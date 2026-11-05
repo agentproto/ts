@@ -1171,6 +1171,10 @@ jobs:
           # explicitly-sanctioned paid model through while still failing closed
           # on a model a PR slipped into the config.
           ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Owner-controlled model override (repo VARIABLE): wins over the
+          # config's `reviewerModel` and goes through the same free/metered
+          # guard below, so it cannot route reviews to an unsanctioned paid id.
+          AGENT_REVIEW_MODEL: ${{ vars.AGENT_REVIEW_MODEL }}
         run: |
           CONFIG="$REVIEW_CONFIG"
           CLI_SOURCE=$(printf '%s' "$CONFIG" | jq -r '.cliSource // "npm"')
@@ -1185,6 +1189,10 @@ jobs:
           # the workflow step's `model` selector and (for opencode-style
           # adapters that route by model id) the provider key env.
           REVIEWER_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
+          if [ -n "${AGENT_REVIEW_MODEL// }" ]; then
+            REVIEWER_MODEL="$AGENT_REVIEW_MODEL"
+            echo "Reviewer model overridden by the AGENT_REVIEW_MODEL repo variable: $REVIEWER_MODEL"
+          fi
           FALLBACK_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerFallbackModels[0] // ""')
           HAS_CLOUD=$(printf '%s' "$CONFIG" | jq -r '(.resolvedAgentAction.presets // []) | index("claude-cloud") != null')
           # Fail closed on a metered route UNLESS it is owner-sanctioned.
@@ -1341,6 +1349,10 @@ jobs:
           # key into the box as OPENCODE_GO_API_KEY (never as OPENCODE_API_KEY).
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
           AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Owner-controlled placement preference (repo VARIABLE, e.g. `e2b` or
+          # `e2b,computer`): reorders reviewerPlacement.ladder without a PR.
+          # reviewerPlacementFor reads it; unset = the config order.
+          AGENT_REVIEW_PLACEMENT: ${{ vars.AGENT_REVIEW_PLACEMENT }}
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # The key authenticates OpenCode. It is selected by the resolved

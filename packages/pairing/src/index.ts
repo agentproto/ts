@@ -33,6 +33,11 @@ export {
   type PairCredential,
 } from "./credential.js"
 export { TunnelClientError, type TunnelClientErrorCode } from "./errors.js"
+/** The short code both screens show while a pairing waits for the operator's
+ *  confirmation (AIP-59 §3.7). */
+export function pairingCode(fingerprint: string): string {
+  return fingerprint.slice(0, 8)
+}
 export { PAIRING_REVOKED_CODE, type ChannelTimeouts, type WebSocketConstructor } from "./channel.js"
 export {
   encodeOfferWebUrl,

@@ -74,6 +74,9 @@ export const CONFIG_TOOLS = [
   "remote_disable",
   "pair_list",
   "pair_offer",
+  "pair_pending",
+  "pair_confirm",
+  "pair_decline",
   "pair_revoke",
   "tunnel_list",
   "tunnel_status",
@@ -837,6 +840,7 @@ function clearRemoteSecrets() {
   pairReveal = null;
   remoteRevokeAllArmed = false;
   remoteAccessTargets = [];
+  remotePendingCount = 0;
   clearPairCountdown();
   // The #sec-remote DOM may still show a rendered reveal box from before
   // this call — clearing the variable alone does not touch it. Force the
@@ -2406,6 +2410,7 @@ var remoteReveal = null;
 var pairReveal = null;
 var remoteRevokeAllArmed = false;
 var remoteAccessTargets = [];
+var remotePendingCount = 0;
 var pairCountdownTimer = null;
 
 function clearPairCountdown() {
@@ -2427,9 +2432,10 @@ function loadRemote() {
   return Promise.all([
     loadTool("remote_status", {}),
     loadTool("pair_list", {}),
+    loadTool("pair_pending", {}),
     loadTool("tunnel_list", {}),
   ]).then(function (results) {
-    renderRemote(results[0], results[1], results[2]);
+    renderRemote(results[0], results[1], results[2], results[3]);
   });
 }
 
@@ -2440,7 +2446,7 @@ function remoteRootHost(tn) {
   try { return new URL(tn.publicUrl || tn.url || "").hostname; } catch (e) { return ""; }
 }
 
-function renderRemote(remoteR, pairR, tunnelR) {
+function renderRemote(remoteR, pairR, pendingR, tunnelR) {
   var el = document.getElementById("sec-remote");
   var html = '<div class="sect-h">Remote access'
     + '<button type="button" class="btn-sm danger" id="remote-revoke-all-btn">Revoke all remote access</button>'
@@ -2456,6 +2462,7 @@ function renderRemote(remoteR, pairR, tunnelR) {
 
   var rs = remoteR.ok ? remoteR.data : null;
   var pairings = (pairR.ok && pairR.data && pairR.data.pairings) || [];
+  var pendingRows = (pendingR.ok && pendingR.data && pendingR.data.pending) || [];
   var tunnels = (tunnelR.ok && tunnelR.data && tunnelR.data.tunnels) || [];
   var rows = [];
   var targets = [];
@@ -2502,7 +2509,21 @@ function renderRemote(remoteR, pairR, tunnelR) {
     });
     targets.push({ kind: "tunnel", target: tn.id });
   }
+  for (var q = 0; q < pendingRows.length; q++) {
+    var pq = pendingRows[q];
+    rows.push({
+      kind: "pending",
+      label: pq.name,
+      detail: "code " + (pq.code || ""),
+      url: pq.rendezvous || ("device " + pq.fingerprint),
+      created: pq.createdAt,
+      lastSeen: "",
+      target: pq.id,
+      revokeKind: "pending",
+    });
+  }
   remoteAccessTargets = targets;
+  remotePendingCount = pendingRows.length;
 
   if (rs) {
     html += '<div class="card" data-card-id="remote"><div class="body"><dl>'
@@ -2551,7 +2572,11 @@ function renderRemote(remoteR, pairR, tunnelR) {
         + '<td>' + escHtml(item.url || "") + '</td>'
         + '<td>' + escHtml(item.created ? fmtRelative(item.created) : "-") + '</td>'
         + '<td>' + escHtml(item.lastSeen ? fmtRelative(item.lastSeen) : "-") + '</td>'
-        + '<td><button type="button" class="btn-sm danger" data-remote-revoke-kind="' + escHtml(item.revokeKind) + '" data-remote-revoke-id="' + escHtml(item.target || "") + '">revoke</button></td>'
+        + '<td>' + (item.kind === "pending"
+          ? '<button type="button" class="btn-sm primary" data-pair-confirm="' + escHtml(item.target || "") + '">confirm</button>'
+            + '<button type="button" class="btn-sm danger" data-pair-decline="' + escHtml(item.target || "") + '">decline</button>'
+          : '<button type="button" class="btn-sm danger" data-remote-revoke-kind="' + escHtml(item.revokeKind) + '" data-remote-revoke-id="' + escHtml(item.target || "") + '">revoke</button>')
+        + '</td>'
         + '</tr>';
     }
     html += '</tbody></table>';
@@ -2596,8 +2621,11 @@ function revokeAllRemoteAccess() {
     remoteRevokeAllArmed = false;
     remoteReveal = null;
     pairReveal = null;
-    if (failures.length) toast("Some revokes failed: " + failures.join("; "), true);
-    else toast("Remote access revoked.", false);
+    var pendingNote = remotePendingCount > 0
+      ? " " + remotePendingCount + " pending pairing(s) left for confirm or decline."
+      : "";
+    if (failures.length) toast("Some revokes failed: " + failures.join("; ") + pendingNote, true);
+    else toast("Remote access revoked." + pendingNote, false);
     loadRemote();
   });
 }
@@ -2639,6 +2667,32 @@ function wireRemote(container) {
         loadRemote();
       });
     });
+  }
+  var confirmBtns = container.querySelectorAll("[data-pair-confirm]");
+  for (var c = 0; c < confirmBtns.length; c++) {
+    (function (btn) {
+      var target = btn.getAttribute("data-pair-confirm");
+      btn.addEventListener("click", function () {
+        loadTool("pair_confirm", { target: target }).then(function (r) {
+          if (!r.ok) { toast(r.message, true); return; }
+          toast("Pairing confirmed.", false);
+          loadRemote();
+        });
+      });
+    })(confirmBtns[c]);
+  }
+  var declineBtns = container.querySelectorAll("[data-pair-decline]");
+  for (var d = 0; d < declineBtns.length; d++) {
+    (function (btn) {
+      var target = btn.getAttribute("data-pair-decline");
+      btn.addEventListener("click", function () {
+        loadTool("pair_decline", { target: target }).then(function (r) {
+          if (!r.ok) { toast(r.message, true); return; }
+          toast("Pairing declined.", false);
+          loadRemote();
+        });
+      });
+    })(declineBtns[d]);
   }
   var revokeAllBtn = container.querySelector("#remote-revoke-all-btn");
   if (revokeAllBtn) {
