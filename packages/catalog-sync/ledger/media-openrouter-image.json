@@ -68,8 +68,8 @@
     "fetchedAt": "2026-11-02"
   },
   "krea/k3-edit": {
-    "hash": "de59f82cb20d738253b3e98fdfbdcd5f888a2db7f4c6406ddfa5536fe1711ddd",
-    "fetchedAt": "2026-11-02"
+    "hash": "a5ad3b01e43ab516810a6b7b72d6e09c4c53c43a8cfb88c5684f601fa60ff0c4",
+    "fetchedAt": "2026-11-05"
   },
   "krea/krea-2-large": {
     "hash": "de59f82cb20d738253b3e98fdfbdcd5f888a2db7f4c6406ddfa5536fe1711ddd",
@@ -134,6 +134,14 @@
   "openai/gpt-image-2.5-sunburst": {
     "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
     "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-image-2.6-flare": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-05"
+  },
+  "openai/gpt-image-2.6-sunburst": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-05"
   },
   "qwen/qwen-image-2.1-pro": {
     "hash": "c79f91765668a3844459fd4d46412d8d083b2082688f9e3155a0de7ee14e8db9",
@@ -241,10 +249,6 @@
   },
   "x-ai/grok-imagine-image-2.0": {
     "hash": "d931f861318d02f4070d77351cc2256ca68f56efbf2921a57cee3635f1c1f1ce",
-    "fetchedAt": "2026-11-02"
-  },
-  "x-ai/grok-imagine-image-quality": {
-    "hash": "1cc00cd08bb9cfa2ae44836f972d88fe8aef90a2ad423a5a332dff21c4ea77d1",
     "fetchedAt": "2026-11-02"
   }
 }

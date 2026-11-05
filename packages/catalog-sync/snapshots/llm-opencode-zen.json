@@ -301,6 +301,16 @@
           "cache_write": 2.5
         }
       },
+      "crouton-alpha-free": {
+        "id": "crouton-alpha-free",
+        "name": "Crouton Alpha Free",
+        "release_date": "2026-11-03",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
@@ -1566,6 +1576,16 @@
         "cost": {
           "input": 0,
           "output": 0
+        }
+      },
+      "pulse-alpha-free": {
+        "id": "pulse-alpha-free",
+        "name": "Pulse Alpha Free",
+        "release_date": "2026-11-02",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
         }
       },
       "qwen3-coder": {

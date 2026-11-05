@@ -78,4 +78,31 @@ export const FIRST_PARTY_CATALOG_ENTRIES: readonly AppCatalogEntry[] = [
     ],
     "homepage": "https://agentproto.sh/apps/@agentik/session-chat"
   },
+  {
+    "appId": "@agentproto/app-store",
+    "name": "App Store",
+    "description": "Browse, install and update agentproto apps. Projects the daemon's catalog and installed app registry into one storefront (featured shelf, category filters, detail pages, install drawer, update badges) and dispatches the existing app_catalog / app_list / app_updates / app_install / app_resync / app_uninstall / app_status / app_run / app_ui_app verbs. Installs keep the existing preview-then-confirm step (source URL, pinned digest or commit, and whether a build command runs) before any write.",
+    "source": {
+      "kind": "agentapp",
+      "url": "https://github.com/agentproto/apps/releases/download/app-store%400.3.1/app-store-0.3.1.agentapp",
+      "sha256": "c28cc9e2980758a98966b6a42a1f28effcc12f93669c1cd42050239df068518a",
+      "version": "0.3.1",
+      "size": 46051
+    },
+    "icon": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentproto/app-store/0.3.1/icon.svg",
+    "version": "0.3.1",
+    "tier": "bundle",
+    "publisher": "agentproto",
+    "publisherUrl": "https://agentproto.sh",
+    "license": {
+      "kind": "free"
+    },
+    "tagline": "Browse, install and update agentproto apps, no CLI needed.",
+    "longDescription": "A storefront for your agentproto daemon. Browse the public catalog, install an\napp in two steps and keep every app up to date, without touching the CLI.\n\n## Discover\n\nA featured shelf and a filterable grid over the public catalog, with the\ntagline, icon, screenshots and version of each app. Open a card for the full\ndescription, requirements, publisher and license.\n\n## Install with a preview\n\nInstall never writes before you confirm. The drawer first shows the source, the\npinned digest or commit and whether a build command would run. Confirm to\ninstall; cancel and nothing changed. Prefer the terminal? Each detail page also\ncarries the exact CLI install line.\n\n## Stay current\n\nThe Installed view lists what runs on your daemon and badges every app that is\nbehind its catalog release. Update shows the version change first, then resyncs\nfrom the same catalog the app came from.\n\n## Manage\n\nOpen an app's UI in its own tab, or uninstall it with an inline confirmation.\nBuilt-in panels are listed too, but are never removable.\n\n## Requirements\n\nApp Store talks to your local agentproto daemon. It sits beside the built-in\nstore panel, which stays available as a fallback.",
+    "categories": [
+      "store",
+      "developer-tools"
+    ],
+    "homepage": "https://agentproto.sh/apps/@agentproto/app-store"
+  },
 ]

@@ -505,3 +505,36 @@ for that.
 
 ### llm:huggingface
 - Added: CohereLabs/c4ai-command-r7b-arabic-02-2025
+
+## 2026-11-05
+
+### llm:openrouter
+- Added: inclusionai/ling-3.0-tiny, openrouter/auto-code, ricursiveai/ripple-65b-preview, tencent/hy4, x-ai/grok-4.6:batch, x-ai/grok-4.7:batch
+- Removed: minimax/minimax-01, minimax/minimax-m2, minimax/minimax-m2-her, minimax/minimax-m2.1
+
+### llm:requesty
+- Added: azure/gpt-5.6-luna@polandcentral, azure/gpt-5.6-sol@polandcentral, azure/gpt-5.6-terra@polandcentral, azure/gpt-6-luna@polandcentral, azure/gpt-6-sol@polandcentral, azure/gpt-6.1-sol@polandcentral, azure/gpt-6.1-terra@polandcentral, deepinfra/kimi-k3.1-pro, fireworks/kimi-k3.1-pro, novita/kimi-k3.1-pro, runware/kimi-k3.1-pro, tensorx/kimi-k3.1-pro, together/kimi-k3.1-pro
+- Removed: anthropic/claude-sonnet-4-5, openai/gpt-4.1-nano
+
+### llm:opencode-go
+- Added: opencode-go/hy4
+
+### llm:opencode-zen
+- Added: opencode/crouton-alpha-free, opencode/pulse-alpha-free
+
+### llm:huggingface
+- Added: swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-8B-Instruct-2509
+- Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, Qwen/Qwen2.5-72B-Instruct, Qwen/Qwen2.5-Coder-32B-Instruct, Qwen/Qwen2.5-Coder-3B-Instruct, Qwen/Qwen2.5-Coder-7B-Instruct, Qwen/Qwen3-235B-A22B, Qwen/Qwen3-4B-Instruct-2507, Qwen/Qwen3-4B-Thinking-2507, Qwen/Qwen3-8B, deepseek-ai/DeepSeek-R1-Distill-Llama-8B, deepseek-ai/DeepSeek-R1-Distill-Qwen-14B, deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+
+### llm:context-windows
+- Removed: grok-imagine-image-quality
+
+### image:openrouter
+- Added: openai/gpt-image-2.6-flare, openai/gpt-image-2.6-sunburst
+- Removed: x-ai/grok-imagine-image-quality
+
+### llm:minimax
+- Removed: M2-her
+
+### video:replicate
+- Removed: replicate:xai/grok-imagine-video
