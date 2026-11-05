@@ -1290,6 +1290,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: "~/.agentproto/worktrees",
   },
   {
+    path: "worktrees.extraRoots",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Extra worktrees roots",
+    help: "Extra directories `maintain --all` scans for worktrees, in addition to `worktrees.root`; `--worktrees-root` adds to this list.",
+    default: [],
+  },
+  {
     path: "worktrees.isolation",
     schema: z.enum(["always", "on-request", "never"]),
     apply: "hot",
