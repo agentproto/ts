@@ -335,13 +335,38 @@ export const reviewerTurnRetryFor = (config, verb) => {
  *   · a ladder left with no rung throws: a configured review never silently
  *     degrades to a host spawn.
  */
+// ── placement preference (owner-controlled, no PR edit needed) ──────────────
+//
+// `AGENT_REVIEW_PLACEMENT` is a repo VARIABLE: an ordered, comma/space
+// separated list of sandbox providers (`e2b`, `e2b,computer`). It REORDERS the
+// shipped ladder, it never adds or removes a rung: listed providers move to
+// the front in the order given, unlisted ones keep their relative order after
+// them. So swapping the preferred lane is a variable edit, and the paid /
+// fallback rungs of the config stay reachable. Unset or empty = config order.
+const PLACEMENT_PREFERENCE_ENV = "AGENT_REVIEW_PLACEMENT"
+
+const placementPreference = () =>
+  envPresent(PLACEMENT_PREFERENCE_ENV)
+    ? process.env[PLACEMENT_PREFERENCE_ENV].split(/[\s,]+/).map(p => p.trim().toLowerCase()).filter(Boolean)
+    : []
+
+const byProviderPreference = rungs => {
+  const prefs = placementPreference()
+  if (prefs.length === 0) return rungs
+  const rank = rung => {
+    const i = prefs.indexOf(providerOf(rung?.sandbox).toLowerCase())
+    return i === -1 ? prefs.length : i
+  }
+  return rungs.map((rung, i) => ({ rung, i })).sort((a, b) => rank(a.rung) - rank(b.rung) || a.i - b.i).map(x => x.rung)
+}
+
 export const reviewerPlacementFor = (config, verb) => {
   const cfg = resolveCommandConfig(config, verb)
   const ladder = ladderOf(cfg)
   if (!ladder) return undefined
   const adapter = adapterFor(config, verb)
   const turnRetry = reviewerTurnRetryFor(config, verb)
-  const rungs = ladder
+  const rungs = byProviderPreference(ladder
     .filter(rung => {
       if (providerOf(rung?.sandbox) === "computer" && !hasFleet()) {
         logOnce("placement: COMPUTER_CONTROLLER_URL is not set on this runner, skipping computer rungs")
@@ -349,7 +374,7 @@ export const reviewerPlacementFor = (config, verb) => {
       }
       return rung.model === undefined || modelUsable(rung.model, adapter)
     })
-    .map(rung => (rung.turnRetry === undefined ? rung : { ...rung, turnRetry: filterTurnRetry(rung.turnRetry, adapter) }))
+    .map(rung => (rung.turnRetry === undefined ? rung : { ...rung, turnRetry: filterTurnRetry(rung.turnRetry, adapter) })))
   if (rungs.length === 0) {
     throw new Error(
       "reviewerPlacement: no placement rung is usable on this runner (computer rungs need COMPUTER_CONTROLLER_URL; " +
