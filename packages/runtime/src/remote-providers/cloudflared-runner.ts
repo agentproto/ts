@@ -264,14 +264,7 @@ export class CloudflaredRunner {
         this.log(`[cloudflared] ${state}: ${detail}`)
         if (this.supervisor) this.emitHealth()
       },
-      onLog: line => {
-        this.log(line)
-        // cloudflared tells us the moment the connector is registered, which
-        // is a far better probe trigger than waiting out the settle step.
-        if (this.settleToken && /registered tunnel connection/i.test(line)) {
-          void this.probe(true)
-        }
-      },
+      onLog: line => this.log(line),
     })
     this.supervisor = sup
     try {
