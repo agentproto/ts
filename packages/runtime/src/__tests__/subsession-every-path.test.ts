@@ -365,9 +365,16 @@ describe("AIP-59 sub-session token on every gateway path", () => {
     await callImported(gateway, session.id, IMPORT_ALIAS)
     await callImported(gateway, session.id, IMPORT_ID)
     expect(bureau.mints).toHaveLength(1)
+    expect(bureau.calls).toHaveLength(2)
+    expect(bureau.calls[0]?.subsession).toBe(`tok-${session.id}`)
+    expect(bureau.calls[1]?.subsession).toBe(`tok-${session.id}`)
+    expect(bureau.calls.every(c => c.caller === undefined)).toBe(true)
 
     gateway.sessions.kill(session.id)
     await waitFor(() => bureau.deletes.length > 0)
+    // Let a second, duplicate DELETE land before asserting: a count taken
+    // right after the first one would miss the bug this test guards.
+    await new Promise(resolve => setTimeout(resolve, 150))
     expect(bureau.deletes).toEqual([session.id])
   })
 })
