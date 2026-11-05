@@ -92,7 +92,11 @@ import {
 } from "./session-message.js"
 import type { Grant } from "@agentproto/policy"
 
-import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
+import {
+  defaultUrgencyForKind,
+  registerMessageTools,
+  type RegisterMessageToolsOptions,
+} from "./message-tools.js"
 import { registerPermissionsTools } from "./permissions-tools.js"
 import { decide } from "./permissions.js"
 import { createWorkspaceOfCwd } from "./workspace-binding.js"
@@ -579,6 +583,13 @@ export interface RegisterAgentToolsOptions {
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
    *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** `mcp.noCallerIdentity` — how the MCP gateway treats a call with no
+   *  caller identity: `block` (default) refuses, `accept` allows an
+   *  anonymous `message_send` as `claude-code`, `ask` parks it on a human
+   *  approval. */
+  noCallerIdentity?: "block" | "ask" | "accept"
+  /** `ask` mode: raise a human approval for an identity-less send. */
+  requestAnonymousMessageApproval?: RegisterMessageToolsOptions["requestAnonymousMessageApproval"]
 }
 
 export function registerAgentTools(
@@ -612,6 +623,8 @@ export function registerAgentTools(
     messagingPeerGroups,
     messagingGrants,
     messagingAgentInterrupt,
+    noCallerIdentity,
+    requestAnonymousMessageApproval,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
     loadCommandAllowlist,
@@ -1412,6 +1425,8 @@ export function registerAgentTools(
       : {}),
     ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(noCallerIdentity ? { noCallerIdentity } : {}),
+    ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
   registerPermissionsTools(server, {

@@ -190,6 +190,8 @@ import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
+import { resolveNoCallerIdentity } from "./mcp-config.js"
+import type { AnonymousMessageApprovalDetail } from "./message-tools.js"
 import { resolveTaskDefaults } from "./task-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { backfillSessionIndexesAsync } from "./session-index.js"
@@ -4223,6 +4225,8 @@ export async function createGateway(
     // takes effect on the very next `agent_prompt` / `message_parent` /
     // `message_send` / `message_reply` call, no daemon restart.
     const messagingDefaults = await resolveMessagingDefaults()
+    // Same fresh-per-request read for `mcp.noCallerIdentity`.
+    const mcpNoCallerIdentity = await resolveNoCallerIdentity()
     // Same fresh-per-request read for the task ledger's operator delegates,
     // so a `config_set` takes effect on the next task_* call.
     const taskDefaults = await resolveTaskDefaults()
@@ -4499,6 +4503,25 @@ export async function createGateway(
       messagingPeerGroups: messagingDefaults.peerGroups,
       messagingGrants: messagingDefaults.grants,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
+      noCallerIdentity: mcpNoCallerIdentity,
+      // `ask`: park an identity-less send on a human approval. The requester
+      // is the operator (an unidentified client is operator context, the
+      // same rule the approval tools use); the send still goes out as the
+      // anonymous `claude-code`, never as any session.
+      requestAnonymousMessageApproval: async (detail: AnonymousMessageApprovalDetail) => {
+        const record = approvalsEngine.request(
+          {
+            kind: "message_send",
+            title: `Allow anonymous message from claude-code to ${detail.to}?`,
+            preview: { sender: "claude-code", to: detail.to, kind: detail.kind, text: detail.text.slice(0, 2000) },
+            payload: { to: detail.to, kind: detail.kind, urgency: detail.urgency, text: detail.text },
+            expiresAt: new Date(Date.now() + 45_000).toISOString(),
+          },
+          { operator: true },
+        )
+        const settled = await approvalsEngine.wait(record.id, 45_000)
+        return settled?.status === "approved"
+      },
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }

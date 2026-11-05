@@ -70,6 +70,23 @@ export interface RegisterMessageToolsOptions {
   /** `defaults.messaging.agentInterrupt: "allow"` — let a session sender's
    *  `interrupt` cancel the recipient's turn. Off by default (→ `steer`). */
   allowInterrupt?: boolean
+  /** `mcp.noCallerIdentity` — how a call with no caller identity is handled.
+   *  `block` (default) keeps the refusal; `accept` lets an identity-less
+   *  `message_send` go out as the anonymous `claude-code` sender; `ask`
+   *  parks that send on a human approval. */
+  noCallerIdentity?: "block" | "ask" | "accept"
+  /** `ask` mode: raise a human approval for an identity-less send and
+   *  resolve true only when it is approved. Absent ⇒ `ask` degrades to the
+   *  `block` refusal (reported in the error text). */
+  requestAnonymousMessageApproval?: (detail: AnonymousMessageApprovalDetail) => Promise<boolean>
+}
+
+/** What an `ask` approval gate is asked to allow. */
+export interface AnonymousMessageApprovalDetail {
+  to: string
+  text: string
+  kind: MessageKind
+  urgency: MessageUrgency
 }
 
 type ToolResult = {
@@ -112,6 +129,7 @@ function view(m: SessionMessage): Record<string, unknown> {
     text: m.text,
     ...(m.data !== undefined ? { data: m.data } : {}),
     ...(m.replyTo ? { replyTo: m.replyTo } : {}),
+    ...(m.replyAddress ? { replyAddress: m.replyAddress } : {}),
     ...(m.correlationId ? { correlationId: m.correlationId } : {}),
     ...(m.delivered ? { delivered: m.delivered } : {}),
   }
@@ -158,32 +176,127 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   const isResult = (v: unknown): v is ToolResult =>
     typeof v === "object" && v !== null && "content" in v
 
-  /** Shared send path for `message_send` / `message_reply`. */
-  const send = async (
+  const noCallerIdentity = opts.noCallerIdentity ?? "block"
+  /** The id this gateway was told about, if any (absence is the
+   *  identity-less case `noCallerIdentity` governs). */
+  const rawCallerId = callerScope?.ownerSessionId ?? callerSessionId
+
+  /** `cc:<id>` is always a declared address; any other value that names a
+   *  live session is one too; `msg_*` stays a message thread id. Anything
+   *  else is rejected rather than silently reinterpreted. */
+  const classifyReplyTo = (
+    value: string,
     tool: string,
-    self: SessionDescriptor,
+  ): { replyTo?: string; replyAddress?: string } | ToolResult => {
+    if (value.startsWith("msg_")) return { replyTo: value }
+    const declared = /^(?:cc:)?[A-Za-z0-9._-]{1,128}$/.test(value)
+    if ((declared && value.startsWith("cc:")) || registry.get(value)) {
+      return { replyAddress: value }
+    }
+    return fail(
+      "invalid_reply_to",
+      `${tool}: replyTo "${value}" is neither a message id (msg_…) nor a declared ` +
+        "caller address (cc:<id> or a live session id).",
+    )
+  }
+
+  /** An identity-less client asks to send under `accept`/`ask`: only
+   *  `message_send` may act, and always as the anonymous `claude-code`
+   *  sender — never as a session. */
+  const anonymousSend = async (
+    tool: string,
     toId: string,
     input: {
       text: string
       kind?: MessageKind
       urgency?: MessageUrgency
       replyTo?: string
+      replyAddress?: string
       correlationId?: string
       data?: Record<string, unknown>
       from?: unknown
     },
+  ): Promise<ToolResult> => {
+    if (noCallerIdentity === "block") {
+      return fail(
+        "no_caller_identity",
+        `${tool}: cannot identify the calling session. Config \`mcp.noCallerIdentity\` ` +
+          "is \"block\"; set it to \"accept\" (or \"ask\") to allow an anonymous send.",
+      )
+    }
+    const kind = input.kind ?? "report"
+    const urgency = input.urgency ?? defaultUrgencyForKind(kind)
+    if (noCallerIdentity === "ask") {
+      const request = opts.requestAnonymousMessageApproval
+      if (!request) {
+        return fail(
+          "no_caller_identity",
+          `${tool}: config \`mcp.noCallerIdentity\` is \"ask\", but no approval channel ` +
+            "is wired into this gateway; the send is refused.",
+        )
+      }
+      let approved = false
+      try {
+        approved = await request({ to: toId, text: input.text, kind, urgency })
+      } catch {
+        approved = false
+      }
+      if (!approved) {
+        return fail(
+          "anonymous_not_approved",
+          `${tool}: an identity-less send to "${toId}" was not approved.`,
+        )
+      }
+    }
+    return send(tool, undefined, toId, { ...input, kind, urgency }, true)
+  }
+
+  /** What an `accept` reader can do instead of reading a nonexistent inbox. */
+  const anonymousReadHint = (tool: string): ToolResult =>
+    ok({
+      messages: [],
+      anonymous: true,
+      hint:
+        `${tool}: this caller has no session identity, so it has no inbox to read. ` +
+        "To receive replies, pass your own session id as `replyTo` on `message_send` " +
+        "(cc:<id> or the session id) so the recipient knows where to address a reply; " +
+        "read your inbox through your harness hook instead.",
+    })
+
+  /** Shared send path for `message_send` / `message_reply`. */
+  const send = async (
+    tool: string,
+    self: SessionDescriptor | undefined,
+    toId: string,
+    input: {
+      text: string
+      kind?: MessageKind
+      urgency?: MessageUrgency
+      replyTo?: string
+      replyAddress?: string
+      correlationId?: string
+      data?: Record<string, unknown>
+      from?: unknown
+    },
+    anonymous = false,
   ): Promise<ToolResult> => {
     if (input.from !== undefined) {
       return fail("from_not_settable", `${tool}: \`from\` is not settable — the daemon attests the sender.`)
     }
     const recipient = registry.get(toId)
     if (!recipient) return fail("no_such_session", `${tool}: session "${toId}" does not exist.`)
-    // One ACL for every messaging entry point (permissions.ts).
-    const principal = { kind: "session", session: self } as const
+    // One ACL for every messaging entry point (permissions.ts). An
+    // identity-less caller is evaluated as the operator/human principal,
+    // which is what it already is on the wire (the same principal an
+    // unauthenticated local `/mcp` operator call gets); it is never any
+    // session and never gains a session's grants.
+    const principal = self
+      ? ({ kind: "session", session: self } as const)
+      : ({ kind: "operator", via: "anonymous-local" } as const)
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
-    if (decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
+    if (self && decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
         senderId: self.id,
         recipientId: recipient.id,
@@ -212,18 +325,21 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     try {
       msg = createSessionMessage({
         to: recipient.id,
-        from: messageFrom(self, relation),
+        from: self
+          ? messageFrom(self, relation)
+          : { relation: "human", label: "claude-code", anonymous: true },
         text: input.text,
         kind,
         urgency,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        ...(input.replyAddress ? { replyAddress: input.replyAddress } : {}),
         ...(input.correlationId ? { correlationId: input.correlationId } : {}),
         ...(input.data !== undefined ? { data: input.data } : {}),
       })
     } catch (err) {
       return fail("invalid_message", `${tool}: ${err instanceof Error ? err.message : String(err)}`)
     }
-    const provenance = `${relation}:${self.id}`
+    const provenance = self ? `${relation}:${self.id}` : "anonymous:claude-code"
     try {
       const interrupt = decide(principal, "session.message.interrupt", resource, policy)
       const r = await registry.sendMessage(msg, {
@@ -239,6 +355,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         delivered: r.delivered,
         queued: r.queued,
         urgencyApplied: r.urgencyApplied,
+        ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
         ...(r.urgencyApplied !== urgency
           ? { note: `urgency "${urgency}" delivered as "${r.urgencyApplied}"` }
           : {}),
@@ -285,8 +402,18 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       correlationId: z.string().optional().describe("Thread id (defaults to the first message's id)."),
     },
     async input => {
+      const routed = input.replyTo !== undefined ? classifyReplyTo(input.replyTo, "message_send") : {}
+      if (isResult(routed)) return routed
       const self = resolveCaller("message_send")
-      if (isResult(self)) return self
+      if (isResult(self)) {
+        // A known-caller-descriptor failure is a real refusal; only an
+        // ABSENT identity is the case `mcp.noCallerIdentity` governs.
+        if (rawCallerId) return self
+        if (input.to === "parent") {
+          return fail("no_parent", "message_send: this caller has no parent session.")
+        }
+        return anonymousSend("message_send", input.to, { ...input, ...routed })
+      }
       let toId = input.to
       if (toId === "parent") {
         if (!self.parentSessionId) {
@@ -294,7 +421,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         }
         toId = self.parentSessionId
       }
-      return send("message_send", self, toId, input)
+      return send("message_send", self, toId, { ...input, ...routed })
     },
   )
 
@@ -354,7 +481,10 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     },
     async input => {
       const self = resolveCaller("inbox_list")
-      if (isResult(self)) return self
+      if (isResult(self)) {
+        if (!rawCallerId && noCallerIdentity === "accept") return anonymousReadHint("inbox_list")
+        return self
+      }
       const msgs = registry.listInbox(self.id, {
         ...toFilter(input),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -385,7 +515,13 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     },
     async input => {
       const self = resolveCaller("inbox_ack")
-      if (isResult(self)) return self
+      if (isResult(self)) {
+        if (!rawCallerId && noCallerIdentity === "accept") {
+          const read = anonymousReadHint("inbox_ack")
+          return ok({ ...JSON.parse(read.content[0]!.text), acked: [], noop: input.noop === true })
+        }
+        return self
+      }
       const noop = input.noop === true
       const before = noop ? (registry.listInbox(self.id) ?? []) : []
       const result = registry.ackInbox(self.id, input.ids)
@@ -417,7 +553,13 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     },
     async (input, extra) => {
       const self = resolveCaller("inbox_wait")
-      if (isResult(self)) return self
+      if (isResult(self)) {
+        if (!rawCallerId && noCallerIdentity === "accept") {
+          const read = anonymousReadHint("inbox_wait")
+          return ok({ ...JSON.parse(read.content[0]!.text), timedOut: false, pendingChildren: [] })
+        }
+        return self
+      }
       const signal = (extra as { signal?: AbortSignal } | undefined)?.signal
       const r = await registry.waitForMessages(self.id, toFilter(input), {
         timeoutMs: input.timeoutMs ?? INBOX_WAIT_DEFAULT_MS,
