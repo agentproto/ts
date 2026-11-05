@@ -401,6 +401,7 @@ const featuresConfigSchema: z.ZodType<FeaturesConfig> = z
 const worktreesConfigSchema: z.ZodType<WorktreesConfig> = z
   .object({
     root: z.string().optional(),
+    extraRoots: z.array(z.string()).optional(),
     isolation: z.enum(["always", "on-request", "never"]).optional(),
     provisionConcurrency: z.number().int().min(0).optional(),
     provisionConcurrencyByRepo: z.record(z.string(), z.number().int().min(0)).optional(),

@@ -28,7 +28,8 @@ import { basename, dirname, join, resolve } from "node:path"
 import { mcpToolCall, withDaemon } from "./workflow.js"
 import { repoRootOf } from "./worktree.js"
 import { resolveWorktreesRoot } from "./worktree.js"
-import { discoverWorktreeOwningRepos, resolveAllRepos } from "./maintain-discovery.js"
+import { discoverWorktreeOwningRepos, normalizeExtraRoots, resolveAllRepos } from "./maintain-discovery.js"
+import { loadConfig } from "@agentproto/runtime/config"
 import { httpGetJson } from "./_daemon-helpers.js"
 import { APP_INSTALL_WORKTREE_REPOINT_REFUSED, MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
 
@@ -183,7 +184,10 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			return root
 		})
 		if (explicit.some((r) => r === null)) return 2
-		const extraRoots = (values["worktrees-root"] ?? []).map((dir) => resolve(dir))
+		// Config `worktrees.extraRoots` first, then the flag. An unreadable
+		// config must not stop a maintenance run: fall back to the flag alone.
+		const cfg = await loadConfig().catch(() => undefined)
+		const extraRoots = normalizeExtraRoots([...(cfg?.worktrees?.extraRoots ?? []), ...(values["worktrees-root"] ?? [])])
 		repos = await resolveAllRepos([worktreesRoot, ...extraRoots], explicit as string[])
 		if (repos.length === 0) {
 			process.stderr.write(
