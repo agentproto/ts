@@ -401,6 +401,7 @@ const featuresConfigSchema: z.ZodType<FeaturesConfig> = z
 const worktreesConfigSchema: z.ZodType<WorktreesConfig> = z
   .object({
     root: z.string().optional(),
+    extraRoots: z.array(z.string()).optional(),
     isolation: z.enum(["always", "on-request", "never"]).optional(),
     provisionConcurrency: z.number().int().min(0).optional(),
     provisionConcurrencyByRepo: z.record(z.string(), z.number().int().min(0)).optional(),
@@ -1287,6 +1288,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Worktrees root",
     help: "Absolute path new `worktree new` worktrees are created under.",
     default: "~/.agentproto/worktrees",
+  },
+  {
+    path: "worktrees.extraRoots",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Extra worktrees roots",
+    help: "Extra directories `maintain --all` scans for worktrees, in addition to `worktrees.root`; `--worktrees-root` adds to this list.",
+    default: [],
   },
   {
     path: "worktrees.isolation",
