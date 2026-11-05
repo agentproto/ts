@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SandboxExecOpts, SandboxExecResult, SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
+import type { SandboxExecOpts, SandboxExecResult, SandboxProvider } from "@agentproto/sandbox"
 import { createEgressHealthLedger, DEFAULT_EGRESS_COOLDOWN_MS, MAX_EGRESS_COOLDOWN_MS } from "../egress-health.js"
 import { probeEgressSlots, readEgressHealth } from "../egress-health-report.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
@@ -121,7 +121,6 @@ describe("readEgressHealth / probeEgressSlots", () => {
     { id: "b", publicIp: IP_B, computers: 0 },
   ]
   let stops: string[]
-  let bootSpecs: SandboxSpec[]
   let execBySlot: Record<string, (o: SandboxExecOpts) => Promise<SandboxExecResult>>
   const out = (over: Partial<SandboxExecResult> = {}): SandboxExecResult => ({
     exitCode: 0,
@@ -135,7 +134,6 @@ describe("readEgressHealth / probeEgressSlots", () => {
     const provider: SandboxProvider = {
       egressPool: vi.fn(async () => POOL),
       boot: vi.fn(async spec => {
-        bootSpecs.push(spec)
         const slot = String((spec.config as { egressIp?: string }).egressIp)
         const pool = POOL.find(p => p.id === slot)!
         return {
@@ -170,7 +168,6 @@ describe("readEgressHealth / probeEgressSlots", () => {
 
   beforeEach(() => {
     stops = []
-    bootSpecs = []
     execBySlot = { a: async () => out(), b: async () => out() }
   })
 
@@ -215,58 +212,7 @@ describe("readEgressHealth / probeEgressSlots", () => {
     ])
     expect(d.ledger.cooling(IP_A, MODEL)?.errorClass).toBe("usage-limit")
     expect(d.ledger.cooling(IP_B, MODEL)).toBeUndefined()
-    expect(stops.sort()).toEqual(["a", "b"])
-  })
-
-  it("probe: every slot's box boots in parallel", async () => {
-    let releaseBoth: (() => void) | undefined
-    const bothStarted = new Promise<void>(resolve => {
-      releaseBoth = resolve
-    })
-    let started = 0
-    const base = handle()
-    ;(base.provider.boot as ReturnType<typeof vi.fn>).mockImplementation(async (spec: SandboxSpec) => {
-      started++
-      if (started === 2) releaseBoth?.()
-      await bothStarted
-      const slot = String((spec.config as { egressIp?: string }).egressIp)
-      const pool = POOL.find(p => p.id === slot)!
-      return {
-        mcpUrl: "http://127.0.0.1:1/mcp",
-        sandboxId: `sbx_${slot}`,
-        egressIp: { id: slot, publicIp: pool.publicIp },
-        stop: async () => {
-          stops.push(slot)
-        },
-        exec: (o: SandboxExecOpts) => execBySlot[slot]!(o),
-      }
-    })
-    const d = {
-      ledger: createEgressHealthLedger({ path, now }),
-      resolveSandboxProvider: async (slug: string) => (slug === "computer" ? base : null),
-    }
-    const report = await Promise.race([
-      probeEgressSlots({ model: MODEL }, d),
-      new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), 250)),
-    ])
-    expect(report).not.toBe("timeout")
-    if (report === "timeout" || !report.ok) return
-    expect(started).toBe(2)
-    expect(report.results.map(r => r.verdict)).toEqual(["ok", "ok"])
-  })
-
-  it("probe: boots each box at 1 GiB with the egress hosts opencode needs", async () => {
-    const report = await probeEgressSlots({ model: MODEL }, deps())
-    expect(report.ok).toBe(true)
-    if (!report.ok) return
-    expect(bootSpecs).toHaveLength(2)
-    for (const spec of bootSpecs) {
-      expect(spec.config).toMatchObject({
-        cpus: 1,
-        memoryMiB: 1024,
-        egress: ["opencode.ai", "models.opencode.ai", "models.dev", "rdv.agentproto.sh", "registry.npmjs.org"],
-      })
-    }
+    expect(stops).toEqual(["a", "b"])
   })
 
   it("probe: an inconclusive probe or a boot error changes nothing", async () => {
@@ -281,6 +227,6 @@ describe("readEgressHealth / probeEgressSlots", () => {
     if (!report.ok) return
     expect(report.results.map(r => r.verdict)).toEqual(["unknown", "unknown"])
     expect(d.ledger.cooling(IP_A, MODEL)?.errorClass).toBe("rate-limit")
-    expect(stops.sort()).toEqual(["a", "b"])
+    expect(stops).toEqual(["a", "b"])
   })
 })

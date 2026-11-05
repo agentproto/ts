@@ -290,16 +290,7 @@ export async function runPreflightProbe(
   }
   try {
     const settled = await Promise.race([probe.run({ ...ctx, exec, timeoutMs }), timedOut])
-    if (settled === "timeout") {
-      // A silent model-answers timeout is the signature of opencode retrying a
-      // rate limit without printing anything: it looks like a throttled IP but
-      // is really a hidden refusal. Point the operator at the logs.
-      const hint =
-        probe.id === MODEL_ANSWERS_PROBE_ID
-          ? "; opencode retries rate limits silently, so re-run opencode with --print-logs --log-level WARN to see the limit (it shows in ~5s)"
-          : ""
-      return finish({ verdict: "unknown", detail: `timed out after ${timeoutMs}ms with no output${hint}` })
-    }
+    if (settled === "timeout") return finish({ verdict: "unknown", detail: `timed out after ${timeoutMs}ms` })
     return finish(settled)
   } catch (err) {
     return finish({ verdict: "unknown", detail: `probe failed to run: ${clip(err instanceof Error ? err.message : String(err))}` })

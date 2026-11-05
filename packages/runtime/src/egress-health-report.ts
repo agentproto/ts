@@ -124,8 +124,7 @@ export interface EgressProbeDeps extends EgressHealthDeps {
  * Boot one box per slot, run `model-answers` for `model` from it, then stop
  * the box. A `ko` that is a usage or rate limit sets the cooldown; an `ok`
  * clears every cooldown on that address for the model; `unknown` and boot
- * errors change nothing. Every slot's box boots in parallel: each is a real
- * boot, so probing sequentially made a full sweep take minutes.
+ * errors change nothing. Boxes run one at a time: each is a real boot.
  */
 export async function probeEgressSlots(
   opts: { provider?: string; model: string; adapter?: string },
@@ -146,57 +145,46 @@ export async function probeEgressSlots(
     }
   }
 
-  const results = await Promise.all(
-    pool.slots.map(async (slot): Promise<EgressProbeSlotResult> => {
-      // 1 GiB is enough for one `opencode run`; models.dev must be reachable or
-      // opencode hangs silently on model metadata and looks like a throttled IP.
-      const spec: SandboxSpec = {
-        provider,
-        config: {
-          egressIp: slot.id,
-          cpus: 1,
-          memoryMiB: 1024,
-          egress: ["opencode.ai", "models.opencode.ai", "models.dev", "rdv.agentproto.sh", "registry.npmjs.org"],
-        },
+  const results: EgressProbeSlotResult[] = []
+  for (const slot of pool.slots) {
+    const spec: SandboxSpec = { provider, config: { egressIp: slot.id } }
+    let booted: Awaited<ReturnType<NonNullable<typeof handle.provider.boot>>> | undefined
+    try {
+      booted = await handle.provider.boot(spec, { env: {} })
+      if (!booted.exec) {
+        results.push({ slot: slot.id, verdict: "error", detail: `provider "${provider}" boxes cannot run commands` })
+        continue
       }
-      let booted: Awaited<ReturnType<NonNullable<typeof handle.provider.boot>>> | undefined
-      try {
-        booted = await handle.provider.boot(spec, { env: {} })
-        if (!booted.exec) {
-          return { slot: slot.id, verdict: "error", detail: `provider "${provider}" boxes cannot run commands` }
-        }
-        const publicIp = booted.egressIp?.publicIp ?? slot.publicIp
-        const run = await runSandboxPreflight(
-          [MODEL_ANSWERS_PROBE_ID],
-          { exec: booted.exec, adapter, model: opts.model, egressIp: publicIp },
-          { registry: deps.preflightRegistry ?? defaultPreflightRegistry, ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}) },
-        )
-        const outcome = run.failed ?? run.outcomes[0]
-        if (!outcome) {
-          return { slot: slot.id, publicIp, verdict: "unknown", detail: "no probe ran" }
-        }
-        if (outcome.verdict === "ok") {
-          const cleared = ledger.clear({ publicIp, model: opts.model })
-          return { slot: slot.id, publicIp, verdict: "ok", detail: outcome.detail, cleared }
-        }
-        if (outcome.verdict === "ko" && isEgressHealthErrorClass(outcome.errorClass)) {
-          const cooldown = ledger.mark({
-            publicIp,
-            model: opts.model,
-            errorClass: outcome.errorClass,
-            slot: slot.id,
-            source: `probe:${MODEL_ANSWERS_PROBE_ID}`,
-          })
-          return { slot: slot.id, publicIp, verdict: "ko", detail: outcome.detail, cooldown }
-        }
-        return { slot: slot.id, publicIp, verdict: outcome.verdict, detail: outcome.detail }
-      } catch (err) {
-        return { slot: slot.id, verdict: "error", detail: err instanceof Error ? err.message : String(err) }
-      } finally {
-        if (booted) await booted.stop().catch(() => undefined)
+      const publicIp = booted.egressIp?.publicIp ?? slot.publicIp
+      const run = await runSandboxPreflight(
+        [MODEL_ANSWERS_PROBE_ID],
+        { exec: booted.exec, adapter, model: opts.model, egressIp: publicIp },
+        { registry: deps.preflightRegistry ?? defaultPreflightRegistry, ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}) },
+      )
+      const outcome = run.failed ?? run.outcomes[0]
+      if (!outcome) {
+        results.push({ slot: slot.id, publicIp, verdict: "unknown", detail: "no probe ran" })
+      } else if (outcome.verdict === "ok") {
+        const cleared = ledger.clear({ publicIp, model: opts.model })
+        results.push({ slot: slot.id, publicIp, verdict: "ok", detail: outcome.detail, cleared })
+      } else if (outcome.verdict === "ko" && isEgressHealthErrorClass(outcome.errorClass)) {
+        const cooldown = ledger.mark({
+          publicIp,
+          model: opts.model,
+          errorClass: outcome.errorClass,
+          slot: slot.id,
+          source: `probe:${MODEL_ANSWERS_PROBE_ID}`,
+        })
+        results.push({ slot: slot.id, publicIp, verdict: "ko", detail: outcome.detail, cooldown })
+      } else {
+        results.push({ slot: slot.id, publicIp, verdict: outcome.verdict, detail: outcome.detail })
       }
-    }),
-  )
+    } catch (err) {
+      results.push({ slot: slot.id, verdict: "error", detail: err instanceof Error ? err.message : String(err) })
+    } finally {
+      if (booted) await booted.stop().catch(() => undefined)
+    }
+  }
   return { ok: true, provider, model: opts.model, adapter, results }
 }
 

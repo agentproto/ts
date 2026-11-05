@@ -128,8 +128,7 @@ describe("model-answers probe", () => {
     const out = await runPreflightProbe(modelAnswersProbe, ctxWith(() => new Promise<SandboxExecResult>(() => {})), 25)
     expect(out.verdict).toBe("unknown")
     expect(out.errorClass).toBeUndefined()
-    expect(out.detail).toContain("timed out after 25ms with no output")
-    expect(out.detail).toContain("--print-logs --log-level WARN")
+    expect(out.detail).toContain("timed out after 25ms")
   })
 
   it("an exec that throws (provider-side timeout, dropped box) is unknown", async () => {
