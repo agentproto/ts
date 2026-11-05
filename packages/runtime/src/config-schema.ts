@@ -336,7 +336,41 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
-    sandbox: z.object({ checkpoint: sandboxCheckpointConfigSchema.optional() }).passthrough().optional(),
+    sandbox: z
+      .object({
+        checkpoint: sandboxCheckpointConfigSchema.optional(),
+        /** Config-declared preflight probes: one shell command in the box, read as yes/no.
+         *  Reference them by id from `agent_start({ preflight: [...] })` or a placement rung. */
+        preflight: z
+          .object({
+            probes: z
+              .array(
+                z.object({
+                  id: z.string().min(1),
+                  description: z.string().optional(),
+                  command: z.string().min(1),
+                  okExitCode: z.number().int().optional(),
+                  okStdoutMatches: z.string().optional(),
+                  koWhen: z
+                    .array(
+                      z.object({
+                        match: z.string().min(1),
+                        errorClass: z.enum(["usage-limit", "rate-limit", "auth", "other"]).optional(),
+                      }),
+                    )
+                    .optional(),
+                  failAs: z.enum(["ko", "unknown"]).optional(),
+                  timeoutMs: z.number().int().positive().optional(),
+                  runsWithSpawnAuth: z.boolean().optional(),
+                }),
+              )
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough()
 
@@ -2145,6 +2179,11 @@ export const CONFIG_KEYS_NOT_EXPOSED: readonly ConfigKeyNotExposedEntry[] = [
     path: "version",
     reason:
       "internal schema-version stamp; saveConfig() always overwrites it with CONFIG_VERSION on every write, never a user knob.",
+  },
+  {
+    path: "defaults.sandbox.preflight.probes",
+    reason:
+      "an array of structured probe objects (id, command, koWhen, ...); a single dotted key cannot set one. Edit config.json directly.",
   },
 ]
 
