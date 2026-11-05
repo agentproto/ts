@@ -1,5 +1,18 @@
 # @agentproto/adapter-pi
 
+## 0.7.0
+
+### Minor Changes
+
+- 068fdbc: Add a structured question tool under permission hold for pi.
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [ae6751d]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/harness@3.1.0
+
 ## 0.6.0
 
 ### Minor Changes

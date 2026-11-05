@@ -1,5 +1,14 @@
 # @agentproto/adapter-opencode
 
+## 1.9.7
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [ae6751d]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/harness@3.1.0
+
 ## 1.9.6
 
 ### Patch Changes

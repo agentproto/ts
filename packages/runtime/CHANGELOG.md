@@ -1,5 +1,105 @@
 # @agentproto/runtime
 
+## 6.2.0
+
+### Minor Changes
+
+- 59d30ee: Relay host-owned credentials to nested spawns inside box orchestrators
+- 88087a1: Add an opt-in `claude-socket` wake adapter for external Claude Code sessions. When `daemon.claudeSocketWake` is true, a level 2 or higher message (next-turn, steer) to a `cc:<session_id>` row is delivered directly to the idle Claude Code process over its per-session unix socket, using the two-frame auth/user wire protocol; the message is consumed rather than also parked in the inbox, so a later Stop/UserPromptSubmit hook cannot re-inject it. Level 1 (fyi), `bypassPermissions` targets, and missing, non-socket, or foreign-owned registration/socket/key all fall back to the existing inbox delivery and report the reason on the send result. The `Notification` hook now refreshes the external row's liveness (POST /sessions/:id/touch), and `hook install` registers it alongside the existing inbox hooks.
+- d30132f: Route a retired follower's digest to its live parent with its level kept and `routedTo` in the ledger, replay parked follow digests when the follower respawns (the retirement sweep replays before cancelling), and forward a sentinel notice for a closed session at its own level.
+- fc1e587: Record follow and message deliveries in the shared append-only delivery ledger.
+
+  - `@agentproto/runtime`: follow digests append one `producer: "follow"` line per entry after the digest outcome, with a deterministic event id, the contributing follow id (or `follower:<id>`), the must-wake `floor`, triage `level` / `rule` / `repeatKey`, and the digest `messageId` for delivered entries. The parent relay and `POST /sessions/:id/messages` append one `producer: "message"` line after the send outcome, with `eventId`/`messageId` set to the envelope id, the sender as `subject`, and the level derived from urgency. A ledger write failure never changes the response. `follow-triage.jsonl` is no longer written; delivery behaviour is unchanged.
+
+- ec66378: Add named MCP surface profiles (`core`, `orchestrator`, `apps`, `admin`,
+  `full`) selectable per request with `?profile=` or daemon-wide with
+  `defaults.mcp.profile`, plus a budget test that requires every generated
+  daemon tool to be classified.
+- c7cbcb5: Make pairing the default phone path and the tunnel phone link opt-in
+- 98ec20f: Require operator confirmation before a new pairing is usable
+- 30f500a: Follow triage rules now live behind the `session-lifecycle` delivery
+  classifier, built in the runtime and closing over the follow facts. Session
+  follow signals produce delivery envelopes carrying a `floor` for
+  awaiting-input, crashed, and turn-end-with-a-question, and `computeLevel`
+  turns that floor into level 3. The three separate always-wake pins (the rule
+  branch, the classifier guard, and the digest urgency bump) are replaced by
+  that one floor, so an empty classifier registry still pins a floored
+  `session.awaiting_input` envelope at level 3 and a `fyi` digest containing
+  one is delivered as `next-turn`. Delivery with triage off is unchanged.
+- ab9ca12: Turn retry now treats network-level provider failures as transient. A one-off TLS handshake failure (`EPROTO: The TLS handshake failed`), a reset, timed-out or broken socket (`ECONNRESET`, `ETIMEDOUT`, `EPIPE`, `socket hang up`, undici `UND_ERR_SOCKET` / `UND_ERR_CONNECT_TIMEOUT`) and a transient DNS miss (`EAI_AGAIN`) are classified `upstream-5xx` instead of `other`, so an opted-in session re-prompts with its normal backoff instead of stopping mid-work. `ENOTFOUND` and `ECONNREFUSED` stay non-transient: a wrong host or port does not recover with backoff.
+
+### Patch Changes
+
+- 1c3c800: Sync generated catalog data from the pinned provider sources.
+- eec6ecf: Refresh stale imported-MCP tool lists on change, TTL and unknown tool
+- d7b0174: Stop a dead or dropped session from pinning a computer box. `sandbox_attach` rendezvous connects no longer take a session slot nobody can release, a failed `boot`/`connect` releases the slots it took, a throwing MCP `close()` can no longer skip the provider release, and the sandbox gc pass releases dead attachés' slots on boxes that stay in use (`releaseSession`), treats registry-absent sessions as dead (daemon opt-in, grace-limited) and runs its first pass two minutes after daemon start.
+- fc1aaae: `agentproto sandbox egress-health --probe` now boots its per-slot probe boxes in parallel (1 CPU, 1 GiB, with the egress hosts opencode needs, `models.dev` included) instead of one after another with the template default size, and a `model-answers` timeout with no output is reported as unknown with a hint to re-run opencode with `--print-logs --log-level WARN`, since opencode retries rate limits silently.
+- 0fcf3f4: A placement-ladder rung that has a next rung no longer sits out the computer fleet's 12 minute `503 fleet-capacity` wait. The runtime passes the new `SandboxBootOpts.capacityWaitBudgetMs` (the rung's `agentStartTimeoutMs`, default 5 minutes) to every non-final rung; the computer provider then fails the rung at once when the refusal has no `Retry-After`, or waits once, capped by that budget, when it has one. The refusal reason (for example `no-active-host`) stays in the failure message and in the `[placement]` log line. A plain `sandbox` spawn and the last rung keep the existing wait.
+- 06e0ecc: New config key `worktrees.extraRoots`: extra directories `maintain --all` scans for worktrees, so scheduled maintenance routines cover pools outside the worktrees root without passing `--worktrees-root` on every run. The flag still adds to the list.
+- 4217da7: Replace sandbox preflight's boolean `runsWithSpawnAuth` with an explicit `phase: "prelaunch" | "postlaunch"`. `prelaunch` (the default for config probes) runs before the agent starts and always runs, authed spawn or not; `postlaunch` needs the session's credentials and is skipped with a warning on an authed spawn. The built-in `model-answers` probe is `postlaunch`. `runsWithSpawnAuth` is still accepted as a deprecated alias (`true` maps to `prelaunch`, `false` to `postlaunch`). Behaviour change: a config probe that set neither field was previously skipped on an authed spawn; it now defaults to `prelaunch` and runs.
+- 2cbfa02: Make the sandbox preflight a generic yes/no check that a deployment extends from config. `defaults.sandbox.preflight.probes` declares probes as one shell command run in the box (`command`, `okExitCode`, `okStdoutMatches`, `koWhen` patterns with an error class, `failAs`), so "the Zen free model still answers from this IP" or "gh is installed" is a config entry, not code. Each probe now says whether it may run when the spawn carries credentials (`runsWithSpawnAuth`); before, any spawn with auth skipped the whole preflight, so CI's api-key lane never ran its ladder preflight. Probes that need the credential (the built-in `model-answers`) are still skipped, per probe, with a warning.
+- f17cea4: Fix the PR provenance footer crediting a supervisor instead of its executor: the reconciler's branch lane no longer stamps a session that supervises a child sharing its cwd, so a body that lost its footer is restamped by the executor that wrote the PR (agentproto/ts#2541, #2542).
+- 2fe27c6: Test only: `command-list-provenance.test.ts` drains the registry's pending writes before deleting its temp dir, so the fire-and-forget command-log write no longer logs an ENOENT on CI.
+- c62b5de: Add per-target batching to the delivery kernel. A sentinel target can set
+  `batchMs`; a burst of envelopes for the same session inside that window is
+  delivered as one message, so the session starts one turn instead of one per
+  envelope. The ledger still records one line per envelope and target, and the
+  sentinel triage level / rule for each event is unchanged. The sentinel default
+  is `batchMs: 0`, which keeps the existing one-delivery-per-envelope behaviour.
+- 898175f: Move GitHub delivery knowledge out of the kernel: sentinel triage now runs
+  through the delivery classifier registry, GitHub verdicts, the explicit triage
+  table from #2444, coalesce keys and repeat keys live in
+  `@agentproto/delivery-github`, and the runtime daemon registers that module
+  next to `createSentinelRuntime`. The kernel drops `ClassifyContext.facts` and
+  `Classifier.repeatKey`; `SentinelEvent` now extends the delivery `Envelope`.
+  GitHub failures carry no repeat key, so a repeated failure on the same head
+  still wakes.
+
+  Decision changes from main, for a first non-terminal event:
+
+  | Event type                             | Verdict                         | main | this branch |
+  | -------------------------------------- | ------------------------------- | ---- | ----------- |
+  | `github.check_suite.completed`         | `success`, `neutral`, `skipped` | wake | fyi         |
+  | `github.workflow_run.completed`        | `success`, `neutral`, `skipped` | wake | fyi         |
+  | `github.pull_request_review.submitted` | `approved`, `commented`         | wake | fyi         |
+  | `github.issue_comment.created`         | bot actor                       | wake | fyi         |
+  | `github.pull_request.synchronize`      | none                            | wake | fyi         |
+
+  No other decision changes. Failure-class verdicts remain wake. Normalized
+  `github.pull_request.closed` events remain wake because they are terminal, so
+  the terminal rule wins before the closed rows in the table.
+
+- aa778c3: Refuse bare submit on fields questions; trim redundant choice text
+- b08d66d: Keep `tool_help` available under every named MCP surface profile
+- ec5f33e: Fix tunnel health probes caching an NXDOMAIN for fresh hostnames: wait for public DNS-over-HTTPS visibility before the first probe, then probe the pinned DoH address instead of the system resolver.
+- b33ff7d: Re-probe a fresh Cloudflare tunnel on a short settle ladder so its first health check does not report an edge 530 for a full minute.
+- 42ea874: Stop turn-retry from retrying an out-of-funds refusal as a transient 5xx. pi prints provider errors as `402: {"type":"server_error","message":"... Insufficient account funds"}`: `extractHttpStatus` now reads a status that leads the message (`NNN: ...`), the billing match covers `insufficient <word> funds/credits/balance`, and the reviewer host's wallet-exhausted cooldown recognises the same wording. The turn is classified `auth` and is no longer retried.
+- fa4dd61: Turn retry no longer counts provably read-only shell commands as side-effecting tool calls. A shell call's recorded name is its command line, and the gate used to look only at its first word, so `git status --short && git diff --stat` blocked the retry of a turn cut by a transient error (EPROTO, 5xx, 429) while `cat >> notes.md` passed as a read. The gate now parses the command and accepts it only when every command in it is an allowlisted read-only program (`git status|diff|log|show|rev-parse|ls-remote|...`, `cat`, `sed -n`, `grep`, `rg`, `ls`, `head`, `tail`, `wc`, `pwd`, `echo`, `cd`, ...) joined by `&&`, `||`, `;` or `|`, with no output redirection to a file. Anything it cannot parse (command substitution, subshells, heredocs, loops) still counts, as do `git commit`, `sed -i`, `tee`, `> file` and `pnpm test`.
+- Updated dependencies [1c3c800]
+- Updated dependencies [88087a1]
+- Updated dependencies [ae6751d]
+- Updated dependencies [d7b0174]
+- Updated dependencies [d30132f]
+- Updated dependencies [c710e7e]
+- Updated dependencies [0fcf3f4]
+- Updated dependencies [c7cbcb5]
+- Updated dependencies [98ec20f]
+- Updated dependencies [bfff8fa]
+- Updated dependencies [c62b5de]
+- Updated dependencies [898175f]
+- Updated dependencies [aa778c3]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/sentinel@0.5.0
+  - @agentproto/harness@3.1.0
+  - @agentproto/acp@0.15.0
+  - @agentproto/sandbox@0.16.1
+  - @agentproto/apps@0.27.0
+  - @agentproto/pairing-host@0.4.0
+  - @agentproto/delivery@0.2.0
+  - @agentproto/delivery-github@0.2.0
+  - @agentproto/providers-store@0.4.4
+  - @agentproto/inference-endpoint@1.0.2
+
 ## 6.1.0
 
 ### Minor Changes

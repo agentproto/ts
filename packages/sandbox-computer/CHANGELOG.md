@@ -1,5 +1,16 @@
 # @agentproto/sandbox-computer
 
+## 0.7.1
+
+### Patch Changes
+
+- d7b0174: Stop a dead or dropped session from pinning a computer box. `sandbox_attach` rendezvous connects no longer take a session slot nobody can release, a failed `boot`/`connect` releases the slots it took, a throwing MCP `close()` can no longer skip the provider release, and the sandbox gc pass releases dead attachés' slots on boxes that stay in use (`releaseSession`), treats registry-absent sessions as dead (daemon opt-in, grace-limited) and runs its first pass two minutes after daemon start.
+- e77be01: With `egressIp: "auto"` and an egress health view, a create that names a pool slot and is refused for capacity on that slot's host now moves to a slot on a different host, then to plain `auto`, instead of sleeping the whole fleet-capacity window on the full host. `ComputerApiError` exposes the fleet's refusal `reason`.
+- 0fcf3f4: A placement-ladder rung that has a next rung no longer sits out the computer fleet's 12 minute `503 fleet-capacity` wait. The runtime passes the new `SandboxBootOpts.capacityWaitBudgetMs` (the rung's `agentStartTimeoutMs`, default 5 minutes) to every non-final rung; the computer provider then fails the rung at once when the refusal has no `Retry-After`, or waits once, capped by that budget, when it has one. The refusal reason (for example `no-active-host`) stays in the failure message and in the `[placement]` log line. A plain `sandbox` spawn and the last rung keep the existing wait.
+- Updated dependencies [d7b0174]
+- Updated dependencies [0fcf3f4]
+  - @agentproto/sandbox@0.16.1
+
 ## 0.7.0
 
 ### Minor Changes

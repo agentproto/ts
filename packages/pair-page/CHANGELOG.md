@@ -1,5 +1,12 @@
 # @agentproto/pair-page
 
+## 0.0.18
+
+### Patch Changes
+
+- Updated dependencies [98ec20f]
+  - @agentproto/pairing@1.2.0
+
 ## 0.0.17
 
 ### Patch Changes

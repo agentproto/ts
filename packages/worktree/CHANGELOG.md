@@ -1,5 +1,11 @@
 # @agentproto/worktree
 
+## 0.21.1
+
+### Patch Changes
+
+- 057c438: Fix `branch gc approve` refusing with `tip-moved` for stored verdicts whose name is a display label (`remote:feat/x`, `local:a, local:b`): the name is now resolved into branch names and every matching ref at the sha is reported.
+
 ## 0.21.0
 
 ### Minor Changes

@@ -1,5 +1,40 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.48
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [59d30ee]
+- Updated dependencies [eec6ecf]
+- Updated dependencies [88087a1]
+- Updated dependencies [ae6751d]
+- Updated dependencies [d7b0174]
+- Updated dependencies [d30132f]
+- Updated dependencies [fc1e587]
+- Updated dependencies [fc1aaae]
+- Updated dependencies [0fcf3f4]
+- Updated dependencies [06e0ecc]
+- Updated dependencies [ec66378]
+- Updated dependencies [c7cbcb5]
+- Updated dependencies [98ec20f]
+- Updated dependencies [4217da7]
+- Updated dependencies [2cbfa02]
+- Updated dependencies [f17cea4]
+- Updated dependencies [2fe27c6]
+- Updated dependencies [c62b5de]
+- Updated dependencies [898175f]
+- Updated dependencies [30f500a]
+- Updated dependencies [aa778c3]
+- Updated dependencies [b08d66d]
+- Updated dependencies [ec5f33e]
+- Updated dependencies [b33ff7d]
+- Updated dependencies [42ea874]
+- Updated dependencies [ab9ca12]
+- Updated dependencies [fa4dd61]
+  - @agentproto/runtime@6.2.0
+  - @agentproto/harness@3.1.0
+
 ## 0.7.47
 
 ### Patch Changes
