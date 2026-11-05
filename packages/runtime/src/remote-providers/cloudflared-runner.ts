@@ -441,7 +441,10 @@ export class CloudflaredRunner {
       while (!token.cancelled && this.supervisor && this.dnsPending) {
         await sleep(delay)
         if (token.cancelled || !this.supervisor) return
-        await this.probeNow()
+        // Once DNS is visible this is the first real probe of the tunnel, so
+        // anchor it like the post-start path: a 530 here still means the
+        // connector is settling, not that the tunnel is broken.
+        await this.probe(true)
       }
     })()
   }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { CloudflaredRunner } from "../remote-providers/cloudflared-runner.js"
 import type { FetchLike } from "../remote-providers/cloudflare-api.js"
+import type { PublicDns } from "../remote-providers/dns-resolver.js"
 import type {
   ProcessSpawner,
   SpawnRequest,
@@ -158,6 +159,42 @@ describe("CloudflaredRunner settle window", () => {
     expect(runner.health()).toMatchObject({
       state: "degraded",
       reason: "wa.example.com: edge returned 530",
+    })
+    await runner.stop()
+  })
+
+  it("anchors the first DNS-visible probe on the dnsPending start path", async () => {
+    const timers = fakeTimers()
+    const sp = fakeSpawner()
+    const probe = sequenceProbe([530])
+    let dnsCalls = 0
+    const publicDns: PublicDns = {
+      resolve: async () =>
+        ++dnsCalls === 1
+          ? { kind: "no-answer" }
+          : { kind: "answer", addresses: ["203.0.113.10"] },
+      pinnedFetch: () => probe.probeFetch,
+      systemLookup: async () => ["203.0.113.10"],
+    }
+    const runner = new CloudflaredRunner({
+      spawner: sp.spawner,
+      probeFetch: probe.probeFetch,
+      healthIntervalMs: 60_000,
+      publicDns,
+      dnsRetrySleep: async () => {},
+      settleDelaysMs: [2_000, 4_000],
+      setTimer: timers.setTimer,
+      supervisor: { initialBackoffMs: 10, maxRestarts: 2 },
+    })
+
+    runner.start({ ...START, dnsPending: true })
+    for (let i = 0; i < 20 && runner.health()?.reason !== "wa.example.com: connecting to the Cloudflare edge"; i++) {
+      await flush()
+    }
+
+    expect(runner.health()).toMatchObject({
+      state: "degraded",
+      reason: "wa.example.com: connecting to the Cloudflare edge",
     })
     await runner.stop()
   })
