@@ -40,11 +40,15 @@ interface RecordedCall {
   opts?: { source?: string; origin?: string; coalesceKey?: string }
 }
 
-function stubRegistry(): SentinelRuntimeRegistry & { calls: RecordedCall[] } {
+function stubRegistry(failFirstSends = 0): SentinelRuntimeRegistry & { calls: RecordedCall[]; attempts: () => number } {
   const calls: RecordedCall[] = []
+  let attempts = 0
   return {
     calls,
+    attempts: () => attempts,
     async sendMessage(msg, opts) {
+      attempts++
+      if (attempts <= failFirstSends) throw new Error("transient send failure")
       calls.push({ msg, opts })
       return okResult()
     },
@@ -54,17 +58,20 @@ function stubRegistry(): SentinelRuntimeRegistry & { calls: RecordedCall[] } {
 interface Harness {
   store: SentinelStore
   calls: RecordedCall[]
+  acks: string[]
+  attempts: () => number
   runtime: ReturnType<typeof createSentinelRuntime>
   ledgerPath: string
   cleanup: () => void
 }
 
-function setup(batchMs: number | undefined): Harness {
+function setup(batchMs: number | undefined, failFirstSends = 0): Harness {
   const dir = mkdtempSync(join(tmpdir(), "sentinel-batching-"))
   const ledgerPath = join(dir, "delivery-ledger.jsonl")
   const parkedPath = join(dir, "parked.jsonl")
   const store = createSentinelStore({ persist: false })
-  const provider = createFakeSentinelProvider()
+  const acks: string[] = []
+  const provider = createFakeSentinelProvider({ onAck: (_handle, cursor) => acks.push(cursor) })
   const prs = ["acme/widgets#1", "acme/widgets#2", "acme/widgets#3"]
 
   for (const pr of prs) {
@@ -93,7 +100,7 @@ function setup(batchMs: number | undefined): Harness {
     )
   }
 
-  const registry = stubRegistry()
+  const registry = stubRegistry(failFirstSends)
   const opts: SentinelRuntimeOptions = {
     store,
     registry,
@@ -110,6 +117,8 @@ function setup(batchMs: number | undefined): Harness {
   return {
     store,
     calls: registry.calls,
+    acks,
+    attempts: registry.attempts,
     runtime,
     ledgerPath,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
@@ -170,6 +179,52 @@ describe("sentinel per-target batching", () => {
     try {
       await h.runtime.pollOnce()
       expect(h.calls).toHaveLength(3)
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  it("acks the poll cursor only after the batched flush landed", async () => {
+    vi.useFakeTimers()
+    const h = setup(500)
+    try {
+      await h.runtime.pollOnce()
+      expect(h.acks).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(500)
+      expect(h.calls).toHaveLength(1)
+
+      await h.runtime.pollOnce()
+      expect(h.acks.length).toBeGreaterThan(0)
+      expect(h.calls).toHaveLength(1)
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  it("a failed flush is not acked and is redelivered on the next poll, sent exactly once", async () => {
+    vi.useFakeTimers()
+    const h = setup(500, 1)
+    try {
+      await h.runtime.pollOnce()
+      expect(h.acks).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(500)
+      expect(h.attempts()).toBe(1)
+      expect(h.calls).toHaveLength(0)
+      // A further poll while nothing landed must still not ack the lost events.
+      await h.runtime.pollOnce()
+      expect(h.acks).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(500)
+      expect(h.calls).toHaveLength(1)
+      expect(h.calls[0]!.msg.text).toContain("check suite completed on acme/widgets#1")
+      expect(h.calls[0]!.msg.text).toContain("check suite completed on acme/widgets#3")
+
+      await h.runtime.pollOnce()
+      expect(h.acks.length).toBeGreaterThan(0)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(h.calls).toHaveLength(1)
     } finally {
       h.cleanup()
     }

@@ -1055,9 +1055,10 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     sentinelId: string,
     provider: SentinelProviderHandle,
     events: readonly SentinelEvent[],
-  ): Promise<{ haltedOnError: boolean; delivered: number; stoppedEarly: boolean }> {
+  ): Promise<{ haltedOnError: boolean; delivered: number; stoppedEarly: boolean; heldForBatch: boolean }> {
     let haltedOnError = false
     let stoppedEarly = false
+    let heldForBatch = false
     let delivered = 0
 
     for (const event of events) {
@@ -1080,7 +1081,12 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         break
       }
 
-      if (store.isSeen(current.id, event.id) || pendingBatchKeys.has(batchKey(current.id, event.id))) continue
+      if (store.isSeen(current.id, event.id)) continue
+      if (pendingBatchKeys.has(batchKey(current.id, event.id))) {
+        // Still waiting on its flush: not delivered yet, so the poll must not ack it.
+        heldForBatch = true
+        continue
+      }
 
       const closedNow = trackClosure(current, event)
       if (closedNow && !event.terminal) {
@@ -1126,7 +1132,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
           break
         }
         // Bookkeeping (markSeen / counters / lifetime) moves to the flush:
-        // until the combined send lands, the event has not been delivered.
+        // until the combined send lands, the event has not been delivered,
+        // so the poll must not ack its cursor (at-least-once).
+        heldForBatch = true
         delivered++
         continue
       }
@@ -1153,7 +1161,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (updated) await applyLifetime(updated, event, provider)
     }
 
-    return { haltedOnError, delivered, stoppedEarly }
+    return { haltedOnError, delivered, stoppedEarly, heldForBatch }
   }
 
   // ── Poll ──────────────────────────────────────────────────────────
@@ -1190,12 +1198,15 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       }
     }
 
-    const { haltedOnError, stoppedEarly } = await processEvents(sentinel.id, provider, result.events)
+    const { haltedOnError, stoppedEarly, heldForBatch } = await processEvents(sentinel.id, provider, result.events)
 
     // Ack only a fully-handled batch: every item at or before `cursor` is
     // delivered (outbox/session) or quarantined. A halted/stopped batch, or a
     // failed quarantine write, keeps the cursor where it was.
-    if (haltedOnError || stoppedEarly || quarantineFailed) {
+    // A batched event whose flush has not landed is not delivered yet: leave the
+    // cursor so a failed flush is redelivered by the next poll. Once the flush
+    // lands the event is seen and a later poll acks the whole batch.
+    if (haltedOnError || stoppedEarly || quarantineFailed || heldForBatch) {
       if (quarantineFailed) store.update(sentinel.id, { lastError: "quarantine write failed; batch not acknowledged" })
       return
     }
