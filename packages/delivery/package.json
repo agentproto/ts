@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/delivery",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/delivery - the delivery kernel's pure core (envelope, 0-3 level and tier table, level formula, classifier registry, recent-key window, ledger types) plus an opt-in `@agentproto/delivery/ledger-writer` I/O subpath.",
   "keywords": [
     "agentproto",

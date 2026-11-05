@@ -1,5 +1,18 @@
 # @agentproto/pairing-host
 
+## 0.4.0
+
+### Minor Changes
+
+- 98ec20f: Require operator confirmation before a new pairing is usable
+
+### Patch Changes
+
+- Updated dependencies [ae6751d]
+- Updated dependencies [c710e7e]
+- Updated dependencies [aa778c3]
+  - @agentproto/acp@0.15.0
+
 ## 0.3.0
 
 ### Minor Changes

@@ -1,5 +1,51 @@
 # @agentproto/cli
 
+## 1.34.0
+
+### Minor Changes
+
+- 88087a1: Add an opt-in `claude-socket` wake adapter for external Claude Code sessions. When `daemon.claudeSocketWake` is true, a level 2 or higher message (next-turn, steer) to a `cc:<session_id>` row is delivered directly to the idle Claude Code process over its per-session unix socket, using the two-frame auth/user wire protocol; the message is consumed rather than also parked in the inbox, so a later Stop/UserPromptSubmit hook cannot re-inject it. Level 1 (fyi), `bypassPermissions` targets, and missing, non-socket, or foreign-owned registration/socket/key all fall back to the existing inbox delivery and report the reason on the send result. The `Notification` hook now refreshes the external row's liveness (POST /sessions/:id/touch), and `hook install` registers it alongside the existing inbox hooks.
+- c710e7e: Pad E2E frame plaintext to size buckets once negotiated in the hello
+- ec66378: Add named MCP surface profiles (`core`, `orchestrator`, `apps`, `admin`,
+  `full`) selectable per request with `?profile=` or daemon-wide with
+  `defaults.mcp.profile`, plus a budget test that requires every generated
+  daemon tool to be classified.
+- c7cbcb5: Make pairing the default phone path and the tunnel phone link opt-in
+- 98ec20f: Require operator confirmation before a new pairing is usable
+
+### Patch Changes
+
+- e92466f: `maintain --all` now finds worktrees placed directly at the worktrees root (`<root>/<slug>`, no repo bucket), and takes a repeatable `--worktrees-root <dir>` to scan pools outside the configured root, so repos whose worktrees live elsewhere are no longer skipped.
+- 06e0ecc: New config key `worktrees.extraRoots`: extra directories `maintain --all` scans for worktrees, so scheduled maintenance routines cover pools outside the worktrees root without passing `--worktrees-root` on every run. The flag still adds to the list.
+- 53f13ba: Add `agentproto pair offer --url` to print the web pair link without a QR
+- Updated dependencies [057c438]
+- Updated dependencies [1c3c800]
+- Updated dependencies [88087a1]
+- Updated dependencies [ae6751d]
+- Updated dependencies [d7b0174]
+- Updated dependencies [d30132f]
+- Updated dependencies [c710e7e]
+- Updated dependencies [e77be01]
+- Updated dependencies [0fcf3f4]
+- Updated dependencies [c7cbcb5]
+- Updated dependencies [98ec20f]
+- Updated dependencies [bfff8fa]
+- Updated dependencies [c62b5de]
+- Updated dependencies [898175f]
+- Updated dependencies [aa778c3]
+  - @agentproto/worktree@0.21.1
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/sentinel@0.5.0
+  - @agentproto/harness@3.1.0
+  - @agentproto/acp@0.15.0
+  - @agentproto/sandbox-computer@0.7.1
+  - @agentproto/apps@0.27.0
+  - @agentproto/pairing-host@0.4.0
+  - @agentproto/sandbox-box@0.2.40
+  - @agentproto/sandbox-e2b@0.11.2
+  - @agentproto/sandbox-instabox@0.2.7
+  - @agentproto/inference-endpoint@1.0.2
+
 ## 1.33.0
 
 ### Minor Changes

@@ -1,5 +1,14 @@
 # @agentproto/adapter-claude-code
 
+## 2.7.2
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [ae6751d]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/harness@3.1.0
+
 ## 2.7.1
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/apps
 
+## 0.27.0
+
+### Minor Changes
+
+- c7cbcb5: Make pairing the default phone path and the tunnel phone link opt-in
+- 98ec20f: Require operator confirmation before a new pairing is usable
+- bfff8fa: Add a single Remote access view with per-row and revoke-all actions
+
 ## 0.26.0
 
 ### Minor Changes

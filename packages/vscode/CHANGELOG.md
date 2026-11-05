@@ -1,5 +1,40 @@
 # agentproto-vscode
 
+## 0.26.2
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [59d30ee]
+- Updated dependencies [eec6ecf]
+- Updated dependencies [88087a1]
+- Updated dependencies [d7b0174]
+- Updated dependencies [d30132f]
+- Updated dependencies [fc1e587]
+- Updated dependencies [fc1aaae]
+- Updated dependencies [0fcf3f4]
+- Updated dependencies [06e0ecc]
+- Updated dependencies [ec66378]
+- Updated dependencies [c7cbcb5]
+- Updated dependencies [98ec20f]
+- Updated dependencies [4217da7]
+- Updated dependencies [2cbfa02]
+- Updated dependencies [f17cea4]
+- Updated dependencies [bfff8fa]
+- Updated dependencies [2fe27c6]
+- Updated dependencies [c62b5de]
+- Updated dependencies [898175f]
+- Updated dependencies [30f500a]
+- Updated dependencies [aa778c3]
+- Updated dependencies [b08d66d]
+- Updated dependencies [ec5f33e]
+- Updated dependencies [b33ff7d]
+- Updated dependencies [42ea874]
+- Updated dependencies [ab9ca12]
+- Updated dependencies [fa4dd61]
+  - @agentproto/runtime@6.2.0
+  - @agentproto/apps@0.27.0
+
 ## 0.26.1
 
 ### Patch Changes

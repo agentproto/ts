@@ -1,5 +1,46 @@
 # @agentproto/sentinel
 
+## 0.5.0
+
+### Minor Changes
+
+- c62b5de: Add per-target batching to the delivery kernel. A sentinel target can set
+  `batchMs`; a burst of envelopes for the same session inside that window is
+  delivered as one message, so the session starts one turn instead of one per
+  envelope. The ledger still records one line per envelope and target, and the
+  sentinel triage level / rule for each event is unchanged. The sentinel default
+  is `batchMs: 0`, which keeps the existing one-delivery-per-envelope behaviour.
+- 898175f: Move GitHub delivery knowledge out of the kernel: sentinel triage now runs
+  through the delivery classifier registry, GitHub verdicts, the explicit triage
+  table from #2444, coalesce keys and repeat keys live in
+  `@agentproto/delivery-github`, and the runtime daemon registers that module
+  next to `createSentinelRuntime`. The kernel drops `ClassifyContext.facts` and
+  `Classifier.repeatKey`; `SentinelEvent` now extends the delivery `Envelope`.
+  GitHub failures carry no repeat key, so a repeated failure on the same head
+  still wakes.
+
+  Decision changes from main, for a first non-terminal event:
+
+  | Event type                             | Verdict                         | main | this branch |
+  | -------------------------------------- | ------------------------------- | ---- | ----------- |
+  | `github.check_suite.completed`         | `success`, `neutral`, `skipped` | wake | fyi         |
+  | `github.workflow_run.completed`        | `success`, `neutral`, `skipped` | wake | fyi         |
+  | `github.pull_request_review.submitted` | `approved`, `commented`         | wake | fyi         |
+  | `github.issue_comment.created`         | bot actor                       | wake | fyi         |
+  | `github.pull_request.synchronize`      | none                            | wake | fyi         |
+
+  No other decision changes. Failure-class verdicts remain wake. Normalized
+  `github.pull_request.closed` events remain wake because they are terminal, so
+  the terminal rule wins before the closed rows in the table.
+
+### Patch Changes
+
+- 88087a1: Add an opt-in `claude-socket` wake adapter for external Claude Code sessions. When `daemon.claudeSocketWake` is true, a level 2 or higher message (next-turn, steer) to a `cc:<session_id>` row is delivered directly to the idle Claude Code process over its per-session unix socket, using the two-frame auth/user wire protocol; the message is consumed rather than also parked in the inbox, so a later Stop/UserPromptSubmit hook cannot re-inject it. Level 1 (fyi), `bypassPermissions` targets, and missing, non-socket, or foreign-owned registration/socket/key all fall back to the existing inbox delivery and report the reason on the send result. The `Notification` hook now refreshes the external row's liveness (POST /sessions/:id/touch), and `hook install` registers it alongside the existing inbox hooks.
+- d30132f: Route a retired follower's digest to its live parent with its level kept and `routedTo` in the ledger, replay parked follow digests when the follower respawns (the retirement sweep replays before cancelling), and forward a sentinel notice for a closed session at its own level.
+- Updated dependencies [c62b5de]
+- Updated dependencies [898175f]
+  - @agentproto/delivery@0.2.0
+
 ## 0.4.0
 
 ### Minor Changes
