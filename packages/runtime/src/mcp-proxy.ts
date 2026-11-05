@@ -210,10 +210,19 @@ export class McpProxyRegistry {
       if (existing) {
         // Snapshot may have changed (user re-imported same id with
         // different command). Detect by comparing serialised
-        // snapshots; on mismatch, force reconnect.
+        // snapshots; on mismatch, force reconnect. `subsession` is part
+        // of the connection's shape: it decides whether per-call
+        // headers (the AIP-59 token) reach the upstream, and that flag
+        // is fixed when the client opens.
         if (
-          JSON.stringify([existing.entry.snapshot, existing.entry.secretRefs, existing.entry.resolve, existing.entry.auth]) !==
-          JSON.stringify([entry.snapshot, entry.secretRefs, entry.resolve, entry.auth])
+          JSON.stringify([
+            existing.entry.snapshot,
+            existing.entry.secretRefs,
+            existing.entry.resolve,
+            existing.entry.auth,
+            existing.entry.subsession,
+          ]) !==
+          JSON.stringify([entry.snapshot, entry.secretRefs, entry.resolve, entry.auth, entry.subsession])
         ) {
           await safeClose(existing.client)
           this.clients.set(entry.id, freshPlaceholder(entry))

@@ -20,6 +20,13 @@ export interface SubsessionTarget {
   baseUrl: string
   /** Headers the import already sends, including its `Authorization`. */
   headers: Record<string, string>
+  /**
+   * Canonical cache identity for this target. The gateway reaches one import
+   * by alias (`mcp_imported_call`) and by import id (`/mcp/imported/<id>`);
+   * both must share ONE token per session. Defaults to the caller-supplied
+   * alias when absent.
+   */
+  key?: string
 }
 
 export interface SubsessionMinterOptions {
@@ -111,11 +118,11 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
       // The session ended while this mint was in flight: do not keep the
       // token, revoke it on the server too.
       if (!(await deleteOnServer(alias, sessionId, target))) {
-        pendingDeletes.set(keyOf(alias, sessionId), { alias, sessionId, target })
+        pendingDeletes.set(keyOf(target.key ?? alias, sessionId), { alias, sessionId, target })
       }
       throw new Error(`sub-session mint for "${alias}" failed: the session ended`)
     }
-    cache.set(keyOf(alias, sessionId), { alias, sessionId, token, expiresAtMs, target })
+    cache.set(keyOf(target.key ?? alias, sessionId), { alias, sessionId, token, expiresAtMs, target })
     try {
       o.onMinted?.(sessionId, target)
     } catch {
@@ -133,16 +140,23 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
       if (revoked.has(sessionId)) {
         throw new Error(`sub-session mint for "${alias}" failed: the session ended`)
       }
-      const key = keyOf(alias, sessionId)
+      // Fast path for a connection that always names the import the same way.
+      const localKey = keyOf(alias, sessionId)
+      const localCached = cache.get(localKey)
+      if (localCached && localCached.expiresAtMs - now() > CACHE_MARGIN_MS) return localCached.token
+      const target = await o.resolve(alias)
+      if (!target) throw new Error(`sub-session mint for "${alias}" failed: not an AIP-59 import`)
+      // Alias and import id are two spellings of the SAME import: resolve both
+      // to one canonical key so a session gets ONE token whichever path calls.
+      const key = keyOf(target.key ?? alias, sessionId)
       const cached = cache.get(key)
-      if (cached && cached.expiresAtMs - now() > CACHE_MARGIN_MS) return cached.token
+      if (cached && cached.expiresAtMs - now() > CACHE_MARGIN_MS) {
+        cache.set(localKey, cached)
+        return cached.token
+      }
       const running = inFlight.get(key)
       if (running) return running
-      const promise = (async () => {
-        const target = await o.resolve(alias)
-        if (!target) throw new Error(`sub-session mint for "${alias}" failed: not an AIP-59 import`)
-        return mint(alias, sessionId, target)
-      })()
+      const promise = mint(alias, sessionId, target)
       inFlight.set(key, promise)
       try {
         return await promise
@@ -153,11 +167,22 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
 
     async revokeSession(sessionId) {
       revoked.add(sessionId)
-      const toDelete = new Map(pendingDeletes)
+      // Alias and import id both cache the same token under two keys. A
+      // revoke must still send exactly ONE DELETE per (server, session), so
+      // dedupe by the server target rather than by cache key.
+      const toDelete = new Map<string, { alias: string; sessionId: string; target: SubsessionTarget }>()
+      const queuedTargets = new Set<string>()
+      const queue = (key: string, item: { alias: string; sessionId: string; target: SubsessionTarget }): void => {
+        const targetKey = `${trimBase(item.target.baseUrl)}\u0000${item.sessionId}`
+        if (queuedTargets.has(targetKey)) return
+        queuedTargets.add(targetKey)
+        toDelete.set(key, item)
+      }
+      for (const [key, item] of pendingDeletes) queue(key, item)
       pendingDeletes.clear()
       for (const [key, entry] of cache) {
         if (entry.sessionId !== sessionId) continue
-        toDelete.set(key, { alias: entry.alias, sessionId, target: entry.target })
+        queue(key, { alias: entry.alias, sessionId, target: entry.target })
         cache.delete(key)
       }
       const failures: string[] = []
