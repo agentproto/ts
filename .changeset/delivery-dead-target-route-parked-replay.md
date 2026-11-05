@@ -1,5 +1,5 @@
 ---
-"@agentproto/runtime": patch
+"@agentproto/runtime": minor
 "@agentproto/sentinel": patch
 ---
 
