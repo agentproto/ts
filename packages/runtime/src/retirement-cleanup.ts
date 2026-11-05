@@ -28,6 +28,10 @@ export interface RetirementCleanupDeps {
   sentinelStore: SentinelStore
   /** Provider-side cancel + record removal (`cancelSentinelWatch`). */
   cancelSentinel: (sentinelId: string) => Promise<unknown>
+  /** Redeliver follow digests parked for a follower that is alive again.
+   *  The sweep runs this BEFORE removing or re-pointing any wiring, so a
+   *  digest that was only waiting on a respawn is never cancelled with it. */
+  replayFollowParked?: () => Promise<number>
   log?: (line: string) => void
 }
 
@@ -69,6 +73,16 @@ export async function sweepWiringLifecycle(
     followsRelinked: 0,
     sentinelsCancelled: 0,
     sentinelsRelinked: 0,
+  }
+
+  // Replay first: a parked digest is a pending delivery, not stale wiring.
+  if (deps.replayFollowParked) {
+    try {
+      const replayed = await deps.replayFollowParked()
+      if (replayed > 0) log(`[retirement-cleanup] replayed ${replayed} parked follow digest(s)`)
+    } catch (err) {
+      log(`[retirement-cleanup] follow parked replay failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   const liveSuccessor = (id: string): string | undefined => {

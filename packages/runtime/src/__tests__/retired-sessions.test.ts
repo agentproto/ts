@@ -906,6 +906,38 @@ describe("sweepWiringLifecycle", () => {
     expect(sentinelStore.get(parentSentinel.id)).toBeDefined()
   })
 
+  it("replays parked follow digests before cancelling any wiring", async () => {
+    const { reg, followStore, sentinelStore, ids } = setup(["old"])
+    const [oldId] = ids as [string]
+    const follow = followStore.upsert({ follower: oldId, selector: { all: true } }).follow
+    const sentinel = watch(sentinelStore, oldId)
+    const order: string[] = []
+    const replayFollowParked = vi.fn(async () => {
+      order.push("replay")
+      return 1
+    })
+    const cancelSentinel = vi.fn(async (id: string) => {
+      order.push(`cancel:${id}`)
+      sentinelStore.remove(id)
+    })
+
+    reg.kill(oldId)
+    reg.archiveSession(oldId)
+    await sweepWiringLifecycle({
+      registry: reg,
+      followStore,
+      sentinelStore,
+      cancelSentinel,
+      replayFollowParked,
+      log: () => {},
+    })
+
+    expect(replayFollowParked).toHaveBeenCalledTimes(1)
+    expect(order[0]).toBe("replay")
+    expect(order).toContain(`cancel:${sentinel.id}`)
+    expect(followStore.get(follow.id)).toBeUndefined()
+  })
+
   it("relinks wiring to a live successor instead of removing it", async () => {
     const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup(["old", "new"])
     const [oldId, newId] = ids as [string, string]

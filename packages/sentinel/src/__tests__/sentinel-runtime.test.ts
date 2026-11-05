@@ -806,7 +806,7 @@ describe("SentinelRuntime", () => {
 
   describe("sessions closed with a deliberate outcome", () => {
     for (const endedReason of ["operator-completed", "steward-completed", "steward-abandoned", "operator-stopped"]) {
-      it(`never resumes a session ended "${endedReason}" — notice goes to its live parent and the sentinel is re-targeted there`, async () => {
+      it(`never resumes a session ended "${endedReason}" - the notice goes to its live parent at its own level`, async () => {
         const store = createSentinelStore({ persist: false })
         const provider = createFakeSentinelProvider()
         newSentinel(store, { sessionId: "sess_done" })
@@ -834,7 +834,7 @@ describe("SentinelRuntime", () => {
         expect(restarts).toBe(0)
         expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_done", "sess_parent"])
         const forwarded = registry.calls[1]!.msg
-        expect(forwarded.urgency).toBe("fyi")
+        expect(forwarded.urgency).toBe("next-turn")
         expect(forwarded.text).toContain("sess_done")
         expect(store.list()[0]!.spec.target).toMatchObject({ sessionId: "sess_parent" })
         expect(store.list()[0]!.status).toBe("active")
