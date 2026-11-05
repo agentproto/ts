@@ -589,6 +589,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         to: record.to,
         messageKind: record.kind,
         urgency: record.urgency,
+        ...(record.replyAddress ? { replyAddress: record.replyAddress } : {}),
       })
     },
     recordMirrorEvents(sessionId, records) {
