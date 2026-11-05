@@ -180,6 +180,11 @@ export function cloudflareManagedTunnelProvider(
       hostnames = tunnel.hostnames.map(normalizeHost)
       const rec = await eng.reconcile({ key: tunnel.key, hostnames }, service)
 
+      // A fresh hostname is served by the edge before the zone's record is
+      // visible everywhere. Waiting here keeps the first probe (and the user's
+      // first browser request) from caching an NXDOMAIN for the SOA negative
+      // TTL. A timeout is not an error: the tunnel still starts, degraded.
+      const dnsVisible = await r.awaitPublicDns(hostnames)
       if (stopped) {
         // `stop()` ran during the awaits above and found no runner. Spawning
         // now would leak a cloudflared nobody can stop.
@@ -193,6 +198,7 @@ export function cloudflareManagedTunnelProvider(
           hostnames,
           workspace: opts.workspace,
           label: managedTunnelName(tunnel.key),
+          ...(dnsVisible ? {} : { dnsPending: true }),
           ...(opts.onLog ? { onLog: opts.onLog } : {}),
           ...(opts.onHealth ? { onHealth: opts.onHealth } : {}),
         })

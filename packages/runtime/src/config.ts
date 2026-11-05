@@ -350,6 +350,14 @@ export interface WorktreesConfig {
    */
   root?: string
   /**
+   * Extra directories `agentproto maintain --all` scans for worktrees, in
+   * addition to `root`. For pools that live outside `root` (a repo's own
+   * `_worktrees/`, sibling `*-wt-*` dirs). Each dir holds worktrees directly
+   * (`<dir>/<slug>`) or in buckets (`<dir>/<repo>/<slug>`); `~/` expands.
+   * The `--worktrees-root` flag adds to this list, it does not replace it.
+   */
+  extraRoots?: string[]
+  /**
    * Policy for `agent_start.worktree` isolation. Resolution order mirrors
    * the module docblock (there is no CLI flag — this is a daemon-side
    * policy read at spawn, not a per-invocation flag):

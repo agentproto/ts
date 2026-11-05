@@ -11,7 +11,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { realpathSync, existsSync } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { discoverWorktreeOwningRepos, mainRepoOfWorktree, resolveAllRepos } from "../commands/maintain-discovery.js"
+import { discoverWorktreeOwningRepos, mainRepoOfWorktree, normalizeExtraRoots, resolveAllRepos } from "../commands/maintain-discovery.js"
 
 const cleanupPaths: string[] = []
 
@@ -163,5 +163,19 @@ describe("resolveAllRepos", () => {
 
 		expect(await resolveAllRepos(empty, [repoC])).toEqual([repoC])
 		expect(await resolveAllRepos(empty)).toEqual([])
+	})
+})
+
+describe("normalizeExtraRoots", () => {
+	it("expands ~/, resolves, drops blanks and dedupes", () => {
+		expect(normalizeExtraRoots(["~/pool", "  ", "/abs/pool", "/abs/pool/", "~"], "/home/u")).toEqual([
+			"/home/u/pool",
+			"/abs/pool",
+			"/home/u",
+		])
+	})
+
+	it("is empty for undefined", () => {
+		expect(normalizeExtraRoots(undefined)).toEqual([])
 	})
 })

@@ -19,7 +19,24 @@
  */
 
 import { readdir, readFile, stat, realpath } from "node:fs/promises"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+
+/**
+ * Normalise a list of extra worktrees roots (from `worktrees.extraRoots` and
+ * `--worktrees-root`): `~/` expands, everything resolves to an absolute path,
+ * blanks are dropped and duplicates collapse, first occurrence wins.
+ */
+export function normalizeExtraRoots(raw: readonly string[] | undefined, home: string = homedir()): string[] {
+	const out: string[] = []
+	for (const entry of raw ?? []) {
+		const trimmed = entry.trim()
+		if (!trimmed) continue
+		const abs = resolve(trimmed === "~" ? home : trimmed.startsWith("~/") ? join(home, trimmed.slice(2)) : trimmed)
+		if (!out.includes(abs)) out.push(abs)
+	}
+	return out
+}
 
 /**
  * Discover the main repos behind every worktree under `root`:

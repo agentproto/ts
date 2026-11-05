@@ -442,6 +442,30 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
     expect(editBodies[1]).toContain("`sess_a`")
   })
 
+  it("does not stamp a supervisor by branch when its child shares the cwd (ts#2542)", async () => {
+    // The executor's body rewrite dropped the footer; the supervisor's turn
+    // ends first and the shared cwd's branch resolves to the PR. Lane B must
+    // leave it for the executor instead of crediting the supervisor.
+    const sup: ReconcilerSession = { id: "sess_super", kind: "agent-cli", cwd: "/wt", harness: "claude-code" }
+    const child = execSession({ id: "sess_exec", parentSessionId: "sess_super", cwd: "/wt" })
+    const { reg, recorded } = fakeRegistry([sup, child])
+    const run: GhRunner = async args => (args[1] === "view" ? { exitCode: 0, stdout: "Body." } : { exitCode: 0, stdout: "" })
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      listToolCalls: async () => [],
+      run,
+    })
+    bus.emit(turnEnd("sess_super"))
+    await flush()
+    expect(recorded).toEqual([])
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(recorded.map(r => r.sessionId)).toEqual(["sess_exec"])
+  })
+
   it("does not let a same-cwd sibling steal a PR another session already stamped via lane B", async () => {
     // sess_a stamps its PR from its record; later sess_b's turn ends while
     // the shared cwd's branch still resolves to sess_a's PR — the shared

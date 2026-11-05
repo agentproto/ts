@@ -9,6 +9,7 @@ import {
   fileSessionStore,
 } from "../remote-providers/cloudflare-provisioned.js"
 import type { FetchLike } from "../remote-providers/cloudflare-api.js"
+import type { PublicDns } from "../remote-providers/dns-resolver.js"
 import { TunnelStartAbortedError } from "../remote-providers/types.js"
 import type { ProcessSpawner, SpawnRequest, SupervisedProcess } from "../remote-providers/process-supervisor.js"
 
@@ -303,6 +304,7 @@ async function loggedInProvider(world: FakeWorld, extra: Record<string, unknown>
     sleep: noSleep,
     spawner,
     healthIntervalMs: 0,
+    publicDns: false,
     ...extra,
   })
   await provider.auth!.begin()
@@ -340,6 +342,7 @@ describe("cloudflareProvisionedTunnelProvider", () => {
         requests.push(req)
         return new FakeProc()
       },
+      publicDns: false,
     })
     await expect(
       p.start({ target: { host: "127.0.0.1", port: 8081 }, workspace: "/x", tunnel: { key: "k", hostnames: [] } }),
@@ -425,6 +428,7 @@ describe("cloudflareProvisionedTunnelProvider", () => {
       fetch: world.fetch,
       spawner,
       healthIntervalMs: 0,
+      publicDns: false,
     })
 
     expect((await provider.auth!.state()).status).toBe("logged_in")
@@ -456,6 +460,7 @@ describe("cloudflareProvisionedTunnelProvider", () => {
       fetch: world.fetch,
       spawner,
       healthIntervalMs: 0,
+      publicDns: false,
     })
 
     world.rejectNextWith401 = true
@@ -482,6 +487,7 @@ describe("cloudflareProvisionedTunnelProvider", () => {
       fetch: world.fetch,
       spawner,
       healthIntervalMs: 0,
+      publicDns: false,
     })
 
     expect((await provider.auth!.state()).status).toBe("logged_in")
@@ -520,6 +526,97 @@ describe("cloudflareProvisionedTunnelProvider", () => {
     await provider.destroy!({ key: "wa", hostnames: [] })
     expect(world.tunnels.has("wa")).toBe(false)
     await expect(provider.destroy!({ key: "wa", hostnames: [] })).resolves.toBeUndefined()
+  })
+
+  it("waits for public DNS before the first probe, then reports active", async () => {
+    const world = new FakeWorld()
+    const events: string[] = []
+    const pinned: Array<{ hostname: string; address: string }> = []
+    let dohCalls = 0
+    let now = 0
+    const publicDns: PublicDns = {
+      async resolve() {
+        dohCalls++
+        const answer = dohCalls > 2
+        events.push(answer ? "doh:answer" : "doh:nxdomain")
+        return answer ? { kind: "answer", addresses: ["203.0.113.10"] } : { kind: "no-answer" }
+      },
+      pinnedFetch(hostname, address) {
+        events.push("probe")
+        pinned.push({ hostname, address })
+        return async () => respond(200, {})
+      },
+      async systemLookup() {
+        events.push("system")
+        return []
+      },
+    }
+    const { provider } = await loggedInProvider(world, {
+      publicDns,
+      dnsNow: () => now,
+      dnsSleep: async (ms: number) => {
+        now += ms
+      },
+    })
+
+    const res = await provider.start({
+      target: { host: "127.0.0.1", port: 8081 },
+      workspace: "/x",
+      tunnel: { key: "dns-gate", hostnames: [] },
+    })
+    expect(res.publicUrl).toBe("https://user-42.example.sh")
+    // The create call only returned after DoH saw the record, and no probe
+    // ran before that answer.
+    const firstAnswer = events.indexOf("doh:answer")
+    const firstProbe = events.indexOf("probe")
+    expect(firstAnswer).toBeGreaterThanOrEqual(0)
+    expect(events.slice(0, firstAnswer)).not.toContain("probe")
+    expect(firstProbe === -1 || firstAnswer < firstProbe).toBe(true)
+    expect(events).not.toContain("system")
+
+    const health = await provider.probeNow()
+    expect(health).toMatchObject({ state: "active" })
+    expect(pinned[0]).toEqual({ hostname: "user-42.example.sh", address: "203.0.113.10" })
+    expect(events).not.toContain("system")
+    await provider.stop()
+  })
+
+  it("DoH timeout still returns the tunnel, degraded with the pending reason", async () => {
+    const world = new FakeWorld()
+    let now = 0
+    const publicDns: PublicDns = {
+      async resolve() {
+        return { kind: "no-answer" }
+      },
+      pinnedFetch() {
+        return async () => respond(200, {})
+      },
+      async systemLookup() {
+        throw new Error("system lookup must not run while dns is pending")
+      },
+    }
+    const { provider } = await loggedInProvider(world, {
+      publicDns,
+      dnsVisibleTimeoutMs: 2_000,
+      dnsRetryDelayMs: 60_000,
+      dnsNow: () => now,
+      dnsSleep: async (ms: number) => {
+        now += ms
+      },
+      dnsRetrySleep: () => new Promise<void>(() => {}),
+    })
+
+    const res = await provider.start({
+      target: { host: "127.0.0.1", port: 8081 },
+      workspace: "/x",
+      tunnel: { key: "dns-timeout", hostnames: [] },
+    })
+    expect(res.publicUrl).toBe("https://user-42.example.sh")
+    expect(provider.health()).toMatchObject({
+      state: "degraded",
+      reason: "dns not yet visible on public resolvers",
+    })
+    await provider.stop()
   })
 
   it("sends the tunnel's root on start and on every hostname swap", async () => {

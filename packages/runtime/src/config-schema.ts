@@ -336,7 +336,41 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
-    sandbox: z.object({ checkpoint: sandboxCheckpointConfigSchema.optional() }).passthrough().optional(),
+    sandbox: z
+      .object({
+        checkpoint: sandboxCheckpointConfigSchema.optional(),
+        /** Config-declared preflight probes: one shell command in the box, read as yes/no.
+         *  Reference them by id from `agent_start({ preflight: [...] })` or a placement rung. */
+        preflight: z
+          .object({
+            probes: z
+              .array(
+                z.object({
+                  id: z.string().min(1),
+                  description: z.string().optional(),
+                  command: z.string().min(1),
+                  okExitCode: z.number().int().optional(),
+                  okStdoutMatches: z.string().optional(),
+                  koWhen: z
+                    .array(
+                      z.object({
+                        match: z.string().min(1),
+                        errorClass: z.enum(["usage-limit", "rate-limit", "auth", "other"]).optional(),
+                      }),
+                    )
+                    .optional(),
+                  failAs: z.enum(["ko", "unknown"]).optional(),
+                  timeoutMs: z.number().int().positive().optional(),
+                  runsWithSpawnAuth: z.boolean().optional(),
+                }),
+              )
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough()
 
@@ -401,6 +435,7 @@ const featuresConfigSchema: z.ZodType<FeaturesConfig> = z
 const worktreesConfigSchema: z.ZodType<WorktreesConfig> = z
   .object({
     root: z.string().optional(),
+    extraRoots: z.array(z.string()).optional(),
     isolation: z.enum(["always", "on-request", "never"]).optional(),
     provisionConcurrency: z.number().int().min(0).optional(),
     provisionConcurrencyByRepo: z.record(z.string(), z.number().int().min(0)).optional(),
@@ -1289,6 +1324,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: "~/.agentproto/worktrees",
   },
   {
+    path: "worktrees.extraRoots",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Extra worktrees roots",
+    help: "Extra directories `maintain --all` scans for worktrees, in addition to `worktrees.root`; `--worktrees-root` adds to this list.",
+    default: [],
+  },
+  {
     path: "worktrees.isolation",
     schema: z.enum(["always", "on-request", "never"]),
     apply: "hot",
@@ -2134,6 +2179,11 @@ export const CONFIG_KEYS_NOT_EXPOSED: readonly ConfigKeyNotExposedEntry[] = [
     path: "version",
     reason:
       "internal schema-version stamp; saveConfig() always overwrites it with CONFIG_VERSION on every write, never a user knob.",
+  },
+  {
+    path: "defaults.sandbox.preflight.probes",
+    reason:
+      "an array of structured probe objects (id, command, koWhen, ...); a single dotted key cannot set one. Edit config.json directly.",
   },
 ]
 

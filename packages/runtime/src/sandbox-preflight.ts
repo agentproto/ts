@@ -69,6 +69,14 @@ export interface PreflightProbe {
   description: string
   /** Hard budget in ms when the caller does not override it. */
   defaultTimeoutMs: number
+  /**
+   * May this probe run when the spawn carries credentials? The probe reaches
+   * the box without them (they reach the box through its own `agent_start`),
+   * so a probe whose verdict depends on them must say false (the default) and
+   * is skipped with a warning; a probe that does not (a package is installed,
+   * an address is not capped for everyone) says true.
+   */
+  runsWithSpawnAuth?: boolean
   run(ctx: PreflightContext): Promise<Omit<PreflightResult, "durationMs">>
 }
 
@@ -172,6 +180,76 @@ export const modelAnswersProbe: PreflightProbe = {
       detail: `exit ${res.exitCode} with no recognizable provider error: ${clip(text) || "no output"}`,
     }
   },
+}
+
+/**
+ * A probe declared in config (`defaults.sandbox.preflight.probes`): run one
+ * shell command in the box and turn its result into a yes/no. Nothing in it is
+ * specific to a harness or provider, so any "does this box have X" check is a
+ * config entry, not code.
+ */
+export interface CommandProbeSpec {
+  id: string
+  description?: string
+  command: string
+  /** Exit code that means yes. Default 0. */
+  okExitCode?: number
+  /** Regex the stdout must match to count as yes. */
+  okStdoutMatches?: string
+  /** Output patterns that are a definite no, each with the class a caller (and the egress cooldown ledger) sees. */
+  koWhen?: Array<{ match: string; errorClass?: "usage-limit" | "rate-limit" | "auth" | "other" }>
+  /** What a result that is neither yes nor a `koWhen` hit means: `unknown` (default, never vetoes) or `ko`. */
+  failAs?: "ko" | "unknown"
+  timeoutMs?: number
+  /** See {@link PreflightProbe.runsWithSpawnAuth}. */
+  runsWithSpawnAuth?: boolean
+}
+
+const compileOrUndefined = (source: string): RegExp | undefined => {
+  try {
+    return new RegExp(source, "i")
+  } catch {
+    return undefined
+  }
+}
+
+export function commandPreflightProbe(spec: CommandProbeSpec): PreflightProbe {
+  return {
+    id: spec.id,
+    description: spec.description ?? `Runs \`${clip(spec.command)}\` in the box.`,
+    defaultTimeoutMs: spec.timeoutMs ?? MODEL_ANSWERS_TIMEOUT_MS,
+    runsWithSpawnAuth: spec.runsWithSpawnAuth === true,
+    async run(ctx) {
+      const res = await ctx.exec({
+        command: spec.command,
+        ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
+        timeoutMs: ctx.timeoutMs,
+      })
+      const text = `${res.stderr}\n${res.stdout}`
+      for (const k of spec.koWhen ?? []) {
+        const re = compileOrUndefined(k.match)
+        if (re?.test(text)) return { verdict: "ko", errorClass: k.errorClass ?? "other", detail: clip(text) }
+      }
+      const stdoutRe = spec.okStdoutMatches !== undefined ? compileOrUndefined(spec.okStdoutMatches) : undefined
+      if (spec.okStdoutMatches !== undefined && stdoutRe === undefined) {
+        return { verdict: "unknown", detail: `okStdoutMatches is not a valid regex: ${clip(spec.okStdoutMatches)}` }
+      }
+      if (res.exitCode === (spec.okExitCode ?? 0) && (stdoutRe === undefined || stdoutRe.test(res.stdout))) {
+        return { verdict: "ok", detail: clip(res.stdout) || `exit ${res.exitCode}` }
+      }
+      const detail = `exit ${res.exitCode}: ${clip(text) || "no output"}`
+      return spec.failAs === "ko" ? { verdict: "ko", errorClass: "other", detail } : { verdict: "unknown", detail }
+    },
+  }
+}
+
+/** The built-in probes plus the config-declared ones. A config id that reuses a built-in id is ignored. */
+export function buildPreflightRegistry(specs: readonly CommandProbeSpec[] = []): PreflightRegistry {
+  const registry = createPreflightRegistry([modelAnswersProbe])
+  for (const spec of specs) {
+    if (registry.get(spec.id) === undefined) registry.register(commandPreflightProbe(spec))
+  }
+  return registry
 }
 
 /** The daemon-wide registry: built-in probes, extendable with `register`. */

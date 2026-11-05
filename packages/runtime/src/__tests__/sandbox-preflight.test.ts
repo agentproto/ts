@@ -7,6 +7,8 @@
 import { describe, expect, it, vi } from "vitest"
 import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 import {
+  buildPreflightRegistry,
+  commandPreflightProbe,
   createPreflightRegistry,
   defaultPreflightRegistry,
   MODEL_ANSWERS_PROBE_ID,
@@ -307,5 +309,48 @@ describe("preflightFailedResult", () => {
     )
     const failure = preflightFailedResult({ ...run, failed: run.failed! }, { provider: "e2b", sandboxId: "sbx_2" })
     expect(failure.details).not.toHaveProperty("egressIp")
+  })
+})
+
+describe("commandPreflightProbe (config-declared, nothing harness-specific)", () => {
+  const run = (spec: Parameters<typeof commandPreflightProbe>[0], r: Partial<SandboxExecResult>) =>
+    runPreflightProbe(commandPreflightProbe(spec), ctxWith(async () => result(r)), 1000)
+
+  it("a tool-installed check: exit 0 is yes, failAs ko makes a missing tool a no", async () => {
+    const spec = { id: "has-gh", command: "command -v gh", failAs: "ko" as const }
+    expect((await run(spec, { exitCode: 0, stdout: "/usr/bin/gh\n" })).verdict).toBe("ok")
+    const missing = await run(spec, { exitCode: 1, stdout: "", stderr: "" })
+    expect(missing.verdict).toBe("ko")
+    expect(missing.errorClass).toBe("other")
+  })
+
+  it("an unmatched failure is unknown by default, so a probe that cannot decide never vetoes", async () => {
+    expect((await run({ id: "p", command: "x" }, { exitCode: 2, stdout: "", stderr: "boom" })).verdict).toBe("unknown")
+  })
+
+  it("koWhen wins over an ok exit and carries the declared class (the zen free cap)", async () => {
+    const spec = {
+      id: "zen-free-answers",
+      command: "opencode run -m opencode/glm-5.3-flash-free 'reply ok' < /dev/null",
+      koWhen: [{ match: "Free usage limit reached", errorClass: "usage-limit" as const }],
+    }
+    const out = await run(spec, { exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
+    expect(out.verdict).toBe("ko")
+    expect(out.errorClass).toBe("usage-limit")
+  })
+
+  it("okStdoutMatches must match for a yes; a bad regex is unknown, not a veto", async () => {
+    expect((await run({ id: "p", command: "x", okStdoutMatches: "^v2\\." }, { stdout: "v2.4\n" })).verdict).toBe("ok")
+    expect((await run({ id: "p", command: "x", okStdoutMatches: "^v2\\." }, { stdout: "v1.0\n" })).verdict).toBe("unknown")
+    expect((await run({ id: "p", command: "x", okStdoutMatches: "(" }, {})).verdict).toBe("unknown")
+  })
+
+  it("buildPreflightRegistry adds config probes and ignores one that reuses a built-in id", () => {
+    const reg = buildPreflightRegistry([
+      { id: "has-gh", command: "command -v gh" },
+      { id: MODEL_ANSWERS_PROBE_ID, command: "true" },
+    ])
+    expect(reg.get("has-gh")).toBeDefined()
+    expect(reg.get(MODEL_ANSWERS_PROBE_ID)).toBe(modelAnswersProbe)
   })
 })

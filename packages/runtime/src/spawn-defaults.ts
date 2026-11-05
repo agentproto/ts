@@ -27,6 +27,7 @@ import type { Grant } from "@agentproto/policy"
 import type { DelegationGateMode } from "./delegation-gate.js"
 import type { ProfileGateMode } from "./profile-gate.js"
 import type { StdioMountGateMode } from "./stdio-mount-gate.js"
+import type { CommandProbeSpec } from "./sandbox-preflight.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
@@ -348,6 +349,10 @@ export interface SpawnDefaultsConfig {
      *  `resolveSandboxCheckpointConfig`. Overridden per-spawn by
      *  `agent_start.sandboxCheckpoint`. */
     checkpoint?: SandboxCheckpointConfig
+    /** Config-declared preflight probes (one shell command in the box, read as
+     *  yes/no), referenced by id from `agent_start.preflight` or a placement
+     *  rung. See `sandbox-preflight.ts`'s `CommandProbeSpec`. */
+    preflight?: { probes?: CommandProbeSpec[] }
   }
 }
 

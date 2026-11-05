@@ -17,6 +17,14 @@ import { promisify } from "node:util"
 
 import type { FetchLike } from "./cloudflare-api.js"
 import {
+  DNS_NOT_VISIBLE,
+  defaultPublicDns,
+  systemLookup as systemDnsLookup,
+  waitForPublicDns,
+  type DohResult,
+  type PublicDns,
+} from "./dns-resolver.js"
+import {
   ProcessSupervisor,
   type ProcessSpawner,
   type ProcessSupervisorOptions,
@@ -35,19 +43,65 @@ export interface ProbeResult {
   reason?: string
 }
 
+/** Public-DNS resolution + pinned transport for one probe. */
+export interface ProbeDnsOptions {
+  resolve(hostname: string): Promise<DohResult>
+  /** Connect to the resolved address while keeping SNI/Host for `hostname`. */
+  pinnedFetch?(hostname: string, address: string): FetchLike
+  /** System resolver, used only when DoH itself is unreachable. */
+  systemLookup?(hostname: string): Promise<string[]>
+}
+
 /**
  * Probe a public hostname with an unsigned request. Any answer from the app
  * itself (2xx-4xx, incl. the guard's 401 or the app's 404) means the
  * tunnel works; a Cloudflare edge 5xx (502/530/1033…) or a network failure
  * means it doesn't.
+ *
+ * With `dns`, the address comes from DNS-over-HTTPS and the connection is
+ * pinned to it, so a negative answer cached by the host's system resolver
+ * can never decide the verdict. The system resolver is a fallback only for
+ * a DoH outage, after the hostname was confirmed visible at creation time.
  */
 export async function probeHostname(
   fetchImpl: FetchLike,
   hostname: string,
   timeoutMs = 10_000,
+  dns?: ProbeDnsOptions,
 ): Promise<ProbeResult> {
+  let requestFetch = fetchImpl
+  if (dns) {
+    let resolution: DohResult
+    try {
+      resolution = await dns.resolve(hostname)
+    } catch (err) {
+      resolution = { kind: "unreachable", error: err instanceof Error ? err.message : String(err) }
+    }
+    if (resolution.kind === "no-answer") {
+      return { hostname, ok: false, reason: DNS_NOT_VISIBLE }
+    }
+    if (resolution.kind === "answer") {
+      const address = resolution.addresses[0]
+      if (address && dns.pinnedFetch) requestFetch = dns.pinnedFetch(hostname, address)
+    } else {
+      try {
+        const addresses = dns.systemLookup
+          ? await dns.systemLookup(hostname)
+          : await systemDnsLookup(hostname)
+        const address = addresses[0]
+        if (!address) return { hostname, ok: false, reason: `unreachable: no address for ${hostname}` }
+        if (dns.pinnedFetch) requestFetch = dns.pinnedFetch(hostname, address)
+      } catch (err) {
+        return {
+          hostname,
+          ok: false,
+          reason: `unreachable: ${err instanceof Error ? err.message : String(err)}`,
+        }
+      }
+    }
+  }
   try {
-    const res = await fetchImpl(`https://${hostname}/`, {
+    const res = await requestFetch(`https://${hostname}/`, {
       method: "GET",
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
@@ -77,6 +131,19 @@ export interface CloudflaredRunnerDeps {
   supervisor?: Partial<Omit<ProcessSupervisorOptions, "spawner" | "request">>
   /** Pre-flight binary check. Skipped when a custom spawner is injected. */
   checkBinary?: () => Promise<boolean>
+  /**
+   * Public-DNS gate + pinned probe transport. Omit for the production DoH
+   * resolver; `false` keeps the legacy system-resolver behaviour (tests).
+   */
+  publicDns?: PublicDns | false
+  /** Total budget waiting for public DNS before `start()` returns. Default 60s. */
+  dnsVisibleTimeoutMs?: number
+  /** Background re-check period once the create wait gave up. Default 5s. */
+  dnsRetryDelayMs?: number
+  /** Clock / sleep seams for the DNS gate (tests). */
+  dnsSleep?: (ms: number) => Promise<void>
+  dnsRetrySleep?: (ms: number) => Promise<void>
+  dnsNow?: () => number
 }
 
 export interface CloudflaredRunnerStart {
@@ -89,12 +156,18 @@ export interface CloudflaredRunnerStart {
   label: string
   onLog?: (line: string) => void
   onHealth?: (health: TunnelHealth) => void
+  /**
+   * The hostname was not visible on public DNS when the provider finished
+   * waiting: report the pending reason and keep re-checking in the background.
+   */
+  dnsPending?: boolean
 }
 
 /** One supervised connector + its health loop. Not reusable after stop(). */
 export class CloudflaredRunner {
   private readonly deps: CloudflaredRunnerDeps
   private readonly probeFetch: FetchLike
+  private readonly publicDns: PublicDns | null
   private supervisor: ProcessSupervisor | null = null
   private secret: string | null = null
   private hostnames: string[] = []
@@ -105,10 +178,13 @@ export class CloudflaredRunner {
   private onHealth: ((h: TunnelHealth) => void) | undefined
   private rawLog: ((line: string) => void) | undefined
   private cleanup: (() => void) | null = null
+  private dnsPending = false
+  private dnsWaitToken: { cancelled: boolean } | null = null
 
   constructor(deps: CloudflaredRunnerDeps = {}) {
     this.deps = deps
     this.probeFetch = deps.probeFetch ?? (globalThis.fetch as unknown as FetchLike)
+    this.publicDns = deps.publicDns === false ? null : (deps.publicDns ?? defaultPublicDns())
   }
 
   get running(): boolean {
@@ -168,8 +244,10 @@ export class CloudflaredRunner {
       this.secret = null
       throw new Error(`failed to spawn cloudflared: ${msg}`)
     }
+    this.dnsPending = this.publicDns !== null && opts.dnsPending === true
     this.emitHealth()
-    void this.probeNow()
+    if (this.dnsPending) this.startDnsWait()
+    else void this.probeNow()
     const interval = this.deps.healthIntervalMs ?? 60_000
     if (interval > 0) {
       const t = setInterval(() => void this.probeNow(), interval)
@@ -188,11 +266,44 @@ export class CloudflaredRunner {
     return this.lastHealth
   }
 
+  /**
+   * Wait (bounded) until every hostname has a public A/AAAA answer. Called by
+   * the providers before `start()` so the very first probe and the user's
+   * first browser request never race the zone's propagation.
+   */
+  async awaitPublicDns(hostnames: string[]): Promise<boolean> {
+    const dns = this.publicDns
+    if (!dns) return true
+    for (const hostname of hostnames) {
+      const result = await waitForPublicDns(hostname, {
+        resolve: h => dns.resolve(h),
+        timeoutMs: this.deps.dnsVisibleTimeoutMs ?? 60_000,
+        ...(this.deps.dnsSleep ? { sleep: this.deps.dnsSleep } : {}),
+        ...(this.deps.dnsNow ? { now: this.deps.dnsNow } : {}),
+      })
+      if (result.kind !== "answer") return false
+    }
+    return true
+  }
+
   async probeNow(): Promise<TunnelHealth | null> {
     if (!this.supervisor) return null
+    if (this.dnsPending) {
+      const visible = await this.checkDnsVisible(this.hostnames)
+      if (!visible) return this.emitHealth()
+      this.dnsPending = false
+    }
     const targets = [...this.hostnames]
+    const dns = this.publicDns
+    const dnsOpts: ProbeDnsOptions | undefined = dns
+      ? {
+          resolve: h => dns.resolve(h),
+          pinnedFetch: (h, address) => dns.pinnedFetch(h, address),
+          systemLookup: h => dns.systemLookup(h),
+        }
+      : undefined
     const results = await Promise.all(
-      targets.map(h => probeHostname(this.probeFetch, h, this.deps.probeTimeoutMs)),
+      targets.map(h => probeHostname(this.probeFetch, h, this.deps.probeTimeoutMs, dnsOpts)),
     )
     if (!this.supervisor) return null
     this.probes = results
@@ -202,6 +313,9 @@ export class CloudflaredRunner {
   async stop(): Promise<void> {
     this.cancelHealth?.()
     this.cancelHealth = null
+    if (this.dnsWaitToken) this.dnsWaitToken.cancelled = true
+    this.dnsWaitToken = null
+    this.dnsPending = false
     const sup = this.supervisor
     this.supervisor = null
     this.probes = null
@@ -210,6 +324,42 @@ export class CloudflaredRunner {
     this.cleanup?.()
     this.cleanup = null
     this.secret = null
+  }
+
+  private async checkDnsVisible(hostnames: string[]): Promise<boolean> {
+    const dns = this.publicDns
+    if (!dns) return true
+    for (const hostname of hostnames) {
+      const result = await dns.resolve(hostname).catch(
+        (err: unknown): DohResult => ({
+          kind: "unreachable",
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      )
+      if (result.kind !== "answer") return false
+    }
+    return true
+  }
+
+  private startDnsWait(): void {
+    const token = { cancelled: false }
+    this.dnsWaitToken = token
+    const delay = this.deps.dnsRetryDelayMs ?? 5_000
+    const sleep =
+      this.deps.dnsRetrySleep ??
+      this.deps.dnsSleep ??
+      ((ms: number) =>
+        new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, ms)
+          timer.unref?.()
+        }))
+    void (async () => {
+      while (!token.cancelled && this.supervisor && this.dnsPending) {
+        await sleep(delay)
+        if (token.cancelled || !this.supervisor) return
+        await this.probeNow()
+      }
+    })()
   }
 
   private emitHealth(): TunnelHealth | null {
@@ -221,6 +371,8 @@ export class CloudflaredRunner {
       h = { state: "error", reason: `cloudflared ${this.supDetail}`, checkedAt: at }
     } else if (sup.state === "restarting") {
       h = { state: "degraded", reason: `cloudflared ${this.supDetail}`, checkedAt: at }
+    } else if (this.dnsPending) {
+      h = { state: "degraded", reason: DNS_NOT_VISIBLE, checkedAt: at }
     } else if (!this.probes) {
       h = { state: "degraded", reason: "awaiting first health probe", checkedAt: at }
     } else {
