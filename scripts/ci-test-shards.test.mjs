@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BUILD_EXTRAS, DEFAULT_WEIGHT, WEIGHTS, buildExtras, partition } from './ci-test-shards.mjs'
+import { BUILD_EXTRAS, DEFAULT_WEIGHT, SPLIT, WEIGHTS, buildExtras, partition, plan } from './ci-test-shards.mjs'
 
 const names = [...Object.keys(WEIGHTS), ...Array.from({ length: 40 }, (_, i) => `@agentproto/pkg-${String(i).padStart(2, '0')}`)]
 
@@ -69,4 +69,33 @@ test('BUILD_EXTRAS only names packages that exist in the workspace', async () =>
     assert.ok(all.has(tested), `${tested} is not a workspace package`)
     for (const e of extras) assert.ok(all.has(e), `${e} (extra of ${tested}) is not a workspace package`)
   }
+})
+
+test('plan gives each runtime slice its own shard and spreads the rest over the others', () => {
+  const p = plan(names, 5)
+  assert.equal(p.length, 5)
+  assert.deepEqual(p[0], { names: ['@agentproto/runtime'], vitestShard: '--shard=1/2' })
+  assert.deepEqual(p[1], { names: ['@agentproto/runtime'], vitestShard: '--shard=2/2' })
+  const rest = p.slice(2)
+  for (const r of rest) assert.equal(r.vitestShard, null)
+  const flat = rest.flatMap((r) => r.names)
+  assert.ok(!flat.includes('@agentproto/runtime'), 'runtime also landed in an unsplit shard')
+  assert.deepEqual([...flat].sort(), names.filter((n) => !(n in SPLIT)).sort())
+})
+
+test('plan covers every package: split ones in all their slices, the rest exactly once', () => {
+  const p = plan(names, 5)
+  for (const [name, n] of Object.entries(SPLIT)) assert.equal(p.filter((e) => e.names.includes(name)).length, n)
+  const unsplit = p.filter((e) => !e.vitestShard).flatMap((e) => e.names)
+  assert.equal(unsplit.length, new Set(unsplit).size)
+})
+
+test('plan skips a split package that has no test script', () => {
+  const p = plan(['a', 'b', 'c'], 3)
+  assert.ok(p.every((e) => e.vitestShard === null))
+  assert.deepEqual(p.flatMap((e) => e.names).sort(), ['a', 'b', 'c'])
+})
+
+test('plan refuses a shard count that leaves nothing for the unsplit packages', () => {
+  assert.throws(() => plan(names, 2), /leaves no shard/)
 })

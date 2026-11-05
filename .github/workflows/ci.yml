@@ -122,9 +122,10 @@ jobs:
   # This used to be ONE serial job (median 12.4 min over 28 PR runs: tests 7.7,
   # type-check 3.3, build 0.8). It is now:
   #   typecheck       build + `tsc --noEmit` + the repo-level script gates
-  #   test (matrix)   the workspace's test suites in 4 weight-balanced shards
-  #                   (scripts/ci-test-shards.mjs — every package with a test
-  #                   script lands in exactly one shard)
+  #   test (matrix)   the workspace's test suites in 5 shards
+  #                   (scripts/ci-test-shards.mjs): runtime split in two by
+  #                   test file (vitest --shard), every other package with a
+  #                   test script in exactly one of the 3 weight-balanced rest
   #   build-and-test  a tiny aggregate that KEEPS the name "Build + test" and
   #                   the id `build-and-test`: increment-guard's prior-green
   #                   lookup, pr-review's "Wait for Build + test", auto-merge's
@@ -433,7 +434,7 @@ jobs:
         run: node scripts/check-changesets.mjs
 
   test:
-    name: Tests (${{ matrix.shard }}/4)
+    name: Tests (${{ matrix.shard }}/5)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [increment-guard]
@@ -445,7 +446,7 @@ jobs:
       # author want the full list of failing packages in one run.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-test-${{ matrix.shard }}
       cancel-in-progress: ${{ startsWith(github.head_ref, 'changeset-release/') }}
@@ -480,7 +481,7 @@ jobs:
       # the package's own `dist/`.
       - name: Build shard packages
         run: |
-          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4)
+          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5)
           AFFECTED=""
           if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
             AFFECTED="--affected"
@@ -489,7 +490,7 @@ jobs:
           # Suites that load a package's `dist/` without depending on it (the
           # cli's jcode smoke test) — built unscoped by --affected, see
           # BUILD_EXTRAS in scripts/ci-test-shards.mjs.
-          EXTRAS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4 --extras)
+          EXTRAS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5 --extras)
           if [ -n "$EXTRAS" ]; then
             pnpm exec turbo run build $EXTRAS
           fi
@@ -507,11 +508,14 @@ jobs:
       # CPU saturation (see AGENTS.md `tests` section).
       - name: Run tests
         run: |
-          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4)
+          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5)
+          # A runtime slice adds vitest's own `--shard=k/n` (SPLIT in the
+          # script); empty for every other shard.
+          VSHARD=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5 --vitest-shard)
           if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
-            pnpm exec turbo run test --affected $FILTERS
+            pnpm exec turbo run test --affected $FILTERS ${VSHARD:+-- $VSHARD}
           else
-            pnpm -r $FILTERS test
+            pnpm -r $FILTERS test ${VSHARD:+$VSHARD}
           fi
         env:
           TURBO_API: https://turbo-cache.agentik.net
