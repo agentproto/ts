@@ -282,7 +282,15 @@ export function createPrProvenanceReconciler(opts: {
     // Lane B — branch→PR reconciliation, the fallback for adapters whose tool
     // calls aren't recorded (or a PR opened by a path no record captured).
     // A sandboxed session asks about its box's work branch (see `hostSideOf`).
-    if (host.branch !== null) {
+    // A supervisor shares its child's checkout (review-supervisor + executor on
+    // one cwd), so the branch answers the same PR for both. Whichever turn
+    // ends first would stamp ITS id when the body has no footer (an executor
+    // `gh pr edit --body` dropped it; ts#2541/#2542). The supervisor is only
+    // ever attributed through lane A's exact record, never by branch.
+    const supervisesSharedCwd = opts.registry
+      .list()
+      .some(s => s.parentSessionId === desc.id && s.kind === "agent-cli" && (s.cwd ?? undefined) === sessionCwd)
+    if (host.branch !== null && !supervisesSharedCwd) {
       const pr = host.branch
         ? await opts.resolveOpenPr(cwd, { branch: host.branch })
         : await opts.resolveOpenPr(cwd)
