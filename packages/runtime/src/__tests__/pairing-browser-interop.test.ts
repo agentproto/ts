@@ -239,6 +239,11 @@ describe("browser-mode (WebCrypto) client ↔ node:crypto daemon over a real ren
     const hello = await client.next(f => f.t === "hello")
     expect(hello.t === "hello" && hello.label).toBe("node-daemon")
 
+    // First contact is pending until the operator confirms (AIP-59 §3.7).
+    await vi.waitFor(async () => expect((await registry!.listPending()).length).toBe(1))
+    const [pending] = await registry!.listPending()
+    expect(await registry!.confirmPending(pending!.code)).toMatchObject({ ok: true })
+
     // client → daemon → client: ping/pong.
     sink.send({ t: "ping", nonce: "from-browser" })
     await client.next(f => f.t === "pong" && f.nonce === "from-browser")

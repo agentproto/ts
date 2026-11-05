@@ -31,7 +31,9 @@ import {
 const isLocal = (bindings) => bindings?.input?.placement === "local"
 
 // The ordered placement ladder (reviewerPlacement): computer fleet, then e2b,
-// then the paid model on the fleet. undefined ⇒ no ladder configured.
+// then the paid model on the fleet, reordered by the owner-controlled
+// AGENT_REVIEW_PLACEMENT repo variable (e.g. `e2b` = e2b first).
+// undefined ⇒ no ladder configured.
 const placementLadder = (bindings) =>
   isLocal(bindings) ? undefined : reviewerPlacementFor(bindings?.input?.reviewConfig, "review")
 

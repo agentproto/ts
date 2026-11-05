@@ -11567,6 +11567,7 @@ async function handleRemoteControl(
       ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
       ...(typeof b.targetPort === "number" ? { targetPort: b.targetPort } : {}),
       ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
+      ...(typeof b.phoneLink === "boolean" ? { phoneLink: b.phoneLink } : {}),
     }
     try {
       const result = await controller.enable(input)
@@ -12403,7 +12404,10 @@ function enrichPermission(
  *   POST   /pairings/offer         → { ttlMinutes?, rendezvous? } mint offer
  *                                    → { url, fingerprint, rendezvous,
  *                                        rendezvousIsHostedDefault, expiresAt }
- *   GET    /pairings               → { pairings: [...] }
+ *   GET    /pairings               → { pairings: [...] } (persisted only)
+ *   GET    /pairings/pending       → { pending: [...] } (awaiting confirm)
+ *   POST   /pairings/confirm       → { target } promote a pending pairing
+ *   POST   /pairings/decline       → { target } drop a pending pairing
  *   DELETE /pairings/:fingerprint  → revoke by fingerprint (or name)
  *
  * Mirrors the MCP `pair_offer` / `pair_list` / `pair_revoke` tools over the same
@@ -12463,6 +12467,42 @@ async function handlePairings(
     return true
   }
 
+  if (path === "/pairings/pending" && req.method === "GET") {
+    json(200, { pending: await registry.listPending() })
+    return true
+  }
+
+  if ((path === "/pairings/confirm" || path === "/pairings/decline") && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const target = typeof b.target === "string" ? b.target : ""
+    if (!target) {
+      json(400, {
+        error: "missing_target",
+        message: "pass { target } (short code or full fingerprint; never a client name)",
+      })
+      return true
+    }
+    const result =
+      path === "/pairings/confirm"
+        ? await registry.confirmPending(target)
+        : await registry.declinePending(target)
+    if (!result.ok) {
+      json(
+        result.reason === "ambiguous" ? 409 : 404,
+        { error: result.reason, message: result.message },
+      )
+      return true
+    }
+    json(
+      200,
+      path === "/pairings/confirm"
+        ? { ok: true, confirmed: target }
+        : { ok: true, declined: target },
+    )
+    return true
+  }
+
   const fpMatch = path.match(/^\/pairings\/([^/]+)$/)
   if (fpMatch && req.method === "DELETE") {
     const target = decodeURIComponent(fpMatch[1] ?? "")
@@ -12475,10 +12515,19 @@ async function handlePairings(
     return true
   }
 
-  if (path === "/pairings" || path === "/pairings/offer" || fpMatch) {
+  if (
+    path === "/pairings" ||
+    path === "/pairings/offer" ||
+    path === "/pairings/pending" ||
+    path === "/pairings/confirm" ||
+    path === "/pairings/decline" ||
+    fpMatch
+  ) {
     json(405, {
       error: "method_not_allowed",
-      message: "POST /pairings/offer · GET /pairings · DELETE /pairings/:fingerprint",
+      message:
+        "POST /pairings/offer · GET /pairings · GET /pairings/pending · " +
+        "POST /pairings/confirm · POST /pairings/decline · DELETE /pairings/:fingerprint",
     })
     return true
   }

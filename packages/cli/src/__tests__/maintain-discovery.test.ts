@@ -94,6 +94,17 @@ describe("discoverWorktreeOwningRepos", () => {
 		expect(discovered).not.toContain(mainCheckout)
 	})
 
+	it("finds the owner of a worktree placed directly at the root (no bucket dir)", async () => {
+		const repoA = await makeRepo("a")
+		const root = realpathSync(await mkdtemp(join(tmpdir(), "maintain-all-flat-")))
+		cleanupPaths.push(root)
+		git(repoA, "worktree", "add", join(root, "flat-slug"), "-b", "wt/flat-slug")
+		// A sibling main checkout in the same dir must still be ignored.
+		await mkdir(join(root, "some-repo", ".git", "objects"), { recursive: true })
+
+		expect(await discoverWorktreeOwningRepos(root)).toEqual([repoA])
+	})
+
 	it("yields an empty list for a missing root", async () => {
 		expect(await discoverWorktreeOwningRepos(join(tmpdir(), "maintain-all-nope-xyz"))).toEqual([])
 	})
@@ -118,6 +129,19 @@ describe("mainRepoOfWorktree", () => {
 })
 
 describe("resolveAllRepos", () => {
+	it("unions several roots, so a pool outside the configured root is still found", async () => {
+		const repoA = await makeRepo("a")
+		const repoB = await makeRepo("b")
+		const rootA = await makeWorktreesRoot([{ repoRoot: repoA, bucket: "repo-a", slugs: ["one"] }])
+		const rootB = realpathSync(await mkdtemp(join(tmpdir(), "maintain-all-extra-")))
+		cleanupPaths.push(rootB)
+		git(repoB, "worktree", "add", join(rootB, "wt-x"), "-b", "wt/x")
+
+		const all = await resolveAllRepos([rootA, rootB])
+
+		expect(all.sort()).toEqual([repoA, repoB].sort())
+	})
+
 	it("appends explicit --repo roots and dedupes against discovery", async () => {
 		const repoA = await makeRepo("a")
 		const repoB = await makeRepo("b")

@@ -48,7 +48,7 @@ describe("pairing registry over an in-memory rendezvous", () => {
     await rm(tmp, { recursive: true, force: true }).catch(() => {})
   })
 
-  it("offer -> accept reaches serve, persists a pairing", async () => {
+  it("offer -> accept reaches serve as PENDING, then confirm persists it", async () => {
     const rv = new FakeRendezvous()
     const registry = make(rv)
     const offer = await registry.createOffer({ ttlMs: 60_000 })
@@ -57,8 +57,17 @@ describe("pairing registry over an in-memory rendezvous", () => {
     const hello = await client.ready()
     expect(hello.label).toBe("test-host")
     expect(served).toHaveLength(1)
-    expect(served[0]).toMatchObject({ mode: "offer", name: "phone" })
+    expect(served[0]).toMatchObject({ mode: "offer", name: "phone", pending: true })
 
+    // Pending: in memory only, not listed, not in pairings.json.
+    const pending = await registry.listPending()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ name: "phone", code: pending[0]!.fingerprint.slice(0, 8) })
+    expect(await registry.list()).toEqual([])
+    expect(registry.isOnline(pending[0]!.fingerprint)).toBe(false)
+
+    expect(await registry.confirmPending(pending[0]!.code)).toMatchObject({ ok: true })
+    expect(await registry.listPending()).toEqual([])
     const listed = await registry.list()
     expect(listed).toHaveLength(1)
     expect(listed[0]?.name).toBe("phone")
@@ -76,6 +85,8 @@ describe("pairing registry over an in-memory rendezvous", () => {
     const offer = await first.createOffer({ ttlMs: 60_000 })
     const { client, pairRoot, daemon } = await pairViaOffer(rv, offer.url, "phone")
     await client.ready()
+    const [pending] = await first.listPending()
+    expect(await first.confirmPending(pending!.id)).toMatchObject({ ok: true })
     await client.close()
     const [fingerprint] = (await first.list()).map(p => p.fingerprint)
     await first.shutdown()

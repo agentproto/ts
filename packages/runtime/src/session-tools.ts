@@ -3527,6 +3527,11 @@ export function registerSessionTools(
           getMcpCredentialDeps()
         )
         await saveImportedMcps(added.config)
+        // Re-importing an existing id may leave an unchanged snapshot, so
+        // `ensureCurrent`'s snapshot comparison keeps the old pooled client
+        // and its stale tool cache. Drop it explicitly so the next read
+        // reconnects and re-lists.
+        if (mcpProxy) await mcpProxy.invalidate(added.entry.id)
         const out =
           added.warnings.length > 0
             ? { ...added.entry, warnings: added.warnings }
