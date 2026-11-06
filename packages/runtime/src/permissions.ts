@@ -286,6 +286,12 @@ export interface PermissionContext {
      *  to the same registered workspace via `workspaceOfCwd`. */
     peerBinding?: "slug" | "verified"
     agentInterrupt?: "allow" | "deny"
+    /** `defaults.messaging.anonymousSend`: "label" admits an UNVERIFIED
+     *  session sender (an external client such as the shared
+     *  `claude-desktop` identity) to any live session, as relation
+     *  `granted`, rule `messaging.anonymousSend`, capped at `steer`.
+     *  "block" (or unset) keeps the refusal. Verified senders never read it. */
+    anonymousSend?: "block" | "label"
   }
   /** cwd to registered workspace slug (undefined when unregistered). */
   workspaceOfCwd?: (cwd: string) => string | undefined
@@ -622,6 +628,14 @@ function decideTool(principal: Principal, resource: PermissionResource, ctx: Per
   }
 }
 
+/** Rule id of a message admitted only because the sender is unverified. */
+export const ANONYMOUS_SEND_RULE = "messaging.anonymousSend"
+
+/** A session whose identity was CLAIMED, not proven (an external client). */
+export function isUnverifiedMessageSender(node: MessageTreeNode): boolean {
+  return node.kind === "external" || node.externalHost !== undefined
+}
+
 function decideMessage(
   principal: Principal,
   recipient: MessageTreeNode,
@@ -703,6 +717,26 @@ function decideMessage(
       })
     }
   }
+  // An unverified session sender (claimed external identity) outside every
+  // relation: admitted and labelled, never trusted (message-tools.ts adds
+  // the text prefix; decideInterrupt caps it at steer). An explicit
+  // `session:message` deny still wins.
+  if (
+    principal.kind === "session" &&
+    ctx.messaging?.anonymousSend === "label" &&
+    isUnverifiedMessageSender(principal.session) &&
+    !messageRefusal(evaluation, recipient)
+  ) {
+    return mint({
+      ...base,
+      allow: true,
+      relation: "granted",
+      rule: ANONYMOUS_SEND_RULE,
+      reason:
+        "the sender is an unverified (claimed) identity; defaults.messaging.anonymousSend is \"label\", " +
+        "so the message is delivered labelled unverified and capped at steer",
+    })
+  }
   if (refusal && candidates.some(x => x.g.allow)) {
     return mint({ ...base, allow: false, relation: strongest(relations), rule: refusal.rule, reason: refusal.reason })
   }
@@ -756,6 +790,17 @@ function decideInterrupt(principal: Principal, recipient: MessageTreeNode | unde
         allow: false,
         rule: "session.message",
         reason: `cannot interrupt: session.message to "${recipient.id}" is refused (${message.rule}): ${message.reason}`,
+      })
+    }
+  }
+  if (principal.kind === "session" && isUnverifiedMessageSender(principal.session)) {
+    const viaLabel = recipient && decideMessage(principal, recipient, ctx).rule === ANONYMOUS_SEND_RULE
+    if (viaLabel) {
+      return mint({
+        ...base,
+        allow: false,
+        rule: ANONYMOUS_SEND_RULE,
+        reason: "an unverified sender admitted by defaults.messaging.anonymousSend is capped at steer",
       })
     }
   }
