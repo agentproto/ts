@@ -58,7 +58,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
-import { type LedgerLine, type LedgerOutcome, type Level } from "@agentproto/delivery"
+import { type LedgerLine, type LedgerOutcome, type Level, shadowDeliveryGrant } from "@agentproto/delivery"
 import { decide, type Decision } from "./permissions.js"
 import {
   createSessionMessage,
@@ -733,6 +733,11 @@ export async function deliverParentRelayMessage(input: {
       cap: 3,
       rule: "sender-urgency",
       applied: false,
+      grant: shadowDeliveryGrant({
+        producer: {},
+        subject: grant.boxSessionId,
+        target: parentId,
+      }),
       outcome,
       messageId: envelope.id,
     }

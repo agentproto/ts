@@ -37,7 +37,9 @@ import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/led
 import {
   createDeliveryBatcher,
   levelFromDecision,
+  shadowDeliveryGrant,
   type DeliveryBatcher,
+  type DeliveryGrantDecider,
   type Envelope,
   type LedgerLine,
   type LedgerOutcome,
@@ -258,6 +260,9 @@ export interface SentinelRuntimeOptions {
   /** Cancel-tombstone file (tests). Same default/persistence rule as
    *  `quarantinePath`: `~/.agentproto/sentinel-cancel-tombstones.json`. */
   cancelTombstonePath?: string
+  /** Shadow grant decider for ledger observation (tests / future
+   *  enforcement). Omitted → the capability-based shadow decider. */
+  grantDecide?: DeliveryGrantDecider
 }
 
 export interface SentinelRuntime {
@@ -785,6 +790,12 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       cap: 3,
       rule: prepared.effectiveTriage.rule,
       applied: false,
+      grant: shadowDeliveryGrant({
+        producer: prepared.provider,
+        subject: prepared.event.subject,
+        target: prepared.targetSessionId,
+        ...(opts.grantDecide !== undefined ? { decide: opts.grantDecide } : {}),
+      }),
       outcome: outcome.outcome,
       ...(outcome.routedTo !== undefined ? { routedTo: outcome.routedTo } : {}),
       ...(outcome.messageId !== undefined ? { messageId: outcome.messageId } : {}),

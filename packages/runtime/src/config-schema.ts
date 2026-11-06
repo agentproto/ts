@@ -26,6 +26,7 @@ import type {
   CatalogConfig,
   DaemonConfig,
   FeaturesConfig,
+  McpConfig,
   PairingConfig,
   ProfileConfig,
   ProvenanceConfig,
@@ -377,6 +378,12 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
   })
   .passthrough()
 
+const mcpConfigSchema: z.ZodType<McpConfig> = z
+  .object({
+    noCallerIdentity: z.enum(["block", "ask", "accept"]).optional(),
+  })
+  .passthrough()
+
 const daemonConfigSchema: z.ZodType<DaemonConfig> = z
   .object({
     workspace: z.string().optional(),
@@ -567,6 +574,7 @@ const terminalPresetSchema: z.ZodType<TerminalPreset> = z
 export const agentprotoConfigSchema = z
   .object({
     version: z.number().optional(),
+    mcp: mcpConfigSchema.optional(),
     daemon: daemonConfigSchema.optional(),
     tunnel: tunnelConfigSchema.optional(),
     features: featuresConfigSchema.optional(),
@@ -627,6 +635,7 @@ type AssertTrue<_T extends true> = void
 type ConfigTopLevelKey =
   | "version"
   | "daemon"
+  | "mcp"
   | "tunnel"
   | "features"
   | "pairing"
@@ -715,6 +724,17 @@ const brainIngestWorkspacesSchema = z.array(z.string().min(1))
 const clerkReactionWorkspacesSchema = z.array(z.string().min(1))
 
 export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
+  // ── mcp ──
+  {
+    path: "mcp.noCallerIdentity",
+    schema: z.enum(["block", "ask", "accept"]),
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP calls without a caller identity",
+    help: "How the MCP gateway handles a tool call that carries no caller identity (Claude Code / Claude Desktop connecting directly). block (default) refuses with no_caller_identity. accept lets an identity-less message_send go out as the anonymous sender claude-code, with no ACL elevation and never as any session. ask parks such a send on a human approval before it is delivered.",
+    default: "block",
+  },
   // ── daemon ──
   {
     path: "daemon.workspace",

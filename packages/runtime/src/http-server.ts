@@ -77,7 +77,7 @@ import {
   type MessageUrgency,
 } from "./session-message.js"
 import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
-import { type LedgerLine, type LedgerOutcome, type Level } from "@agentproto/delivery"
+import { type LedgerLine, type LedgerOutcome, type Level, shadowDeliveryGrant } from "@agentproto/delivery"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
@@ -8823,6 +8823,11 @@ code { color: #9ad; }
         cap: 3,
         rule: "sender-urgency",
         applied: false,
+        grant: shadowDeliveryGrant({
+          producer: {},
+          subject: sender?.id ?? "user",
+          target: id,
+        }),
         outcome,
         messageId: msg.id,
       }

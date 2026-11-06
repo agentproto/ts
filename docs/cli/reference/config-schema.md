@@ -95,6 +95,16 @@ agentproto config set daemon.port 18791
     "traceRedactor": "secrets"
   },
 
+  // How the MCP gateway treats a call that carries no caller identity
+  // (a Claude Code / Claude Desktop session connecting to /mcp directly).
+  // "block" (default) refuses with no_caller_identity; "accept" lets an
+  // anonymous message_send through as a literal "claude-code" sender;
+  // "ask" parks it on a human approval. Reads stay empty and
+  // message_parent / message_reply still require a real identity.
+  "mcp": {
+    "noCallerIdentity": "block"
+  },
+
   // Generic ACP agents — any CLI that speaks the Agent Client Protocol,
   // connectable with zero adapter code. Keyed by adapter slug; shadows a
   // curated ACP_CATALOG entry of the same slug. Managed via
@@ -228,6 +238,17 @@ Defaults for `agentproto daemon` and `agentproto serve`:
 | `sandboxGoneRestartDefault` | boolean | Off by default. When `true`, a sandbox (box) session spawned with no explicit `restartPolicy` gets `restartPolicy.on: ["sandbox-gone"]`, so if its box dies for good (lifetime cap, provider reclaim, unrecoverable unreachability) the daemon moves it to a fresh box instead of leaving it dead. An explicit per-session `restartPolicy` always wins. With `restartSweepIntervalMs` unset, turning it on also arms the restart sweep at 30s. Applies on daemon restart. See [`agent_start`](../../../packages/runtime/docs/mcp-tools/agent_start.md#restartpolicy). |
 
 Verb flags override config; config overrides hard-coded defaults.
+
+### `mcp: object`
+
+How the MCP gateway handles a call that arrives with no caller identity.
+This is an identity-less client (Claude Code, Claude Desktop) connecting to
+`/mcp` without a `callerSessionId`; it is never a session and never acts as
+one.
+
+| Field             | Type   | Meaning |
+| ----------------- | ------ | ------- |
+| `noCallerIdentity`| string | `block` (default), `ask`, or `accept`. `block` refuses with `no_caller_identity`. `accept` lets an anonymous `message_send` through, delivered with `from: "claude-code"` and marked anonymous; its body is prefixed with a `reply to:` line when `replyTo` is supplied. `ask` raises a human approval and sends only on approval. In every mode `message_parent` and `message_reply` still require a real identity, and `inbox_list` / `inbox_wait` return empty with a hint to pass `cc:<session_id>` as `replyTo`. Writable via `config_set mcp.noCallerIdentity <value>`; takes effect on the next call. |
 
 ### `defaults: object`
 

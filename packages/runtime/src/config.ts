@@ -548,6 +548,21 @@ export interface ApprovalsConfig {
 }
 
 /**
+ * MCP gateway policy (top-level `mcp`). Distinct from `defaults.mcp`, which
+ * configures the MCP servers a SPAWN mounts.
+ */
+export interface McpConfig {
+  /** How a tool call that reaches the gateway WITHOUT a caller identity
+   *  (Claude Code / Claude Desktop talking to the MCP server directly, no
+   *  `?session=` / bearer caller) is handled. `block` (default) refuses with
+   *  `no_caller_identity`; `accept` allows an identity-less `message_send`
+   *  to go out as the anonymous literal sender `claude-code` (never as any
+   *  session, never an ACL elevation); `ask` parks the send on a human
+   *  approval before delivering it. */
+  noCallerIdentity?: "block" | "ask" | "accept"
+}
+
+/**
  * Sentinel auto-link policy (AIP-60 §6, step 4) — whether a PR an executor
  * session opens gets a sentinel created for it automatically.
  */
@@ -805,6 +820,8 @@ export interface AgentprotoConfig {
   provenance?: ProvenanceConfig
   /** Approvals policy — the `web_click` origin allowlist. See {@link ApprovalsConfig}. */
   approvals?: ApprovalsConfig
+  /** MCP gateway policy. See {@link McpConfig}. */
+  mcp?: McpConfig
   /** Sentinel auto-link policy. See {@link SentinelConfig}. */
   sentinel?: SentinelConfig
   /** Session-follow policy (triage). See {@link FollowConfig}. */
