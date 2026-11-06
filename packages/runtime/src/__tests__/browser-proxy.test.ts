@@ -1,6 +1,6 @@
 /**
- * Tests for the one-version daemon `browser_*` → Bureau proxy and the
- * built-in `browser` capability bundle.
+ * Tests for the daemon `browser_*` → Bureau proxy and the built-in `browser`
+ * capability bundle.
  *
  * Fakes only: an in-memory MCP client/transport for the tool surface and a
  * structural `mcpProxy.callTool` double for the imported-MCP registry. No
@@ -15,7 +15,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 
-import { registerBrowserTools } from "../browser-tools.js"
+import { registerBrowserTools, setLiveBrowserInstance } from "../browser-tools.js"
+import { resolveBrowserBuiltin } from "../browser-proxy.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { builtinBrowserBundle, effectiveBundles, type Bundle } from "../bundles.js"
 import type { ImportedMcpsConfig } from "../mcp-imports.js"
@@ -45,7 +46,9 @@ afterEach(() => {
 
 async function makeSetup(opts: {
   proxyImport: string | undefined
+  builtin?: "off" | "proxy" | "on"
   proxy?: ReturnType<typeof fakeProxy>
+  extra?: Record<string, unknown>
 }) {
   const registry = createSessionsRegistry({ persistPath: join(tmp, "sessions.json") })
   const server = new McpServer({ name: "test-browser-proxy", version: "0.0.1" })
@@ -56,6 +59,8 @@ async function makeSetup(opts: {
     mcpProxy: proxy,
     callerSessionId: CALLER,
     loadProxyImport: async () => opts.proxyImport,
+    ...(opts.builtin ? { builtin: opts.builtin } : {}),
+    ...(opts.extra ?? {}),
   })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -66,6 +71,7 @@ async function makeSetup(opts: {
   return {
     client,
     proxy,
+    registry,
     cleanup: async () => {
       await client.close()
       registry.shutdown()
@@ -73,15 +79,34 @@ async function makeSetup(opts: {
   }
 }
 
-describe("browser proxy - off by default", () => {
-  it("takes the old path and never calls the imported-MCP proxy when proxyImport is unset", async () => {
-    const { client, proxy, cleanup } = await makeSetup({ proxyImport: undefined })
+function textOf(result: unknown): string | undefined {
+  const content = (result as { content: Array<{ type: string; text?: string }> }).content
+  return content.find(c => c.type === "text")?.text
+}
+
+describe("browser builtin = off", () => {
+  it("registers only fetch_page and makes browser_navigate an unknown tool", async () => {
+    const { client, proxy, cleanup } = await makeSetup({ proxyImport: "bureau", builtin: "off" })
     try {
+      const names = (await client.listTools()).tools.map(t => t.name)
+      expect(names).toContain("fetch_page")
+      for (const name of [
+        "browser_navigate",
+        "browser_screenshot",
+        "browser_list_tabs",
+        "browser_adapter_list",
+        "start_browser",
+        "list_browsers",
+      ]) {
+        expect(names).not.toContain(name)
+      }
+
       const res = await client.callTool({
         name: "browser_navigate",
-        arguments: { sessionId: "no-such-session", url: "https://example.com" },
+        arguments: { sessionId: "s", url: "https://example.com" },
       })
       expect(res.isError).toBe(true)
+      expect(textOf(res)).toContain("browser_navigate")
       expect(proxy.callTool).not.toHaveBeenCalled()
     } finally {
       await cleanup()
@@ -89,81 +114,246 @@ describe("browser proxy - off by default", () => {
   })
 })
 
-describe("browser proxy - the six proxied tools", () => {
+describe("browser builtin resolves", () => {
+  it("treats a legacy proxyImport-only config as proxy", async () => {
+    expect(resolveBrowserBuiltin({ proxyImport: "bureau" })).toBe("proxy")
+    expect(resolveBrowserBuiltin({ builtin: "off", proxyImport: "bureau" })).toBe("off")
+    expect(resolveBrowserBuiltin({ builtin: "on" })).toBe("on")
+    expect(resolveBrowserBuiltin(undefined)).toBe("on")
+
+    const { client, cleanup } = await makeSetup({
+      proxyImport: "bureau",
+      builtin: resolveBrowserBuiltin({ proxyImport: "bureau" }),
+    })
+    try {
+      const res = await client.callTool({
+        name: "browser_extract_text",
+        arguments: { sessionId: "s" },
+      })
+      expect(res.isError).toBe(true)
+      expect(textOf(res)).toContain("browser:use_bureau")
+    } finally {
+      await cleanup()
+    }
+  })
+})
+
+describe("browser proxy - proxied tools", () => {
   const cases: Array<{
     tool: string
     input: Record<string, unknown>
+    target: string
     expectedArgs: Record<string, unknown>
-    dropped: string
+    expectedNotes: string[]
   }> = [
     {
       tool: "browser_navigate",
-      input: { sessionId: "s", url: "https://example.com", tabId: "t1" },
-      expectedArgs: { url: "https://example.com" },
-      dropped: "tabId",
+      input: { sessionId: "s", url: "https://example.com", tabId: "t1", instance: "inst-1" },
+      target: "browser_navigate",
+      expectedArgs: { url: "https://example.com", tabId: "t1", instance: "inst-1" },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
     },
     {
       tool: "browser_click",
-      input: { sessionId: "s", tabId: "t1", selector: "#go", button: "left", clickCount: 2 },
-      expectedArgs: { selector: "#go", button: "left", clickCount: 2 },
-      dropped: "tabId",
+      input: { sessionId: "s", tabId: "t1", instance: "inst-1", selector: "#go", button: "left", clickCount: 2 },
+      target: "browser_click",
+      expectedArgs: { selector: "#go", button: "left", clickCount: 2, tabId: "t1", instance: "inst-1" },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
     },
     {
       tool: "browser_fill",
-      input: { sessionId: "s", tabId: "t1", selector: "#q", value: "hello", clear: false },
-      expectedArgs: { selector: "#q", value: "hello", clear: false },
-      dropped: "tabId",
+      input: { sessionId: "s", tabId: "t1", instance: "inst-1", selector: "#q", value: "hello", clear: false },
+      target: "browser_fill",
+      expectedArgs: { selector: "#q", value: "hello", clear: false, tabId: "t1", instance: "inst-1" },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
     },
     {
       tool: "browser_evaluate",
       input: {
         sessionId: "s",
         tabId: "t1",
+        instance: "inst-1",
         expression: "document.title",
         awaitPromise: false,
         returnByValue: true,
         maxResultBytes: 1024,
       },
+      target: "browser_evaluate",
       expectedArgs: {
         expression: "document.title",
         awaitPromise: false,
         returnByValue: true,
         maxResultBytes: 1024,
+        tabId: "t1",
+        instance: "inst-1",
       },
-      dropped: "tabId",
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
     },
     {
       tool: "browser_get_dom",
-      input: { sessionId: "s", tabId: "t1" },
-      expectedArgs: {},
-      dropped: "tabId",
+      input: { sessionId: "s", tabId: "t1", instance: "inst-1" },
+      target: "browser_get_dom",
+      expectedArgs: { tabId: "t1", instance: "inst-1" },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
     },
     {
       tool: "browser_screenshot",
-      input: { sessionId: "s", tabId: "t1" },
-      expectedArgs: {},
-      dropped: "tabId",
+      input: { sessionId: "s", tabId: "t1", instance: "inst-1" },
+      target: "browser_screenshot",
+      expectedArgs: { tabId: "t1", instance: "inst-1" },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
+    },
+    {
+      tool: "browser_press_key",
+      input: {
+        sessionId: "s",
+        tabId: "t1",
+        instance: "inst-1",
+        key: "ArrowDown",
+        selector: "#list",
+        count: 2,
+        modifiers: ["Shift"],
+      },
+      target: "browser_press_key",
+      expectedArgs: {
+        key: "ArrowDown",
+        selector: "#list",
+        count: 2,
+        modifiers: ["Shift"],
+        tabId: "t1",
+        instance: "inst-1",
+      },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
+    },
+    {
+      tool: "browser_list_tabs",
+      input: { sessionId: "s", instance: "inst-1" },
+      target: "browser_list_owned_tabs",
+      expectedArgs: { instance: "inst-1" },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
+    },
+    {
+      tool: "browser_status",
+      input: { sessionId: "s", instance: "inst-1" },
+      target: "browser_list_instances",
+      expectedArgs: { instance: "inst-1" },
+      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
+    },
+    {
+      tool: "list_browsers",
+      input: { onlyAlive: true, instance: "inst-1" },
+      target: "browser_list_instances",
+      expectedArgs: { instance: "inst-1" },
+      expectedNotes: ['dropped "onlyAlive" (no Bureau equivalent)'],
     },
   ]
 
   for (const c of cases) {
-    it(`${c.tool} → Bureau ${c.tool}, with deprecated and a note for the dropped argument`, async () => {
-      const { client, proxy, cleanup } = await makeSetup({ proxyImport: "bureau" })
+    it(`${c.tool} → Bureau ${c.target}, forwarding tabId and instance`, async () => {
+      const { client, proxy, cleanup } = await makeSetup({
+        proxyImport: "bureau",
+        builtin: "proxy",
+      })
       try {
         const res = await client.callTool({ name: c.tool, arguments: c.input })
         expect(res.isError).toBeFalsy()
-        expect(proxy.callTool).toHaveBeenCalledWith("bureau", c.tool, c.expectedArgs, {
+        expect(proxy.callTool).toHaveBeenCalledWith("bureau", c.target, c.expectedArgs, {
           callerSessionId: CALLER,
         })
         expect(res.structuredContent).toMatchObject({
           deprecated:
-            "The daemon browser_* tools proxy to Bureau for one version; mount the Bureau MCP and call its tools directly.",
+            'The daemon browser_* tools proxy to Bureau; "off" (defaults.browser.builtin) is the end state: mount the Bureau MCP and call its tools directly.',
         })
-        expect((res.structuredContent as { notes?: string[] }).notes ?? []).toEqual([
-          `dropped "${c.dropped}" (no Bureau equivalent)`,
-          // The daemon session selector is reported, not silently ignored.
-          `ignored "sessionId": Bureau drives the caller session's own tab`,
-        ])
+        expect((res.structuredContent as { notes?: string[] }).notes ?? []).toEqual(c.expectedNotes)
+      } finally {
+        await cleanup()
+      }
+    })
+  }
+})
+
+describe("browser proxy - tools with no Bureau twin", () => {
+  const cases: Array<{ tool: string; input: Record<string, unknown>; target: string }> = [
+    { tool: "browser_adapter_list", input: {}, target: "browser_list_instances" },
+    { tool: "browser_extract_text", input: { sessionId: "browser-session" }, target: "browser_evaluate" },
+    { tool: "browser_new_tab", input: { sessionId: "browser-session" }, target: "browser_navigate" },
+    { tool: "browser_scroll", input: { sessionId: "browser-session" }, target: "browser_evaluate" },
+    {
+      tool: "browser_select",
+      input: { sessionId: "browser-session", selector: "#s", value: "v" },
+      target: "browser_evaluate",
+    },
+    { tool: "browser_screencast_start", input: { sessionId: "browser-session" }, target: "browser_screenshot" },
+    { tool: "browser_screencast_frame", input: { sessionId: "browser-session" }, target: "browser_screenshot" },
+    { tool: "browser_screencast_stop", input: { sessionId: "browser-session" }, target: "browser_screenshot" },
+    {
+      tool: "browser_upload_file",
+      input: { sessionId: "browser-session", selector: "#f", paths: ["/tmp/does-not-matter"] },
+      target: "browser_act",
+    },
+    { tool: "browser_wait_for", input: { sessionId: "browser-session", selector: "#x" }, target: "browser_evaluate" },
+    { tool: "start_browser", input: { adapter: "chrome-live" }, target: "browser_list_instances" },
+    { tool: "stop_browser", input: { sessionId: "browser-session" }, target: "browser_close_tab" },
+  ]
+
+  for (const c of cases) {
+    it(`${c.tool} answers browser:use_bureau (${c.target}) and never touches the chrome-live adapter`, async () => {
+      const touches: string[] = []
+      const spy = (name: string) =>
+        vi.fn(async () => {
+          touches.push(name)
+          return {} as never
+        })
+      const instance = {
+        id: "chrome-live",
+        port: 9222,
+        baseUrl: "http://127.0.0.1:9222",
+        wasAlreadyRunning: true,
+        healthy: true,
+        stop: async () => {},
+        navigate: spy("navigate"),
+        getDom: spy("getDom"),
+        click: spy("click"),
+        fill: spy("fill"),
+        evaluate: spy("evaluate"),
+        scroll: spy("scroll"),
+        pressKey: spy("pressKey"),
+        selectOption: spy("selectOption"),
+        waitFor: spy("waitFor"),
+        uploadFileOntoFileInput: spy("uploadFileOntoFileInput"),
+        openNewTab: spy("openNewTab"),
+        listOwnedTabs: spy("listOwnedTabs"),
+        screencastStart: spy("screencastStart"),
+        screencastFrame: spy("screencastFrame"),
+        screencastStop: spy("screencastStop"),
+      }
+      const resolveBrowserAdapter = vi.fn(() => instance)
+      const listBrowserAdapters = vi.fn(() => [])
+      const { client, proxy, registry, cleanup } = await makeSetup({
+        proxyImport: "bureau",
+        builtin: "proxy",
+        extra: { resolveBrowserAdapter, listBrowserAdapters },
+      })
+      try {
+        const id = registry.registerBrowser({
+          adapterId: "chrome-live",
+          port: 9222,
+          baseUrl: "http://127.0.0.1:9222",
+          wasAlreadyRunning: false,
+          stop: async () => {},
+        }).id
+        setLiveBrowserInstance(id, instance as never)
+        const input = { ...c.input }
+        if (input.sessionId === "browser-session") input.sessionId = id
+
+        const res = await client.callTool({ name: c.tool, arguments: input })
+        expect(res.isError).toBe(true)
+        expect(textOf(res)).toContain("browser:use_bureau")
+        expect(textOf(res)).toContain(c.target)
+        expect(proxy.callTool).not.toHaveBeenCalled()
+        expect(resolveBrowserAdapter).not.toHaveBeenCalled()
+        expect(listBrowserAdapters).not.toHaveBeenCalled()
+        expect(touches).toEqual([])
       } finally {
         await cleanup()
       }
@@ -179,6 +369,7 @@ describe("browser proxy - error passthrough", () => {
     }
     const { client, cleanup } = await makeSetup({
       proxyImport: "bureau",
+      builtin: "proxy",
       proxy: fakeProxy(bureauError),
     })
     try {
