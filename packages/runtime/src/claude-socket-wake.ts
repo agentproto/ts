@@ -165,8 +165,23 @@ export function claudeSocketPath(socketDir: string, pid: number): string {
   return join(socketDir, `${pid}.sock`)
 }
 
-export function isBypassPermissions(registration: ClaudeSessionRegistration): boolean {
-  return registration.permissionMode === "bypassPermissions" || registration.status === "bypassPermissions"
+/**
+ * Two sources: the registration file (`permissionMode` / `status`) and the
+ * mode last reported by the Claude hooks on the daemon's external row
+ * (`rowPermissionMode`). Claude Code 2.1.317 writes neither field to the
+ * registration file, so the row is the only source there. Either one saying
+ * bypass is enough: the row is refreshed on every hook touch and follows a
+ * mid-session mode switch, the file does not.
+ */
+export function isBypassPermissions(
+  registration: ClaudeSessionRegistration,
+  rowPermissionMode?: string,
+): boolean {
+  return (
+    registration.permissionMode === "bypassPermissions" ||
+    registration.status === "bypassPermissions" ||
+    rowPermissionMode === "bypassPermissions"
+  )
 }
 
 /**
@@ -252,8 +267,10 @@ export async function wakeClaudeSocket(input: {
   text: string
   urgency: MessageUrgency
   config?: ClaudeSocketWakeConfig
+  /** Permission mode the Claude hooks last reported on the external row. */
+  rowPermissionMode?: string
 }): Promise<ClaudeSocketWakeOutcome> {
-  const { sessionId, text, urgency, config } = input
+  const { sessionId, text, urgency, config, rowPermissionMode } = input
   const reason = (r: ClaudeSocketWakeReason, extra: Partial<ClaudeSocketWakeOutcome> = {}): ClaudeSocketWakeOutcome => ({
     written: false,
     reason: r,
@@ -270,7 +287,7 @@ export async function wakeClaudeSocket(input: {
   const socketDir = config.socketDir ?? CLAUDE_SOCKET_WAKE_DEFAULT_SOCKET_DIR
   const registration = await findClaudeSessionRegistration(claudeSessionId, claudeSessionsDir)
   if (!registration) return reason("no-registration")
-  if (isBypassPermissions(registration)) return reason("bypass-permissions", { pid: registration.pid })
+  if (isBypassPermissions(registration, rowPermissionMode)) return reason("bypass-permissions", { pid: registration.pid })
 
   const socketPath = claudeSocketPath(socketDir, registration.pid)
   const socketState = await checkSocket(socketPath)

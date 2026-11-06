@@ -392,6 +392,7 @@ async function runInbox(args: readonly string[], deps: HookDeps): Promise<number
     hook_event_name?: unknown
     stop_hook_active?: unknown
     cwd?: unknown
+    permission_mode?: unknown
   } = {}
   try {
     const raw = await (deps.readStdin ?? readStdin)()
@@ -439,6 +440,11 @@ async function runInbox(args: readonly string[], deps: HookDeps): Promise<number
         {
           host: DESKTOP_HOST,
           ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
+          // Claude's hook input carries the live mode; the registration file
+          // does not on 2.1.317, and the socket wake needs it to skip bypass.
+          ...(typeof payload.permission_mode === "string" && payload.permission_mode
+            ? { permissionMode: payload.permission_mode }
+            : {}),
           ...fields,
         },
         endpoint.token,

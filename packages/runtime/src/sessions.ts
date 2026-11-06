@@ -3061,6 +3061,10 @@ export interface SessionDescriptor {
    *  chat (e.g. Claude's `hostSessionId`), so the daemon row can be matched
    *  back to the client that registered it. */
   externalHostSessionId?: string
+  /** `kind: "external"` only: the permission mode the host's hooks last
+   *  reported (Claude's `permission_mode`, e.g. `bypassPermissions`). The
+   *  socket wake reads it when the host's registration file carries no mode. */
+  externalPermissionMode?: string
   /** `kind: "external"` only: ISO instant of the session's last MCP request
    *  (or inbox poll). The row is alive while `now - lastSeenAt` is inside the
    *  registry's liveness window; `startedAt` is the first sighting. */
@@ -4863,6 +4867,8 @@ export interface SessionsRegistry {
     name?: string
     cwd?: string
     hostSessionId?: string
+    /** Host-reported permission mode; absent leaves the stored one as is. */
+    permissionMode?: string
   }): SessionDescriptor | undefined
   /** Send a follow-up turn to a live agent session and AWAIT it. Throws
    *  when the session is missing, not an agent-cli kind, dead (exited/
@@ -13766,6 +13772,7 @@ export function createSessionsRegistry(opts?: {
         if (input.name) desc.name = input.name
         if (input.cwd) desc.cwd = input.cwd
         if (input.hostSessionId) desc.externalHostSessionId = input.hostSessionId
+        if (input.permissionMode) desc.externalPermissionMode = input.permissionMode
         schedulePersist()
         return desc
       }
@@ -13783,6 +13790,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.name ? { name: input.name } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.hostSessionId ? { externalHostSessionId: input.hostSessionId } : {}),
+        ...(input.permissionMode ? { externalPermissionMode: input.permissionMode } : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -14129,6 +14137,7 @@ export function createSessionsRegistry(opts?: {
             text: renderSessionMessage(msg),
             urgency: msg.urgency,
             config: claudeSocketWake,
+            ...(rt.desc.externalPermissionMode ? { rowPermissionMode: rt.desc.externalPermissionMode } : {}),
           })
           if (wake.written) {
             const delivered: SessionMessage = {
