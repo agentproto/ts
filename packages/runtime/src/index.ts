@@ -53,6 +53,7 @@ import {
   type BrowserAdapterResolver,
   type BrowserAdapterLister,
 } from "./browser-tools.js"
+import { resolveBrowserBuiltin } from "./browser-proxy.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
@@ -4652,6 +4653,10 @@ export async function createGateway(
     registerBrowserTools(server, {
       registry: sessions,
       mcpProxy,
+      // `defaults.browser.builtin` decides the registered surface. Read once
+      // per `/mcp` session (registration fixes the tool list): a config
+      // change applies on the next MCP session, no daemon restart.
+      builtin: resolveBrowserBuiltin((await loadConfig()).defaults?.browser),
       ...(callerSessionId ? { callerSessionId } : {}),
       ...(opts.resolveBrowserAdapter
         ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }

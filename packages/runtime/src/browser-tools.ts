@@ -44,10 +44,14 @@ import { realpath } from "node:fs/promises"
 import { z } from "zod"
 import type { AdapterLister } from "@agentproto/provider-kit"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
-import { catchErrors, paginated } from "@agentproto/tool"
+import { catchErrors, paginated, type ToolTransformer } from "@agentproto/tool"
 import { loadConfig } from "./config.js"
 import {
   callProxiedBrowserTool,
+  browserUseBureauMessage,
+  browserUseBureauResult,
+  resolveBrowserBuiltin,
+  type BrowserBuiltinMode,
   type BrowserProxyCaller,
   type ProxiedBrowserToolName,
 } from "./browser-proxy.js"
@@ -391,6 +395,12 @@ interface RegisterBrowserToolsOptions {
    *  default reads `~/.agentproto/config.json` at call time so a
    *  `config_set` takes effect on the next tool call). */
   loadProxyImport?: () => Promise<string | undefined>
+  /** `defaults.browser.builtin` as resolved by the caller's registration
+   *  pass: `"off"` registers only `fetch_page`, `"proxy"` refuses any tool
+   *  Bureau has no twin for, `"on"` is today's behaviour. The tool LIST is
+   *  fixed at registration (once per `/mcp` request), so a config change
+   *  applies on the next MCP session. Defaults to `"on"`. */
+  builtin?: BrowserBuiltinMode
   log?: (msg: string) => void
 }
 
@@ -400,8 +410,20 @@ export function registerBrowserTools(
 ): void {
   const server = withBrowserObservers(rawServer)
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
+  const builtin: BrowserBuiltinMode = opts.builtin ?? "on"
   const loadProxyImport =
     opts.loadProxyImport ?? (async () => (await loadConfig()).defaults?.browser?.proxyImport)
+
+  /** The six tools the one-version `proxyImport` bridge has always covered.
+   *  `"on"` keeps exactly those; `"proxy"` adds the rest of the mapping. */
+  const LEGACY_PROXIED = new Set<ProxiedBrowserToolName>([
+    "browser_navigate",
+    "browser_click",
+    "browser_fill",
+    "browser_evaluate",
+    "browser_get_dom",
+    "browser_screenshot",
+  ])
 
   /** Forward to Bureau when configured; undefined means "take the old path". */
   const tryProxy = async (
@@ -409,8 +431,26 @@ export function registerBrowserTools(
     input: Record<string, unknown>,
   ): Promise<Awaited<ReturnType<typeof callProxiedBrowserTool>> | undefined> => {
     if (!opts.mcpProxy) return undefined
+    if (builtin === "on" && !LEGACY_PROXIED.has(toolName)) return undefined
     const alias = await loadProxyImport()
-    if (!alias) return undefined
+    if (!alias) {
+      // In proxy mode the daemon's own path is off limits, so a missing
+      // import is a configuration error, not a silent fallback.
+      if (builtin === "proxy") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `${toolName}: defaults.browser.builtin is "proxy" but ` +
+                "defaults.browser.proxyImport names no imported MCP alias.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      return undefined
+    }
     return callProxiedBrowserTool({
       proxy: opts.mcpProxy,
       alias,
@@ -419,6 +459,64 @@ export function registerBrowserTools(
       ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
     })
   }
+
+  /** Refuse a tool Bureau has no twin for, in `"proxy"` mode. */
+  const refuseWithoutTwin = (toolName: string) =>
+    builtin === "proxy" ? browserUseBureauResult(toolName) : undefined
+
+  /** Proxy a contract-layer tool before its pagination/catch wrappers run:
+   *  a proxied result is already a final MCP text result and must pass
+   *  through, not be paginated. */
+  const proxyFirst = (toolName: ProxiedBrowserToolName): ToolTransformer => ({
+    name: `browser-proxy:${toolName}`,
+    wrapHandler: handler => async input => {
+      const proxied = await tryProxy(toolName, (input ?? {}) as Record<string, unknown>)
+      if (proxied) return proxied
+      return handler(input)
+    },
+  })
+
+  // ── fetch_page ───────────────────────────────────────────────────────────────
+  // The only browser-family tool that stays in `"off"` mode: a plain HTTP
+  // read, no browser involved.
+  server.tool(
+    "fetch_page",
+    "Read a URL over plain HTTP — no browser, instant. Returns clean text: " +
+      "{ title, text (markdown, boilerplate stripped), url (after redirects), blocked }. " +
+      "`blocked: true` means the response looks anti-bot-gated (403/429/503, or a " +
+      "known challenge page from Cloudflare/Akamai/PerimeterX/Datadome/Incapsula) — " +
+      "`text` is omitted in that case; escalate to `start_browser` + `browser_navigate` " +
+      "+ `browser_extract_text` (or `browser_click`/`browser_fill`/`browser_scroll` if the " +
+      "page needs interaction first) instead of retrying the same fetch. Try this FIRST for " +
+      "any public page — instant, no browser — and only reach for the browser tools when " +
+      "`blocked: true` or the content needs JS/interaction to appear.",
+    {
+      url: z.string().min(1).describe("URL to fetch."),
+      timeoutMs: z.number().int().positive().max(60_000).optional().describe("Default 15000."),
+    },
+    async input => {
+      const ac = new AbortController()
+      const timer = setTimeout(() => ac.abort(), input.timeoutMs ?? 15_000)
+      try {
+        const res = await fetch(input.url, { signal: ac.signal, redirect: "follow" })
+        const html = await res.text()
+        if (looksBlocked(res.status, html)) {
+          return okResult({ url: res.url, blocked: true, status: res.status })
+        }
+        if (!res.ok) return errResult(`fetch_page: HTTP ${res.status} fetching ${input.url}`)
+        const { title, text } = await extractPageText(html, res.url)
+        return okResult({ title, text, url: res.url, blocked: false })
+      } catch (err) {
+        return errResult(`fetch_page: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+  )
+
+  // `"off"`: no browser tool at all beyond the plain HTTP read above. The
+  // rest of this function's registrations are browser/driver tools.
+  if (builtin === "off") return
 
   // ── browser_adapter_list ────────────────────────────────────────────────────
   // Migrated onto the AIP contract layer (defineTool + implementTool +
@@ -438,6 +536,9 @@ export function registerBrowserTools(
       "`description` and the informational `install`/`config` manifest arrays.",
     inputSchema: browserAdapterListSchema,
     handler: async () => {
+      if (builtin === "proxy") {
+        throw new Error(browserUseBureauMessage("browser_adapter_list"))
+      }
       // Kit path: async lister supplied — extract info fields to preserve the
       // existing { id, name, description, defaultPort }[] response shape.
       if (lister) {
@@ -547,6 +648,8 @@ export function registerBrowserTools(
         ),
     },
     async input => {
+      const refused = refuseWithoutTwin("start_browser")
+      if (refused) return refused
       if (!resolveBrowserAdapter) {
         return {
           content: [
@@ -678,6 +781,8 @@ export function registerBrowserTools(
         .describe("Session id returned by `start_browser` or `list_browsers`."),
     },
     async input => {
+      const refused = refuseWithoutTwin("stop_browser")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) {
         return {
@@ -724,6 +829,10 @@ export function registerBrowserTools(
       .describe(
         "When true, return only sessions with status='running'. Default false (all including killed/exited)."
       ),
+    instance: z
+      .string()
+      .optional()
+      .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
   })
   type ListBrowsersInput = z.infer<typeof listBrowsersSchema>
 
@@ -744,6 +853,7 @@ export function registerBrowserTools(
         : all
     },
     transformers: [
+      proxyFirst("list_browsers"),
       catchErrors(),
       paginated({
         project: compactBrowserSessionRow,
@@ -764,8 +874,14 @@ export function registerBrowserTools(
         .string()
         .min(1)
         .describe("Session id returned by `start_browser` or `list_browsers`."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
     },
     async input => {
+      const proxied = await tryProxy("browser_status", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) {
         return {
@@ -855,8 +971,12 @@ export function registerBrowserTools(
           "Camofox: tabId to screenshot (default: first active tab). " +
             "Chromium: service-internal session id (default: first listed session). " +
             "Chrome Live: provider-owned target id (default: first active agent tab; foreign tabs are rejected). " +
-            "Bureau: ignored (bureau screenshots its current tab)."
+            "Bureau: forwarded as-is (ownership is checked on the Bureau side)."
         ),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
     },
     async input => {
       const proxied = await tryProxy("browser_screenshot", input)
@@ -991,42 +1111,6 @@ export function registerBrowserTools(
     }
   )
 
-  // ── fetch_page ───────────────────────────────────────────────────────────────
-  server.tool(
-    "fetch_page",
-    "Read a URL over plain HTTP — no browser, instant. Returns clean text: " +
-      "{ title, text (markdown, boilerplate stripped), url (after redirects), blocked }. " +
-      "`blocked: true` means the response looks anti-bot-gated (403/429/503, or a " +
-      "known challenge page from Cloudflare/Akamai/PerimeterX/Datadome/Incapsula) — " +
-      "`text` is omitted in that case; escalate to `start_browser` + `browser_navigate` " +
-      "+ `browser_extract_text` (or `browser_click`/`browser_fill`/`browser_scroll` if the " +
-      "page needs interaction first) instead of retrying the same fetch. Try this FIRST for " +
-      "any public page — instant, no browser — and only reach for the browser tools when " +
-      "`blocked: true` or the content needs JS/interaction to appear.",
-    {
-      url: z.string().min(1).describe("URL to fetch."),
-      timeoutMs: z.number().int().positive().max(60_000).optional().describe("Default 15000."),
-    },
-    async input => {
-      const ac = new AbortController()
-      const timer = setTimeout(() => ac.abort(), input.timeoutMs ?? 15_000)
-      try {
-        const res = await fetch(input.url, { signal: ac.signal, redirect: "follow" })
-        const html = await res.text()
-        if (looksBlocked(res.status, html)) {
-          return okResult({ url: res.url, blocked: true, status: res.status })
-        }
-        if (!res.ok) return errResult(`fetch_page: HTTP ${res.status} fetching ${input.url}`)
-        const { title, text } = await extractPageText(html, res.url)
-        return okResult({ title, text, url: res.url, blocked: false })
-      } catch (err) {
-        return errResult(`fetch_page: ${err instanceof Error ? err.message : String(err)}`)
-      } finally {
-        clearTimeout(timer)
-      }
-    }
-  )
-
   // ── browser_navigate ─────────────────────────────────────────────────────────
   server.tool(
     "browser_navigate",
@@ -1047,6 +1131,10 @@ export function registerBrowserTools(
         .string()
         .optional()
         .describe("Provider-owned target id to navigate (default: any existing owned tab, else a new one)."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
     },
     async input => {
       const proxied = await tryProxy("browser_navigate", input)
@@ -1088,6 +1176,8 @@ export function registerBrowserTools(
         .describe("Provider-owned target id to read (default: the first active agent tab)."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_extract_text")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_extract_text: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1125,6 +1215,10 @@ export function registerBrowserTools(
         .string()
         .optional()
         .describe("Provider-owned target id to read (default: the first active agent tab)."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
     },
     async input => {
       const proxied = await tryProxy("browser_get_dom", input)
@@ -1160,6 +1254,10 @@ export function registerBrowserTools(
         .min(1)
         .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
       tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
       selector: z.string().min(1).describe("CSS selector of the element to click."),
       button: z.enum(["left", "middle", "right"]).optional().describe("Default left."),
       clickCount: z.number().int().min(1).max(3).optional().describe("Default 1 (2 for a double-click)."),
@@ -1201,6 +1299,10 @@ export function registerBrowserTools(
         .min(1)
         .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
       tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
       selector: z.string().min(1).describe("CSS selector of the input/textarea element."),
       value: z.string().describe("Text to type."),
       clear: z.boolean().optional().describe("Clear the existing value first. Default true."),
@@ -1242,6 +1344,10 @@ export function registerBrowserTools(
         .min(1)
         .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
       tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
       expression: z.string().min(1).describe("JavaScript expression to evaluate."),
       awaitPromise: z.boolean().optional().describe("Await the expression if it returns a promise. Default true."),
       returnByValue: z.boolean().optional().describe("Serialize the result by value. Default true."),
@@ -1292,6 +1398,8 @@ export function registerBrowserTools(
       y: z.number().optional().describe("Absolute vertical scroll position in CSS px. Default 0. Ignored if `selector` is set."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_scroll")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_scroll: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1333,6 +1441,10 @@ export function registerBrowserTools(
         .min(1)
         .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
       tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
       key: z.string().min(1).describe("Key name (Enter, Tab, Escape, ArrowDown, …) or one printable character."),
       selector: z.string().optional().describe("CSS selector to focus before pressing. Default: whatever has focus."),
       count: z.number().int().min(1).max(100).optional().describe("How many times to press. Default 1."),
@@ -1342,6 +1454,8 @@ export function registerBrowserTools(
         .describe("Modifier keys held for this press."),
     },
     async input => {
+      const proxied = await tryProxy("browser_press_key", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_press_key: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1389,6 +1503,8 @@ export function registerBrowserTools(
       index: z.number().int().min(0).optional().describe("Zero-based option index to select."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_select")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_select: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1443,6 +1559,8 @@ export function registerBrowserTools(
       pollMs: z.number().int().min(1).optional().describe("Poll interval in ms. Default 100."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_wait_for")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_wait_for: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1494,6 +1612,8 @@ export function registerBrowserTools(
         .describe("ABSOLUTE local paths (on this machine) of the files to attach, in order."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_upload_file")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_upload_file: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1530,6 +1650,8 @@ export function registerBrowserTools(
       url: z.string().optional().describe("URL to open the new tab at (default about:blank)."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_new_tab")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_new_tab: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1559,8 +1681,14 @@ export function registerBrowserTools(
         .string()
         .min(1)
         .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
     },
     async input => {
+      const proxied = await tryProxy("browser_list_tabs", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_list_tabs: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1659,6 +1787,8 @@ export function registerBrowserTools(
       maxHeight: z.number().int().min(1).optional(),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_screencast_start")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_screencast_start: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1713,6 +1843,8 @@ export function registerBrowserTools(
       sessionId: z.string().min(1).describe("Browser session id (adapter `chrome-live`)."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_screencast_frame")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_screencast_frame: session "${input.sessionId}" not found.`)
       const adapterId = desc.browserAdapterId ?? ""
@@ -1747,6 +1879,8 @@ export function registerBrowserTools(
       sessionId: z.string().min(1).describe("Browser session id (adapter `chrome-live`)."),
     },
     async input => {
+      const refused = refuseWithoutTwin("browser_screencast_stop")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_screencast_stop: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")

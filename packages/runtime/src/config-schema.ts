@@ -256,7 +256,10 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
     adapters: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
     bundles: z.array(z.string()).optional(),
     browser: z
-      .object({ proxyImport: z.string().min(1).optional() })
+      .object({
+        builtin: z.enum(["off", "proxy", "on"]).optional(),
+        proxyImport: z.string().min(1).optional(),
+      })
       .passthrough()
       .optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
@@ -1284,13 +1287,23 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help: "Bundle ids (bundle_list) auto-attached to every agent_start spawn (unioned with per-adapter bundles).",
   },
   {
+    path: "defaults.browser.builtin",
+    schema: z.enum(["off", "proxy", "on"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Built-in browser tools",
+    default: "on",
+    help: "How much of the daemon's built-in browser surface is registered. \"off\": only fetch_page (a plain HTTP read, no browser); every other browser tool is absent. \"proxy\": forward the daemon browser tools to the Bureau MCP named by defaults.browser.proxyImport (adding browser_press_key, browser_list_tabs and the list/status tools), and refuse every tool Bureau has no twin for with browser:use_bureau instead of using the daemon's own chrome-live path. \"on\" (default): today's behaviour. Set on its own, proxyImport implies \"proxy\". The tool list is fixed at registration (once per /mcp session), so a change applies on the next MCP session, not mid-session.",
+  },
+  {
     path: "defaults.browser.proxyImport",
     schema: str,
     apply: "hot",
     writable: true,
     section: "defaults",
     label: "Browser proxy import",
-    help: "Alias of an imported MCP that is a Bureau server (for example `bureau`). When set, the daemon browser_navigate/click/fill/evaluate/get_dom/screenshot tools forward to the Bureau tool of the same name and the built-in `browser` bundle mounts that import. Unset: every browser tool behaves exactly as before.",
+    help: "Alias of an imported MCP that is a Bureau server (for example `bureau`). When set, the daemon browser tools forward to the Bureau tool of the same name and the built-in `browser` bundle mounts that import. A config that sets only proxyImport behaves as defaults.browser.builtin \"proxy\". Unset: every browser tool behaves exactly as before.",
   },
   {
     path: "defaults.defaultRoleDepthCutoff",
