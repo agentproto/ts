@@ -154,6 +154,8 @@ Usage:
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
                                            register the daemon's MCP server with coding CLIs
                          [--app <appId>]  write a scoped mcp-app entry instead (book apps only)
+                         [--approvals [--write]]
+                                           Claude Desktop approval cards: print / add the agentproto-approvals entry
   agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
                                            alias of \`agentproto setup\` (the wizard)
   agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]

@@ -24,7 +24,7 @@ import { existsSync, mkdtempSync, statSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { createMcpServer, registerEventsMethods, registerUiResource } from "@agentproto/mcp-server"
+import { createMcpServer, registerEventsMethods } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
 
 import { writeRuntimeMeta } from "./agentproto-dir.js"
@@ -328,8 +328,7 @@ import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
 import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
 import { registerApprovalTools } from "./approvals/tools.js"
-import { registerApprovalCardDecideTool } from "./approvals/card-tool.js"
-import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/card.js"
+import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
@@ -4225,6 +4224,16 @@ export async function createGateway(
     credentialSessionId?: string,
     profileOverride?: readonly string[],
   ) => {
+    // `?surface=approval-cards` (human-facing MCP Apps host, never an agent
+    // session) is a cards-only server: it branches off here, before any root
+    // tool or deferral wrapper exists. See `buildApprovalCardsServer` for the
+    // gate and the security reasoning.
+    const cardsServer = buildApprovalCardsServer(
+      approvalsEngine,
+      { surface, callerSessionId },
+      { name: opts.name ?? "agentproto-runtime", version: opts.version ?? "0.1.0-alpha" },
+    )
+    if (cardsServer) return cardsServer
     const activeProfiles: ToolProfileName[] | undefined = resolveToolProfileSelection({
       query: profileOverride,
       config: opts.mcpProfile,
@@ -4447,35 +4456,6 @@ export async function createGateway(
       engine: approvalsEngine,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
-    // SECURITY BOUNDARY: `approval_card_decide` and every
-    // `ui://agentproto/approval/<id>` card resource are mounted ONLY on the
-    // dedicated `?surface=approval-cards` connection, and `handleMcp`
-    // (http-server.ts) already refuses that surface outright when a
-    // `callerSessionId` is present — the `!callerSessionId` check here is
-    // defense in depth for any other caller of this factory. Every other
-    // surface (root `/mcp`, any daemon-spawned session's self-ref
-    // connection) gets NEITHER: an agent CLI's model can typically
-    // `resources/read` and call app-only tools despite
-    // `_meta.ui.visibility: ["app"]` (most hosts don't honour it), so
-    // mounting the card there would let an agent mint its own ticket and
-    // self-approve. Only a human-facing MCP Apps host (Claude Desktop via
-    // `install-mcp --app`, configured to dial `/mcp?surface=approval-cards`)
-    // is meant to ever see this surface. Re-derived from the engine's own
-    // pending set on every build (this factory runs once per stateless
-    // `/mcp` connection — see the module docblock — so a resource
-    // registered inside a tool handler would vanish before the next
-    // connection could `resources/read` it).
-    if (surface === "approval-cards" && !callerSessionId) {
-      registerApprovalCardDecideTool(server, approvalsEngine)
-      for (const pending of approvalsEngine.list({ status: "pending" })) {
-        registerUiResource(server, {
-          name: `approval-${pending.id}`,
-          uri: approvalCardResourceUri(pending.id),
-          html: () => renderApprovalCardHtml(approvalsEngine, pending.id),
-          description: "Human approval card",
-        })
-      }
-    }
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.

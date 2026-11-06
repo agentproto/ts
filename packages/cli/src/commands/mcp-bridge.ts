@@ -7,10 +7,16 @@
  * — no third-party bridge needed.
  *
  * Usage:
- *   agentproto mcp-bridge
+ *   agentproto mcp-bridge [--surface approval-cards]
+ *
+ * `--surface <name>` sets `?surface=<name>` on the daemon URL (the default
+ * one or AGENTPROTO_MCP_URL; any other query parameter in it is kept). Only
+ * `approval-cards` is accepted: the human-facing Approve / Refuse cards for
+ * Claude Desktop, see `install-mcp --approvals`.
  *
  * Configuration:
- *   AGENTPROTO_MCP_URL  — explicit URL (e.g. http://127.0.0.1:18790/mcp)
+ *   AGENTPROTO_MCP_URL  - explicit URL (e.g. http://127.0.0.1:18790/mcp);
+ *                         its query string is passed to the daemon as is
  *   ~/.agentproto/config.json → daemon.port (default 18790)
  *
  * Register in a stdio MCP client:
@@ -40,12 +46,20 @@ import {
 import { loadConfig } from "@agentproto/runtime/config"
 import {
   exitOnStdinClose,
+  parseBridgeArgs,
   stampOrigin,
   watchParentExit,
+  withSurface,
 } from "./mcp-bridge.logic.js"
 
-export async function runMcpBridge(_args: readonly string[]): Promise<number> {
-  const url = process.env.AGENTPROTO_MCP_URL ?? (await resolveDefaultUrl())
+export async function runMcpBridge(args: readonly string[]): Promise<number> {
+  const parsed = parseBridgeArgs(args)
+  if ("error" in parsed) {
+    process.stderr.write(`agentproto mcp-bridge: ${parsed.error}\n`)
+    return 2
+  }
+  const baseUrl = process.env.AGENTPROTO_MCP_URL ?? (await resolveDefaultUrl())
+  const url = parsed.surface ? withSurface(baseUrl, parsed.surface) : baseUrl
 
   if (!process.env.AGENTPROTO_MCP_URL) {
     process.stderr.write(
