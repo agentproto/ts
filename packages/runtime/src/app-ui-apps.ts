@@ -133,6 +133,7 @@ export const MCP_APP_BRIDGE_SCRIPT = `<script>
     return null;
   }
   window.addEventListener("message", function (e) {
+    if (e.source !== window.parent) return;
     var m = e.data;
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (_) { return; } }
     if (!m || m.jsonrpc !== "2.0") return;

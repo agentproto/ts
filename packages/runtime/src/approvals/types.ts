@@ -131,3 +131,22 @@ export interface RelayOutboxEntry {
   attempts: number
   queuedAt: string
 }
+
+/** A Telegram card the bridge has sent and not yet closed. Persisted next to
+ *  the approval record as `<id>/telegram-card.json`, so a tap on a card sent
+ *  before a daemon restart still decides, and a decision made while the daemon
+ *  was down still strips the old message's buttons. `token` is the opaque
+ *  random callback token; no bot token, chat id or user id is stored. */
+export interface TelegramCardEntry {
+  token: string
+  approvalId: string
+  messageId: number
+  text: string
+}
+
+/** Marker that a decision reached the system that asked for it, stored as
+ *  `<id>/relayed.json`. The boot sweep skips approvals that carry one. */
+export interface RelayedMarker {
+  approvalId: string
+  relayedAt: string
+}

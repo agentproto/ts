@@ -21,7 +21,13 @@ import {
   writeFileSync,
 } from "node:fs"
 
-import type { ApprovalRecord, CardTicketRecord, RelayOutboxEntry } from "./types.js"
+import type {
+  ApprovalRecord,
+  CardTicketRecord,
+  RelayOutboxEntry,
+  RelayedMarker,
+  TelegramCardEntry,
+} from "./types.js"
 
 export function defaultApprovalsHomeDir(): string {
   return join(homedir(), ".agentproto", "approvals")
@@ -61,6 +67,14 @@ function cardTicketPath(homeDir: string, id: string): string {
 
 function relayOutboxPath(homeDir: string, id: string): string {
   return join(approvalDir(homeDir, id), "relay-outbox.json")
+}
+
+function telegramCardPath(homeDir: string, id: string): string {
+  return join(approvalDir(homeDir, id), "telegram-card.json")
+}
+
+function relayedPath(homeDir: string, id: string): string {
+  return join(approvalDir(homeDir, id), "relayed.json")
 }
 
 /** Workspace-relative path to `<id>/payload.json` — what `signArtifact`
@@ -170,4 +184,49 @@ export function loadAllRelayOutbox(homeDir: string): RelayOutboxEntry[] {
     }
   }
   return out
+}
+
+export function writeTelegramCard(homeDir: string, card: TelegramCardEntry): void {
+  writeJsonAtomic(telegramCardPath(homeDir, card.approvalId), card)
+}
+
+export function removeTelegramCard(homeDir: string, id: string): void {
+  rmSync(telegramCardPath(homeDir, id), { force: true })
+}
+
+/** Every Telegram card still open, the boot-recovery pass. Malformed files
+ *  are ignored, same policy as the other loaders. */
+export function loadAllTelegramCards(homeDir: string): TelegramCardEntry[] {
+  const out: TelegramCardEntry[] = []
+  if (!existsSync(homeDir)) return out
+  let entries: string[]
+  try {
+    entries = readdirSync(homeDir)
+  } catch {
+    return out
+  }
+  for (const id of entries) {
+    if (id.startsWith(".") || id === "audit" || id === "_secrets.json") continue
+    const card = readJsonIfExists<TelegramCardEntry>(telegramCardPath(homeDir, id))
+    if (
+      card &&
+      card.approvalId === id &&
+      typeof card.token === "string" &&
+      card.token !== "" &&
+      typeof card.messageId === "number" &&
+      Number.isFinite(card.messageId) &&
+      typeof card.text === "string"
+    ) {
+      out.push(card)
+    }
+  }
+  return out
+}
+
+export function writeRelayedMarker(homeDir: string, marker: RelayedMarker): void {
+  writeJsonAtomic(relayedPath(homeDir, marker.approvalId), marker)
+}
+
+export function hasRelayedMarker(homeDir: string, id: string): boolean {
+  return existsSync(relayedPath(homeDir, id))
 }

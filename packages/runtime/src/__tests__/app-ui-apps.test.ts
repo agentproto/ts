@@ -573,17 +573,18 @@ interface BridgeHarness {
     displayMode?: Record<string, unknown>
   }
   posted: Array<Record<string, unknown>>
-  deliver: (msg: unknown) => void
+  /** Deliver a window message. `source` defaults to the host (`window.parent`). */
+  deliver: (msg: unknown, source?: unknown) => void
 }
 
 function loadPostMessageBridge(agentprotoUI?: unknown): BridgeHarness {
   const posted: Array<Record<string, unknown>> = []
-  const listeners: Array<(e: { data: unknown }) => void> = []
+  const listeners: Array<(e: { data: unknown; source: unknown }) => void> = []
   const windowObj: Record<string, unknown> = {
     // A distinct object from `window` — the script's standalone check is
     // `window.parent === window`, and this harness is the HOSTED path.
     parent: { postMessage: (m: Record<string, unknown>) => posted.push(m) },
-    addEventListener: (_type: string, cb: (e: { data: unknown }) => void) => listeners.push(cb),
+    addEventListener: (_type: string, cb: (e: { data: unknown; source: unknown }) => void) => listeners.push(cb),
   }
   if (agentprotoUI) windowObj.AgentprotoUI = agentprotoUI
   const sandbox: Record<string, unknown> = {
@@ -599,8 +600,8 @@ function loadPostMessageBridge(agentprotoUI?: unknown): BridgeHarness {
   return {
     mcpApp: windowObj.McpApp as BridgeHarness["mcpApp"],
     posted,
-    deliver: (msg) => {
-      for (const cb of listeners) cb({ data: msg })
+    deliver: (msg, source = windowObj.parent) => {
+      for (const cb of listeners) cb({ data: msg, source })
     },
   }
 }
@@ -620,6 +621,47 @@ async function connectWith(
   })
   return pending
 }
+
+describe("MCP_APP_BRIDGE_SCRIPT sender check", () => {
+  it("ignores a message from a window that is not the host and handles one from the host", async () => {
+    const bridge = loadPostMessageBridge()
+    const pending = bridge.mcpApp.connect()
+    const init = bridge.posted.find(m => m.method === "ui/initialize")
+    const reply = { jsonrpc: "2.0", id: init?.id, result: { hostContext: { displayMode: "inline" } } }
+
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
+    // A foreign window answers the app's JSON-RPC call: it must be dropped.
+    bridge.deliver(reply, { postMessage: () => {} })
+    bridge.deliver(reply, null)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    // The host's answer to the same call is handled.
+    bridge.deliver(reply)
+    const conn = await pending
+    expect((conn.getHostContext as () => Record<string, unknown>)()).toEqual({ displayMode: "inline" })
+  })
+
+  it("does not let a foreign window change the host context or tool input", async () => {
+    const bridge = loadPostMessageBridge()
+    const conn = await connectWith(bridge, { displayMode: "inline" })
+    const foreign = { postMessage: () => {} }
+    bridge.deliver(
+      { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: "fullscreen" } },
+      foreign,
+    )
+    bridge.deliver(
+      { jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: { evil: true } } },
+      foreign,
+    )
+    expect((conn.getHostContext as () => Record<string, unknown>)()).toEqual({ displayMode: "inline" })
+    expect((conn.getToolInput as () => unknown)()).toBeNull()
+  })
+})
 
 describe("MCP_APP_BRIDGE_SCRIPT display mode", () => {
   it("captures the hostContext carried by the ui/initialize result", async () => {

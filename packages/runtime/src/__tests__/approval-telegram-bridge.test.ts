@@ -6,9 +6,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { createSessionEventBus, type SessionEvent, type SessionEventBus } from "../session-event-bus.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "../approvals/engine.js"
@@ -221,6 +222,120 @@ describe("createApprovalTelegramBridge", () => {
     const bridge = makeBridge()
     expect(await bridge.handleUpdate(tap("perm:abc:a"))).toEqual({ handled: false })
     expect(await bridge.handleUpdate({ message: { text: "hi" } })).toEqual({ handled: false })
+  })
+
+  describe("restart", () => {
+    const cardFile = (id: string) => join(home, id, "telegram-card.json")
+    const restart = () => {
+      engine.dispose()
+      bus = createSessionEventBus()
+      events = []
+      bus.onAny(e => events.push(e))
+      engine = createApprovalsEngine({ homeDir: home, sessionEvents: bus, telegramCards: true })
+    }
+    const edits = () => tg.calls.filter(c => c.method === "editMessageText")
+
+    it("a tap on a card sent before the restart still decides through the telegram channel", async () => {
+      const first = makeBridge()
+      first.start()
+      const record = request()
+      await until(() => tg.calls.length > 0)
+      const approve = buttons(tg.calls[0]!)[0]!
+      first.stop()
+      expect(existsSync(cardFile(record.id))).toBe(true)
+
+      restart()
+      const second = makeBridge()
+      second.start()
+      expect(await second.handleUpdate(tap(approve.callback_data))).toEqual({ handled: true })
+
+      const decided = engine.get(record.id)!
+      expect(decided.status).toBe("approved")
+      expect(decided.decision?.channel).toBe("telegram")
+      await until(() => edits().length === 1)
+      expect(String(edits()[0]!.body.text)).toContain("Approved via telegram")
+      expect(existsSync(cardFile(record.id))).toBe(false)
+      second.stop()
+    })
+
+    it("keeps no bot token, chat id or user id in the card file", async () => {
+      const bridge = makeBridge()
+      bridge.start()
+      const record = request()
+      await until(() => tg.calls.length > 0)
+      const raw = readFileSync(cardFile(record.id), "utf8")
+      expect(raw).not.toContain("TOKEN")
+      expect(raw).not.toContain(CHAT)
+      expect(raw).not.toContain(JEREMY)
+      expect(raw).not.toContain("chat_id")
+      bridge.stop()
+    })
+
+    it("closes the message once at start when the approval was decided while the bridge was down", async () => {
+      const first = makeBridge()
+      first.start()
+      const record = request()
+      await until(() => tg.calls.length > 0)
+      first.stop()
+
+      restart()
+      const { ticket } = engine.mintCardTicket(record.id)
+      await engine.decideByCard(record.id, "deny", ticket, evidence)
+      expect(edits()).toHaveLength(0)
+
+      const second = makeBridge()
+      second.start()
+      await until(() => edits().length === 1)
+      const edit = edits()[0]!
+      expect(String(edit.body.text)).toContain("Denied via ui_card")
+      expect((edit.body.reply_markup as { inline_keyboard: Keyboard }).inline_keyboard).toEqual([])
+      await until(() => !existsSync(cardFile(record.id)))
+      second.stop()
+
+      // Another start finds no card left, so nothing is edited twice.
+      const third = makeBridge()
+      third.start()
+      await new Promise(r => setTimeout(r, 40))
+      expect(edits()).toHaveLength(1)
+      third.stop()
+    })
+
+    it("removes the card file when another channel decides while the bridge runs", async () => {
+      const bridge = makeBridge()
+      bridge.start()
+      const record = request()
+      await until(() => tg.calls.length > 0)
+      expect(existsSync(cardFile(record.id))).toBe(true)
+      const { ticket } = engine.mintCardTicket(record.id)
+      await engine.decideByCard(record.id, "approve", ticket, evidence)
+      await until(() => !existsSync(cardFile(record.id)))
+      bridge.stop()
+    })
+  })
+
+  it("reports a failed sendMessage through onError", async () => {
+    const errors: unknown[] = []
+    const failing = (async () =>
+      new Response(JSON.stringify({ ok: false, description: "chat not found" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch
+    const bridge = makeBridge({ fetchImpl: failing, onError: err => errors.push(err) })
+    bridge.start()
+    request()
+    await until(() => errors.length > 0)
+    expect(String((errors[0] as Error).message)).toContain("sendMessage")
+    expect(String((errors[0] as Error).message)).not.toContain("TOKEN")
+    bridge.stop()
+  })
+
+  it("is wired to the daemon log in index.ts with the [approval-telegram-bridge] prefix", () => {
+    const source = readFileSync(fileURLToPath(new URL("../index.ts", import.meta.url)), "utf8")
+    const start = source.indexOf("createApprovalTelegramBridge({")
+    expect(start).toBeGreaterThan(-1)
+    const call = source.slice(start, source.indexOf("approvalTelegram?.start()", start))
+    expect(call).toMatch(/onError:/)
+    expect(call).toContain("[approval-telegram-bridge]")
   })
 
   it("requires at least one allowed user id", () => {

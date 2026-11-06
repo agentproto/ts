@@ -24,6 +24,8 @@ export {
   type CardTicketErrorCode,
   type CardTicketRecord,
   type RelayOutboxEntry,
+  type RelayedMarker,
+  type TelegramCardEntry,
 } from "./types.js"
 export { handleApprovals, type ApprovalsHttpAuth } from "./http.js"
 export {

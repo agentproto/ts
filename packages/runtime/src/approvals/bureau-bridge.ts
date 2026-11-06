@@ -23,6 +23,12 @@
  * (`already_decided`, `request_expired`, `request_not_found`). The outbox holds
  * the decision only: never a header value or a credential.
  *
+ * A relay that ends (2xx or a final answer) leaves a small `relayed.json`
+ * marker. At boot, after the outbox pass, a sweep re-queues every decided
+ * Bureau approval that has no outbox entry, no marker and an unexpired Bureau
+ * request: the daemon may have died after the engine saved the decision but
+ * before the outbox write. Bureau answers a duplicate with `already_decided`.
+ *
  * Nothing here can decide an approval. Only the engine's human channels can.
  */
 
@@ -57,7 +63,15 @@ export interface BureauApprovalBridgeOptions {
    *  in-memory request cache. */
   engine: Pick<
     ApprovalsEngine,
-    "request" | "get" | "getPayload" | "list" | "putRelayOutbox" | "removeRelayOutbox" | "listRelayOutbox"
+    | "request"
+    | "get"
+    | "getPayload"
+    | "list"
+    | "putRelayOutbox"
+    | "removeRelayOutbox"
+    | "listRelayOutbox"
+    | "markRelayed"
+    | "isRelayed"
   >
   sessionEvents: SessionEventBus
   resolveImport: BureauImportResolver
@@ -307,6 +321,7 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
     busy.add(id)
     try {
       if ((await send(entry)) === "done") {
+        opts.engine.markRelayed(id)
         opts.engine.removeRelayOutbox(id)
         return
       }
@@ -332,21 +347,32 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
     }
   }
 
+  const enqueued = new Set<string>()
+
+  /** Persist the entry before the first send: a crash mid-flight still relays
+   *  at boot. */
+  const enqueue = (approvalId: string, decision: "approved" | "denied"): void => {
+    // The boot sweep can see a decision whose `approval:decided` event is still
+    // on its way (the engine saves the decision before it signs and emits).
+    if (enqueued.has(approvalId)) return
+    enqueued.add(approvalId)
+    const entry: RelayOutboxEntry = {
+      approvalId,
+      decision,
+      attempts: 0,
+      queuedAt: new Date().toISOString(),
+    }
+    opts.engine.putRelayOutbox(entry)
+    void deliver(entry).catch(err => {
+      log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
   const offDecided = opts.sessionEvents.on("approval:decided", ev => {
     // A bus callback must never throw.
     try {
       if (!relayTargetOf(opts.engine.get(ev.approvalId), opts.engine.getPayload(ev.approvalId))) return
-      const entry: RelayOutboxEntry = {
-        approvalId: ev.approvalId,
-        decision: ev.decision === "approved" ? "approved" : "denied",
-        attempts: 0,
-        queuedAt: new Date().toISOString(),
-      }
-      // Persist before the first send: a crash mid-flight still relays at boot.
-      opts.engine.putRelayOutbox(entry)
-      void deliver(entry).catch(err => {
-        log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
-      })
+      enqueue(ev.approvalId, ev.decision === "approved" ? "approved" : "denied")
     } catch (err) {
       log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -354,14 +380,35 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
 
   // Boot pass: anything decided but not delivered before the last shutdown.
   queueMicrotask(() => {
+    const queued = new Set<string>()
     try {
       for (const entry of opts.engine.listRelayOutbox()) {
+        queued.add(entry.approvalId)
         void deliver(entry).catch(err => {
           log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
         })
       }
     } catch (err) {
       log(`[bureau-approval-bridge] could not read the relay outbox: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    // Sweep: a decision the engine saved but the outbox never got (the daemon
+    // died in between). The Bureau request must still be open; Bureau answers
+    // a duplicate with `already_decided`, so a double relay is harmless.
+    try {
+      const now = Date.now()
+      for (const record of opts.engine.list()) {
+        if (disposed) return
+        if (record.kind !== BUREAU_APPROVAL_KIND) continue
+        const decision = record.decision?.decision
+        if ((record.status !== "approved" && record.status !== "denied") || !decision) continue
+        if (queued.has(record.id) || opts.engine.isRelayed(record.id)) continue
+        if (!relayTargetOf(record, opts.engine.getPayload(record.id))) continue
+        const expiresAt = record.expiresAt ? Date.parse(record.expiresAt) : Number.NaN
+        if (!Number.isFinite(expiresAt) || expiresAt <= now) continue
+        enqueue(record.id, decision)
+      }
+    } catch (err) {
+      log(`[bureau-approval-bridge] could not sweep decided approvals: ${err instanceof Error ? err.message : String(err)}`)
     }
   })
 
