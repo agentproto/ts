@@ -951,6 +951,32 @@ describe("runInstallMcp --app", () => {
 // ── tests: --uninstall (integration through runInstallMcp) ──────────────────
 
 describe("runInstallMcp --uninstall", () => {
+  it("also removes the agentproto entry from the Claude-3p profile", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const third = "/tmp/fake-home/Library/Application Support/Claude-3p/claude_desktop_config.json"
+    const state = {
+      entries: [
+        { agent: "claude-desktop", configPath: DESKTOP_CONFIG_PATH, transport: "stdio" as const, registeredAt: "2025-01-01T00:00:00Z" },
+      ],
+    }
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: { agentproto: { command: "agentproto" } } }),
+        [third]: JSON.stringify({ mcpServers: { agentproto: { command: "agentproto" }, other: { command: "x" } } }),
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    const write = mockFs.writeFile.mock.calls.find(c => c[0] === third)
+    expect(write).toBeDefined()
+    const written = JSON.parse(write![1] as string)
+    expect(written.mcpServers.agentproto).toBeUndefined()
+    expect(written.mcpServers.other).toEqual({ command: "x" })
+  })
+
   it("removes entries and clears state", async () => {
     const statePath = "/tmp/fake-home/.agentproto/install-state.json"
     const configPath = "/tmp/fake-home/.cursor/mcp.json"

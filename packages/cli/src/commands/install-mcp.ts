@@ -1070,8 +1070,21 @@ async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
       }
       break
     }
-    case "cursor":
     case "claude-desktop":
+      await removeFromJsonConfig(entry.configPath, serverKey)
+      // Mirror of the Claude-3p write in registerAgent (full-daemon entry only).
+      if (!entry.appId && platform() === "darwin") {
+        const thirdParty = desktopThirdPartyConfigPath()
+        if (await fileExists(thirdParty)) {
+          try {
+            await removeFromJsonConfig(thirdParty, serverKey)
+          } catch {
+            // best effort, like the write
+          }
+        }
+      }
+      break
+    case "cursor":
     case "windsurf":
       await removeFromJsonConfig(entry.configPath, serverKey)
       break
