@@ -118,3 +118,16 @@ export class CardTicketError extends Error {
 
 /** 10 minutes — same TTL the Pygmalion M1 gate reference uses. */
 export const CARD_TICKET_TTL_MS = 10 * 60 * 1000
+
+/** A decision a subscriber still has to deliver to the system that asked for
+ *  it (the Bureau bridge's W2 relay). Persisted next to the approval record as
+ *  `<id>/relay-outbox.json`, so a daemon restart or an outage on the other side
+ *  does not lose the human's answer. Holds NO header values or credentials: the
+ *  target comes from `payload.json` and the connection is re-resolved at send. */
+export interface RelayOutboxEntry {
+  approvalId: string
+  decision: "approved" | "denied"
+  /** Failed delivery attempts so far. */
+  attempts: number
+  queuedAt: string
+}

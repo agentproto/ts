@@ -23,6 +23,7 @@ export {
   type ApprovalErrorCode,
   type CardTicketErrorCode,
   type CardTicketRecord,
+  type RelayOutboxEntry,
 } from "./types.js"
 export { handleApprovals, type ApprovalsHttpAuth } from "./http.js"
 export {

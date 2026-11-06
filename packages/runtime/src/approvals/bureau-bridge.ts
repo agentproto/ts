@@ -17,12 +17,19 @@
  * import's own connection headers and NO `Agentproto-Subsession` header: only
  * the device credential may decide (CONTRACT.md rule 1), never a sub-session.
  *
+ * A decision that Bureau did not take (Bureau down, a 5xx) is kept in a small
+ * outbox next to the approval record and retried with a bounded backoff while
+ * the daemon runs, and once at boot. It stops on a 2xx or on a final answer
+ * (`already_decided`, `request_expired`, `request_not_found`). The outbox holds
+ * the decision only: never a header value or a credential.
+ *
  * Nothing here can decide an approval. Only the engine's human channels can.
  */
 
-import type { SessionEventBus, ApprovalDecidedEvent } from "../session-event-bus.js"
+import type { SessionEventBus } from "../session-event-bus.js"
 import type { SubsessionTarget } from "../subsession-minter.js"
 import type { ApprovalsEngine } from "./engine.js"
+import type { ApprovalRecord, RelayOutboxEntry } from "./types.js"
 import { approvalCardResourceUri } from "./card.js"
 
 /** The approval kind this bridge owns. Contract W3 fixes the spelling. */
@@ -48,14 +55,42 @@ export interface BureauApprovalBridgeOptions {
   /** `get`/`getPayload` are what make the relay restart-safe: the decision
    *  reads the persisted record and the pinned payload file, never an
    *  in-memory request cache. */
-  engine: Pick<ApprovalsEngine, "request" | "get" | "getPayload">
+  engine: Pick<
+    ApprovalsEngine,
+    "request" | "get" | "getPayload" | "list" | "putRelayOutbox" | "removeRelayOutbox" | "listRelayOutbox"
+  >
   sessionEvents: SessionEventBus
   resolveImport: BureauImportResolver
   /** Test seam; defaults to the global fetch. */
   fetch?: typeof fetch
   /** Test seam; defaults to `console.warn`. Never receives a secret. */
   log?: (message: string) => void
+  /** Outbox retry pacing; tests shrink it. */
+  retry?: Partial<RelayRetryOptions>
 }
+
+export interface RelayRetryOptions {
+  /** First retry delay; doubles each attempt up to `maxDelayMs`. */
+  baseDelayMs: number
+  maxDelayMs: number
+  /** Failed attempts, across restarts, before the entry is dropped. */
+  maxAttempts: number
+}
+
+const DEFAULT_RETRY: RelayRetryOptions = { baseDelayMs: 1_000, maxDelayMs: 60_000, maxAttempts: 20 }
+
+/** Bureau answers that a retry of the same request can never change. */
+const FINAL_W2_CODES = new Set([
+  "already_decided",
+  "request_expired",
+  "request_not_found",
+  "input_mismatch",
+  "wrong_device",
+  "subsession_forbidden",
+])
+
+/** Used when Bureau's `expiresAt` is missing, unparsable or already past. */
+const FALLBACK_TTL_MS = 15 * 60 * 1000
 
 export interface ImportedResultHookCall {
   alias: string
@@ -134,6 +169,11 @@ function withApprovalState(
 ): Record<string, unknown> {
   const content = Array.isArray(result.content) ? [...result.content] : []
   const waitWith = "approval_wait"
+  // The structured twin of the details gets the same two fields, so a caller
+  // reading `structuredContent` does not have to parse a text note.
+  const structured = parseDetailsBody(result.structuredContent)
+    ? { structuredContent: { ...(result.structuredContent as Record<string, unknown>), approvalId, waitWith } }
+    : {}
   if (textIndex !== undefined) {
     const block = content[textIndex]
     if (isRecord(block) && typeof block.text === "string") {
@@ -141,7 +181,7 @@ function withApprovalState(
         const body = JSON.parse(block.text)
         if (isRecord(body)) {
           content[textIndex] = { ...block, text: JSON.stringify({ ...body, approvalId, waitWith }) }
-          return { ...result, content }
+          return { ...result, ...structured, content }
         }
       } catch {
         // Not JSON after all: append a note instead of dropping the details.
@@ -152,7 +192,15 @@ function withApprovalState(
     type: "text",
     text: `approvalId: ${approvalId}\nwaitWith: ${waitWith}`,
   })
-  return { ...result, content }
+  return { ...result, ...structured, content }
+}
+
+/** Bureau's `expiresAt` when it is a real, future instant; otherwise now +
+ *  15 minutes, so the approval is never created already expired. */
+function usableExpiry(expiresAt: string, now: number): { value: string; fallback: boolean } {
+  const parsed = Date.parse(expiresAt)
+  if (Number.isFinite(parsed) && parsed > now) return { value: expiresAt, fallback: false }
+  return { value: new Date(now + FALLBACK_TTL_MS).toISOString(), fallback: true }
 }
 
 export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): BureauApprovalBridge {
@@ -182,24 +230,31 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
     return { importAlias, requestId, inputSha256 }
   }
 
-  const relay = async (ev: ApprovalDecidedEvent): Promise<void> => {
-    const target = relayTargetOf(opts.engine.get(ev.approvalId), opts.engine.getPayload(ev.approvalId))
-    if (!target) return
+  const retry: RelayRetryOptions = { ...DEFAULT_RETRY, ...opts.retry }
+  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  const busy = new Set<string>()
+  let disposed = false
+
+  /** One W2 POST for a queued decision. `done` means stop for good (2xx, a
+   *  final Bureau answer, or nothing left to relay); `retry` means try later. */
+  const send = async (entry: RelayOutboxEntry): Promise<"done" | "retry"> => {
+    const target = relayTargetOf(opts.engine.get(entry.approvalId), opts.engine.getPayload(entry.approvalId))
+    if (!target) return "done"
     let resolved: SubsessionTarget | undefined
     try {
       resolved = await opts.resolveImport(target.importAlias)
     } catch (err) {
       log(
-        `[bureau-approval-bridge] could not resolve import "${target.importAlias}" for ${ev.approvalId}: ` +
+        `[bureau-approval-bridge] could not resolve import "${target.importAlias}" for ${entry.approvalId}: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       )
-      return
+      return "retry"
     }
     if (!resolved) {
       log(
-        `[bureau-approval-bridge] import "${target.importAlias}" is no longer a Bureau import; ${ev.approvalId} not relayed`,
+        `[bureau-approval-bridge] import "${target.importAlias}" is no longer a Bureau import; ${entry.approvalId} not relayed`,
       )
-      return
+      return "done"
     }
     // Rule 1: the device credential decides. Never present a sub-session
     // token, whatever a caller managed to put on the connection. Header
@@ -209,35 +264,116 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
       if (key.toLowerCase() === "agentproto-subsession") delete headers[key]
     }
     const url = `${resolved.baseUrl.replace(/\/+$/, "")}/pair/approvals/${encodeURIComponent(target.requestId)}`
+    const label = `"${target.importAlias}/${target.requestId}"`
     try {
       const res = await fetchImpl(url, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          decision: ev.decision === "approved" ? "approved" : "denied",
+          decision: entry.decision,
           inputSha256: target.inputSha256,
-          decisionRef: ev.approvalId,
+          decisionRef: entry.approvalId,
         }),
       })
-      if (!res.ok) {
-        log(
-          `[bureau-approval-bridge] W2 for "${target.importAlias}/${target.requestId}" failed: HTTP ${res.status}`,
-        )
+      if (res.ok) return "done"
+      let code: string | undefined
+      try {
+        const body: unknown = JSON.parse(await res.text())
+        if (isRecord(body)) {
+          const raw = body.error ?? body.code
+          if (typeof raw === "string") code = raw
+        }
+      } catch {
+        // No JSON body: judge by status alone.
       }
+      const final = res.status === 410 || (code !== undefined && FINAL_W2_CODES.has(code))
+      log(
+        `[bureau-approval-bridge] W2 for ${label} failed: HTTP ${res.status}` +
+          `${code ? ` (${code})` : ""}${final ? ", final" : ""}`,
+      )
+      return final ? "done" : "retry"
     } catch (err) {
       log(
-        `[bureau-approval-bridge] W2 for "${target.importAlias}/${target.requestId}" failed: ` +
+        `[bureau-approval-bridge] W2 for ${label} failed: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       )
+      return "retry"
+    }
+  }
+
+  const deliver = async (entry: RelayOutboxEntry): Promise<void> => {
+    const id = entry.approvalId
+    if (disposed || busy.has(id) || timers.has(id)) return
+    busy.add(id)
+    try {
+      if ((await send(entry)) === "done") {
+        opts.engine.removeRelayOutbox(id)
+        return
+      }
+      const next: RelayOutboxEntry = { ...entry, attempts: entry.attempts + 1 }
+      if (next.attempts >= retry.maxAttempts) {
+        log(`[bureau-approval-bridge] giving up relaying ${id} after ${next.attempts} attempts`)
+        opts.engine.removeRelayOutbox(id)
+        return
+      }
+      opts.engine.putRelayOutbox(next)
+      if (disposed) return
+      const delay = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** (next.attempts - 1))
+      const timer = setTimeout(() => {
+        timers.delete(id)
+        void deliver(next).catch(err => {
+          log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }, delay)
+      timer.unref?.()
+      timers.set(id, timer)
+    } finally {
+      busy.delete(id)
     }
   }
 
   const offDecided = opts.sessionEvents.on("approval:decided", ev => {
-    // A bus callback must never throw; `relay` already catches everything.
-    void relay(ev).catch(err => {
+    // A bus callback must never throw.
+    try {
+      if (!relayTargetOf(opts.engine.get(ev.approvalId), opts.engine.getPayload(ev.approvalId))) return
+      const entry: RelayOutboxEntry = {
+        approvalId: ev.approvalId,
+        decision: ev.decision === "approved" ? "approved" : "denied",
+        attempts: 0,
+        queuedAt: new Date().toISOString(),
+      }
+      // Persist before the first send: a crash mid-flight still relays at boot.
+      opts.engine.putRelayOutbox(entry)
+      void deliver(entry).catch(err => {
+        log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    } catch (err) {
       log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
-    })
+    }
   })
+
+  // Boot pass: anything decided but not delivered before the last shutdown.
+  queueMicrotask(() => {
+    try {
+      for (const entry of opts.engine.listRelayOutbox()) {
+        void deliver(entry).catch(err => {
+          log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+    } catch (err) {
+      log(`[bureau-approval-bridge] could not read the relay outbox: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  })
+
+  /** A pending approval already created for this Bureau request, so an agent
+   *  that retries before anyone decides gets the same card, not a second one. */
+  const findPending = (importAlias: string, requestId: string): ApprovalRecord | undefined => {
+    for (const record of opts.engine.list({ status: "pending" })) {
+      const existing = relayTargetOf(record, opts.engine.getPayload(record.id))
+      if (existing && existing.importAlias === importAlias && existing.requestId === requestId) return record
+    }
+    return undefined
+  }
 
   return {
     async handleToolResult(call: ImportedResultHookCall): Promise<unknown> {
@@ -249,28 +385,38 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
         const target = await opts.resolveImport(call.alias)
         if (!target) return call.result
         const { details } = found
-        const record = opts.engine.request(
-          {
-            kind: BUREAU_APPROVAL_KIND,
-            title: `${details.recipe} · ${details.tool}`,
-            preview: {
-              recipe: details.recipe,
-              version: details.version,
-              tool: details.tool,
-              preview: details.preview,
-              inputSha256: details.inputSha256,
+        const expiry = usableExpiry(details.expiresAt, Date.now())
+        if (expiry.fallback) {
+          log(
+            `[bureau-approval-bridge] Bureau expiresAt for "${details.requestId}" is invalid or already past; ` +
+              `using now + 15 min`,
+          )
+        }
+        const importAlias = target.key ?? call.alias
+        const record =
+          findPending(importAlias, details.requestId) ??
+          opts.engine.request(
+            {
+              kind: BUREAU_APPROVAL_KIND,
+              title: `${details.recipe} · ${details.tool}`,
+              preview: {
+                recipe: details.recipe,
+                version: details.version,
+                tool: details.tool,
+                preview: details.preview,
+                inputSha256: details.inputSha256,
+              },
+              payload: {
+                importAlias,
+                requestId: details.requestId,
+                inputSha256: details.inputSha256,
+              },
+              expiresAt: expiry.value,
             },
-            payload: {
-              importAlias: target.key ?? call.alias,
-              requestId: details.requestId,
-              inputSha256: details.inputSha256,
-            },
-            expiresAt: details.expiresAt,
-          },
-          call.context?.callerSessionId
-            ? { sessionId: call.context.callerSessionId }
-            : { operator: true },
-        )
+            call.context?.callerSessionId
+              ? { sessionId: call.context.callerSessionId }
+              : { operator: true },
+          )
         const augmented = withApprovalState(call.result as Record<string, unknown>, found.textIndex, record.id)
         const meta = isRecord(augmented._meta) ? augmented._meta : {}
         return {
@@ -291,7 +437,10 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
     },
 
     dispose(): void {
+      disposed = true
       offDecided()
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
     },
   }
 }

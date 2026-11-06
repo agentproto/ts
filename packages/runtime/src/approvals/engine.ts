@@ -37,12 +37,15 @@ import {
   defaultApprovalsHomeDir,
   loadAllApprovals,
   loadAllCardTickets,
+  loadAllRelayOutbox,
   payloadRelativePath,
   readCardTicket,
   readPayload,
+  removeRelayOutbox,
   writeApprovalRecord,
   writeCardTicket,
   writePayload,
+  writeRelayOutbox,
 } from "./store.js"
 import {
   APPROVAL_CHANNELS,
@@ -57,6 +60,7 @@ import {
   type ApprovalStatus,
   type CardTicketErrorCode,
   type CardTicketRecord,
+  type RelayOutboxEntry,
 } from "./types.js"
 
 export interface ApprovalRequestInput {
@@ -116,6 +120,13 @@ export interface ApprovalsEngine {
    *  `undefined` when the file is missing or unparsable. */
   getPayload(id: string): unknown | undefined
   list(filter?: ApprovalListFilter): ApprovalRecord[]
+  /** Persist a decision a subscriber still has to deliver, next to the
+   *  approval record. Overwrites an earlier entry for the same approval. */
+  putRelayOutbox(entry: RelayOutboxEntry): void
+  /** Drop the entry once the decision is delivered or can never be. */
+  removeRelayOutbox(id: string): void
+  /** Every persisted undelivered decision, read from disk. */
+  listRelayOutbox(): RelayOutboxEntry[]
   /** Resolves once the approval leaves `pending` (approved/denied/expired),
    *  or after `timeoutMs` with whatever the current record is (still
    *  pending, most likely). Resolves immediately if already decided. */
@@ -426,6 +437,9 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
     get,
     getPayload,
     list,
+    putRelayOutbox: entry => writeRelayOutbox(homeDir, entry),
+    removeRelayOutbox: id => removeRelayOutbox(homeDir, id),
+    listRelayOutbox: () => loadAllRelayOutbox(homeDir),
     wait,
     decideWeb,
     decideTelegram,
