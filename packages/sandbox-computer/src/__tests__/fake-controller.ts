@@ -43,6 +43,15 @@ export interface FakeControllerOptions {
   createStatus?: number
   createError?: string
   execStatus?: number
+  /** Model the edge cutting a long single request: return this status for an
+   *  exec whose `timeoutSec` exceeds `execTimeoutOverSec` (default 100). */
+  execTimeoutStatus?: number
+  execTimeoutOverSec?: number
+  /** Outcome of a detached launch's embedded command. `"pending"` models a
+   *  command that never writes its exit file, for the timeout tests. */
+  detachedOutcome?: (
+    command: string,
+  ) => { exitCode: number; stdout: string; stderr: string } | "pending" | undefined
   /** Fail GET /v1/computers (the list) with this status/body. */
   listStatus?: number
   listError?: string
@@ -529,6 +538,12 @@ export class FakeController {
         return reply(res, 400, { error: "argv contains a registered secret value" })
       }
       if (this.states.get(id) !== "running") return reply(res, 409, { error: "sandbox not running", state: this.states.get(id) })
+      if (
+        this.options.execTimeoutStatus !== undefined &&
+        parsed.timeoutSec > (this.options.execTimeoutOverSec ?? 100)
+      ) {
+        return reply(res, this.options.execTimeoutStatus, { error: "exec timed out" })
+      }
       const out = this.runExec(id, parsed.argv, parsed)
       assertContract(execResponseSchema, out)
       return reply(res, 200, out)
@@ -559,8 +574,49 @@ export class FakeController {
     return reply(res, 404, { error: "not found" })
   }
 
+  /** Simulate the detached transport's launch: the runner script was written
+   *  via writeFile, so read the command back out of it and materialise the
+   *  stdout/stderr/exit files the poll loop reads. */
+  private runDetachedLaunch(
+    id: string,
+    argv: string[],
+    parsed: { timeoutSec: number },
+  ): { exitCode: number; stdout: string; stderr: string } | undefined {
+    const script = argv[2] ?? ""
+    if (!script.includes("setsid nohup")) return undefined
+    const scriptPath = /setsid\s+nohup\s+bash\s+'([^']*)'/.exec(script)?.[1]
+    if (scriptPath === undefined) return undefined
+    const runner = this.fileSystem.get(scriptPath) ?? ""
+    const command = /# __AP_COMMAND_START__\n([\s\S]*?)\n# __AP_COMMAND_END__/.exec(runner)?.[1] ?? ""
+    const stdoutPath = /<\/dev\/null > '([^']*)'/.exec(script)?.[1]
+    const stderrPath = /2> '([^']*)'/.exec(script)?.[1]
+    const pidPath = /echo \$! > '([^']*)'/.exec(script)?.[1]
+    const exitPath = /mv '[^']*' '([^']*)'/.exec(runner)?.[1]
+
+    // Record the resolved command like a direct exec so existing tests that
+    // look for the script text (npm i -g, a setup command) still see it.
+    this.execs.push({ id, argv: ["/bin/bash", "-lc", command], timeoutSec: parsed.timeoutSec })
+
+    const outcome =
+      this.options.execOutcome?.(["/bin/bash", "-lc", command], parsed) ??
+      this.options.detachedOutcome?.(command) ?? {
+        exitCode: 0,
+        stdout: `ran-detached:${command.length}`,
+        stderr: "",
+      }
+
+    if (pidPath !== undefined) this.fileSystem.set(pidPath, "4242\n")
+    if (outcome === "pending") return { exitCode: 0, stdout: "started", stderr: "" }
+    if (stdoutPath !== undefined) this.fileSystem.set(stdoutPath, outcome.stdout)
+    if (stderrPath !== undefined) this.fileSystem.set(stderrPath, outcome.stderr)
+    if (exitPath !== undefined) this.fileSystem.set(exitPath, String(outcome.exitCode))
+    return { exitCode: 0, stdout: "started", stderr: "" }
+  }
+
   /** Tiny in-box shell simulation so health probes / file IO flows work. */
   private runExec(id: string, argv: string[], parsed: { timeoutSec: number }): { exitCode: number; stdout: string; stderr: string } {
+    const detached = this.runDetachedLaunch(id, argv, parsed)
+    if (detached !== undefined) return detached
     const custom = this.options.execOutcome?.(argv, parsed)
     if (custom) return custom
     const script = argv[2] ?? ""
