@@ -968,7 +968,7 @@ describe("createPrProvenanceReconciler : footer survives an agent rewrite", () =
     reconciler.dispose()
   })
 
-  it("never touches a repo listed in defaults.prProvenance.footer.skipRepos", async () => {
+  it("never touches a repo listed in defaults.prProvenance.footer.skipRepos, matching it case-insensitively", async () => {
     const { reg, recorded } = footerStateRegistry([execSession(), SUPER])
     const gh = bodyMachine("Body v1.")
     const bus = createSessionEventBus()
@@ -978,7 +978,7 @@ describe("createPrProvenanceReconciler : footer survives an agent rewrite", () =
       sessionEvents: bus,
       resolveOpenPr: async () => PR,
       run: gh.run,
-      skipFooterRepos: () => ["o/r"],
+      skipFooterRepos: () => ["O/R"],
     })
 
     bus.emit(turnEnd("sess_exec"))

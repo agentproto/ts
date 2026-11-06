@@ -25,6 +25,7 @@
 import { createHash } from "node:crypto"
 import { hostname } from "node:os"
 import { checkpointBranchOf, checkpointRefPrefixForSession } from "./sandbox-delivery.js"
+import { isFooterSkipped, resolveFooterSkipRepos } from "./pr-provenance-skip.js"
 import {
   appendFooterOnce,
   buildSessionPrFooter,
@@ -114,6 +115,9 @@ export interface StampPrInput {
    *  (`defaults.sandbox.checkpoint.refPrefix`). The session's own per-spawn
    *  override wins over it (see `checkpointRefPrefixForSession`). */
   checkpointRefPrefix?: string
+  /** Resolve `defaults.prProvenance.footer.skipRepos` per call; a PR in a
+   *  listed repo gets no footer (see `pr-provenance-skip.ts`). */
+  skipFooterRepos?: () => Promise<readonly string[]> | readonly string[]
 }
 
 export type StampOutcome =
@@ -168,6 +172,7 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
       ...(input.run ? { run: input.run } : {}),
       ...(input.host ? { host: input.host } : {}),
       ...(input.checkpointRefPrefix ? { checkpointRefPrefix: input.checkpointRefPrefix } : {}),
+      ...(input.skipFooterRepos ? { skipFooterRepos: input.skipFooterRepos } : {}),
     })
   } catch (err) {
     return { stamped: false, reason: err instanceof Error ? err.message : String(err) }
@@ -253,10 +258,16 @@ export async function stampFooterOnPr(input: {
    *  body counts as a deliberate removal (two in a row stop stamping), while
    *  a changed body is an agent rewrite and gets exactly one re-stamp. */
   footerState?: PrFooterState
+  /** Resolve `defaults.prProvenance.footer.skipRepos` per call; a PR in a
+   *  listed repo is never stamped or refreshed (no `gh` call runs). */
+  skipFooterRepos?: () => Promise<readonly string[]> | readonly string[]
 }): Promise<StampOutcome> {
   try {
     if (input.footerState?.disabled) {
       return { stamped: false, reason: "footer suppressed (removed deliberately twice)" }
+    }
+    if (isFooterSkipped(input.prUrl, await resolveFooterSkipRepos(input.skipFooterRepos))) {
+      return { stamped: false, reason: "repo opted out of provenance footers" }
     }
     const run = input.run ?? defaultGhRunner
     const stampRun: GhRunner = input.authorizeArgs

@@ -43,6 +43,7 @@ import { homedir } from "node:os"
 import type { SessionEventBus } from "./session-event-bus.js"
 import { stampFooterOnPr, type GhRunner, type PrFooterState } from "./pr-provenance-stamp.js"
 import { checkpointRefPrefixForSession } from "./sandbox-delivery.js"
+import { isFooterSkipped, resolveFooterSkipRepos } from "./pr-provenance-skip.js"
 import type { FooterSession } from "./pr-provenance.js"
 import { readToolCallRecords } from "./tool-call-log.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
@@ -113,11 +114,7 @@ export interface ReconcilerRegistry {
   recordPrFooterState?(sessionId: string, url: string, state: PrFooterState): unknown
 }
 
-/** `owner/name` of a forge PR url (`https://host/owner/name/pull/42`), or
- *  undefined when the url does not have that shape. */
-export function repoFromPrUrl(url: string): string | undefined {
-  return /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/.exec(url)?.[1]
-}
+export { repoFromPrUrl } from "./pr-provenance-skip.js"
 
 export interface PrProvenanceReconciler {
   /** Detach both bus subscriptions and clear in-memory state. */
@@ -211,18 +208,8 @@ export function createPrProvenanceReconciler(opts: {
 
     const host = await hostSideOf(desc, sessionCwd)
     const cwd = host.cwd
-    const skipRepos = await (async () => {
-      try {
-        return await (opts.skipFooterRepos?.() ?? [])
-      } catch {
-        return []
-      }
-    })()
-    const repoOf = (url: string): string | undefined => repoFromPrUrl(url)
-    const skipped = (url: string): boolean => {
-      const repo = repoOf(url)
-      return repo !== undefined && skipRepos.includes(repo)
-    }
+    const skipRepos = await resolveFooterSkipRepos(opts.skipFooterRepos)
+    const skipped = (url: string): boolean => isFooterSkipped(url, skipRepos)
 
     // Per-reconcile set shared by both lanes (lane A and lane B can resolve
     // the same PR). Across turn-ends it resets: a PR the daemon stamped is
@@ -376,13 +363,7 @@ export function createPrProvenanceReconciler(opts: {
     cwd: string,
   ): Promise<void> => {
     if (typeof desc.costUsd !== "number") return
-    const skipRepos = await (async () => {
-      try {
-        return await (opts.skipFooterRepos?.() ?? [])
-      } catch {
-        return []
-      }
-    })()
+    const skipRepos = await resolveFooterSkipRepos(opts.skipFooterRepos)
     for (const opened of desc.openedPrs ?? []) {
       if (costRefreshedPrUrls.has(opened.url)) continue
       const number = opened.number ?? prNumberFromUrl(opened.url)
@@ -391,8 +372,7 @@ export function createPrProvenanceReconciler(opts: {
         continue
       }
       // A repo opted out of footers is never stamped OR refreshed.
-      const repo = repoFromPrUrl(opened.url)
-      if (repo !== undefined && skipRepos.includes(repo)) {
+      if (isFooterSkipped(opened.url, skipRepos)) {
         costRefreshedPrUrls.add(opened.url)
         continue
       }

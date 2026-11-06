@@ -419,6 +419,7 @@ import {
   ensureGhShimDir,
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
+import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
 import { prefixPrompt } from "./agent-projection.js"
 import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
@@ -1706,6 +1707,11 @@ export interface SpawnAgentSessionDeps {
    *  `loadProvenanceWrapGh` (reads the real config) when omitted; tests
    *  inject a stub to pin it without touching env or the file. */
   resolveProvenanceWrapGh?: () => Promise<boolean>
+  /** Resolves `defaults.prProvenance.footer.skipRepos` when the `gh` shim is
+   *  installed, so a listed repo gets no footer from the shim either.
+   *  Defaults to `loadFooterSkipRepos` (reads the real config); tests inject
+   *  a stub. */
+  resolveFooterSkipRepos?: () => Promise<readonly string[]>
   /** Resolves + shapes the AGENTS.md for a spawn's `cwd` (see
    *  `agents-md.ts`): inline / pointer / absent, plus the standing cd-contract
    *  line. Defaults to the real resolver over `loadAgentsMdInlineMaxKb`'s
@@ -2923,6 +2929,7 @@ async function spawnAgentSessionOnce(
     resolveSpawnAttach,
     resolveSpawnDedupe,
     resolveProvenanceWrapGh,
+    resolveFooterSkipRepos,
     resolveAgentsMd,
     resolveWorkspaceRules,
     listCatalogModels,
@@ -5718,6 +5725,7 @@ async function spawnAgentSessionOnce(
         const wrapGh = await (resolveProvenanceWrapGh ?? loadProvenanceWrapGh)()
         if (wrapGh) {
           const shimDir = await ensureGhShimDir()
+          const skipRepos = await (resolveFooterSkipRepos ?? loadFooterSkipRepos)()
           ghProvenanceEnv = buildGhShimEnv({
             shimDir,
             basePath: process.env.PATH ?? "",
@@ -5725,6 +5733,7 @@ async function spawnAgentSessionOnce(
             ...(input.model ?? resolved?.defaultModel
               ? { model: input.model ?? resolved?.defaultModel }
               : {}),
+            ...(skipRepos.length > 0 ? { skipRepos } : {}),
           })
         }
       } catch {
