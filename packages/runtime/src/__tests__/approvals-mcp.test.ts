@@ -198,7 +198,7 @@ describe("Approvals MCP: ui_card channel via a real resources/read", () => {
     if (!content || !("text" in content)) throw new Error("resource read returned no text content")
     const html = content.text
     expect(html).toContain("Approve")
-    expect(html).toContain("Deny")
+    expect(html).toContain("Refuse")
     const ticketMatch = html.match(/var TICKET = "([^"]+)"/)
     expect(ticketMatch).toBeTruthy()
     const ticket = ticketMatch![1]!
