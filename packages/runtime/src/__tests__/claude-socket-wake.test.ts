@@ -18,7 +18,7 @@ import {
   type ClaudeSocketWakeConfig,
 } from "../claude-socket-wake.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
-import { createSessionMessage } from "../session-message.js"
+import { createSessionMessage, renderSessionMessage } from "../session-message.js"
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -230,15 +230,14 @@ describe("claude-socket wake through the sessions registry", () => {
   })
 
   it("wakes an idle level-2 message and consumes it instead of parking it", async () => {
-    const res = await registry.sendMessage(
-      createSessionMessage({
-        to: "cc:chat-1",
-        from: { relation: "system" },
-        kind: "notice",
-        urgency: "next-turn",
-        text: "ping",
-      }),
-    )
+    const msg = createSessionMessage({
+      to: "cc:chat-1",
+      from: { relation: "system" },
+      kind: "notice",
+      urgency: "next-turn",
+      text: "ping",
+    })
+    const res = await registry.sendMessage(msg)
     expect(res.delivered).toEqual({ via: "socket" })
     expect(res.wake).toMatchObject({ written: true, reason: "written", pid: h.pid })
     // No inbox copy: a later Stop/UserPromptSubmit hook must not re-inject it.
@@ -246,7 +245,32 @@ describe("claude-socket wake through the sessions registry", () => {
 
     await waitFor(() => h.frames.length >= 2)
     expect(h.frames[0]).toEqual({ type: "auth", token: "super-secret-key" })
-    expect(h.frames[1]).toMatchObject({ type: "user", priority: "next", message: { content: "ping" } })
+    expect(h.frames[1]).toMatchObject({ type: "user", priority: "next" })
+    expect((h.frames[1]!.message as { content: string }).content).toBe(renderSessionMessage(msg))
+  })
+
+  it("wakes with the rendered envelope, keeping the reply address and sender attribution", async () => {
+    const msg = createSessionMessage({
+      to: "cc:chat-1",
+      from: { relation: "granted", anonymous: true, label: "claude-code" },
+      kind: "question",
+      urgency: "next-turn",
+      text: "who is this?",
+      replyAddress: "cc:abc",
+    })
+    const res = await registry.sendMessage(msg)
+    expect(res.delivered).toEqual({ via: "socket" })
+    expect(res.wake).toMatchObject({ written: true, reason: "written", pid: h.pid })
+    expect(registry.listInbox("cc:chat-1")).toEqual([])
+
+    await waitFor(() => h.frames.length >= 2)
+    expect(h.frames).toHaveLength(2)
+    const content = (h.frames[1]!.message as { content: string }).content
+    expect(content).toContain("reply to: cc:abc")
+    expect(content).toContain('from="granted"')
+    expect(content).toContain('anonymous="true"')
+    expect(content).toContain('label="claude-code"')
+    expect(content).toBe(renderSessionMessage(msg))
   })
 
   it("does not wake a fyi message", async () => {
