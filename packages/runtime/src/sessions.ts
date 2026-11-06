@@ -6687,6 +6687,12 @@ function remoteParentFields(
   return { remoteParent: { sessionId: remoteParent.sessionId, url: remoteParent.url } }
 }
 
+/** `endedReason` values the daemon sets on an external row on its own
+ *  (shutdown sweep `daemon-restart`, crash sweep `crashed`). The host session
+ *  behind the row is a separate process that may still be alive, so a later
+ *  `touchExternal` revives such a row; any other reason is a deliberate end. */
+const DAEMON_ENDED_EXTERNAL_REASONS: ReadonlySet<string> = new Set(["daemon-restart", "crashed"])
+
 export function createSessionsRegistry(opts?: {
   /** Liveness window for `external` sessions, ms. Default
    *  {@link DEFAULT_EXTERNAL_SESSION_LIVENESS_MS}. */
@@ -13745,11 +13751,15 @@ export function createSessionsRegistry(opts?: {
       if (existing) {
         const desc = existing.desc
         if (desc.kind !== "external") return undefined
-        // A deliberately ended row (operator kill / retire) stays ended.
-        const deliberate = desc.endedReason !== undefined || isRetired(desc)
+        // A deliberately ended row (operator kill / retire / archive /
+        // superseded) stays ended. A row the daemon itself ended (restart,
+        // crash) did not stop the host session, so a fresh sighting revives it.
+        const daemonEnded = desc.endedReason !== undefined && DAEMON_ENDED_EXTERNAL_REASONS.has(desc.endedReason)
+        const deliberate = (desc.endedReason !== undefined && !daemonEnded) || isRetired(desc)
         if (desc.status !== "running" && desc.status !== "starting" && !deliberate) {
           desc.status = "running"
           delete desc.endedAt
+          delete desc.endedReason
         }
         desc.lastSeenAt = nowIso
         if (input.host && !desc.externalHost) desc.externalHost = input.host

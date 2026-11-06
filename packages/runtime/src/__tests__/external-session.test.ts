@@ -144,6 +144,39 @@ describe("external session registration + liveness", () => {
     expect(registry.get("desktop-1")?.status).toBe("running")
   })
 
+  it("revives a row the daemon ended itself (daemon-restart) when the live session touches it", () => {
+    registry.touchExternal({ id: "cc:abc", host: "claude-code" })
+    const desc = registry.get("cc:abc")!
+    desc.status = "killed"
+    desc.endedAt = new Date(clock).toISOString()
+    desc.endedReason = "daemon-restart"
+
+    registry.touchExternal({ id: "cc:abc" })
+    const revived = registry.get("cc:abc")
+    expect(revived?.status).toBe("running")
+    expect(revived?.endedAt).toBeUndefined()
+    expect(revived?.endedReason).toBeUndefined()
+  })
+
+  it("keeps an operator-killed external row ended after a touch", () => {
+    registry.touchExternal({ id: "cc:abc", host: "claude-code" })
+    registry.kill("cc:abc", "SIGTERM", "operator-stopped")
+    expect(registry.get("cc:abc")?.status).toBe("killed")
+    registry.touchExternal({ id: "cc:abc" })
+    expect(registry.get("cc:abc")?.status).toBe("killed")
+    expect(registry.get("cc:abc")?.endedReason).toBe("operator-stopped")
+  })
+
+  it("keeps a retired external row ended after a touch", () => {
+    registry.touchExternal({ id: "cc:abc", host: "claude-code" })
+    const desc = registry.get("cc:abc")!
+    desc.status = "killed"
+    desc.endedAt = new Date(clock).toISOString()
+    desc.retiredAt = new Date(clock).toISOString()
+    registry.touchExternal({ id: "cc:abc" })
+    expect(registry.get("cc:abc")?.status).toBe("killed")
+  })
+
   it("defaults the window to 30 minutes", () => {
     expect(DEFAULT_EXTERNAL_SESSION_LIVENESS_MS).toBe(30 * 60_000)
     const r2 = createSessionsRegistry({ persist: false, transcriptDir: tmp, externalNow: () => clock })
