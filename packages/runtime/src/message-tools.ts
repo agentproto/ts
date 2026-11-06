@@ -29,7 +29,7 @@ import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
-import { ANONYMOUS_SEND_RULE, decide, type PermissionContext } from "./permissions.js"
+import { ANONYMOUS_SEND_RULE, REPLY_RULE, decide, type PermissionContext } from "./permissions.js"
 import { warnPeerUnverified } from "./workspace-binding.js"
 import {
   createSessionMessage,
@@ -39,6 +39,7 @@ import {
   type MessageFilter,
   type MessageKind,
   type MessageUrgency,
+  replyToUnverifiedSenderPrefix,
   unverifiedSenderPrefix,
   type SessionMessage,
 } from "./session-message.js"
@@ -167,7 +168,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   const anonymousSendMode: "block" | "label" = opts.anonymousSend ?? "label"
   // One shared messaging context (messaging-context.ts) so the tools,
   // `POST /sessions/:id/messages` and `permissions_explain` cannot drift.
-  const policy: PermissionContext = buildMessagingPermissionContext({
+  const basePolicy: PermissionContext = buildMessagingPermissionContext({
     defaults: {
       allowSiblings: allowSiblings === true,
       allowSameWorkspace,
@@ -352,6 +353,18 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const recipient = registry.get(toId)
     if (!recipient) return fail("no_such_session", `${tool}: session "${toId}" does not exist.`)
+    // A reply to a message the caller received is admitted whatever the
+    // relation (permissions.ts REPLY_RULE); the context carries the lookup.
+    const policy: PermissionContext =
+      self && input.replyTo?.startsWith("msg_")
+        ? {
+            ...basePolicy,
+            reply: {
+              messageId: input.replyTo,
+              originalSenderOf: (id, mid) => registry.findReceivedMessage(id, mid)?.from.sessionId,
+            },
+          }
+        : basePolicy
     // One ACL for every messaging entry point (permissions.ts). An
     // identity-less caller is evaluated as the operator/human principal,
     // which is what it already is on the wire (the same principal an
@@ -362,6 +375,14 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       : ({ kind: "operator", via: "anonymous-local" } as const)
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
+    /** The message answers one the caller received from this recipient: it never interrupts. */
+    const answersReceived =
+      self !== undefined && policy.reply?.originalSenderOf(self.id, policy.reply.messageId) === recipient.id
+    /** The message being answered came from an unverified/anonymous sender: label the reply too. */
+    const originalFrom =
+      answersReceived && self && input.replyTo ? registry.findReceivedMessage(self.id, input.replyTo)?.from : undefined
+    const originalUnverified = originalFrom?.unverified === true || originalFrom?.anonymous === true
+    const replyToUnverified = self !== undefined && decision.rule === REPLY_RULE && originalUnverified
     const relation = decision.relation
     if (self && decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
@@ -393,7 +414,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     // delivered with a visible text prefix and capped at steer. "block"
     // leaves an anonymous sender exactly as before (operator principal).
     const labelled =
-      anonymousSendMode === "label" && (self ? decision.rule === ANONYMOUS_SEND_RULE : anonymous)
+      anonymousSendMode === "label" && (self
+        ? decision.rule === ANONYMOUS_SEND_RULE || replyToUnverified
+        : anonymous)
     let msg: SessionMessage
     try {
       msg = createSessionMessage({
@@ -402,7 +425,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           ? messageFrom(self, relation)
           : { relation: "human", label: "claude-code", anonymous: true },
         text: labelled
-          ? unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code") + input.text
+          ? (replyToUnverified
+              ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId)
+              : unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code")) + input.text
           : input.text,
         kind,
         urgency,
@@ -424,7 +449,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           source: provenance,
           origin: provenance,
           decision,
-          ...(interrupt.allow && !labelled ? { allowInterrupt: true } : {}),
+          ...(interrupt.allow && !labelled && !answersReceived ? { allowInterrupt: true } : {}),
         },
         opts.deliveryApply,
         parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
@@ -442,10 +467,19 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
         ...(labelled
           ? {
-              unverified: true,
-              note: `delivered unverified: the recipient sees the sender as unverified and the urgency is capped at steer${
+              ...(replyToUnverified ? { replyToUnverified: true } : { unverified: true }),
+              note: `${
+                replyToUnverified
+                  ? "delivered as a reply to an unverified sender: the recipient sees the original sender as unverified"
+                  : "delivered unverified: the recipient sees the sender as unverified"
+              } and the urgency is capped at steer${
                 r.urgencyApplied !== urgency ? ` ("${urgency}" delivered as "${r.urgencyApplied}")` : ""
               }`,
+            }
+          : {}),
+        ...(decision.rule === REPLY_RULE && recipient.kind === "external"
+          ? {
+              replyNote: `reply delivered to the external row "${recipient.id}" (its inbox/hook); a shared identity does not record which real session sent the original`,
             }
           : {}),
         ...(!labelled && r.urgencyApplied !== urgency
