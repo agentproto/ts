@@ -125,7 +125,10 @@ answer (the "Other" box of a choice field, or a text/number field).
 `--answers <json|@file>` takes the whole
 `{ "<field>": { "selected": [...], "text": "...", "value": ... } }` object
 instead and is mutually exclusive with `--select`/`--text`. Fields left out
-are skipped. `ls` lists each field's id and choices (see above); `--json`
+are skipped — but a **bare submit** (no answers at all: the `submit` option,
+or an `approve` that would pick it) on a fields question is refused with
+`invalid_answers` and the question stays parked; use `deny` (or option
+`skip`) to skip it. `ls` lists each field's id and choices (see above); `--json`
 prints the daemon's response. A question is skipped by `deny`, not answered.
 
 ### `watch`

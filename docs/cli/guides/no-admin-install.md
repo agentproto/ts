@@ -181,6 +181,16 @@ On A (your home daemon):
 agentproto devices add <the offer-url from B>
 ```
 
+B's daemon holds that handshake **pending** until you confirm it on B:
+
+```bash
+# on B
+agentproto pair pending            # note the short code
+agentproto pair confirm <code>     # or: pair decline <code>
+```
+
+Until B confirms, the pairing drives nothing on B's side.
+
 Once both are up, A addresses B's local models transparently, e.g.
 `ollama@my-work-mac/llama3.1:8b` in any model string routed through A's own
 `llm-endpoint` gateway.
