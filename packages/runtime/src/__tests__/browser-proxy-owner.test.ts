@@ -72,6 +72,11 @@ async function startFakeBureau(): Promise<FakeBureau> {
       )
       return
     }
+    if (url.pathname.startsWith("/pair/subsessions/") && req.method === "DELETE") {
+      res.writeHead(204)
+      res.end()
+      return
+    }
     if (url.pathname === "/mcp") {
       const subsession = req.headers["agentproto-subsession"]
       if (typeof subsession === "string") state.calls.push({ subsession })
