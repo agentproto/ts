@@ -678,6 +678,41 @@ export function buildDesktopStdioEntry(port: number = DEFAULT_PORT): Record<stri
   }
 }
 
+/** Config of the second Claude Desktop profile ("Claude-3p"). It has its own
+ *  `claude_desktop_config.json`, so an entry written only to `Claude/` leaves
+ *  that profile's Chat tab on whatever it had (no shared identity, hence the
+ *  anonymous `claude-code` sender). */
+export function desktopThirdPartyConfigPath(home: string = homedir()): string {
+  return join(home, "Library", "Application Support", "Claude-3p", "claude_desktop_config.json")
+}
+
+/** Write the shared-identity entry into the Claude-3p profile, only when that
+ *  profile already has a config file (never create the profile). Best effort:
+ *  a failure here must not fail the main install. */
+export async function registerDesktopThirdPartyProfile(
+  entry: Record<string, unknown>,
+  configPath: string = desktopThirdPartyConfigPath(),
+): Promise<boolean> {
+  if (platform() !== "darwin" || !(await fileExists(configPath))) return false
+  try {
+    const config = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>
+    const servers =
+      typeof config.mcpServers === "object" && config.mcpServers !== null
+        ? (config.mcpServers as Record<string, unknown>)
+        : {}
+    servers[SERVER_NAME] = entry
+    config.mcpServers = servers
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
+    process.stdout.write(`  ✓ claude-desktop (Claude-3p profile) → ${configPath}\n`)
+    return true
+  } catch (err) {
+    process.stdout.write(
+      `  ✗ claude-desktop (Claude-3p profile) — ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return false
+  }
+}
+
 async function registerAgent(
   detection: AgentDetection,
   port: number,
@@ -694,10 +729,11 @@ async function registerAgent(
       return registerStdioJson(detection, "cursor", stdioEnv)
     case "codex":
       return registerCodex(detection, stdioEnv)
-    case "claude-desktop":
-      return registerStdioJson(detection, "claude-desktop", stdioEnv, {
-        entry: buildDesktopStdioEntry(port),
-      })
+    case "claude-desktop": {
+      const entry = buildDesktopStdioEntry(port)
+      await registerDesktopThirdPartyProfile(entry)
+      return registerStdioJson(detection, "claude-desktop", stdioEnv, { entry })
+    }
     case "aider":
       return registerAider(detection, stdioEnv)
     case "hermes":
