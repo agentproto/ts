@@ -22,6 +22,7 @@
  * a small file read and is already called this often elsewhere.
  */
 
+import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import type { Grant } from "@agentproto/policy"
 
 import { loadConfig } from "./config.js"
@@ -57,6 +58,10 @@ export interface ResolvedMessagingDefaults {
   /** `defaults.messaging.pendingPromptStaleMinutes` — minutes a queued prompt
    *  may wait before its sender is told it is stuck. Default 5. */
   pendingPromptStaleMinutes: number
+  /** Top-level `delivery.apply` (the K6 funnel), read with the messaging
+   *  knobs so a `message.*` type opted in takes effect on the next send.
+   *  Absent = off. */
+  deliveryApply?: DeliveryApplyConfig
 }
 
 /** Same unset-defaults as before this resolver existed — a missing/malformed
@@ -74,11 +79,13 @@ export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
 }
 
 export async function resolveMessagingDefaults(
-  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
+  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig; delivery?: { apply?: DeliveryApplyConfig } }> = loadConfig,
 ): Promise<ResolvedMessagingDefaults> {
   try {
-    const d = (await loadCfg()).defaults
+    const cfg = await loadCfg()
+    const d = cfg.defaults
     return {
+      ...(cfg.delivery?.apply ? { deliveryApply: cfg.delivery.apply } : {}),
       agentPromptInterrupt: d?.agentPromptInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentPromptInterrupt,
       allowSiblings: d?.messaging?.allowSiblings ?? DEFAULT_MESSAGING_DEFAULTS.allowSiblings,
       allowSameWorkspace:

@@ -4531,6 +4531,7 @@ export async function createGateway(
       messagingPeerGroups: messagingDefaults.peerGroups,
       messagingGrants: messagingDefaults.grants,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
+      ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
       noCallerIdentity: mcpNoCallerIdentity,
       // `ask`: park an identity-less send on a human approval. The requester
       // is the operator (an unidentified client is operator context, the

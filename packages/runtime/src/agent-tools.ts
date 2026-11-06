@@ -583,6 +583,8 @@ export interface RegisterAgentToolsOptions {
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
    *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** `delivery.apply` for the message tools (dead-recipient route). */
+  deliveryApply?: RegisterMessageToolsOptions["deliveryApply"]
   /** `mcp.noCallerIdentity` — how the MCP gateway treats a call with no
    *  caller identity: `block` (default) refuses, `accept` allows an
    *  anonymous `message_send` as `claude-code`, `ask` parks it on a human
@@ -623,6 +625,7 @@ export function registerAgentTools(
     messagingPeerGroups,
     messagingGrants,
     messagingAgentInterrupt,
+    deliveryApply,
     noCallerIdentity,
     requestAnonymousMessageApproval,
     ensureLlmEndpointRunning,
@@ -1454,6 +1457,7 @@ export function registerAgentTools(
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
     ...(noCallerIdentity ? { noCallerIdentity } : {}),
     ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
+    ...(deliveryApply ? { deliveryApply } : {}),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
   registerPermissionsTools(server, {

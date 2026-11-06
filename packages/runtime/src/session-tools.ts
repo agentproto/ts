@@ -790,6 +790,8 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.agentInterrupt`. */
   messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]
+  /** `delivery.apply` - forwarded to `registerAgentTools`. */
+  deliveryApply?: RegisterAgentToolsOptions["deliveryApply"]
   /** `mcp.noCallerIdentity` - forwarded to `registerAgentTools`. */
   noCallerIdentity?: RegisterAgentToolsOptions["noCallerIdentity"]
   /** `mcp.noCallerIdentity: "ask"` - forwarded to `registerAgentTools`. */
