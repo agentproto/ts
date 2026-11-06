@@ -244,13 +244,9 @@ window.addEventListener('message', function(evt) {
 
 function initBridge() {
   return rpcRequest('ui/initialize', {
-    capabilities: {},
-    clientInfo: {name: 'agentproto-terminal-panel', version: '0.1.0'},
-    protocolVersion: '2026-01-26',
-    appCapabilities: {
-      tools: {listChanged: false},
-      availableDisplayModes: ['inline', 'fullscreen']
-    }
+    appInfo: {name: 'agentproto-terminal-panel', version: '0.1.0'},
+    appCapabilities: {availableDisplayModes: ['inline', 'fullscreen']},
+    protocolVersion: '2026-01-26'
   }).then(function() {
     rpcNotify('ui/notifications/initialized', {});
   });
