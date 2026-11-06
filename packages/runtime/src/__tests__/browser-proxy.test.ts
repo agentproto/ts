@@ -115,23 +115,37 @@ describe("browser builtin = off", () => {
 })
 
 describe("browser builtin resolves", () => {
-  it("treats a legacy proxyImport-only config as proxy", async () => {
-    expect(resolveBrowserBuiltin({ proxyImport: "bureau" })).toBe("proxy")
+  it("keeps a legacy proxyImport-only config on the old on path", async () => {
+    expect(resolveBrowserBuiltin({ proxyImport: "bureau" })).toBe("on")
+    expect(resolveBrowserBuiltin({ builtin: "proxy", proxyImport: "bureau" })).toBe("proxy")
     expect(resolveBrowserBuiltin({ builtin: "off", proxyImport: "bureau" })).toBe("off")
     expect(resolveBrowserBuiltin({ builtin: "on" })).toBe("on")
     expect(resolveBrowserBuiltin(undefined)).toBe("on")
 
-    const { client, cleanup } = await makeSetup({
-      proxyImport: "bureau",
-      builtin: resolveBrowserBuiltin({ proxyImport: "bureau" }),
-    })
+    const builtin = resolveBrowserBuiltin({ proxyImport: "bureau" })
+    const { client, proxy, cleanup } = await makeSetup({ proxyImport: "bureau", builtin })
     try {
-      const res = await client.callTool({
+      // The six legacy tools still proxy, exactly as on main.
+      const proxied = await client.callTool({
+        name: "browser_navigate",
+        arguments: { sessionId: "s", url: "https://example.com" },
+      })
+      expect(proxied.isError).toBeFalsy()
+      expect(proxy.callTool).toHaveBeenCalledWith(
+        "bureau",
+        "browser_navigate",
+        { url: "https://example.com" },
+        { callerSessionId: CALLER },
+      )
+
+      // Everything else keeps its local path: no browser:use_bureau refusal.
+      const local = await client.callTool({
         name: "browser_extract_text",
         arguments: { sessionId: "s" },
       })
-      expect(res.isError).toBe(true)
-      expect(textOf(res)).toContain("browser:use_bureau")
+      expect(local.isError).toBe(true)
+      expect(textOf(local)).toContain('session "s" not found')
+      expect(textOf(local)).not.toContain("browser:use_bureau")
     } finally {
       await cleanup()
     }

@@ -9,7 +9,9 @@
  *   - `"on"`    today's behaviour (the default).
  *
  * A config that only names `defaults.browser.proxyImport` (no `builtin`)
- * resolves to `"proxy"`, so existing installs keep their behaviour.
+ * resolves to `"on"`, so existing installs keep exactly their old behaviour:
+ * the six legacy tools proxy and every other tool keeps its local path.
+ * `"proxy"` is opt-in through `builtin: "proxy"`.
  *
  * The argument shapes below are copied from Bureau's tool catalogue, not from
  * this file's own schemas. Since agentproto/bureau#41 every Bureau page tool
@@ -32,10 +34,12 @@ export const BROWSER_PROXY_DEPRECATED =
 export type BrowserBuiltinMode = "off" | "proxy" | "on"
 
 /**
- * Resolve `defaults.browser.builtin` with backward compatibility: a config
- * that only sets `proxyImport` means `"proxy"`, and an absent value means
- * today's `"on"`. Unknown values are treated as `"on"` rather than silently
- * disabling a browser tool surface.
+ * Resolve `defaults.browser.builtin`. Backward compatibility wins: a config
+ * that only sets `proxyImport` keeps today's `"on"` behaviour (the six legacy
+ * tools proxy, everything else keeps its local path), and an absent value is
+ * `"on"` too. `"proxy"` is opt-in through an explicit `builtin: "proxy"`.
+ * Unknown values are treated as `"on"` rather than silently disabling a
+ * browser tool surface.
  */
 export function resolveBrowserBuiltin(
   browser:
@@ -45,7 +49,7 @@ export function resolveBrowserBuiltin(
   if (browser?.builtin === "off" || browser?.builtin === "proxy" || browser?.builtin === "on") {
     return browser.builtin
   }
-  return browser?.proxyImport ? "proxy" : "on"
+  return "on"
 }
 
 /** The daemon browser tools this proxy covers. */
