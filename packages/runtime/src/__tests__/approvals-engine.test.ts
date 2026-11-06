@@ -6,7 +6,7 @@
  * the engine adds on top.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -394,6 +394,28 @@ describe("ApprovalsEngine: card tickets (ui_card channel)", () => {
 })
 
 describe("ApprovalsEngine: restart persistence", () => {
+  it("getPayload reads the pinned payload file, including after a restart", () => {
+    const payload = { to: "a@example.invalid", subject: "hi" }
+    const record = engine.request({ kind: "send", title: "Send", preview, payload }, requester)
+    expect(engine.getPayload(record.id)).toEqual(payload)
+    engine.dispose()
+
+    const bus2 = createSessionEventBus()
+    const reloaded = createApprovalsEngine({ homeDir: home, sessionEvents: bus2 })
+    expect(reloaded.getPayload(record.id)).toEqual(payload)
+    expect(reloaded.getPayload("apr_missing")).toBeUndefined()
+    reloaded.dispose()
+  })
+
+  it("getPayload is undefined when the payload file is not valid JSON", () => {
+    const record = engine.request(
+      { kind: "send", title: "Send", preview, payload: { x: 1 } },
+      requester,
+    )
+    writeFileSync(join(home, record.id, "payload.json"), "{not json", "utf8")
+    expect(engine.getPayload(record.id)).toBeUndefined()
+  })
+
   it("a pending request survives a restart and can still be decided", async () => {
     const payload = { to: "a@example.invalid", subject: "hi" }
     const record = engine.request({ kind: "send", title: "Send", preview, payload }, requester)

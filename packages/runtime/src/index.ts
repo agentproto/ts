@@ -325,6 +325,7 @@ import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
+import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
 import { registerApprovalTools } from "./approvals/tools.js"
 import { registerApprovalCardDecideTool } from "./approvals/card-tool.js"
 import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/card.js"
@@ -2283,6 +2284,11 @@ export interface GatewayHandle {
     failed: number
     dead: number
   }>
+  /** The gateway's approvals engine. Exposed so an embedding host (and a test
+   *  standing in for a human channel) can read a decision's state without
+   *  going through HTTP. Nothing on it is model-reachable; only the declared
+   *  human channels can decide. */
+  approvals: ApprovalsEngine
   stop(): Promise<void>
 }
 
@@ -3795,25 +3801,31 @@ export async function createGateway(
     importsCache = { mtimeMs, config }
     return config
   }
+  // The ONE AIP-59 import resolver. Both the sub-session minter and the
+  // Bureau approval bridge use it, so they agree on what "a Bureau import"
+  // is and on its origin/headers (index.ts used to inline this in the
+  // minter only).
+  const resolveAip59Target = async (alias: string) => {
+    const config = await importsSnapshot()
+    // The same import is addressed by alias (`mcp_imported_call`) and by
+    // import id (`/mcp/imported/<id>`); both must reach this AIP-59 target.
+    const entry = config.imports.find(e => e.alias === alias || e.id === alias)
+    if (!entry || entry.subsession !== "aip-59" || entry.snapshot.type !== "http") return undefined
+    const { config: connection } = await resolveImportConnection(entry, getMcpCredentialDeps())
+    if (connection.type !== "http" || typeof connection.url !== "string") return undefined
+    // AIP-59 section 8.6 binds /pair/subsessions at the server root, not
+    // under the MCP path, hence the origin. W2 (`/pair/approvals/<id>`) is
+    // in the same family.
+    let baseUrl: string
+    try {
+      baseUrl = new URL(connection.url).origin
+    } catch {
+      return undefined
+    }
+    return { baseUrl, headers: { ...(connection.headers ?? {}) }, key: entry.alias }
+  }
   const subsessions = createSubsessionMinter({
-    resolve: async alias => {
-      const config = await importsSnapshot()
-      // The same import is addressed by alias (`mcp_imported_call`) and by
-      // import id (`/mcp/imported/<id>`); both must reach this AIP-59 target.
-      const entry = config.imports.find(e => e.alias === alias || e.id === alias)
-      if (!entry || entry.subsession !== "aip-59" || entry.snapshot.type !== "http") return undefined
-      const { config: connection } = await resolveImportConnection(entry, getMcpCredentialDeps())
-      if (connection.type !== "http" || typeof connection.url !== "string") return undefined
-      // AIP-59 section 8.6 binds /pair/subsessions at the server root, not
-      // under the MCP path, hence the origin.
-      let baseUrl: string
-      try {
-        baseUrl = new URL(connection.url).origin
-      } catch {
-        return undefined
-      }
-      return { baseUrl, headers: { ...(connection.headers ?? {}) }, key: entry.alias }
-    },
+    resolve: resolveAip59Target,
     // AIP-63 M7: store the recordings LINK on the session, never a copy.
     onMinted: (sessionId, target) => {
       // One link per session (its Bureau); rewritten only when it changes, so
@@ -3834,6 +3846,15 @@ export async function createGateway(
   // Per-call human approval for imported tools named by a `hold` rule in
   // `.agentproto/hooks.json` (e.g. agentpush `send_message`). No rule, no change.
   mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace, subsessions }))
+  // Bureau recipe writes gated at `approve` (CONTRACT.md W3): the imported
+  // result becomes a daemon approval, and the human's decision is relayed
+  // back to Bureau's W2 route. Passes every other result through untouched.
+  const bureauApprovals = createBureauApprovalBridge({
+    engine: approvalsEngine,
+    sessionEvents,
+    resolveImport: resolveAip59Target,
+  })
+  mcpProxy.setResultHook(call => bureauApprovals.handleToolResult(call))
 
   // MCP Apps host (mcp-apps-host.ts) — the daemon fetches app UIs for a
   // session's chat. Its own config-keyed client pool: a harness alias is
@@ -5717,6 +5738,7 @@ export async function createGateway(
     ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
     ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
     token,
+    approvals: approvalsEngine,
     mintOrchestratorScope: scopeTokens.mint,
     async resumeSessionsOnBoot(passOpts) {
       // Off by default (§5 "Opt-in vs automatic") — lazy resume-on-prompt
@@ -5884,6 +5906,8 @@ export async function createGateway(
       // Detach the task ledger's bus subscription + sync-flush tasks.json
       // (same debounce-then-flush contract as supervisor.shutdown()).
       taskLedger.dispose()
+      // Detach the Bureau approval bridge's bus subscriptions.
+      bureauApprovals.dispose()
       // Clear the approvals engine's pending `approval_wait` timers.
       approvalsEngine.dispose()
       // On-demand app services: the host's listener dies with this daemon, so

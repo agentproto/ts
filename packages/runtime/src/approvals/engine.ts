@@ -39,6 +39,7 @@ import {
   loadAllCardTickets,
   payloadRelativePath,
   readCardTicket,
+  readPayload,
   writeApprovalRecord,
   writeCardTicket,
   writePayload,
@@ -110,6 +111,10 @@ export interface ApprovalsEngine {
   enabledChannels: readonly ApprovalChannel[]
   request(input: ApprovalRequestInput, requester: ApprovalRequester): ApprovalRecord
   get(id: string): ApprovalRecord | undefined
+  /** The pinned payload's parsed JSON, read from `<id>/payload.json`. This is
+   *  the restart-safe source for a subscriber that acts on a decision:
+   *  `undefined` when the file is missing or unparsable. */
+  getPayload(id: string): unknown | undefined
   list(filter?: ApprovalListFilter): ApprovalRecord[]
   /** Resolves once the approval leaves `pending` (approved/denied/expired),
    *  or after `timeoutMs` with whatever the current record is (still
@@ -221,6 +226,8 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
   }
 
   const get = (id: string): ApprovalRecord | undefined => liveGet(id)
+
+  const getPayload = (id: string): unknown | undefined => readPayload(homeDir, id)
 
   const list = (filter?: ApprovalListFilter): ApprovalRecord[] => {
     const all = Array.from(approvals.keys()).map(id => liveGet(id)!)
@@ -417,6 +424,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
     enabledChannels,
     request,
     get,
+    getPayload,
     list,
     wait,
     decideWeb,

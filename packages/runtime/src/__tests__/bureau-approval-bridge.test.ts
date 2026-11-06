@@ -1,0 +1,576 @@
+/**
+ * CONTRACT.md W3: a Bureau recipe-write `browser:approval_required` becomes a
+ * daemon approval, and the human's decision is relayed to Bureau's W2 route.
+ *
+ * The fake Bureau below implements W1 (the richer error details) and W2
+ * (`POST /pair/approvals/<requestId>`) exactly as the contract states. It is
+ * modelled on `browser-proxy-owner.test.ts`, which already fakes
+ * `/pair/subsessions` and `/mcp` for an `aip-59` import.
+ */
+
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { createServer, type IncomingMessage, type Server } from "node:http"
+import type { AddressInfo } from "node:net"
+import { spawn, type ChildProcess } from "node:child_process"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+
+import { createGateway, type GatewayHandle } from "../index.js"
+import {
+  IMPORTED_MCPS_PATH,
+  saveImportedMcps,
+  type ImportedMcpEntry,
+} from "../mcp-imports.js"
+import { approvalCardResourceUri } from "../approvals/card.js"
+import { createBureauApprovalBridge } from "../approvals/bureau-bridge.js"
+import { createApprovalsEngine } from "../approvals/engine.js"
+import { createSessionEventBus } from "../session-event-bus.js"
+
+const IMPORT_ID = "fixture:global:bureau-approval"
+const IMPORT_ALIAS = "bureau"
+const INPUT_SHA = "a".repeat(64)
+const EXPIRES_AT = new Date(Date.now() + 15 * 60 * 1000).toISOString()
+
+interface W2Call {
+  requestId: string
+  body: Record<string, unknown>
+  subsession: string | undefined
+}
+
+interface FakeBureau {
+  url: string
+  calls: W2Call[]
+  failApprovals: boolean
+  close(): Promise<void>
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once("error", reject)
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as AddressInfo).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = ""
+    req.setEncoding("utf8")
+    req.on("data", chunk => (body += chunk))
+    req.on("end", () => resolve(body))
+    req.on("error", reject)
+  })
+}
+
+function bureauError(requestId: string): { isError: true; content: Array<{ type: "text"; text: string }> } {
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          code: "browser:approval_required",
+          error: "a human approval is required before this write runs",
+          recipe: "linkedin",
+          version: "1.0.1",
+          tool: "linkedin_react",
+          requestId,
+          approveWith: `bureau recipe approve ${requestId}`,
+          inputSha256: INPUT_SHA,
+          preview: "React to a post",
+          expiresAt: EXPIRES_AT,
+          deviceDecision: true,
+        }),
+      },
+    ],
+  }
+}
+
+async function startFakeBureau(): Promise<FakeBureau> {
+  const state = { calls: [] as W2Call[] }
+  let counter = 0
+  const server: Server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/pair/subsessions" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}") as { sessionId?: string }
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          token: `tok-${body.sessionId ?? ""}`,
+          sessionId: body.sessionId,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      )
+      return
+    }
+    if (url.pathname.startsWith("/pair/subsessions/") && req.method === "DELETE") {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+    if (url.pathname.startsWith("/pair/approvals/") && req.method === "POST") {
+      const requestId = decodeURIComponent(url.pathname.slice("/pair/approvals/".length))
+      const body = JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>
+      const subsession = req.headers["agentproto-subsession"]
+      state.calls.push({
+        requestId,
+        body,
+        subsession: typeof subsession === "string" ? subsession : undefined,
+      })
+      if (bureau.failApprovals) {
+        res.writeHead(500, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: "boom" }))
+        return
+      }
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ requestId, status: body.decision }))
+      return
+    }
+    if (url.pathname === "/mcp") {
+      const mcp = new McpServer({ name: "fake-bureau-approval", version: "1.0.0" })
+      mcp.registerTool("linkedin_react", { description: "react to a post" }, async () => {
+        counter += 1
+        return bureauError(`req_${counter}`)
+      })
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+      res.on("close", () => {
+        void transport.close()
+        void mcp.close()
+      })
+      await mcp.connect(transport)
+      await transport.handleRequest(req, res)
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
+  const port = (server.address() as AddressInfo).port
+  const bureau: FakeBureau = {
+    url: `http://127.0.0.1:${port}`,
+    get calls() {
+      return state.calls
+    },
+    failApprovals: false,
+    async close() {
+      server.closeAllConnections?.()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    },
+  }
+  return bureau
+}
+
+function entry(
+  url: string,
+  options: {
+    alias?: string
+    id?: string
+    bureau?: boolean
+    headers?: Record<string, string>
+  } = {},
+): ImportedMcpEntry {
+  const alias = options.alias ?? IMPORT_ALIAS
+  const id = options.id ?? IMPORT_ID
+  return {
+    id,
+    alias,
+    addedAt: "2026-01-01T00:00:00.000Z",
+    snapshot: {
+      id,
+      source: "workspace",
+      scope: "workspace",
+      name: alias,
+      type: "http",
+      url: `${url}/mcp`,
+      ...(options.headers ? { headers: options.headers } : {}),
+    },
+    ...(options.bureau === false ? {} : { subsession: "aip-59" as const }),
+  }
+}
+
+async function waitFor<T>(probe: () => T | undefined, timeoutMs = 2_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const value = probe()
+    if (value !== undefined) return value
+    if (Date.now() > deadline) throw new Error("timed out waiting for condition")
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
+interface Harness {
+  bureau: FakeBureau
+  gateway: GatewayHandle
+  sessionId: string
+}
+
+describe("Bureau approval bridge", () => {
+  const cleanups: Array<() => Promise<void> | void> = []
+
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try {
+        await cleanup()
+      } catch {
+        // teardown is best effort
+      }
+    }
+    vi.restoreAllMocks()
+  })
+
+  async function setup(
+    options: { nonBureauImport?: boolean; importHeaders?: Record<string, string> } = {},
+  ): Promise<Harness> {
+    const bureau = await startFakeBureau()
+    cleanups.push(() => bureau.close())
+    const workspace = mkdtempSync(join(tmpdir(), "bureau-approval-ws-"))
+    cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
+    mkdirSync(join(process.env["HOME"]!, ".agentproto"), { recursive: true })
+    mkdirSync(join(workspace, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(process.env["HOME"]!, ".agentproto", "config.json"),
+      JSON.stringify({ approvals: { webOrigins: ["https://web.example.invalid"] } }),
+      "utf8",
+    )
+    const imports = [
+      entry(bureau.url, options.importHeaders ? { headers: options.importHeaders } : {}),
+    ]
+    if (options.nonBureauImport) {
+      imports.push(entry(bureau.url, { alias: "not-bureau", id: "not-bureau-id", bureau: false }))
+    }
+    await saveImportedMcps({ version: 1, imports }, IMPORTED_MCPS_PATH())
+    const gateway: GatewayHandle = await createGateway({
+      workspace,
+      specs: [],
+      port: await freePort(),
+      boot: false,
+      persist: false,
+    })
+    cleanups.push(() => gateway.stop())
+
+    const sessionId = "sess_bureau_approval"
+    const child: ChildProcess = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    })
+    cleanups.push(() => {
+      if (!child.killed) child.kill("SIGKILL")
+    })
+    gateway.sessions.register({
+      child,
+      id: sessionId,
+      workspaceSlug: "default",
+      command: "fake-agent",
+      cwd: workspace,
+      kind: "agent-cli",
+    })
+    return { bureau, gateway, sessionId }
+  }
+
+  async function callViaDaemonMcp(
+    gateway: GatewayHandle,
+    sessionId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ content?: Array<{ type: string; text?: string }>; isError?: boolean; _meta?: unknown }> {
+    const client = new Client({ name: "bureau-approval", version: "0.0.1" })
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`${gateway.url}/mcp?callerSessionId=${encodeURIComponent(sessionId)}`),
+    )
+    await client.connect(transport)
+    try {
+      return (await client.callTool({ name, arguments: args })) as never
+    } finally {
+      await client.close()
+    }
+  }
+
+  async function callViaImportMount(
+    gateway: GatewayHandle,
+    sessionId: string,
+    importId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ content?: Array<{ type: string; text?: string }>; isError?: boolean; _meta?: unknown }> {
+    const client = new Client({ name: "bureau-approval-mount", version: "0.0.1" })
+    const transport = new StreamableHTTPClientTransport(
+      new URL(
+        `${gateway.url}/mcp/imported/${encodeURIComponent(importId)}?callerSessionId=${encodeURIComponent(sessionId)}`,
+      ),
+    )
+    await client.connect(transport)
+    try {
+      return (await client.callTool({ name, arguments: args })) as never
+    } finally {
+      await client.close()
+    }
+  }
+
+  function bodyOf(result: { content?: Array<{ type: string; text?: string }> }): Record<string, unknown> {
+    const text = result.content?.find(c => c.type === "text")?.text
+    if (!text) throw new Error("tool returned no text content")
+    return JSON.parse(text) as Record<string, unknown>
+  }
+
+  async function requestBureauApproval(h: Harness): Promise<{ approvalId: string; requestId: string }> {
+    const result = await callViaDaemonMcp(h.gateway, h.sessionId, "mcp_imported_call", {
+      alias: IMPORT_ALIAS,
+      toolName: "linkedin_react",
+      args: { text: "hello" },
+    })
+    const body = bodyOf(result)
+    expect(typeof body["approvalId"]).toBe("string")
+    expect(body["waitWith"]).toBe("approval_wait")
+    expect(result._meta).toEqual({
+      ui: { resourceUri: approvalCardResourceUri(body["approvalId"] as string) },
+    })
+    return { approvalId: body["approvalId"] as string, requestId: body["requestId"] as string }
+  }
+
+  it("turns the W1 error into a bureau.recipe-write approval the agent can wait on", async () => {
+    const h = await setup()
+    const { approvalId, requestId } = await requestBureauApproval(h)
+
+    const record = h.gateway.approvals.get(approvalId)
+    expect(record).toBeDefined()
+    expect(record?.kind).toBe("bureau.recipe-write")
+    expect(record?.title).toBe("linkedin · linkedin_react")
+    expect(record?.status).toBe("pending")
+    expect(record?.requestedBy).toEqual({ sessionId: h.sessionId })
+    expect(record?.expiresAt).toBe(EXPIRES_AT)
+    expect(record?.preview).toEqual({
+      recipe: "linkedin",
+      version: "1.0.1",
+      tool: "linkedin_react",
+      preview: "React to a post",
+      inputSha256: INPUT_SHA,
+    })
+    expect(requestId).toMatch(/^req_/)
+  })
+
+  it("approve decides through the engine and relays approved to W2 without a sub-session header", async () => {
+    // A mixed-case header must be stripped too: HTTP header names are
+    // case-insensitive, so exact-spelling matching would leak it to Bureau
+    // and let a sub-session credential attempt a decision.
+    const h = await setup({
+      importHeaders: {
+        "AgentProto-SubSession": "must-not-reach-w2",
+        Authorization: "Bearer device-credential",
+      },
+    })
+    const { approvalId, requestId } = await requestBureauApproval(h)
+
+    await h.gateway.approvals.decideWeb(approvalId, "approve", {
+      ipAddress: "127.0.0.1",
+      userAgent: "vitest",
+    })
+    const call = await waitFor(() => h.bureau.calls[0])
+    expect(call.requestId).toBe(requestId)
+    expect(call.body).toEqual({
+      decision: "approved",
+      inputSha256: INPUT_SHA,
+      decisionRef: approvalId,
+    })
+    expect(call.subsession).toBeUndefined()
+    expect(h.gateway.approvals.get(approvalId)?.status).toBe("approved")
+  })
+
+  it("works through the per-import mount the browser bundle uses, not only mcp_imported_call", async () => {
+    const h = await setup()
+    const result = await callViaImportMount(h.gateway, h.sessionId, IMPORT_ID, "linkedin_react", {
+      text: "hello",
+    })
+    const body = bodyOf(result)
+    expect(typeof body["approvalId"]).toBe("string")
+    expect(result._meta).toEqual({
+      ui: { resourceUri: approvalCardResourceUri(body["approvalId"] as string) },
+    })
+    const approvalId = body["approvalId"] as string
+    expect(h.gateway.approvals.get(approvalId)?.kind).toBe("bureau.recipe-write")
+
+    await h.gateway.approvals.decideWeb(approvalId, "approve", {
+      ipAddress: "127.0.0.1",
+      userAgent: "vitest",
+    })
+    const call = await waitFor(() => h.bureau.calls[0])
+    expect(call.body["decision"]).toBe("approved")
+    expect(call.body["decisionRef"]).toBe(approvalId)
+    expect(call.subsession).toBeUndefined()
+  })
+
+  it("relays denied when the human denies", async () => {
+    const h = await setup()
+    const { approvalId, requestId } = await requestBureauApproval(h)
+
+    await h.gateway.approvals.decideWeb(approvalId, "deny", {
+      ipAddress: "127.0.0.1",
+      userAgent: "vitest",
+    })
+    const call = await waitFor(() => h.bureau.calls[0])
+    expect(call.requestId).toBe(requestId)
+    expect(call.body["decision"]).toBe("denied")
+    expect(call.body["inputSha256"]).toBe(INPUT_SHA)
+    expect(call.body["decisionRef"]).toBe(approvalId)
+  })
+
+  it("relays through a fresh bridge after the creating bridge is disposed (restart safe)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "bureau-approval-restart-"))
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }))
+    const bus = createSessionEventBus()
+    const engine = createApprovalsEngine({
+      homeDir: home,
+      sessionEvents: bus,
+      webOrigins: ["https://web.example.invalid"],
+    })
+    cleanups.push(() => engine.dispose())
+
+    const callsA: Array<Record<string, unknown>> = []
+    const callsB: Array<Record<string, unknown>> = []
+    const makeFetch = (calls: Array<Record<string, unknown>>): typeof fetch =>
+      (async (_input: unknown, init?: RequestInit) => {
+        calls.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>)
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+      }) as typeof fetch
+    const resolveImport = async () => ({
+      baseUrl: "https://bureau.example.invalid",
+      headers: {},
+      key: IMPORT_ALIAS,
+    })
+
+    const bridgeA = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: makeFetch(callsA),
+    })
+    const result = bureauError("req_restart")
+    const augmented = (await bridgeA.handleToolResult({
+      alias: IMPORT_ALIAS,
+      toolName: "linkedin_react",
+      result,
+      context: { callerSessionId: "sess_restart" },
+    })) as { content: Array<{ type: string; text?: string }> }
+    const approvalId = JSON.parse(
+      augmented.content.find(c => c.type === "text")?.text ?? "{}",
+    ).approvalId as string
+    expect(engine.get(approvalId)?.kind).toBe("bureau.recipe-write")
+
+    // The daemon restarts: the bridge that created the approval is gone, a
+    // fresh one subscribes to the same engine/bus. The decision must still
+    // relay because the payload lives on the persisted record.
+    bridgeA.dispose()
+    const bridgeB = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: makeFetch(callsB),
+    })
+    cleanups.push(() => bridgeB.dispose())
+
+    await engine.decideWeb(approvalId, "approve", {
+      ipAddress: "127.0.0.1",
+      userAgent: "vitest",
+    })
+    await waitFor(() => callsB[0])
+    expect(callsA).toHaveLength(0)
+    expect(callsB).toHaveLength(1)
+    expect(callsB[0]).toEqual({
+      decision: "approved",
+      inputSha256: INPUT_SHA,
+      decisionRef: approvalId,
+    })
+  })
+
+  it("no agent-callable path can decide: the approval stays pending", async () => {
+    const h = await setup()
+    const { approvalId } = await requestBureauApproval(h)
+
+    const { tools } = await (async () => {
+      const client = new Client({ name: "bureau-approval-list", version: "0.0.1" })
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${h.gateway.url}/mcp?callerSessionId=${encodeURIComponent(h.sessionId)}`),
+      )
+      await client.connect(transport)
+      try {
+        return await client.listTools()
+      } finally {
+        await client.close()
+      }
+    })()
+    // The card-decide tool is only mounted on the human approval-cards surface.
+    expect(tools.some(t => t.name === "approval_card_decide")).toBe(false)
+
+    // A session caller can request (that path is model-visible and safe)…
+    const requested = bodyOf(
+      await callViaDaemonMcp(h.gateway, h.sessionId, "approval_request", {
+        kind: "test",
+        title: "test",
+        preview: {},
+        payload: { x: 1 },
+      }),
+    )
+    expect(requested["status"]).toBe("pending")
+
+    // …but no tool decides the Bureau approval.
+    const consumed = bodyOf(
+      await callViaDaemonMcp(h.gateway, h.sessionId, "approval_consume", {
+        id: approvalId,
+        payload: { importAlias: IMPORT_ALIAS, requestId: "req_1", inputSha256: INPUT_SHA },
+      }),
+    )
+    expect(consumed["error"]).toBe("approval_not_approved")
+
+    const responded = bodyOf(
+      await callViaDaemonMcp(h.gateway, h.sessionId, "permissions_respond", {
+        id: approvalId,
+        decision: "approve",
+      }),
+    )
+    expect(responded["error"]).toBe("not_found")
+
+    const got = bodyOf(await callViaDaemonMcp(h.gateway, h.sessionId, "approval_get", { id: approvalId }))
+    expect(got["status"]).toBe("pending")
+    expect(h.gateway.approvals.get(approvalId)?.status).toBe("pending")
+    expect(h.bureau.calls).toHaveLength(0)
+  })
+
+  it("a non-Bureau import returning the same error text creates no approval", async () => {
+    const h = await setup({ nonBureauImport: true })
+    const result = await callViaDaemonMcp(h.gateway, h.sessionId, "mcp_imported_call", {
+      alias: "not-bureau",
+      toolName: "linkedin_react",
+      args: { text: "hello" },
+    })
+    const body = bodyOf(result)
+    expect(body["code"]).toBe("browser:approval_required")
+    expect(body["approvalId"]).toBeUndefined()
+    expect(result._meta).toBeUndefined()
+    expect(h.gateway.approvals.list()).toHaveLength(0)
+  })
+
+  it("a W2 failure logs one line and does not throw", async () => {
+    const h = await setup()
+    h.bureau.failApprovals = true
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const { approvalId } = await requestBureauApproval(h)
+
+    await expect(
+      h.gateway.approvals.decideWeb(approvalId, "approve", {
+        ipAddress: "127.0.0.1",
+        userAgent: "vitest",
+      }),
+    ).resolves.toMatchObject({ status: "approved" })
+
+    await waitFor(() =>
+      warn.mock.calls.some(args => String(args[0]).includes("[bureau-approval-bridge]")),
+    )
+    expect(h.gateway.approvals.get(approvalId)?.status).toBe("approved")
+  })
+})

@@ -80,6 +80,12 @@ export function readApprovalRecord(homeDir: string, id: string): ApprovalRecord 
   return readJsonIfExists<ApprovalRecord>(requestPath(homeDir, id))
 }
 
+/** The pinned payload's parsed JSON, read back from `<id>/payload.json`.
+ *  `undefined` when the file is missing or not valid JSON. */
+export function readPayload(homeDir: string, id: string): unknown | undefined {
+  return readJsonIfExists<unknown>(payloadPath(homeDir, id))
+}
+
 export function writeCardTicket(homeDir: string, ticket: CardTicketRecord): void {
   writeJsonAtomic(cardTicketPath(homeDir, ticket.approvalId), ticket)
 }

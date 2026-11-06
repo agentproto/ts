@@ -136,6 +136,19 @@ export type ProxyCallGuard = (call: {
   context?: ProxyCallContext
 }) => Promise<{ allow: true; headers?: Record<string, string> } | { allow: false; reason: string }>
 
+/**
+ * Post-dispatch hook consulted by every successful `callTool`. It sees the
+ * upstream result and may return a replacement (e.g. one carrying an approval
+ * id). It must not throw; if it does, the registry keeps the original result.
+ * Unset by default, so a bare registry returns exactly what the upstream sent.
+ */
+export type ProxyResultHook = (call: {
+  alias: string
+  toolName: string
+  result: unknown
+  context?: ProxyCallContext
+}) => Promise<unknown> | unknown
+
 export interface McpProxyRegistryOptions {
   /** `http`/`sse` only: how long a cached `tools/list` stays fresh. */
   toolCacheTtlMs?: number
@@ -148,6 +161,7 @@ export interface McpProxyRegistryOptions {
 
 export class McpProxyRegistry {
   private callGuard: ProxyCallGuard | undefined
+  private resultHook: ProxyResultHook | undefined
   private readonly ttlMs: number
   private readonly now: () => number
   private readonly statusRefreshTimeoutMs: number
@@ -160,6 +174,10 @@ export class McpProxyRegistry {
 
   setCallGuard(guard: ProxyCallGuard | undefined): void {
     this.callGuard = guard
+  }
+
+  setResultHook(hook: ProxyResultHook | undefined): void {
+    this.resultHook = hook
   }
 
   private clients = new Map<string, ProxyClient>()
@@ -500,7 +518,21 @@ export class McpProxyRegistry {
         handle.toolsFetchedAt = 0
         await this.refreshTools(handle)
       }
-      return { ok: true, result }
+      let finalResult: unknown = result
+      if (this.resultHook) {
+        try {
+          finalResult = await this.resultHook({
+            alias,
+            toolName,
+            result,
+            ...(context ? { context } : {}),
+          })
+        } catch {
+          // A hook failure must never turn a successful call into an error.
+          finalResult = result
+        }
+      }
+      return { ok: true, result: finalResult }
     } catch (err) {
       // Mark the client as dirty — the connection may have died
       // mid-call (process crash, http server restart). The next call
