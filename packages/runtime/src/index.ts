@@ -326,6 +326,7 @@ import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
+import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
 import { registerApprovalTools } from "./approvals/tools.js"
 import { registerApprovalCardDecideTool } from "./approvals/card-tool.js"
 import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/card.js"
@@ -3736,8 +3737,16 @@ export async function createGateway(
   const approvalsHomeDir = persist
     ? undefined
     : mkdtempSync(join(tmpdir(), "agentproto-approvals-"))
+  // Telegram approval cards share the permission bridge's chat, user ids and
+  // alias; they exist only when the opt-in flag AND that setup are present.
+  const permissionTelegramCfg = daemonConfig.approvals
+  const telegramApprovalCardsOn =
+    permissionTelegramCfg?.telegramApprovalCards === true &&
+    !!permissionTelegramCfg.permissionTelegramChatId &&
+    (permissionTelegramCfg.permissionTelegramUserIds?.length ?? 0) > 0
   const approvalsEngine: ApprovalsEngine = createApprovalsEngine({
     sessionEvents,
+    ...(telegramApprovalCardsOn ? { telegramCards: true } : {}),
     ...(approvalsHomeDir ? { homeDir: approvalsHomeDir } : {}),
     webOrigins: daemonConfig.approvals?.webOrigins ?? [],
     ...(daemonConfig.approvals?.telegramBotSecret
@@ -5146,7 +5155,6 @@ export async function createGateway(
 
   // Telegram tap-to-approve for pending permissions. Off unless a chat id and
   // at least one allowed user id are configured.
-  const permissionTelegramCfg = daemonConfig.approvals
   const permissionTelegram =
     permissionTelegramCfg?.permissionTelegramChatId && (permissionTelegramCfg.permissionTelegramUserIds?.length ?? 0) > 0
       ? createPermissionTelegramBridge({
@@ -5160,6 +5168,17 @@ export async function createGateway(
         })
       : undefined
   permissionTelegram?.start()
+  const approvalTelegram = telegramApprovalCardsOn
+    ? createApprovalTelegramBridge({
+        events: sessionEvents,
+        engine: approvalsEngine,
+        telegramCreds: telegramBotCreds,
+        alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+        chatId: permissionTelegramCfg!.permissionTelegramChatId!,
+        allowedUserIds: permissionTelegramCfg!.permissionTelegramUserIds!,
+      })
+    : undefined
+  approvalTelegram?.start()
 
   // E99: one `[heap]` line every few minutes (AGENTPROTO_HEAP_LOG_INTERVAL_MS,
   // 0 = off) with heapUsed/rss, the floor after the last major GC, live
@@ -5268,11 +5287,15 @@ export async function createGateway(
     // this, every slug 404s as "unknown_inbound_endpoint" regardless of
     // what's registered, since the http layer never saw the store at all.
     endpointStore: inboundEndpointStore,
-    ...(permissionTelegram
+    ...(permissionTelegram || approvalTelegram
       ? {
           permissionCallbacks: {
             alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
-            handleUpdate: (update: unknown) => permissionTelegram.handleUpdate(update),
+            handleUpdate: async (update: unknown) => {
+              const fromPermissions = await permissionTelegram?.handleUpdate(update)
+              if (fromPermissions?.handled) return fromPermissions
+              return (await approvalTelegram?.handleUpdate(update)) ?? { handled: false }
+            },
           },
         }
       : {}),
@@ -5867,6 +5890,7 @@ export async function createGateway(
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       permissionTelegram?.stop()
+      approvalTelegram?.stop()
       // Stop the sentinel poll loop and flush its store before sessions shut
       // down — same ordering reason as inboundWatcher above (delivery reads
       // `sessions`).

@@ -34,6 +34,11 @@ export {
   type BureauImportResolver,
   type ImportedResultHookCall,
 } from "./bureau-bridge.js"
+export {
+  createApprovalTelegramBridge,
+  type ApprovalTelegramBridge,
+  type ApprovalTelegramBridgeOptions,
+} from "./telegram-bridge.js"
 export { registerApprovalTools, type RegisterApprovalToolsOptions } from "./tools.js"
 export { registerApprovalCardDecideTool } from "./card-tool.js"
 export { renderApprovalCardHtml, approvalCardResourceUri } from "./card.js"

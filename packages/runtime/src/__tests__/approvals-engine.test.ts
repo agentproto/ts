@@ -467,3 +467,24 @@ describe("ApprovalsEngine: events", () => {
     expect(events.find(e => e.type === "approval:consumed")).toMatchObject({ approvalId: record.id })
   })
 })
+
+describe("ApprovalsEngine: telegram channel for the in-process Telegram cards", () => {
+  const make = (extra: { telegramCards?: boolean; telegramBotSecret?: string }) =>
+    createApprovalsEngine({ homeDir: home, sessionEvents: createSessionEventBus(), ...extra })
+
+  it("lists telegram in channels only when the cards are on or a bot secret is set", () => {
+    const req = (e: ApprovalsEngine) => e.request({ kind: "k", title: "t", preview, payload: { a: 1 } }, requester)
+    expect(req(make({})).channels).not.toContain("telegram")
+    expect(req(make({ telegramCards: false })).channels).not.toContain("telegram")
+    expect(req(make({ telegramCards: true })).channels).toContain("telegram")
+    expect(req(make({ telegramBotSecret: "s" })).channels).toContain("telegram")
+  })
+
+  it("decides through telegram without a bot secret once the cards are on", async () => {
+    const e = make({ telegramCards: true })
+    const record = e.request({ kind: "k", title: "t", preview, payload: { a: 1 } }, requester)
+    const decided = await e.decideTelegram(record.id, "approve", { ipAddress: "x", userAgent: "x" })
+    expect(decided.decision?.channel).toBe("telegram")
+    expect(decided.status).toBe("approved")
+  })
+})

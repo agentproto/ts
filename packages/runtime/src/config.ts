@@ -546,6 +546,15 @@ export interface ApprovalsConfig {
   permissionTelegramAlias?: string
   /** Tool names mirrored to Telegram. Default `["send_message"]`. */
   permissionTelegramTools?: string[]
+  /**
+   * Also send each pending approvals-engine record (`approval:requested`,
+   * e.g. a Bureau recipe write) to the same Telegram chat as an
+   * Approve / Refuse card (`approval-telegram-bridge.ts`). Reuses
+   * `permissionTelegramChatId`, `permissionTelegramUserIds` and
+   * `permissionTelegramAlias`; does nothing unless those are set. Default
+   * false. Turning it on also adds `telegram` to new approvals' `channels`.
+   */
+  telegramApprovalCards?: boolean
 }
 
 /**

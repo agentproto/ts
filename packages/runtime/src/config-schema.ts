@@ -488,6 +488,7 @@ const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
     permissionTelegramUserIds: z.array(z.string()).optional(),
     permissionTelegramAlias: z.string().optional(),
     permissionTelegramTools: z.array(z.string()).optional(),
+    telegramApprovalCards: z.boolean().optional(),
   })
   .passthrough()
 
@@ -857,6 +858,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Permission Telegram tools",
     help: "Tool names whose pending permissions are mirrored to Telegram. Which calls are held at all is decided by .agentproto/hooks.json rules.",
     default: ["send_message"],
+  },
+  {
+    path: "approvals.telegramApprovalCards",
+    schema: bool,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Telegram approval cards",
+    help: "Send each pending approval (for example a Bureau recipe write) to the Telegram chat as an Approve / Refuse card, and let a tap from an allowed user decide it through the telegram channel. Reuses approvals.permissionTelegramChatId, approvals.permissionTelegramUserIds and approvals.permissionTelegramAlias, and does nothing until those are set. Default false.",
+    default: false,
   },
   {
     path: "daemon.strictOrigins",
