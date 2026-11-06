@@ -101,6 +101,16 @@ describe("agent_start.parent (declared cc:<id>)", () => {
     expect(sendMessage.mock.calls.at(-1)![0]).toMatchObject({ to: "cc:abc123" })
   })
 
+  it("the long-standing parentSessionId hint takes a cc: row too (works with a client holding a stale tool schema)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    registry.touchExternal({ id: "cc:abc123", host: "claude-cli" })
+    const anon = await connect(registry, { noCallerIdentity: "accept" })
+    const body = parseToolJson(await anon.start({ parentSessionId: "cc:abc123", label: "e2e-t7-child-3", role: "supervisor" }))
+    const child = registry.get(body.id)!
+    expect(child.parentSessionId).toBe("cc:abc123")
+    expect(child.depth).toBe(1)
+  })
+
   it("without a declared parent an identity-less spawn is a root", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const anon = await connect(registry, { noCallerIdentity: "accept" })
