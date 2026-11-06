@@ -40,6 +40,8 @@ export interface FakeSentinelProvider extends SentinelProviderHandle {
 
 export interface CreateFakeSentinelProviderOptions {
   slug?: string
+  /** Subject schemes this fake declares it can watch. Default `["*"]`. */
+  subjects?: string[]
   /** Ack calls are recorded but otherwise no-ops (the fake keeps full
    *  history for test inspection) unless this throws. */
   onAck?: (handle: SentinelHandle, cursor: string) => void
@@ -84,7 +86,7 @@ export function createFakeSentinelProvider(
     requiresSetup: false,
     exclusiveRemote: true,
     capabilities: {
-      subjects: ["*"],
+      subjects: opts?.subjects ?? ["*"],
       push: false,
       poll: true,
       durable: false,

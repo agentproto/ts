@@ -64,6 +64,11 @@ export interface SessionMessageFrom {
   agentSlug?: string
   adapter?: string
   relation: MessageRelation
+  /** True when this message came from a caller with no session identity
+   *  (an identity-less MCP client let through by `mcp.noCallerIdentity:
+   *  "accept"`). `label` is then the literal `claude-code`; the message is
+   *  never attributable to any session. */
+  anonymous?: boolean
 }
 
 export interface SessionMessage {
@@ -82,6 +87,10 @@ export interface SessionMessage {
   correlationId?: string
   /** A `SessionMessage.id` this answers. */
   replyTo?: string
+  /** A DECLARED caller identity supplied by an identity-less client (a
+   *  session id, `sess_*`/`cc:*`). Never used for authorization — it only
+   *  tells the recipient where a reply could be addressed. */
+  replyAddress?: string
   text: string
   /** Optional structured payload (≤ `MAX_MESSAGE_DATA_BYTES`). */
   data?: Record<string, unknown>
@@ -337,6 +346,7 @@ export function createSessionMessage(input: {
   kind?: MessageKind
   urgency?: MessageUrgency
   replyTo?: string
+  replyAddress?: string
   correlationId?: string
   data?: Record<string, unknown>
 }): SessionMessage {
@@ -357,6 +367,7 @@ export function createSessionMessage(input: {
     kind: input.kind ?? "report",
     urgency: input.urgency ?? "next-turn",
     ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+    ...(input.replyAddress ? { replyAddress: input.replyAddress } : {}),
     correlationId: input.correlationId ?? input.replyTo ?? id,
     text: input.text,
     ...(input.data !== undefined ? { data: input.data } : {}),
@@ -426,10 +437,12 @@ export function renderSessionMessage(msg: SessionMessage): string {
   const relation = normalizeMessageRelation(msg.from.relation) ?? msg.from.relation
   const attrs: string[] = [`id="${attr(msg.id)}"`, `from="${relation}"`]
   if (msg.from.sessionId) attrs.push(`session="${attr(msg.from.sessionId)}"`)
+  if (msg.from.anonymous) attrs.push(`anonymous="true"`)
   const label = sanitizeLabel(msg.from.label)
   if (label) attrs.push(`label="${label}"`)
   attrs.push(`kind="${msg.kind}"`)
   if (msg.replyTo) attrs.push(`reply-to="${attr(msg.replyTo)}"`)
+  if (msg.replyAddress) attrs.push(`reply-address="${attr(msg.replyAddress)}"`)
   if (msg.correlationId && msg.correlationId !== msg.id) {
     attrs.push(`correlation="${attr(msg.correlationId)}"`)
   }
@@ -437,7 +450,7 @@ export function renderSessionMessage(msg: SessionMessage): string {
     msg.data !== undefined ? `\n<data>${escapeMessageBody(JSON.stringify(msg.data))}</data>` : ""
   return (
     `<${MESSAGE_TAG} ${attrs.join(" ")}>\n` +
-    `<body>\n${escapeMessageBody(msg.text)}\n</body>${data}\n` +
+    `<body>\n${msg.replyAddress ? `reply to: ${escapeMessageBody(msg.replyAddress)}\n` : ""}${escapeMessageBody(msg.text)}\n</body>${data}\n` +
     `</${MESSAGE_TAG}>`
   )
 }

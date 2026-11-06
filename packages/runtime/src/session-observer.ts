@@ -19,6 +19,8 @@ export interface SessionMessageSentRecord {
   to: string
   kind: MessageKind
   urgency: MessageUrgency
+  /** The declared reply address the sender attached, when any. */
+  replyAddress?: string
 }
 
 export interface SessionObserver {

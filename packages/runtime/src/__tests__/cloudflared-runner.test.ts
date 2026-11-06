@@ -137,6 +137,34 @@ const START = {
   label: "wa",
 }
 
+// --- pre-probe health ---------------------------------------------------
+
+describe("CloudflaredRunner before the first probe", () => {
+  it("reports the edge-connecting reason while the first probe is still in flight", async () => {
+    const timers = fakeTimers()
+    const sp = fakeSpawner()
+    const probe = controllableProbe()
+    const runner = new CloudflaredRunner({
+      spawner: sp.spawner,
+      probeFetch: probe.probeFetch,
+      healthIntervalMs: 60_000,
+      publicDns: false,
+      settleDelaysMs: [2_000, 4_000],
+      setTimer: timers.setTimer,
+      supervisor: { initialBackoffMs: 10, maxRestarts: 2 },
+    })
+
+    runner.start(START)
+    await flush()
+    expect(probe.calls()).toBe(1)
+    expect(runner.health()).toMatchObject({
+      state: "degraded",
+      reason: "connecting to the Cloudflare edge",
+    })
+    await runner.stop()
+  })
+})
+
 // --- settle window ------------------------------------------------------
 
 describe("CloudflaredRunner settle window", () => {

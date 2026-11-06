@@ -14,6 +14,10 @@ export type LedgerOutcome =
   | "dropped"
   | "duplicate"
 
+/** The shadow grant verdict recorded on a line. Observation only: it never
+ *  changes the outcome. */
+export type LedgerGrant = "allow" | "deny" | "unknown" | "error"
+
 /** One append-only delivery decision. The hash chain (`prev`) is the NEXT PR;
  *  lines are not linked yet, so this file stays a plain JSONL journal. */
 export interface LedgerLine {
@@ -32,6 +36,8 @@ export interface LedgerLine {
   cap: Level
   rule: string
   applied: boolean
+  /** Shadow publish/wake grant verdict, recorded after the fact. */
+  grant?: LedgerGrant
   outcome: LedgerOutcome
   routedTo?: string
   messageId?: string

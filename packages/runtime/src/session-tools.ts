@@ -790,6 +790,10 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.agentInterrupt`. */
   messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]
+  /** `mcp.noCallerIdentity` - forwarded to `registerAgentTools`. */
+  noCallerIdentity?: RegisterAgentToolsOptions["noCallerIdentity"]
+  /** `mcp.noCallerIdentity: "ask"` - forwarded to `registerAgentTools`. */
+  requestAnonymousMessageApproval?: RegisterAgentToolsOptions["requestAnonymousMessageApproval"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join

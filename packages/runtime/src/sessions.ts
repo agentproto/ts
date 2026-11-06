@@ -11174,6 +11174,7 @@ export function createSessionsRegistry(opts?: {
       to: msg.to,
       kind: msg.kind,
       urgency: msg.urgency,
+      ...(msg.replyAddress ? { replyAddress: msg.replyAddress } : {}),
     })
   }
 
@@ -13862,6 +13863,7 @@ export function createSessionsRegistry(opts?: {
             to: envelope.to,
             kind: envelope.kind,
             urgency: envelope.urgency,
+            ...(envelope.replyAddress ? { replyAddress: envelope.replyAddress } : {}),
           })
         }
       }
