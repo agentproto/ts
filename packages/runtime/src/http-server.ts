@@ -69,6 +69,8 @@ import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import { injectProviderKeysIntoEnv } from "./providers-store.js"
 import {
+  CLAUDE_SESSION_HEADER,
+  SHARED_CLAUDE_DESKTOP_ID,
   createSessionMessage,
   messageFrom,
   MESSAGE_KINDS,
@@ -2320,10 +2322,26 @@ export async function startHttpServer(
     return trimmed
   }
 
+  /** `x-agentproto-claude-session`: the real Claude Code session id, set by the
+   *  stdio bridge from `CLAUDE_CODE_SESSION_ID`. Same charset as `cc:` addresses. */
+  function parseClaudeSessionHeader(req: IncomingMessage): string | undefined {
+    const raw = req.headers[CLAUDE_SESSION_HEADER]
+    const value = (Array.isArray(raw) ? raw[0] : raw)?.trim()
+    return value && /^[A-Za-z0-9._-]{1,128}$/.test(value) ? value : undefined
+  }
+
   /** The caller's session id for this request: the trusted query claim, else
    *  the identity header (same trust rules; see `externalClaimTrusted`). */
   function resolveCallerSessionId(req: IncomingMessage): string | undefined {
     const fromQuery = parseCallerSessionIdQuery(req.url ?? "")
+    // The bridge's attested Claude Code session wins over the shared
+    // `claude-desktop` identity (and over no identity): the call is then the
+    // real `cc:<id>` row, the same one the hooks touch. Any other claimed
+    // identity (a daemon session, a different external id) is left alone.
+    if ((fromQuery === undefined || fromQuery === SHARED_CLAUDE_DESKTOP_ID) && externalClaimTrusted(req)) {
+      const attested = parseClaudeSessionHeader(req)
+      if (attested) return `cc:${attested}`
+    }
     if (fromQuery) return fromQuery
     if (!externalClaimTrusted(req)) return undefined
     return parseCallerSessionIdHeader(req)
@@ -2564,7 +2582,12 @@ export async function startHttpServer(
     {
       const claimed = resolveCallerSessionId(req)
       if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
-        opts.sessions.touchExternal({ id: claimed, host: parseHostQuery(req.url ?? "") })
+        opts.sessions.touchExternal({
+          id: claimed,
+          // An attested `cc:` row is created like the hook does when it is new;
+          // the host label falls back to `claude-desktop` (the hook's host label) if the URL names none.
+          host: parseHostQuery(req.url ?? "") ?? (claimed.startsWith("cc:") ? "claude-desktop" : undefined),
+        })
       }
     }
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")

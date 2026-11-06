@@ -354,6 +354,12 @@ export function messageFrom(
  *  (declared, never proven). */
 export const SHARED_CLAUDE_DESKTOP_ID = "claude-desktop"
 
+/** Header the stdio `mcp-bridge` sets from `CLAUDE_CODE_SESSION_ID` (the env
+ *  Claude Code gives its MCP child; the model cannot set it). Mirrored by
+ *  `CLAUDE_SESSION_HEADER` in the cli's mcp-bridge.logic.ts. Lets the daemon
+ *  attribute an otherwise shared-`claude-desktop` call to the real `cc:<id>` row. */
+export const CLAUDE_SESSION_HEADER = "x-agentproto-claude-session"
+
 /** A declared Claude Code address: `cc:<session_id>`. */
 export const DECLARED_CC_ADDRESS = /^cc:[A-Za-z0-9._-]{1,128}$/
 

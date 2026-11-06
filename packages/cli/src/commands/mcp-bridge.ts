@@ -45,8 +45,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
+  claudeSessionHeaders,
   exitOnStdinClose,
   parseBridgeArgs,
+  readClaudeSessionId,
+  redactSessionId,
   stampOrigin,
   watchParentExit,
   withSurface,
@@ -73,7 +76,19 @@ export async function runMcpBridge(args: readonly string[]): Promise<number> {
   )
 
   try {
-    const httpTransport = new StreamableHTTPClientTransport(new URL(url))
+    // Under Claude Code the bridge inherits CLAUDE_CODE_SESSION_ID: attest it
+    // on every request so the daemon can attribute the call to the real
+    // `cc:<id>` row. A header, not the URL, so the mount URL stays stable.
+    const sessionHeaders = claudeSessionHeaders(process.env)
+    const attested = readClaudeSessionId(process.env)
+    if (attested) {
+      process.stderr.write(
+        `agentproto mcp-bridge: attesting Claude Code session ${redactSessionId(attested)}\n`
+      )
+    }
+    const httpTransport = new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: { headers: sessionHeaders },
+    })
     await client.connect(httpTransport)
   } catch (err) {
     process.stderr.write(
