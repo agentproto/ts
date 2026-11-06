@@ -990,6 +990,50 @@ describe("createPrProvenanceReconciler : footer survives an agent rewrite", () =
     reconciler.dispose()
   })
 
+  it("stops stamping after the footer is deliberately removed twice with no body change", async () => {
+    const session = execSession()
+    const { reg } = footerStateRegistry([session, SUPER])
+    const gh = bodyMachine("Body v1.")
+    const logs: string[] = []
+    const bus = createSessionEventBus()
+    const reconciler = createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run: gh.run,
+      log: line => logs.push(line),
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+
+    // Remove only the footer: the body is otherwise identical to the stamp.
+    gh.setBody("Body v1.")
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain(PR.url)
+
+    // Permanently disabled: even a later genuine rewrite does not re-stamp.
+    gh.setBody("Body v3 rewrite.")
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+
+    reconciler.dispose()
+  })
+
   it("keeps the same behaviour across a daemon restart (fresh reconciler, same openedPrs)", async () => {
     const session = execSession()
     const { reg } = footerStateRegistry([session, SUPER])

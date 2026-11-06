@@ -155,6 +155,9 @@ export function createPrProvenanceReconciler(opts: {
    *  (`defaults.prProvenance.footer.skipRepos`). Resolved on every reconcile
    *  so a config change takes effect without a daemon restart. */
   skipFooterRepos?: () => Promise<readonly string[]> | readonly string[]
+  /** Info logger for the one line emitted when a PR opts out of stamping
+   *  after two deliberate footer removals. Defaults to `console.log`. */
+  log?: (line: string) => void
 }): PrProvenanceReconciler {
   // Per-reconcile dedupe of the PRs lane A / lane B resolved (below, local to
   // `reconcile`), plus the session that stamped each url THIS daemon run.
@@ -162,6 +165,7 @@ export function createPrProvenanceReconciler(opts: {
   // already stamped, while a session that owns the PR may re-check it on a
   // later turn-end (an agent may have rewritten the body since).
   const stampedByThisRun = new Map<string, string>()
+  const log = opts.log ?? ((line: string) => console.log(line))
   // PRs whose footer has been re-rendered with the session's spend (or
   // already carried one) — the cost refresh is a once-per-PR follow-up to
   // the first, mid-turn stamp that lands before any usage is known.
@@ -274,6 +278,11 @@ export function createPrProvenanceReconciler(opts: {
         ...(requireTrailerAuthorship ? { requireTrailerAuthorship: true } : {}),
         ...(prior ? { footerState: prior } : {}),
       })
+      // One info line when a PR opts itself out after two deliberate footer
+      // removals. The disabled flag is persisted, so this fires once.
+      if (outcome.footerState?.disabled === true && prior?.disabled !== true) {
+        log(`[pr-provenance] ${pr.url} lost its footer twice with no body change; stopping stamps`)
+      }
       if (outcome.stamped) stampedByThisRun.set(pr.url, desc.id)
     }
 
@@ -409,6 +418,9 @@ export function createPrProvenanceReconciler(opts: {
         ...(opts.host ? { host: opts.host } : {}),
         checkpointRefPrefix: checkpointRefPrefixForSession(desc, opts.checkpointRefPrefix),
       })
+      if (outcome.footerState?.disabled === true) {
+        log(`[pr-provenance] ${opened.url} lost its footer twice with no body change; stopping stamps`)
+      }
       // Settled either way (re-rendered, or already carried a cost); a
       // failed gh call is retried at the next turn-end.
       if (outcome.stamped) {

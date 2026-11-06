@@ -399,6 +399,21 @@ export async function stampFooterOnPr(input: {
     }
 
     if (!alreadyStamped) {
+      // A footerless body the daemon already stamped once can be either an
+      // agent rewrite (new text, so a NEW hash) or a deliberate footer
+      // removal (same body, no footer). Only a rewrite earns a re-stamp;
+      // two removals in a row stop stamping this PR for good.
+      const priorHash = input.footerState?.bodyHash
+      if (priorHash !== undefined && priorHash === bodyHash) {
+        const removals = (input.footerState?.removals ?? 0) + 1
+        const disabled = removals >= 2
+        recordFooterState({ bodyHash, removals, ...(disabled ? { disabled: true } : {}) })
+        return {
+          stamped: false,
+          reason: disabled ? "footer removed deliberately twice; stopping" : "footer removed; body unchanged",
+          footerState: { bodyHash, removals, ...(disabled ? { disabled: true } : {}) },
+        }
+      }
       const newBody = appendFooterOnce(body, footer)
       const edit = await stampRun(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
       if (edit.exitCode !== 0) {
