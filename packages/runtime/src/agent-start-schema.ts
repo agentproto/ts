@@ -164,6 +164,15 @@ export const agentStartInputShape = {
     .describe(
       `Parent-lineage hint: nest this spawn under that session; ignored through the scoped gateway.`
     ),
+  parent: z
+    .string()
+    .regex(/^(?:cc:)?[A-Za-z0-9._-]{1,128}$/)
+    .optional()
+    .describe(
+      "Declared parent for a caller the daemon cannot identify (Claude Code on a static MCP URL): " +
+        "`cc:<session_id>` or a live session id. The child's `message_parent` then reports to it. " +
+        "Declared, not proven (same trust as `replyTo`). Refused when the call already carries an identity."
+    ),
   succeeds: z
     .string()
     .min(1)

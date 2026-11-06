@@ -1804,6 +1804,10 @@ export interface SpawnAgentSessionInput {
    *  the depth-gated worktree/role guards — declaring a logical parent is not
    *  the same as being a nested (scoped) spawn. */
   parentSessionId?: string
+  /** Daemon-internal: the call carried no caller identity and
+   *  `mcp.noCallerIdentity` let it through. Stamped as `meta.anonymous`; it
+   *  grants nothing (no ACL elevation). Set by `agent_start`, never by input. */
+  anonymousCaller?: boolean
   /** Attach policy override for THIS spawn (`agent_start.attach`). `false`
    *  forces an independent root even when a parent is derivable; `true` opts
    *  in to attaching under the derived parent even under an `on-request`
@@ -5903,6 +5907,7 @@ async function spawnAgentSessionOnce(
     // Always present: every spawn records at least its resolved `role`.
     const spawnDescriptorMeta = (): Record<string, string> => ({
       ...(input.boardId ? { boardId: input.boardId } : {}),
+      ...(input.anonymousCaller ? { anonymous: "claude-code" } : {}),
       ...workflowOwnerMeta(input.workflowOwner),
       ...(appBoundary ? boundaryMeta(appBoundary) : {}),
       ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
