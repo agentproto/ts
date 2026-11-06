@@ -92,7 +92,14 @@ import {
 } from "./stdio-mount-gate.js"
 import type { AllowlistEntry } from "./command-allowlist.js"
 import { spawnAdmissionReport } from "./action-hooks/spawn-admission-counters.js"
-import { ANONYMOUS_SEND_RULE, decide, type Principal } from "./permissions.js"
+import {
+  ANONYMOUS_SEND_RULE,
+  REPLY_RULE,
+  decide,
+  isUnverifiedMessageSender,
+  type PermissionContext,
+  type Principal,
+} from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
@@ -8771,11 +8778,23 @@ code { color: #9ad; }
     // The same shared context as `message_send` / `message_reply`, including
     // any explicit `defaults.messaging.grants`; `operatorLabelOf` is what
     // makes a sender's `session-label://<label>` principal resolvable.
-    const policy = buildMessagingPermissionContext({
+    const basePolicy = buildMessagingPermissionContext({
       defaults: messaging,
       registry,
       workspaceOfCwd: createWorkspaceOfCwd(),
     })
+    // A reply to a message the sender received is admitted whatever the
+    // relation (permissions.ts REPLY_RULE).
+    const policy: PermissionContext =
+      sender && typeof b.replyTo === "string" && b.replyTo.startsWith("msg_")
+        ? {
+            ...basePolicy,
+            reply: {
+              messageId: b.replyTo,
+              originalSenderOf: (sid, mid) => registry.findReceivedMessage(sid, mid)?.from.sessionId,
+            },
+          }
+        : basePolicy
     const principal: Principal = sender
       ? { kind: "session", session: sender }
       : { kind: "operator", via: "anonymous-local" }
@@ -8784,7 +8803,10 @@ code { color: #9ad; }
     const relation = decision.relation
     // Admitted only because the sender is an unverified (claimed) identity:
     // prefix the text; `decide("session.message.interrupt")` already caps it.
-    const unverifiedLabel = sender !== undefined && decision.allow && decision.rule === ANONYMOUS_SEND_RULE
+    const unverifiedLabel =
+      sender !== undefined &&
+      decision.allow &&
+      (decision.rule === ANONYMOUS_SEND_RULE || (decision.rule === REPLY_RULE && isUnverifiedMessageSender(sender)))
     if (decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
         senderId: sender?.id,
@@ -8851,7 +8873,9 @@ code { color: #9ad; }
           // A human operator keeps `interrupt`; session senders follow
           // `defaults.messaging.agentInterrupt` (AIP-46: hosts SHOULD NOT grant
           // it to session senders by default — they get `steer` instead).
-          ...(interruptDecision.allow ? { allowInterrupt: true } : {}),
+          ...(interruptDecision.allow && !(sender && policy.reply?.originalSenderOf(sender.id, policy.reply.messageId) === recipient.id)
+            ? { allowInterrupt: true }
+            : {}),
         },
         messaging.deliveryApply,
         parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
