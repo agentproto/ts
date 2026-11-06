@@ -583,6 +583,8 @@ export interface RegisterAgentToolsOptions {
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
    *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** `delivery.apply` for the message tools (dead-recipient route). */
+  deliveryApply?: RegisterMessageToolsOptions["deliveryApply"]
   /** config.json `defaults.messaging.anonymousSend` - "label" (default) or
    *  "block". Forwarded to `message_send` / `message_reply` and
    *  `permissions_explain`. */
@@ -627,6 +629,7 @@ export function registerAgentTools(
     messagingPeerGroups,
     messagingGrants,
     messagingAgentInterrupt,
+    deliveryApply,
     messagingAnonymousSend,
     noCallerIdentity,
     requestAnonymousMessageApproval,
@@ -1460,6 +1463,7 @@ export function registerAgentTools(
     ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
     ...(noCallerIdentity ? { noCallerIdentity } : {}),
     ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
+    ...(deliveryApply ? { deliveryApply } : {}),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
   registerPermissionsTools(server, {

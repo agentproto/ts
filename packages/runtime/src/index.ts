@@ -4531,6 +4531,7 @@ export async function createGateway(
       messagingPeerGroups: messagingDefaults.peerGroups,
       messagingGrants: messagingDefaults.grants,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
+      ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
       messagingAnonymousSend: messagingDefaults.anonymousSend,
       noCallerIdentity: mcpNoCallerIdentity,
       // `ask`: park an identity-less send on a human approval. The requester

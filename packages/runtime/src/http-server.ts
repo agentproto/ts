@@ -79,6 +79,7 @@ import {
 } from "./session-message.js"
 import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
 import { type LedgerLine, type LedgerOutcome, type Level, shadowDeliveryGrant } from "@agentproto/delivery"
+import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
@@ -8815,7 +8816,7 @@ code { color: #9ad; }
     }
     const provenance = sender ? `${relation}:${sender.id}` : "user"
     const ledgerPath = ledgerPathOverride ?? join(agentprotoHome(), DELIVERY_LEDGER_FILE)
-    const writeLedger = (outcome: LedgerOutcome): void => {
+    const writeLedger = (outcome: LedgerOutcome, routed?: { applied: boolean; routedTo?: string }): void => {
       const line: LedgerLine = {
         ts: new Date().toISOString(),
         producer: "message",
@@ -8827,29 +8828,44 @@ code { color: #9ad; }
         level: urgencyLevel(msg.urgency),
         cap: 3,
         rule: "sender-urgency",
-        applied: false,
+        applied: routed?.applied === true,
         grant: shadowDeliveryGrant({
           producer: {},
           subject: sender?.id ?? "user",
           target: id,
         }),
         outcome,
+        ...(routed?.routedTo !== undefined ? { routedTo: routed.routedTo } : {}),
         messageId: msg.id,
       }
       appendLedgerLine(ledgerPath, line)
     }
     try {
-      const r = await registry.sendMessage(msg, {
-        source: sender ? provenance : "user",
-        origin: provenance,
-        decision,
-        // A human operator keeps `interrupt`; session senders follow
-        // `defaults.messaging.agentInterrupt` (AIP-46: hosts SHOULD NOT grant
-        // it to session senders by default — they get `steer` instead).
-        ...(interruptDecision.allow ? { allowInterrupt: true } : {}),
+      const routed = await sendMessageWithDeadRecipientRoute(
+        registry,
+        msg,
+        {
+          source: sender ? provenance : "user",
+          origin: provenance,
+          decision,
+          // A human operator keeps `interrupt`; session senders follow
+          // `defaults.messaging.agentInterrupt` (AIP-46: hosts SHOULD NOT grant
+          // it to session senders by default — they get `steer` instead).
+          ...(interruptDecision.allow ? { allowInterrupt: true } : {}),
+        },
+        messaging.deliveryApply,
+        parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
+      )
+      const r = routed.result
+      writeLedger(routed.routedTo !== undefined ? "retargeted" : messageOutcome(r), routed)
+      json(200, {
+        ok: true,
+        id: routed.routedTo ?? id,
+        relation,
+        ...r,
+        ...(routed.routedTo ? { routedFrom: id } : {}),
+        ...(unverifiedLabel ? { unverified: true } : {}),
       })
-      writeLedger(messageOutcome(r))
-      json(200, { ok: true, id, relation, ...r, ...(unverifiedLabel ? { unverified: true } : {}) })
     } catch (err) {
       writeLedger("dropped")
       if (err instanceof SessionRetiredError) {

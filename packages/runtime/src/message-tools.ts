@@ -10,11 +10,22 @@
  * gateway-verified caller identity and the session tree.
  */
 
+import { homedir } from "node:os"
+import { join } from "node:path"
+
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 import type { Grant } from "@agentproto/policy"
 
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import {
+  shadowDeliveryGrant,
+  type DeliveryApplyConfig,
+  type Level,
+} from "@agentproto/delivery"
+
+import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
@@ -82,6 +93,12 @@ export interface RegisterMessageToolsOptions {
    *  resolve true only when it is approved. Absent ⇒ `ask` degrades to the
    *  `block` refusal (reported in the error text). */
   requestAnonymousMessageApproval?: (detail: AnonymousMessageApprovalDetail) => Promise<boolean>
+  /** `delivery.apply` (K6 funnel). A `message.*` type opted in routes a
+   *  message to a dead recipient to its live parent. Absent = off. */
+  deliveryApply?: DeliveryApplyConfig
+  /** Delivery ledger file for the lines the funnel writes (tests). Default
+   *  `<AGENTPROTO_HOME or ~/.agentproto>/delivery-ledger.jsonl`. */
+  ledgerPath?: string
 }
 
 /** What an `ask` approval gate is asked to allow. */
@@ -269,6 +286,50 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         "read your inbox through your harness hook instead.",
     })
 
+  /** One ledger line per funnel-applied send (the producer is `message`; the
+   *  target stays the addressed session, `routedTo` names the parent that
+   *  took it). Nothing is written while the funnel is off. */
+  const writeFunnelLedger = (
+    msg: SessionMessage,
+    self: SessionDescriptor | undefined,
+    targetId: string,
+    r: { queued: boolean; delivered: { via: string } | null; refused?: "inbox-full" },
+    routedTo: string | undefined,
+  ): void => {
+    const level: Level = msg.urgency === "fyi" ? 1 : msg.urgency === "next-turn" ? 2 : 3
+    const outcome =
+      r.refused !== undefined
+        ? "dropped"
+        : routedTo !== undefined
+          ? "retargeted"
+          : r.queued
+            ? "queued"
+            : r.delivered?.via === "inbox"
+              ? "inbox"
+              : "delivered"
+    appendLedgerLine(
+      opts.ledgerPath ??
+        join(process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto"), DELIVERY_LEDGER_FILE),
+      {
+        ts: new Date().toISOString(),
+        producer: "message",
+        subscriptionId: "message:tool",
+        target: { kind: "session", id: targetId },
+        eventId: msg.id,
+        type: `message.${msg.kind ?? "message"}`,
+        subject: self?.id ?? "claude-code",
+        level,
+        cap: 3,
+        rule: "sender-urgency",
+        applied: true,
+        grant: shadowDeliveryGrant({ producer: {}, subject: self?.id ?? "claude-code", target: targetId }),
+        outcome,
+        ...(routedTo !== undefined ? { routedTo } : {}),
+        messageId: msg.id,
+      },
+    )
+  }
+
   /** Shared send path for `message_send` / `message_reply`. */
   const send = async (
     tool: string,
@@ -356,15 +417,24 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     const provenance = self ? `${relation}:${self.id}` : "anonymous:claude-code"
     try {
       const interrupt = decide(principal, "session.message.interrupt", resource, policy)
-      const r = await registry.sendMessage(msg, {
-        source: provenance,
-        origin: provenance,
-        decision,
-        ...(interrupt.allow && !labelled ? { allowInterrupt: true } : {}),
-      })
+      const routed = await sendMessageWithDeadRecipientRoute(
+        registry,
+        msg,
+        {
+          source: provenance,
+          origin: provenance,
+          decision,
+          ...(interrupt.allow && !labelled ? { allowInterrupt: true } : {}),
+        },
+        opts.deliveryApply,
+        parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
+      )
+      const r = routed.result
+      if (routed.applied) writeFunnelLedger(msg, self, recipient.id, r, routed.routedTo)
       return ok({
         messageId: r.messageId,
-        to: recipient.id,
+        to: routed.routedTo ?? recipient.id,
+        ...(routed.routedTo ? { routedFrom: recipient.id } : {}),
         relation,
         delivered: r.delivered,
         queued: r.queued,

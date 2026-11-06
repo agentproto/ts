@@ -884,6 +884,7 @@ export function createOrchestratorMcpServerFactory(
       messagingGrants: deps.messagingGrants ?? messagingDefaults.grants,
       messagingPeerBinding: deps.messagingPeerBinding ?? messagingDefaults.peerBinding,
       messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
+      ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
       messagingAnonymousSend: deps.messagingAnonymousSend ?? messagingDefaults.anonymousSend,
       daemonMcpUrl: deps.daemonMcpUrl,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),
