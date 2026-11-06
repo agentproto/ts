@@ -738,6 +738,138 @@ describe("Bureau approval bridge robustness", () => {
     await waitFor(() => (second.engine.listRelayOutbox().length === 0 ? true : undefined))
   })
 
+  describe("boot sweep for a decision lost before the outbox write", () => {
+    /** Create an approval, then decide it with the creating bridge already gone,
+     *  as if the daemon died after the engine saved the decision and before the
+     *  outbox write. Returns the home dir to restart on. */
+    async function decidedWithoutOutbox(requestId: string, overrides: Record<string, unknown> = {}) {
+      const home = tmpHome()
+      const first = newEngine(home)
+      const creator = createBureauApprovalBridge({
+        engine: first.engine,
+        sessionEvents: first.bus,
+        resolveImport,
+        fetch: scriptedFetch([json(200, {})]).fetch,
+        log: () => {},
+        retry: RETRY,
+      })
+      const { approvalId } = await requestApproval(creator, requestId, overrides)
+      creator.dispose()
+      await decide(first.engine, approvalId)
+      expect(first.engine.listRelayOutbox()).toEqual([])
+      expect(first.engine.isRelayed(approvalId)).toBe(false)
+      return { home, approvalId }
+    }
+
+    function boot(home: string, answers: Array<Response | Error>) {
+      const second = newEngine(home)
+      const up = scriptedFetch(answers)
+      const bridge = createBureauApprovalBridge({
+        engine: second.engine,
+        sessionEvents: second.bus,
+        resolveImport,
+        fetch: up.fetch,
+        log: () => {},
+        retry: RETRY,
+      })
+      cleanups.push(() => bridge.dispose())
+      return { engine: second.engine, calls: up.calls }
+    }
+
+    it("relays a decided approval that has no outbox entry and no marker, then writes the marker", async () => {
+      const { home, approvalId } = await decidedWithoutOutbox("req_sweep")
+      const { engine, calls } = boot(home, [json(200, { status: "approved" })])
+
+      await waitFor(() => calls[0])
+      expect(calls[0]).toEqual({ decision: "approved", inputSha256: INPUT_SHA, decisionRef: approvalId })
+      await waitFor(() => (engine.isRelayed(approvalId) ? true : undefined))
+      expect(engine.listRelayOutbox()).toEqual([])
+      expect(readFileSync(join(home, approvalId, "relayed.json"), "utf8")).not.toContain("device-secret")
+    })
+
+    it("relays a denied approval the same way", async () => {
+      const home = tmpHome()
+      const first = newEngine(home)
+      const creator = createBureauApprovalBridge({
+        engine: first.engine,
+        sessionEvents: first.bus,
+        resolveImport,
+        fetch: scriptedFetch([json(200, {})]).fetch,
+        log: () => {},
+      })
+      const { approvalId } = await requestApproval(creator, "req_sweep_deny")
+      creator.dispose()
+      await decide(first.engine, approvalId, "deny")
+      const { calls } = boot(home, [json(200, { status: "denied" })])
+      await waitFor(() => calls[0])
+      expect(calls[0]?.["decision"]).toBe("denied")
+    })
+
+    it("does not relay again once a relay has succeeded (marker present)", async () => {
+      const home = tmpHome()
+      const first = newEngine(home)
+      const live = scriptedFetch([json(200, { status: "approved" })])
+      const bridge = createBureauApprovalBridge({
+        engine: first.engine,
+        sessionEvents: first.bus,
+        resolveImport,
+        fetch: live.fetch,
+        log: () => {},
+        retry: RETRY,
+      })
+      const { approvalId } = await requestApproval(bridge, "req_marked")
+      await decide(first.engine, approvalId)
+      await waitFor(() => (first.engine.isRelayed(approvalId) ? true : undefined))
+      bridge.dispose()
+      expect(live.calls).toHaveLength(1)
+
+      const { calls } = boot(home, [json(200, {})])
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(calls).toHaveLength(0)
+    })
+
+    it("marks a final Bureau answer as relayed too", async () => {
+      const { home, approvalId } = await decidedWithoutOutbox("req_final_marker")
+      const { engine, calls } = boot(home, [json(409, { error: "already_decided" })])
+      await waitFor(() => calls[0])
+      await waitFor(() => (engine.isRelayed(approvalId) ? true : undefined))
+    })
+
+    it("does not relay when the Bureau request has expired", async () => {
+      const { home, approvalId } = await decidedWithoutOutbox("req_expired")
+      const file = join(home, approvalId, "request.json")
+      const record = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>
+      record["expiresAt"] = new Date(Date.now() - 60_000).toISOString()
+      writeFileSync(file, JSON.stringify(record))
+
+      const { engine, calls } = boot(home, [json(200, {})])
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(calls).toHaveLength(0)
+      expect(engine.isRelayed(approvalId)).toBe(false)
+    })
+
+    it("ignores approvals of other kinds and undecided ones", async () => {
+      const home = tmpHome()
+      const first = newEngine(home)
+      first.engine.request(
+        { kind: "other.kind", title: "x", preview: {}, payload: { importAlias: "bureau", requestId: "r", inputSha256: "s" } },
+        { operator: true },
+      )
+      const creator = createBureauApprovalBridge({
+        engine: first.engine,
+        sessionEvents: first.bus,
+        resolveImport,
+        fetch: scriptedFetch([json(200, {})]).fetch,
+        log: () => {},
+      })
+      await requestApproval(creator, "req_still_pending")
+      creator.dispose()
+      const { calls } = boot(home, [json(200, {})])
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(calls).toHaveLength(0)
+    })
+  })
+
   it("reuses the pending approval when the agent retries the same Bureau requestId", async () => {
     const { engine, bus } = newEngine(tmpHome())
     const bridge = createBureauApprovalBridge({

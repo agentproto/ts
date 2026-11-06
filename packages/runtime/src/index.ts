@@ -5176,6 +5176,9 @@ export async function createGateway(
         alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
         chatId: permissionTelegramCfg!.permissionTelegramChatId!,
         allowedUserIds: permissionTelegramCfg!.permissionTelegramUserIds!,
+        onError: err => {
+          console.warn(`[approval-telegram-bridge] ${err instanceof Error ? err.message : String(err)}`)
+        },
       })
     : undefined
   approvalTelegram?.start()

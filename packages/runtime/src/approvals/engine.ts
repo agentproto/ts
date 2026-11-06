@@ -37,15 +37,20 @@ import {
   defaultApprovalsHomeDir,
   loadAllApprovals,
   loadAllCardTickets,
+  hasRelayedMarker,
   loadAllRelayOutbox,
+  loadAllTelegramCards,
   payloadRelativePath,
   readCardTicket,
   readPayload,
   removeRelayOutbox,
+  removeTelegramCard,
   writeApprovalRecord,
   writeCardTicket,
   writePayload,
   writeRelayOutbox,
+  writeRelayedMarker,
+  writeTelegramCard,
 } from "./store.js"
 import {
   APPROVAL_CHANNELS,
@@ -61,6 +66,7 @@ import {
   type CardTicketErrorCode,
   type CardTicketRecord,
   type RelayOutboxEntry,
+  type TelegramCardEntry,
 } from "./types.js"
 
 export interface ApprovalRequestInput {
@@ -131,6 +137,18 @@ export interface ApprovalsEngine {
   removeRelayOutbox(id: string): void
   /** Every persisted undelivered decision, read from disk. */
   listRelayOutbox(): RelayOutboxEntry[]
+  /** Record that the decision reached the system that asked for it, so the
+   *  boot sweep does not relay it again. */
+  markRelayed(id: string): void
+  /** Whether {@link markRelayed} was called for this approval. */
+  isRelayed(id: string): boolean
+  /** Persist an open Telegram card next to the approval record, so a tap on it
+   *  still works after a daemon restart. Overwrites an earlier card. */
+  putTelegramCard(card: TelegramCardEntry): void
+  /** Drop the card once its message is closed, whatever the channel. */
+  removeTelegramCard(id: string): void
+  /** Every persisted open Telegram card, read from disk. */
+  listTelegramCards(): TelegramCardEntry[]
   /** Resolves once the approval leaves `pending` (approved/denied/expired),
    *  or after `timeoutMs` with whatever the current record is (still
    *  pending, most likely). Resolves immediately if already decided. */
@@ -445,6 +463,11 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
     putRelayOutbox: entry => writeRelayOutbox(homeDir, entry),
     removeRelayOutbox: id => removeRelayOutbox(homeDir, id),
     listRelayOutbox: () => loadAllRelayOutbox(homeDir),
+    markRelayed: id => writeRelayedMarker(homeDir, { approvalId: id, relayedAt: new Date().toISOString() }),
+    isRelayed: id => hasRelayedMarker(homeDir, id),
+    putTelegramCard: card => writeTelegramCard(homeDir, card),
+    removeTelegramCard: id => removeTelegramCard(homeDir, id),
+    listTelegramCards: () => loadAllTelegramCards(homeDir),
     wait,
     decideWeb,
     decideTelegram,

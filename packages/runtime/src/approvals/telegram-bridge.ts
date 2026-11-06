@@ -12,6 +12,10 @@
  * another chat are refused. When the approval is decided or expires through any
  * other channel, the buttons are stripped and the outcome is appended.
  *
+ * Each open card is persisted next to its approval (`telegram-card.json`), so
+ * a tap on a card sent before a daemon restart still decides, and a card whose
+ * approval was decided while the daemon was down is closed once at `start()`.
+ *
  * Nothing here logs the bot token, a chat id or a user id.
  */
 
@@ -28,7 +32,10 @@ const MAX_FIELD_CHARS = 500
 
 export interface ApprovalTelegramBridgeOptions {
   events: Pick<SessionEventBus, "onAny">
-  engine: Pick<ApprovalsEngine, "get" | "decideTelegram">
+  engine: Pick<
+    ApprovalsEngine,
+    "get" | "decideTelegram" | "putTelegramCard" | "removeTelegramCard" | "listTelegramCards"
+  >
   telegramCreds: TelegramBotCredsStore
   /** Bot credential alias (`telegram_bot_token_set`). */
   alias: string
@@ -123,11 +130,21 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
     return json.result ?? {}
   }
 
+  function track(token: string, t: Tracked): void {
+    byToken.set(token, t)
+    tokenByApproval.set(t.approvalId, token)
+  }
+
   function forget(token: string): Tracked | undefined {
     const t = byToken.get(token)
     if (!t) return undefined
     byToken.delete(token)
     tokenByApproval.delete(t.approvalId)
+    try {
+      opts.engine.removeTelegramCard(t.approvalId)
+    } catch (err) {
+      reportError(err)
+    }
     return t
   }
 
@@ -172,11 +189,39 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
         ],
       },
     })
-    byToken.set(token, { approvalId, messageId: Number(result.message_id), text })
-    tokenByApproval.set(approvalId, token)
+    const messageId = Number(result.message_id)
+    track(token, { approvalId, messageId, text })
+    try {
+      opts.engine.putTelegramCard({ token, approvalId, messageId, text })
+    } catch (err) {
+      reportError(err)
+    }
     // Decided elsewhere while the send was in flight: its event found nothing to close.
     const now = opts.engine.get(approvalId)
     if (now && now.status !== "pending") await finish(approvalId, outcomeLine(now))
+  }
+
+  /** Cards persisted by an earlier run: a still-pending approval is tracked
+   *  again; anything else gets its message closed once and its file removed. */
+  async function restoreCards(): Promise<void> {
+    for (const card of opts.engine.listTelegramCards()) {
+      const t: Tracked = { approvalId: card.approvalId, messageId: card.messageId, text: card.text }
+      const record = opts.engine.get(card.approvalId)
+      if (record && record.status === "pending") {
+        if (!tokenByApproval.has(card.approvalId)) track(card.token, t)
+        continue
+      }
+      try {
+        await closeMessage(t, record ? outcomeLine(record) : "No longer pending.")
+      } catch (err) {
+        reportError(err)
+      }
+      try {
+        opts.engine.removeTelegramCard(card.approvalId)
+      } catch (err) {
+        reportError(err)
+      }
+    }
   }
 
   async function answer(queryId: string, text: string): Promise<void> {
@@ -201,6 +246,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
           finish(ev.approvalId, "Expired: nothing was approved.").catch(reportError)
         }
       })
+      restoreCards().catch(reportError)
     },
 
     stop() {
