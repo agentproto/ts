@@ -1,6 +1,6 @@
 /**
  * The `?surface=approval-cards` MCP connection: the app-only
- * `approval_card_decide`, one card resource per pending approval, and the
+ * `approval_card_decide` and `approval_card_list`, one card resource per pending approval, and the
  * model-visible `approval_pending` widget tool with its list resource (what
  * Claude Desktop renders: it draws a widget from the tool DEFINITION's
  * `_meta.ui.resourceUri`, so a card that only a per-result `_meta` points at
@@ -16,7 +16,7 @@ import { defineTool, catchErrors, type ToolContext } from "@agentproto/tool"
 import type { DriverHandle } from "@agentproto/driver"
 import { registerUiResource, toMcpTool } from "@agentproto/mcp-server"
 
-import { registerApprovalCardDecideTool } from "./card-tool.js"
+import { registerApprovalCardDecideTool, registerApprovalCardListTool, requestedByText } from "./card-tool.js"
 import {
   APPROVAL_PENDING_RESOURCE_URI,
   approvalCardResourceUri,
@@ -24,7 +24,6 @@ import {
   renderPendingApprovalsHtml,
 } from "./card.js"
 import type { ApprovalsEngine } from "./engine.js"
-import type { ApprovalRecord } from "./types.js"
 
 const pendingInputSchema = z.object({})
 type PendingInput = z.infer<typeof pendingInputSchema>
@@ -59,10 +58,6 @@ const pendingTool = defineTool<PendingInput, PendingOutput, PendingContext>({
   approval: "auto",
   riskLevel: 0,
 })
-
-function requestedByText(record: ApprovalRecord): string {
-  return "sessionId" in record.requestedBy ? record.requestedBy.sessionId : "operator"
-}
 
 function pendingDriver(): DriverHandle {
   return {
@@ -116,7 +111,7 @@ export interface ApprovalCardSurfaceContext {
 /**
  * The `?surface=approval-cards` server, or `undefined` for any other
  * connection. It is a cards-only surface: `approval_card_decide`,
- * `approval_pending`, the pending list resource and one card resource per
+ * `approval_card_list`, `approval_pending`, the pending list resource and one card resource per
  * pending approval, and NOTHING else (no root tools, no deferral wrapper),
  * so the Claude Desktop entry that dials it does not repeat the daemon's whole
  * tool list next to the main `agentproto` entry.
@@ -140,18 +135,19 @@ export function buildApprovalCardsServer(
   if (ctx.surface !== "approval-cards" || ctx.callerSessionId) return undefined
   const server = new McpServer({ name: info.name, version: info.version })
   registerApprovalCardDecideTool(server, engine)
+  registerApprovalCardListTool(server, engine)
   registerApprovalPendingTool(server, engine)
   registerUiResource(server, {
     name: "approval-pending",
     uri: APPROVAL_PENDING_RESOURCE_URI,
-    html: () => renderPendingApprovalsHtml(engine),
+    html: () => renderPendingApprovalsHtml(),
     description: "Pending human approvals",
   })
   for (const pending of engine.list({ status: "pending" })) {
     registerUiResource(server, {
       name: `approval-${pending.id}`,
       uri: approvalCardResourceUri(pending.id),
-      html: () => renderApprovalCardHtml(engine, pending.id),
+      html: () => renderApprovalCardHtml(pending.id),
       description: "Human approval card",
     })
   }

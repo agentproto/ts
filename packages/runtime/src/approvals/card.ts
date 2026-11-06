@@ -1,32 +1,24 @@
 /**
- * The `ui_card` channel's HTML — a self-contained, no-network MCP Apps
- * panel served as `ui://agentproto/approval/<id>`. Its producer function
- * runs on EVERY `resources/read` (never once at registration): each read
- * mints a fresh one-time ticket via `ApprovalsEngine.mintCardTicket`,
- * which — by construction (`mintCardTicket` overwrites the single stored
- * ticket for that approval id) — invalidates whatever ticket an earlier
- * read handed out. The ticket lives ONLY in this HTML's inline `<script>`;
- * it is never returned from any tool call.
+ * The `ui_card` channel's HTML: self-contained, no-network MCP Apps pages
+ * served as `ui://agentproto/approval/pending` (every pending approval) and
+ * `ui://agentproto/approval/<id>` (one approval).
+ *
+ * Both are templates. A host may read a `ui://` resource once per connection
+ * and reuse that HTML on every later tool call, so the HTML holds no approval
+ * data and no ticket. After the `ui/initialize` handshake the page asks the
+ * app-only `approval_card_list` tool for the cards (each with a freshly minted
+ * one-time ticket) and renders them itself, again on every
+ * `ui/notifications/tool-result`, after each decision and every 30 s while
+ * visible. A ticket therefore exists only in the page's memory and is only
+ * ever returned by that app-only tool.
  */
-
-import type { ApprovalsEngine } from "./engine.js"
-import type { ApprovalRecord } from "./types.js"
 
 export function approvalCardResourceUri(id: string): string {
   return `ui://agentproto/approval/${id}`
 }
 
-function escHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-}
-
 const MSG_NOT_WAITING = "This request is no longer waiting for a decision."
-const MSG_EXPIRED = "This card has expired. Open it again to decide."
+const MSG_EXPIRED = "This card was refreshed. Click again to decide."
 const MSG_GENERIC = "Something went wrong. Try again."
 
 /** Ordered `[regex source, message]` rules. The same table is inlined into
@@ -45,127 +37,6 @@ export function humanizeApprovalError(raw: unknown): string {
   }
   return MSG_GENERIC
 }
-
-const MAX_ROWS = 40
-const MAX_DEPTH = 4
-
-/** "invoiceNumber" / "invoice_number" -> "Invoice number". */
-function humanizeKey(key: string): string {
-  const words = key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_\-.]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase()
-  return words.length === 0 ? "Value" : words.charAt(0).toUpperCase() + words.slice(1)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-}
-
-function scalarText(value: unknown): string | undefined {
-  if (value === null || value === undefined) return undefined
-  if (typeof value === "string") return value
-  if (typeof value === "boolean") return value ? "Yes" : "No"
-  if (typeof value === "number" || typeof value === "bigint") return String(value)
-  return undefined
-}
-
-/** Flatten any value into label/value rows. Nested labels are joined with " / ". */
-function flattenRows(value: unknown, label: string, depth: number, out: Array<[string, string]>): void {
-  if (out.length >= MAX_ROWS) return
-  const scalar = scalarText(value)
-  if (scalar !== undefined) {
-    out.push([label, scalar])
-    return
-  }
-  if (value === null || value === undefined) return
-  if (Array.isArray(value)) {
-    if (value.length === 0) return
-    const allScalar = value.every(item => scalarText(item) !== undefined)
-    if (allScalar) {
-      out.push([label, value.map(item => scalarText(item) ?? "").join(", ")])
-      return
-    }
-    value.forEach((item, index) => {
-      flattenRows(item, `${label} ${index + 1}`, depth + 1, out)
-    })
-    return
-  }
-  if (isRecord(value)) {
-    if (depth >= MAX_DEPTH) return
-    for (const [key, child] of Object.entries(value)) {
-      flattenRows(child, label ? `${label} / ${humanizeKey(key)}` : humanizeKey(key), depth + 1, out)
-    }
-  }
-}
-
-function humanSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return ""
-  if (bytes < 1024) return `${Math.round(bytes)} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1).replace(/\.0$/, "")} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`
-}
-
-function addressList(value: unknown): string {
-  if (Array.isArray(value)) return value.map(v => scalarText(v) ?? "").filter(s => s.length > 0).join(", ")
-  return scalarText(value) ?? ""
-}
-
-/** Values long enough to be clipped to 3 lines carry their full text in a
- *  tooltip and in a visually hidden span, so assistive tech reads the whole
- *  value (the clipped copy is aria-hidden to avoid reading it twice). */
-const TITLE_MIN_LENGTH = 80
-
-function ddHtml(value: string): string {
-  if (value.length > TITLE_MIN_LENGTH || value.includes("\n")) {
-    return `<dd title="${escHtml(value)}"><span aria-hidden="true">${escHtml(value)}</span><span class="sr-only">${escHtml(value)}</span></dd>`
-  }
-  return `<dd>${escHtml(value)}</dd>`
-}
-
-function renderMail(preview: Record<string, unknown>): string {
-  const to = addressList(preview.to)
-  const cc = addressList(preview.cc)
-  const subject = scalarText(preview.subject) ?? ""
-  const body = scalarText(preview.body) ?? ""
-  const attachments = Array.isArray(preview.attachments)
-    ? preview.attachments.filter(isRecord).map(a => {
-        const name = scalarText(a.fileName) ?? ""
-        const size = typeof a.sizeBytes === "number" ? humanSize(a.sizeBytes) : ""
-        return size ? `${name} (${size})` : name
-      })
-    : []
-  const rows: Array<[string, string]> = []
-  rows.push(["To", to])
-  if (cc.length > 0) rows.push(["Cc", cc])
-  rows.push(["Subject", subject])
-  const head = rows.map(([k, v]) => `<dt>${escHtml(k)}</dt>${ddHtml(v)}`).join("")
-  const attach =
-    attachments.length > 0
-      ? `<div class="attachments"><div class="label">Attachments</div><ul>${attachments
-          .map(a => `<li>${escHtml(a)}</li>`)
-          .join("")}</ul></div>`
-      : ""
-  return `<dl class="mail">${head}</dl><div class="body">${escHtml(body)}</div>${attach}`
-}
-
-function renderPreview(record: ApprovalRecord): string {
-  const preview = record.preview
-  if (isRecord(preview) && preview.kind === "mail") return renderMail(preview)
-  const rows: Array<[string, string]> = []
-  if (isRecord(preview)) {
-    for (const [key, value] of Object.entries(preview)) flattenRows(value, humanizeKey(key), 1, rows)
-  } else {
-    flattenRows(preview, "Details", 1, rows)
-  }
-  if (rows.length === 0) return ""
-  return `<dl class="list">${rows
-    .map(([k, v]) => `<dt>${escHtml(k)}</dt>${ddHtml(v)}`)
-    .join("")}</dl>`
-}
-
 
 /** Colours come from the host's MCP Apps CSS variables when it sends them,
  *  else from the host theme (`data-theme`, set by the script), else from
@@ -203,8 +74,10 @@ const PAGE_STYLE = `
   button.primary { background: var(--ap-fg); border-color: var(--ap-fg); color: var(--ap-bg); }
   button:focus-visible { outline: 2px solid var(--ap-fg); outline-offset: 2px; }
   button:disabled { opacity: 0.5; cursor: default; }
-  #status { margin-top: 8px; font-size: 12px; color: var(--ap-muted); }
-  #status:empty { display: none; }
+  .status { margin-top: 8px; font-size: 12px; color: var(--ap-muted); }
+  .status:empty { display: none; }
+  #note:empty { display: none; }
+  .card + .card { border-top: 1px solid var(--ap-border); margin-top: 12px; padding-top: 12px; }
 `
 
 /**
@@ -222,6 +95,7 @@ const BRIDGE_JS = `
   var _hostContext = {};
   var _lastHeight = -1;
   var _sizing = false;
+  var onToolResult = null;
 
   function post(msg) { window.parent.postMessage(msg, '*'); }
 
@@ -304,6 +178,8 @@ const BRIDGE_JS = `
     } else if (msg.method === 'ui/notifications/host-context-changed') {
       applyHostContext(msg.params);
       reportSize();
+    } else if (msg.method === 'ui/notifications/tool-result') {
+      if (typeof onToolResult === 'function') onToolResult();
     }
   });
 
@@ -318,34 +194,20 @@ const BRIDGE_JS = `
     });
   }
 
-  function connect(onReady) {
+  function connect(onReady, onFail) {
     initBridge().then(function () {
       if (onReady) onReady();
       startSizing();
-    }, startSizing);
+    }, function () {
+      if (onFail) onFail();
+      startSizing();
+    });
   }
 `
 
+
 function pageScript(body: string): string {
   return `<script>\n(function () {${BRIDGE_JS}${body}})();\n</script>`
-}
-
-/** Static HTML for a state with nothing to decide. Still self-contained and
- *  network-free; it still reports its size so the host shrinks the frame. */
-function messageHtml(title: string | undefined, message: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${PAGE_STYLE}</style></head><body>
-${title === undefined ? "" : `<h3>${escHtml(title)}</h3>`}
-<p>${escHtml(message)}</p>
-${pageScript("\n  connect();\n")}
-</body></html>`
-}
-
-function decidedHtml(record: ApprovalRecord): string {
-  return messageHtml(record.title, MSG_NOT_WAITING)
-}
-
-function notFoundHtml(): string {
-  return messageHtml(undefined, MSG_NOT_WAITING)
 }
 
 /** JSON safe to inline in a `<script>` block. */
@@ -356,25 +218,48 @@ function scriptJson(value: unknown): string {
     .replace(new RegExp("\\u2029", "g"), "\\u2029")
 }
 
-/** The earlier of the approval's own expiry and the card ticket's, as an ISO
- *  string the in-page script turns into "expires in 12 min". */
-function earliestExpiry(...candidates: Array<string | undefined>): string | undefined {
-  let best: { iso: string; ms: number } | undefined
-  for (const iso of candidates) {
-    if (iso === undefined) continue
-    const ms = Date.parse(iso)
-    if (Number.isNaN(ms)) continue
-    if (best === undefined || ms < best.ms) best = { iso, ms }
-  }
-  return best?.iso
-}
+const MSG_NOTHING_TO_APPROVE = "Nothing to approve"
+const MSG_LOADING = "Loading"
+const MSG_LOAD_FAILED = "Could not load. Try again."
 
-/** Script pieces every card page needs: the error table, the `tools/call`
- *  wrapper, error humanizing and the relative-expiry text. Shared by the
- *  single-card page and the pending-list page so they cannot drift. */
-function cardSharedJs(): string {
-  return `var ERROR_RULES = ${scriptJson(ERROR_RULES)};
+/** Rows kept per card and nesting followed when flattening a preview. */
+const MAX_ROWS = 40
+const MAX_DEPTH = 4
+/** Values longer than this carry their full text in a tooltip and a visually
+ *  hidden span (the clipped copy is aria-hidden to avoid reading it twice). */
+const TITLE_MIN_LENGTH = 80
+const REFRESH_MS = 30_000
+
+/** The widget behind the model-visible `approval_pending` tool: every
+ *  pending approval as its own card. Not an approval id. */
+export const APPROVAL_PENDING_RESOURCE_URI = approvalCardResourceUri("pending")
+
+/**
+ * The one page script behind both card resources. Everything that comes from
+ * an approval is written with `textContent`, never `innerHTML`. Plain ES5.
+ * `String.raw` keeps its regex and escape sequences literal.
+ */
+function cardPageJs(approvalId: string | null): string {
+  return String.raw`
+  var APPROVAL_ID = ${scriptJson(approvalId)};
+  var ERROR_RULES = ${scriptJson(ERROR_RULES)};
   var MSG_GENERIC = ${scriptJson(MSG_GENERIC)};
+  var MSG_NOT_WAITING = ${scriptJson(MSG_NOT_WAITING)};
+  var MSG_NOTHING = ${scriptJson(MSG_NOTHING_TO_APPROVE)};
+  var MSG_LOAD_FAILED = ${scriptJson(MSG_LOAD_FAILED)};
+  var MAX_ROWS = ${MAX_ROWS};
+  var MAX_DEPTH = ${MAX_DEPTH};
+  var TITLE_MIN_LENGTH = ${TITLE_MIN_LENGTH};
+  var REFRESH_MS = ${REFRESH_MS};
+  var FINAL_TEXT = { approved: 'Approved', consumed: 'Approved', denied: 'Refused', expired: 'Expired' };
+
+  var _ready = false;
+  var _cards = {};
+  var _order = [];
+  var _deciding = 0;
+  var _refreshSeq = 0;
+  var _container = document.getElementById('cards');
+  var _note = document.getElementById('note');
 
   function callTool(name, args) {
     return rpcRequest('tools/call', { name: name, arguments: args || {} }).then(function (result) {
@@ -401,198 +286,306 @@ function cardSharedJs(): string {
     var hours = Math.round(mins / 60);
     if (hours < 24) return 'expires in ' + hours + ' h';
     return 'expires in ' + Math.round(hours / 24) + ' d';
-  }`
-}
+  }
 
-/** The widget behind the model-visible `approval_pending` tool: every
- *  pending approval as its own card. Not an approval id. */
-export const APPROVAL_PENDING_RESOURCE_URI = approvalCardResourceUri("pending")
+  function node(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
 
-const MSG_NOTHING_TO_APPROVE = "Nothing to approve"
+  function humanizeKey(key) {
+    var words = String(key)
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_.-]+/g, ' ')
+      .replace(/ +/g, ' ')
+      .trim()
+      .toLowerCase();
+    return words.length === 0 ? 'Value' : words.charAt(0).toUpperCase() + words.slice(1);
+  }
 
-const PENDING_STYLE = `
-  .card + .card { border-top: 1px solid var(--ap-border); margin-top: 12px; padding-top: 12px; }
-  .card .status { margin-top: 8px; font-size: 12px; color: var(--ap-muted); }
-  .card .status:empty { display: none; }
-`
+  function scalarText(v) {
+    if (v === null || v === undefined) return undefined;
+    if (typeof v === 'string') return v;
+    if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+    if (typeof v === 'number') return String(v);
+    return undefined;
+  }
 
-/**
- * One card per pending approval, each with its own freshly minted one-time
- * ticket (inline in the script only, like the single card). Deciding a card
- * calls `approval_card_decide` exactly as the single card does, then drops
- * that card. With nothing pending it is the "Nothing to approve" page.
- */
-export function renderPendingApprovalsHtml(engine: ApprovalsEngine): string {
-  const cards: Array<{ record: ApprovalRecord; ticket: string; expiresAt: string | undefined }> = []
-  for (const record of engine.list({ status: "pending" })) {
-    try {
-      const { ticket, expiresAt } = engine.mintCardTicket(record.id)
-      cards.push({ record, ticket, expiresAt: earliestExpiry(record.expiresAt, expiresAt) })
-    } catch {
-      // Decided or expired between the list and the mint: nothing to show.
+  function flattenRows(value, label, depth, out) {
+    if (out.length >= MAX_ROWS) return;
+    var scalar = scalarText(value);
+    if (scalar !== undefined) { out.push([label, scalar]); return; }
+    if (value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      var allScalar = true;
+      for (var i = 0; i < value.length; i++) if (scalarText(value[i]) === undefined) allScalar = false;
+      if (allScalar) {
+        var parts = [];
+        for (var j = 0; j < value.length; j++) parts.push(scalarText(value[j]));
+        out.push([label, parts.join(', ')]);
+        return;
+      }
+      for (var k = 0; k < value.length; k++) flattenRows(value[k], label + ' ' + (k + 1), depth + 1, out);
+      return;
+    }
+    if (isObj(value)) {
+      if (depth >= MAX_DEPTH) return;
+      var keys = Object.keys(value);
+      for (var n = 0; n < keys.length; n++) {
+        flattenRows(value[keys[n]], label ? label + ' / ' + humanizeKey(keys[n]) : humanizeKey(keys[n]), depth + 1, out);
+      }
     }
   }
-  if (cards.length === 0) return messageHtml(undefined, MSG_NOTHING_TO_APPROVE)
 
-  const markup = cards
-    .map(({ record, expiresAt }, i) => {
-      const expiryAttr = expiresAt === undefined ? "" : ` data-expires="${escHtml(expiresAt)}"`
-      return `<section class="card" id="card-${i}">
-<h3>${escHtml(record.title)}</h3>
-${renderPreview(record)}
-<div class="meta" id="expiry-${i}"${expiryAttr}></div>
-<div class="actions" id="actions-${i}">
-  <button id="deny-${i}" disabled>Refuse</button>
-  <button id="approve-${i}" class="primary" disabled>Approve</button>
-</div>
-<div class="status" id="status-${i}" role="status"></div>
-</section>`
-    })
-    .join("\n")
+  function humanSize(bytes) {
+    if (typeof bytes !== 'number' || !isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return Math.round(bytes) + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1).replace(/\.0$/, '') + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '') + ' MB';
+  }
 
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>${PAGE_STYLE}${PENDING_STYLE}</style>
-</head>
-<body>
-${markup}
-<p id="empty" hidden>${escHtml(MSG_NOTHING_TO_APPROVE)}</p>
-${pageScript(`
-  var CARDS = ${scriptJson(cards.map(c => ({ id: c.record.id, ticket: c.ticket })))};
-  var _left = CARDS.length;
-  ${cardSharedJs()}
+  function addressList(v) {
+    if (Array.isArray(v)) {
+      var out = [];
+      for (var i = 0; i < v.length; i++) {
+        var t = scalarText(v[i]);
+        if (t) out.push(t);
+      }
+      return out.join(', ');
+    }
+    return scalarText(v) || '';
+  }
 
-  function setBusy(i, busy) {
-    document.getElementById('approve-' + i).disabled = busy;
-    document.getElementById('deny-' + i).disabled = busy;
+  function addRow(dl, key, value) {
+    dl.appendChild(node('dt', '', key));
+    var dd = node('dd');
+    if (value.length > TITLE_MIN_LENGTH || value.indexOf('\n') >= 0) {
+      dd.setAttribute('title', value);
+      var clipped = node('span', '', value);
+      clipped.setAttribute('aria-hidden', 'true');
+      dd.appendChild(clipped);
+      dd.appendChild(node('span', 'sr-only', value));
+    } else {
+      dd.textContent = value;
+    }
+    dl.appendChild(dd);
+  }
+
+  function renderMail(preview) {
+    var wrap = node('div');
+    var head = node('dl', 'mail');
+    addRow(head, 'To', addressList(preview.to));
+    var cc = addressList(preview.cc);
+    if (cc.length > 0) addRow(head, 'Cc', cc);
+    addRow(head, 'Subject', scalarText(preview.subject) || '');
+    wrap.appendChild(head);
+    wrap.appendChild(node('div', 'body', scalarText(preview.body) || ''));
+    var names = [];
+    if (Array.isArray(preview.attachments)) {
+      for (var i = 0; i < preview.attachments.length; i++) {
+        var a = preview.attachments[i];
+        if (!isObj(a)) continue;
+        var name = scalarText(a.fileName) || '';
+        var size = humanSize(a.sizeBytes);
+        names.push(size ? name + ' (' + size + ')' : name);
+      }
+    }
+    if (names.length > 0) {
+      var box = node('div', 'attachments');
+      box.appendChild(node('div', 'label', 'Attachments'));
+      var ul = node('ul');
+      for (var j = 0; j < names.length; j++) ul.appendChild(node('li', '', names[j]));
+      box.appendChild(ul);
+      wrap.appendChild(box);
+    }
+    return wrap;
+  }
+
+  function renderPreview(preview) {
+    if (isObj(preview) && preview.kind === 'mail') return renderMail(preview);
+    var rows = [];
+    if (isObj(preview)) {
+      var keys = Object.keys(preview);
+      for (var i = 0; i < keys.length; i++) flattenRows(preview[keys[i]], humanizeKey(keys[i]), 1, rows);
+    } else {
+      flattenRows(preview, 'Details', 1, rows);
+    }
+    if (rows.length === 0) return null;
+    var dl = node('dl', 'list');
+    for (var j = 0; j < rows.length; j++) addRow(dl, rows[j][0], rows[j][1]);
+    return dl;
+  }
+
+  function syncButtons(card) {
+    var off = !_ready || !card.ticket || card.busy;
+    card.approveBtn.disabled = off;
+    card.denyBtn.disabled = off;
+  }
+
+  function setNote(text) {
+    _note.textContent = text;
+  }
+
+  function showFinal(card, status) {
+    card.final = true;
+    card.ticket = '';
+    card.actions.style.display = 'none';
+    card.meta.textContent = '';
+    card.statusEl.textContent = FINAL_TEXT[status] || MSG_NOT_WAITING;
   }
 
   function updateExpiry() {
-    for (var i = 0; i < CARDS.length; i++) {
-      var el = document.getElementById('expiry-' + i);
-      if (!el) continue;
-      var at = Date.parse(el.getAttribute('data-expires') || '');
-      if (!isNaN(at)) el.textContent = expiryText(at - Date.now());
+    for (var i = 0; i < _order.length; i++) {
+      var card = _cards[_order[i]];
+      if (card.final) continue;
+      var at = card.expiresAt ? Date.parse(card.expiresAt) : NaN;
+      card.meta.textContent = isNaN(at) ? '' : expiryText(at - Date.now());
     }
+  }
+
+  function buildCard(item) {
+    var el = node('section', 'card');
+    el.appendChild(node('h3', '', item.title === undefined ? '' : String(item.title)));
+    var preview = renderPreview(item.preview);
+    if (preview) el.appendChild(preview);
+    var card = {
+      id: item.id, el: el, ticket: '', expiresAt: '', busy: false, final: false,
+      meta: node('div', 'meta'), actions: node('div', 'actions'),
+      denyBtn: node('button', '', 'Refuse'), approveBtn: node('button', 'primary', 'Approve'),
+      statusEl: node('div', 'status')
+    };
+    card.statusEl.setAttribute('role', 'status');
+    card.denyBtn.disabled = true;
+    card.approveBtn.disabled = true;
+    card.denyBtn.addEventListener('click', function () { decide(card, 'deny'); });
+    card.approveBtn.addEventListener('click', function () { decide(card, 'approve'); });
+    card.actions.appendChild(card.denyBtn);
+    card.actions.appendChild(card.approveBtn);
+    el.appendChild(card.meta);
+    el.appendChild(card.actions);
+    el.appendChild(card.statusEl);
+    return card;
+  }
+
+  function dropCard(id) {
+    var card = _cards[id];
+    if (!card) return;
+    card.el.remove();
+    delete _cards[id];
+    _order.splice(_order.indexOf(id), 1);
+  }
+
+  function showEmptyNote() {
+    setNote(_order.length === 0 ? (APPROVAL_ID ? MSG_NOT_WAITING : MSG_NOTHING) : '');
+  }
+
+  function applyList(items) {
+    var seen = {};
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!isObj(item) || typeof item.id !== 'string') continue;
+      seen[item.id] = true;
+      var card = _cards[item.id];
+      if (!card) {
+        card = buildCard(item);
+        _cards[item.id] = card;
+        _order.push(item.id);
+        _container.appendChild(card.el);
+      }
+      card.expiresAt = typeof item.expiresAt === 'string' ? item.expiresAt : '';
+      if (item.status && item.status !== 'pending') {
+        showFinal(card, item.status);
+      } else {
+        card.ticket = typeof item.ticket === 'string' ? item.ticket : '';
+      }
+      syncButtons(card);
+    }
+    var ids = _order.slice();
+    for (var j = 0; j < ids.length; j++) if (!seen[ids[j]]) dropCard(ids[j]);
+    showEmptyNote();
+    updateExpiry();
     reportSize();
   }
 
-  var _expiryTimer = setInterval(updateExpiry, 30000);
-
-  function decide(i, decision) {
-    var status = document.getElementById('status-' + i);
-    setBusy(i, true);
-    callTool('approval_card_decide', { approvalId: CARDS[i].id, decision: decision, ticket: CARDS[i].ticket })
-      .then(function () {
-        document.getElementById('card-' + i).remove();
-        _left--;
-        if (_left === 0) {
-          clearInterval(_expiryTimer);
-          document.getElementById('empty').hidden = false;
-        }
-        reportSize();
-      })
-      .catch(function (err) {
-        status.textContent = humanize(err);
-        setBusy(i, false);
-        reportSize();
-      });
+  function refresh() {
+    if (!_ready || _deciding > 0) return Promise.resolve();
+    var seq = ++_refreshSeq;
+    return callTool('approval_card_list', APPROVAL_ID ? { approvalId: APPROVAL_ID } : {}).then(function (result) {
+      if (seq !== _refreshSeq || _deciding > 0) return;
+      var data = result && result.structuredContent;
+      applyList(data && Array.isArray(data.approvals) ? data.approvals : []);
+    }, function () {
+      if (_order.length === 0) { setNote(MSG_LOAD_FAILED); reportSize(); }
+    });
   }
 
-  CARDS.forEach(function (_card, i) {
-    document.getElementById('approve-' + i).addEventListener('click', function () { decide(i, 'approve'); });
-    document.getElementById('deny-' + i).addEventListener('click', function () { decide(i, 'deny'); });
-  });
+  function decide(card, decision) {
+    if (card.busy || !card.ticket || !_ready) return;
+    card.busy = true;
+    _deciding++;
+    card.statusEl.textContent = '';
+    syncButtons(card);
+    callTool('approval_card_decide', { approvalId: card.id, decision: decision, ticket: card.ticket }).then(function () {
+      _deciding--;
+      card.busy = false;
+      if (APPROVAL_ID) showFinal(card, decision === 'approve' ? 'approved' : 'denied');
+      else { dropCard(card.id); showEmptyNote(); }
+      reportSize();
+      refresh();
+    }, function (err) {
+      _deciding--;
+      var text = humanize(err);
+      card.statusEl.textContent = text;
+      reportSize();
+      if (text === MSG_GENERIC) { card.busy = false; syncButtons(card); return; }
+      refresh().then(function () { card.busy = false; syncButtons(card); reportSize(); });
+    });
+  }
 
-  updateExpiry();
-  connect(function () {
-    for (var i = 0; i < CARDS.length; i++) setBusy(i, false);
-  });
-`)}
-</body>
-</html>`
+  onToolResult = function () { refresh(); };
+  setNote(${scriptJson(MSG_LOADING)});
+  setInterval(function () {
+    updateExpiry();
+    if (document.visibilityState !== 'hidden') refresh();
+  }, REFRESH_MS);
+  connect(function () { _ready = true; refresh(); }, function () { setNote(MSG_LOAD_FAILED); });
+`
 }
 
-/**
- * Render the card HTML for `approvalId`, minting a fresh one-time ticket
- * when the approval is still `pending`. Title, preview (key/value lines),
- * and two buttons (Approve / Refuse) that call the app-only
- * `approval_card_decide` tool over the standard MCP Apps
- * `window.parent.postMessage` JSON-RPC bridge, with no other network access.
- */
-export function renderApprovalCardHtml(engine: ApprovalsEngine, approvalId: string): string {
-  const record = engine.get(approvalId)
-  if (!record) return notFoundHtml()
-  if (record.status !== "pending") return decidedHtml(record)
-
-  const { ticket, expiresAt: ticketExpiresAt } = engine.mintCardTicket(approvalId)
-  const expiresAt = earliestExpiry(record.expiresAt, ticketExpiresAt)
-  const expiryAttr = expiresAt === undefined ? "" : ` data-expires="${escHtml(expiresAt)}"`
-
-  return `<!doctype html>
+const CARD_PAGE_HEAD = `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>${PAGE_STYLE}</style>
 </head>
 <body>
-<h3>${escHtml(record.title)}</h3>
-${renderPreview(record)}
-<div class="meta" id="expiry"${expiryAttr}></div>
-<div class="actions" id="actions">
-  <button id="deny" disabled>Refuse</button>
-  <button id="approve" class="primary" disabled>Approve</button>
-</div>
-<div id="status" role="status"></div>
-${pageScript(`
-  var TICKET = ${scriptJson(ticket)};
-  var APPROVAL_ID = ${scriptJson(approvalId)};
-  ${cardSharedJs()}
+<div id="cards"></div>
+<p id="note"></p>
+`
 
-  function setStatus(text) {
-    document.getElementById('status').textContent = text;
-    reportSize();
-  }
-
-  function setBusy(busy) {
-    document.getElementById('approve').disabled = busy;
-    document.getElementById('deny').disabled = busy;
-  }
-
-  var _expiryTimer = null;
-
-  function updateExpiry() {
-    var el = document.getElementById('expiry');
-    var at = Date.parse(el.getAttribute('data-expires') || '');
-    if (isNaN(at)) return;
-    el.textContent = expiryText(at - Date.now());
-    reportSize();
-  }
-
-  function decide(decision) {
-    setBusy(true);
-    callTool('approval_card_decide', { approvalId: APPROVAL_ID, decision: decision, ticket: TICKET })
-      .then(function () {
-        if (_expiryTimer !== null) clearInterval(_expiryTimer);
-        document.getElementById('actions').style.display = 'none';
-        document.getElementById('expiry').style.display = 'none';
-        setStatus(decision === 'approve' ? 'Approved' : 'Refused');
-      })
-      .catch(function (err) {
-        setStatus(humanize(err));
-        setBusy(false);
-      });
-  }
-
-  document.getElementById('approve').addEventListener('click', function () { decide('approve'); });
-  document.getElementById('deny').addEventListener('click', function () { decide('deny'); });
-
-  updateExpiry();
-  _expiryTimer = setInterval(updateExpiry, 30000);
-  connect(function () { setBusy(false); });
-`)}
+function cardPageHtml(approvalId: string | null): string {
+  return `${CARD_PAGE_HEAD}${pageScript(cardPageJs(approvalId))}
 </body>
 </html>`
+}
+
+/**
+ * The template behind `ui://agentproto/approval/pending`: one card per
+ * pending approval, fetched live by the page. Holds no approval data and no
+ * ticket, so a host that caches it still shows the current list.
+ */
+export function renderPendingApprovalsHtml(): string {
+  return cardPageHtml(null)
+}
+
+/**
+ * The template behind `ui://agentproto/approval/<id>`: the same page,
+ * targeting one approval. It differs from the pending page only by that id.
+ * Holds no approval data and no ticket.
+ */
+export function renderApprovalCardHtml(approvalId: string): string {
+  return cardPageHtml(approvalId)
 }

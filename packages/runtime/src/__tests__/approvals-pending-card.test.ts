@@ -13,7 +13,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
-import vm from "node:vm"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
@@ -26,6 +25,7 @@ import { createApprovalsEngine, type ApprovalsEngine } from "../approvals/engine
 import { registerApprovalTools } from "../approvals/tools.js"
 import { buildApprovalCardsServer } from "../approvals/card-surface.js"
 import { renderPendingApprovalsHtml } from "../approvals/card.js"
+import { runCardPage } from "./helpers/approvals-card-page.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 
@@ -126,11 +126,30 @@ async function readHtml(client: Client, uri: string): Promise<string> {
   return content.text
 }
 
-/** Ticket and approval id of every card on a pending page. */
-function cardsOf(html: string): Array<{ id: string; ticket: string }> {
-  const match = html.match(/var CARDS = (\[.*?\]);/)
-  if (!match) throw new Error("no CARDS table in the page")
-  return JSON.parse(match[1]!) as Array<{ id: string; ticket: string }>
+interface ListedApproval {
+  id: string
+  title: string
+  kind: string
+  requestedBy: string
+  status?: string
+  expiresAt?: string
+  ticket?: string
+}
+
+async function listCards(client: Client, approvalId?: string): Promise<ListedApproval[]> {
+  const result = (await client.callTool({
+    name: "approval_card_list",
+    arguments: approvalId ? { approvalId } : {},
+  })) as { structuredContent?: { approvals: ListedApproval[] }; isError?: boolean }
+  expect(result.isError).toBeFalsy()
+  return result.structuredContent?.approvals ?? []
+}
+
+async function decide(client: Client, approvalId: string, decision: "approve" | "deny", ticket: string) {
+  return (await client.callTool({
+    name: "approval_card_decide",
+    arguments: { approvalId, decision, ticket },
+  })) as { isError?: boolean }
 }
 
 describe("approval_pending is mounted on the cards surface only", () => {
@@ -140,6 +159,8 @@ describe("approval_pending is mounted on the cards surface only", () => {
       const client = await connect(base)
       const { tools } = await client.listTools()
       expect(tools.map(t => t.name)).not.toContain("approval_pending")
+      expect(tools.map(t => t.name)).not.toContain("approval_card_list")
+      await expect(client.callTool({ name: "approval_card_list", arguments: {} })).resolves.toMatchObject({ isError: true })
       const { resources } = await client.listResources().catch(() => ({ resources: [] }))
       expect(resources.map(r => r.uri)).not.toContain(PENDING_URI)
       await expect(client.readResource({ uri: PENDING_URI })).rejects.toThrow()
@@ -153,6 +174,8 @@ describe("approval_pending is mounted on the cards surface only", () => {
       const client = await connect(base, "?callerSessionId=sess_x")
       const { tools } = await client.listTools()
       expect(tools.map(t => t.name)).not.toContain("approval_pending")
+      expect(tools.map(t => t.name)).not.toContain("approval_card_list")
+      await expect(client.callTool({ name: "approval_card_list", arguments: {} })).resolves.toMatchObject({ isError: true })
       await expect(client.readResource({ uri: PENDING_URI })).rejects.toThrow()
       await client.close()
     })
@@ -171,12 +194,12 @@ describe("approval_pending is mounted on the cards surface only", () => {
 })
 
 describe("the approval-cards surface is cards-only", () => {
-  it("tools/list is exactly approval_card_decide and approval_pending", async () => {
+  it("tools/list is exactly approval_card_decide, approval_card_list and approval_pending", async () => {
     await withServer(async base => {
       request("Send")
       const client = await connect(base, "?surface=approval-cards")
       const { tools } = await client.listTools()
-      expect(tools.map(t => t.name).sort()).toEqual(["approval_card_decide", "approval_pending"])
+      expect(tools.map(t => t.name).sort()).toEqual(["approval_card_decide", "approval_card_list", "approval_pending"])
       await client.close()
     })
   })
@@ -206,6 +229,7 @@ describe("the approval-cards surface is cards-only", () => {
       expect(names).toContain("approval_request")
       expect(names).not.toContain("approval_card_decide")
       expect(names).not.toContain("approval_pending")
+      expect(names).not.toContain("approval_card_list")
       await client.close()
     })
   })
@@ -230,6 +254,9 @@ describe("approval_pending tool", () => {
       // The decide tool stays out of the model's reach.
       const decide = tools.find(t => t.name === "approval_card_decide")
       expect(decide?._meta).toMatchObject({ ui: { visibility: ["app"] } })
+      const list = tools.find(t => t.name === "approval_card_list")
+      expect(list?._meta).toMatchObject({ ui: { visibility: ["app"] } })
+      expect(list?.inputSchema.required ?? []).toEqual([])
       await client.close()
     })
   })
@@ -277,184 +304,165 @@ describe("approval_pending tool", () => {
   })
 })
 
-describe("the pending resource", () => {
-  it("renders one card per pending approval, each with its own ticket that decides only its own approval", async () => {
+describe("approval_card_list tool", () => {
+  it("lists the pending approvals with a fresh ticket each, and the approval's own expiry only", async () => {
+    await withServer(async base => {
+      const a = request("Send the Q3 report")
+      const b = request("Pay invoice 42", { operator: true })
+      const decided = request("Already done")
+      const { ticket } = engine.mintCardTicket(decided)
+      await engine.decideByCard(decided, "approve", ticket, { ipAddress: "t", userAgent: "t" })
+
+      const client = await connect(base, "?surface=approval-cards")
+      const items = await listCards(client)
+      expect(items.map(i => i.id).sort()).toEqual([a, b].sort())
+      expect(items.find(i => i.id === a)).toMatchObject({ title: "Send the Q3 report", kind: "send", requestedBy: "sess_abc" })
+      expect(items.find(i => i.id === b)).toMatchObject({ title: "Pay invoice 42", requestedBy: "operator" })
+      for (const item of items) {
+        expect(item.ticket).toBeTruthy()
+        expect(item.expiresAt).toBeUndefined()
+      }
+      expect(items[0]!.ticket).not.toBe(items[1]!.ticket)
+      await client.close()
+    })
+  })
+
+  it("each call mints a new ticket, and the earlier one stops working", async () => {
+    await withServer(async base => {
+      const a = request("Send")
+      const client = await connect(base, "?surface=approval-cards")
+      const first = (await listCards(client))[0]!
+      const second = (await listCards(client))[0]!
+      expect(first.id).toBe(a)
+      expect(first.ticket).not.toBe(second.ticket)
+      expect((await decide(client, a, "approve", first.ticket!)).isError).toBe(true)
+      expect(engine.get(a)?.status).toBe("pending")
+      // a refused attempt burns the stored ticket, so the page asks again
+      const third = (await listCards(client, a))[0]!
+      expect(third.ticket).not.toBe(second.ticket)
+      expect((await decide(client, a, "approve", third.ticket!)).isError).toBeFalsy()
+      expect(engine.get(a)?.status).toBe("approved")
+      await client.close()
+    })
+  })
+
+  it("a ticket decides only its own approval", async () => {
     await withServer(async base => {
       const a = request("Send the Q3 report")
       const b = request("Pay invoice 42")
-
       const client = await connect(base, "?surface=approval-cards")
-      const html = await readHtml(client, PENDING_URI)
-      expect(html).toContain("Send the Q3 report")
-      expect(html).toContain("Pay invoice 42")
-      expect((html.match(/class="card"/g) ?? []).length).toBe(2)
-      expect(html).toContain("ui/notifications/size-changed")
 
-      const cards = cardsOf(html)
-      expect(cards.map(c => c.id).sort()).toEqual([a, b].sort())
-      const [cardA, cardB] = [cards.find(c => c.id === a)!, cards.find(c => c.id === b)!]
-      expect(cardA.ticket).not.toBe(cardB.ticket)
-
-      // A's ticket does not decide B ...
-      const cross = (await client.callTool({
-        name: "approval_card_decide",
-        arguments: { approvalId: b, decision: "approve", ticket: cardA.ticket },
-      })) as { isError?: boolean }
-      expect(cross.isError).toBe(true)
+      const both = await listCards(client)
+      const ticketA = both.find(c => c.id === a)!.ticket!
+      expect((await decide(client, b, "approve", ticketA)).isError).toBe(true)
       expect(engine.get(b)?.status).toBe("pending")
 
-      // ... and B's own ticket was burned by that attempt only for B's id, so
-      // re-read to get a fresh pair, then each ticket decides its own.
-      const fresh = cardsOf(await readHtml(client, PENDING_URI))
-      const freshA = fresh.find(c => c.id === a)!
-      const freshB = fresh.find(c => c.id === b)!
-      const okA = (await client.callTool({
-        name: "approval_card_decide",
-        arguments: { approvalId: a, decision: "approve", ticket: freshA.ticket },
-      })) as { isError?: boolean }
-      expect(okA.isError).toBeFalsy()
+      const freshA = (await listCards(client, a))[0]!.ticket!
+      expect((await decide(client, a, "approve", freshA)).isError).toBeFalsy()
       expect(engine.get(a)?.status).toBe("approved")
       expect(engine.get(b)?.status).toBe("pending")
 
-      const okB = (await client.callTool({
-        name: "approval_card_decide",
-        arguments: { approvalId: b, decision: "deny", ticket: freshB.ticket },
-      })) as { isError?: boolean }
-      expect(okB.isError).toBeFalsy()
+      const freshB = (await listCards(client, b))[0]!.ticket!
+      expect((await decide(client, b, "deny", freshB)).isError).toBeFalsy()
       expect(engine.get(b)?.status).toBe("denied")
       await client.close()
     })
   })
 
-  it("each read mints fresh tickets (an earlier page's tickets stop working)", async () => {
+  it("an empty list is an empty array, not an error", async () => {
     await withServer(async base => {
-      const a = request("Send")
       const client = await connect(base, "?surface=approval-cards")
-      const first = cardsOf(await readHtml(client, PENDING_URI))[0]!
-      const second = cardsOf(await readHtml(client, PENDING_URI))[0]!
-      expect(first.ticket).not.toBe(second.ticket)
-      const stale = (await client.callTool({
-        name: "approval_card_decide",
-        arguments: { approvalId: a, decision: "approve", ticket: first.ticket },
-      })) as { isError?: boolean }
-      expect(stale.isError).toBe(true)
-      expect(engine.get(a)?.status).toBe("pending")
+      expect(await listCards(client)).toEqual([])
       await client.close()
     })
   })
 
-  it("with nothing pending it is the empty state", () => {
-    const html = renderPendingApprovalsHtml(engine)
-    expect(html).toContain("Nothing to approve")
-    expect(html).not.toContain("approval_card_decide")
-    expect(html).not.toContain("class=\"card\"")
+  it("a decided approval is returned with its final status and no ticket", async () => {
+    await withServer(async base => {
+      const id = request("Done")
+      const { ticket } = engine.mintCardTicket(id)
+      await engine.decideByCard(id, "deny", ticket, { ipAddress: "t", userAgent: "t" })
+      const client = await connect(base, "?surface=approval-cards")
+      const [item] = await listCards(client, id)
+      expect(item).toMatchObject({ id, status: "denied" })
+      expect(item?.ticket).toBeUndefined()
+      await client.close()
+    })
   })
 })
 
-describe("the pending page script", () => {
-  interface FakeEl {
-    textContent: string
-    disabled: boolean
-    hidden: boolean
-    removed: boolean
-    attrs: Record<string, string>
-    listeners: Record<string, () => void>
-    getAttribute(name: string): string | null
-    addEventListener(type: string, fn: () => void): void
-    remove(): void
-  }
-  const fakeEl = (attrs: Record<string, string> = {}): FakeEl => {
-    const el: FakeEl = {
-      textContent: "",
-      disabled: false,
-      hidden: false,
-      removed: false,
-      attrs,
-      listeners: {},
-      getAttribute: name => el.attrs[name] ?? null,
-      addEventListener: (type, fn) => {
-        el.listeners[type] = fn
-      },
-      remove: () => {
-        el.removed = true
-      },
-    }
-    return el
-  }
-
-  function runPage(html: string, count: number) {
-    const posted: Array<{ id?: number; method?: string; params?: Record<string, unknown> }> = []
-    const els: Record<string, FakeEl> = { empty: fakeEl() }
-    for (let i = 0; i < count; i++) {
-      for (const name of ["card", "approve", "deny", "status", "expiry"]) els[`${name}-${i}`] = fakeEl()
-    }
-    let onMessage: (evt: { data: unknown; source?: unknown }) => void = () => {}
-    const parent = { postMessage: (msg: (typeof posted)[number]) => void posted.push(msg) }
-    vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1]!, {
-      window: {
-        parent,
-        addEventListener: (type: string, fn: typeof onMessage) => {
-          if (type === "message") onMessage = fn
-        },
-      },
-      document: {
-        documentElement: { setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
-        body: { getBoundingClientRect: () => ({ height: 100 }) },
-        getElementById: (id: string) => els[id],
-      },
-      ResizeObserver: class {
-        observe(): void {}
-      },
-      setInterval: () => 1,
-      clearInterval: () => {},
+describe("the card resources are templates", () => {
+  it("the pending resource holds no approval data and no ticket, and reading it mints nothing", async () => {
+    await withServer(async base => {
+      const a = request("Send the Q3 report")
+      const before = engine.mintCardTicket(a).ticket
+      const client = await connect(base, "?surface=approval-cards")
+      const html = await readHtml(client, PENDING_URI)
+      expect(html).not.toContain("Send the Q3 report")
+      expect(html).not.toContain("var TICKET")
+      expect(html).not.toContain(before)
+      expect(html).toContain("approval_card_list")
+      expect(html).toContain("ui/notifications/size-changed")
+      // the read minted nothing: the ticket from before still decides
+      expect((await decide(client, a, "approve", before)).isError).toBeFalsy()
+      await client.close()
     })
-    const reply = (id: number, result: unknown) => onMessage({ data: { jsonrpc: "2.0", id, result }, source: parent })
-    const flush = () => new Promise<void>(resolve => setImmediate(resolve))
-    return { posted, els, reply, flush }
-  }
-
-  it("Approve calls approval_card_decide with that card's id and ticket, then removes only that card", async () => {
-    const a = request("First")
-    const b = request("Second")
-    const html = renderPendingApprovalsHtml(engine)
-    const cards = cardsOf(html)
-    const page = runPage(html, cards.length)
-    const indexOfB = cards.findIndex(c => c.id === b)
-
-    page.els[`approve-${indexOfB}`]!.listeners.click!()
-    const call = page.posted.find(m => m.method === "tools/call")
-    expect(call?.params).toEqual({
-      name: "approval_card_decide",
-      arguments: { approvalId: b, decision: "approve", ticket: cards[indexOfB]!.ticket },
-    })
-    expect(page.els[`approve-${indexOfB}`]!.disabled).toBe(true)
-
-    page.reply(call!.id!, { content: [] })
-    await page.flush()
-    expect(page.els[`card-${indexOfB}`]!.removed).toBe(true)
-    const indexOfA = cards.findIndex(c => c.id === a)
-    expect(page.els[`card-${indexOfA}`]!.removed).toBe(false)
-    expect(page.els.empty!.hidden).toBe(false)
   })
 
-  it("shows the empty state once the last card is gone, and keeps a failed card with a message", async () => {
-    request("Only")
-    const html = renderPendingApprovalsHtml(engine)
-    const page = runPage(html, 1)
+  it("the per-approval resource is the same template, differing only by the id", async () => {
+    await withServer(async base => {
+      const a = request("Send the Q3 report")
+      request("Pay invoice 42")
+      const client = await connect(base, "?surface=approval-cards")
+      const pending = await readHtml(client, PENDING_URI)
+      const single = await readHtml(client, `ui://agentproto/approval/${a}`)
+      expect(single).not.toContain("Send the Q3 report")
+      expect(single.replaceAll(JSON.stringify(a), "null")).toBe(pending)
+      await client.close()
+    })
+  })
 
-    page.els["deny-0"]!.listeners.click!()
-    const first = page.posted.find(m => m.method === "tools/call")!
-    page.reply(first.id!, { isError: true, content: [{ type: "text", text: "ticket_invalid: used" }] })
-    await page.flush()
-    expect(page.els["card-0"]!.removed).toBe(false)
-    expect(page.els["status-0"]!.textContent).toBe("This card has expired. Open it again to decide.")
-    expect(page.els["deny-0"]!.disabled).toBe(false)
+  it("a cached template page shows the approvals that exist now, through the real surface", async () => {
+    await withServer(async base => {
+      const client = await connect(base, "?surface=approval-cards")
+      const cached = await readHtml(client, PENDING_URI)
+      const a = request("Send the Q3 report")
+      const page = runCardPage(cached, {
+        callTool: (name, args) => client.callTool({ name, arguments: args }),
+      })
+      await page.flush()
+      expect(page.cards().map(c => page.titleOf(c))).toEqual(["Send the Q3 report"])
 
-    page.els["deny-0"]!.listeners.click!()
-    const second = page.posted.filter(m => m.method === "tools/call")[1]!
-    page.reply(second.id!, { content: [] })
-    await page.flush()
-    expect(page.els["card-0"]!.removed).toBe(true)
-    expect(page.els.empty!.hidden).toBe(false)
+      const board = page.buttons(page.cards()[0]!)
+      board.approve.click()
+      await page.flush()
+      expect(engine.get(a)?.status).toBe("approved")
+      expect(page.note.textContent).toBe("Nothing to approve")
+      await client.close()
+    })
+  })
+
+  it("the per-approval card decides through the bridge via approval_card_list + approval_card_decide", async () => {
+    await withServer(async base => {
+      const a = request("Send the Q3 report")
+      request("Pay invoice 42")
+      const client = await connect(base, "?surface=approval-cards")
+      const html = await readHtml(client, `ui://agentproto/approval/${a}`)
+      const page = runCardPage(html, { callTool: (name, args) => client.callTool({ name, arguments: args }) })
+      await page.flush()
+      expect(page.cards()).toHaveLength(1)
+      page.buttons(page.cards()[0]!).deny.click()
+      await page.flush()
+      expect(page.calls().map(m => m.params?.["name"])).toEqual(["approval_card_list", "approval_card_decide", "approval_card_list"])
+      expect(engine.get(a)?.status).toBe("denied")
+      expect(page.statusOf(page.cards()[0]!)).toBe("Refused")
+      await client.close()
+    })
+  })
+
+  it("with nothing pending the template shows the empty state once it has loaded", async () => {
+    const html = renderPendingApprovalsHtml()
+    expect(html).toContain("Nothing to approve")
+    expect(html).not.toContain('class="card"')
   })
 })
