@@ -63,6 +63,8 @@ import {
   type ComputerClientConfig,
 } from "./client.js"
 import { ComputerSandboxError, type ComputerSandboxErrorCode } from "./errors.js"
+import { detachedExec, type DetachedExecIo } from "./detached-exec.js"
+import { shQuote } from "./quote.js"
 import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
 import type { ComputerListEntry, ComputerStatus, CreateComputerResponse, PortPublish } from "@agentproto/computer-api"
 
@@ -140,6 +142,10 @@ function withBoxNodeOptions(env: Record<string, string>, memoryMiB: number | und
 
 /** Cap on one exec call: the controller accepts `timeoutSec ≤ 600`. */
 const EXEC_TIMEOUT_MAX_SEC = 600
+/** A caller that asks for a command timeout above this runs it through the
+ *  detached transport, so no single controller request can outlive the 100
+ *  second Cloudflare request cut. Short commands keep the one-shot path. */
+const DETACHED_EXEC_THRESHOLD_MS = 90_000
 const DEFAULT_WAIT_READY_TIMEOUT_MS = 120_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
 /** One budget for the whole provider-side boot (create -> running -> daemon
@@ -614,10 +620,7 @@ function applyDaemonRoute(config: ComputerSandboxConfig, client: ComputerClientC
 // a per-element 8192-char cap and synchronous execution — every long-lived
 // process is therefore started detached via `nohup … &` inside one bash -lc.
 
-/** shQuote a value so a `bash -lc <script>` can interpolate it safely. */
-export function shQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
+export { shQuote } from "./quote.js"
 
 /** Computers run as an unprivileged user with no sudo, so a global npm install
  *  must target a user-writable prefix, and the serve script must find the CLI
@@ -1690,20 +1693,18 @@ async function daemonHealthyOrThrow(
     return stored.exitCode === 0 && stored.stdout.trim() !== "" ? stored.stdout.trim() : undefined
   }
 
+  const detachedIo = createDetachedExecIo(client, id)
   if (config.updateCliOnBoot !== false && !(await cliAlreadyPresent(client, id, config))) {
     const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
-    const install = await hardExec(
-      client,
-      id,
-      bashArgv(
-        `${USER_BIN_PATH_EXPORT}npm i -g --prefix "$HOME/.local" @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`,
-      ),
-      Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(UPDATE_CLI_TIMEOUT_MS / 1000)),
+    const install = await detachedExec(
+      detachedIo,
+      `${USER_BIN_PATH_EXPORT}npm i -g --prefix "$HOME/.local" @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`,
+      { timeoutMs: UPDATE_CLI_TIMEOUT_MS },
     )
     if (install.exitCode !== 0) throw bootStepError("CLI install", id, install)
   }
   for (const command of config.setupCommands ?? []) {
-    const setup = await hardExec(client, id, bashArgv(command), EXEC_TIMEOUT_MAX_SEC)
+    const setup = await detachedExec(detachedIo, command, { timeoutMs: EXEC_TIMEOUT_MAX_SEC * 1000 })
     if (setup.exitCode !== 0) throw bootStepError("setup command", id, setup)
   }
 
@@ -1791,6 +1792,18 @@ async function hardExec(
   timeoutSec: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return client.exec(id, argv, { timeoutSec: Math.max(1, Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(timeoutSec))) })
+}
+
+/** The primitive surface `detachedExec` runs on: short synchronous execs plus
+ *  the box's own chunked file helpers. Exported for the transport tests. */
+export function createDetachedExecIo(client: ComputerControllerClient, id: string): DetachedExecIo {
+  return {
+    id,
+    exec: (script, opts) =>
+      hardExec(client, id, bashArgv(script, opts?.cwd, opts?.env), Math.ceil((opts?.timeoutMs ?? 30_000) / 1000)),
+    writeFile: (path, data) => writeBoxFile(client, id, path, data),
+    readFile: (path) => readBoxFile(client, id, path),
+  }
 }
 
 // ── handle wrapping ───────────────────────────────────────────────────
@@ -1924,10 +1937,21 @@ function boxIo(
 ): Pick<BootedSandbox, "exec" | "readFile" | "writeFile"> {
   return {
     async exec(execOpts: SandboxExecOpts): Promise<SandboxExecResult> {
+      // Resolve the default before the threshold check: an omitted timeout is
+      // still a real 120s budget, and must not fall through to a single
+      // synchronous request that the edge cuts at 100s.
+      const effectiveTimeoutMs = execOpts.timeoutMs ?? 120_000
+      if (effectiveTimeoutMs > DETACHED_EXEC_THRESHOLD_MS) {
+        return detachedExec(createDetachedExecIo(client, id), execOpts.command, {
+          timeoutMs: effectiveTimeoutMs,
+          ...(execOpts.cwd !== undefined ? { cwd: execOpts.cwd } : {}),
+          ...(execOpts.env !== undefined ? { env: execOpts.env } : {}),
+        })
+      }
       const startedAt = Date.now()
       const timeoutSec = Math.max(
         1,
-        Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil((execOpts.timeoutMs ?? 120_000) / 1000)),
+        Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(effectiveTimeoutMs / 1000)),
       )
       const result = await hardExec(client, id, bashArgv(execOpts.command, execOpts.cwd, execOpts.env), timeoutSec)
       return {
@@ -1938,59 +1962,74 @@ function boxIo(
       }
     },
     async readFile(path: string): Promise<Uint8Array> {
-      const exists = await hardExec(
-        client,
-        id,
-        bashArgv(`test -f ${shQuote(path)} && exit 0 || exit 65`),
-        15,
-      )
-      if (exists.exitCode !== 0) throw new Error(`computer "${id}": no file at ${JSON.stringify(path)}`)
-      const chunks: Uint8Array[] = []
-      for (let offset = 0; ; offset += READ_CHUNK_RAW) {
-        const out = await hardExec(
-          client,
-          id,
-          bashArgv(
-            `dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset / READ_CHUNK_RAW} 2>/dev/null | base64; exit 0`,
-          ),
-          60,
-        )
-        if (out.exitCode !== 0) {
-          throw new Error(`computer "${id}": cannot read ${JSON.stringify(path)} (exit ${out.exitCode})`)
-        }
-        const decoded = Buffer.from(out.stdout.trim(), "base64")
-        if (decoded.length === 0) break
-        chunks.push(new Uint8Array(decoded))
-        if (decoded.length < READ_CHUNK_RAW) break
-      }
-      const total = chunks.reduce((n, c) => n + c.length, 0)
-      const merged = new Uint8Array(total)
-      let cursor = 0
-      for (const chunk of chunks) {
-        merged.set(chunk, cursor)
-        cursor += chunk.length
-      }
-      return merged
+      return readBoxFile(client, id, path)
     },
     async writeFile(path: string, data: Uint8Array): Promise<void> {
-      const dir = path.replace(/\/[^/]*$/, "") || "/"
-      await hardExec(client, id, bashArgv(`mkdir -p ${shQuote(dir)}`), 15)
-      const b64 = Buffer.from(data).toString("base64")
-      if (b64.length > 0) {
-        await hardExec(client, id, bashArgv(`: > ${shQuote(path)}; exit 0`), 15)
-      }
-      for (let offset = 0; offset < b64.length; offset += WRITE_CHUNK_BASE64) {
-        const chunk = b64.slice(offset, offset + WRITE_CHUNK_BASE64)
-        const result = await hardExec(
-          client,
-          id,
-          bashArgv(`printf %s ${shQuote(chunk)} | base64 -d >> ${shQuote(path)} && exit 0 || exit 65`),
-          30,
-        )
-        if (result.exitCode !== 0) {
-          throw new Error(`computer "${id}": cannot write ${JSON.stringify(path)} (exit ${result.exitCode})`)
-        }
-      }
+      return writeBoxFile(client, id, path, data)
     },
+  }
+}
+
+/** Read one file out of the box in controller-sized base64 chunks. */
+async function readBoxFile(client: ComputerControllerClient, id: string, path: string): Promise<Uint8Array> {
+  const exists = await hardExec(
+    client,
+    id,
+    bashArgv(`test -f ${shQuote(path)} && exit 0 || exit 65`),
+    15,
+  )
+  if (exists.exitCode !== 0) throw new Error(`computer "${id}": no file at ${JSON.stringify(path)}`)
+  const chunks: Uint8Array[] = []
+  for (let offset = 0; ; offset += READ_CHUNK_RAW) {
+    const out = await hardExec(
+      client,
+      id,
+      bashArgv(
+        `dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset / READ_CHUNK_RAW} 2>/dev/null | base64; exit 0`,
+      ),
+      60,
+    )
+    if (out.exitCode !== 0) {
+      throw new Error(`computer "${id}": cannot read ${JSON.stringify(path)} (exit ${out.exitCode})`)
+    }
+    const decoded = Buffer.from(out.stdout.trim(), "base64")
+    if (decoded.length === 0) break
+    chunks.push(new Uint8Array(decoded))
+    if (decoded.length < READ_CHUNK_RAW) break
+  }
+  const total = chunks.reduce((n, c) => n + c.length, 0)
+  const merged = new Uint8Array(total)
+  let cursor = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, cursor)
+    cursor += chunk.length
+  }
+  return merged
+}
+
+/** Write one file into the box in controller-sized base64 chunks. */
+async function writeBoxFile(
+  client: ComputerControllerClient,
+  id: string,
+  path: string,
+  data: Uint8Array,
+): Promise<void> {
+  const dir = path.replace(/\/[^/]*$/, "") || "/"
+  await hardExec(client, id, bashArgv(`mkdir -p ${shQuote(dir)}`), 15)
+  const b64 = Buffer.from(data).toString("base64")
+  if (b64.length > 0) {
+    await hardExec(client, id, bashArgv(`: > ${shQuote(path)}; exit 0`), 15)
+  }
+  for (let offset = 0; offset < b64.length; offset += WRITE_CHUNK_BASE64) {
+    const chunk = b64.slice(offset, offset + WRITE_CHUNK_BASE64)
+    const result = await hardExec(
+      client,
+      id,
+      bashArgv(`printf %s ${shQuote(chunk)} | base64 -d >> ${shQuote(path)} && exit 0 || exit 65`),
+      30,
+    )
+    if (result.exitCode !== 0) {
+      throw new Error(`computer "${id}": cannot write ${JSON.stringify(path)} (exit ${result.exitCode})`)
+    }
   }
 }
