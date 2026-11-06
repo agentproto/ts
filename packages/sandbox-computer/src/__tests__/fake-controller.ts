@@ -52,6 +52,11 @@ export interface FakeControllerOptions {
   detachedOutcome?: (
     command: string,
   ) => { exitCode: number; stdout: string; stderr: string } | "pending" | undefined
+  /** Model a launch whose backgrounded runner could not start (missing
+   *  setsid/nohup/bash, bad cwd, unreadable script): no exit file is written,
+   *  so the launch's liveness probe finds the child already gone and exits 1
+   *  with this stderr — exactly what the real launch script produces. */
+  detachedLaunchFails?: string
   /** Fail GET /v1/computers (the list) with this status/body. */
   listStatus?: number
   listError?: string
@@ -596,6 +601,12 @@ export class FakeController {
     // Record the resolved command like a direct exec so existing tests that
     // look for the script text (npm i -g, a setup command) still see it.
     this.execs.push({ id, argv: ["/bin/bash", "-lc", command], timeoutSec: parsed.timeoutSec })
+
+    // The backgrounded runner never starts: model what the launch's liveness
+    // probe observes — no exit file, child gone, stderr on the wire, exit 1.
+    if (this.options.detachedLaunchFails !== undefined) {
+      return { exitCode: 1, stdout: "", stderr: this.options.detachedLaunchFails }
+    }
 
     const outcome =
       this.options.execOutcome?.(["/bin/bash", "-lc", command], parsed) ??

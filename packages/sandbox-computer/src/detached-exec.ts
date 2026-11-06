@@ -46,6 +46,8 @@ const CLEANUP_TIMEOUT_MS = 15_000
 const DEFAULT_POLL_MS = 3_000
 const DEFAULT_MAX_POLL_MS = 10_000
 const POLL_RETRIES = 3
+const LAUNCH_PROBE_ATTEMPTS = 5
+const LAUNCH_PROBE_MS = 100
 
 const sleepDefault = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -153,14 +155,37 @@ export async function detachedExec(
   try {
     await io.writeFile(scriptPath, Buffer.from(buildRunner(command, exitPath), "utf8"))
 
+    // `&` makes the shell's own status `echo`'s (always 0), even when the
+    // backgrounded runner could not start (missing setsid/nohup/bash, bad
+    // cwd, unreadable script). Probe the child's liveness: if it is gone and
+    // wrote no exit file, surface the captured stderr and fail now instead
+    // of polling to the timeout for a 504. The probe retries briefly to
+    // absorb the race where the runner has exited but its EXIT trap has not
+    // yet renamed the exit file into place; the exit-file guard keeps an
+    // instantly-finished command from being misreported as a failed launch.
     const launch =
       `setsid nohup bash ${shQuote(scriptPath)} </dev/null ` +
-      `> ${shQuote(stdoutPath)} 2> ${shQuote(stderrPath)} & echo $! > ${shQuote(pidPath)}`
-    await io.exec(launch, {
+      `> ${shQuote(stdoutPath)} 2> ${shQuote(stderrPath)} & echo $! > ${shQuote(pidPath)}; ` +
+      `__ap_pid=$(cat ${shQuote(pidPath)} 2>/dev/null || true); __ap_ok=0; __ap_i=0; ` +
+      `while [ "$__ap_i" -lt ${LAUNCH_PROBE_ATTEMPTS} ]; do ` +
+      `if [ -f ${shQuote(exitPath)} ] || ` +
+      `{ [ -n "$__ap_pid" ] && kill -0 "$__ap_pid" 2>/dev/null; }; then __ap_ok=1; break; fi; ` +
+      `__ap_i=$((__ap_i + 1)); sleep ${LAUNCH_PROBE_MS / 1000}; done; ` +
+      `if [ "$__ap_ok" -ne 1 ]; then cat ${shQuote(stderrPath)} >&2; exit 1; fi`
+    const launched = await io.exec(launch, {
       timeoutMs: LAUNCH_TIMEOUT_MS,
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       ...(opts.env !== undefined ? { env: opts.env } : {}),
     })
+    // A failed launch never starts the runner, so no exit file is ever
+    // written. Surface its own error now instead of polling to the timeout.
+    if (launched.exitCode !== 0) {
+      const tail = (launched.stderr.trim() || launched.stdout.trim()).slice(-400)
+      throw new Error(
+        `computer "${io.id ?? "unknown"}": detached exec launch failed (exit ${launched.exitCode})` +
+          (tail ? `: ${tail}` : ""),
+      )
+    }
 
     const deadline = startedAt + opts.timeoutMs
     for (;;) {

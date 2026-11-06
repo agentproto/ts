@@ -1937,9 +1937,13 @@ function boxIo(
 ): Pick<BootedSandbox, "exec" | "readFile" | "writeFile"> {
   return {
     async exec(execOpts: SandboxExecOpts): Promise<SandboxExecResult> {
-      if (execOpts.timeoutMs !== undefined && execOpts.timeoutMs > DETACHED_EXEC_THRESHOLD_MS) {
+      // Resolve the default before the threshold check: an omitted timeout is
+      // still a real 120s budget, and must not fall through to a single
+      // synchronous request that the edge cuts at 100s.
+      const effectiveTimeoutMs = execOpts.timeoutMs ?? 120_000
+      if (effectiveTimeoutMs > DETACHED_EXEC_THRESHOLD_MS) {
         return detachedExec(createDetachedExecIo(client, id), execOpts.command, {
-          timeoutMs: execOpts.timeoutMs,
+          timeoutMs: effectiveTimeoutMs,
           ...(execOpts.cwd !== undefined ? { cwd: execOpts.cwd } : {}),
           ...(execOpts.env !== undefined ? { env: execOpts.env } : {}),
         })
@@ -1947,7 +1951,7 @@ function boxIo(
       const startedAt = Date.now()
       const timeoutSec = Math.max(
         1,
-        Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil((execOpts.timeoutMs ?? 120_000) / 1000)),
+        Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(effectiveTimeoutMs / 1000)),
       )
       const result = await hardExec(client, id, bashArgv(execOpts.command, execOpts.cwd, execOpts.env), timeoutSec)
       return {

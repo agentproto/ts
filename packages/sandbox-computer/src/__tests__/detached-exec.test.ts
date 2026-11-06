@@ -85,6 +85,16 @@ describe("detached exec transport", () => {
     expect(controller.execs[0]!.argv[2]).not.toContain("setsid nohup")
   })
 
+  it("surfaces a failed launch instead of polling to the timeout", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    controller.options.detachedLaunchFails = "setsid: command not found\n"
+    controller.execs.length = 0
+
+    await expect(booted.exec!({ command: "long-run", timeoutMs: 120_000 })).rejects.toThrow(
+      /detached exec launch failed \(exit 1\): setsid: command not found/,
+    )
+  })
+
   it("kills the process group and rejects when the command outlives its timeout", async () => {
     controller.options.detachedOutcome = (command) => (command.includes("sleep 999") ? "pending" : undefined)
 

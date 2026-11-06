@@ -565,7 +565,7 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.daemonToken).toBe(token)
     expect(controller.attachBodies.length).toBe(attaches)
 
-    const result = await execBox.exec!({ command: "echo hi" })
+    const result = await execBox.exec!({ command: "echo hi", timeoutMs: 5_000 })
     expect(result.exitCode).toBe(0)
     // Only the caller's command: no health probe, token read or serve.
     expect(controller.execs).toHaveLength(1)
