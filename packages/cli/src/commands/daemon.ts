@@ -1082,8 +1082,14 @@ function xmlEscape(s: string): string {
 // whose quoting rules (re-parsed by Task Scheduler AND by cmd routinely) are
 // hostile to multi-argv payloads and to output redirection, so the task's
 // /TR is just the quoted launcher path; the .cmd file is where redirection
-// (`>> daemon.log 2>&1`) and argv quoting live. Per-user task (HKCU) — no
-// admin required. Same three-part `status` shape as the launchd branch.
+// (`>> daemon.log 2>&1`) and argv quoting live. A per-user ONLOGON task
+// under HKCU normally needs no elevation, BUT a managed enterprise account
+// can still be refused by group policy ("Access is denied"). When
+// `schtasks /Create` fails for any reason, `install` falls back to a
+// launcher in the user's Startup folder (no admin, no scheduled task) and
+// starts the daemon immediately; `start`/`stop`/`restart`/`status`/
+// `uninstall` all recognise that mode. Same three-part `status` shape as the
+// launchd branch.
 // ---------------------------------------------------------------------------
 
 /** The Task Scheduler task name. Exported for read-only probes (doctor,
@@ -1093,6 +1099,52 @@ export const SCHTASKS_TASK_NAME = "agentproto-daemon"
 /** Where `daemon install` writes the Windows launcher. */
 export function schtasksTaskScriptPath(home: string = homedir()): string {
   return join(home, ".agentproto", `${SCHTASKS_TASK_NAME}.cmd`)
+}
+
+/** Which Windows backend the verbs use: a per-user Task Scheduler task, or
+ *  the Startup-folder fallback used when `schtasks /Create` is refused (a
+ *  managed enterprise account under group policy). */
+export type WinDaemonMode = "schtasks" | "startup-fallback"
+
+/** The user's Startup folder. `%APPDATA%` is the normal source; the
+ *  `<home>/AppData/Roaming` fallback keeps the path derivable from an
+ *  injected home (tests) with no dependency on this host's environment. */
+export function winStartupDir(
+  home: string = homedir(),
+  appData: string | undefined = process.env.APPDATA,
+): string {
+  const roaming = appData ?? join(home, "AppData", "Roaming")
+  return join(roaming, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+}
+
+/** The `.cmd` the fallback drops in the Startup folder. It simply calls the
+ *  same launcher `schtasks /TR` would have pointed at, so argv + output
+ *  redirection still live in one place. */
+export function winStartupScriptPath(
+  home: string = homedir(),
+  appData: string | undefined = process.env.APPDATA,
+): string {
+  return join(winStartupDir(home, appData), `${SCHTASKS_TASK_NAME}.cmd`)
+}
+
+/** Body of the Startup-folder shim. Pure; unit-tested without cmd. */
+export function renderWinStartupShim(launcherPath: string): string {
+  return `@echo off\ncall "${launcherPath.replace(/"/g, '""')}"\n`
+}
+
+/** Does the fallback shim exist? A present shim is the authoritative marker
+ *  for `startup-fallback`; install removes it again on a successful
+ *  schtasks registration, so the two modes never normally coexist. */
+export async function detectWinDaemonMode(
+  home: string = homedir(),
+  appData?: string,
+): Promise<WinDaemonMode> {
+  try {
+    await fs.access(winStartupScriptPath(home, appData))
+    return "startup-fallback"
+  } catch {
+    return "schtasks"
+  }
 }
 
 /** Injectable sync step ahead of `kickstart` — see the PATH self-heal
@@ -1222,12 +1274,153 @@ function schtasks(args: string[]): Promise<LaunchctlResult> {
   })
 }
 
+/** What `status` shows for the `/health` probe (Windows). `pid` is the
+ *  running daemon's, when the body exposes one. */
+export interface WinHealthSummary {
+  health: string
+  release: string | null
+  pid: number | null
+}
+
+/** Single `/health` + release-check pass for `status`, injectable so the
+ *  status tests never hit the network. */
+export type WinHealthProbeFn = () => Promise<WinHealthSummary>
+
+/** Injectable deps for the Windows verbs, mirroring {@link LinuxDeps} so
+ *  tests never touch a real schtasks, Startup folder or network.
+ *  The Startup fallback reuses {@link ServeSpawnFn} from the Linux branch. */
+export interface WinDeps {
+  /** Home override (launcher + runtime.json live under it). */
+  home?: string
+  /** `%APPDATA%` override for the Startup folder. */
+  appData?: string
+  health?: HealthFetchFn
+  probeAttempts?: number
+  /** Spawn the detached fallback serve; resolves its pid or `null`. */
+  spawnServe?: ServeSpawnFn
+  /** Kill a process tree by pid (`taskkill /T /F` by default). */
+  killTree?: (pid: number) => Promise<number>
+  /** The daemon PID recorded in runtime.json. */
+  readDaemonPid?: () => Promise<number | null>
+  /** Delay before post-kill re-probes (tests set 0). */
+  releaseDelayMs?: number
+  /** Single `/health` pass for `status`. */
+  probeHealth?: WinHealthProbeFn
+}
+
+/** Write the Startup-folder shim that calls the existing `.cmd` launcher.
+ *  Returns its path. */
+async function writeWinStartupFallback(opts: {
+  home: string
+  appData?: string
+  launcherPath: string
+}): Promise<string> {
+  const startupPath = winStartupScriptPath(opts.home, opts.appData)
+  await fs.mkdir(dirname(startupPath), { recursive: true })
+  await fs.writeFile(startupPath, renderWinStartupShim(opts.launcherPath), "utf8")
+  return startupPath
+}
+
+/** Best-effort removal of the Startup shim (idempotent). */
+async function removeWinStartupFallback(home: string, appData?: string): Promise<void> {
+  await fs.unlink(winStartupScriptPath(home, appData)).catch(() => undefined)
+}
+
+/** Fallback `start`/`restart`: spawn a detached `serve` through the same
+ *  launcher argv the `.cmd` uses (double-fork semantics via
+ *  `detached: true` + `unref()` in {@link spawnDetachedServe}). A healthy
+ *  daemon already answering `/health` is left alone. */
+async function startDetachedWinDaemon(
+  deps: WinDeps,
+  probeAttempts: number,
+  verb: "started" | "restarted",
+  fallbackHealth: HealthFetchFn,
+): Promise<number> {
+  const home = deps.home ?? homedir()
+  const health = deps.health ?? fallbackHealth
+  const spawnServe = deps.spawnServe ?? spawnDetachedServe
+  const cfg = await loadConfig()
+  const p = paths(home)
+
+  const existing = await health().catch(() => null)
+  if (existing) {
+    process.stdout.write(`agentproto daemon: already running (startup fallback)\n`)
+    printLifecycleInfo(verb, existing)
+    return 0
+  }
+
+  await fs.mkdir(dirname(p.log), { recursive: true })
+  const pid = await spawnServe({
+    fullArgv: [...p.argv, ...buildServeArgv(cfg)],
+    cwd: cfg.daemon?.workspace ?? home,
+    logPath: p.log,
+  })
+  if (pid === null) {
+    process.stderr.write(
+      `agentproto daemon ${verb}: failed to spawn a detached serve (startup fallback)\n` +
+        `  Run \`agentproto serve\` in a terminal to see why.\n`,
+    )
+    return 1
+  }
+  process.stdout.write(`agentproto daemon: startup fallback: spawned detached serve (pid ${pid})\n`)
+  printLifecycleInfo(verb, await waitForHealth(health, probeAttempts, 300))
+  return 0
+}
+
+/** Fallback `stop`: kill the detached daemon's process tree (the same
+ *  `/health` pid -> runtime.json pid resolution as the schtasks path). A
+ *  daemon that is not answering is already stopped. */
+async function stopDetachedWinDaemon(deps: WinDeps): Promise<number> {
+  const home = deps.home ?? homedir()
+  const health = deps.health ?? fetchHealth
+  const killTree = deps.killTree ?? taskkillTree
+  const readPid = deps.readDaemonPid ?? (() => readHomeRuntimePid(home))
+  const delay = deps.releaseDelayMs ?? 500
+  const wait = (): Promise<void> =>
+    delay > 0 ? new Promise(r => setTimeout(r, delay)) : Promise.resolve()
+
+  const running = await health().catch(() => null)
+  if (!running) {
+    process.stdout.write(`agentproto daemon: no detached daemon answering (startup fallback)\n`)
+    return 0
+  }
+  const pid = running.pid ?? (await readPid())
+  if (pid === null || pid === undefined) {
+    process.stderr.write(
+      `agentproto daemon stop: startup fallback daemon is answering but no pid found\n` +
+        `  (kill it manually; check what owns the daemon port)\n`,
+    )
+    return 1
+  }
+  const killCode = await killTree(pid)
+  if (killCode !== 0) {
+    process.stderr.write(
+      `agentproto daemon stop: taskkill /PID ${pid} exited ${killCode} (startup fallback)\n`,
+    )
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await wait()
+    if (!(await health().catch(() => null))) {
+      process.stdout.write(
+        `agentproto daemon stop: killed pid ${pid} tree (startup fallback port released)\n`,
+      )
+      return 0
+    }
+  }
+  process.stderr.write(
+    `agentproto daemon stop: killed pid ${pid} but the port is still answering (startup fallback)\n` +
+      `  check what owns the port and kill it manually\n`,
+  )
+  return 1
+}
+
 export async function runWinInstall(
   args: readonly string[] = [],
   schtasksFn: SchtasksFn = schtasks,
   /** Home override — tests point this at a temp dir so no real launcher is
    *  ever written. */
   home: string = homedir(),
+  deps: WinDeps = {},
 ): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
@@ -1249,7 +1442,9 @@ export async function runWinInstall(
   const create = [
     "/Create", "/TN", SCHTASKS_TASK_NAME,
     // Per-user task under HKCU, runs at logon, overwrite any previous one.
-    // No elevation required.
+    // Normally no elevation is required, but group policy on a managed
+    // enterprise account can still refuse /Create, which the Startup-folder
+    // fallback below handles.
     "/SC", "ONLOGON", "/F",
     "/TR", renderSchtasksTr(scriptPath),
   ]
@@ -1257,7 +1452,8 @@ export async function runWinInstall(
   if (values["dry-run"]) {
     process.stdout.write(
       `# Would install a service running:\n${renderServiceTarget(p.argv[0], process.argv[1] ?? null, "win32")}\n` +
-        `# Would write ${scriptPath}:\n\n${script}\n# schtasks ${create.join(" ")}\n# schtasks /Run /TN ${SCHTASKS_TASK_NAME}\n`,
+        `# Would write ${scriptPath}:\n\n${script}\n# schtasks ${create.join(" ")}\n# schtasks /Run /TN ${SCHTASKS_TASK_NAME}\n` +
+        `# If schtasks /Create is refused (group policy), would fall back to a Startup-folder launcher at ${winStartupScriptPath(home, deps.appData)} and start a detached serve\n`,
     )
     return 0
   }
@@ -1280,11 +1476,46 @@ export async function runWinInstall(
 
   const created = await schtasksFn(create)
   if (created.code !== 0) {
+    // A per-user ONLOGON task normally needs no elevation, but a managed
+    // enterprise account can still be denied `schtasks /Create` by group
+    // policy ("Access is denied", localized FR/EN or OEM mojibake; the
+    // exit code is the only reliable signal). Fall back to a launcher in
+    // the user's Startup folder: no admin, no scheduled task. Then start
+    // the daemon now so install leaves a running daemon, not only a
+    // next-logon promise.
     process.stderr.write(
-      `agentproto daemon install: schtasks create failed (exit ${created.code})\n${created.stderr}\n`,
+      `agentproto daemon install: schtasks create failed (exit ${created.code}); ` +
+        `a group policy may block per-user scheduled tasks\n` +
+        `  falling back to a Startup-folder launcher (no admin, no scheduled task)\n`,
     )
-    return 1
+    let startupPath: string
+    try {
+      startupPath = await writeWinStartupFallback({
+        home,
+        appData: deps.appData,
+        launcherPath: scriptPath,
+      })
+    } catch (err) {
+      process.stderr.write(
+        `agentproto daemon install: failed to write the Startup-folder launcher: ` +
+          `${err instanceof Error ? err.message : String(err)}\n`,
+      )
+      return 1
+    }
+    process.stdout.write(
+      `agentproto daemon: registered a Startup-folder launcher at ${startupPath} ` +
+        `(auto-start at logon, no admin required)\n`,
+    )
+    return startDetachedWinDaemon(
+      { ...deps, home },
+      deps.probeAttempts ?? 20,
+      "started",
+      deps.health ?? fetchHealth,
+    )
   }
+  // A task won this time: drop any stale fallback shim from an earlier
+  // install so the two start mechanisms never coexist.
+  await removeWinStartupFallback(home, deps.appData)
   const started = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
   if (started.code !== 0) {
     process.stderr.write(
@@ -1331,7 +1562,28 @@ export function winSchtasksTaskAbsent(result: LaunchctlResult): boolean {
 
 export async function runWinUninstall(
   schtasksFn: SchtasksFn = schtasks,
+  deps: WinDeps = {},
 ): Promise<number> {
+  const home = deps.home ?? homedir()
+  if ((await detectWinDaemonMode(home, deps.appData)) === "startup-fallback") {
+    const startupPath = winStartupScriptPath(home, deps.appData)
+    const stopCode = await stopDetachedWinDaemon(deps)
+    try {
+      await fs.unlink(startupPath)
+      process.stdout.write(`agentproto daemon: removed ${startupPath}\n`)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        process.stderr.write(
+          `agentproto daemon uninstall: failed to remove the Startup shim: ` +
+            `${err instanceof Error ? err.message : String(err)}\n`,
+        )
+        return 1
+      }
+      process.stdout.write(`agentproto daemon: ${startupPath} already absent\n`)
+    }
+    return stopCode
+  }
+
   // Idempotent: ask the scheduler first. `/Query` exits 0 iff the task
   // exists, whatever the display language. A non-zero exit is NOT proof of
   // absence (access denied and a dead service share it), so only the known
@@ -1340,6 +1592,7 @@ export async function runWinUninstall(
   const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
   if (query.code !== 0) {
     if (winSchtasksTaskAbsent(query)) {
+      await removeWinStartupFallback(home, deps.appData)
       process.stdout.write(
         `agentproto daemon: scheduled task ${SCHTASKS_TASK_NAME} already absent\n`,
       )
@@ -1359,6 +1612,7 @@ export async function runWinUninstall(
     )
     return 1
   }
+  await removeWinStartupFallback(home, deps.appData)
   process.stdout.write(`agentproto daemon: removed scheduled task ${SCHTASKS_TASK_NAME}\n`)
   return 0
 }
@@ -1368,7 +1622,17 @@ export async function runWinStart(
   health: HealthFetchFn = fetchHealth,
   probeAttempts = 20,
   readPolicy: () => Promise<string | null> = readWinExecutionPolicy,
+  deps: WinDeps = {},
 ): Promise<number> {
+  const home = deps.home ?? homedir()
+  if ((await detectWinDaemonMode(home, deps.appData)) === "startup-fallback") {
+    return startDetachedWinDaemon(
+      { ...deps, home },
+      deps.probeAttempts ?? probeAttempts,
+      "started",
+      deps.health ?? health,
+    )
+  }
   const out = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
   if (out.code !== 0) {
     // The exit code is the signal — schtasks' message is localized and in the
@@ -1390,7 +1654,19 @@ export async function runWinRestart(
   health: HealthFetchFn = fetchHealth,
   probeAttempts = 20,
   readPolicy: () => Promise<string | null> = readWinExecutionPolicy,
+  deps: WinDeps = {},
 ): Promise<number> {
+  const home = deps.home ?? homedir()
+  if ((await detectWinDaemonMode(home, deps.appData)) === "startup-fallback") {
+    const stopCode = await stopDetachedWinDaemon({ ...deps, home, health: deps.health ?? health })
+    if (stopCode !== 0) return stopCode
+    return startDetachedWinDaemon(
+      { ...deps, home },
+      deps.probeAttempts ?? probeAttempts,
+      "restarted",
+      deps.health ?? health,
+    )
+  }
   // /End fails harmlessly when the task isn't mid-run; /Run always relaunches.
   await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
   const out = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
@@ -1413,16 +1689,7 @@ export async function runWinRestart(
  *  `/health`, and if the port still answers, kill the recorded PID tree
  *  (`taskkill /PID <pid> /T /F` — win32 only) and re-probe. Everything is
  *  injectable so the tests never touch schtasks, taskkill, or the network. */
-export interface WinStopDeps {
-  health?: HealthFetchFn
-  /** Kill a process tree by pid. Default: win32 `taskkill /T /F`. */
-  killTree?: (pid: number) => Promise<number>
-  /** The daemon PID recorded at start — `~/.agentproto/runtime.json`'s
-   *  `pid` field by default. Fallback when `/health` doesn't expose one. */
-  readDaemonPid?: () => Promise<number | null>
-  /** Delay before post-kill re-probes (tests set 0 to stay hermetic). */
-  releaseDelayMs?: number
-}
+export type WinStopDeps = WinDeps
 
 /** One `taskkill /PID <pid> /T /F` — kills the node daemon AND its whole
  *  child tree. No port killer, SO_REUSEADDR, or task-snapshot parsing: the
@@ -1441,10 +1708,10 @@ async function taskkillTree(pid: number): Promise<number> {
 /** The `pid` field of the serve daemon's home runtime.json — `null` when
  *  missing/malformed/absent-pid. Keep the read bounded: one JSON parse,
  *  never a config load (this must work even when the daemon is wedged). */
-async function readHomeRuntimePid(): Promise<number | null> {
+async function readHomeRuntimePid(home: string = homedir()): Promise<number | null> {
   try {
     const raw = await fs.readFile(
-      join(homedir(), ".agentproto", "runtime.json"),
+      join(home, ".agentproto", "runtime.json"),
       "utf8",
     )
     const parsed = JSON.parse(raw) as { pid?: unknown }
@@ -1458,6 +1725,10 @@ export async function runWinStop(
   schtasksFn: SchtasksFn = schtasks,
   deps: WinStopDeps = {},
 ): Promise<number> {
+  const home = deps.home ?? homedir()
+  if ((await detectWinDaemonMode(home, deps.appData)) === "startup-fallback") {
+    return stopDetachedWinDaemon({ ...deps, home })
+  }
   const out = await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
   if (out.code !== 0) {
     process.stderr.write(
@@ -1469,7 +1740,7 @@ export async function runWinStop(
 
   const health = deps.health ?? fetchHealth
   const killTree = deps.killTree ?? taskkillTree
-  const readPid = deps.readDaemonPid ?? readHomeRuntimePid
+  const readPid = deps.readDaemonPid ?? (() => readHomeRuntimePid(home))
   const delay = deps.releaseDelayMs ?? 500
   const wait = (): Promise<void> =>
     delay > 0 ? new Promise(r => setTimeout(r, delay)) : Promise.resolve()
@@ -1509,53 +1780,82 @@ export async function runWinStop(
   return 0
 }
 
-export async function runWinStatus(schtasksFn: SchtasksFn = schtasks): Promise<number> {
-  const p = paths()
+/** Single `/health` + release-check pass for the Windows `status` verb.
+ *  Injectable so status tests never hit the network. */
+async function probeWinHealth(): Promise<WinHealthSummary> {
   const cfg = await loadConfig()
   const port = cfg.daemon?.port ?? 18790
   const bind = cfg.daemon?.bind ?? "127.0.0.1"
-
-  // 1. task registered? (`schtasks /Query /TN <name>` exits 0 iff found.)
-  const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
-  const installed = query.code === 0
-  // Task Scheduler prints a `Status:` line ("Ready", "Running", …); grab it
-  // best-effort so an output-format change degrades to just the state word.
-  const status = query.stdout.match(/^\s*Status:\s*(\S.*)$/m)?.[1]?.trim() ?? null
-
-  // 2. /health probe — same shape as the launchd branch.
-  let health: string | null = null
-  let release: string | null = null
-  let buildSource: ReleaseBuildSource = null
   try {
     const res = await fetch(`http://${bind}:${port}/health`, {
       signal: AbortSignal.timeout(800),
     })
-    if (res.ok) {
-      const body = (await res.json().catch(() => ({}))) as {
-        workspace?: string
-        uptimeMs?: number
-        version?: string | null
-        build?: DaemonHealthInfo["build"]
-      }
-      health =
-        `ok${body.version ? ` · v${body.version}` : ""}${renderBuild(body.build)}` +
-        ` · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
-      buildSource = body.build?.source === "workspace" ? "workspace" : "tarball"
-      release = await renderReleaseStatus(body.version ?? null, buildSource)
-    } else {
-      health = `HTTP ${res.status}`
+    if (!res.ok) return { health: `HTTP ${res.status}`, release: null, pid: null }
+    const body = (await res.json().catch(() => ({}))) as {
+      workspace?: string
+      uptimeMs?: number
+      version?: string | null
+      build?: DaemonHealthInfo["build"]
+      pid?: number
     }
+    const health =
+      `ok${body.version ? ` · v${body.version}` : ""}${renderBuild(body.build)}` +
+      ` · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
+    const buildSource: ReleaseBuildSource = body.build?.source === "workspace" ? "workspace" : "tarball"
+    const release = await renderReleaseStatus(body.version ?? null, buildSource)
+    return { health, release, pid: typeof body.pid === "number" ? body.pid : null }
   } catch {
-    health = "unreachable"
+    return { health: "unreachable", release: null, pid: null }
+  }
+}
+
+export async function runWinStatus(
+  schtasksFn: SchtasksFn = schtasks,
+  deps: WinDeps = {},
+): Promise<number> {
+  const home = deps.home ?? homedir()
+  const mode = await detectWinDaemonMode(home, deps.appData)
+  const p = paths(home)
+  const cfg = await loadConfig()
+  const port = cfg.daemon?.port ?? 18790
+  const bind = cfg.daemon?.bind ?? "127.0.0.1"
+  const summary = await (deps.probeHealth ?? probeWinHealth)()
+
+  let head: string
+  let ok: boolean
+  if (mode === "startup-fallback") {
+    const startupPath = winStartupScriptPath(home, deps.appData)
+    let installed = true
+    try {
+      await fs.access(startupPath)
+    } catch {
+      installed = false
+    }
+    const running = summary.pid !== null || summary.health.startsWith("ok")
+    head =
+      `agentproto daemon status\n` +
+      `  mode:      startup fallback (auto-start at logon via the Startup folder, not a scheduled task)\n` +
+      `  startup:   ${installed ? "present" : "absent"} (${startupPath})\n` +
+      `  process:   ${running ? `running${summary.pid !== null ? ` (pid ${summary.pid})` : ""}` : "not running"}\n`
+    ok = installed && running
+  } else {
+    // 1. task registered? (`schtasks /Query /TN <name>` exits 0 iff found.)
+    const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
+    const installed = query.code === 0
+    // Task Scheduler prints a `Status:` line ("Ready", "Running", …); grab it
+    // best-effort so an output-format change degrades to just the state word.
+    const status = query.stdout.match(/^\s*Status:\s*(\S.*)$/m)?.[1]?.trim() ?? null
+    head =
+      `agentproto daemon status\n` +
+      `  task:      ${installed ? "registered" : "not registered"} (${SCHTASKS_TASK_NAME})\n` +
+      `  schtasks:  ${installed ? (status ?? "registered") : "not registered"}\n`
+    ok = installed
   }
 
   process.stdout.write(
-    `agentproto daemon status\n` +
-      `  task:      ${installed ? "registered" : "not registered"} (${SCHTASKS_TASK_NAME})\n` +
-      `  schtasks:  ${installed ? (status ?? "registered") : "not registered"}` +
-      `\n` +
-      `  /health:   ${health}  (http://${bind}:${port})\n` +
-      `  release:   ${release ?? "unknown"}\n` +
+    head +
+      `  /health:   ${summary.health}  (http://${bind}:${port})\n` +
+      `  release:   ${summary.release ?? "unknown"}\n` +
       `  config:    ${CONFIG_FILE_PATH()}\n` +
       `  logs:      ${p.log}\n`,
   )
@@ -1568,7 +1868,7 @@ export async function runWinStatus(schtasksFn: SchtasksFn = schtasks): Promise<n
   } catch {
     /* no log yet */
   }
-  return installed ? 0 : 1
+  return ok ? 0 : 1
 }
 
 // ---------------------------------------------------------------------------
@@ -1803,7 +2103,7 @@ export interface LinuxHealthSummary {
   sandboxSessions?: DaemonHealthInfo["sandboxSessions"]
 }
 
-/** Single `/health` + release-check pass for `status` — injectable so the
+/** Single `/health` + release-check pass for `status`, injectable so the
  *  status tests never hit the network. */
 export type LinuxHealthProbeFn = () => Promise<LinuxHealthSummary>
 
