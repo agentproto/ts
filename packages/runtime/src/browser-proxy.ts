@@ -63,7 +63,6 @@ export type ProxiedBrowserToolName =
   | "browser_press_key"
   | "browser_list_tabs"
   | "list_browsers"
-  | "browser_status"
 
 interface BrowserToolMapping {
   /** The Bureau tool this daemon tool maps to. */
@@ -74,6 +73,8 @@ interface BrowserToolMapping {
   consumed: readonly string[]
   /** Daemon input fields with no Bureau equivalent: dropped and noted. */
   dropped: readonly string[]
+  /** Extra notes carried on a successful proxied result. */
+  extraNotes?: readonly string[]
 }
 
 /**
@@ -150,12 +151,9 @@ const MAPPINGS: Record<ProxiedBrowserToolName, BrowserToolMapping> = {
     forward: ["instance"],
     consumed: [],
     dropped: ["onlyAlive"],
-  },
-  browser_status: {
-    target: "browser_list_instances",
-    forward: ["instance"],
-    consumed: ["sessionId"],
-    dropped: [],
+    extraNotes: [
+      "Bureau browser_list_instances returns instances, not the daemon's browser-session descriptors",
+    ],
   },
 }
 
@@ -183,6 +181,7 @@ export const BROWSER_USE_BUREAU: Readonly<Record<string, string>> = {
   browser_screencast_frame: "browser_screenshot",
   browser_screencast_start: "browser_screenshot",
   browser_screencast_stop: "browser_screenshot",
+  browser_status: "browser_list_instances",
   browser_upload_file: "browser_act",
   browser_wait_for: "browser_evaluate",
   start_browser: "browser_list_instances",
@@ -221,6 +220,7 @@ export function mapBrowserProxyArgs(
     if (input[key] !== undefined) args[key] = input[key]
   }
   const notes = [
+    ...(mapping.extraNotes ?? []),
     ...mapping.dropped
       .filter(key => input[key] !== undefined)
       .map(key => `dropped "${key}" (no Bureau equivalent)`),

@@ -874,14 +874,10 @@ export function registerBrowserTools(
         .string()
         .min(1)
         .describe("Session id returned by `start_browser` or `list_browsers`."),
-      instance: z
-        .string()
-        .optional()
-        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
     },
     async input => {
-      const proxied = await tryProxy("browser_status", input)
-      if (proxied) return proxied
+      const refused = refuseWithoutTwin("browser_status")
+      if (refused) return refused
       const desc = registry.get(input.sessionId)
       if (!desc) {
         return {

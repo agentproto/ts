@@ -247,18 +247,14 @@ describe("browser proxy - proxied tools", () => {
       expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
     },
     {
-      tool: "browser_status",
-      input: { sessionId: "s", instance: "inst-1" },
-      target: "browser_list_instances",
-      expectedArgs: { instance: "inst-1" },
-      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
-    },
-    {
       tool: "list_browsers",
       input: { onlyAlive: true, instance: "inst-1" },
       target: "browser_list_instances",
       expectedArgs: { instance: "inst-1" },
-      expectedNotes: ['dropped "onlyAlive" (no Bureau equivalent)'],
+      expectedNotes: [
+        "Bureau browser_list_instances returns instances, not the daemon's browser-session descriptors",
+        'dropped "onlyAlive" (no Bureau equivalent)',
+      ],
     },
   ]
 
@@ -306,6 +302,7 @@ describe("browser proxy - tools with no Bureau twin", () => {
       target: "browser_act",
     },
     { tool: "browser_wait_for", input: { sessionId: "browser-session", selector: "#x" }, target: "browser_evaluate" },
+    { tool: "browser_status", input: { sessionId: "browser-session" }, target: "browser_list_instances" },
     { tool: "start_browser", input: { adapter: "chrome-live" }, target: "browser_list_instances" },
     { tool: "stop_browser", input: { sessionId: "browser-session" }, target: "browser_close_tab" },
   ]
