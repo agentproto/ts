@@ -19,6 +19,9 @@
  * strictly under the app's data dir (or, for legacy files, its source dir)
  * and refuses to escape either.
  *
+ * A session that carries an app boundary may only address its own app
+ * (`ownAppId`); an app UI may only address its own app (app-tools.ts).
+ *
  * ## Resolution rule (the contract app UIs and agents rely on)
  *
  * An app-relative path `p` resolves as follows — see `locateAppDataPath`:
@@ -381,6 +384,9 @@ export interface RegisterAppDataToolsOptions {
   callerScope?: CallerScope
   /** Where trees are read from. Default: the daemon's shared instance. */
   scopes?: CallerScopes
+  /** The app whose boundary the calling session carries (app-boundary.ts).
+   *  When set, every tool here refuses any other appId. Absent = host call. */
+  ownAppId?: string
 }
 
 export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToolsOptions): void {
@@ -390,6 +396,11 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
   // cannot see is not installed as far as this caller is concerned.
   const visibleApp = (appId: string): InstalledApp | undefined => {
     assertServed(opts.callerScope)
+    if (opts.ownAppId !== undefined && appId !== opts.ownAppId) {
+      throw new Error(
+        `refused: a session of app "${opts.ownAppId}" may only address its own app data, not "${appId}".`,
+      )
+    }
     const app = appRegistry.getApp(appId)
     if (!app) return undefined
     const visible =

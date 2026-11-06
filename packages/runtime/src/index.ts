@@ -4532,6 +4532,7 @@ export async function createGateway(
       messagingGrants: messagingDefaults.grants,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
       ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
+      messagingAnonymousSend: messagingDefaults.anonymousSend,
       noCallerIdentity: mcpNoCallerIdentity,
       // `ask`: park an identity-less send on a human approval. The requester
       // is the operator (an unidentified client is operator context, the
@@ -4734,7 +4735,7 @@ export async function createGateway(
     })
     // App-scoped durable data plane (app-data.ts) — app_data_read/write/list/
     // migrate, anchored to each installed app's own dir with traversal guard.
-    registerAppDataTools(server, { appRegistry, callerScope })
+    registerAppDataTools(server, { appRegistry, callerScope, ...(boundary ? { ownAppId: boundary.appId } : {}) })
     // Read-only external filesystem plane (app-external.ts) —
     // app_external_list/app_external_read, anchored to each installed app's
     // opted-in InstalledApp.externalReadRoots (never the app's own sandbox

@@ -107,6 +107,17 @@ import { createHash, randomBytes } from "node:crypto"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
+/** Data-plane tools an app UI may only point at its own app (`args.appId`). */
+const APP_DATA_PLANE_TOOLS: ReadonlySet<string> = new Set([
+  "app_data_read",
+  "app_data_write",
+  "app_data_list",
+  "app_data_migrate",
+  "app_state_append",
+  "app_state_get",
+  "app_state_list",
+])
+
 /**
  * Local companion to the shared `paginated()` transformer for tools whose
  * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
@@ -770,6 +781,12 @@ async function dispatchAllowlistedAppTool(
       )
     }
     args = input.args ?? {}
+  }
+  if (APP_DATA_PLANE_TOOLS.has(input.tool) && args.appId !== undefined && args.appId !== input.appId) {
+    return errorResult(
+      `app_tool_call: app "${input.appId}" may only address its own data; ` +
+        `"${input.tool}" named app "${String(args.appId)}".`,
+    )
   }
   // App-UI install guard: an `app_install` routed through an app panel's
   // tool-call surface (`window.McpApp` bridge → this dispatcher) needs an

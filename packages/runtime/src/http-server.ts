@@ -73,6 +73,7 @@ import {
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
+  unverifiedSenderPrefix,
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
@@ -91,7 +92,7 @@ import {
 } from "./stdio-mount-gate.js"
 import type { AllowlistEntry } from "./command-allowlist.js"
 import { spawnAdmissionReport } from "./action-hooks/spawn-admission-counters.js"
-import { decide, type Principal } from "./permissions.js"
+import { ANONYMOUS_SEND_RULE, decide, type Principal } from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
@@ -8781,6 +8782,9 @@ code { color: #9ad; }
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
+    // Admitted only because the sender is an unverified (claimed) identity:
+    // prefix the text; `decide("session.message.interrupt")` already caps it.
+    const unverifiedLabel = sender !== undefined && decision.allow && decision.rule === ANONYMOUS_SEND_RULE
     if (decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
         senderId: sender?.id,
@@ -8799,7 +8803,7 @@ code { color: #9ad; }
       msg = createSessionMessage({
         to: id,
         from: messageFrom(sender, relation),
-        text: b.text,
+        text: unverifiedLabel ? unverifiedSenderPrefix(sender?.label ?? sender?.id) + b.text : b.text,
         ...(b.kind !== undefined ? { kind: b.kind as MessageKind } : {}),
         ...(b.urgency !== undefined ? { urgency: b.urgency as MessageUrgency } : {}),
         ...(typeof b.replyTo === "string" ? { replyTo: b.replyTo } : {}),
@@ -8860,6 +8864,7 @@ code { color: #9ad; }
         relation,
         ...r,
         ...(routed.routedTo ? { routedFrom: id } : {}),
+        ...(unverifiedLabel ? { unverified: true } : {}),
       })
     } catch (err) {
       writeLedger("dropped")

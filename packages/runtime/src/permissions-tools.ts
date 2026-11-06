@@ -43,6 +43,8 @@ export interface RegisterPermissionsToolsOptions {
   allowInterrupt?: boolean
   /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
   peerBinding?: "slug" | "verified"
+  /** `defaults.messaging.anonymousSend`, resolved for this request. */
+  anonymousSend?: "block" | "label"
   /** cwd to registered-workspace resolver for verified peer binding. Omitted: no cwd resolves, so "verified" links no peers. */
   workspaceOfCwd?: (cwd: string) => string | undefined
   /** `defaults.spawn.sharedProfiles`, resolved for this request. Omitted: read from config per call. */
@@ -67,6 +69,7 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
     messagingGrants,
     allowInterrupt,
     peerBinding,
+    anonymousSend,
     workspaceOfCwd,
     sharedProfiles,
   } = opts
@@ -175,6 +178,7 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
           peerGroups: peerGroups ?? [],
           peerBinding: peerBinding ?? "slug",
           agentInterrupt: allowInterrupt ? "allow" : "deny",
+          ...(anonymousSend ? { anonymousSend } : {}),
           grants: messagingGrants ?? [],
         },
         registry,

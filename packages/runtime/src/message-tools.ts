@@ -29,7 +29,7 @@ import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
-import { decide, type PermissionContext } from "./permissions.js"
+import { ANONYMOUS_SEND_RULE, decide, type PermissionContext } from "./permissions.js"
 import { warnPeerUnverified } from "./workspace-binding.js"
 import {
   createSessionMessage,
@@ -39,6 +39,7 @@ import {
   type MessageFilter,
   type MessageKind,
   type MessageUrgency,
+  unverifiedSenderPrefix,
   type SessionMessage,
 } from "./session-message.js"
 
@@ -81,6 +82,8 @@ export interface RegisterMessageToolsOptions {
   /** `defaults.messaging.agentInterrupt: "allow"` — let a session sender's
    *  `interrupt` cancel the recipient's turn. Off by default (→ `steer`). */
   allowInterrupt?: boolean
+  /** `defaults.messaging.anonymousSend` - "label" (default) or "block". */
+  anonymousSend?: "block" | "label"
   /** `mcp.noCallerIdentity` — how a call with no caller identity is handled.
    *  `block` (default) keeps the refusal; `accept` lets an identity-less
    *  `message_send` go out as the anonymous `claude-code` sender; `ask`
@@ -160,6 +163,8 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   /** `defaults.messaging.peerGroups` - the operator's workspace families.
    *  Empty (the default) = no cross-workspace link. */
   const peerGroups = opts.peerGroups ?? []
+  /** `defaults.messaging.anonymousSend` - "label" unless the operator set "block". */
+  const anonymousSendMode: "block" | "label" = opts.anonymousSend ?? "label"
   // One shared messaging context (messaging-context.ts) so the tools,
   // `POST /sessions/:id/messages` and `permissions_explain` cannot drift.
   const policy: PermissionContext = buildMessagingPermissionContext({
@@ -169,6 +174,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       peerGroups,
       peerBinding: opts.peerBinding ?? "slug",
       agentInterrupt: allowInterrupt ? "allow" : "deny",
+      anonymousSend: anonymousSendMode,
       grants: opts.messagingGrants ?? [],
     },
     registry,
@@ -382,6 +388,12 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const kind = input.kind ?? "report"
     const urgency = input.urgency ?? defaultUrgencyForKind(kind)
+    // `defaults.messaging.anonymousSend: "label"`: an identity-less caller, or
+    // a session sender admitted only because its identity is unverified, is
+    // delivered with a visible text prefix and capped at steer. "block"
+    // leaves an anonymous sender exactly as before (operator principal).
+    const labelled =
+      anonymousSendMode === "label" && (self ? decision.rule === ANONYMOUS_SEND_RULE : anonymous)
     let msg: SessionMessage
     try {
       msg = createSessionMessage({
@@ -389,7 +401,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         from: self
           ? messageFrom(self, relation)
           : { relation: "human", label: "claude-code", anonymous: true },
-        text: input.text,
+        text: labelled
+          ? unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code") + input.text
+          : input.text,
         kind,
         urgency,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
@@ -410,7 +424,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           source: provenance,
           origin: provenance,
           decision,
-          ...(interrupt.allow ? { allowInterrupt: true } : {}),
+          ...(interrupt.allow && !labelled ? { allowInterrupt: true } : {}),
         },
         opts.deliveryApply,
         parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
@@ -426,7 +440,15 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         queued: r.queued,
         urgencyApplied: r.urgencyApplied,
         ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
-        ...(r.urgencyApplied !== urgency
+        ...(labelled
+          ? {
+              unverified: true,
+              note: `delivered unverified: the recipient sees the sender as unverified and the urgency is capped at steer${
+                r.urgencyApplied !== urgency ? ` ("${urgency}" delivered as "${r.urgencyApplied}")` : ""
+              }`,
+            }
+          : {}),
+        ...(!labelled && r.urgencyApplied !== urgency
           ? { note: `urgency "${urgency}" delivered as "${r.urgencyApplied}"` }
           : {}),
       })
