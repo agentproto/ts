@@ -37,7 +37,10 @@ import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/led
 import {
   createDeliveryBatcher,
   levelFromDecision,
+  levelToTier,
   shadowDeliveryGrant,
+  shouldApplyDelivery,
+  type DeliveryApplyConfig,
   type DeliveryBatcher,
   type DeliveryGrantDecider,
   type Envelope,
@@ -260,6 +263,11 @@ export interface SentinelRuntimeOptions {
   /** Cancel-tombstone file (tests). Same default/persistence rule as
    *  `quarantinePath`: `~/.agentproto/sentinel-cancel-tombstones.json`. */
   cancelTombstonePath?: string
+  /** The daemon `delivery.apply` switch, read fresh per event. Absent or
+   *  empty ⇒ the sentinel's classified decision is only observed (today's
+   *  behaviour); an enabled type has its level APPLIED to the target
+   *  urgency, and a level-0 event is dropped without a send. */
+  apply?: () => DeliveryApplyConfig | undefined
   /** Shadow grant decider for ledger observation (tests / future
    *  enforcement). Omitted → the capability-based shadow decider. */
   grantDecide?: DeliveryGrantDecider
@@ -709,7 +717,13 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     event: SentinelEvent
     provider: SentinelProviderHandle
     targetSessionId: string
+    /** Urgency actually used for delivery: the target's own, or the
+     *  classified tier when `applied`. */
     targetUrgency: MessageUrgency
+    /** Whether the daemon delivery.apply switch adopted the classification. */
+    applied: boolean
+    /** Applied level 0: observed, ledgered, never sent. */
+    dropped: boolean
     batchMs: number
     envelope: SentinelEvent & Envelope
     triage?: TriageOutcome
@@ -734,6 +748,20 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       log(`[sentinel-runtime] batch flush for ${target} failed: ${describeError(err)}`),
   })
 
+  function safeShouldApply(
+    read: (() => DeliveryApplyConfig | undefined) | undefined,
+    type: string,
+  ): boolean {
+    if (!read) return false
+    try {
+      return shouldApplyDelivery(read(), type)
+    } catch (err) {
+      // The switch must never block delivery.
+      log(`[sentinel-runtime] delivery.apply unavailable: ${describeError(err)}`)
+      return false
+    }
+  }
+
   function prepareDelivery(
     sentinel: Sentinel,
     event: SentinelEvent,
@@ -755,20 +783,35 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       log(`[sentinel-runtime] triage failed: ${describeError(err)}`)
     }
     const effectiveTriage = triage ?? { decision: "wake" as const, rule: "default" as const }
+    // The switch is the only thing that changes DELIVERY: the classification
+    // itself is never recomputed here. Not applied ⇒ target urgency exactly
+    // as before.
+    const applied = safeShouldApply(opts.apply, envelope.type)
+    const level = levelFromDecision(effectiveTriage.decision)
+    const tier = applied ? levelToTier(level) : undefined
+    // A level-0 tier is the applied drop, never a target urgency.
+    const targetUrgency: MessageUrgency = tier === undefined || tier === "drop" ? target.urgency : tier
     const key = coalesceKeyFor(event)
     return {
       sentinel,
       event,
       provider,
       targetSessionId: target.sessionId,
-      targetUrgency: target.urgency,
+      targetUrgency,
+      applied,
+      dropped: applied && level === 0,
       batchMs: target.batchMs ?? 0,
       envelope,
       ...(triage !== undefined ? { triage } : {}),
       effectiveTriage,
       ...(typeof event.time === "string" && event.time.length > 0 ? { eventTs: event.time } : {}),
       ...(envelope.repeatKey !== undefined ? { repeatKey: envelope.repeatKey } : {}),
-      msg: buildMessage(sentinel, event, target.sessionId, target.urgency),
+      msg: buildMessage(
+        sentinel,
+        event,
+        target.sessionId,
+        targetUrgency,
+      ),
       ...(key !== undefined ? { key } : {}),
     }
   }
@@ -789,7 +832,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       level: levelFromDecision(prepared.effectiveTriage.decision),
       cap: 3,
       rule: prepared.effectiveTriage.rule,
-      applied: false,
+      applied: prepared.applied,
       grant: shadowDeliveryGrant({
         producer: prepared.provider,
         subject: prepared.event.subject,
@@ -957,7 +1000,20 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   }
 
   function enqueueBatch(prepared: PreparedDelivery): void {
+    if (prepared.dropped) {
+      // An applied drop never joins the batch: bookkeep it now so the poll
+      // can acknowledge the cursor, and ledger the drop.
+      recordTriage(prepared)
+      writeLedgerFor(prepared, { outcome: "dropped" })
+      void bookkeepPrepared(prepared).catch(err => {
+        log(`[sentinel-runtime] dropped-event bookkeeping failed: ${describeError(err)}`)
+      })
+      return
+    }
     const key = batchKey(prepared.sentinel.id, prepared.event.id)
+    // An applied level-0 event (above) is booked immediately; the poll cursor
+    // still holds one tick on purpose, so the provider re-serves the already
+    // seen batch once and the dedup (`isSeen`) skips it.
     pendingBatchKeys.add(key)
     void batcher.enqueue(prepared.targetSessionId, prepared.batchMs, prepared).catch(err => {
       pendingBatchKeys.delete(key)
@@ -977,6 +1033,12 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // type for `target.sessionId`/`target.urgency` below.
     if (target.kind !== "session") return
     const prepared = prepareDelivery(sentinel, event, provider, target)
+    if (prepared.dropped) {
+      // Applied drop: the event is observed and ledgered, never delivered.
+      recordTriage(prepared)
+      writeLedgerFor(prepared, { outcome: "dropped" })
+      return
+    }
     try {
       const outcome = await attemptSend(prepared)
       writeLedgerFor(prepared, outcome)

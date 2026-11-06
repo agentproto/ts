@@ -1,5 +1,8 @@
 import type { Envelope, Level, Tier } from "./types.js"
 
+// `steer` is the top tier of the shared vocabulary. The follow and sentinel
+// producers only deliver `next-turn` or `fyi`, so an applied level 3 reaches
+// them as a wake (`next-turn`): never downgraded to `fyi`, never dropped.
 const TIER: Record<Level, Tier> = {
   3: "steer",
   2: "next-turn",

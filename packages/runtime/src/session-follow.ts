@@ -48,6 +48,8 @@ import {
   type LedgerLine,
   type LedgerOutcome,
   type Level,
+  shouldApplyDelivery,
+  type DeliveryApplyConfig,
 } from "@agentproto/delivery"
 
 import type { ActivityRecord } from "./activity-projection.js"
@@ -69,7 +71,6 @@ import {
   evaluateFollowEvent,
   followEnvelopeType,
   followFloor,
-  resolveFollowTriageConfig,
   triageEventFromEnvelope,
   triageFollowEvent,
   defaultFollowTriageConfig,
@@ -129,6 +130,11 @@ export interface WireSessionFollowOptions {
    *  with it off nothing about delivery changes. A FUNCTION is re-read
    *  before every digest (the daemon passes the live config resolver). */
   triage?: FollowTriageConfig | (() => FollowTriageConfig | Promise<FollowTriageConfig>)
+  /** Daemon-level delivery-apply switch (`config.delivery.apply`). A
+   *  follow's own `triage.enabled` is the per-subscription override; the
+   *  daemon `follow.triage.enabled` still means "apply every type". A
+   *  FUNCTION is re-read before every digest. */
+  apply?: DeliveryApplyConfig | (() => DeliveryApplyConfig | undefined | Promise<DeliveryApplyConfig | undefined>)
   /** Append-only delivery ledger (tests). Default
    *  `~/.agentproto/delivery-ledger.jsonl`. */
   ledgerPath?: string
@@ -599,6 +605,19 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       : defaultFollowTriageConfig()
   /** Re-read the daemon-level triage default (the daemon passes a resolver
    *  so a `config_set` applies to the next digest). */
+  /** Last `delivery.apply` read at flush time: the synchronous event
+   *  listener uses it when the caller's getter is async. */
+  let cachedApply: DeliveryApplyConfig | undefined
+
+  /** Sync read for the event listener: a plain value or a sync getter is
+   *  current; an async getter falls back to the last flush's value. */
+  function currentApply(): DeliveryApplyConfig | undefined {
+    if (typeof opts.apply !== "function") return opts.apply
+    const value = (opts.apply as () => DeliveryApplyConfig | undefined | Promise<DeliveryApplyConfig | undefined>)()
+    if (value !== undefined && typeof (value as Promise<unknown>).then === "function") return cachedApply
+    return value as DeliveryApplyConfig | undefined
+  }
+
   async function refreshDaemonTriage(): Promise<void> {
     if (typeof opts.triage !== "function") return
     try {
@@ -1115,20 +1134,67 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     let deliveredEntries: BatchEntry[] = entries
     let urgency: FollowUrgency = batch.urgency
     let results: TriageResult[] | undefined
-    const applied = triage.enabled
+    let applyCfg: DeliveryApplyConfig | undefined
+    try {
+      applyCfg = typeof opts.apply === "function" ? await opts.apply() : opts.apply
+      cachedApply = applyCfg
+    } catch (err) {
+      // An unreadable switch must never lose a digest: fall through with
+      // nothing applied, which is the historical behaviour.
+      log(`[session-follow] delivery.apply unavailable for ${followerId}: ${describeError(err)}`)
+    }
     /** The level each entry computed to. `computeLevel` is the one place a
      *  floor becomes level 3; everything below reads this, never a separate
      *  must-wake branch. */
     const levels = new Map<BatchEntry, Level>()
     const resultAt = (i: number): TriageResult => results?.[i] ?? { decision: "wake", rule: "default" }
-    if (triage.enabled) {
-      // Deterministic triage BEFORE the wake: every event is classified,
-      // every decision is logged, and only the `wake` ones (plus a count of
-      // the informational ones) make it into a digest that may wake.
+    // One funnel for the switch: a follow's own `triage.enabled` is the
+    // per-subscription override; the daemon `follow.triage.enabled` still
+    // means "apply every type" (backwards compat); otherwise the
+    // `delivery.apply` globs decide. There is no second switch.
+    const applyEntry = (entry: BatchEntry): boolean => {
+      const follow = batch.followIds.has(entry.followId ?? "")
+        ? follows.find(f => f.id === entry.followId)
+        : undefined
+      const override = follow?.triage?.enabled
+      if (override === true) return true
+      if (override === false) return false
+      if (triage.enabled) return true
+      return shouldApplyDelivery(applyCfg, entry.envelope.type)
+    }
+    const appliedEntries = new Set(entries.filter(applyEntry))
+    if (appliedEntries.size > 0) {
+      // At least one event opted in: every event is still classified, but
+      // only the opted-in ones have their decision APPLIED. A non-opted-in
+      // event keeps today's delivery (a wake), with the verdict recorded.
       try {
         const facts = factsFor(entries)
+        const classifierRegistry =
+          opts.classifierRegistry ??
+          createClassifierRegistry(
+            opts.classifiers ?? [
+              createSessionLifecycleClassifier({
+                rules: triage.rules,
+                facts,
+                reportWindowMs: triage.reportWindowMs,
+              }),
+            ],
+          )
         const evaluated: TriageResult[] = []
         for (const entry of entries) {
+          if (!appliedEntries.has(entry)) {
+            const observed = evaluateFollowEvent(
+              toTriageEvent(followerId, entry),
+              triage.rules,
+              facts,
+              triage.reportWindowMs,
+            )
+            const classified = classifierRegistry.classify(entry.envelope, { targetId: followerId })
+            const level = computeLevel(entry.envelope, classified.level, 3)
+            levels.set(entry, level)
+            evaluated.push({ decision: observed.decision, rule: observed.rule, level })
+            continue
+          }
           const result = await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts)
           // A source-declared fyi is already an explicit downgrade: triage may
           // drop it, but never raise it back to a wake.
@@ -1144,14 +1210,16 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           levels.set(entry, adjusted.level ?? levelFromDecision(adjusted.decision))
         }
         results = evaluated
-        const wakeEntries = entries.filter((_, i) => evaluated[i]!.decision === "wake")
-        const fyiEntries = entries.filter((_, i) => evaluated[i]!.decision === "fyi")
+        const decisionAt = (i: number): TriageResult["decision"] =>
+          appliedEntries.has(entries[i]!) ? evaluated[i]!.decision : "wake"
+        const wakeEntries = entries.filter((_, i) => decisionAt(i) === "wake")
+        const fyiEntries = entries.filter((_, i) => decisionAt(i) === "fyi")
         if (wakeEntries.length === 0) {
           if (fyiEntries.length === 0) {
             // Everything was dropped: nothing to deliver, nothing to wake.
-            log(`[session-follow] follower ${followerId}: digest dropped by triage (${entries.length} event(s))`)
+            log(`[session-follow] follower ${followerId}: digest dropped by apply (${entries.length} event(s))`)
             entries.forEach((entry, i) =>
-              writeLedgerLine(followerId, entry, resultAt(i), applied, {
+              writeLedgerLine(followerId, entry, resultAt(i), appliedEntries.has(entry), {
                 target: followerId,
                 outcome: "dropped",
               }),
@@ -1170,9 +1238,11 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           urgency = batch.urgency === "fyi" ? "fyi" : "next-turn"
         }
       } catch (err) {
-        // Fail open: triage is an optimisation, never a reason to lose the
+        // Fail open: the switch is an optimisation, never a reason to lose the
         // batch (an awaiting-input or a crash must still reach the follower).
-        log(`[session-follow] triage failed for ${followerId}: ${describeError(err)}`)
+        log(
+          `[session-follow] ${triage.enabled ? "triage" : "apply"} failed for ${followerId}: ${describeError(err)}`,
+        )
         text = formatFollowDigest(entries, textFor, id => registry.get(id))
         deliveredEntries = entries
         urgency = batch.urgency
@@ -1193,8 +1263,9 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         }
       }
     } else {
-      // Triage off still records the rules' verdict for every event, marked
-      // as not applied: the ledger is always on, the delivery is unchanged.
+      // Nothing opted in still records the rules' verdict for every event,
+      // marked as not applied: the ledger is always on, the delivery is
+      // unchanged.
       try {
         const facts = factsFor(entries)
         const classifierRegistry =
@@ -1250,7 +1321,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
             followerId,
             entry,
             resultAt(i),
-            applied,
+            appliedEntries.has(entry),
             delivered.has(entry) ? outcome : { target: followerId, outcome: "dropped" },
           ),
         )
@@ -1307,7 +1378,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         if (alreadyClaimed && follow.urgency === "fyi") continue
         const event = followWants(follow, signal)
         if (!event) continue
-        const triageOn = resolveFollowTriageConfig(daemonTriage, follow.triage).enabled
+        const triageOn =
+          follow.triage?.enabled === true ||
+          (follow.triage?.enabled !== false &&
+            (daemonTriage.enabled || shouldApplyDelivery(currentApply(), signal.envelope.type)))
         // The follower's OWN board write. With triage on it reaches the
         // triage stage (where the `ownTaskChanges` rule drops it — and the
         // decision is logged as training data); with triage off the legacy

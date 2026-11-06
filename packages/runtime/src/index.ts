@@ -188,6 +188,7 @@ import { migrateSandboxSession } from "./session-migrate.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
+import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { resolveNoCallerIdentity } from "./mcp-config.js"
@@ -3936,8 +3937,19 @@ export async function createGateway(
     })
     sentinelGithubDeliveryRulesRegistered = true
   }
+  // The daemon delivery-apply switch, shared by follow + sentinel. Read once
+  // here and refreshed with the follow triage config, which is re-read before
+  // every digest, so a config change is hot.
+  const deliveryApply: { current: DeliveryApplyConfig | undefined } = { current: undefined }
+  const refreshDeliveryApply = async () => {
+    const cfg = await loadConfig().catch(() => undefined)
+    deliveryApply.current = cfg?.delivery?.apply
+    return cfg
+  }
+  void refreshDeliveryApply()
   const sentinelRuntime = createSentinelRuntime({
     store: sentinelStore,
+    apply: () => deliveryApply.current,
     registry: { sendMessage: sessions.sendMessage },
     resolveProvider: resolveSentinelProviderResolved,
     isSessionAlive,
@@ -3980,9 +3992,10 @@ export async function createGateway(
     sessionEvents,
     store: sessionFollowStore,
     restartSession: restartSentinelSession,
+    apply: () => deliveryApply.current,
     triage: async () => {
-      const cfg = await loadConfig().catch((): { follow?: { triage?: FollowTriageInput } } => ({}))
-      return resolveFollowTriageConfig(defaultFollowTriageConfig(), cfg.follow?.triage)
+      const cfg = await refreshDeliveryApply()
+      return resolveFollowTriageConfig(defaultFollowTriageConfig(), cfg?.follow?.triage)
     },
     // A cron command job's successful exit is informational when the job
     // declares `notify: "onFailure"`. Resolved at event time from the

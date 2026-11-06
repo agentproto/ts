@@ -32,6 +32,7 @@ import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import type { ModelRolesConfig } from "./model-roles.js"
 import type { FollowTriageInput } from "./follow-triage.js"
+import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { validateConfig } from "./config-schema.js"
 
 export const CONFIG_VERSION = 1 as const
@@ -582,6 +583,15 @@ export interface SentinelConfig {
 }
 
 /**
+ * Delivery-kernel application policy (`@agentproto/delivery`). Which event
+ * types a producer hands to the kernel's level mapping; everything not opted
+ * in keeps its original delivery path.
+ */
+export interface DeliveryConfig {
+  apply?: DeliveryApplyConfig
+}
+
+/**
  * Session-follow policy (`session-follow.ts` + `follow-triage.ts`).
  */
 export interface FollowConfig {
@@ -826,6 +836,8 @@ export interface AgentprotoConfig {
   sentinel?: SentinelConfig
   /** Session-follow policy (triage). See {@link FollowConfig}. */
   follow?: FollowConfig
+  /** Delivery-kernel application policy. See {@link DeliveryConfig}. */
+  delivery?: DeliveryConfig
   /** Review-primitive host policy. See {@link ReviewConfig}. */
   review?: ReviewConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */

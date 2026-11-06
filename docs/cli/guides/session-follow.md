@@ -135,6 +135,43 @@ The daemon-wide default lives in `~/.agentproto/config.json`:
 { "follow": { "triage": { "enabled": true, "rules": { "operatorExit": true } } } }
 ```
 
+## Delivery apply (wake/fyi/drop per event type)
+
+`delivery.apply.types` turns the classifier's decision into the message's
+urgency, per event type. It is **shadow by default**: with no key set, every
+digest is delivered exactly as before and the ledger records the verdict with
+`applied: false`. A type is turned on with a glob key:
+
+```jsonc
+{
+  "delivery": {
+    "apply": {
+      "types": {
+        "session.*": true,           // every session event: apply its level
+        "session.pr_merged": false  // ...except this one
+      }
+    }
+  }
+}
+```
+
+Keys match the envelope `type` (`session.turn_ended`, `session.awaiting_input`,
+`github.check_suite.completed`, ...). A trailing `*` matches a prefix and a bare
+`*` matches everything. An exact key beats every glob; otherwise the longest
+matching prefix wins. The same switch governs sentinel delivery.
+
+Once a type is applied, its classified level becomes the delivery tier: `3`
+and `2` deliver as a wake (`next-turn`), `1` at `fyi`, and `0` is dropped.
+Session follows and sentinels have no tier above `next-turn`, so an applied
+level `3` is a wake too; what it guarantees is that it is never downgraded to
+`fyi` and never dropped. An applied `fyi` never wakes the follower. A level `3`
+floor (awaiting-input, crash) is never downgraded. Events whose type is not opted in still deliver as
+today (a wake) and keep `applied: false` in the ledger.
+
+There is no second switch: a follow's own `triage.enabled: true` (or the daemon
+`follow.triage.enabled: true`) applies every type, and `triage.enabled: false`
+applies none, taking precedence over these globs.
+
 A follow's own `triage` block overrides the daemon default, per field: a rule a
 follow sets explicitly (`true` or `false`) beats the daemon value, and a rule it
 does not name keeps the daemon value. Triage works on the whole digest, so when

@@ -602,3 +602,34 @@ describe("defaults.messaging.grants key", () => {
     )
   })
 })
+
+describe("delivery.apply.types key", () => {
+  it("is hot, writable and defaults to no applied types", () => {
+    expect(findConfigKey("delivery.apply.types")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: {},
+    })
+  })
+
+  it("accepts type globs mapped to booleans", () => {
+    expect(
+      validateConfigKeyValue("delivery.apply.types", { "session.*": true, "session.exited": false }),
+    ).toEqual({ ok: true })
+    expect(validateConfigKeyValue("delivery.apply.types", {})).toEqual({ ok: true })
+  })
+
+  it("rejects a non-record and a non-boolean entry", () => {
+    expect(validateConfigKeyValue("delivery.apply.types", ["session.*"]).ok).toBe(false)
+    expect(validateConfigKeyValue("delivery.apply.types", { "session.*": "yes" }).ok).toBe(false)
+  })
+
+  it("accepts the key inside a full config and rejects a non-boolean", () => {
+    expect(
+      validateConfig({ delivery: { apply: { types: { "session.*": true } } } }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ delivery: { apply: { types: { "session.*": "yes" } } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})
