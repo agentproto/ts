@@ -1,9 +1,7 @@
 /**
  * Claude Desktop MCP entries share ONE unverified caller identity
  * (`claude-desktop`) that has no hook inbox and no socket wake. Such a caller
- * declares its own `cc:<session_id>`:
- *  - `agent_start.parent` (the child's `message_parent` reaches the cc: row);
- *  - `message_send.replyTo` (a `message_reply` is routed to the cc: row).
+ * declares its own `cc:<session_id>` as `agent_start.parent` (the child's `message_parent` reaches the cc: row);
  * Declared, not proven. A verified identity may still not declare a parent.
  */
 
@@ -116,58 +114,5 @@ describe("agent_start.parent from the shared claude-desktop identity", () => {
     const res = await known.call("agent_start", { adapter: "mock", cwd: "/tmp", parent: "cc:abc" })
     expect(res.isError).toBe(true)
     expect(known.startSession).not.toHaveBeenCalled()
-  })
-})
-
-describe("message_reply to the shared claude-desktop identity", () => {
-  it("routes to the cc: id declared as replyTo", async () => {
-    const registry = setup()
-    const target = registry.spawnAgent({
-      workspaceSlug: "default",
-      cwd: "/tmp",
-      agentSession: fakeSession(),
-      adapterSlug: "mock",
-    })
-    const desk = await connect(registry, "claude-desktop", false)
-    const spy = vi.spyOn(registry, "sendMessage")
-    const sent = await desk.call("message_send", { to: target.id, text: "ping", replyTo: "cc:abc" })
-    expect(sent.isError).toBeFalsy()
-    const original = spy.mock.calls.map(c => c[0] as any).find(m => m.to === target.id)!
-    expect(original.replyAddress).toBe("cc:abc")
-    expect(original.from).toMatchObject({ sessionId: "claude-desktop", unverified: true })
-    vi.spyOn(registry, "findReceivedMessage").mockReturnValue(original)
-
-    const asTarget = await connect(registry, target.id, false)
-    const reply = await asTarget.call("message_reply", { replyTo: original.id, text: "pong" })
-    expect(reply.isError, JSON.stringify(reply)).toBeFalsy()
-    const replyTargets = spy.mock.calls.map(c => (c[0] as any).to).slice(1)
-    expect(replyTargets).toEqual(["cc:abc"])
-  })
-
-  it("does not invent a cc: route when none was declared (stays on the sender row)", async () => {
-    const registry = setup()
-    const target = registry.spawnAgent({
-      workspaceSlug: "default",
-      cwd: "/tmp",
-      agentSession: fakeSession(),
-      adapterSlug: "mock",
-    })
-    const desk = await connect(registry, "claude-desktop", false)
-    const spy = vi.spyOn(registry, "sendMessage")
-    await desk.call("message_send", { to: target.id, text: "ping" })
-    const original = spy.mock.calls.map(c => c[0] as any).find(m => m.to === target.id)!
-    vi.spyOn(registry, "findReceivedMessage").mockReturnValue(original)
-    const asTarget = await connect(registry, target.id, false)
-    await asTarget.call("message_reply", { replyTo: original.id, text: "pong" })
-    // Whether the shared row is reachable is the reply ACL's call (#2607);
-    // what matters here is that no cc: row is ever substituted.
-    expect(spy.mock.calls.map(c => (c[0] as any).to).slice(1)).not.toContain("cc:abc")
-  })
-
-  it("rejects a malformed cc: replyTo", async () => {
-    const registry = setup()
-    const desk = await connect(registry, "claude-desktop", false)
-    const res = await desk.call("message_send", { to: "parent", text: "x", replyTo: "cc:bad id!" })
-    expect(res.isError).toBe(true)
   })
 })

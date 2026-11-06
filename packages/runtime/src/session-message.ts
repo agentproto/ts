@@ -350,7 +350,7 @@ export function messageFrom(
 /** The one shared, UNVERIFIED caller identity every Claude Desktop MCP entry
  *  carries (`?callerSessionId=claude-desktop&host=claude-desktop`). It names a
  *  host, not a session: no hook inbox or socket wake exists for it, so a caller
- *  using it declares its own `cc:<session_id>` for parent / reply routing
+ *  using it declares its own `cc:<session_id>` as `agent_start.parent`
  *  (declared, never proven). */
 export const SHARED_CLAUDE_DESKTOP_ID = "claude-desktop"
 
