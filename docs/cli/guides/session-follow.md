@@ -161,9 +161,11 @@ Keys match the envelope `type` (`session.turn_ended`, `session.awaiting_input`,
 matching prefix wins. The same switch governs sentinel delivery.
 
 Once a type is applied, its classified level becomes the delivery tier: `3`
-delivers at `steer`, `2` at `next-turn`, `1` at `fyi`, and `0` is dropped. An
-applied `fyi` never wakes the follower. A level `3` floor (awaiting-input,
-crash) is never downgraded. Events whose type is not opted in still deliver as
+and `2` deliver as a wake (`next-turn`), `1` at `fyi`, and `0` is dropped.
+Session follows and sentinels have no tier above `next-turn`, so an applied
+level `3` is a wake too; what it guarantees is that it is never downgraded to
+`fyi` and never dropped. An applied `fyi` never wakes the follower. A level `3`
+floor (awaiting-input, crash) is never downgraded. Events whose type is not opted in still deliver as
 today (a wake) and keep `applied: false` in the ledger.
 
 There is no second switch: a follow's own `triage.enabled: true` (or the daemon

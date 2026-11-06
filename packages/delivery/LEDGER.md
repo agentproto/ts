@@ -23,7 +23,7 @@ A failed write is swallowed: recording must never alter delivery.
   "eventTs": "2026-11-03T00:00:00.000Z", // optional, producer's event time
   "repeatKey": "github:acme/widgets#42|failure", // optional dedup key
   "floor": "awaiting-human",        // optional; "awaiting-human" | "crash"
-  "level": 2,                       // 3 steer, 2 actionable, 1 info, 0 noise
+  "level": 2,                       // 3 pinned wake, 2 actionable, 1 info, 0 noise
   "cap": 3,                         // highest level this producer may apply
   "rule": "failure",                // classifier / triage rule that decided
   "applied": true,                  // whether the level drove this delivery

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { shouldApplyDelivery, shouldApplyEnvelope, typeMatches } from "../apply.js"
+import { shouldApplyDelivery, typeMatches } from "../apply.js"
 
 describe("delivery apply switch", () => {
   it("applies nothing when absent or empty", () => {
@@ -39,8 +39,7 @@ describe("delivery apply switch", () => {
     ).toBe(true)
   })
 
-  it("exposes the envelope convenience overload and glob helper", () => {
-    expect(shouldApplyEnvelope({ types: { "acme.*": true } }, { type: "acme.deploy" })).toBe(true)
+  it("exposes the glob helper", () => {
     expect(typeMatches("acme.*", "acme.deploy")).toBe(true)
     expect(typeMatches("acme.*", "acme")).toBe(false)
     expect(typeMatches("acme.deploy", "acme.deploy")).toBe(true)

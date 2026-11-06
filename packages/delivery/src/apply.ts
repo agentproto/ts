@@ -1,5 +1,3 @@
-import type { Envelope } from "./types.js"
-
 /** Which envelope types are delivered through the kernel's level mapping.
  *  Absent or empty applies nothing: a producer that never opts in keeps its
  *  original delivery behaviour. */
@@ -30,9 +28,4 @@ export function shouldApplyDelivery(apply: DeliveryApplyConfig | undefined, type
     if (best === undefined || length > best.length) best = { length, on }
   }
   return best?.on === true
-}
-
-/** Convenience overload used by producers that only have an envelope. */
-export function shouldApplyEnvelope(apply: DeliveryApplyConfig | undefined, envelope: Pick<Envelope, "type">): boolean {
-  return shouldApplyDelivery(apply, envelope.type)
 }

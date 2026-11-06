@@ -1011,6 +1011,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       return
     }
     const key = batchKey(prepared.sentinel.id, prepared.event.id)
+    // An applied level-0 event (above) is booked immediately; the poll cursor
+    // still holds one tick on purpose, so the provider re-serves the already
+    // seen batch once and the dedup (`isSeen`) skips it.
     pendingBatchKeys.add(key)
     void batcher.enqueue(prepared.targetSessionId, prepared.batchMs, prepared).catch(err => {
       pendingBatchKeys.delete(key)
