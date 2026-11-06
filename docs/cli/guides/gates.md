@@ -42,6 +42,30 @@ straight to `blocked` with the error `gate command 'pnpm' not in allowlist`.
 Be careful what you add: allowing an interpreter such as `bash` or `python3`
 lets any caller run arbitrary code.
 
+### Verification predicates: `test` and `[`
+
+A gate is an **argv**, not a shell line: `test -f path/to/file` is passed as
+`command: "test"`, `args: ["-f", "path/to/file"]`, and shell syntax (`&&`,
+pipes, redirection) is never interpreted. Add `test` and `[` (whose closing
+`]` is an argv element) to the same allowlist:
+
+```json
+{ "version": 1, "commands": ["pnpm", "test", "["] }
+```
+
+`test` and `[` only evaluate an expression (file tests, string and integer
+comparisons); they execute no code. Allowlisting them is narrower than
+allowlisting an interpreter, and it avoids the bad workaround of wrapping a
+predicate in `bash -c '...'` just to satisfy the gate: that requires
+allowlisting `bash`, which (as the warning above says) grants arbitrary code
+execution. Prefer the predicate. For a multi-step check, use the judge gate or
+a committed script run by a deliberately allowlisted interpreter.
+
+If you pass a whole shell line as `command`, the allowlist check takes the
+basename of that entire string, so it fails with a misleading name (for
+example `gate command 'README.md' not in allowlist`) and the line never runs.
+Split the predicate into `command` + `args`, or use a committed script.
+
 ### Attach the gate
 
 ```bash
