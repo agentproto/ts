@@ -87,7 +87,7 @@ function runPage(html: string, bodyHeight: { value: number }, expires?: string) 
     status: fakeEl(),
     expiry: fakeEl(expires === undefined ? {} : { "data-expires": expires }),
   }
-  let onMessage: (evt: { data: unknown }) => void = () => {}
+  let onMessage: (evt: { data: unknown; source?: unknown }) => void = () => {}
   let resize: () => void = () => {}
   class FakeResizeObserver {
     constructor(cb: () => void) {
@@ -95,9 +95,10 @@ function runPage(html: string, bodyHeight: { value: number }, expires?: string) 
     }
     observe(): void {}
   }
+  const parent = { postMessage: (msg: Posted) => void posted.push(msg) }
   const win = {
-    parent: { postMessage: (msg: Posted) => void posted.push(msg) },
-    addEventListener: (type: string, fn: (evt: { data: unknown }) => void) => {
+    parent,
+    addEventListener: (type: string, fn: (evt: { data: unknown; source?: unknown }) => void) => {
       if (type === "message") onMessage = fn
     },
   }
@@ -119,10 +120,12 @@ function runPage(html: string, bodyHeight: { value: number }, expires?: string) 
     setInterval: () => 1,
     clearInterval: () => {},
   })
-  const reply = (id: number, result: unknown) => onMessage({ data: { jsonrpc: "2.0", id, result } })
+  const reply = (id: number, result: unknown) => onMessage({ data: { jsonrpc: "2.0", id, result }, source: parent })
+  const replyFrom = (source: unknown, id: number, result: unknown) =>
+    onMessage({ data: { jsonrpc: "2.0", id, result }, source })
   const sizes = () => posted.filter(m => m.method === "ui/notifications/size-changed").map(m => m.params?.height)
   const flush = () => new Promise<void>(resolve => setImmediate(resolve))
-  return { posted, rootAttrs, rootVars, els, onMessage: (data: unknown) => onMessage({ data }), reply, resize: () => resize(), sizes, flush }
+  return { posted, rootAttrs, rootVars, els, onMessage: (data: unknown) => onMessage({ data, source: parent }), onMessageFrom: (data: unknown, source: unknown) => onMessage({ data, source }), reply, replyFrom, resize: () => resize(), sizes, flush }
 }
 
 describe("approval card fits its content", () => {
@@ -237,5 +240,26 @@ describe("approval card follows the host theme", () => {
     expect(html).not.toMatch(/#16a34a|#dc2626/i)
     expect(html).toContain(">Refuse<")
     expect(html).not.toContain(">Deny<")
+  })
+
+  it("ignores responses and host-context-changed that do not come from window.parent", async () => {
+    const { html } = pendingCard()
+    const page = runPage(html, { value: 100 })
+    const stranger = { postMessage: () => {} }
+
+    page.replyFrom(stranger, 1, { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#fafafa" } } } })
+    page.replyFrom(undefined, 1, { hostContext: { theme: "dark" } })
+    await page.flush()
+    expect(page.posted.some(m => m.method === "ui/notifications/initialized")).toBe(false)
+    expect(page.rootAttrs["data-theme"]).toBeUndefined()
+    expect(page.rootVars).toEqual({})
+
+    page.reply(1, { hostContext: { theme: "light" } })
+    await page.flush()
+    page.onMessageFrom(
+      { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark" } },
+      stranger,
+    )
+    expect(page.rootAttrs["data-theme"]).toBe("light")
   })
 })

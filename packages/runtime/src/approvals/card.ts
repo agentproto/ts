@@ -264,6 +264,7 @@ const BRIDGE_JS = `
   }
 
   window.addEventListener('message', function (evt) {
+    if (evt.source !== window.parent) return;
     var msg = evt.data;
     if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
     if (msg.id != null && msg.method == null) {
