@@ -45,9 +45,10 @@ interface BureauApprovalDetails {
 export type BureauImportResolver = (alias: string) => Promise<SubsessionTarget | undefined>
 
 export interface BureauApprovalBridgeOptions {
-  /** `get` is what makes the relay restart-safe: the decision reads the
-   *  persisted record, never an in-memory request cache. */
-  engine: Pick<ApprovalsEngine, "request" | "get">
+  /** `get`/`getPayload` are what make the relay restart-safe: the decision
+   *  reads the persisted record and the pinned payload file, never an
+   *  in-memory request cache. */
+  engine: Pick<ApprovalsEngine, "request" | "get" | "getPayload">
   sessionEvents: SessionEventBus
   resolveImport: BureauImportResolver
   /** Test seam; defaults to the global fetch. */
@@ -158,14 +159,16 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
   const fetchImpl = opts.fetch ?? fetch
   const log = opts.log ?? ((message: string) => console.warn(message))
 
-  /** The W2 relay input, taken from the PERSISTED approval record so a
-   *  daemon restart between the request and the human's click still relays.
-   *  A malformed payload is not a Bureau approval this bridge understands. */
+  /** The W2 relay input, taken from the PERSISTED record plus the pinned
+   *  payload file so a daemon restart between the request and the human's
+   *  click still relays. A malformed payload is not a Bureau approval this
+   *  bridge understands. */
   const relayTargetOf = (
-    record: { kind: string; payload?: unknown } | undefined,
+    record: { kind: string } | undefined,
+    payload: unknown,
   ): { importAlias: string; requestId: string; inputSha256: string } | undefined => {
-    if (!record || record.kind !== BUREAU_APPROVAL_KIND || !isRecord(record.payload)) return undefined
-    const { importAlias, requestId, inputSha256 } = record.payload
+    if (!record || record.kind !== BUREAU_APPROVAL_KIND || !isRecord(payload)) return undefined
+    const { importAlias, requestId, inputSha256 } = payload
     if (
       typeof importAlias !== "string" ||
       typeof requestId !== "string" ||
@@ -180,7 +183,7 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
   }
 
   const relay = async (ev: ApprovalDecidedEvent): Promise<void> => {
-    const target = relayTargetOf(opts.engine.get(ev.approvalId))
+    const target = relayTargetOf(opts.engine.get(ev.approvalId), opts.engine.getPayload(ev.approvalId))
     if (!target) return
     let resolved: SubsessionTarget | undefined
     try {

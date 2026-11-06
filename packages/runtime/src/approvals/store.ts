@@ -1,7 +1,6 @@
 /**
  * Filesystem persistence for approval requests — `<homeDir>/<id>/request.json`
- * (the `ApprovalRecord`, including the parsed payload so a post-restart
- * subscriber can act on a decision),
+ * (the `ApprovalRecord`, everything except the payload bytes),
  * `<homeDir>/<id>/payload.json` (canonical JSON of the gated payload, what
  * `signArtifact` hashes and signs), and `<homeDir>/<id>/card-ticket.json`
  * (the `ui_card` channel's one-time ticket — hash only). Atomic
@@ -79,6 +78,12 @@ export function writeApprovalRecord(homeDir: string, record: ApprovalRecord): vo
 
 export function readApprovalRecord(homeDir: string, id: string): ApprovalRecord | undefined {
   return readJsonIfExists<ApprovalRecord>(requestPath(homeDir, id))
+}
+
+/** The pinned payload's parsed JSON, read back from `<id>/payload.json`.
+ *  `undefined` when the file is missing or not valid JSON. */
+export function readPayload(homeDir: string, id: string): unknown | undefined {
+  return readJsonIfExists<unknown>(payloadPath(homeDir, id))
 }
 
 export function writeCardTicket(homeDir: string, ticket: CardTicketRecord): void {

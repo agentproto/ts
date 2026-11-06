@@ -45,11 +45,8 @@ function jsonContent(payload: unknown): McpTextResult {
  *  a fresh `/mcp` connection (see `index.ts`'s per-request loop), so
  *  advertising it past that point would point at a resource that may 404. */
 function withCardMeta(record: ApprovalRecord): Record<string, unknown> {
-  // `payload` rides the persisted record for post-restart subscribers; it was
-  // never part of the model-visible response, so keep it off this surface.
-  const { payload: _payload, ...publicRecord } = record
   return {
-    ...publicRecord,
+    ...record,
     ...(record.status === "pending"
       ? { _meta: { ui: { resourceUri: approvalCardResourceUri(record.id) } } }
       : {}),
@@ -145,7 +142,7 @@ export function registerApprovalTools(server: McpServer, opts: RegisterApprovalT
       if (!engine) return notAvailable
       try {
         const record = engine.consume(input.id, requester(), input.payload)
-        return jsonContent(withCardMeta(record))
+        return jsonContent(record)
       } catch (err) {
         if (err instanceof ApprovalError) return jsonContent({ error: err.code, message: err.message })
         return jsonContent({ error: err instanceof Error ? err.message : String(err) })
