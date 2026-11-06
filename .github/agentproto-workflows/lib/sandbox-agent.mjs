@@ -584,12 +584,12 @@ export const restPostReviewBlock = ({ repo, prNumber }) => [
   `   Write the review body to a file first (safe JSON quoting), then deliver it via the shared helper (which POSTs to the GitHub REST API AND records the created review to the artifact ledger so CI can stamp its provenance footer):`,
   `   \`\`\`bash`,
   `   # review.md contains your review markdown`,
-  `   node -e 'const fs=require("fs");fs.writeFileSync("payload.json",JSON.stringify({event:process.argv[1],body:fs.readFileSync("review.md","utf8")}))' COMMENT`,
+  `   node -e 'const fs=require("fs");fs.writeFileSync("payload.json",JSON.stringify({event:process.argv[1],body:fs.readFileSync("review.md","utf8")}))' APPROVE`,
   `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
   `     --kind review --body-file payload.json \\`,
   `     --url "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews"`,
   `   \`\`\``,
-  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response; read it and retry once.`,
+  `   Set the first node argument to the verdict your review body states: APPROVE or REQUEST_CHANGES. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response; read it and retry once.`,
 ].join("\n")
 
 /**
