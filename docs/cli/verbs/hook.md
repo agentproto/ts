@@ -84,18 +84,17 @@ its inbox and shown the next time the user submits a prompt, a tool call
 finishes or a chat starts (a `steer` or `interrupt` item also keeps a turn that
 is ending going, through the `Stop` hook). Three things have to line up:
 
-1. **The MCP URL registers the session.** Connect the app to
-   `http://127.0.0.1:18790/mcp?callerSessionId=<id>&host=claude-desktop`
+1. **The MCP URL registers the shared identity.** Connect the app to
+   `http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop`
    (18790 is the default daemon port; use `daemon.port` if you changed it).
-   The first authenticated request creates the `external` row for `<id>`.
-   `<id>` is the external row's daemon-side session id: the id sentinels and
-   `session_follow` address (e.g. `claude-desktop`), not the harness's per-chat
-   `session_id`. It must match `[A-Za-z0-9._:-]{1,128}`. A request over loopback
-   is trusted as is; through a tunnel it needs the daemon bearer token, otherwise
-   it never registers the session.
+   The first authenticated request creates the `external` row
+   `claude-desktop`, and every Claude Desktop chat shares it. It must match
+   `[A-Za-z0-9._:-]{1,128}`. A request over loopback is trusted as is; through
+   a tunnel it needs the daemon bearer token, otherwise it never registers the
+   session.
    ```sh
    claude mcp add --transport http --scope user agentproto-desktop \
-     "http://127.0.0.1:18790/mcp?callerSessionId=<id>&host=claude-desktop"
+     "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop"
    ```
 2. **The inbox id comes from the payload.** Each Claude Desktop chat carries
    its own `session_id` in the hook payload, and `hook inbox` reads
@@ -138,19 +137,22 @@ second `PostToolUse` hook with matcher `Bash` (see
 [`hook pr-stamp`](#hook-pr-stamp) below). `hook install` adds it for you; add
 it by hand to the `PostToolUse` array if you are wiring the file yourself.
 
-One settings file no longer means one shared inbox: `hook inbox` resolves each
-Desktop chat's payload to its own `cc:<session_id>` inbox instead of the
-global id. The hook registers that row on first use, so `agentproto send
-cc:<session_id> ...` (or `message_send`) works without an MCP connection first.
+The Chat tab is one shared, anonymous identity: every Claude Desktop chat
+connects as `claude-desktop` and sees the same inbox, and it pulls that inbox
+with `inbox_list` rather than relying on a per-chat push. Nothing proves that
+a client claiming `claude-desktop` is Claude Desktop, so any local process can
+forge the id; messages delivered from it are labelled `unverified`. Use the
+Code tab (a `claude` CLI session registered with its own `sess_...` id, which
+the daemon can attest) when you need a proven identity.
 
 ### Migration for machines already installed
 
-Installing no longer writes `env.AGENTPROTO_SESSION_ID`; each chat uses
-`cc:<session_id>`. A legacy `claude-desktop` value is removed, any other value
-left untouched. Re-run `agentproto hook install --host claude-desktop` (or
-delete the variable from `~/.claude/settings.json`), then restart open chats.
-Daemon-spawned `sess_...` sessions are unchanged; per-chat MCP identity is
-still pending (headersHelper unverified).
+Installing no longer writes `env.AGENTPROTO_SESSION_ID`; the MCP URL carries
+the shared `claude-desktop` identity. A legacy `claude-desktop` value is
+removed, any other value left untouched. Re-run `agentproto hook install
+--host claude-desktop` (or delete the variable from
+`~/.claude/settings.json`), then restart open chats. Daemon-spawned `sess_...`
+sessions are unchanged, and the static URL is never overridden per chat.
 
 ### `hook install --host claude-desktop`
 
@@ -166,10 +168,14 @@ nothing), and refuses to touch a file it cannot parse. It no longer writes
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--host <name>` | required | Only `claude-desktop` is supported. |
-| `--session <id>` | `claude-desktop` when no legacy value is present | `callerSessionId` in the printed MCP URL; not written to `env`. |
+| `--session <id>` | ignored | Accepted for compatibility, but the printed MCP URL always carries `claude-desktop`; a non-empty value prints a one-line warning. Not written to `env`. |
 | `--settings <path>` | `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR` honoured) | Settings file to merge into. |
 | `--port <n>` | `18790` | Daemon port used in the printed MCP URL. |
 | `--dry-run` | off | Print the merged settings JSON on stdout (and the target path and MCP URL on stderr); write nothing. |
+
+The printed MCP URL is always
+`http://127.0.0.1:<port>/mcp?callerSessionId=claude-desktop&host=claude-desktop`;
+`--session` is ignored so every chat shares one identity.
 
 It prints the `claude mcp add` line for step 1; registering the MCP URL stays
 manual because Claude Code keeps MCP servers outside the settings file.

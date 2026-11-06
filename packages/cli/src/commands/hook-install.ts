@@ -3,14 +3,15 @@
  * [--settings <path>] [--port <n>] [--dry-run]`
  *
  * Merges what a Claude Desktop (Claude Code) session needs to receive daemon
- * events into its settings file: `env.AGENTPROTO_SESSION_ID` and the hooks:
- * the five `agentproto hook inbox` hooks (UserPromptSubmit, PostToolUse,
- * SessionStart, Stop, Notification) and the `agentproto hook pr-stamp` PostToolUse hook
- * (matcher Bash). Idempotent:
- * a second run changes nothing, and keys it does not own are left untouched.
- * It also prints the MCP URL that registers the session with the daemon; the
- * URL is not stored in the settings file (Claude Code keeps MCP servers in
- * its own config), so the printed `claude mcp add` line is the one manual step.
+ * events into its settings file: the five `agentproto hook inbox` hooks
+ * (UserPromptSubmit, PostToolUse, SessionStart, Stop, Notification) and the
+ * `agentproto hook pr-stamp` PostToolUse hook (matcher Bash). Idempotent: a
+ * second run changes nothing, and keys it does not own are left untouched.
+ * It also prints the static MCP URL that registers the session with the
+ * daemon; the URL is not stored in the settings file (Claude Code keeps MCP
+ * servers in its own config), so the printed `claude mcp add` line is the one
+ * manual step. All Chat-tab chats share the one anonymous identity
+ * `claude-desktop` (declared, not proven).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -145,18 +146,25 @@ export async function runHookInstall(args: readonly string[], deps: HookInstallD
   }
 
   const merged = mergeDesktopSettings(existing, values.session)
-  const url = desktopMcpUrl(merged.sessionId, port)
+  // The Chat tab uses ONE shared anonymous identity, so the printed MCP URL
+  // is always the static one regardless of `--session` (kept accepted for
+  // compatibility). The identity is declared, not proven.
+  const url = desktopMcpUrl(DEFAULT_DESKTOP_SESSION_ID, port)
+  if (values.session !== undefined && values.session !== DEFAULT_DESKTOP_SESSION_ID) {
+    err(
+      `agentproto hook install: --session ${values.session} is ignored for the MCP URL; ` +
+        `Claude Desktop uses the shared identity "${DEFAULT_DESKTOP_SESSION_ID}".\n`,
+    )
+  }
   const removedNote = merged.removedLegacyEnv
-    ? `Removed env.AGENTPROTO_SESSION_ID (was "${DEFAULT_DESKTOP_SESSION_ID}"): each chat now uses cc:<session_id> from the hook payload.\n`
+    ? `Removed env.AGENTPROTO_SESSION_ID (was "${DEFAULT_DESKTOP_SESSION_ID}"): the Chat tab uses the shared MCP identity "${DEFAULT_DESKTOP_SESSION_ID}".\n`
     : ""
-  const pendingNote =
-    "Note: per-chat MCP identity is pending (headersHelper unverified); the MCP URL keeps its callerSessionId.\n"
   if (values["dry-run"]) {
     out(JSON.stringify(merged.settings, null, 2) + "\n")
     err(
       `# would ${merged.changed ? "update" : "leave unchanged"} ${path}\n` +
         (merged.removedLegacyEnv ? `# would remove env.AGENTPROTO_SESSION_ID ("${DEFAULT_DESKTOP_SESSION_ID}")\n` : "") +
-        `# MCP URL: ${url}\n# ${pendingNote}`,
+        `# MCP URL: ${url}\n`,
     )
     return 0
   }
@@ -168,8 +176,7 @@ export async function runHookInstall(args: readonly string[], deps: HookInstallD
     `${merged.changed ? "Updated" : "Already up to date:"} ${path}\n` +
       removedNote +
       `Register the session with the daemon (once):\n` +
-      `  claude mcp add --transport http --scope user agentproto-desktop "${url}"\n` +
-      pendingNote,
+      `  claude mcp add --transport http --scope user agentproto-desktop "${url}"\n`,
   )
   return 0
 }

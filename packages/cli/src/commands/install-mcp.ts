@@ -24,6 +24,7 @@
  *
  * Usage:
  *   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
+ *   agentproto install-mcp --dry-run [--agent claude-desktop]
  *   agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
  *
  * Agent names: claude, cursor, codex, claude-desktop, aider, windsurf, hermes
@@ -36,6 +37,7 @@ import { join, dirname } from "node:path"
 import { parseArgs } from "node:util"
 import { loadConfig } from "@agentproto/runtime/config"
 import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
+import { DEFAULT_DESKTOP_SESSION_ID, DESKTOP_HOST } from "./hook-install.js"
 import { findInstalledAppDir, readDeclaredCategory, readDeclaredLibraryBookIds } from "../app-serve.js"
 
 // ── types ───────────────────────────────────────────────────────────────────
@@ -89,6 +91,7 @@ const USAGE = `agentproto install-mcp — register the daemon's MCP server with 
 Usage:
   agentproto install-mcp [--agent <name>...] [--all] [--yes]
                           [--update] [--uninstall]
+  agentproto install-mcp --dry-run [--agent claude-desktop]
   agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
 
 Options:
@@ -98,6 +101,7 @@ Options:
                    daemon entry. Requires the app to be installed and declare the
                    book/library contract. Supported agents: cursor, codex, claude-desktop, windsurf.
   --yes            Skip prompts (non-interactive; auto-confirm)
+  --dry-run        Print the exact Claude Desktop entry that would be written; write nothing
   --skip-daemon    Skip daemon discovery/start (use default port from config)
   --update         Re-run registration for previously-registered agents (e.g. after a port change)
   --uninstall      Remove only the agentproto entries we added (uses install-state.json)
@@ -148,6 +152,7 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
       yes: { type: "boolean" },
       update: { type: "boolean" },
       uninstall: { type: "boolean" },
+      "dry-run": { type: "boolean" },
       "skip-daemon": { type: "boolean" },
       app: { type: "string" },
     },
@@ -167,6 +172,40 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
   // 1. Detect installed agents
   const detections = await detectAgents()
   const detected = detections.filter(d => d.hasBinary || d.hasConfig)
+
+  // --dry-run: print ONLY the exact Claude Desktop entry and write nothing.
+  // Scoped to claude-desktop because it is the only agent whose entry now
+  // carries a fixed shared identity; touching no state and starting no
+  // daemon keeps the preview side-effect free.
+  if (values["dry-run"]) {
+    if (values.app) {
+      process.stderr.write("agentproto install-mcp: --dry-run is not supported with --app\n")
+      return 2
+    }
+    const desktop = detected.find(d => d.name === "claude-desktop")
+    if (!desktop) {
+      process.stderr.write(
+        "agentproto install-mcp --dry-run: Claude Desktop is not a target on this machine; nothing to print.\n",
+      )
+      return 0
+    }
+    let port = DEFAULT_PORT
+    let foundUrl: string | undefined
+    try {
+      foundUrl = (await discoverDaemon()).found?.url
+    } catch {
+      foundUrl = undefined
+    }
+    if (foundUrl) {
+      port = extractPort(foundUrl)
+    } else {
+      const cfg = await loadConfig()
+      port = cfg.daemon?.port ?? DEFAULT_PORT
+    }
+    const entry = buildDesktopStdioEntry(port)
+    process.stdout.write(JSON.stringify({ mcpServers: { [SERVER_NAME]: entry } }, null, 2) + "\n")
+    return 0
+  }
 
   if (detected.length === 0) {
     if (values.yes) {
@@ -620,6 +659,25 @@ export function inspectMcpRegistration(
 
 // ── registration ────────────────────────────────────────────────────────────
 
+/** The Chat tab's shared MCP URL. Every Claude Desktop chat uses this ONE
+ *  anonymous identity so they all share an inbox; the identity is declared,
+ *  not proven (any local process can claim it). */
+export function desktopMcpUrl(port: number = DEFAULT_PORT): string {
+  return `http://127.0.0.1:${port}/mcp?callerSessionId=${encodeURIComponent(DEFAULT_DESKTOP_SESSION_ID)}&host=${DESKTOP_HOST}`
+}
+
+/** The exact stdio entry written for Claude Desktop, shared by the real
+ *  write path and `--dry-run` so the printed entry cannot drift. Unlike the
+ *  other stdio agents, the url env var is ALWAYS set (even on the default
+ *  port) so the bridge connects as the shared Chat-tab identity. */
+export function buildDesktopStdioEntry(port: number = DEFAULT_PORT): Record<string, unknown> {
+  return {
+    command: "agentproto",
+    args: ["mcp-bridge"],
+    env: { AGENTPROTO_MCP_URL: desktopMcpUrl(port) },
+  }
+}
+
 async function registerAgent(
   detection: AgentDetection,
   port: number,
@@ -637,7 +695,9 @@ async function registerAgent(
     case "codex":
       return registerCodex(detection, stdioEnv)
     case "claude-desktop":
-      return registerStdioJson(detection, "claude-desktop", stdioEnv)
+      return registerStdioJson(detection, "claude-desktop", stdioEnv, {
+        entry: buildDesktopStdioEntry(port),
+      })
     case "aider":
       return registerAider(detection, stdioEnv)
     case "hermes":
@@ -756,7 +816,7 @@ async function registerStdioJson(
   detection: AgentDetection,
   agentName: string,
   env: Record<string, string>,
-  opts?: { serverKey?: string; args?: string[]; appId?: string },
+  opts?: { serverKey?: string; args?: string[]; appId?: string; entry?: Record<string, unknown> },
 ): Promise<InstallStateEntry> {
   const configPath = detection.configPath
   let config: Record<string, unknown> = {}
@@ -772,7 +832,7 @@ async function registerStdioJson(
     config.mcpServers = {}
   }
   const servers = config.mcpServers as Record<string, Record<string, unknown>>
-  servers[opts?.serverKey ?? SERVER_NAME] = {
+  servers[opts?.serverKey ?? SERVER_NAME] = opts?.entry ?? {
     command: "agentproto",
     args: opts?.args ?? ["mcp-bridge"],
     env,

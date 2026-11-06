@@ -491,6 +491,78 @@ describe("runInstallMcp normal install", () => {
   })
 })
 
+// ── tests: claude-desktop shared Chat-tab identity ──────────────────────────
+
+const DESKTOP_CONFIG_PATH =
+  "/tmp/fake-home/Library/Application Support/Claude/claude_desktop_config.json"
+const DESKTOP_DIR = "/tmp/fake-home/Library/Application Support/Claude"
+
+describe("runInstallMcp - claude-desktop", () => {
+  it("always writes the shared identity URL, even on the default port", async () => {
+    mockMultiPath({
+      files: { [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: {} }) },
+      dirs: [DESKTOP_DIR],
+    })
+
+    const code = await runInstallMcp(["--agent", "claude-desktop", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === DESKTOP_CONFIG_PATH)
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto).toEqual({
+      command: "agentproto",
+      args: ["mcp-bridge"],
+      env: {
+        AGENTPROTO_MCP_URL:
+          "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop",
+      },
+    })
+  })
+
+  it("--dry-run prints the exact entry and writes nothing", async () => {
+    mockMultiPath({
+      files: { [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: {} }) },
+      dirs: [DESKTOP_DIR],
+    })
+    const { chunks, restore } = captureStdout()
+
+    const code = await runInstallMcp(["--agent", "claude-desktop", "--dry-run"])
+    restore()
+
+    expect(code).toBe(0)
+    const printed = JSON.parse(chunks.join(""))
+    expect(printed).toEqual({
+      mcpServers: {
+        agentproto: {
+          command: "agentproto",
+          args: ["mcp-bridge"],
+          env: {
+            AGENTPROTO_MCP_URL:
+              "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop",
+          },
+        },
+      },
+    })
+    expect(mockFs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it("--dry-run prints nothing when Claude Desktop is not a target", async () => {
+    mockDirExists("/tmp/fake-home/.cursor")
+    mockFileExists("/tmp/fake-home/.cursor/mcp.json", "{}")
+    const { chunks: stdout, restore: restoreOut } = captureStdout()
+    const { chunks: stderr, restore: restoreErr } = captureStderr()
+
+    const code = await runInstallMcp(["--dry-run"])
+    restoreOut()
+    restoreErr()
+
+    expect(code).toBe(0)
+    expect(stdout.join("")).toBe("")
+    expect(stderr.join("")).toContain("Claude Desktop is not a target")
+  })
+})
+
 // ── tests: windsurf ──────────────────────────────────────────────────────────
 
 describe("runInstallMcp — windsurf", () => {
