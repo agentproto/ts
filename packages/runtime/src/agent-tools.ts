@@ -789,10 +789,31 @@ export function registerAgentTools(
       // can be woken. Declared, not proven; only the `cc:` form is accepted.
       const sharedDesktopCaller =
         callerScope === undefined && effectiveCaller() === SHARED_CLAUDE_DESKTOP_ID
+      // A caller the bridge attested as `cc:<id>` (x-agentproto-claude-session)
+      // already attaches under that row. A declaration equal to it is redundant
+      // and accepted (no regression for clients that keep sending it); one that
+      // differs is refused: the attested identity wins, a declaration never
+      // re-parents it.
+      const attestedCc =
+        callerScope === undefined && effectiveCaller() !== undefined && DECLARED_CC_ADDRESS.test(effectiveCaller()!)
+      if (declaredParent !== undefined && attestedCc && declaredParent !== effectiveCaller()) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `agent_start: \`parent\` "${declaredParent}" differs from the Claude Code session this call is ` +
+                `attested as (\`${effectiveCaller()}\`); the call attaches under it automatically. Omit \`parent\`.`,
+            },
+          ],
+          isError: true,
+        }
+      }
       if (
         declaredParent !== undefined &&
         (callerScope !== undefined || effectiveCaller() !== undefined) &&
-        !sharedDesktopCaller
+        !sharedDesktopCaller &&
+        !attestedCc
       ) {
         return {
           content: [
