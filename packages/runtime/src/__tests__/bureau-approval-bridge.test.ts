@@ -27,6 +27,9 @@ import {
   type ImportedMcpEntry,
 } from "../mcp-imports.js"
 import { approvalCardResourceUri } from "../approvals/card.js"
+import { createBureauApprovalBridge } from "../approvals/bureau-bridge.js"
+import { createApprovalsEngine } from "../approvals/engine.js"
+import { createSessionEventBus } from "../session-event-bus.js"
 
 const IMPORT_ID = "fixture:global:bureau-approval"
 const IMPORT_ALIAS = "bureau"
@@ -165,7 +168,15 @@ async function startFakeBureau(): Promise<FakeBureau> {
   return bureau
 }
 
-function entry(url: string, options: { alias?: string; id?: string; bureau?: boolean } = {}): ImportedMcpEntry {
+function entry(
+  url: string,
+  options: {
+    alias?: string
+    id?: string
+    bureau?: boolean
+    headers?: Record<string, string>
+  } = {},
+): ImportedMcpEntry {
   const alias = options.alias ?? IMPORT_ALIAS
   const id = options.id ?? IMPORT_ID
   return {
@@ -179,6 +190,7 @@ function entry(url: string, options: { alias?: string; id?: string; bureau?: boo
       name: alias,
       type: "http",
       url: `${url}/mcp`,
+      ...(options.headers ? { headers: options.headers } : {}),
     },
     ...(options.bureau === false ? {} : { subsession: "aip-59" as const }),
   }
@@ -214,7 +226,9 @@ describe("Bureau approval bridge", () => {
     vi.restoreAllMocks()
   })
 
-  async function setup(options: { nonBureauImport?: boolean } = {}): Promise<Harness> {
+  async function setup(
+    options: { nonBureauImport?: boolean; importHeaders?: Record<string, string> } = {},
+  ): Promise<Harness> {
     const bureau = await startFakeBureau()
     cleanups.push(() => bureau.close())
     const workspace = mkdtempSync(join(tmpdir(), "bureau-approval-ws-"))
@@ -226,7 +240,9 @@ describe("Bureau approval bridge", () => {
       JSON.stringify({ approvals: { webOrigins: ["https://web.example.invalid"] } }),
       "utf8",
     )
-    const imports = [entry(bureau.url)]
+    const imports = [
+      entry(bureau.url, options.importHeaders ? { headers: options.importHeaders } : {}),
+    ]
     if (options.nonBureauImport) {
       imports.push(entry(bureau.url, { alias: "not-bureau", id: "not-bureau-id", bureau: false }))
     }
@@ -340,7 +356,15 @@ describe("Bureau approval bridge", () => {
   })
 
   it("approve decides through the engine and relays approved to W2 without a sub-session header", async () => {
-    const h = await setup()
+    // A mixed-case header must be stripped too: HTTP header names are
+    // case-insensitive, so exact-spelling matching would leak it to Bureau
+    // and let a sub-session credential attempt a decision.
+    const h = await setup({
+      importHeaders: {
+        "AgentProto-SubSession": "must-not-reach-w2",
+        Authorization: "Bearer device-credential",
+      },
+    })
     const { approvalId, requestId } = await requestBureauApproval(h)
 
     await h.gateway.approvals.decideWeb(approvalId, "approve", {
@@ -394,6 +418,74 @@ describe("Bureau approval bridge", () => {
     expect(call.body["decision"]).toBe("denied")
     expect(call.body["inputSha256"]).toBe(INPUT_SHA)
     expect(call.body["decisionRef"]).toBe(approvalId)
+  })
+
+  it("relays through a fresh bridge after the creating bridge is disposed (restart safe)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "bureau-approval-restart-"))
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }))
+    const bus = createSessionEventBus()
+    const engine = createApprovalsEngine({
+      homeDir: home,
+      sessionEvents: bus,
+      webOrigins: ["https://web.example.invalid"],
+    })
+    cleanups.push(() => engine.dispose())
+
+    const callsA: Array<Record<string, unknown>> = []
+    const callsB: Array<Record<string, unknown>> = []
+    const makeFetch = (calls: Array<Record<string, unknown>>): typeof fetch =>
+      (async (_input: unknown, init?: RequestInit) => {
+        calls.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>)
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+      }) as typeof fetch
+    const resolveImport = async () => ({
+      baseUrl: "https://bureau.example.invalid",
+      headers: {},
+      key: IMPORT_ALIAS,
+    })
+
+    const bridgeA = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: makeFetch(callsA),
+    })
+    const result = bureauError("req_restart")
+    const augmented = (await bridgeA.handleToolResult({
+      alias: IMPORT_ALIAS,
+      toolName: "linkedin_react",
+      result,
+      context: { callerSessionId: "sess_restart" },
+    })) as { content: Array<{ type: string; text?: string }> }
+    const approvalId = JSON.parse(
+      augmented.content.find(c => c.type === "text")?.text ?? "{}",
+    ).approvalId as string
+    expect(engine.get(approvalId)?.kind).toBe("bureau.recipe-write")
+
+    // The daemon restarts: the bridge that created the approval is gone, a
+    // fresh one subscribes to the same engine/bus. The decision must still
+    // relay because the payload lives on the persisted record.
+    bridgeA.dispose()
+    const bridgeB = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: makeFetch(callsB),
+    })
+    cleanups.push(() => bridgeB.dispose())
+
+    await engine.decideWeb(approvalId, "approve", {
+      ipAddress: "127.0.0.1",
+      userAgent: "vitest",
+    })
+    await waitFor(() => callsB[0])
+    expect(callsA).toHaveLength(0)
+    expect(callsB).toHaveLength(1)
+    expect(callsB[0]).toEqual({
+      decision: "approved",
+      inputSha256: INPUT_SHA,
+      decisionRef: approvalId,
+    })
   })
 
   it("no agent-callable path can decide: the approval stays pending", async () => {
