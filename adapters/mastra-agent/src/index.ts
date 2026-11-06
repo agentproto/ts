@@ -17,6 +17,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
+import { collectMastraConfinedReadPaths } from "./confined-read-paths.js"
 
 // Self-locating: the built handle spawns `node <this-dist>/cli.mjs acp`.
 // import.meta.url resolves into dist/ at runtime, where cli.mjs sits next to
@@ -32,6 +33,9 @@ export const mastraAgent: AgentCliHandle = defineHarness({
   version: "0.1.0",
   bin: "node",
   bin_args: [cliEntry, "acp"],
+  ...(process.platform === "darwin"
+    ? { confinedReadPaths: collectMastraConfinedReadPaths(fileURLToPath(new URL("..", import.meta.url))) }
+    : {}),
   install: [
     {
       method: "npm",
