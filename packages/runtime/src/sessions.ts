@@ -273,6 +273,7 @@ import {
   MESSAGE_PREAMBLE,
   normalizeMessageRelation,
   renderInboxDigest,
+  renderSessionMessage,
   renderSessionMessages,
   type MessageDeliveryVia,
   type MessageFilter,
@@ -14115,7 +14116,7 @@ export function createSessionsRegistry(opts?: {
         if (rt.desc.kind === "external" && claudeSocketWake?.enabled) {
           wake = await wakeClaudeSocket({
             sessionId: rt.desc.id,
-            text: msg.text,
+            text: renderSessionMessage(msg),
             urgency: msg.urgency,
             config: claudeSocketWake,
           })
