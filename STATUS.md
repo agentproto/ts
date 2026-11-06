@@ -133,6 +133,7 @@ agentproto-desktop | `packages/desktop` | core | product runtime package consume
 @agentproto/sandbox-computer | `packages/sandbox-computer` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/sandbox-e2b | `packages/sandbox-e2b` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/sandbox-instabox | `packages/sandbox-instabox` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/sdk | `packages/sdk` | core | product runtime package consumed by the runtime/cli |
 @agentproto/secrets | `packages/secrets` | core | product runtime package consumed by the runtime/cli |
 @agentproto/sentinel | `packages/sentinel` | core | product runtime package consumed by the runtime/cli |
 @agentproto/session-presets | `packages/session-presets` | core | product runtime package consumed by the runtime/cli |
