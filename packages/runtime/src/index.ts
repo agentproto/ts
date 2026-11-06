@@ -3334,6 +3334,10 @@ export async function createGateway(
         ...(configDefaults?.sandbox?.checkpoint?.refPrefix
           ? { checkpointRefPrefix: configDefaults.sandbox.checkpoint.refPrefix }
           : {}),
+        // Read per reconcile, so editing `skipRepos` takes effect without a
+        // daemon restart.
+        skipFooterRepos: async () =>
+          (await loadConfig().catch(() => undefined))?.defaults?.prProvenance?.footer?.skipRepos ?? [],
       })
     : undefined
 
