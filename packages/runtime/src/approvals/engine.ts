@@ -92,6 +92,10 @@ export interface ApprovalsEngineOptions {
    *  check (a Telegram webhook callback has no Origin to verify). Absent ⇒
    *  `telegram` is OFF, same convention as `webOrigins` for `web_click`. */
   telegramBotSecret?: string
+  /** `approvals.telegramApprovalCards`: an in-process Telegram bridge decides
+   *  through `decideTelegram`, so `telegram` joins the enabled channels
+   *  without a bot secret. The HTTP route still needs `telegramBotSecret`. */
+  telegramCards?: boolean
 }
 
 /** Same requester? Used by `consume`'s `not_requester` check — the
@@ -151,7 +155,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
   const telegramBotSecret = opts.telegramBotSecret
   const enabledChannels: ApprovalChannel[] = ["ui_card"]
   if (webOrigins.length > 0) enabledChannels.push("web_click")
-  if (telegramBotSecret) enabledChannels.push("telegram")
+  if (telegramBotSecret || opts.telegramCards) enabledChannels.push("telegram")
 
   const approvals = loadAllApprovals(homeDir)
   const cardTickets = loadAllCardTickets(homeDir)
@@ -349,7 +353,8 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
    *  the shared bot secret the HTTP route checks before this ever runs, not
    *  anything checked here. `evidence` is the (truthful) ip/UA of the
    *  webhook request that carried the human's tap, same convention as
-   *  `decideWeb`'s evidence being the browser request's. */
+   *  `decideWeb`'s evidence being the browser request's. The in-process
+   *  Telegram bridge calls this directly after checking chat and user id. */
   const decideTelegram = async (
     id: string,
     decision: ApprovalDecision,
