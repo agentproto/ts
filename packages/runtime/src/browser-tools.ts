@@ -430,7 +430,22 @@ export function registerBrowserTools(
     toolName: ProxiedBrowserToolName,
     input: Record<string, unknown>,
   ): Promise<Awaited<ReturnType<typeof callProxiedBrowserTool>> | undefined> => {
-    if (!opts.mcpProxy) return undefined
+    if (!opts.mcpProxy) {
+      if (builtin === "proxy") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `${toolName}: defaults.browser.builtin is "proxy" but the daemon ` +
+                "has no imported-MCP registry wired.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      return undefined
+    }
     if (builtin === "on" && !LEGACY_PROXIED.has(toolName)) return undefined
     const alias = await loadProxyImport()
     if (!alias) {

@@ -47,7 +47,7 @@ afterEach(() => {
 async function makeSetup(opts: {
   proxyImport: string | undefined
   builtin?: "off" | "proxy" | "on"
-  proxy?: ReturnType<typeof fakeProxy>
+  proxy?: { callTool: ReturnType<typeof vi.fn> }
   extra?: Record<string, unknown>
 }) {
   const registry = createSessionsRegistry({ persistPath: join(tmp, "sessions.json") })
@@ -280,6 +280,51 @@ describe("browser proxy - proxied tools", () => {
       }
     })
   }
+})
+
+describe("browser proxy - a missing import fails loudly", () => {
+  it("never falls back to chrome-live when proxyImport names no imported alias", async () => {
+    const navigate = vi.fn(async () => {
+      throw new Error("chrome-live navigate must not be reached")
+    })
+    const instance = {
+      id: "chrome-live",
+      port: 9222,
+      baseUrl: "http://127.0.0.1:9222",
+      wasAlreadyRunning: true,
+      healthy: true,
+      stop: async () => {},
+      navigate,
+    }
+    const proxy = {
+      callTool: vi.fn(async () => ({ ok: false as const, error: 'unknown alias "bureau"' })),
+    }
+    const { client, registry, cleanup } = await makeSetup({
+      proxyImport: "bureau",
+      builtin: "proxy",
+      proxy,
+    })
+    try {
+      const id = registry.registerBrowser({
+        adapterId: "chrome-live",
+        port: 9222,
+        baseUrl: "http://127.0.0.1:9222",
+        wasAlreadyRunning: false,
+        stop: async () => {},
+      }).id
+      setLiveBrowserInstance(id, instance as never)
+
+      const res = await client.callTool({
+        name: "browser_navigate",
+        arguments: { sessionId: id, url: "https://example.com" },
+      })
+      expect(res.isError).toBe(true)
+      expect(textOf(res)).toContain('unknown alias "bureau"')
+      expect(navigate).not.toHaveBeenCalled()
+    } finally {
+      await cleanup()
+    }
+  })
 })
 
 describe("browser proxy - tools with no Bureau twin", () => {
