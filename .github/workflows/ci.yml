@@ -1350,8 +1350,9 @@ jobs:
           # home daemon does — join-token-registry.ts synthesizes
           # "<token name> #<pr>" from these labels when the box doesn't
           # self-report one. No AGENTPROTO_JOIN_PROVIDER here: reviewerPlacement
-          # is a ladder (computer, e2b, computer with the paid fallback model),
-          # so reviewerPlacementFor defaults it to the first rung's provider.
+          # is a ladder in the config order (computer, e2b, computer with the
+          # paid fallback model), which AGENT_REVIEW_PLACEMENT can reorder, so
+          # reviewerPlacementFor defaults it to the first rung's provider.
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           # The paid usage-limit fallback rung (opencode-go/*) needs its own key:
           # Zen and Go both read OPENCODE_API_KEY, which the api-key input below
@@ -1376,12 +1377,12 @@ jobs:
           provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
-          # Sandbox for the reviewer session: a placement ladder (computer
-          # fleet, e2b, computer with the paid fallback model;
-          # reviewerPlacement in
-          # .github/agentic-review.json) — the daemon-internal spawn failure on
-          # the runner does not reproduce inside a sandbox, whose own daemon
-          # spawns the adapter.
+          # Sandbox for the reviewer session: a placement ladder in the config
+          # order (computer fleet, e2b, computer with the paid fallback model;
+          # reviewerPlacement in .github/agentic-review.json), which the
+          # AGENT_REVIEW_PLACEMENT repo variable can reorder. The
+          # daemon-internal spawn failure on the runner does not reproduce
+          # inside a sandbox, whose own daemon spawns the adapter.
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
           # Computer fleet legs of the reviewer placement ladder (reviewerPlacement
           # in .github/agentic-review.json). All five are optional: with no
