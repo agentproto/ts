@@ -187,6 +187,38 @@ describe("claude-socket wake adapter", () => {
     })
   })
 
+  describe("with a 2.1.317 registration that carries no mode field", () => {
+    beforeEach(async () => {
+      h = await startHarness()
+      writeFileSync(join(h.claudeSessionsDir, `${h.pid}.json`), JSON.stringify({ pid: h.pid, sessionId: "chat-1" }))
+    })
+
+    it("skips the socket when the row reports bypassPermissions", async () => {
+      const result = await wakeClaudeSocket({
+        sessionId: "cc:chat-1",
+        text: "wake",
+        urgency: "next-turn",
+        config: config(h),
+        rowPermissionMode: "bypassPermissions",
+      })
+      expect(result).toMatchObject({ written: false, reason: "bypass-permissions", pid: h.pid })
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(h.connections).toBe(0)
+    })
+
+    it("still writes the socket when the row reports auto", async () => {
+      const result = await wakeClaudeSocket({
+        sessionId: "cc:chat-1",
+        text: "wake",
+        urgency: "next-turn",
+        config: config(h),
+        rowPermissionMode: "auto",
+      })
+      expect(result).toMatchObject({ written: true, reason: "written" })
+      await waitFor(() => h.frames.length === 2)
+    })
+  })
+
   describe("with a bypassPermissions registration", () => {
     beforeEach(async () => {
       h = await startHarness({ permissionMode: "bypassPermissions" })
@@ -306,6 +338,40 @@ describe("claude-socket wake through the sessions registry", () => {
     expect(registry.listInbox("cc:chat-1")!.map(m => m.text)).toEqual(["fallback"])
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(h.frames).toHaveLength(0)
+  })
+
+  it("falls back to the inbox when the touched row reports bypassPermissions and the file has no mode", async () => {
+    writeFileSync(join(h.claudeSessionsDir, `${h.pid}.json`), JSON.stringify({ pid: h.pid, sessionId: "chat-1" }))
+    registry.touchExternal({ id: "cc:chat-1", host: "claude-desktop", permissionMode: "bypassPermissions" })
+    const res = await registry.sendMessage(
+      createSessionMessage({
+        to: "cc:chat-1",
+        from: { relation: "system" },
+        kind: "notice",
+        urgency: "next-turn",
+        text: "row-mode",
+      }),
+    )
+    expect(res.delivered).toEqual({ via: "inbox" })
+    expect(res.wake).toMatchObject({ written: false, reason: "bypass-permissions" })
+    expect(registry.listInbox("cc:chat-1")!.map(m => m.text)).toEqual(["row-mode"])
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(h.frames).toHaveLength(0)
+  })
+
+  it("writes the socket when the touched row reports auto, and follows a later switch to bypass", async () => {
+    writeFileSync(join(h.claudeSessionsDir, `${h.pid}.json`), JSON.stringify({ pid: h.pid, sessionId: "chat-1" }))
+    registry.touchExternal({ id: "cc:chat-1", host: "claude-desktop", permissionMode: "auto" })
+    const msg = (text: string) =>
+      createSessionMessage({ to: "cc:chat-1", from: { relation: "system" }, kind: "notice", urgency: "next-turn", text })
+    expect((await registry.sendMessage(msg("one"))).delivered).toEqual({ via: "socket" })
+    // A touch without a mode keeps the stored one; one with a mode replaces it.
+    registry.touchExternal({ id: "cc:chat-1" })
+    expect(registry.get("cc:chat-1")?.externalPermissionMode).toBe("auto")
+    registry.touchExternal({ id: "cc:chat-1", permissionMode: "bypassPermissions" })
+    const res = await registry.sendMessage(msg("two"))
+    expect(res.delivered).toEqual({ via: "inbox" })
+    expect(res.wake).toMatchObject({ reason: "bypass-permissions" })
   })
 
   it("does not wake when the daemon flag is off", async () => {

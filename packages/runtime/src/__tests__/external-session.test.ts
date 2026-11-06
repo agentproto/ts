@@ -653,6 +653,18 @@ describe("/mcp gateway registration", () => {
     })
   })
 
+  it("records the permissionMode reported on a touch and ignores a malformed one", async () => {
+    await withGateway(async (base, registry) => {
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", permissionMode: "bypassPermissions" })
+      expect(registry.get("cc:chat-1")?.externalPermissionMode).toBe("bypassPermissions")
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", permissionMode: "bad mode!" })
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop" })
+      expect(registry.get("cc:chat-1")?.externalPermissionMode).toBe("bypassPermissions")
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", permissionMode: "auto" })
+      expect(registry.get("cc:chat-1")?.externalPermissionMode).toBe("auto")
+    })
+  })
+
   it("refuses an untrusted touch, a missing host, and a daemon-owned row", async () => {
     await withGateway(async (base, registry) => {
       expect(

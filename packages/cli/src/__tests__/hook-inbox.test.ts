@@ -203,6 +203,19 @@ describe("hook inbox takes its session id from the payload and the daemon's vari
     expect(await run({}, { session_id: "aaaa-1" })).toBe(0)
   })
 
+  it("forwards the payload's permission_mode on the touch, and omits it when absent", async () => {
+    await run({}, { session_id: "aaaa-1", permission_mode: "bypassPermissions" })
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+      { host: "claude-desktop", permissionMode: "bypassPermissions" },
+      "t",
+    )
+    httpPostJson.mockClear()
+    await run({}, { session_id: "aaaa-1" })
+    expect(httpPostJson.mock.calls[0]![1]).not.toHaveProperty("permissionMode")
+  })
+
   it("adds name and hostSessionId from the matching *.json registry file, never reading .key", async () => {
     const read = vi.fn((path: string) => {
       if (path.endsWith("b.json")) {
