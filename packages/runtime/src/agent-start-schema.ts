@@ -171,7 +171,9 @@ export const agentStartInputShape = {
     .describe(
       "Declared parent for a caller the daemon cannot identify (Claude Code on a static MCP URL): " +
         "`cc:<session_id>` or a live session id. The child's `message_parent` then reports to it. " +
-        "Declared, not proven (same trust as `replyTo`). Refused when the call already carries an identity."
+        "Declared, not proven (same trust as `replyTo`). Also accepted, as `cc:<session_id>` only, from the shared "+
+        "unverified `claude-desktop` identity (Claude Desktop MCP entries): pass your own Claude Code session id " +
+        "(hook payload `session_id`) so follow-ups wake you. Refused for any other call that carries an identity."
     ),
   succeeds: z
     .string()

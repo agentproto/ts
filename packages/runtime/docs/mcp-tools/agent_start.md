@@ -98,7 +98,12 @@ header) and a spawn would land as a parentless root. Pass your own address,
 `cc:<session_id>` (or a live session id), and the child nests under it, so its
 `message_parent` is delivered to that row. Declared, not proven: same trust as
 a `replyTo` address, descriptor-only lineage. Refused when the call already
-carries an identity (it attaches under that identity automatically). With
+carries an identity (it attaches under that identity automatically), with one
+exception: the shared, unverified `claude-desktop` identity that every Claude
+Desktop MCP entry carries (`?callerSessionId=claude-desktop`) may declare its own
+`cc:<session_id>` (the `session_id` of its hook payload; `cc:<id>` form only),
+because that shared row has no hook inbox or socket wake. The child's
+`message_parent` and follow digests then reach the declared row. With
 `mcp.noCallerIdentity: accept`, an identity-less spawn also records
 `meta.anonymous: "claude-code"` and gains no privilege.
 

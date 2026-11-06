@@ -33,8 +33,10 @@ import { ANONYMOUS_SEND_RULE, decide, type PermissionContext } from "./permissio
 import { warnPeerUnverified } from "./workspace-binding.js"
 import {
   createSessionMessage,
+  DECLARED_CC_ADDRESS,
   messageFrom,
   MESSAGE_KINDS,
+  SHARED_CLAUDE_DESKTOP_ID,
   MESSAGE_URGENCIES,
   type MessageFilter,
   type MessageKind,
@@ -167,7 +169,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   const anonymousSendMode: "block" | "label" = opts.anonymousSend ?? "label"
   // One shared messaging context (messaging-context.ts) so the tools,
   // `POST /sessions/:id/messages` and `permissions_explain` cannot drift.
-  const policy: PermissionContext = buildMessagingPermissionContext({
+  const basePolicy: PermissionContext = buildMessagingPermissionContext({
     defaults: {
       allowSiblings: allowSiblings === true,
       allowSameWorkspace,
@@ -346,7 +348,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       from?: unknown
     },
     anonymous = false,
+    extraPolicy?: Pick<PermissionContext, "declaredReply">,
   ): Promise<ToolResult> => {
+    const policy: PermissionContext = extraPolicy ? { ...basePolicy, ...extraPolicy } : basePolicy
     if (input.from !== undefined) {
       return fail("from_not_settable", `${tool}: \`from\` is not settable — the daemon attests the sender.`)
     }
@@ -490,7 +494,16 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     {
       to: z.string().min(1).describe('"parent", or the recipient session id.'),
       ...payloadShape,
-      replyTo: z.string().optional().describe("Id of the message this answers."),
+      replyTo: z
+        .string()
+        .optional()
+        .describe(
+          "Id of the message this answers (msg_…), or your own declared address `cc:<session_id>` " +
+            "so the recipient's reply can reach you. Inside Claude Desktop (shared `claude-desktop` " +
+            "identity) pass your own Claude Code session id as `cc:<session_id>` (it is in your " +
+            "hook payload `session_id`): `message_reply` then routes to that row, which has the " +
+            "hook inbox, instead of the shared inbox. Declared, not proven.",
+        ),
       correlationId: z.string().optional().describe("Thread id (defaults to the first message's id)."),
     },
     async input => {
@@ -538,10 +551,33 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           `message_reply: "${input.replyTo}" came from the ${original.from.relation}, not a session — there is no one to route a reply to.`,
         )
       }
-      return send("message_reply", self, original.from.sessionId, {
-        ...input,
-        correlationId: original.correlationId ?? original.id,
-      })
+      // A reply to the shared, unverified `claude-desktop` identity goes to the
+      // `cc:<id>` the sender declared as `replyTo` (declared, not proven): the
+      // shared row has no hook inbox or socket wake, the declared row does.
+      // Falls back to the sender's own row when the declared row is unknown.
+      const declaredAddress = (m: SessionMessage | undefined): string | undefined =>
+        m?.from.sessionId === SHARED_CLAUDE_DESKTOP_ID &&
+        m.replyAddress !== undefined &&
+        DECLARED_CC_ADDRESS.test(m.replyAddress) &&
+        registry.get(m.replyAddress)
+          ? m.replyAddress
+          : undefined
+      const declaredCc = declaredAddress(original)
+      return send(
+        "message_reply",
+        self,
+        declaredCc ?? original.from.sessionId,
+        { ...input, correlationId: original.correlationId ?? original.id },
+        false,
+        declaredCc
+          ? {
+              declaredReply: {
+                messageId: original.id,
+                declaredAddressOf: (id, mid) => declaredAddress(registry.findReceivedMessage(id, mid)),
+              },
+            }
+          : undefined,
+      )
     },
   )
 

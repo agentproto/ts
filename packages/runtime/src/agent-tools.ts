@@ -84,6 +84,8 @@ import type {
 import { appUiToolId } from "./app-ui-apps.js"
 import {
   createSessionMessage,
+  DECLARED_CC_ADDRESS,
+  SHARED_CLAUDE_DESKTOP_ID,
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
@@ -781,7 +783,17 @@ export function registerAgentTools(
       // identify. A call that already carries an identity attaches under it
       // automatically, so a declaration there is refused rather than allowed to
       // re-parent (the caller's own `parentSessionId` hint is the existing path).
-      if (declaredParent !== undefined && (callerScope !== undefined || effectiveCaller() !== undefined)) {
+      // The shared, unverified `claude-desktop` identity names a host, not a
+      // session (no hook inbox / socket wake), so it may declare its own
+      // `cc:<session_id>` as parent: the child's follow-ups then reach a row that
+      // can be woken. Declared, not proven; only the `cc:` form is accepted.
+      const sharedDesktopCaller =
+        callerScope === undefined && effectiveCaller() === SHARED_CLAUDE_DESKTOP_ID
+      if (
+        declaredParent !== undefined &&
+        (callerScope !== undefined || effectiveCaller() !== undefined) &&
+        !sharedDesktopCaller
+      ) {
         return {
           content: [
             {
@@ -789,6 +801,19 @@ export function registerAgentTools(
               text:
                 "agent_start: `parent` is only for callers without a session identity; " +
                 "this call is attributed to a session and attaches under it automatically.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (declaredParent !== undefined && sharedDesktopCaller && !DECLARED_CC_ADDRESS.test(declaredParent)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "agent_start: from the shared `claude-desktop` identity, `parent` must be your own " +
+                "declared Claude Code address `cc:<session_id>`.",
             },
           ],
           isError: true,

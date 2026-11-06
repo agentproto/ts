@@ -347,6 +347,16 @@ export function messageFrom(
   }
 }
 
+/** The one shared, UNVERIFIED caller identity every Claude Desktop MCP entry
+ *  carries (`?callerSessionId=claude-desktop&host=claude-desktop`). It names a
+ *  host, not a session: no hook inbox or socket wake exists for it, so a caller
+ *  using it declares its own `cc:<session_id>` for parent / reply routing
+ *  (declared, never proven). */
+export const SHARED_CLAUDE_DESKTOP_ID = "claude-desktop"
+
+/** A declared Claude Code address: `cc:<session_id>`. */
+export const DECLARED_CC_ADDRESS = /^cc:[A-Za-z0-9._-]{1,128}$/
+
 export function mintMessageId(): string {
   return `msg_${randomUUID().replace(/-/g, "").slice(0, 8)}`
 }
