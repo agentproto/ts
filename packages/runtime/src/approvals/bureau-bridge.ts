@@ -45,7 +45,9 @@ interface BureauApprovalDetails {
 export type BureauImportResolver = (alias: string) => Promise<SubsessionTarget | undefined>
 
 export interface BureauApprovalBridgeOptions {
-  engine: Pick<ApprovalsEngine, "request">
+  /** `get` is what makes the relay restart-safe: the decision reads the
+   *  persisted record, never an in-memory request cache. */
+  engine: Pick<ApprovalsEngine, "request" | "get">
   sessionEvents: SessionEventBus
   resolveImport: BureauImportResolver
   /** Test seam; defaults to the global fetch. */
@@ -155,32 +157,54 @@ function withApprovalState(
 export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): BureauApprovalBridge {
   const fetchImpl = opts.fetch ?? fetch
   const log = opts.log ?? ((message: string) => console.warn(message))
-  /** approvalId -> what W2 needs to relay the human's decision. */
-  const pending = new Map<string, { alias: string; requestId: string; inputSha256: string }>()
+
+  /** The W2 relay input, taken from the PERSISTED approval record so a
+   *  daemon restart between the request and the human's click still relays.
+   *  A malformed payload is not a Bureau approval this bridge understands. */
+  const relayTargetOf = (
+    record: { kind: string; payload?: unknown } | undefined,
+  ): { importAlias: string; requestId: string; inputSha256: string } | undefined => {
+    if (!record || record.kind !== BUREAU_APPROVAL_KIND || !isRecord(record.payload)) return undefined
+    const { importAlias, requestId, inputSha256 } = record.payload
+    if (
+      typeof importAlias !== "string" ||
+      typeof requestId !== "string" ||
+      typeof inputSha256 !== "string" ||
+      importAlias === "" ||
+      requestId === "" ||
+      inputSha256 === ""
+    ) {
+      return undefined
+    }
+    return { importAlias, requestId, inputSha256 }
+  }
 
   const relay = async (ev: ApprovalDecidedEvent): Promise<void> => {
-    const target = pending.get(ev.approvalId)
+    const target = relayTargetOf(opts.engine.get(ev.approvalId))
     if (!target) return
-    pending.delete(ev.approvalId)
     let resolved: SubsessionTarget | undefined
     try {
-      resolved = await opts.resolveImport(target.alias)
+      resolved = await opts.resolveImport(target.importAlias)
     } catch (err) {
       log(
-        `[bureau-approval-bridge] could not resolve import "${target.alias}" for ${ev.approvalId}: ` +
+        `[bureau-approval-bridge] could not resolve import "${target.importAlias}" for ${ev.approvalId}: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       )
       return
     }
     if (!resolved) {
-      log(`[bureau-approval-bridge] import "${target.alias}" is no longer a Bureau import; ${ev.approvalId} not relayed`)
+      log(
+        `[bureau-approval-bridge] import "${target.importAlias}" is no longer a Bureau import; ${ev.approvalId} not relayed`,
+      )
       return
     }
     // Rule 1: the device credential decides. Never present a sub-session
-    // token, whatever a caller managed to put on the connection.
+    // token, whatever a caller managed to put on the connection. Header
+    // names are case-insensitive, so strip any casing.
     const headers: Record<string, string> = { ...resolved.headers, "content-type": "application/json" }
-    delete headers["agentproto-subsession"]
-    delete headers["Agentproto-Subsession"]
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "agentproto-subsession") delete headers[key]
+    }
     const url = `${resolved.baseUrl.replace(/\/+$/, "")}/pair/approvals/${encodeURIComponent(target.requestId)}`
     try {
       const res = await fetchImpl(url, {
@@ -194,12 +218,12 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
       })
       if (!res.ok) {
         log(
-          `[bureau-approval-bridge] W2 for "${target.alias}/${target.requestId}" failed: HTTP ${res.status}`,
+          `[bureau-approval-bridge] W2 for "${target.importAlias}/${target.requestId}" failed: HTTP ${res.status}`,
         )
       }
     } catch (err) {
       log(
-        `[bureau-approval-bridge] W2 for "${target.alias}/${target.requestId}" failed: ` +
+        `[bureau-approval-bridge] W2 for "${target.importAlias}/${target.requestId}" failed: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       )
     }
@@ -210,9 +234,6 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
     void relay(ev).catch(err => {
       log(`[bureau-approval-bridge] relay failed: ${err instanceof Error ? err.message : String(err)}`)
     })
-  })
-  const offExpired = opts.sessionEvents.on("approval:expired", ev => {
-    pending.delete(ev.approvalId)
   })
 
   return {
@@ -247,11 +268,6 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
             ? { sessionId: call.context.callerSessionId }
             : { operator: true },
         )
-        pending.set(record.id, {
-          alias: target.key ?? call.alias,
-          requestId: details.requestId,
-          inputSha256: details.inputSha256,
-        })
         const augmented = withApprovalState(call.result as Record<string, unknown>, found.textIndex, record.id)
         const meta = isRecord(augmented._meta) ? augmented._meta : {}
         return {
@@ -273,8 +289,6 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
 
     dispose(): void {
       offDecided()
-      offExpired()
-      pending.clear()
     },
   }
 }

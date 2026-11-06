@@ -53,6 +53,11 @@ export interface ApprovalRecord {
   /** sha256 (hex) of the canonical JSON of the payload written to
    *  `<id>/payload.json` at request time. */
   payloadHash: string
+  /** The payload itself, persisted on the record so a subscriber can act on
+   *  a decision after a daemon restart without replaying the request. Absent
+   *  on records written before this field existed; those can still be read
+   *  and consumed, they just cannot be relayed by a post-restart subscriber. */
+  payload?: unknown
   status: ApprovalStatus
   requestedBy: ApprovalRequester
   taskId?: string

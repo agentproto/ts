@@ -204,6 +204,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
       kind: input.kind,
       title: input.title,
       preview: input.preview,
+      payload: input.payload,
       payloadHash,
       status: "pending",
       requestedBy: requester,

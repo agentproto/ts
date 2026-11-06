@@ -1,6 +1,7 @@
 /**
  * Filesystem persistence for approval requests — `<homeDir>/<id>/request.json`
- * (the `ApprovalRecord`, everything except the payload bytes),
+ * (the `ApprovalRecord`, including the parsed payload so a post-restart
+ * subscriber can act on a decision),
  * `<homeDir>/<id>/payload.json` (canonical JSON of the gated payload, what
  * `signArtifact` hashes and signs), and `<homeDir>/<id>/card-ticket.json`
  * (the `ui_card` channel's one-time ticket — hash only). Atomic
