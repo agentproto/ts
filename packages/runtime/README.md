@@ -269,6 +269,14 @@ The daemon, `POST /sessions/browser` and the CLI resolve browser adapters (`camo
 
 chrome-live additionally exposes ONE model — the agent's own, OWNED tab — through `registerBrowserTools`' `browser_navigate` / `browser_extract_text` / `browser_get_dom` / `browser_click` / `browser_fill` / `browser_evaluate` / `browser_scroll` / `browser_press_key` / `browser_select` / `browser_wait_for` (plus `browser_screenshot` / `browser_screencast_*`, which predate this set; `browser_new_tab` opens a FRESH tab in the agent's window, `browser_list_tabs` lists the agent-owned tab ids, and `browser_upload_file` attaches local files to an `<input type=file>` via CDP `DOM.setFileInputFiles` — absolute paths inside an upload allowlist only: the agent's workspace + `~/.pygmalion/data` by default, extended by `AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS`). Every page tool accepts a `tabId` to pick a tab among those. `fetch_page` is the zero-browser fast path: a plain HTTP read, use it first for any public page and escalate to `start_browser` + these only on `blocked: true` or when the page needs JS/interaction.
 
+`defaults.browser.builtin` decides how much of that surface the daemon registers:
+
+- `"off"`: only `fetch_page` (a plain HTTP read, no browser). No other browser tool is listed or callable.
+- `"proxy"`: the daemon browser tools forward to the Bureau MCP named by `defaults.browser.proxyImport`. `browser_press_key` is proxied too, `browser_list_tabs` maps to Bureau's `browser_list_owned_tabs`, and `list_browsers` / `browser_status` map to `browser_list_instances`; `tabId` and an optional `instance` are forwarded. Every tool Bureau has no twin for (`browser_extract_text`, `browser_scroll`, `browser_select`, `browser_wait_for`, `browser_new_tab`, `browser_upload_file`, `browser_screencast_*`, `start_browser`, `stop_browser`, `browser_adapter_list`) refuses with `browser:use_bureau` and names the Bureau tool to use instead. It never falls back to the daemon's own chrome-live path.
+- `"on"` (default): today's behaviour.
+
+A config that sets only `defaults.browser.proxyImport` (no `builtin`) is treated as `"proxy"`. The tool list is fixed when `registerBrowserTools` runs, once per `/mcp` session, so a config change applies on the next MCP session rather than mid-session; no daemon restart is needed.
+
 ## License
 
 MIT — see [LICENSE](../../LICENSE).
