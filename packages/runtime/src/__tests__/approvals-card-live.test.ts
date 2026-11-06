@@ -116,6 +116,28 @@ describe("a cached page shows approvals created after it was read", () => {
     for (const card of page.cards()) expect(page.buttons(card).approve.disabled).toBe(false)
   })
 
+  it("settles through a slow host: the whole handshake, list, decide, refresh chain completes", async () => {
+    const id = request("Slow host")
+    const { client, callTool } = await cardsHost()
+    const slow = async (name: string, args: Record<string, unknown>) => {
+      await new Promise(resolve => setTimeout(resolve, 150))
+      return callTool(name, args)
+    }
+    const page = runCardPage(await readCardHtml(client, approvalCardResourceUri(id)), { callTool: slow })
+    await page.flush()
+    expect(page.cards()).toHaveLength(1)
+
+    page.buttons(page.cards()[0]!).deny.click()
+    await page.flush()
+    expect(page.calls().map(m => m.params?.["name"])).toEqual([
+      "approval_card_list",
+      "approval_card_decide",
+      "approval_card_list",
+    ])
+    expect(engine.get(id)?.status).toBe("denied")
+    expect(page.statusOf(page.cards()[0]!)).toBe("Refused")
+  })
+
   it("the same cached HTML, reused for a second page, lists the current approvals", async () => {
     const { client, callTool } = await cardsHost()
     const cachedHtml = await readCardHtml(client, APPROVAL_PENDING_RESOURCE_URI)

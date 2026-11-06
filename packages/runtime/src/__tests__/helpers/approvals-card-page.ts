@@ -13,6 +13,8 @@ import { buildApprovalCardsServer } from "../../approvals/card-surface.js"
 import type { ApprovalsEngine } from "../../approvals/engine.js"
 
 const realSetImmediate = globalThis.setImmediate
+const realNow = Date.now.bind(Date)
+const FLUSH_DEADLINE_MS = 15_000
 
 export interface Posted {
   jsonrpc?: string
@@ -167,10 +169,14 @@ export function runCardPage(html: string, opts: CardPageOptions = {}) {
     Date,
   })
 
-  /** Lets the page settle: waits until no tool call is in flight. */
+  /** Lets the page settle: waits, on a real-time deadline, until no tool call
+   *  is in flight. Not a tick count: a ticking loop of `setImmediate` runs in
+   *  microseconds and would give up long before a slow host answers. */
   const flush = async (): Promise<void> => {
+    const deadline = realNow() + FLUSH_DEADLINE_MS
     let quiet = 0
-    for (let i = 0; i < 400 && quiet < 4; i++) {
+    while (quiet < 4) {
+      if (realNow() > deadline) throw new Error(`card page did not settle: ${inflight} tool call(s) still in flight`)
       await new Promise<void>(resolve => realSetImmediate(resolve))
       quiet = inflight === 0 ? quiet + 1 : 0
     }
