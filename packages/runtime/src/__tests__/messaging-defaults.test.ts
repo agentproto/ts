@@ -29,6 +29,7 @@ describe("resolveMessagingDefaults", () => {
           grants: [{ principal: "session-label://brain", actions: [{ action: "session:message" }] }],
           agentInterrupt: "allow",
           pendingPromptStaleMinutes: 12,
+          anonymousSend: "block",
         },
       },
     }))
@@ -41,6 +42,7 @@ describe("resolveMessagingDefaults", () => {
       peerBinding: "slug",
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
+      anonymousSend: "block",
     })
   })
 
