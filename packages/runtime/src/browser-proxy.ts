@@ -9,7 +9,9 @@
  *   - `"on"`    today's behaviour (the default).
  *
  * A config that only names `defaults.browser.proxyImport` (no `builtin`)
- * resolves to `"proxy"`, so existing installs keep their behaviour.
+ * resolves to `"on"`, so existing installs keep exactly their old behaviour:
+ * the six legacy tools proxy and every other tool keeps its local path.
+ * `"proxy"` is opt-in through `builtin: "proxy"`.
  *
  * The argument shapes below are copied from Bureau's tool catalogue, not from
  * this file's own schemas. Since agentproto/bureau#41 every Bureau page tool
@@ -32,10 +34,12 @@ export const BROWSER_PROXY_DEPRECATED =
 export type BrowserBuiltinMode = "off" | "proxy" | "on"
 
 /**
- * Resolve `defaults.browser.builtin` with backward compatibility: a config
- * that only sets `proxyImport` means `"proxy"`, and an absent value means
- * today's `"on"`. Unknown values are treated as `"on"` rather than silently
- * disabling a browser tool surface.
+ * Resolve `defaults.browser.builtin`. Backward compatibility wins: a config
+ * that only sets `proxyImport` keeps today's `"on"` behaviour (the six legacy
+ * tools proxy, everything else keeps its local path), and an absent value is
+ * `"on"` too. `"proxy"` is opt-in through an explicit `builtin: "proxy"`.
+ * Unknown values are treated as `"on"` rather than silently disabling a
+ * browser tool surface.
  */
 export function resolveBrowserBuiltin(
   browser:
@@ -45,7 +49,7 @@ export function resolveBrowserBuiltin(
   if (browser?.builtin === "off" || browser?.builtin === "proxy" || browser?.builtin === "on") {
     return browser.builtin
   }
-  return browser?.proxyImport ? "proxy" : "on"
+  return "on"
 }
 
 /** The daemon browser tools this proxy covers. */
@@ -59,7 +63,6 @@ export type ProxiedBrowserToolName =
   | "browser_press_key"
   | "browser_list_tabs"
   | "list_browsers"
-  | "browser_status"
 
 interface BrowserToolMapping {
   /** The Bureau tool this daemon tool maps to. */
@@ -70,6 +73,8 @@ interface BrowserToolMapping {
   consumed: readonly string[]
   /** Daemon input fields with no Bureau equivalent: dropped and noted. */
   dropped: readonly string[]
+  /** Extra notes carried on a successful proxied result. */
+  extraNotes?: readonly string[]
 }
 
 /**
@@ -146,12 +151,9 @@ const MAPPINGS: Record<ProxiedBrowserToolName, BrowserToolMapping> = {
     forward: ["instance"],
     consumed: [],
     dropped: ["onlyAlive"],
-  },
-  browser_status: {
-    target: "browser_list_instances",
-    forward: ["instance"],
-    consumed: ["sessionId"],
-    dropped: [],
+    extraNotes: [
+      "Bureau browser_list_instances returns instances, not the daemon's browser-session descriptors",
+    ],
   },
 }
 
@@ -179,6 +181,7 @@ export const BROWSER_USE_BUREAU: Readonly<Record<string, string>> = {
   browser_screencast_frame: "browser_screenshot",
   browser_screencast_start: "browser_screenshot",
   browser_screencast_stop: "browser_screenshot",
+  browser_status: "browser_list_instances",
   browser_upload_file: "browser_act",
   browser_wait_for: "browser_evaluate",
   start_browser: "browser_list_instances",
@@ -217,6 +220,7 @@ export function mapBrowserProxyArgs(
     if (input[key] !== undefined) args[key] = input[key]
   }
   const notes = [
+    ...(mapping.extraNotes ?? []),
     ...mapping.dropped
       .filter(key => input[key] !== undefined)
       .map(key => `dropped "${key}" (no Bureau equivalent)`),

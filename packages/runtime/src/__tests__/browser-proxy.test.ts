@@ -47,7 +47,7 @@ afterEach(() => {
 async function makeSetup(opts: {
   proxyImport: string | undefined
   builtin?: "off" | "proxy" | "on"
-  proxy?: ReturnType<typeof fakeProxy>
+  proxy?: { callTool: ReturnType<typeof vi.fn> }
   extra?: Record<string, unknown>
 }) {
   const registry = createSessionsRegistry({ persistPath: join(tmp, "sessions.json") })
@@ -115,23 +115,37 @@ describe("browser builtin = off", () => {
 })
 
 describe("browser builtin resolves", () => {
-  it("treats a legacy proxyImport-only config as proxy", async () => {
-    expect(resolveBrowserBuiltin({ proxyImport: "bureau" })).toBe("proxy")
+  it("keeps a legacy proxyImport-only config on the old on path", async () => {
+    expect(resolveBrowserBuiltin({ proxyImport: "bureau" })).toBe("on")
+    expect(resolveBrowserBuiltin({ builtin: "proxy", proxyImport: "bureau" })).toBe("proxy")
     expect(resolveBrowserBuiltin({ builtin: "off", proxyImport: "bureau" })).toBe("off")
     expect(resolveBrowserBuiltin({ builtin: "on" })).toBe("on")
     expect(resolveBrowserBuiltin(undefined)).toBe("on")
 
-    const { client, cleanup } = await makeSetup({
-      proxyImport: "bureau",
-      builtin: resolveBrowserBuiltin({ proxyImport: "bureau" }),
-    })
+    const builtin = resolveBrowserBuiltin({ proxyImport: "bureau" })
+    const { client, proxy, cleanup } = await makeSetup({ proxyImport: "bureau", builtin })
     try {
-      const res = await client.callTool({
+      // The six legacy tools still proxy, exactly as on main.
+      const proxied = await client.callTool({
+        name: "browser_navigate",
+        arguments: { sessionId: "s", url: "https://example.com" },
+      })
+      expect(proxied.isError).toBeFalsy()
+      expect(proxy.callTool).toHaveBeenCalledWith(
+        "bureau",
+        "browser_navigate",
+        { url: "https://example.com" },
+        { callerSessionId: CALLER },
+      )
+
+      // Everything else keeps its local path: no browser:use_bureau refusal.
+      const local = await client.callTool({
         name: "browser_extract_text",
         arguments: { sessionId: "s" },
       })
-      expect(res.isError).toBe(true)
-      expect(textOf(res)).toContain("browser:use_bureau")
+      expect(local.isError).toBe(true)
+      expect(textOf(local)).toContain('session "s" not found')
+      expect(textOf(local)).not.toContain("browser:use_bureau")
     } finally {
       await cleanup()
     }
@@ -233,18 +247,14 @@ describe("browser proxy - proxied tools", () => {
       expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
     },
     {
-      tool: "browser_status",
-      input: { sessionId: "s", instance: "inst-1" },
-      target: "browser_list_instances",
-      expectedArgs: { instance: "inst-1" },
-      expectedNotes: ['ignored "sessionId": Bureau identifies the caller session itself'],
-    },
-    {
       tool: "list_browsers",
       input: { onlyAlive: true, instance: "inst-1" },
       target: "browser_list_instances",
       expectedArgs: { instance: "inst-1" },
-      expectedNotes: ['dropped "onlyAlive" (no Bureau equivalent)'],
+      expectedNotes: [
+        "Bureau browser_list_instances returns instances, not the daemon's browser-session descriptors",
+        'dropped "onlyAlive" (no Bureau equivalent)',
+      ],
     },
   ]
 
@@ -272,6 +282,51 @@ describe("browser proxy - proxied tools", () => {
   }
 })
 
+describe("browser proxy - a missing import fails loudly", () => {
+  it("never falls back to chrome-live when proxyImport names no imported alias", async () => {
+    const navigate = vi.fn(async () => {
+      throw new Error("chrome-live navigate must not be reached")
+    })
+    const instance = {
+      id: "chrome-live",
+      port: 9222,
+      baseUrl: "http://127.0.0.1:9222",
+      wasAlreadyRunning: true,
+      healthy: true,
+      stop: async () => {},
+      navigate,
+    }
+    const proxy = {
+      callTool: vi.fn(async () => ({ ok: false as const, error: 'unknown alias "bureau"' })),
+    }
+    const { client, registry, cleanup } = await makeSetup({
+      proxyImport: "bureau",
+      builtin: "proxy",
+      proxy,
+    })
+    try {
+      const id = registry.registerBrowser({
+        adapterId: "chrome-live",
+        port: 9222,
+        baseUrl: "http://127.0.0.1:9222",
+        wasAlreadyRunning: false,
+        stop: async () => {},
+      }).id
+      setLiveBrowserInstance(id, instance as never)
+
+      const res = await client.callTool({
+        name: "browser_navigate",
+        arguments: { sessionId: id, url: "https://example.com" },
+      })
+      expect(res.isError).toBe(true)
+      expect(textOf(res)).toContain('unknown alias "bureau"')
+      expect(navigate).not.toHaveBeenCalled()
+    } finally {
+      await cleanup()
+    }
+  })
+})
+
 describe("browser proxy - tools with no Bureau twin", () => {
   const cases: Array<{ tool: string; input: Record<string, unknown>; target: string }> = [
     { tool: "browser_adapter_list", input: {}, target: "browser_list_instances" },
@@ -292,6 +347,7 @@ describe("browser proxy - tools with no Bureau twin", () => {
       target: "browser_act",
     },
     { tool: "browser_wait_for", input: { sessionId: "browser-session", selector: "#x" }, target: "browser_evaluate" },
+    { tool: "browser_status", input: { sessionId: "browser-session" }, target: "browser_list_instances" },
     { tool: "start_browser", input: { adapter: "chrome-live" }, target: "browser_list_instances" },
     { tool: "stop_browser", input: { sessionId: "browser-session" }, target: "browser_close_tab" },
   ]

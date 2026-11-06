@@ -162,8 +162,9 @@ export interface SpawnDefaultsConfig {
      *  the daemon browser tools to the `proxyImport` Bureau server and refuses
      *  the ones Bureau has no twin for (`browser:use_bureau`); `"on"` is
      *  today's behaviour. Default `"on"`, and a config that only names
-     *  `proxyImport` resolves to `"proxy"`. Read in the per-`/mcp`-session
-     *  registration pass, so a change applies on the next MCP session. */
+     *  `proxyImport` stays `"on"` so existing installs keep exactly their old
+     *  behaviour. Read in the per-`/mcp`-session registration pass, so a
+     *  change applies on the next MCP session. */
     builtin?: "off" | "proxy" | "on"
     /** Alias of an imported MCP that is a Bureau server (e.g. `bureau`).
      *  Set: the daemon's browser interaction tools forward to the
