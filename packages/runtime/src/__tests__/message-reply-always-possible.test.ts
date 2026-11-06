@@ -4,11 +4,13 @@
  * with no tree or workspace relation. Fake or foreign `replyTo` opens nothing;
  * the reply never interrupts.
  *
- *  - "label" (default): delivered, text prefixed `[unverified sender: ...] `,
- *    capped at steer (an interrupt request degrades to steer, never refused).
- *  - "block": the unverified session sender keeps `forbidden_recipient`.
- *  - A verified unrelated sender is refused whatever the knob says.
- *  - `agent_prompt` (session.drive) stays strict for an unverified sender.
+ *  - A reply to an unverified original is delivered with a
+ *    `[reply to unverified sender: ...] ` text prefix, capped at steer (an
+ *    interrupt request degrades to steer, never refused). The replier keeps
+ *    its own verified identity in the envelope, so the label names the
+ *    original sender, not the replier.
+ *  - A reply to a verified original stays unlabelled.
+ *  - `session.message.interrupt` is refused for a reply-admitted message.
  */
 
 import { describe, it, expect, vi } from "vitest"
@@ -125,8 +127,13 @@ for (const [extId, host] of [
       const h = await harness({ registry, callerSessionId: brain.id })
       try {
         const r = await h.client.callTool({ name: "message_send", arguments: { to: extId, text: "answer", replyTo: id } })
-        expect(JSON.parse(textOf(r))).toMatchObject({ ok: true, unverified: true })
-        expect(send.mock.calls[0]![0].text).toMatch(/^\[unverified sender: .+\] answer$/)
+        expect(JSON.parse(textOf(r))).toMatchObject({ ok: true, replyToUnverified: true })
+        expect(send.mock.calls[0]![0].text).toMatch(/^\[reply to unverified sender: .+\] answer$/)
+        // The prefix names the original sender; the envelope keeps the verified replier.
+        const sent = send.mock.calls[0]![0]
+        expect(sent.from.sessionId).toBe(brain.id)
+        expect(sent.from.unverified).toBeUndefined()
+        expect(sent.from.anonymous).toBeUndefined()
       } finally {
         await h.close()
       }

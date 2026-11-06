@@ -17,6 +17,7 @@ import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
 import { DEFAULT_MESSAGING_DEFAULTS, type ResolvedMessagingDefaults } from "../messaging-defaults.js"
+import { createSessionMessage } from "../session-message.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 
@@ -114,5 +115,84 @@ describe("POST /sessions/:id/messages - anonymousSend", () => {
     expect(r.status).toBe(403)
     expect(r.body).toMatchObject({ error: "forbidden_recipient" })
     expect(r.send).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * HTTP parity for the reply rule: a VERIFIED session replying to an unverified
+ * original gets the same `[reply to unverified sender: ...] ` prefix the
+ * `message_send` tool emits, derived from the ORIGINAL sender — not from the
+ * replier's own (verified) identity — and the envelope keeps the replier.
+ */
+async function replyRoute(urgency = "interrupt") {
+  const tmp = mkdtempSync(join(tmpdir(), "messages-reply-route-"))
+  const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+  registry.touchExternal({ id: "claude-desktop", host: "claude-desktop" })
+  const replier = registry.spawnAgent({
+    workspaceSlug: "agentik-studio",
+    cwd: "/tmp",
+    agentSession: idle("r"),
+    adapterSlug: "fake",
+    label: "brain",
+  })
+  vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
+  const send = vi.spyOn(registry, "sendMessage")
+  const original = createSessionMessage({
+    to: replier.id,
+    from: { sessionId: "claude-desktop", relation: "granted", unverified: true },
+    text: "ping from chat",
+  })
+  await registry.sendMessage(original, { source: "t", origin: "t" })
+  send.mockClear()
+  const resolveAgentAdapter: AgentAdapterResolver = async () => ({ startSession: vi.fn(), commandPreview: "x" })
+  const messagingDefaultsFor = async (): Promise<ResolvedMessagingDefaults> => ({
+    ...DEFAULT_MESSAGING_DEFAULTS,
+    allowSameWorkspace: false,
+  })
+  const port = await freePort()
+  const http = await startHttpServer({
+    port,
+    auth: { mode: "none" },
+    mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+    conversations,
+    events: createRuntimeEvents(),
+    heartbeat,
+    sessions: registry,
+    resolveAgentAdapter,
+    resolveMessagingDefaults: messagingDefaultsFor,
+    meta: { workspace: process.cwd(), registered: [] },
+  })
+  try {
+    const res = await fetch(
+      `http://127.0.0.1:${port}/sessions/claude-desktop/messages?callerSessionId=${replier.id}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "answer", replyTo: original.id, urgency }),
+      },
+    )
+    return {
+      status: res.status,
+      body: (await res.json()) as Record<string, unknown>,
+      send,
+      replierId: replier.id,
+    }
+  } finally {
+    await http.stop()
+    registry.shutdown()
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+describe("POST /sessions/:id/messages - reply to an unverified original", () => {
+  it("labels from the original sender, not the verified replier", async () => {
+    const r = await replyRoute()
+    expect(r.status).toBe(200)
+    expect(r.body).toMatchObject({ ok: true, replyToUnverified: true })
+    const sent = r.send.mock.calls[0]![0]
+    expect(sent.text).toBe("[reply to unverified sender: claude-desktop] answer")
+    expect(sent.from.sessionId).toBe(r.replierId)
+    expect(sent.from.unverified).toBeUndefined()
+    expect(sent.from.anonymous).toBeUndefined()
   })
 })

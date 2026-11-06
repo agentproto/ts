@@ -73,6 +73,7 @@ import {
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
+  replyToUnverifiedSenderPrefix,
   unverifiedSenderPrefix,
   type MessageKind,
   type MessageUrgency,
@@ -96,7 +97,6 @@ import {
   ANONYMOUS_SEND_RULE,
   REPLY_RULE,
   decide,
-  isUnverifiedMessageSender,
   type PermissionContext,
   type Principal,
 } from "./permissions.js"
@@ -8801,12 +8801,24 @@ code { color: #9ad; }
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
-    // Admitted only because the sender is an unverified (claimed) identity:
-    // prefix the text; `decide("session.message.interrupt")` already caps it.
-    const unverifiedLabel =
+    // The message answers one the sender received from this recipient: its
+    // original sender decides whether the reply is labelled (the replier's
+    // own identity does not — parity with the `message_send` tool).
+    const answersReceived =
       sender !== undefined &&
-      decision.allow &&
-      (decision.rule === ANONYMOUS_SEND_RULE || (decision.rule === REPLY_RULE && isUnverifiedMessageSender(sender)))
+      typeof b.replyTo === "string" &&
+      policy.reply?.originalSenderOf(sender.id, policy.reply.messageId) === recipient.id
+    const originalFrom =
+      answersReceived && sender && typeof b.replyTo === "string"
+        ? registry.findReceivedMessage(sender.id, b.replyTo)?.from
+        : undefined
+    const originalUnverified = originalFrom?.unverified === true || originalFrom?.anonymous === true
+    const replyToUnverified = decision.rule === REPLY_RULE && originalUnverified
+    // Admitted only because the sender is an unverified (claimed) identity, or
+    // because the reply answers an unverified original: prefix the text;
+    // `decide("session.message.interrupt")` already caps it.
+    const unverifiedLabel =
+      sender !== undefined && decision.allow && (decision.rule === ANONYMOUS_SEND_RULE || replyToUnverified)
     if (decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
         senderId: sender?.id,
@@ -8825,7 +8837,11 @@ code { color: #9ad; }
       msg = createSessionMessage({
         to: id,
         from: messageFrom(sender, relation),
-        text: unverifiedLabel ? unverifiedSenderPrefix(sender?.label ?? sender?.id) + b.text : b.text,
+        text: unverifiedLabel
+          ? (replyToUnverified
+              ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId) + b.text
+              : unverifiedSenderPrefix(sender?.label ?? sender?.id) + b.text)
+          : b.text,
         ...(b.kind !== undefined ? { kind: b.kind as MessageKind } : {}),
         ...(b.urgency !== undefined ? { urgency: b.urgency as MessageUrgency } : {}),
         ...(typeof b.replyTo === "string" ? { replyTo: b.replyTo } : {}),
@@ -8888,7 +8904,11 @@ code { color: #9ad; }
         relation,
         ...r,
         ...(routed.routedTo ? { routedFrom: id } : {}),
-        ...(unverifiedLabel ? { unverified: true } : {}),
+        ...(unverifiedLabel
+          ? replyToUnverified
+            ? { replyToUnverified: true }
+            : { unverified: true }
+          : {}),
       })
     } catch (err) {
       writeLedger("dropped")

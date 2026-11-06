@@ -425,6 +425,13 @@ export function unverifiedSenderPrefix(label: string | undefined): string {
   return `[unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
 }
 
+/** The text prefix a reply carries when the message it answers came from an
+ *  unverified sender. The replier keeps its own (possibly verified) identity
+ *  in the envelope, so the label names the original sender instead. */
+export function replyToUnverifiedSenderPrefix(label: string | undefined): string {
+  return `[reply to unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
+}
+
 /** Attribute values are daemon-generated, but escape anyway (defence in
  *  depth — an id is never expected to carry these). */
 function attr(value: string): string {

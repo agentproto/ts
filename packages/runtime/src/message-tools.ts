@@ -39,6 +39,7 @@ import {
   type MessageFilter,
   type MessageKind,
   type MessageUrgency,
+  replyToUnverifiedSenderPrefix,
   unverifiedSenderPrefix,
   type SessionMessage,
 } from "./session-message.js"
@@ -381,6 +382,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     const originalFrom =
       answersReceived && self && input.replyTo ? registry.findReceivedMessage(self.id, input.replyTo)?.from : undefined
     const originalUnverified = originalFrom?.unverified === true || originalFrom?.anonymous === true
+    const replyToUnverified = self !== undefined && decision.rule === REPLY_RULE && originalUnverified
     const relation = decision.relation
     if (self && decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
@@ -413,7 +415,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     // leaves an anonymous sender exactly as before (operator principal).
     const labelled =
       anonymousSendMode === "label" && (self
-        ? decision.rule === ANONYMOUS_SEND_RULE || (decision.rule === REPLY_RULE && originalUnverified)
+        ? decision.rule === ANONYMOUS_SEND_RULE || replyToUnverified
         : anonymous)
     let msg: SessionMessage
     try {
@@ -423,7 +425,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           ? messageFrom(self, relation)
           : { relation: "human", label: "claude-code", anonymous: true },
         text: labelled
-          ? unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code") + input.text
+          ? (replyToUnverified
+              ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId)
+              : unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code")) + input.text
           : input.text,
         kind,
         urgency,
@@ -463,8 +467,12 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
         ...(labelled
           ? {
-              unverified: true,
-              note: `delivered unverified: the recipient sees the sender as unverified and the urgency is capped at steer${
+              ...(replyToUnverified ? { replyToUnverified: true } : { unverified: true }),
+              note: `${
+                replyToUnverified
+                  ? "delivered as a reply to an unverified sender: the recipient sees the original sender as unverified"
+                  : "delivered unverified: the recipient sees the sender as unverified"
+              } and the urgency is capped at steer${
                 r.urgencyApplied !== urgency ? ` ("${urgency}" delivered as "${r.urgencyApplied}")` : ""
               }`,
             }
