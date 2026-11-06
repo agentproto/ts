@@ -367,6 +367,150 @@ function earliestExpiry(...candidates: Array<string | undefined>): string | unde
   return best?.iso
 }
 
+/** Script pieces every card page needs: the error table, the `tools/call`
+ *  wrapper, error humanizing and the relative-expiry text. Shared by the
+ *  single-card page and the pending-list page so they cannot drift. */
+function cardSharedJs(): string {
+  return `var ERROR_RULES = ${scriptJson(ERROR_RULES)};
+  var MSG_GENERIC = ${scriptJson(MSG_GENERIC)};
+
+  function callTool(name, args) {
+    return rpcRequest('tools/call', { name: name, arguments: args || {} }).then(function (result) {
+      if (result && result.isError) {
+        var errText = (result.content && result.content[0] && result.content[0].text) || '';
+        throw new Error(errText);
+      }
+      return result;
+    });
+  }
+
+  function humanize(err) {
+    var text = err && err.message ? String(err.message) : '';
+    for (var i = 0; i < ERROR_RULES.length; i++) {
+      if (new RegExp(ERROR_RULES[i][0], 'i').test(text)) return ERROR_RULES[i][1];
+    }
+    return MSG_GENERIC;
+  }
+
+  function expiryText(ms) {
+    var mins = Math.ceil(ms / 60000);
+    if (mins <= 0) return 'expired';
+    if (mins < 60) return 'expires in ' + mins + ' min';
+    var hours = Math.round(mins / 60);
+    if (hours < 24) return 'expires in ' + hours + ' h';
+    return 'expires in ' + Math.round(hours / 24) + ' d';
+  }`
+}
+
+/** The widget behind the model-visible `approval_pending` tool: every
+ *  pending approval as its own card. Not an approval id. */
+export const APPROVAL_PENDING_RESOURCE_URI = approvalCardResourceUri("pending")
+
+const MSG_NOTHING_TO_APPROVE = "Nothing to approve"
+
+const PENDING_STYLE = `
+  .card + .card { border-top: 1px solid var(--ap-border); margin-top: 12px; padding-top: 12px; }
+  .card .status { margin-top: 8px; font-size: 12px; color: var(--ap-muted); }
+  .card .status:empty { display: none; }
+`
+
+/**
+ * One card per pending approval, each with its own freshly minted one-time
+ * ticket (inline in the script only, like the single card). Deciding a card
+ * calls `approval_card_decide` exactly as the single card does, then drops
+ * that card. With nothing pending it is the "Nothing to approve" page.
+ */
+export function renderPendingApprovalsHtml(engine: ApprovalsEngine): string {
+  const cards: Array<{ record: ApprovalRecord; ticket: string; expiresAt: string | undefined }> = []
+  for (const record of engine.list({ status: "pending" })) {
+    try {
+      const { ticket, expiresAt } = engine.mintCardTicket(record.id)
+      cards.push({ record, ticket, expiresAt: earliestExpiry(record.expiresAt, expiresAt) })
+    } catch {
+      // Decided or expired between the list and the mint: nothing to show.
+    }
+  }
+  if (cards.length === 0) return messageHtml(undefined, MSG_NOTHING_TO_APPROVE)
+
+  const markup = cards
+    .map(({ record, expiresAt }, i) => {
+      const expiryAttr = expiresAt === undefined ? "" : ` data-expires="${escHtml(expiresAt)}"`
+      return `<section class="card" id="card-${i}">
+<h3>${escHtml(record.title)}</h3>
+${renderPreview(record)}
+<div class="meta" id="expiry-${i}"${expiryAttr}></div>
+<div class="actions" id="actions-${i}">
+  <button id="deny-${i}">Refuse</button>
+  <button id="approve-${i}" class="primary">Approve</button>
+</div>
+<div class="status" id="status-${i}" role="status"></div>
+</section>`
+    })
+    .join("\n")
+
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>${PAGE_STYLE}${PENDING_STYLE}</style>
+</head>
+<body>
+${markup}
+<p id="empty" hidden>${escHtml(MSG_NOTHING_TO_APPROVE)}</p>
+${pageScript(`
+  var CARDS = ${scriptJson(cards.map(c => ({ id: c.record.id, ticket: c.ticket })))};
+  var _left = CARDS.length;
+  ${cardSharedJs()}
+
+  function setBusy(i, busy) {
+    document.getElementById('approve-' + i).disabled = busy;
+    document.getElementById('deny-' + i).disabled = busy;
+  }
+
+  function updateExpiry() {
+    for (var i = 0; i < CARDS.length; i++) {
+      var el = document.getElementById('expiry-' + i);
+      if (!el) continue;
+      var at = Date.parse(el.getAttribute('data-expires') || '');
+      if (!isNaN(at)) el.textContent = expiryText(at - Date.now());
+    }
+    reportSize();
+  }
+
+  var _expiryTimer = setInterval(updateExpiry, 30000);
+
+  function decide(i, decision) {
+    var status = document.getElementById('status-' + i);
+    setBusy(i, true);
+    callTool('approval_card_decide', { approvalId: CARDS[i].id, decision: decision, ticket: CARDS[i].ticket })
+      .then(function () {
+        document.getElementById('card-' + i).remove();
+        _left--;
+        if (_left === 0) {
+          clearInterval(_expiryTimer);
+          document.getElementById('empty').hidden = false;
+        }
+        reportSize();
+      })
+      .catch(function (err) {
+        status.textContent = humanize(err);
+        setBusy(i, false);
+        reportSize();
+      });
+  }
+
+  CARDS.forEach(function (_card, i) {
+    document.getElementById('approve-' + i).addEventListener('click', function () { decide(i, 'approve'); });
+    document.getElementById('deny-' + i).addEventListener('click', function () { decide(i, 'deny'); });
+  });
+
+  updateExpiry();
+  connect();
+`)}
+</body>
+</html>`
+}
+
 /**
  * Render the card HTML for `approvalId`, minting a fresh one-time ticket
  * when the approval is still `pending`. Title, preview (key/value lines),
@@ -401,26 +545,7 @@ ${renderPreview(record)}
 ${pageScript(`
   var TICKET = ${scriptJson(ticket)};
   var APPROVAL_ID = ${scriptJson(approvalId)};
-  var ERROR_RULES = ${scriptJson(ERROR_RULES)};
-  var MSG_GENERIC = ${scriptJson(MSG_GENERIC)};
-
-  function callTool(name, args) {
-    return rpcRequest('tools/call', { name: name, arguments: args || {} }).then(function (result) {
-      if (result && result.isError) {
-        var errText = (result.content && result.content[0] && result.content[0].text) || '';
-        throw new Error(errText);
-      }
-      return result;
-    });
-  }
-
-  function humanize(err) {
-    var text = err && err.message ? String(err.message) : '';
-    for (var i = 0; i < ERROR_RULES.length; i++) {
-      if (new RegExp(ERROR_RULES[i][0], 'i').test(text)) return ERROR_RULES[i][1];
-    }
-    return MSG_GENERIC;
-  }
+  ${cardSharedJs()}
 
   function setStatus(text) {
     document.getElementById('status').textContent = text;
@@ -430,15 +555,6 @@ ${pageScript(`
   function setBusy(busy) {
     document.getElementById('approve').disabled = busy;
     document.getElementById('deny').disabled = busy;
-  }
-
-  function expiryText(ms) {
-    var mins = Math.ceil(ms / 60000);
-    if (mins <= 0) return 'expired';
-    if (mins < 60) return 'expires in ' + mins + ' min';
-    var hours = Math.round(mins / 60);
-    if (hours < 24) return 'expires in ' + hours + ' h';
-    return 'expires in ' + Math.round(hours / 24) + ' d';
   }
 
   var _expiryTimer = null;

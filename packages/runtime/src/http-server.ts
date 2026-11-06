@@ -1126,7 +1126,7 @@ export interface RuntimeHttpServerOptions {
   /**
    * `surface`, when present, is parsed from the request's `?surface=<name>`
    * query string (see `handleMcp` below). Today's only value,
-   * `"approval-cards"`, is the ONLY way `approval_card_decide` and any
+   * `"approval-cards"`, is the ONLY way `approval_card_decide`, `approval_pending` and any
    * `ui://agentproto/approval/<id>` card resource are ever registered — the
    * plain root `/mcp` and every `callerSessionId`-carrying request (a
    * daemon-spawned session, including agent-CLI sessions that don't honour
@@ -2574,7 +2574,7 @@ export async function startHttpServer(
     // Security boundary (approval-cards): a daemon-spawned session's
     // self-ref connection (`callerSessionId`) must NEVER reach the
     // approval-cards surface — that surface exists only for a human-facing
-    // MCP Apps host (Claude Desktop via `install-mcp`), and an agent CLI
+    // MCP Apps host (Claude Desktop via `install-mcp --approvals`), and an agent CLI
     // that can read `ui://` resources and call app-only tools would
     // otherwise mint its own approval ticket and self-approve. Refuse
     // outright rather than silently building a card-less server, so a

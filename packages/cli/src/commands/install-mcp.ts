@@ -22,10 +22,17 @@
  * assumes agentproto is its only MCP entry (see `registerAider`) and would
  * clobber siblings — all three are refused in `--app` mode.
  *
+ * `--approvals` is a separate, Claude Desktop only mode: it prints (and with
+ * `--write` adds) a second entry, `agentproto-approvals`, that dials the
+ * daemon's `approval-cards` surface so Desktop can show Approve / Refuse
+ * cards for pending approvals. It never starts the daemon and never touches
+ * the other entries.
+ *
  * Usage:
  *   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
  *   agentproto install-mcp --dry-run [--agent claude-desktop]
  *   agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
+ *   agentproto install-mcp --approvals [--write]
  *
  * Agent names: claude, cursor, codex, claude-desktop, aider, windsurf, hermes
  */
@@ -93,6 +100,7 @@ Usage:
                           [--update] [--uninstall]
   agentproto install-mcp --dry-run [--agent claude-desktop]
   agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
+  agentproto install-mcp --approvals [--write]
 
 Options:
   --agent <name>   Target a specific agent (repeatable). Known: claude, cursor, codex, claude-desktop, aider, windsurf, hermes
@@ -102,6 +110,9 @@ Options:
                    book/library contract. Supported agents: cursor, codex, claude-desktop, windsurf.
   --yes            Skip prompts (non-interactive; auto-confirm)
   --dry-run        Print the exact Claude Desktop entry that would be written; write nothing
+  --approvals      Claude Desktop approval cards: print the \`agentproto-approvals\` entry
+                   (\`agentproto mcp-bridge --surface approval-cards\`); write nothing
+  --write          With --approvals: back up the Desktop config, then add (only) that entry
   --skip-daemon    Skip daemon discovery/start (use default port from config)
   --update         Re-run registration for previously-registered agents (e.g. after a port change)
   --uninstall      Remove only the agentproto entries we added (uses install-state.json)
@@ -155,8 +166,28 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
       "dry-run": { type: "boolean" },
       "skip-daemon": { type: "boolean" },
       app: { type: "string" },
+      approvals: { type: "boolean" },
+      write: { type: "boolean" },
     },
   })
+
+  if (values.write && !values.approvals) {
+    process.stderr.write("agentproto install-mcp: --write only applies to --approvals\n")
+    return 2
+  }
+  if (values.approvals) {
+    if (values.app || values.update || values.uninstall || values["dry-run"] || values.all) {
+      process.stderr.write(
+        "agentproto install-mcp: --approvals can not be combined with --app, --update, --uninstall, --dry-run or --all\n",
+      )
+      return 2
+    }
+    if (values.agent && values.agent.some(a => a !== "claude-desktop")) {
+      process.stderr.write("agentproto install-mcp: --approvals only supports --agent claude-desktop\n")
+      return 2
+    }
+    return runInstallApprovals(values.write === true)
+  }
 
   // --uninstall path
   if (values.uninstall) {
@@ -189,19 +220,7 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
       )
       return 0
     }
-    let port = DEFAULT_PORT
-    let foundUrl: string | undefined
-    try {
-      foundUrl = (await discoverDaemon()).found?.url
-    } catch {
-      foundUrl = undefined
-    }
-    if (foundUrl) {
-      port = extractPort(foundUrl)
-    } else {
-      const cfg = await loadConfig()
-      port = cfg.daemon?.port ?? DEFAULT_PORT
-    }
+    const port = await resolveDaemonPortReadOnly()
     const entry = buildDesktopStdioEntry(port)
     process.stdout.write(JSON.stringify({ mcpServers: { [SERVER_NAME]: entry } }, null, 2) + "\n")
     return 0
@@ -364,6 +383,112 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
     )
   }
 
+  return 0
+}
+
+/** The daemon port without starting anything: a running daemon's, else the
+ *  configured one, else the default. */
+async function resolveDaemonPortReadOnly(): Promise<number> {
+  let foundUrl: string | undefined
+  try {
+    foundUrl = (await discoverDaemon()).found?.url
+  } catch {
+    foundUrl = undefined
+  }
+  if (foundUrl) return extractPort(foundUrl)
+  const cfg = await loadConfig()
+  return cfg.daemon?.port ?? DEFAULT_PORT
+}
+
+// ── --approvals ──────────────────────────────────────────────────────────────
+
+/** Key of the second Claude Desktop entry (the approval cards surface). */
+export const APPROVALS_SERVER_NAME = "agentproto-approvals"
+
+/** The Desktop entry for the approval cards. No `callerSessionId` anywhere:
+ *  the daemon refuses the cards surface to any identified session. The URL
+ *  env var is set only off the default port, where the bridge's own default
+ *  would dial the wrong daemon. */
+export function buildApprovalsDesktopEntry(port: number = DEFAULT_PORT): Record<string, unknown> {
+  return {
+    command: "agentproto",
+    args: ["mcp-bridge", "--surface", "approval-cards"],
+    ...(port === DEFAULT_PORT ? {} : { env: { AGENTPROTO_MCP_URL: `http://127.0.0.1:${port}/mcp` } }),
+  }
+}
+
+/** Indent unit of a JSON file (first indented line), 2 spaces when unknown. */
+function detectJsonIndent(raw: string): string {
+  const match = raw.match(/^([ \t]+)\S/m)
+  return match ? match[1]! : "  "
+}
+
+async function runInstallApprovals(write: boolean): Promise<number> {
+  const port = await resolveDaemonPortReadOnly()
+  const entry = buildApprovalsDesktopEntry(port)
+  process.stdout.write(
+    JSON.stringify({ mcpServers: { [APPROVALS_SERVER_NAME]: entry } }, null, 2) + "\n",
+  )
+  if (!write) return 0
+
+  const desktop = await detectAgent("claude-desktop")
+  if (!desktop) {
+    process.stderr.write(
+      "agentproto install-mcp --approvals --write: Claude Desktop was not found on this machine; nothing written.\n",
+    )
+    return 1
+  }
+  const configPath = desktop.configPath
+
+  let raw: string | undefined
+  try {
+    raw = await fs.readFile(configPath, "utf8")
+  } catch {
+    raw = undefined
+  }
+
+  let config: Record<string, unknown> = {}
+  if (raw !== undefined && raw.trim() !== "") {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object")
+      config = parsed as Record<string, unknown>
+    } catch {
+      process.stderr.write(
+        `agentproto install-mcp --approvals --write: ${configPath} is not a JSON object; left untouched.\n`,
+      )
+      return 1
+    }
+  }
+  if (config.mcpServers !== undefined && (config.mcpServers === null || typeof config.mcpServers !== "object" || Array.isArray(config.mcpServers))) {
+    process.stderr.write(
+      `agentproto install-mcp --approvals --write: mcpServers in ${configPath} is not an object; left untouched.\n`,
+    )
+    return 1
+  }
+  const servers = (config.mcpServers ?? {}) as Record<string, unknown>
+
+  if (JSON.stringify(servers[APPROVALS_SERVER_NAME]) === JSON.stringify(entry)) {
+    process.stdout.write(`\n${APPROVALS_SERVER_NAME} is already in ${configPath}; nothing to do.\n`)
+    return 0
+  }
+
+  if (raw !== undefined) {
+    const backupPath = `${configPath}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`
+    await fs.copyFile(configPath, backupPath)
+    process.stdout.write(`\nBacked up ${configPath} to ${backupPath}\n`)
+  }
+
+  const next = { ...config, mcpServers: { ...servers, [APPROVALS_SERVER_NAME]: entry } }
+  await fs.mkdir(dirname(configPath), { recursive: true })
+  await fs.writeFile(
+    configPath,
+    JSON.stringify(next, null, raw !== undefined ? detectJsonIndent(raw) : 2) + "\n",
+    "utf8",
+  )
+  process.stdout.write(
+    `Added ${APPROVALS_SERVER_NAME} to ${configPath}. Quit and reopen Claude Desktop to pick it up.\n`,
+  )
   return 0
 }
 

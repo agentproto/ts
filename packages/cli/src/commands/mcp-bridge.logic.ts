@@ -93,3 +93,42 @@ export function watchParentExit(
   timer.unref()
   return () => clearInterval(timer)
 }
+
+/** The only `?surface=` values the bridge will dial. */
+export const BRIDGE_SURFACES: readonly string[] = ["approval-cards"]
+
+/**
+ * Parse the bridge's own flags. Unknown flags are ignored (the bridge has
+ * always tolerated them); only `--surface <name>` / `--surface=<name>` is
+ * read, and only the names in `BRIDGE_SURFACES` are accepted.
+ */
+export function parseBridgeArgs(
+  args: readonly string[],
+): { surface?: string } | { error: string } {
+  let surface: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === "--surface") {
+      surface = args[++i]
+      if (surface === undefined || surface.startsWith("--")) {
+        return { error: "--surface needs a value" }
+      }
+    } else if (arg.startsWith("--surface=")) {
+      surface = arg.slice("--surface=".length)
+    }
+  }
+  if (surface === undefined) return {}
+  if (!BRIDGE_SURFACES.includes(surface)) {
+    return {
+      error: `unknown surface "${surface}" (accepted: ${BRIDGE_SURFACES.join(", ")})`,
+    }
+  }
+  return { surface }
+}
+
+/** `url` with `?surface=<surface>` set; every other query parameter is kept. */
+export function withSurface(url: string, surface: string): string {
+  const next = new URL(url)
+  next.searchParams.set("surface", surface)
+  return next.toString()
+}
