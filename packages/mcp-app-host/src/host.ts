@@ -22,7 +22,9 @@
  * is left unregistered, so the bridge answers JSON-RPC "Method not found".
  * `ui/request-display-mode` without a handler keeps AppBridge's own default
  * (reply with the current `hostContext.displayMode`), which is what the spec
- * asks of a host that declines a switch.
+ * asks of a host that declines a switch. With a handler, a mode missing from
+ * `hostContext.availableDisplayModes` is declined the same way before the
+ * handler is asked.
  */
 
 import {
@@ -157,10 +159,26 @@ export async function createMcpAppHost(
   const requestDisplayMode = handlers.requestDisplayMode
   if (requestDisplayMode) {
     bridge.onrequestdisplaymode = async ({ mode }) => {
-      const granted = await requestDisplayMode(mode)
+      // Spec: a host only switches to a mode it lists in
+      // `availableDisplayModes`; anything else is declined by answering the
+      // current mode. Checked against the live context (an embedder may
+      // widen or narrow the list after connect) and on both sides of the
+      // handler, so neither the view nor the embedder can land the frame in
+      // a mode the host never said it has a surface for.
+      const current = hostContext.displayMode ?? "inline"
+      if (!isAdvertised(mode)) return { mode: current }
+      const answer = await requestDisplayMode(mode)
+      const granted = isAdvertised(answer) ? answer : current
       if (granted !== hostContext.displayMode) applyHostContext({ displayMode: granted })
       return { mode: granted }
     }
+  }
+
+  /** No `availableDisplayModes` at all means the embedder made no claim,
+   *  so the handler decides alone (the behaviour before this check). */
+  function isAdvertised(mode: McpUiDisplayMode): boolean {
+    const available = hostContext.availableDisplayModes
+    return available === undefined || available.includes(mode)
   }
 
   const onSizeChanged = handlers.onSizeChanged

@@ -237,6 +237,41 @@ describe("createMcpAppHost × ext-apps App", () => {
       expect(app.getHostContext()?.displayMode).toBe("fullscreen")
     })
 
+    it("ui/request-display-mode for a mode the host does not advertise keeps the current mode", async () => {
+      const requestDisplayMode = vi.fn(async (mode: "inline" | "fullscreen" | "pip") => mode)
+      const { app, connect } = await setup(
+        { requestDisplayMode },
+        { displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] },
+      )
+      await connect()
+      await expect(app.requestDisplayMode({ mode: "pip" })).resolves.toEqual({ mode: "inline" })
+      expect(requestDisplayMode).not.toHaveBeenCalled()
+      expect(app.getHostContext()?.displayMode).toBe("inline")
+    })
+
+    it("ui/request-display-mode follows availableDisplayModes changed after connect", async () => {
+      const requestDisplayMode = vi.fn(async (mode: "inline" | "fullscreen" | "pip") => mode)
+      const { host, app, connect } = await setup(
+        { requestDisplayMode },
+        { displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] },
+      )
+      await connect()
+      await host.setHostContext({ availableDisplayModes: ["inline", "fullscreen", "pip"] })
+      await expect(app.requestDisplayMode({ mode: "pip" })).resolves.toEqual({ mode: "pip" })
+      expect(requestDisplayMode).toHaveBeenCalledWith("pip")
+    })
+
+    it("a handler that grants an unadvertised mode is clamped to the current one", async () => {
+      const requestDisplayMode = vi.fn(async () => "pip" as const)
+      const { app, connect } = await setup(
+        { requestDisplayMode },
+        { displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] },
+      )
+      await connect()
+      await expect(app.requestDisplayMode({ mode: "fullscreen" })).resolves.toEqual({ mode: "inline" })
+      expect(app.getHostContext()?.displayMode).toBe("inline")
+    })
+
     it("size-changed → onSizeChanged", async () => {
       const onSizeChanged = vi.fn()
       const { app, connect } = await setup({ onSizeChanged })
