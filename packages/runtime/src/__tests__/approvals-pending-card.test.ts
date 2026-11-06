@@ -1,11 +1,11 @@
 /**
  * The Claude Desktop approval card: the model-visible `approval_pending`
  * widget tool and the `ui://agentproto/approval/pending` list resource, both
- * mounted by `mountApprovalCardSurface` on `?surface=approval-cards` only.
+ * served by `buildApprovalCardsServer` on `?surface=approval-cards` only.
  *
  * Same harness as `approvals-card-surface.test.ts` (real `startHttpServer`
- * and `handleMcp`, real MCP client), but the factory calls the production
- * `mountApprovalCardSurface` so the gate under test is the shipped one.
+ * and `handleMcp`, real MCP client), but the factory branches through the
+ * production `buildApprovalCardsServer` so the gate under test is the shipped one.
  */
 
 import { mkdtempSync, rmSync } from "node:fs"
@@ -24,7 +24,7 @@ import { createRuntimeEvents } from "../events.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "../approvals/engine.js"
 import { registerApprovalTools } from "../approvals/tools.js"
-import { mountApprovalCardSurface } from "../approvals/card-surface.js"
+import { buildApprovalCardsServer } from "../approvals/card-surface.js"
 import { renderPendingApprovalsHtml } from "../approvals/card.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
@@ -52,9 +52,13 @@ async function mcpServerFactory(
   _allowTools?: ReadonlySet<string>,
   surface?: string,
 ) {
+  const cards = buildApprovalCardsServer(engine, { surface, callerSessionId }, { name: "cards", version: "0" })
+  if (cards) return cards
   const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
+  server.registerTool("root_probe", { description: "stands in for the daemon's root tools" }, async () => ({
+    content: [{ type: "text" as const, text: "root" }],
+  }))
   registerApprovalTools(server, { engine, ...(callerSessionId ? { callerSessionId } : {}) })
-  mountApprovalCardSurface(server, engine, { surface, callerSessionId })
   return server
 }
 
@@ -163,6 +167,54 @@ describe("approval_pending is mounted on the cards surface only", () => {
       expect(resources.map(r => r.uri)).toContain(PENDING_URI)
       await client.close()
     })
+  })
+})
+
+describe("the approval-cards surface is cards-only", () => {
+  it("tools/list is exactly approval_card_decide and approval_pending", async () => {
+    await withServer(async base => {
+      request("Send")
+      const client = await connect(base, "?surface=approval-cards")
+      const { tools } = await client.listTools()
+      expect(tools.map(t => t.name).sort()).toEqual(["approval_card_decide", "approval_pending"])
+      await client.close()
+    })
+  })
+
+  it("resources/list has only approval URIs: the pending list plus one card per pending approval", async () => {
+    await withServer(async base => {
+      const a = request("Send")
+      const b = request("Pay")
+      const client = await connect(base, "?surface=approval-cards")
+      const { resources } = await client.listResources()
+      const uris = resources.map(r => r.uri).sort()
+      expect(uris).toEqual(
+        [PENDING_URI, `ui://agentproto/approval/${a}`, `ui://agentproto/approval/${b}`].sort(),
+      )
+      expect(uris.every(uri => uri.startsWith("ui://agentproto/approval/"))).toBe(true)
+      await client.close()
+    })
+  })
+
+  it("root /mcp is unchanged: its tools stay, the cards stay off", async () => {
+    await withServer(async base => {
+      request("Send")
+      const client = await connect(base)
+      const { tools } = await client.listTools()
+      const names = tools.map(t => t.name)
+      expect(names).toContain("root_probe")
+      expect(names).toContain("approval_request")
+      expect(names).not.toContain("approval_card_decide")
+      expect(names).not.toContain("approval_pending")
+      await client.close()
+    })
+  })
+
+  it("builds nothing for another surface or for an agent session", () => {
+    const info = { name: "cards", version: "0" }
+    expect(buildApprovalCardsServer(engine, {}, info)).toBeUndefined()
+    expect(buildApprovalCardsServer(engine, { surface: "other" }, info)).toBeUndefined()
+    expect(buildApprovalCardsServer(engine, { surface: "approval-cards", callerSessionId: "sess_x" }, info)).toBeUndefined()
   })
 })
 

@@ -1,17 +1,17 @@
 /**
- * Everything the `?surface=approval-cards` MCP connection adds on top of the
- * root tools: the app-only `approval_card_decide`, one card resource per
- * pending approval, and the model-visible `approval_pending` widget tool
- * with its list resource (what Claude Desktop renders: it draws a widget
- * from the tool DEFINITION's `_meta.ui.resourceUri`, so a card that only a
- * per-result `_meta` points at never shows up there).
+ * The `?surface=approval-cards` MCP connection: the app-only
+ * `approval_card_decide`, one card resource per pending approval, and the
+ * model-visible `approval_pending` widget tool with its list resource (what
+ * Claude Desktop renders: it draws a widget from the tool DEFINITION's
+ * `_meta.ui.resourceUri`, so a card that only a per-result `_meta` points at
+ * never shows up there).
  *
- * `mountApprovalCardSurface` is the single place that applies the gate, so
+ * `buildApprovalCardsServer` is the single place that applies the gate, so
  * `index.ts` and the tests exercise the same condition.
  */
 
 import { z } from "zod"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { defineTool, catchErrors, type ToolContext } from "@agentproto/tool"
 import type { DriverHandle } from "@agentproto/driver"
 import { registerUiResource, toMcpTool } from "@agentproto/mcp-server"
@@ -114,24 +114,31 @@ export interface ApprovalCardSurfaceContext {
 }
 
 /**
- * Mount the card surface, or nothing. SECURITY BOUNDARY: only the dedicated
- * `approval-cards` surface, and never with a `callerSessionId` (`handleMcp`
- * already refuses that pair with a 403; this check is defense in depth).
- * Every other connection gets NONE of it: an agent CLI's model can usually
- * `resources/read` and call app-only tools despite
- * `_meta.ui.visibility: ["app"]`, so mounting a card there would let an
- * agent mint its own ticket and self-approve.
+ * The `?surface=approval-cards` server, or `undefined` for any other
+ * connection. It is a cards-only surface: `approval_card_decide`,
+ * `approval_pending`, the pending list resource and one card resource per
+ * pending approval, and NOTHING else (no root tools, no deferral wrapper),
+ * so the Claude Desktop entry that dials it does not repeat the daemon's whole
+ * tool list next to the main `agentproto` entry.
+ *
+ * SECURITY BOUNDARY: only the dedicated `approval-cards` surface, and never
+ * with a `callerSessionId` (`handleMcp` already refuses that pair with a 403;
+ * this check is defense in depth). Every other connection gets NONE of it: an
+ * agent CLI's model can usually `resources/read` and call app-only tools
+ * despite `_meta.ui.visibility: ["app"]`, so mounting a card there would let
+ * an agent mint its own ticket and self-approve.
  *
  * Re-derived from the engine's pending set on every build (the factory runs
  * once per stateless `/mcp` connection, so a resource registered inside a
  * tool handler would vanish before the next connection could read it).
  */
-export function mountApprovalCardSurface(
-  server: McpServer,
+export function buildApprovalCardsServer(
   engine: ApprovalsEngine,
   ctx: ApprovalCardSurfaceContext,
-): void {
-  if (ctx.surface !== "approval-cards" || ctx.callerSessionId) return
+  info: { name: string; version: string },
+): McpServer | undefined {
+  if (ctx.surface !== "approval-cards" || ctx.callerSessionId) return undefined
+  const server = new McpServer({ name: info.name, version: info.version })
   registerApprovalCardDecideTool(server, engine)
   registerApprovalPendingTool(server, engine)
   registerUiResource(server, {
@@ -148,4 +155,5 @@ export function mountApprovalCardSurface(
       description: "Human approval card",
     })
   }
+  return server
 }

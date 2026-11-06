@@ -1127,7 +1127,8 @@ export interface RuntimeHttpServerOptions {
    * `surface`, when present, is parsed from the request's `?surface=<name>`
    * query string (see `handleMcp` below). Today's only value,
    * `"approval-cards"`, is the ONLY way `approval_card_decide`, `approval_pending` and any
-   * `ui://agentproto/approval/<id>` card resource are ever registered — the
+   * `ui://agentproto/approval/<id>` card resource are ever registered, and it is
+   * a cards-only server (none of the root tools, no deferral wrapper) — the
    * plain root `/mcp` and every `callerSessionId`-carrying request (a
    * daemon-spawned session, including agent-CLI sessions that don't honour
    * `_meta.ui.visibility`) never get them, full stop. `handleMcp` refuses

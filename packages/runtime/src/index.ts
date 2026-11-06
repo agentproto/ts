@@ -328,7 +328,7 @@ import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
 import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
 import { registerApprovalTools } from "./approvals/tools.js"
-import { mountApprovalCardSurface } from "./approvals/card-surface.js"
+import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
@@ -4224,6 +4224,16 @@ export async function createGateway(
     credentialSessionId?: string,
     profileOverride?: readonly string[],
   ) => {
+    // `?surface=approval-cards` (human-facing MCP Apps host, never an agent
+    // session) is a cards-only server: it branches off here, before any root
+    // tool or deferral wrapper exists. See `buildApprovalCardsServer` for the
+    // gate and the security reasoning.
+    const cardsServer = buildApprovalCardsServer(
+      approvalsEngine,
+      { surface, callerSessionId },
+      { name: opts.name ?? "agentproto-runtime", version: opts.version ?? "0.1.0-alpha" },
+    )
+    if (cardsServer) return cardsServer
     const activeProfiles: ToolProfileName[] | undefined = resolveToolProfileSelection({
       query: profileOverride,
       config: opts.mcpProfile,
@@ -4298,10 +4308,7 @@ export async function createGateway(
     // session told to delegate through `agent_start` must see it on its
     // first `tools/list`, not have to go hunting for it. A deny-role's mount
     // still loses them — the `denyTools` exclusion below wraps outermost.
-    // The approval-cards surface is never deferred: its widget tool has to be
-    // in the first `tools/list` for a host to draw it.
-    const deferredActive =
-      surface === "approval-cards" ? false : (deferredOverride ?? opts.deferredTools !== undefined)
+    const deferredActive = deferredOverride ?? opts.deferredTools !== undefined
     let server = deferredActive
       ? withDeferredTools(gatedServer, {
           alwaysOn: new Set([
@@ -4449,15 +4456,6 @@ export async function createGateway(
       engine: approvalsEngine,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
-    // SECURITY BOUNDARY: `approval_card_decide`, `approval_pending` and every
-    // `ui://agentproto/approval/...` card resource are mounted ONLY on the
-    // dedicated `?surface=approval-cards` connection, and never with a
-    // `callerSessionId` (`handleMcp` refuses that pair outright). Only a
-    // human-facing MCP Apps host (Claude Desktop, through the
-    // `agentproto-approvals` entry that `install-mcp --approvals` adds, which
-    // dials `/mcp?surface=approval-cards`) is meant to ever see it. The gate
-    // and the reasoning live in `mountApprovalCardSurface`.
-    mountApprovalCardSurface(server, approvalsEngine, { surface, callerSessionId })
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
