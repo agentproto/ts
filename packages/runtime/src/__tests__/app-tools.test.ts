@@ -260,14 +260,21 @@ describe("app_* verbs", () => {
     expect(body.error).toContain("totally_bogus_tool_xyz")
   })
 
-  it("app_install: adapter not resolvable fails with an actionable hint", async () => {
+  it("app_install: succeeds for an app with an agent when mastra-agent is not resolvable", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
-    const { client } = await setup({ resolveAgentAdapter: async () => null })
+    const startSession = fakeStartSession()
+    const { client } = await setup({
+      resolveAgentAdapter: async slug =>
+        slug === "claude-code"
+          ? { startSession, commandPreview: "mock-claude-code", declaredOptions: [] }
+          : null,
+    })
 
     const res = await client.callTool({ name: "app_install", arguments: { dir } })
-    expect(isError(res)).toBe(true)
-    const body = parseToolJson(res)
-    expect(body.error).toContain("agentproto install mastra-agent")
+    expect(isError(res)).toBe(false)
+    const record = parseToolJson(res)
+    expect(record.appId).toBe("@test/fixture-app")
+    expect(record.agents).toHaveLength(1)
   })
 
   it("app_install normalizes a `~`-relative externalReadRoots entry and validates it exists", async () => {
@@ -1676,6 +1683,55 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
           'agent "foo-worker" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run',
       },
     ])
+  })
+
+  it("an app_run whose agents all fail reports errors and never a mastra-agent runner", async () => {
+    await emitAgentsApp("@test/all-fail-runner-app", [
+      { id: "foo-worker", model: "some-provider/foo-1" },
+    ])
+    const startSession = fakeStartSession()
+    const { client } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/all-fail-runner-app" } }),
+    )
+    expect(ran.errors).toHaveLength(1)
+    expect(ran.sessions).toEqual([])
+    expect(startSession).not.toHaveBeenCalled()
+    expect(ran.adapter).toBeUndefined()
+    expect(ran.harness).toBeUndefined()
+  })
+
+  it("an app_run whose agents all fail is ended failed, so app_uninstall runs without app_stop", async () => {
+    await emitAgentsApp("@test/all-fail-ended-app", [
+      { id: "foo-worker", model: "some-provider/foo-1" },
+    ])
+    const startSession = fakeStartSession()
+    const { client, appRegistry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/all-fail-ended-app" } }),
+    )
+    expect(ran.errors).toHaveLength(1)
+    expect(ran.status).toBe("failed")
+    expect(ran.endedAt).toBeTruthy()
+    const run = appRegistry.getRun(ran.appRunId)!
+    expect(run.status).toBe("failed")
+    expect(run.endedAt).toBeTruthy()
+
+    const uninstalled = await client.callTool({
+      name: "app_uninstall",
+      arguments: { appId: "@test/all-fail-ended-app" },
+    })
+    expect(isError(uninstalled)).toBe(false)
   })
 
   it("an unroutable model with `metadata.adapter: mastra-agent` spawns mastra-agent with the `agent` option", async () => {
