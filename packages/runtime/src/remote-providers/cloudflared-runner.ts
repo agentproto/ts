@@ -50,9 +50,22 @@ export const EDGE_CONNECTING = "connecting to the Cloudflare edge"
  */
 const DEFAULT_SETTLE_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000]
 
-/** A probe failure that a short settle window can plausibly fix by itself. */
+/**
+ * A probe failure that a short settle window can plausibly fix by itself.
+ *
+ * Right after start / a hostname swap, public resolvers are not yet
+ * consistent: one DoH resolver instance can still answer "no answer" for a
+ * record another already serves (and `awaitPublicDns` may have seen it
+ * seconds earlier). That no-answer is a settling condition exactly like an
+ * edge 530, so it must keep the ladder going instead of ending the window.
+ */
 function isSettleFailure(reason: string | undefined): boolean {
-  return !!reason && (reason.startsWith("edge returned ") || reason.startsWith("unreachable: "))
+  return (
+    !!reason &&
+    (reason.startsWith("edge returned ") ||
+      reason.startsWith("unreachable: ") ||
+      reason === DNS_NOT_VISIBLE)
+  )
 }
 
 /** Unref'd one-shot timer so a pending settle probe never holds the process. */

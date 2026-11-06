@@ -248,6 +248,90 @@ describe("CloudflaredRunner settle window", () => {
     await runner.stop()
   })
 
+  it("keeps settling when the first probe sees no DNS answer yet", async () => {
+    const timers = fakeTimers()
+    const sp = fakeSpawner()
+    const probe = sequenceProbe([404])
+    let dnsCalls = 0
+    const publicDns: PublicDns = {
+      resolve: async () => {
+        dnsCalls++
+        return dnsCalls === 1
+          ? { kind: "no-answer" }
+          : { kind: "answer", addresses: ["203.0.113.10"] }
+      },
+      pinnedFetch: () => probe.probeFetch,
+      systemLookup: async () => ["203.0.113.10"],
+    }
+    const runner = new CloudflaredRunner({
+      spawner: sp.spawner,
+      probeFetch: probe.probeFetch,
+      healthIntervalMs: 60_000,
+      publicDns,
+      settleDelaysMs: [2_000, 4_000],
+      setTimer: timers.setTimer,
+      supervisor: { initialBackoffMs: 10, maxRestarts: 2 },
+    })
+
+    runner.start(START)
+    await flush()
+    expect(dnsCalls).toBe(1)
+    expect(runner.health()).toMatchObject({
+      state: "degraded",
+      reason: "wa.example.com: connecting to the Cloudflare edge",
+    })
+
+    // The no-answer scheduled the short ladder, not the 60s interval.
+    await timers.advance(2_000)
+    expect(dnsCalls).toBe(2)
+    expect(probe.calls()).toBe(1)
+    expect(runner.health()).toMatchObject({ state: "active" })
+    expect(timers.now()).toBeLessThan(60_000)
+    await runner.stop()
+  })
+
+  it("shows the DNS reason outside any settle window", async () => {
+    const timers = fakeTimers()
+    const sp = fakeSpawner()
+    const probe = sequenceProbe([404])
+    const publicDns: PublicDns = {
+      resolve: async () => ({ kind: "no-answer" }),
+      pinnedFetch: () => probe.probeFetch,
+      systemLookup: async () => ["203.0.113.10"],
+    }
+    const runner = new CloudflaredRunner({
+      spawner: sp.spawner,
+      probeFetch: probe.probeFetch,
+      healthIntervalMs: 60_000,
+      publicDns,
+      settleDelaysMs: [2_000],
+      setTimer: timers.setTimer,
+      supervisor: { initialBackoffMs: 10, maxRestarts: 2 },
+    })
+
+    runner.start(START)
+    await flush()
+    expect(runner.health()).toMatchObject({
+      state: "degraded",
+      reason: "wa.example.com: connecting to the Cloudflare edge",
+    })
+
+    // Ladder exhausted (2s), so the settle window is closed and still failing.
+    await timers.advance(2_000)
+    expect(runner.health()).toMatchObject({
+      state: "degraded",
+      reason: "wa.example.com: dns not yet visible on public resolvers",
+    })
+
+    // A regular probe outside the window keeps the real reason.
+    await runner.probeNow()
+    expect(runner.health()).toMatchObject({
+      state: "degraded",
+      reason: "wa.example.com: dns not yet visible on public resolvers",
+    })
+    await runner.stop()
+  })
+
   it("drops a stale failing probe that resolves after a newer success", async () => {
     const timers = fakeTimers()
     const sp = fakeSpawner()
