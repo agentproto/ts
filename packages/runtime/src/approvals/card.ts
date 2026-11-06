@@ -113,12 +113,16 @@ function addressList(value: unknown): string {
   return scalarText(value) ?? ""
 }
 
-/** Values long enough to be clipped to 3 lines carry their full text in a tooltip. */
+/** Values long enough to be clipped to 3 lines carry their full text in a
+ *  tooltip and in a visually hidden span, so assistive tech reads the whole
+ *  value (the clipped copy is aria-hidden to avoid reading it twice). */
 const TITLE_MIN_LENGTH = 80
 
 function ddHtml(value: string): string {
-  const title = value.length > TITLE_MIN_LENGTH || value.includes("\n") ? ` title="${escHtml(value)}"` : ""
-  return `<dd${title}>${escHtml(value)}</dd>`
+  if (value.length > TITLE_MIN_LENGTH || value.includes("\n")) {
+    return `<dd title="${escHtml(value)}"><span aria-hidden="true">${escHtml(value)}</span><span class="sr-only">${escHtml(value)}</span></dd>`
+  }
+  return `<dd>${escHtml(value)}</dd>`
 }
 
 function renderMail(preview: Record<string, unknown>): string {
@@ -187,6 +191,7 @@ const PAGE_STYLE = `
   dl { display: grid; grid-template-columns: minmax(72px, 28%) 1fr; gap: 4px 12px; margin: 0 0 8px; }
   dt { color: var(--ap-muted); }
   dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
   .body { border-top: 1px solid var(--ap-border); border-bottom: 1px solid var(--ap-border); padding: 8px 0; margin: 0 0 8px; max-height: 10em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .attachments { margin: 0 0 8px; }
   .attachments .label { color: var(--ap-muted); margin-bottom: 2px; }
@@ -214,6 +219,7 @@ const BRIDGE_JS = `
   var _nextId = 1;
   var _pending = {};
   var _appliedVars = [];
+  var _hostContext = {};
   var _lastHeight = -1;
   var _sizing = false;
 
@@ -231,15 +237,37 @@ const BRIDGE_JS = `
     post({ jsonrpc: '2.0', method: method, params: params || {} });
   }
 
-  function applyHostContext(ctx) {
-    if (!ctx || typeof ctx !== 'object') return;
+  function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+
+  function assign(target, source) {
+    for (var k in source) {
+      if (Object.prototype.hasOwnProperty.call(source, k)) target[k] = source[k];
+    }
+    return target;
+  }
+
+  function mergeHostContext(prev, patch) {
+    var next = assign(assign({}, prev), patch);
+    if (isObj(patch.styles)) {
+      var prevStyles = isObj(prev.styles) ? prev.styles : {};
+      next.styles = assign(assign({}, prevStyles), patch.styles);
+      if (isObj(patch.styles.variables)) {
+        var prevVars = isObj(prevStyles.variables) ? prevStyles.variables : {};
+        next.styles.variables = assign(assign({}, prevVars), patch.styles.variables);
+      }
+    }
+    return next;
+  }
+
+  function applyHostContext(patch) {
+    if (!isObj(patch)) return;
+    _hostContext = mergeHostContext(_hostContext, patch);
     var root = document.documentElement;
-    if (ctx.theme === 'light' || ctx.theme === 'dark') root.setAttribute('data-theme', ctx.theme);
-    if (ctx.theme === undefined && ctx.styles === undefined) return;
+    if (_hostContext.theme === 'light' || _hostContext.theme === 'dark') root.setAttribute('data-theme', _hostContext.theme);
     for (var i = 0; i < _appliedVars.length; i++) root.style.removeProperty(_appliedVars[i]);
     _appliedVars = [];
-    var vars = ctx.styles && ctx.styles.variables;
-    if (!vars || typeof vars !== 'object') return;
+    var vars = isObj(_hostContext.styles) ? _hostContext.styles.variables : undefined;
+    if (!isObj(vars)) return;
     for (var key in vars) {
       if (!Object.prototype.hasOwnProperty.call(vars, key)) continue;
       var value = vars[key];

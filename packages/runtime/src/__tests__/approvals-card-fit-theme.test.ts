@@ -197,6 +197,19 @@ describe("approval card fits its content", () => {
   })
 })
 
+describe("approval card exposes clipped values to assistive tech", () => {
+  it("a long value carries its full text in a hidden span and the tooltip; a short one stays plain", () => {
+    const long = "x".repeat(120)
+    const id = engine.request(
+      { kind: "send", title: "Long", preview: { note: long, short: "ok" }, payload: {} },
+      { sessionId: "sess_abc" },
+    ).id
+    const html = renderApprovalCardHtml(engine, id)
+    expect(html).toContain(`<dd title="${long}"><span aria-hidden="true">${long}</span><span class="sr-only">${long}</span></dd>`)
+    expect(html).toContain("<dt>Short</dt><dd>ok</dd>")
+  })
+})
+
 describe("approval card follows the host theme", () => {
   it("applies hostContext.theme and styles.variables to the root", async () => {
     const { html } = pendingCard()
@@ -212,7 +225,31 @@ describe("approval card follows the host theme", () => {
     expect(page.rootVars).toEqual({ "--color-text-primary": "#fafafa", "--font-sans": "Inter" })
   })
 
-  it("re-applies on host-context-changed and drops variables the host no longer sends", async () => {
+  it("a partial host-context-changed keeps the variables applied earlier", async () => {
+    const { html } = pendingCard()
+    const page = runPage(html, { value: 100 })
+    page.reply(1, {
+      hostContext: {
+        theme: "dark",
+        styles: { variables: { "--color-text-primary": "#fafafa", "--font-sans": "Inter" } },
+      },
+    })
+    await page.flush()
+
+    page.onMessage({
+      jsonrpc: "2.0",
+      method: "ui/notifications/host-context-changed",
+      params: { styles: { variables: { "--color-text-primary": "#111111", "--color-border-primary": "#333333" } } },
+    })
+    expect(page.rootAttrs["data-theme"]).toBe("dark")
+    expect(page.rootVars).toEqual({
+      "--color-text-primary": "#111111",
+      "--font-sans": "Inter",
+      "--color-border-primary": "#333333",
+    })
+  })
+
+  it("a theme-only host-context-changed switches the theme and keeps the variables", async () => {
     const { html } = pendingCard()
     const page = runPage(html, { value: 100 })
     page.reply(1, { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#fafafa" } } } })
@@ -220,7 +257,7 @@ describe("approval card follows the host theme", () => {
 
     page.onMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "light" } })
     expect(page.rootAttrs["data-theme"]).toBe("light")
-    expect(page.rootVars).toEqual({})
+    expect(page.rootVars).toEqual({ "--color-text-primary": "#fafafa" })
   })
 
   it("the CSS reads the host variables with fallbacks and has no green/red fills", () => {
