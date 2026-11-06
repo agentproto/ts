@@ -768,7 +768,26 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, full: _full, fields: _fields, ...spawnInput } = input
+      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, full: _full, fields: _fields, parent: declaredParent, ...spawnInput } = input
+      // Declared parent (`agent_start.parent`): for a caller the daemon cannot
+      // identify. A call that already carries an identity attaches under it
+      // automatically, so a declaration there is refused rather than allowed to
+      // re-parent (the caller's own `parentSessionId` hint is the existing path).
+      if (declaredParent !== undefined && (callerScope !== undefined || effectiveCaller() !== undefined)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "agent_start: `parent` is only for callers without a session identity; " +
+                "this call is attributed to a session and attaches under it automatically.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const anonymousCall =
+        callerScope === undefined && effectiveCaller() === undefined && noCallerIdentity === "accept"
       // Lineage handover (`agent_start.succeeds`): the caller declares that
       // THIS new session takes over another session's position in the spawn
       // tree. Authorized to the human operator, the replaced session itself
@@ -842,6 +861,14 @@ export function registerAgentTools(
           // passing its own id. An explicit `parentSessionId` still outranks
           // it in `decideSpawnAttach`.
           ...(callerSessionId ? { autoParentSessionId: callerSessionId } : {}),
+          // A declared parent is a lineage hint (descriptor-only, same trust as
+          // a declared `replyTo` address); an explicit `parentSessionId` wins.
+          ...(declaredParent !== undefined && spawnInput.parentSessionId === undefined
+            ? { parentSessionId: declaredParent }
+            : {}),
+          // Identity-less call let through by `mcp.noCallerIdentity: accept`:
+          // spawned as a root tagged anonymous, with no elevation.
+          ...(anonymousCall ? { anonymousCaller: true } : {}),
           // AIP-46 rule 4: who may name an operator is decided from the
           // daemon-derived caller, overwriting anything the request carried.
           callerSessionId: effectiveCaller(),

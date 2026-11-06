@@ -89,6 +89,19 @@ parent (parent depth + 1); you don't set it. Ignored when this call arrives
 through the scoped orchestrator gateway — that path derives the parent from
 its own token, which always wins over this hint.
 
+## parent
+
+Declared parent for a caller the daemon cannot identify. Claude Code connects
+to a static MCP URL, so its tool calls carry no caller identity (identity is
+per connection: `?callerSessionId=` or the `x-agentproto-caller-session-id`
+header) and a spawn would land as a parentless root. Pass your own address,
+`cc:<session_id>` (or a live session id), and the child nests under it, so its
+`message_parent` is delivered to that row. Declared, not proven: same trust as
+a `replyTo` address, descriptor-only lineage. Refused when the call already
+carries an identity (it attaches under that identity automatically). With
+`mcp.noCallerIdentity: accept`, an identity-less spawn also records
+`meta.anonymous: "claude-code"` and gains no privilege.
+
 ## succeeds
 
 Lineage handover: declare THIS new session the SUCCESSOR of another session
