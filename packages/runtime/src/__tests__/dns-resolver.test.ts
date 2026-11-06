@@ -195,8 +195,38 @@ describe("resolveViaDoh", () => {
     )
   })
 
-  it("reports a SERVFAIL body (Status 2) as no-answer today", async () => {
+  it("treats a SERVFAIL body as an unreachable resolver", async () => {
     const { fetch } = recordingFetch(() => okJson({ Status: 2, Answer: [] }))
+    const result = await resolveViaDoh("example.com", { fetch, endpoints: ENDPOINTS })
+    expect(result).toEqual({ kind: "unreachable", error: "DoH status 2" })
+  })
+
+  it("falls back to a later endpoint when the first SERVFAILs", async () => {
+    const { fetch } = recordingFetch(url => {
+      if (endpointOf(url) === "https://dns.one/query") return okJson({ Status: 2 })
+      return okJson({ Status: 0, Answer: [{ type: 1, data: "203.0.113.50" }] })
+    })
+    const result = await resolveViaDoh("example.com", { fetch, endpoints: ENDPOINTS })
+    expect(result).toEqual({ kind: "answer", addresses: ["203.0.113.50"] })
+  })
+
+  it("returns no-answer when one endpoint SERVFAILs and another says NXDOMAIN", async () => {
+    const { fetch } = recordingFetch(url => {
+      if (endpointOf(url) === "https://dns.one/query") return okJson({ Status: 2 })
+      return okJson({ Status: 3, Answer: [] })
+    })
+    const result = await resolveViaDoh("example.com", { fetch, endpoints: ENDPOINTS })
+    expect(result).toEqual({ kind: "no-answer" })
+  })
+
+  it("treats REFUSED (Status 5) like SERVFAIL", async () => {
+    const { fetch } = recordingFetch(() => okJson({ Status: 5, Answer: [] }))
+    const result = await resolveViaDoh("example.com", { fetch, endpoints: ENDPOINTS })
+    expect(result).toEqual({ kind: "unreachable", error: "DoH status 5" })
+  })
+
+  it("treats a missing Status field as NOERROR", async () => {
+    const { fetch } = recordingFetch(() => okJson({ Answer: [] }))
     const result = await resolveViaDoh("example.com", { fetch, endpoints: ENDPOINTS })
     expect(result).toEqual({ kind: "no-answer" })
   })
