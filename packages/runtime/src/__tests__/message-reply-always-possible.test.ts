@@ -17,6 +17,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
 import { registerMessageTools } from "../message-tools.js"
+import { createSessionMessage } from "../session-message.js"
 import { decide } from "../permissions.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent, SessionDescriptor } from "../sessions.js"
@@ -117,6 +118,20 @@ for (const [extId, host] of [
       }
     })
 
+    it("labels the reply as unverified when the original came from an unverified sender", async () => {
+      const { registry, brain, send } = world(extId, host)
+      const id = await receive(registry, brain.id, extId)
+      send.mockClear()
+      const h = await harness({ registry, callerSessionId: brain.id })
+      try {
+        const r = await h.client.callTool({ name: "message_send", arguments: { to: extId, text: "answer", replyTo: id } })
+        expect(JSON.parse(textOf(r))).toMatchObject({ ok: true, unverified: true })
+        expect(send.mock.calls[0]![0].text).toMatch(/^\[unverified sender: .+\] answer$/)
+      } finally {
+        await h.close()
+      }
+    })
+
     it("message_reply is delivered too", async () => {
       const { registry, brain, send } = world(extId, host)
       const id = await receive(registry, brain.id, extId)
@@ -167,6 +182,25 @@ for (const [extId, host] of [
     })
   })
 }
+
+describe("reply to a verified original sender", () => {
+  it("stays unlabelled", async () => {
+    const { registry, brain, send } = world("claude-desktop", "claude-desktop")
+    const peer = spawnNode(registry, "other-workspace", "peer")
+    // peer messages the brain through the Registry directly (verified, relation granted in same-workspace-less setup).
+    const m = createSessionMessage({ to: brain.id, from: { sessionId: peer.id, relation: "granted" }, text: "hi" })
+    await registry.sendMessage(m, { source: "t", origin: "t" })
+    send.mockClear()
+    const h = await harness({ registry, callerSessionId: brain.id })
+    try {
+      const r = await h.client.callTool({ name: "message_send", arguments: { to: peer.id, text: "answer", replyTo: m.id } })
+      expect(isError(r)).toBeFalsy()
+      expect(send.mock.calls[0]![0].text).toBe("answer")
+    } finally {
+      await h.close()
+    }
+  })
+})
 
 describe("reply rule is capped at steer in the ACL", () => {
   it("session.message.interrupt is refused for a reply-admitted message", () => {

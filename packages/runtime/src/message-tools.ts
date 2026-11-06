@@ -29,7 +29,7 @@ import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
-import { ANONYMOUS_SEND_RULE, REPLY_RULE, decide, isUnverifiedMessageSender, type PermissionContext } from "./permissions.js"
+import { ANONYMOUS_SEND_RULE, REPLY_RULE, decide, type PermissionContext } from "./permissions.js"
 import { warnPeerUnverified } from "./workspace-binding.js"
 import {
   createSessionMessage,
@@ -377,6 +377,10 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     /** The message answers one the caller received from this recipient: it never interrupts. */
     const answersReceived =
       self !== undefined && policy.reply?.originalSenderOf(self.id, policy.reply.messageId) === recipient.id
+    /** The message being answered came from an unverified/anonymous sender: label the reply too. */
+    const originalFrom =
+      answersReceived && self && input.replyTo ? registry.findReceivedMessage(self.id, input.replyTo)?.from : undefined
+    const originalUnverified = originalFrom?.unverified === true || originalFrom?.anonymous === true
     const relation = decision.relation
     if (self && decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
@@ -409,7 +413,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     // leaves an anonymous sender exactly as before (operator principal).
     const labelled =
       anonymousSendMode === "label" && (self
-        ? decision.rule === ANONYMOUS_SEND_RULE || (decision.rule === REPLY_RULE && isUnverifiedMessageSender(self))
+        ? decision.rule === ANONYMOUS_SEND_RULE || (decision.rule === REPLY_RULE && originalUnverified)
         : anonymous)
     let msg: SessionMessage
     try {
