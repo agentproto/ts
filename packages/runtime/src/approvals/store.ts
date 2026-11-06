@@ -146,7 +146,7 @@ export function removeRelayOutbox(homeDir: string, id: string): void {
   rmSync(relayOutboxPath(homeDir, id), { force: true })
 }
 
-/** Every undelivered relay entry, keyed by approval id — the boot-recovery
+/** Every undelivered relay entry, keyed by approval id, the boot-recovery
  *  pass. Malformed files are ignored, same policy as the other loaders. */
 export function loadAllRelayOutbox(homeDir: string): RelayOutboxEntry[] {
   const out: RelayOutboxEntry[] = []
