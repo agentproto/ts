@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { createServer, type IncomingMessage, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { spawn, type ChildProcess } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -70,27 +70,30 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
-function bureauError(requestId: string): { isError: true; content: Array<{ type: "text"; text: string }> } {
+function bureauErrorBody(requestId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    code: "browser:approval_required",
+    error: "a human approval is required before this write runs",
+    recipe: "linkedin",
+    version: "1.0.1",
+    tool: "linkedin_react",
+    requestId,
+    approveWith: `bureau recipe approve ${requestId}`,
+    inputSha256: INPUT_SHA,
+    preview: "React to a post",
+    expiresAt: EXPIRES_AT,
+    deviceDecision: true,
+    ...overrides,
+  }
+}
+
+function bureauError(
+  requestId: string,
+  overrides: Record<string, unknown> = {},
+): { isError: true; content: Array<{ type: "text"; text: string }> } {
   return {
     isError: true,
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          code: "browser:approval_required",
-          error: "a human approval is required before this write runs",
-          recipe: "linkedin",
-          version: "1.0.1",
-          tool: "linkedin_react",
-          requestId,
-          approveWith: `bureau recipe approve ${requestId}`,
-          inputSha256: INPUT_SHA,
-          preview: "React to a post",
-          expiresAt: EXPIRES_AT,
-          deviceDecision: true,
-        }),
-      },
-    ],
+    content: [{ type: "text", text: JSON.stringify(bureauErrorBody(requestId, overrides)) }],
   }
 }
 
@@ -572,5 +575,236 @@ describe("Bureau approval bridge", () => {
       warn.mock.calls.some(args => String(args[0]).includes("[bureau-approval-bridge]")),
     )
     expect(h.gateway.approvals.get(approvalId)?.status).toBe("approved")
+  })
+})
+
+describe("Bureau approval bridge robustness", () => {
+  const cleanups: Array<() => void> = []
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try {
+        cleanup()
+      } catch {
+        // teardown is best effort
+      }
+    }
+  })
+
+  const SECRET = "Bearer device-secret-do-not-persist"
+  const RETRY = { baseDelayMs: 5, maxDelayMs: 20, maxAttempts: 50 }
+
+  function newEngine(home: string, bus = createSessionEventBus()) {
+    const engine = createApprovalsEngine({
+      homeDir: home,
+      sessionEvents: bus,
+      webOrigins: ["https://web.example.invalid"],
+    })
+    cleanups.push(() => engine.dispose())
+    return { engine, bus }
+  }
+
+  function tmpHome(): string {
+    const home = mkdtempSync(join(tmpdir(), "bureau-bridge-robust-"))
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }))
+    return home
+  }
+
+  const resolveImport = async () => ({
+    baseUrl: "https://bureau.example.invalid",
+    headers: { Authorization: SECRET },
+    key: IMPORT_ALIAS,
+  })
+
+  function scriptedFetch(answers: Array<Response | Error>): { fetch: typeof fetch; calls: Array<Record<string, unknown>> } {
+    const calls: Array<Record<string, unknown>> = []
+    let i = 0
+    const fn = (async (_input: unknown, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>)
+      const answer = answers[Math.min(i, answers.length - 1)]!
+      i += 1
+      if (answer instanceof Error) throw answer
+      return answer.clone()
+    }) as typeof fetch
+    return { fetch: fn, calls }
+  }
+
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+
+  async function requestApproval(
+    bridge: ReturnType<typeof createBureauApprovalBridge>,
+    requestId: string,
+    overrides: Record<string, unknown> = {},
+  ): Promise<{ approvalId: string; result: Record<string, any> }> {
+    const result = (await bridge.handleToolResult({
+      alias: IMPORT_ALIAS,
+      toolName: "linkedin_react",
+      result: bureauError(requestId, overrides),
+      context: { callerSessionId: "sess_robust" },
+    })) as Record<string, any>
+    const body = JSON.parse(result.content.find((c: any) => c.type === "text").text)
+    return { approvalId: body.approvalId as string, result }
+  }
+
+  const decide = (engine: ReturnType<typeof createApprovalsEngine>, id: string, d: "approve" | "deny" = "approve") =>
+    engine.decideWeb(id, d, { ipAddress: "127.0.0.1", userAgent: "vitest" })
+
+  it("keeps an undelivered decision in an outbox and retries until Bureau answers 2xx", async () => {
+    const home = tmpHome()
+    const { engine, bus } = newEngine(home)
+    const { fetch: f, calls } = scriptedFetch([
+      new Error("ECONNREFUSED"),
+      json(503, { error: "unavailable" }),
+      json(200, { status: "approved" }),
+    ])
+    const bridge = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: f,
+      log: () => {},
+      retry: { baseDelayMs: 40, maxDelayMs: 80, maxAttempts: 50 },
+    })
+    cleanups.push(() => bridge.dispose())
+    const { approvalId } = await requestApproval(bridge, "req_retry")
+    await decide(engine, approvalId)
+
+    // Persisted next to the record while undelivered, and it carries no header value.
+    const outboxFile = join(home, approvalId, "relay-outbox.json")
+    expect(readFileSync(outboxFile, "utf8")).not.toContain("device-secret")
+    await waitFor(() => (calls.length >= 3 ? true : undefined))
+    await waitFor(() => (engine.listRelayOutbox().length === 0 ? true : undefined))
+    expect(calls).toHaveLength(3)
+    expect(calls[2]).toEqual({ decision: "approved", inputSha256: INPUT_SHA, decisionRef: approvalId })
+    for (const file of readdirSync(join(home, approvalId)).filter(n => n.endsWith(".json"))) {
+      expect(readFileSync(join(home, approvalId, file), "utf8")).not.toContain("device-secret")
+    }
+  })
+
+  it("stops on a final 4xx and does not retry", async () => {
+    const home = tmpHome()
+    const { engine, bus } = newEngine(home)
+    const { fetch: f, calls } = scriptedFetch([json(409, { error: "already_decided" })])
+    const bridge = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: f,
+      log: () => {},
+      retry: RETRY,
+    })
+    cleanups.push(() => bridge.dispose())
+    const { approvalId } = await requestApproval(bridge, "req_final")
+    await decide(engine, approvalId, "deny")
+
+    await waitFor(() => (engine.listRelayOutbox().length === 0 ? true : undefined))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.["decision"]).toBe("denied")
+  })
+
+  it("redelivers once at boot from the persisted record after a restart", async () => {
+    const home = tmpHome()
+    const first = newEngine(home)
+    const down = scriptedFetch([new Error("ECONNREFUSED")])
+    const bridgeA = createBureauApprovalBridge({
+      engine: first.engine,
+      sessionEvents: first.bus,
+      resolveImport,
+      fetch: down.fetch,
+      log: () => {},
+      retry: { baseDelayMs: 60_000, maxDelayMs: 60_000, maxAttempts: 50 },
+    })
+    const { approvalId } = await requestApproval(bridgeA, "req_boot")
+    await decide(first.engine, approvalId)
+    await waitFor(() => (down.calls.length === 1 ? true : undefined))
+    bridgeA.dispose()
+    expect(first.engine.listRelayOutbox().map(e => e.approvalId)).toEqual([approvalId])
+
+    // Restart: a new engine reloads the same dir, a new bridge boots.
+    const second = newEngine(home)
+    const up = scriptedFetch([json(200, { status: "approved" })])
+    const bridgeB = createBureauApprovalBridge({
+      engine: second.engine,
+      sessionEvents: second.bus,
+      resolveImport,
+      fetch: up.fetch,
+      log: () => {},
+      retry: RETRY,
+    })
+    cleanups.push(() => bridgeB.dispose())
+    await waitFor(() => up.calls[0])
+    expect(up.calls[0]).toEqual({ decision: "approved", inputSha256: INPUT_SHA, decisionRef: approvalId })
+    await waitFor(() => (second.engine.listRelayOutbox().length === 0 ? true : undefined))
+  })
+
+  it("reuses the pending approval when the agent retries the same Bureau requestId", async () => {
+    const { engine, bus } = newEngine(tmpHome())
+    const bridge = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: scriptedFetch([json(200, {})]).fetch,
+      log: () => {},
+    })
+    cleanups.push(() => bridge.dispose())
+    const a = await requestApproval(bridge, "req_same")
+    const b = await requestApproval(bridge, "req_same")
+    expect(b.approvalId).toBe(a.approvalId)
+    expect(engine.list()).toHaveLength(1)
+    const c = await requestApproval(bridge, "req_other")
+    expect(c.approvalId).not.toBe(a.approvalId)
+    expect(engine.list()).toHaveLength(2)
+  })
+
+  it("echoes approvalId and waitWith into structuredContent when the details came from there", async () => {
+    const { engine, bus } = newEngine(tmpHome())
+    const bridge = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: scriptedFetch([json(200, {})]).fetch,
+      log: () => {},
+    })
+    cleanups.push(() => bridge.dispose())
+    const out = (await bridge.handleToolResult({
+      alias: IMPORT_ALIAS,
+      toolName: "linkedin_react",
+      result: {
+        isError: true,
+        content: [{ type: "text", text: "approval required" }],
+        structuredContent: bureauErrorBody("req_structured"),
+      },
+    })) as { structuredContent: Record<string, unknown>; content: Array<{ text: string }> }
+    const approvalId = out.structuredContent["approvalId"]
+    expect(typeof approvalId).toBe("string")
+    expect(out.structuredContent["waitWith"]).toBe("approval_wait")
+    expect(out.structuredContent["requestId"]).toBe("req_structured")
+    expect(out.content.some(c => c.text.includes(String(approvalId)))).toBe(true)
+  })
+
+  it.each([
+    ["unparsable", "not a date"],
+    ["already past", new Date(Date.now() - 60_000).toISOString()],
+  ])("falls back to now + 15 min and logs when expiresAt is %s", async (_label, expiresAt) => {
+    const { engine, bus } = newEngine(tmpHome())
+    const lines: string[] = []
+    const bridge = createBureauApprovalBridge({
+      engine,
+      sessionEvents: bus,
+      resolveImport,
+      fetch: scriptedFetch([json(200, {})]).fetch,
+      log: m => lines.push(m),
+    })
+    cleanups.push(() => bridge.dispose())
+    const before = Date.now()
+    const { approvalId } = await requestApproval(bridge, "req_expiry", { expiresAt })
+    const record = engine.get(approvalId)
+    expect(record?.status).toBe("pending")
+    const at = Date.parse(record?.expiresAt ?? "")
+    expect(Number.isFinite(at)).toBe(true)
+    expect(at).toBeGreaterThanOrEqual(before + 14 * 60 * 1000)
+    expect(at).toBeLessThanOrEqual(Date.now() + 15 * 60 * 1000)
+    expect(lines.some(l => l.includes("[bureau-approval-bridge]") && l.includes("expiresAt"))).toBe(true)
   })
 })
