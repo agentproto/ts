@@ -300,6 +300,16 @@ export interface SpawnDefaultsConfig {
       workspaces?: string[]
     }
   }
+  /** PR provenance footer policy (the daemon reconciler and the
+   *  `command_execute` stamper). */
+  prProvenance?: {
+    footer?: {
+      /** `owner/name` repos whose pull requests never receive or refresh an
+       *  agentproto provenance footer. Read per stamp, so a change takes
+       *  effect without a daemon restart. Default []: stamp every repo. */
+      skipRepos?: string[]
+    }
+  }
   /** Task-ledger policy. */
   tasks?: {
     /** Sessions that keep operator rights on the task ledger while still

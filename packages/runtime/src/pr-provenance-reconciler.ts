@@ -41,7 +41,7 @@
 
 import { homedir } from "node:os"
 import type { SessionEventBus } from "./session-event-bus.js"
-import { stampFooterOnPr, type GhRunner } from "./pr-provenance-stamp.js"
+import { stampFooterOnPr, type GhRunner, type PrFooterState } from "./pr-provenance-stamp.js"
 import { checkpointRefPrefixForSession } from "./sandbox-delivery.js"
 import type { FooterSession } from "./pr-provenance.js"
 import { readToolCallRecords } from "./tool-call-log.js"
@@ -73,7 +73,15 @@ export type OpenPrResolver = (
  *  full `SessionDescriptor` satisfies this structurally. */
 export interface ReconcilerSession extends FooterSession {
   worktreePath?: string
-  openedPrs?: readonly { url: string; number?: number }[]
+  openedPrs?: readonly {
+    url: string
+    number?: number
+    /** Footer bookkeeping the daemon persists (see `PrFooterState`). */
+    footerStampedAt?: string
+    footerBodyHash?: string
+    footerRemovals?: number
+    footerDisabled?: boolean
+  }[]
   /** Ephemeral transcript path the live registry stamps on every read
    *  (see `SessionDescriptor.eventsPath`); lane C's bounded tail read
    *  needs it. Absent from test fakes without a transcript on disk. */
@@ -100,6 +108,15 @@ export interface ReconcilerRegistry {
   get(id: string): ReconcilerSession | undefined
   list(): readonly FooterSession[]
   recordOpenedPr(sessionId: string, input: { adapter: string; number: number; url: string }): unknown
+  /** Persist footer bookkeeping onto an already-recorded PR. Optional so
+   *  lightweight fakes keep working. */
+  recordPrFooterState?(sessionId: string, url: string, state: PrFooterState): unknown
+}
+
+/** `owner/name` of a forge PR url (`https://host/owner/name/pull/42`), or
+ *  undefined when the url does not have that shape. */
+export function repoFromPrUrl(url: string): string | undefined {
+  return /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/.exec(url)?.[1]
 }
 
 export interface PrProvenanceReconciler {
@@ -134,11 +151,21 @@ export function createPrProvenanceReconciler(opts: {
    *  override wins over it, the checkpoint the delivery pushed lives under
    *  the session's namespace, not the global one. */
   checkpointRefPrefix?: string
+  /** `owner/name` repos whose PRs never receive or refresh a footer
+   *  (`defaults.prProvenance.footer.skipRepos`). Resolved on every reconcile
+   *  so a config change takes effect without a daemon restart. */
+  skipFooterRepos?: () => Promise<readonly string[]> | readonly string[]
+  /** Info logger for the one line emitted when a PR opts out of stamping
+   *  after two deliberate footer removals. Defaults to `console.log`. */
+  log?: (line: string) => void
 }): PrProvenanceReconciler {
-  // PR urls already stamped this daemon run — the dedupe is per-PR, not per
-  // session, so a session that opens several PRs stamps each one once. Also
-  // short-circuited by the descriptor's own `openedPrs` (survives restarts).
-  const stampedPrUrls = new Set<string>()
+  // Per-reconcile dedupe of the PRs lane A / lane B resolved (below, local to
+  // `reconcile`), plus the session that stamped each url THIS daemon run.
+  // The latter keeps a same-cwd sibling from stealing a PR another session
+  // already stamped, while a session that owns the PR may re-check it on a
+  // later turn-end (an agent may have rewritten the body since).
+  const stampedByThisRun = new Map<string, string>()
+  const log = opts.log ?? ((line: string) => console.log(line))
   // PRs whose footer has been re-rendered with the session's spend (or
   // already carried one) — the cost refresh is a once-per-PR follow-up to
   // the first, mid-turn stamp that lands before any usage is known.
@@ -184,18 +211,50 @@ export function createPrProvenanceReconciler(opts: {
 
     const host = await hostSideOf(desc, sessionCwd)
     const cwd = host.cwd
-
-    // Per-PR dedupe shared by both lanes: skip a PR already stamped this run,
-    // or one already recorded on the descriptor (a prior daemon generation, or
-    // the command_execute path). A session may legitimately open more than one
-    // PR — each distinct url is stamped exactly once. Returns true when the
-    // caller should stamp.
-    const shouldStamp = (url: string): boolean => {
-      if (stampedPrUrls.has(url)) return false
-      if (desc.openedPrs && desc.openedPrs.some(recorded => recorded.url === url)) {
-        stampedPrUrls.add(url)
-        return false
+    const skipRepos = await (async () => {
+      try {
+        return await (opts.skipFooterRepos?.() ?? [])
+      } catch {
+        return []
       }
+    })()
+    const repoOf = (url: string): string | undefined => repoFromPrUrl(url)
+    const skipped = (url: string): boolean => {
+      const repo = repoOf(url)
+      return repo !== undefined && skipRepos.includes(repo)
+    }
+
+    // Per-reconcile set shared by both lanes (lane A and lane B can resolve
+    // the same PR). Across turn-ends it resets: a PR the daemon stamped is
+    // re-checked so an agent rewrite that dropped the footer is re-stamped.
+    const handledPrUrls = new Set<string>()
+    const footerStateFor = (url: string): PrFooterState | undefined => {
+      const recorded = desc.openedPrs?.find(row => row.url === url)
+      if (!recorded) return undefined
+      return {
+        ...(recorded.footerBodyHash !== undefined ? { bodyHash: recorded.footerBodyHash } : {}),
+        ...(recorded.footerRemovals !== undefined ? { removals: recorded.footerRemovals } : {}),
+        ...(recorded.footerDisabled ? { disabled: true } : {}),
+      }
+    }
+    // Should this PR be (re)considered at all? A PR recorded but never
+    // footer-stamped by the daemon (an older daemon, or another lane's
+    // attribution) stays untouched, preserving the historical dedupe. A PR
+    // this daemon DID stamp is reconsidered so its body can be re-checked.
+    const shouldStamp = (url: string): boolean => {
+      if (handledPrUrls.has(url)) return false
+      handledPrUrls.add(url)
+      if (skipped(url)) return false
+      const recorded = desc.openedPrs?.find(row => row.url === url)
+      if (recorded) {
+        if (recorded.footerDisabled) return false
+        if (recorded.footerBodyHash === undefined && recorded.footerStampedAt === undefined) return false
+        return true
+      }
+      // Not recorded on THIS session: if another session stamped it this run,
+      // it is theirs (the same-cwd sibling guard).
+      const stampedBy = stampedByThisRun.get(url)
+      if (stampedBy !== undefined && stampedBy !== desc.id) return false
       return true
     }
 
@@ -205,6 +264,7 @@ export function createPrProvenanceReconciler(opts: {
         : null
 
     const stamp = async (pr: { number: number; url: string }, requireTrailerAuthorship = false): Promise<void> => {
+      const prior = footerStateFor(pr.url)
       const outcome = await stampFooterOnPr({
         registry: opts.registry,
         session: desc,
@@ -216,11 +276,14 @@ export function createPrProvenanceReconciler(opts: {
         ...(opts.host ? { host: opts.host } : {}),
         checkpointRefPrefix: checkpointRefPrefixForSession(desc, opts.checkpointRefPrefix),
         ...(requireTrailerAuthorship ? { requireTrailerAuthorship: true } : {}),
+        ...(prior ? { footerState: prior } : {}),
       })
-      // Record this PR as stamped only on a real stamp (or an already-stamped
-      // body). A transient `gh` failure leaves it unstamped so a later event
-      // retries.
-      if (outcome.stamped) stampedPrUrls.add(pr.url)
+      // One info line when a PR opts itself out after two deliberate footer
+      // removals. The disabled flag is persisted, so this fires once.
+      if (outcome.footerState?.disabled === true && prior?.disabled !== true) {
+        log(`[pr-provenance] ${pr.url} lost its footer twice with no body change; stopping stamps`)
+      }
+      if (outcome.stamped) stampedByThisRun.set(pr.url, desc.id)
     }
 
     // Lane A — EXACT attribution from the session's own recorded tool calls.
@@ -313,10 +376,32 @@ export function createPrProvenanceReconciler(opts: {
     cwd: string,
   ): Promise<void> => {
     if (typeof desc.costUsd !== "number") return
+    const skipRepos = await (async () => {
+      try {
+        return await (opts.skipFooterRepos?.() ?? [])
+      } catch {
+        return []
+      }
+    })()
     for (const opened of desc.openedPrs ?? []) {
       if (costRefreshedPrUrls.has(opened.url)) continue
       const number = opened.number ?? prNumberFromUrl(opened.url)
       if (number === null) {
+        costRefreshedPrUrls.add(opened.url)
+        continue
+      }
+      // A repo opted out of footers is never stamped OR refreshed.
+      const repo = repoFromPrUrl(opened.url)
+      if (repo !== undefined && skipRepos.includes(repo)) {
+        costRefreshedPrUrls.add(opened.url)
+        continue
+      }
+      const prior: PrFooterState | undefined = {
+        ...(opened.footerBodyHash !== undefined ? { bodyHash: opened.footerBodyHash } : {}),
+        ...(opened.footerRemovals !== undefined ? { removals: opened.footerRemovals } : {}),
+        ...(opened.footerDisabled ? { disabled: true } : {}),
+      }
+      if (prior.disabled) {
         costRefreshedPrUrls.add(opened.url)
         continue
       }
@@ -328,13 +413,20 @@ export function createPrProvenanceReconciler(opts: {
         prUrl: opened.url,
         cwd,
         refresh: true,
+        ...(prior.bodyHash !== undefined || prior.removals !== undefined ? { footerState: prior } : {}),
         ...(opts.run ? { run: opts.run } : {}),
         ...(opts.host ? { host: opts.host } : {}),
         checkpointRefPrefix: checkpointRefPrefixForSession(desc, opts.checkpointRefPrefix),
       })
+      if (outcome.footerState?.disabled === true) {
+        log(`[pr-provenance] ${opened.url} lost its footer twice with no body change; stopping stamps`)
+      }
       // Settled either way (re-rendered, or already carried a cost); a
       // failed gh call is retried at the next turn-end.
-      if (outcome.stamped) costRefreshedPrUrls.add(opened.url)
+      if (outcome.stamped) {
+        costRefreshedPrUrls.add(opened.url)
+        stampedByThisRun.set(opened.url, desc.id)
+      }
     }
   }
 
@@ -390,7 +482,7 @@ export function createPrProvenanceReconciler(opts: {
   return {
     dispose() {
       for (const unsubscribe of unsubscribes) unsubscribe()
-      stampedPrUrls.clear()
+      stampedByThisRun.clear()
       costRefreshedPrUrls.clear()
       lastPollAt.clear()
     },

@@ -316,6 +316,15 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
+    prProvenance: z
+      .object({
+        footer: z
+          .object({ skipRepos: z.array(z.string().min(1)).optional() })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
     tasks: z
       .object({
         operatorDelegates: z.array(z.string()).optional(),
@@ -1462,6 +1471,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "gh provenance shim",
     help: "Opt-in gh PATH shim that stamps PR bodies with agentproto provenance.",
     default: DEFAULT_WRAP_GH,
+  },
+  {
+    path: "defaults.prProvenance.footer.skipRepos",
+    schema: z.array(z.string().min(1)),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Provenance footer skip list",
+    help: "Repos (owner/name) whose pull requests never receive an agentproto provenance footer.",
+    default: [],
   },
   {
     path: "agentsMd.inlineMaxKb",
