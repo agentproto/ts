@@ -8,13 +8,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
   CLERK_HOOK_DEFAULTS,
   createClerkPassRunner,
+  spawnClerkCommand,
   createClerkTurnEndController,
   loadWorkspaceClerkHook,
   parseAgentClerkHook,
@@ -415,6 +416,7 @@ describe("clerk pass runner", () => {
   })
 
   it("spawns the configured command in the session's cwd", async () => {
+    vi.stubEnv("AGENTPROTO_HOME", "/tmp/ap-home")
     const spawnCommand = vi.fn().mockResolvedValue({ code: 0 })
     const runner = createClerkPassRunner({ spawnCommand, allowCommand: () => true })
     await runner({
@@ -430,7 +432,21 @@ describe("clerk pass runner", () => {
       command: "agentproto",
       args: ["steward", "act"],
       cwd: "/tmp/work",
+      stderrLogPath: "/tmp/ap-home/logs/clerk-sess_1.err",
     })
+    vi.unstubAllEnvs()
+  })
+
+  it("journals a failing command's stderr to the per-session log instead of dropping it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "clerk-err-"))
+    const stderrLogPath = join(dir, "logs", "clerk-sess_1.err")
+    const { code } = await spawnClerkCommand({
+      command: process.execPath,
+      args: ["-e", "console.error('Cannot find module x'); process.exit(1)"],
+      stderrLogPath,
+    })
+    expect(code).toBe(1)
+    expect(readFileSync(stderrLogPath, "utf8")).toContain("Cannot find module x")
   })
 
   it("refuses the command arm unless the allowlist gate approves it", async () => {

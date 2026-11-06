@@ -4,14 +4,17 @@
  *
  * Both arms are fire-and-forget by construction: the runner returns as
  * soon as the work is DISPATCHED, never waiting for the pass to finish.
- * The command arm spawns a detached child (unref'd, stdio ignored) so a
- * long pass can never keep the daemon's event loop busy, and it kills the
- * child when the pass's `timeoutMs` elapses so a stuck pass cannot outlive
- * its budget.
+ * The command arm spawns a detached child (unref'd, stdin/stdout ignored,
+ * stderr appended to `~/.agentproto/logs/clerk-<sessionId>.err`) so a long
+ * pass can never keep the daemon's event loop busy, and it kills the child
+ * when the pass's `timeoutMs` elapses so a stuck pass cannot outlive its
+ * budget.
  */
 
 import { spawn } from "node:child_process"
-import { basename } from "node:path"
+import { closeSync, mkdirSync, openSync } from "node:fs"
+import { homedir } from "node:os"
+import { basename, dirname, join } from "node:path"
 
 import type { ClerkHookConfig } from "./clerk-hook-config.js"
 import type { ClerkPassInput } from "./clerk-turn-end.js"
@@ -21,6 +24,26 @@ export interface ClerkCommandSpec {
   args: string[]
   cwd?: string
   timeoutMs?: number
+  /** File the child's stderr is appended to. Absent: stderr is dropped. */
+  stderrLogPath?: string
+}
+
+/** `$AGENTPROTO_HOME|~/.agentproto/logs/clerk-<sessionId>.err`. */
+export function clerkStderrLogPath(sessionId: string): string {
+  const home = process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+  return join(home, "logs", `clerk-${sessionId.replace(/[^A-Za-z0-9._-]/g, "_")}.err`)
+}
+
+/** Opens the stderr log for append; null when it cannot be opened (the pass
+ *  must still run, just without a journal). */
+function openStderrLog(path: string | undefined): number | null {
+  if (!path) return null
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    return openSync(path, "a")
+  } catch {
+    return null
+  }
 }
 
 export interface ClerkPassRunnerOptions {
@@ -46,15 +69,18 @@ export interface ClerkPassRunnerOptions {
 export function spawnClerkCommand(spec: ClerkCommandSpec): Promise<{ code: number | null }> {
   return new Promise((resolvePromise, rejectPromise) => {
     let child: ReturnType<typeof spawn>
+    const errFd = openStderrLog(spec.stderrLogPath)
     try {
       child = spawn(spec.command, spec.args, {
         ...(spec.cwd ? { cwd: spec.cwd } : {}),
         detached: true,
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", errFd ?? "ignore"],
       })
     } catch (err) {
       rejectPromise(err)
       return
+    } finally {
+      if (errFd !== null) closeSync(errFd)
     }
     let timer: ReturnType<typeof setTimeout> | undefined
     if (spec.timeoutMs && spec.timeoutMs > 0) {
@@ -129,6 +155,7 @@ export function createClerkPassRunner(opts: ClerkPassRunnerOptions) {
         args,
         ...(cwd ? { cwd } : {}),
         ...(run.timeoutMs ? { timeoutMs: run.timeoutMs } : {}),
+        stderrLogPath: clerkStderrLogPath(input.sessionId),
       })
     }
     throw new Error("clerk hook config names neither a routine nor a command to run")
