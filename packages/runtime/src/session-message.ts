@@ -69,6 +69,11 @@ export interface SessionMessageFrom {
    *  "accept"`). `label` is then the literal `claude-code`; the message is
    *  never attributable to any session. */
   anonymous?: boolean
+  /** True when the sender's identity was CLAIMED, not proven: an external
+   *  MCP client registered through `?callerSessionId=` + `?host=` (e.g. the
+   *  shared `claude-desktop` Chat-tab identity). Any local process can
+   *  claim it, so the recipient must treat the sender as unverified. */
+  unverified?: boolean
 }
 
 export interface SessionMessage {
@@ -137,6 +142,11 @@ export interface MessageTreeNode {
    *  pack or manifest) and `meta.agentId` the AIP-42 manifest identity. */
   meta?: Readonly<Record<string, string>>
   adapterSlug?: string
+  /** Session kind. `"external"` marks a client that registered through a
+   *  claimed `?callerSessionId=` + `?host=` and is therefore unverified. */
+  kind?: string
+  /** `kind: "external"` only: the claimed host (e.g. `claude-desktop`). */
+  externalHost?: string
   /** The workspace the session belongs to. Two sessions of the SAME
    *  workspace may message each other even without a tree edge - see
    *  {@link sameWorkspace} and `defaults.messaging.allowSameWorkspace`. */
@@ -325,6 +335,7 @@ export function messageFrom(
 ): SessionMessageFrom {
   if (!sender || relation === "human" || relation === "system") return { relation }
   const agentSlug = sender.agentSlug || sender.meta?.agentSlug || sender.meta?.agentId
+  const unverified = sender.kind === "external" || sender.externalHost !== undefined
   return {
     sessionId: sender.id,
     ...(sender.label ? { label: sender.label } : {}),
@@ -332,6 +343,7 @@ export function messageFrom(
     ...(agentSlug ? { agentSlug } : {}),
     ...(sender.adapterSlug ? { adapter: sender.adapterSlug } : {}),
     relation,
+    ...(unverified ? { unverified: true } : {}),
   }
 }
 
@@ -438,6 +450,7 @@ export function renderSessionMessage(msg: SessionMessage): string {
   const attrs: string[] = [`id="${attr(msg.id)}"`, `from="${relation}"`]
   if (msg.from.sessionId) attrs.push(`session="${attr(msg.from.sessionId)}"`)
   if (msg.from.anonymous) attrs.push(`anonymous="true"`)
+  if (msg.from.unverified) attrs.push(`unverified="true"`)
   const label = sanitizeLabel(msg.from.label)
   if (label) attrs.push(`label="${label}"`)
   attrs.push(`kind="${msg.kind}"`)
@@ -468,7 +481,8 @@ export function renderInboxDigest(msgs: readonly SessionMessage[]): string {
       const label = sanitizeLabel(m.from.label)
       const relation = normalizeMessageRelation(m.from.relation) ?? m.from.relation
       const sender = m.from.sessionId ? `${relation} ${m.from.sessionId}${label ? ` (${label})` : ""}` : relation
-      return `${m.id} from ${sender} [${m.kind}]`
+      const unverified = m.from.unverified ? " (unverified)" : ""
+      return `${m.id} from ${sender}${unverified} [${m.kind}]`
     })
     .join("; ")
   return (

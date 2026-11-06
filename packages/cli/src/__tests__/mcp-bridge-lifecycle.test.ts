@@ -36,12 +36,16 @@ const CLI_PATH = join(
 
 interface FakeDaemon {
   url: string
+  /** Every request URL the fake daemon saw, query string included. */
+  requests: string[]
   close: () => Promise<void>
 }
 
 /** Minimal stateless MCP endpoint — enough for the bridge's connect + listTools. */
 async function startFakeDaemon(): Promise<FakeDaemon> {
+  const requests: string[] = []
   const server = createServer(async (req, res) => {
+    if (req.url !== undefined) requests.push(req.url)
     if (req.url?.split("?")[0] !== "/mcp") {
       res.writeHead(404).end()
       return
@@ -66,6 +70,7 @@ async function startFakeDaemon(): Promise<FakeDaemon> {
   const { port } = server.address() as AddressInfo
   return {
     url: `http://127.0.0.1:${port}/mcp`,
+    requests,
     close: () =>
       new Promise<void>(resolve => {
         server.closeAllConnections()
@@ -163,6 +168,34 @@ test(
 
     const { code, signal } = await waitForExit(child, 5_000)
     expect(signal).toBeNull()
+    expect(code).toBe(0)
+  },
+)
+
+test(
+  "forwards the desktop identity query string to the daemon URL",
+  { timeout: 20_000 },
+  async () => {
+    daemon = await startFakeDaemon()
+    fakeHome = await mkdtemp(join(tmpdir(), "agentproto-mcp-bridge-home-"))
+    child = spawn(process.execPath, [CLI_PATH, "mcp-bridge"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        AGENTPROTO_MCP_URL: `${daemon.url}?callerSessionId=claude-desktop&host=claude-desktop`,
+      },
+    })
+
+    await waitForReady(child)
+    expect(
+      daemon.requests.some(
+        u => u.includes("callerSessionId=claude-desktop") && u.includes("host=claude-desktop"),
+      ),
+    ).toBe(true)
+
+    child.stdin?.end()
+    const { code } = await waitForExit(child, 5_000)
     expect(code).toBe(0)
   },
 )

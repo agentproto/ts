@@ -17,10 +17,14 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { RuntimeWorkflow } from "@agentproto/workflow-runtime"
 
 import { registerAgentTools } from "../agent-tools.js"
+import { registerMessageTools } from "../message-tools.js"
+import { renderSessionMessage } from "../session-message.js"
+import type { ActionGrant } from "@agentproto/policy"
 import {
   createSessionsRegistry,
   SessionNotAliveError,
@@ -449,14 +453,23 @@ describe("/mcp gateway registration", () => {
     })
   }
 
-  async function withGateway(fn: (base: string, registry: SessionsRegistry) => Promise<void>): Promise<void> {
+  async function withGateway(
+    fn: (base: string, registry: SessionsRegistry) => Promise<void>,
+    factory?: (
+      registry: SessionsRegistry,
+      callerSessionId?: string,
+    ) => Promise<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>,
+  ): Promise<void> {
     const tmp = mkdtempSync(join(tmpdir(), "external-http-"))
     const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
     const port = await freePort()
     const http = await startHttpServer({
       port,
       auth: { mode: "none" },
-      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      mcpServerFactory: async (_deny, callerSessionId) =>
+        factory
+          ? factory(registry, callerSessionId)
+          : (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
       conversations,
       events: createRuntimeEvents(),
       heartbeat,
@@ -490,6 +503,68 @@ describe("/mcp gateway registration", () => {
       await initialize(`${base}/mcp?callerSessionId=desktop-9&host=claude-desktop`)
       expect(registry.get("desktop-9")).toMatchObject({ kind: "external", status: "running", externalHost: "claude-desktop" })
     })
+  })
+
+  it("labels a message sent from the shared external identity unverified", async () => {
+    const grant = {
+      principal: "*",
+      effect: "allow" as const,
+      actions: [{ action: "session:message" }] as [ActionGrant],
+    }
+    await withGateway(
+      async (base, registry) => {
+        registry.touchExternal({ id: "desktop-peer", host: "claude-desktop" })
+
+        const client = new Client({ name: "t", version: "0" })
+        const transport = new StreamableHTTPClientTransport(
+          new URL(`${base}/mcp?callerSessionId=claude-desktop&host=claude-desktop`),
+        )
+        await client.connect(transport)
+        const result = (await client.callTool({
+          name: "message_send",
+          arguments: { to: "desktop-peer", text: "hello from the chat tab" },
+        })) as { content: Array<{ text: string }>; isError?: boolean }
+        await client.close()
+
+        expect(result.isError).not.toBe(true)
+        expect(registry.get("claude-desktop")).toMatchObject({ kind: "external", externalHost: "claude-desktop" })
+        const inbox = registry.listInbox("desktop-peer") ?? []
+        expect(inbox).toHaveLength(1)
+        expect(inbox[0]!.from).toMatchObject({ sessionId: "claude-desktop", unverified: true })
+        expect(renderSessionMessage(inbox[0]!)).toContain('unverified="true"')
+      },
+      async (registry, callerSessionId) => {
+        const { server } = await createMcpServer({ specs: [], name: "t", version: "0" })
+        registerMessageTools(server, { registry, callerSessionId, messagingGrants: [grant] })
+        return server
+      },
+    )
+  })
+
+  it("keeps no_caller_identity for a tool call that carries no callerSessionId", async () => {
+    await withGateway(
+      async (base, registry) => {
+        registry.touchExternal({ id: "desktop-peer", host: "claude-desktop" })
+
+        const client = new Client({ name: "t", version: "0" })
+        const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`))
+        await client.connect(transport)
+        const result = (await client.callTool({
+          name: "message_send",
+          arguments: { to: "desktop-peer", text: "should not land" },
+        })) as { content: Array<{ text: string }>; isError?: boolean }
+        await client.close()
+
+        expect(result.isError).toBe(true)
+        expect(JSON.parse(result.content[0]!.text)).toMatchObject({ error: "no_caller_identity" })
+        expect(registry.listInbox("desktop-peer")).toEqual([])
+      },
+      async (registry, callerSessionId) => {
+        const { server } = await createMcpServer({ specs: [], name: "t", version: "0" })
+        registerMessageTools(server, { registry, callerSessionId })
+        return server
+      },
+    )
   })
 
   it("does not register without ?host=", async () => {

@@ -110,9 +110,15 @@ describe("hook install --host claude-desktop", () => {
   it("--dry-run prints the merged JSON and writes nothing", async () => {
     expect(await run(["--dry-run", "--session", "desk-1"])).toBe(0)
     expect(JSON.parse(out)).not.toHaveProperty("env")
-    expect(err).toContain("callerSessionId=desk-1&host=claude-desktop")
-    expect(err).toContain("headersHelper unverified")
+    expect(err).toContain("callerSessionId=claude-desktop&host=claude-desktop")
+    expect(err).toContain("--session desk-1 is ignored")
     expect(existsSync(path)).toBe(false)
+  })
+
+  it("always prints the shared identity URL and does not warn without --session", async () => {
+    expect(await run([])).toBe(0)
+    expect(out).toContain("callerSessionId=claude-desktop&host=claude-desktop")
+    expect(err).not.toContain("is ignored")
   })
 
   it("writes the file, then a second run changes nothing", async () => {
@@ -123,7 +129,7 @@ describe("hook install --host claude-desktop", () => {
     expect(JSON.parse(first).hooks).toMatchObject({ SessionStart: [inboxEntry], Stop: [inboxEntry] })
     expect(JSON.parse(first)).not.toHaveProperty("env")
     expect(out).toContain("Updated")
-    expect(out).toContain('claude mcp add --transport http --scope user agentproto-desktop "http://127.0.0.1:18790/mcp?callerSessionId=desk-1&host=claude-desktop"')
+    expect(out).toContain('claude mcp add --transport http --scope user agentproto-desktop "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop"')
 
     out = ""
     expect(await run([])).toBe(0)
@@ -136,7 +142,7 @@ describe("hook install --host claude-desktop", () => {
     expect(await run([])).toBe(0)
     expect(JSON.parse(readFileSync(path, "utf8")).env).toEqual({ FOO: "1" })
     expect(out).toContain('Removed env.AGENTPROTO_SESSION_ID (was "claude-desktop")')
-    expect(out).toContain("cc:<session_id>")
+    expect(out).toContain("callerSessionId=claude-desktop&host=claude-desktop")
 
     out = ""
     writeFileSync(path, JSON.stringify({ env: { AGENTPROTO_SESSION_ID: "mine" } }))
