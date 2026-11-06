@@ -128,7 +128,12 @@ describe("message_send - dead recipient route (delivery.apply message.*)", () =>
     const dir = mkdtempSync(join(tmpdir(), "dead-route-"))
     const ledger = join(dir, "ledger.jsonl")
     try {
-      for (const apply of [undefined, { types: { "message.*": false } }, { types: { "session.*": true } }]) {
+      const offs: Array<DeliveryApplyConfig | undefined> = [
+        undefined,
+        { types: { "message.*": false } },
+        { types: { "session.*": true } },
+      ]
+      for (const apply of offs) {
         const { registry, parent, child, sender } = tree()
         const r = await callSend(registry, sender.id, child.id, apply, ledger)
         expect(r.isError).toBe(true)

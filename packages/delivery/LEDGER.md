@@ -83,7 +83,12 @@ declare no capabilities yet, so they record `unknown`.
   `message.<kind>` (default `message`), `subject` the sender id, `eventId` and
   `messageId` the envelope id, `level` from urgency (`steer` 3, `next-turn` 2,
   `fyi` 1), `rule: "sender-urgency"`, `applied: false`, outcome `delivered`,
-  `queued`, `inbox`, or `dropped` when the send threw.
+  `queued`, `inbox`, or `dropped` when the send threw. When `delivery.apply.types`
+  opts the `message.<kind>` type in and the recipient is dead, the message goes to
+  its live parent with a `[for <recipient id>] ` text prefix: `applied: true`,
+  outcome `retargeted`, `routedTo` the parent (the target stays the addressed
+  session). `message_send` / `message_reply` write a line (`message:tool`) only
+  in that applied case.
 
 ## Old ledgers
 
