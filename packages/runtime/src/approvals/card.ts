@@ -113,6 +113,14 @@ function addressList(value: unknown): string {
   return scalarText(value) ?? ""
 }
 
+/** Values long enough to be clipped to 3 lines carry their full text in a tooltip. */
+const TITLE_MIN_LENGTH = 80
+
+function ddHtml(value: string): string {
+  const title = value.length > TITLE_MIN_LENGTH || value.includes("\n") ? ` title="${escHtml(value)}"` : ""
+  return `<dd${title}>${escHtml(value)}</dd>`
+}
+
 function renderMail(preview: Record<string, unknown>): string {
   const to = addressList(preview.to)
   const cc = addressList(preview.cc)
@@ -129,7 +137,7 @@ function renderMail(preview: Record<string, unknown>): string {
   rows.push(["To", to])
   if (cc.length > 0) rows.push(["Cc", cc])
   rows.push(["Subject", subject])
-  const head = rows.map(([k, v]) => `<dt>${escHtml(k)}</dt><dd>${escHtml(v)}</dd>`).join("")
+  const head = rows.map(([k, v]) => `<dt>${escHtml(k)}</dt>${ddHtml(v)}`).join("")
   const attach =
     attachments.length > 0
       ? `<div class="attachments"><div class="label">Attachments</div><ul>${attachments
@@ -150,34 +158,154 @@ function renderPreview(record: ApprovalRecord): string {
   }
   if (rows.length === 0) return ""
   return `<dl class="list">${rows
-    .map(([k, v]) => `<dt>${escHtml(k)}</dt><dd>${escHtml(v)}</dd>`)
+    .map(([k, v]) => `<dt>${escHtml(k)}</dt>${ddHtml(v)}`)
     .join("")}</dl>`
 }
 
+
+/** Colours come from the host's MCP Apps CSS variables when it sends them,
+ *  else from the host theme (`data-theme`, set by the script), else from
+ *  `prefers-color-scheme`. The body stays transparent so the card sits in the
+ *  chat instead of in a box of its own. */
 const PAGE_STYLE = `
-  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 16px; color: #111; }
-  h3 { margin: 0 0 12px; font-size: 16px; }
-  dl { display: grid; grid-template-columns: minmax(80px, 30%) 1fr; gap: 6px 12px; margin: 0 0 12px; font-size: 13px; }
-  dt { color: #666; }
-  dd { margin: 0; word-break: break-word; white-space: pre-wrap; }
-  .body { border-top: 1px solid #eee; border-bottom: 1px solid #eee; padding: 10px 0; margin: 0 0 12px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
-  .attachments { font-size: 13px; margin: 0 0 12px; }
-  .attachments .label { color: #666; margin-bottom: 4px; }
+  :root { color-scheme: light; --ap-fg-d: #1a1a1a; --ap-muted-d: #6b6b6b; --ap-border-d: #e2e2e2; --ap-bg-d: #ffffff; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { color-scheme: dark; --ap-fg-d: #ececec; --ap-muted-d: #9a9a9a; --ap-border-d: #3a3a3a; --ap-bg-d: #1c1c1c; }
+  }
+  :root[data-theme="dark"] { color-scheme: dark; --ap-fg-d: #ececec; --ap-muted-d: #9a9a9a; --ap-border-d: #3a3a3a; --ap-bg-d: #1c1c1c; }
+  :root {
+    --ap-fg: var(--color-text-primary, var(--ap-fg-d));
+    --ap-muted: var(--color-text-secondary, var(--ap-muted-d));
+    --ap-border: var(--color-border-primary, var(--ap-border-d));
+    --ap-bg: var(--color-background-primary, var(--ap-bg-d));
+    --ap-font: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+  }
+  html, body { background: transparent; }
+  body { font-family: var(--ap-font); font-size: 13px; line-height: 1.45; margin: 0; padding: 12px; color: var(--ap-fg); }
+  h3 { margin: 0 0 8px; font-size: 14px; font-weight: 500; }
+  p { margin: 0; color: var(--ap-muted); }
+  dl { display: grid; grid-template-columns: minmax(72px, 28%) 1fr; gap: 4px 12px; margin: 0 0 8px; }
+  dt { color: var(--ap-muted); }
+  dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
+  .body { border-top: 1px solid var(--ap-border); border-bottom: 1px solid var(--ap-border); padding: 8px 0; margin: 0 0 8px; max-height: 10em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .attachments { margin: 0 0 8px; }
+  .attachments .label { color: var(--ap-muted); margin-bottom: 2px; }
   .attachments ul { margin: 0; padding-left: 18px; }
-  .actions { display: flex; gap: 8px; margin-top: 16px; }
-  button { flex: 1; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  .meta { font-size: 11px; color: var(--ap-muted); margin: 0; }
+  .meta:empty { display: none; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  button { font: inherit; font-size: 12px; padding: 4px 12px; border: 1px solid var(--ap-border); border-radius: 6px; background: transparent; color: var(--ap-fg); cursor: pointer; }
+  button.primary { background: var(--ap-fg); border-color: var(--ap-fg); color: var(--ap-bg); }
+  button:focus-visible { outline: 2px solid var(--ap-fg); outline-offset: 2px; }
   button:disabled { opacity: 0.5; cursor: default; }
-  #approve { background: #16a34a; color: white; }
-  #deny { background: #dc2626; color: white; }
-  #status { margin-top: 12px; font-size: 13px; color: #444; min-height: 16px; }
+  #status { margin-top: 8px; font-size: 12px; color: var(--ap-muted); }
+  #status:empty { display: none; }
 `
 
+/**
+ * The MCP Apps JSON-RPC-over-postMessage bridge shared by every card page
+ * (same wire shape as `terminal-panel-app.ts` / `sessions-panel.ts`): the
+ * `ui/initialize` handshake, the host theme (`hostContext.theme` and
+ * `hostContext.styles.variables`, also on `host-context-changed`), and
+ * `ui/notifications/size-changed` so the host sizes its frame to the content
+ * instead of keeping a default height. Plain ES5, no interpolation.
+ */
+const BRIDGE_JS = `
+  var _nextId = 1;
+  var _pending = {};
+  var _appliedVars = [];
+  var _lastHeight = -1;
+  var _sizing = false;
+
+  function post(msg) { window.parent.postMessage(msg, '*'); }
+
+  function rpcRequest(method, params) {
+    return new Promise(function (resolve, reject) {
+      var id = _nextId++;
+      _pending[id] = { resolve: resolve, reject: reject };
+      post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+    });
+  }
+
+  function rpcNotify(method, params) {
+    post({ jsonrpc: '2.0', method: method, params: params || {} });
+  }
+
+  function applyHostContext(ctx) {
+    if (!ctx || typeof ctx !== 'object') return;
+    var root = document.documentElement;
+    if (ctx.theme === 'light' || ctx.theme === 'dark') root.setAttribute('data-theme', ctx.theme);
+    if (ctx.theme === undefined && ctx.styles === undefined) return;
+    for (var i = 0; i < _appliedVars.length; i++) root.style.removeProperty(_appliedVars[i]);
+    _appliedVars = [];
+    var vars = ctx.styles && ctx.styles.variables;
+    if (!vars || typeof vars !== 'object') return;
+    for (var key in vars) {
+      if (!Object.prototype.hasOwnProperty.call(vars, key)) continue;
+      var value = vars[key];
+      if (!/^--[a-z0-9-]+$/i.test(key) || typeof value !== 'string' || value === '') continue;
+      root.style.setProperty(key, value);
+      _appliedVars.push(key);
+    }
+  }
+
+  function reportSize() {
+    if (!_sizing) return;
+    var height = Math.ceil(document.body.getBoundingClientRect().height);
+    if (!(height > 0) || height === _lastHeight) return;
+    _lastHeight = height;
+    rpcNotify('ui/notifications/size-changed', { height: height });
+  }
+
+  function startSizing() {
+    _sizing = true;
+    reportSize();
+    if (typeof ResizeObserver === 'function') new ResizeObserver(reportSize).observe(document.body);
+  }
+
+  window.addEventListener('message', function (evt) {
+    var msg = evt.data;
+    if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
+    if (msg.id != null && msg.method == null) {
+      var p = _pending[msg.id];
+      if (!p) return;
+      delete _pending[msg.id];
+      if (msg.error) p.reject(new Error(msg.error.message || 'rpc error ' + msg.error.code));
+      else p.resolve(msg.result);
+    } else if (msg.method === 'ui/notifications/host-context-changed') {
+      applyHostContext(msg.params);
+      reportSize();
+    }
+  });
+
+  function initBridge() {
+    return rpcRequest('ui/initialize', {
+      capabilities: {},
+      clientInfo: { name: 'agentproto-approval-card', version: '0.1.0' },
+      protocolVersion: '2026-01-26',
+      appCapabilities: { tools: { listChanged: false }, availableDisplayModes: ['inline'] }
+    }).then(function (result) {
+      applyHostContext(result && result.hostContext);
+      rpcNotify('ui/notifications/initialized', {});
+    });
+  }
+
+  function connect() {
+    initBridge().then(startSizing, startSizing);
+  }
+`
+
+function pageScript(body: string): string {
+  return `<script>\n(function () {${BRIDGE_JS}${body}})();\n</script>`
+}
+
 /** Static HTML for a state with nothing to decide. Still self-contained and
- *  network-free. */
+ *  network-free; it still reports its size so the host shrinks the frame. */
 function messageHtml(title: string | undefined, message: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><style>${PAGE_STYLE}</style></head><body>
 ${title === undefined ? "" : `<h3>${escHtml(title)}</h3>`}
 <p>${escHtml(message)}</p>
+${pageScript("\n  connect();\n")}
 </body></html>`
 }
 
@@ -197,20 +325,34 @@ function scriptJson(value: unknown): string {
     .replace(new RegExp("\\u2029", "g"), "\\u2029")
 }
 
+/** The earlier of the approval's own expiry and the card ticket's, as an ISO
+ *  string the in-page script turns into "expires in 12 min". */
+function earliestExpiry(...candidates: Array<string | undefined>): string | undefined {
+  let best: { iso: string; ms: number } | undefined
+  for (const iso of candidates) {
+    if (iso === undefined) continue
+    const ms = Date.parse(iso)
+    if (Number.isNaN(ms)) continue
+    if (best === undefined || ms < best.ms) best = { iso, ms }
+  }
+  return best?.iso
+}
+
 /**
  * Render the card HTML for `approvalId`, minting a fresh one-time ticket
- * when the approval is still `pending`. Title, preview (key/value table),
- * and two buttons (Approve / Deny) that call the app-only
+ * when the approval is still `pending`. Title, preview (key/value lines),
+ * and two buttons (Approve / Refuse) that call the app-only
  * `approval_card_decide` tool over the standard MCP Apps
- * `window.parent.postMessage` JSON-RPC bridge (same wire shape as
- * `terminal-panel-app.ts` / `sessions-panel.ts`) — no other network access.
+ * `window.parent.postMessage` JSON-RPC bridge — no other network access.
  */
 export function renderApprovalCardHtml(engine: ApprovalsEngine, approvalId: string): string {
   const record = engine.get(approvalId)
   if (!record) return notFoundHtml()
   if (record.status !== "pending") return decidedHtml(record)
 
-  const { ticket } = engine.mintCardTicket(approvalId)
+  const { ticket, expiresAt: ticketExpiresAt } = engine.mintCardTicket(approvalId)
+  const expiresAt = earliestExpiry(record.expiresAt, ticketExpiresAt)
+  const expiryAttr = expiresAt === undefined ? "" : ` data-expires="${escHtml(expiresAt)}"`
 
   return `<!doctype html>
 <html>
@@ -221,59 +363,17 @@ export function renderApprovalCardHtml(engine: ApprovalsEngine, approvalId: stri
 <body>
 <h3>${escHtml(record.title)}</h3>
 ${renderPreview(record)}
-<div class="actions">
-  <button id="approve">Approve</button>
-  <button id="deny">Deny</button>
+<div class="meta" id="expiry"${expiryAttr}></div>
+<div class="actions" id="actions">
+  <button id="deny">Refuse</button>
+  <button id="approve" class="primary">Approve</button>
 </div>
 <div id="status" role="status"></div>
-<script>
-(function () {
+${pageScript(`
   var TICKET = ${scriptJson(ticket)};
   var APPROVAL_ID = ${scriptJson(approvalId)};
   var ERROR_RULES = ${scriptJson(ERROR_RULES)};
   var MSG_GENERIC = ${scriptJson(MSG_GENERIC)};
-
-  // ============================================================
-  // MCP Apps bridge — JSON-RPC 2.0 over window.parent.postMessage.
-  // Same wire shape as terminal-panel-app.ts / sessions-panel.ts.
-  // ============================================================
-  var _nextId = 1;
-  var _pending = {};
-
-  function post(msg) { window.parent.postMessage(msg, '*'); }
-
-  function rpcRequest(method, params) {
-    return new Promise(function (resolve, reject) {
-      var id = _nextId++;
-      _pending[id] = { resolve: resolve, reject: reject };
-      post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
-    });
-  }
-
-  function rpcNotify(method, params) {
-    post({ jsonrpc: '2.0', method: method, params: params || {} });
-  }
-
-  window.addEventListener('message', function (evt) {
-    var msg = evt.data;
-    if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
-    if (msg.id != null && msg.method == null) {
-      var p = _pending[msg.id];
-      if (!p) return;
-      delete _pending[msg.id];
-      if (msg.error) p.reject(new Error(msg.error.message || 'rpc error ' + msg.error.code));
-      else p.resolve(msg.result);
-    }
-  });
-
-  function initBridge() {
-    return rpcRequest('ui/initialize', {
-      capabilities: {},
-      clientInfo: { name: 'agentproto-approval-card', version: '0.1.0' },
-      protocolVersion: '2026-01-26',
-      appCapabilities: { tools: { listChanged: false }, availableDisplayModes: ['inline'] }
-    }).then(function () { rpcNotify('ui/notifications/initialized', {}); });
-  }
 
   function callTool(name, args) {
     return rpcRequest('tools/call', { name: name, arguments: args || {} }).then(function (result) {
@@ -295,6 +395,7 @@ ${renderPreview(record)}
 
   function setStatus(text) {
     document.getElementById('status').textContent = text;
+    reportSize();
   }
 
   function setBusy(busy) {
@@ -302,12 +403,33 @@ ${renderPreview(record)}
     document.getElementById('deny').disabled = busy;
   }
 
+  function expiryText(ms) {
+    var mins = Math.ceil(ms / 60000);
+    if (mins <= 0) return 'expired';
+    if (mins < 60) return 'expires in ' + mins + ' min';
+    var hours = Math.round(mins / 60);
+    if (hours < 24) return 'expires in ' + hours + ' h';
+    return 'expires in ' + Math.round(hours / 24) + ' d';
+  }
+
+  var _expiryTimer = null;
+
+  function updateExpiry() {
+    var el = document.getElementById('expiry');
+    var at = Date.parse(el.getAttribute('data-expires') || '');
+    if (isNaN(at)) return;
+    el.textContent = expiryText(at - Date.now());
+    reportSize();
+  }
+
   function decide(decision) {
     setBusy(true);
     callTool('approval_card_decide', { approvalId: APPROVAL_ID, decision: decision, ticket: TICKET })
       .then(function () {
-        document.querySelector('.actions').style.display = 'none';
-        setStatus(decision === 'approve' ? 'Approved' : 'Declined');
+        if (_expiryTimer !== null) clearInterval(_expiryTimer);
+        document.getElementById('actions').style.display = 'none';
+        document.getElementById('expiry').style.display = 'none';
+        setStatus(decision === 'approve' ? 'Approved' : 'Refused');
       })
       .catch(function (err) {
         setStatus(humanize(err));
@@ -318,9 +440,10 @@ ${renderPreview(record)}
   document.getElementById('approve').addEventListener('click', function () { decide('approve'); });
   document.getElementById('deny').addEventListener('click', function () { decide('deny'); });
 
-  initBridge();
-})();
-</script>
+  updateExpiry();
+  _expiryTimer = setInterval(updateExpiry, 30000);
+  connect();
+`)}
 </body>
 </html>`
 }
