@@ -22,6 +22,7 @@
  * driven with a fake in tests.
  */
 
+import { createHash } from "node:crypto"
 import { hostname } from "node:os"
 import { checkpointBranchOf, checkpointRefPrefixForSession } from "./sandbox-delivery.js"
 import {
@@ -35,6 +36,7 @@ import {
   collectBranchAuthors,
   sessionIdsFromTrailers,
   replaceProvenanceFooter,
+  stripProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
   type FooterAuthor,
@@ -48,6 +50,25 @@ export type GhRunner = (
   cwd: string,
 ) => Promise<{ exitCode: number; stdout: string }>
 
+/** Bookkeeping the daemon keeps on a PR it has stamped, so a later rewrite
+ *  can be told apart from a repeat poll and a deliberate footer removal from
+ *  a genuine body edit. Persisted on `SessionDescriptor.openedPrs`
+ *  (`OpenedPullRequest`), which survives restarts. */
+export interface PrFooterState {
+  /** sha256 (hex) of the PR body with the footer stripped, at the moment of
+   *  the daemon's last stamp. A current footerless body hashing to the same
+   *  value means the author only removed the footer, not rewrote the body. */
+  bodyHash?: string
+  /** Consecutive polls that found the footer removed while that body was
+   *  unchanged. Two in a row stops stamping this PR deliberately. */
+  removals?: number
+  /** Stop stamping this PR: the footer was removed twice with no other body
+   *  change. */
+  disabled?: boolean
+  /** ISO timestamp of the last successful daemon stamp. */
+  stampedAt?: string
+}
+
 /** The slice of `SessionsRegistry` this stamper touches — kept structural so
  *  the module doesn't drag the full registry type (and its imports) in. */
 export interface StampRegistry {
@@ -57,6 +78,16 @@ export interface StampRegistry {
   list(opts?: { includeArchived?: boolean }): readonly FooterSession[]
   get(id: string): FooterSession | undefined
   recordOpenedPr(sessionId: string, input: { adapter: string; number: number; url: string }): unknown
+  /** Persist {@link PrFooterState} onto an already-recorded PR. Optional so
+   *  lightweight registries/fakes keep working; without it the daemon cannot
+   *  remember a stamp across turns, and a rewritten footer is re-stamped at
+   *  most once (never suppressed). */
+  recordPrFooterState?(sessionId: string, url: string, state: PrFooterState): unknown
+}
+
+/** Stable digest of a body (footer stripped) for {@link PrFooterState}. */
+export function footerBodyHash(body: string): string {
+  return createHash("sha256").update(stripProvenanceFooter(body)).digest("hex").slice(0, 32)
 }
 
 export interface StampPrInput {
@@ -86,7 +117,7 @@ export interface StampPrInput {
 }
 
 export type StampOutcome =
-  | { stamped: false; reason: string }
+  | { stamped: false; reason: string; footerState?: PrFooterState }
   | {
       stamped: true
       url: string
@@ -96,6 +127,8 @@ export type StampOutcome =
       /** True when an existing footer was re-rendered (refresh mode) — see
        *  {@link replaceProvenanceFooter}. */
       refreshed?: boolean
+      /** Bookkeeping the caller should persist (see {@link PrFooterState}). */
+      footerState?: PrFooterState
     }
 
 /**
@@ -215,8 +248,16 @@ export async function stampFooterOnPr(input: {
    *  wrote it (agentproto/ts#2447 credited the CI reviewer as the opener).
    *  Only read when `authors` is not passed. */
   requireTrailerAuthorship?: boolean
+  /** The PR's persisted footer bookkeeping (from `openedPrs`). When present,
+   *  a footerless body is compared to the last stamped body: an unchanged
+   *  body counts as a deliberate removal (two in a row stop stamping), while
+   *  a changed body is an agent rewrite and gets exactly one re-stamp. */
+  footerState?: PrFooterState
 }): Promise<StampOutcome> {
   try {
+    if (input.footerState?.disabled) {
+      return { stamped: false, reason: "footer suppressed (removed deliberately twice)" }
+    }
     const run = input.run ?? defaultGhRunner
     const stampRun: GhRunner = input.authorizeArgs
       ? async (args, cwd) => {
@@ -294,6 +335,14 @@ export async function stampFooterOnPr(input: {
 
     const alreadyStamped = hasProvenanceFooter(body)
     const ownFooter = alreadyStamped && footerSessionId(body) === input.session.id
+    // The body as the author wrote it, plus its digest. A footerless body
+    // hashing to the SAME value as the last stamp means the footer was
+    // deliberately removed, not that the body was rewritten.
+    const bodyHash = footerBodyHash(body)
+    const stampedAt = (): string => new Date().toISOString()
+    const recordFooterState = (state: PrFooterState): void => {
+      input.registry.recordPrFooterState?.(input.session.id, input.prUrl, state)
+    }
 
     // Record an own-footer PR the FIRST time it's seen (not on a `refresh`
     // pass — a refresh call only ever iterates PRs the reconciler already
@@ -319,12 +368,34 @@ export async function stampFooterOnPr(input: {
       // conservative as before.
       const upgrade = ownFooter ? footerIsRicherThan(footer, body) : footerHasCost(footer) && !footerHasCost(body)
       if (!upgrade) {
-        return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: false }
+        // Remember the body this daemon stamped, so a later footer removal
+        // can be recognized. Only when we do not already know that body.
+        if (ownFooter && input.footerState?.bodyHash !== bodyHash) {
+          recordFooterState({ bodyHash, removals: 0, stampedAt: stampedAt() })
+        }
+        return {
+          stamped: true,
+          url: input.prUrl,
+          number: input.prNumber,
+          sessionId: input.session.id,
+          alreadyStamped,
+          refreshed: false,
+          ...(ownFooter ? { footerState: { bodyHash, removals: 0 } } : {}),
+        }
       }
       const refreshedBody = replaceProvenanceFooter(body, footer)
       const edit = await stampRun(["pr", "edit", input.prUrl, "--body", refreshedBody], input.cwd)
       if (edit.exitCode !== 0) return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
-      return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: true }
+      if (ownFooter) recordFooterState({ bodyHash, removals: 0, stampedAt: stampedAt() })
+      return {
+        stamped: true,
+        url: input.prUrl,
+        number: input.prNumber,
+        sessionId: input.session.id,
+        alreadyStamped,
+        refreshed: true,
+        ...(ownFooter ? { footerState: { bodyHash, removals: 0 } } : {}),
+      }
     }
 
     if (!alreadyStamped) {
@@ -343,6 +414,7 @@ export async function stampFooterOnPr(input: {
         number: input.prNumber,
         url: input.prUrl,
       })
+      recordFooterState({ bodyHash, removals: 0, stampedAt: stampedAt() })
     }
 
     return {

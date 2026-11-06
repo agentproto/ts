@@ -34,6 +34,7 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync, watch as watchFsPath } from "node:fs"
 import type { FSWatcher } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import type { PrFooterState } from "./pr-provenance-stamp.js"
 import { computeAgentRoleRefresh, renderRoleUpdateNotice } from "./agent-role-refresh.js"
 import type { AgentManifestRefError } from "./spawn-agent-manifest.js"
 import { encodeCloudSessionMeta, resolveCloudResumeId } from "@agentproto/cloud-agent"
@@ -4809,6 +4810,14 @@ export interface SessionsRegistry {
     sessionId: string,
     input: RecordOpenedPrInput,
   ): SessionDescriptor | undefined
+  /** Persist provenance-footer bookkeeping onto an already-recorded PR (the
+   *  body hash at the last stamp, the removal count, and the stop flag). A
+   *  no-op when the session or the PR is unknown. */
+  recordPrFooterState(
+    sessionId: string,
+    url: string,
+    state: PrFooterState,
+  ): SessionDescriptor | undefined
   /** Read back a `kind:"command"` session's full logged result (the
    *  `CommandLogEntry` `recordCommand` wrote). Resolves to null when the
    *  session isn't a command session or has no recorded entry. Routed
@@ -6549,6 +6558,17 @@ export interface OpenedPullRequest {
   number: number
   url: string
   openedAt: string
+  /** ISO timestamp of the daemon's last provenance-footer stamp on this PR
+   *  (see `pr-provenance-stamp.ts`). */
+  footerStampedAt?: string
+  /** Digest of the PR body with the footer stripped at that last stamp, so a
+   *  later footerless body can be told apart from a genuine rewrite. */
+  footerBodyHash?: string
+  /** Consecutive polls that found the footer removed while the body was
+   *  unchanged since that stamp. */
+  footerRemovals?: number
+  /** Stop stamping this PR: its footer was removed deliberately twice. */
+  footerDisabled?: boolean
 }
 
 /** `RecordOpenedPrInput.adapter` for PRs the reconciler merely saw MENTIONED
@@ -13638,6 +13658,21 @@ export function createSessionsRegistry(opts?: {
           )
         }
       }
+      return rt.desc
+    },
+    recordPrFooterState(sessionId, url, state) {
+      const rt = sessions.get(sessionId)
+      if (!rt) return undefined
+      const existing = rt.desc.openedPrs ?? []
+      const index = existing.findIndex(pr => pr.url === url)
+      if (index === -1) return undefined
+      const next = { ...existing[index]! }
+      if (state.stampedAt !== undefined) next.footerStampedAt = state.stampedAt
+      if (state.bodyHash !== undefined) next.footerBodyHash = state.bodyHash
+      if (state.removals !== undefined) next.footerRemovals = state.removals
+      if (state.disabled !== undefined) next.footerDisabled = state.disabled
+      rt.desc.openedPrs = existing.map((pr, i) => (i === index ? next : pr))
+      schedulePersist()
       return rt.desc
     },
     async readCommandLog(sessionId) {
