@@ -17,10 +17,11 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs"
 
-import type { ApprovalRecord, CardTicketRecord } from "./types.js"
+import type { ApprovalRecord, CardTicketRecord, RelayOutboxEntry } from "./types.js"
 
 export function defaultApprovalsHomeDir(): string {
   return join(homedir(), ".agentproto", "approvals")
@@ -56,6 +57,10 @@ function payloadPath(homeDir: string, id: string): string {
 
 function cardTicketPath(homeDir: string, id: string): string {
   return join(approvalDir(homeDir, id), "card-ticket.json")
+}
+
+function relayOutboxPath(homeDir: string, id: string): string {
+  return join(approvalDir(homeDir, id), "relay-outbox.json")
 }
 
 /** Workspace-relative path to `<id>/payload.json` — what `signArtifact`
@@ -129,6 +134,40 @@ export function loadAllCardTickets(homeDir: string): Map<string, CardTicketRecor
     if (id.startsWith(".") || id === "audit" || id === "_secrets.json") continue
     const ticket = readCardTicket(homeDir, id)
     if (ticket && ticket.approvalId === id) out.set(id, ticket)
+  }
+  return out
+}
+
+export function writeRelayOutbox(homeDir: string, entry: RelayOutboxEntry): void {
+  writeJsonAtomic(relayOutboxPath(homeDir, entry.approvalId), entry)
+}
+
+export function removeRelayOutbox(homeDir: string, id: string): void {
+  rmSync(relayOutboxPath(homeDir, id), { force: true })
+}
+
+/** Every undelivered relay entry, keyed by approval id — the boot-recovery
+ *  pass. Malformed files are ignored, same policy as the other loaders. */
+export function loadAllRelayOutbox(homeDir: string): RelayOutboxEntry[] {
+  const out: RelayOutboxEntry[] = []
+  if (!existsSync(homeDir)) return out
+  let entries: string[]
+  try {
+    entries = readdirSync(homeDir)
+  } catch {
+    return out
+  }
+  for (const id of entries) {
+    if (id.startsWith(".") || id === "audit" || id === "_secrets.json") continue
+    const entry = readJsonIfExists<RelayOutboxEntry>(relayOutboxPath(homeDir, id))
+    if (
+      entry &&
+      entry.approvalId === id &&
+      (entry.decision === "approved" || entry.decision === "denied") &&
+      typeof entry.attempts === "number"
+    ) {
+      out.push(entry)
+    }
   }
   return out
 }
