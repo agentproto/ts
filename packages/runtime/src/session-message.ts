@@ -418,6 +418,13 @@ export function sanitizeLabel(label: string | undefined): string | undefined {
   return clean.replace(/^_+|_+$/g, "") || undefined
 }
 
+/** The text prefix an unverified or anonymous sender's message carries
+ *  (`defaults.messaging.anonymousSend: "label"`), so the recipient sees it
+ *  in the body, not only in the envelope attributes. */
+export function unverifiedSenderPrefix(label: string | undefined): string {
+  return `[unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
+}
+
 /** Attribute values are daemon-generated, but escape anyway (defence in
  *  depth — an id is never expected to carry these). */
 function attr(value: string): string {

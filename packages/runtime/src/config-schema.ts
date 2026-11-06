@@ -283,6 +283,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
         peerBinding: z.enum(["slug", "verified"]).optional(),
         agentInterrupt: z.enum(["allow", "deny"]).optional(),
         pendingPromptStaleMinutes: z.number().positive().optional(),
+        anonymousSend: z.enum(["block", "label"]).optional(),
       })
       .passthrough()
       .optional(),
@@ -1788,6 +1789,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Agent-sender interrupt urgency",
     help: "Whether a SESSION sender may use urgency \"interrupt\" (vs. downgraded to \"steer\"). Takes effect on the next call.",
     default: "deny",
+  },
+  {
+    path: "defaults.messaging.anonymousSend",
+    schema: z.enum(["block", "label"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Anonymous / unverified sender messages",
+    help: "What message_send / message_reply (and POST /sessions/:id/messages) do for a sender with no verified session identity (an identity-less MCP client under mcp.noCallerIdentity \"accept\", or a claimed external identity such as the shared claude-desktop Chat tab). \"label\" (default): delivered to any live session, text prefixed \"[unverified sender: <label>] \", capped at steer (never interrupt). \"block\": an unverified session sender outside the tree and workspace relations is refused with forbidden_recipient, as before. Verified senders and agent_prompt are unaffected. Takes effect on the next call.",
+    default: "label",
   },
   {
     path: "defaults.messaging.pendingPromptStaleMinutes",

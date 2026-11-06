@@ -257,6 +257,10 @@ export interface SpawnDefaultsConfig {
      *  sender is told it is stuck (typed notice) and it is flagged `stale`
      *  in `pendingPrompts`. Default 5. */
     pendingPromptStaleMinutes?: number
+    /** `defaults.messaging.anonymousSend` - "label" (default): anonymous and
+     *  unverified senders reach any live session, labelled and capped at
+     *  steer. "block": unverified session senders keep the refusal. */
+    anonymousSend?: "block" | "label"
   }
   /** Caller identity (ts#2165 step 5). */
   identity?: {

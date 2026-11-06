@@ -57,6 +57,11 @@ export interface ResolvedMessagingDefaults {
   /** `defaults.messaging.pendingPromptStaleMinutes` — minutes a queued prompt
    *  may wait before its sender is told it is stuck. Default 5. */
   pendingPromptStaleMinutes: number
+  /** `defaults.messaging.anonymousSend` - "label" (default): an anonymous or
+   *  unverified sender may message any live session, labelled unverified and
+   *  capped at steer. "block": an unverified session sender outside the usual
+   *  relations is refused (`forbidden_recipient`). */
+  anonymousSend: "block" | "label"
 }
 
 /** Same unset-defaults as before this resolver existed — a missing/malformed
@@ -71,6 +76,7 @@ export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
   peerBinding: "slug",
   agentInterrupt: "deny",
   pendingPromptStaleMinutes: 5,
+  anonymousSend: "label",
 }
 
 export async function resolveMessagingDefaults(
@@ -89,6 +95,7 @@ export async function resolveMessagingDefaults(
       agentInterrupt: d?.messaging?.agentInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentInterrupt,
       pendingPromptStaleMinutes:
         d?.messaging?.pendingPromptStaleMinutes ?? DEFAULT_MESSAGING_DEFAULTS.pendingPromptStaleMinutes,
+      anonymousSend: d?.messaging?.anonymousSend ?? DEFAULT_MESSAGING_DEFAULTS.anonymousSend,
     }
   } catch {
     return DEFAULT_MESSAGING_DEFAULTS

@@ -583,6 +583,10 @@ export interface RegisterAgentToolsOptions {
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
    *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** config.json `defaults.messaging.anonymousSend` - "label" (default) or
+   *  "block". Forwarded to `message_send` / `message_reply` and
+   *  `permissions_explain`. */
+  messagingAnonymousSend?: "block" | "label"
   /** `mcp.noCallerIdentity` — how the MCP gateway treats a call with no
    *  caller identity: `block` (default) refuses, `accept` allows an
    *  anonymous `message_send` as `claude-code`, `ask` parks it on a human
@@ -623,6 +627,7 @@ export function registerAgentTools(
     messagingPeerGroups,
     messagingGrants,
     messagingAgentInterrupt,
+    messagingAnonymousSend,
     noCallerIdentity,
     requestAnonymousMessageApproval,
     ensureLlmEndpointRunning,
@@ -1452,6 +1457,7 @@ export function registerAgentTools(
       : {}),
     ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
     ...(noCallerIdentity ? { noCallerIdentity } : {}),
     ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
   })
@@ -1471,6 +1477,7 @@ export function registerAgentTools(
     ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
     workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
   })
 
   // ── agent_output ───────────────────────────────────
