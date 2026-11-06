@@ -25,6 +25,14 @@ export {
   type CardTicketRecord,
 } from "./types.js"
 export { handleApprovals, type ApprovalsHttpAuth } from "./http.js"
+export {
+  createBureauApprovalBridge,
+  BUREAU_APPROVAL_KIND,
+  type BureauApprovalBridge,
+  type BureauApprovalBridgeOptions,
+  type BureauImportResolver,
+  type ImportedResultHookCall,
+} from "./bureau-bridge.js"
 export { registerApprovalTools, type RegisterApprovalToolsOptions } from "./tools.js"
 export { registerApprovalCardDecideTool } from "./card-tool.js"
 export { renderApprovalCardHtml, approvalCardResourceUri } from "./card.js"
