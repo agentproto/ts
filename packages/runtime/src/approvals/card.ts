@@ -309,18 +309,20 @@ const BRIDGE_JS = `
 
   function initBridge() {
     return rpcRequest('ui/initialize', {
-      capabilities: {},
-      clientInfo: { name: 'agentproto-approval-card', version: '0.1.0' },
-      protocolVersion: '2026-01-26',
-      appCapabilities: { tools: { listChanged: false }, availableDisplayModes: ['inline'] }
+      appInfo: { name: 'agentproto-approval-card', version: '0.1.0' },
+      appCapabilities: { availableDisplayModes: ['inline'] },
+      protocolVersion: '2026-01-26'
     }).then(function (result) {
       applyHostContext(result && result.hostContext);
       rpcNotify('ui/notifications/initialized', {});
     });
   }
 
-  function connect() {
-    initBridge().then(startSizing, startSizing);
+  function connect(onReady) {
+    initBridge().then(function () {
+      if (onReady) onReady();
+      startSizing();
+    }, startSizing);
   }
 `
 
@@ -440,8 +442,8 @@ export function renderPendingApprovalsHtml(engine: ApprovalsEngine): string {
 ${renderPreview(record)}
 <div class="meta" id="expiry-${i}"${expiryAttr}></div>
 <div class="actions" id="actions-${i}">
-  <button id="deny-${i}">Refuse</button>
-  <button id="approve-${i}" class="primary">Approve</button>
+  <button id="deny-${i}" disabled>Refuse</button>
+  <button id="approve-${i}" class="primary" disabled>Approve</button>
 </div>
 <div class="status" id="status-${i}" role="status"></div>
 </section>`
@@ -505,7 +507,9 @@ ${pageScript(`
   });
 
   updateExpiry();
-  connect();
+  connect(function () {
+    for (var i = 0; i < CARDS.length; i++) setBusy(i, false);
+  });
 `)}
 </body>
 </html>`
@@ -538,8 +542,8 @@ export function renderApprovalCardHtml(engine: ApprovalsEngine, approvalId: stri
 ${renderPreview(record)}
 <div class="meta" id="expiry"${expiryAttr}></div>
 <div class="actions" id="actions">
-  <button id="deny">Refuse</button>
-  <button id="approve" class="primary">Approve</button>
+  <button id="deny" disabled>Refuse</button>
+  <button id="approve" class="primary" disabled>Approve</button>
 </div>
 <div id="status" role="status"></div>
 ${pageScript(`
@@ -587,7 +591,7 @@ ${pageScript(`
 
   updateExpiry();
   _expiryTimer = setInterval(updateExpiry, 30000);
-  connect();
+  connect(function () { setBusy(false); });
 `)}
 </body>
 </html>`

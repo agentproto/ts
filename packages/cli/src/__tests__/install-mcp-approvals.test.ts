@@ -5,9 +5,9 @@
  * byte-level claims are checked on actual files.
  */
 
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const { FAKE_HOME } = vi.hoisted(() => ({ FAKE_HOME: { value: "/tmp/unset" } }))
@@ -82,7 +82,12 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-const APPROVALS_ENTRY = { command: "agentproto", args: ["mcp-bridge", "--surface", "approval-cards"] }
+// A GUI app has no shell PATH and the bin is `#!/usr/bin/env node`: the entry
+// carries absolute node and the absolute running cli script.
+const APPROVALS_ENTRY = {
+  command: process.execPath,
+  args: [realpathSync(process.argv[1]!), "mcp-bridge", "--surface", "approval-cards"],
+}
 
 describe("install-mcp --approvals (print)", () => {
   it("prints the exact entry and touches nothing", async () => {
@@ -202,5 +207,122 @@ describe("install-mcp --approvals --write", () => {
 
     expect(await runInstallMcp(["--approvals", "--write"])).toBe(1)
     expect(stderr.join("")).toContain("Claude Desktop was not found")
+  })
+})
+
+describe("install-mcp --approvals --write (Claude-3p profile)", () => {
+  let thirdPartyDir: string
+  let thirdPartyPath: string
+
+  beforeEach(() => {
+    thirdPartyDir = join(home, "Library", "Application Support", "Claude-3p")
+    thirdPartyPath = join(thirdPartyDir, "claude_desktop_config.json")
+  })
+
+  const backupsOf = (dir: string, base: string) => readdirSync(dir).filter(n => n.startsWith(`${base}.bak-`))
+
+  it("writes the entry into both profiles when both exist, each backed up, other entries untouched", async () => {
+    const mainOriginal = otherEntriesConfig("  ")
+    const thirdOriginal = otherEntriesConfig("    ")
+    writeFileSync(configPath, mainOriginal)
+    mkdirSync(thirdPartyDir, { recursive: true })
+    writeFileSync(thirdPartyPath, thirdOriginal)
+
+    expect(await runInstallMcp(["--approvals", "--write"])).toBe(0)
+
+    for (const [path, dir, original] of [
+      [configPath, desktopDir, mainOriginal],
+      [thirdPartyPath, thirdPartyDir, thirdOriginal],
+    ] as const) {
+      const backups = backupsOf(dir, "claude_desktop_config.json")
+      expect(backups).toHaveLength(1)
+      expect(readFileSync(join(dir, backups[0]!), "utf8")).toBe(original)
+      const next = JSON.parse(readFileSync(path, "utf8")) as { mcpServers: Record<string, unknown> }
+      expect(Object.keys(next.mcpServers)).toEqual(["agentproto", "vendor", "agentproto-approvals"])
+      expect(next.mcpServers["agentproto-approvals"]).toEqual(APPROVALS_ENTRY)
+      const before = JSON.parse(original) as { mcpServers: Record<string, unknown> }
+      expect(JSON.stringify(next.mcpServers.vendor)).toBe(JSON.stringify(before.mcpServers.vendor))
+      expect(JSON.stringify(next.mcpServers.agentproto)).toBe(JSON.stringify(before.mcpServers.agentproto))
+    }
+    expect(readFileSync(thirdPartyPath, "utf8").startsWith('{\n    "globalShortcut"')).toBe(true)
+  })
+
+  it("writes only Claude/ and never creates Claude-3p when that config is absent", async () => {
+    writeFileSync(configPath, otherEntriesConfig("  "))
+
+    expect(await runInstallMcp(["--approvals", "--write"])).toBe(0)
+
+    expect(JSON.parse(readFileSync(configPath, "utf8")).mcpServers["agentproto-approvals"]).toEqual(APPROVALS_ENTRY)
+    expect(readdirSync(join(home, "Library", "Application Support"))).toEqual(["Claude"])
+  })
+
+  it("writes the Claude-3p profile even when Claude/ is not installed", async () => {
+    rmSync(desktopDir, { recursive: true, force: true })
+    mkdirSync(thirdPartyDir, { recursive: true })
+    writeFileSync(thirdPartyPath, otherEntriesConfig("  "))
+
+    expect(await runInstallMcp(["--approvals", "--write"])).toBe(0)
+
+    expect(JSON.parse(readFileSync(thirdPartyPath, "utf8")).mcpServers["agentproto-approvals"]).toEqual(APPROVALS_ENTRY)
+    expect(readdirSync(join(home, "Library", "Application Support"))).toEqual(["Claude-3p"])
+  })
+
+  it("the entry uses absolute node and an absolute cli script, not bare agentproto", async () => {
+    writeFileSync(configPath, otherEntriesConfig("  "))
+    mkdirSync(thirdPartyDir, { recursive: true })
+    writeFileSync(thirdPartyPath, otherEntriesConfig("  "))
+
+    await runInstallMcp(["--approvals", "--write"])
+
+    for (const path of [configPath, thirdPartyPath]) {
+      const entry = JSON.parse(readFileSync(path, "utf8")).mcpServers["agentproto-approvals"] as {
+        command: string
+        args: string[]
+      }
+      expect(entry.command).toBe(process.execPath)
+      expect(isAbsolute(entry.command)).toBe(true)
+      expect(isAbsolute(entry.args[0]!)).toBe(true)
+      expect(entry.args.slice(1)).toEqual(["mcp-bridge", "--surface", "approval-cards"])
+    }
+    const printed = JSON.parse(stdout.join("").slice(0, stdout.join("").indexOf("\n}\n") + 2)) as {
+      mcpServers: Record<string, unknown>
+    }
+    expect(printed.mcpServers["agentproto-approvals"]).toEqual(APPROVALS_ENTRY)
+  })
+
+  it("prints the quit-Claude reminder once after writing, and no other entry", async () => {
+    writeFileSync(configPath, otherEntriesConfig("  "))
+    mkdirSync(thirdPartyDir, { recursive: true })
+    writeFileSync(thirdPartyPath, otherEntriesConfig("  "))
+
+    await runInstallMcp(["--approvals", "--write"])
+
+    const out = stdout.join("") + stderr.join("")
+    expect(out.match(/Quit Claude completely \(Cmd\+Q\) BEFORE running this/g)).toHaveLength(1)
+    expect(out).not.toContain(OTHER_SECRET_ARG)
+    expect(out).not.toContain(OTHER_SECRET_ENV)
+    expect(out).not.toContain("vendor")
+  })
+
+  it("prints no quit reminder when nothing needed writing", async () => {
+    writeFileSync(configPath, otherEntriesConfig("  "))
+    await runInstallMcp(["--approvals", "--write"])
+    stdout.length = 0
+
+    expect(await runInstallMcp(["--approvals", "--write"])).toBe(0)
+
+    expect(stdout.join("")).not.toContain("Quit Claude completely")
+  })
+
+  it("one unreadable profile fails the run but the other is still written", async () => {
+    writeFileSync(configPath, otherEntriesConfig("  "))
+    mkdirSync(thirdPartyDir, { recursive: true })
+    writeFileSync(thirdPartyPath, "{ not json")
+
+    expect(await runInstallMcp(["--approvals", "--write"])).toBe(1)
+
+    expect(readFileSync(thirdPartyPath, "utf8")).toBe("{ not json")
+    expect(backupsOf(thirdPartyDir, "claude_desktop_config.json")).toHaveLength(0)
+    expect(JSON.parse(readFileSync(configPath, "utf8")).mcpServers["agentproto-approvals"]).toEqual(APPROVALS_ENTRY)
   })
 })
