@@ -78,8 +78,13 @@ export async function resolveViaDoh(
           lastError = `HTTP ${res.status}`
           continue
         }
-        sawResponse = true
         const body = (await res.json()) as DohJson
+        const status = body.Status ?? 0
+        if (status !== 0 && status !== 3) {
+          lastError = `DoH status ${status}`
+          continue
+        }
+        sawResponse = true
         const addresses = (body.Answer ?? [])
           .filter(a => (a.type === 1 || a.type === 28) && typeof a.data === "string" && a.data.length > 0)
           .map(a => a.data as string)
