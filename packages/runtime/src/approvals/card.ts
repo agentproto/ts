@@ -343,7 +343,7 @@ function earliestExpiry(...candidates: Array<string | undefined>): string | unde
  * when the approval is still `pending`. Title, preview (key/value lines),
  * and two buttons (Approve / Refuse) that call the app-only
  * `approval_card_decide` tool over the standard MCP Apps
- * `window.parent.postMessage` JSON-RPC bridge — no other network access.
+ * `window.parent.postMessage` JSON-RPC bridge, with no other network access.
  */
 export function renderApprovalCardHtml(engine: ApprovalsEngine, approvalId: string): string {
   const record = engine.get(approvalId)
