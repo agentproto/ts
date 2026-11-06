@@ -69,6 +69,11 @@ export const GH_PROVENANCE_ADAPTER_ENV = "AGENTPROTO_ADAPTER"
  *  the adapter declared no default. */
 export const GH_PROVENANCE_MODEL_ENV = "AGENTPROTO_MODEL"
 
+/** JSON array of `owner/name` repos that must never receive a footer, read
+ *  from `defaults.prProvenance.footer.skipRepos` at spawn and checked by the
+ *  shim on every invocation (case-insensitively). */
+export const GH_PROVENANCE_SKIP_REPOS_ENV = "AGENTPROTO_GH_PROVENANCE_SKIP_REPOS"
+
 /** Parse a raw string into a boolean opt-in, or `undefined` when it isn't a
  *  recognised truthy/falsy token (so a lower-precedence source can decide). */
 export function parseWrapGh(raw: string | undefined): boolean | undefined {
@@ -131,6 +136,9 @@ export interface GhShimEnvInput {
   adapter?: string
   /** Resolved model id for the footer, when known. */
   model?: string
+  /** `defaults.prProvenance.footer.skipRepos`, resolved at spawn. The shim
+   *  checks it on every invocation; a listed repo gets no footer. */
+  skipRepos?: readonly string[]
   sep?: string
 }
 
@@ -147,6 +155,9 @@ export function buildGhShimEnv(input: GhShimEnvInput): Record<string, string> {
   }
   if (input.adapter) env[GH_PROVENANCE_ADAPTER_ENV] = input.adapter
   if (input.model) env[GH_PROVENANCE_MODEL_ENV] = input.model
+  if (input.skipRepos && input.skipRepos.length > 0) {
+    env[GH_PROVENANCE_SKIP_REPOS_ENV] = JSON.stringify(input.skipRepos)
+  }
   return env
 }
 
@@ -185,6 +196,23 @@ const SESSION_ID_ENV = ${JSON.stringify(SESSION_ID_ENV)}
 const WORKSPACE_SLUG_ENV = ${JSON.stringify(WORKSPACE_SLUG_ENV)}
 const ADAPTER_ENV = ${JSON.stringify(GH_PROVENANCE_ADAPTER_ENV)}
 const MODEL_ENV = ${JSON.stringify(GH_PROVENANCE_MODEL_ENV)}
+const SKIP_REPOS_ENV = ${JSON.stringify(GH_PROVENANCE_SKIP_REPOS_ENV)}
+
+// Repos (lowercased) that opted out of footers, read on every invocation so a
+// respawned session (or an injected value) is always current.
+function skipRepos() {
+  const raw = process.env[SKIP_REPOS_ENV]
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.map(function (r) { return String(r).trim().toLowerCase() }).filter(Boolean)
+      : []
+  } catch { return [] }
+}
+const SKIP_REPOS = skipRepos()
+function repoKey(owner, repo) { return (String(owner) + "/" + String(repo)).toLowerCase() }
+function repoIsSkipped(key) { return SKIP_REPOS.indexOf(key) >= 0 }
 
 // A RENDERED footer line, not a prose mention of the marker.
 const FOOTER_RE = new RegExp("<sub>[^\\n]*" + MARKER + "[^\\n]*</sub>")
@@ -243,7 +271,7 @@ if (rewrite) {
   const edit = spawnSync(realGh, args, { stdio: "inherit" })
   const editExit = exitFrom(edit)
   try {
-    if (editExit === 0 && kept) restoreFooter(kept)
+    if (editExit === 0 && kept && !repoIsSkipped(kept.repo)) restoreFooter(kept)
   } catch { /* swallow: keeping the footer never fails the underlying gh */ }
   process.exit(editExit)
 }
@@ -264,7 +292,7 @@ const exitCode = exitFrom(run)
 try {
   if (exitCode === 0) {
     const parsed = parsePrUrl(stdout)
-    if (parsed) stampFooter(parsed)
+    if (parsed && !repoIsSkipped(repoKey(parsed.owner, parsed.repo))) stampFooter(parsed)
   }
 } catch { /* swallow — stamping never fails the underlying gh */ }
 process.exit(exitCode)
@@ -383,6 +411,7 @@ function readFooter(target) {
   let apiPath
   let host
   let body
+  let repo = ""
   if (target.kind === "pr") {
     const viewArgs = ["pr", "view"]
     if (target.selector !== null) viewArgs.push(target.selector)
@@ -394,19 +423,22 @@ function readFooter(target) {
     const loc = parsePrUrl(String(pr.url || ""))
     if (!loc) return null
     apiPath = "repos/" + loc.owner + "/" + loc.repo + "/pulls/" + loc.number
+    repo = repoKey(loc.owner, loc.repo)
     host = loc.host && loc.host !== "github.com" ? ["--hostname", loc.host] : []
     body = pr.body
   } else {
     // The same endpoint string the agent used, so gh resolves any
     // {owner}/{repo} placeholder exactly as it does for the rewrite itself.
     apiPath = target.endpoint
+    const endpointMatch = /^\\/?repos\\/([^\\/\\s]+)\\/([^\\/\\s]+)\\//.exec(String(apiPath || ""))
+    if (endpointMatch) repo = repoKey(endpointMatch[1], endpointMatch[2])
     host = target.hostname ? ["--hostname", target.hostname] : []
     const get = spawnSync(realGh, ["api", ...host, apiPath], SIDE_OPTS)
     if (get.status !== 0) return null
     body = JSON.parse(get.stdout).body
   }
   const m = typeof body === "string" ? FOOTER_RE.exec(body) : null
-  return m ? { footer: m[0], apiPath, host } : null
+  return m ? { footer: m[0], apiPath, host, repo } : null
 }
 
 // After a successful rewrite: if the new body lost the footer, append that

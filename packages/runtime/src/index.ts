@@ -319,6 +319,7 @@ import { withToolDenyGate } from "./tool-deny-gate.js"
 import { boundaryFromMeta, boundaryRestartOptions } from "./app-boundary.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
+import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
@@ -3336,8 +3337,7 @@ export async function createGateway(
           : {}),
         // Read per reconcile, so editing `skipRepos` takes effect without a
         // daemon restart.
-        skipFooterRepos: async () =>
-          (await loadConfig().catch(() => undefined))?.defaults?.prProvenance?.footer?.skipRepos ?? [],
+        skipFooterRepos: loadFooterSkipRepos,
       })
     : undefined
 

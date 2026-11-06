@@ -34,6 +34,11 @@ import {
   renderGhShimScript,
 } from "../gh-provenance-shim.js"
 
+/** Env var the generated shim reads its opt-out list from. Written as a
+ *  literal in these tests so the file still loads (and then fails on the
+ *  behaviour) against a tree that predates the constant. */
+const SKIP_REPOS_ENV = "AGENTPROTO_GH_PROVENANCE_SKIP_REPOS"
+
 describe("parseWrapGh", () => {
   it("recognises truthy tokens", () => {
     for (const v of ["1", "true", "TRUE", "yes", "on", " On "]) {
@@ -81,6 +86,14 @@ describe("buildGhShimEnv", () => {
     const env = buildGhShimEnv({ shimDir: "/shim", basePath: "/usr/bin" })
     expect(GH_PROVENANCE_ADAPTER_ENV in env).toBe(false)
     expect(GH_PROVENANCE_MODEL_ENV in env).toBe(false)
+  })
+  it("carries the footer skip list when provided", () => {
+    const env = buildGhShimEnv({
+      shimDir: "/shim",
+      basePath: "/usr/bin",
+      skipRepos: ["Acme/Widgets"],
+    })
+    expect(env[SKIP_REPOS_ENV]).toBe(JSON.stringify(["Acme/Widgets"]))
   })
 })
 
@@ -206,6 +219,18 @@ exit 0
     expect(l).toContain("model `opus`")
     // Original body preserved ahead of the footer.
     expect(l).toContain("body=Initial body")
+  })
+
+  it("does not stamp a repo listed in the skip env, matching it case-insensitively", () => {
+    const r = runShim(["pr", "create", "--title", "t", "--body", "b"], {
+      FAKE_GH_BODY: "Initial body",
+      [SKIP_REPOS_ENV]: JSON.stringify(["ACME/Widgets"]),
+    })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain(PR_URL)
+    // The real create ran, but no footer view/PATCH followed.
+    expect(log()).toContain("create")
+    expect(log()).not.toContain("PATCH")
   })
 
   it("does not double-stamp when the body already carries the marker", () => {
@@ -366,6 +391,16 @@ process.exit(0)
     expect(r.status).toBe(0)
     // The fake gh read the body off stdin, so the shim's own reads never ate it.
     expect(body()).toBe(`From stdin\n\n---\n${FOOTER}`)
+  })
+
+  it("does not restore a footer on a rewrite in a skip-listed repo", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "--body", "Rewritten"], {
+      [SKIP_REPOS_ENV]: JSON.stringify(["Acme/Widgets"]),
+    })
+    expect(r.status).toBe(0)
+    expect(body()).toBe("Rewritten")
+    expect(patches()).toHaveLength(0)
   })
 
   it("never duplicates a footer the new body already carries", () => {
