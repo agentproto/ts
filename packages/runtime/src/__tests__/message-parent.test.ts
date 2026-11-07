@@ -398,7 +398,7 @@ describe("message_parent — refusals", () => {
   })
 })
 
-describe("message_parent — dead parent fallback (ts#2069)", () => {
+describe("message_parent - dead parent fallback (ts#2069)", () => {
   async function report(registry: SessionsRegistry, childId: string) {
     const h = await harness({ registry, callerSessionId: childId })
     try {

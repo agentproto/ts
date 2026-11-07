@@ -1402,7 +1402,7 @@ export function registerAgentTools(
         if (!target || !moved) {
           return fail(
             `message_parent: parent session "${parentId}" is not running ` +
-              `(status: ${deadParent.status}) — the message cannot be delivered` +
+              `(status: ${deadParent.status}) - the message cannot be delivered` +
               (target ? "." : "; no live successor or ancestor to report to.")
           )
         }
