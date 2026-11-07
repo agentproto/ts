@@ -6,23 +6,27 @@
  * Scheduler's behaviour.
  */
 
-import { mkdtempSync, rmSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { describe, it, expect, vi, afterEach } from "vitest"
 import {
   SCHTASKS_TASK_NAME,
+  detectWinDaemonMode,
   renderSchtasksTr,
   renderWinDaemonScript,
+  renderWinStartupShim,
   schtasksTaskScriptPath,
   runWinInstall,
   runWinUninstall,
   runWinStart,
   runWinRestart,
   runWinStop,
+  runWinStatus,
   winDaemonInstallCommand,
   winDaemonShimCommand,
   winExecutionPolicyBlocksScripts,
+  winStartupScriptPath,
   type SchtasksFn,
 } from "../commands/daemon.js"
 
@@ -195,23 +199,6 @@ describe("runWinInstall", () => {
       // the local-folder warning must NOT fire.
       expect(text).toContain("published npm install")
       expect(text).not.toContain("LOCAL FOLDER")
-    } finally {
-      rmSync(home, { recursive: true, force: true })
-    }
-  })
-
-  it("a schtasks create failure is a failed install (exit code, no /Run)", async () => {
-    const home = tempHome()
-    try {
-      const calls: string[][] = []
-      const fake: SchtasksFn = async args => {
-        calls.push(args)
-        return { code: 1, stdout: "", stderr: "ERROR: boom" }
-      }
-      const code = await runWinInstall([], fake, home)
-      expect(code).toBe(1)
-      // Only the create ran — a failed install never starts the task.
-      expect(calls).toHaveLength(1)
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
@@ -494,5 +481,228 @@ describe("runWinUninstall / start / restart / stop", () => {
     err.restore()
     expect(code).toBe(1)
     expect(err.chunks.join("")).toContain("agentproto.cmd daemon install")
+  })
+})
+
+/**
+ * A managed enterprise account can be denied `schtasks /Create` by group
+ * policy even though a per-user ONLOGON task normally needs no admin. The
+ * fallback must register a no-admin auto-start (a launcher in the user's
+ * Startup folder), start the daemon right away, and make every later verb
+ * recognise the mode. Every OS primitive is injected: no real schtasks,
+ * registry, Startup folder or network is touched.
+ */
+describe("Windows Startup-folder fallback (schtasks refused)", () => {
+  function installStartupMarker(home: string, appData: string): string {
+    const startupPath = winStartupScriptPath(home, appData)
+    mkdirSync(dirname(startupPath), { recursive: true })
+    writeFileSync(startupPath, renderWinStartupShim(schtasksTaskScriptPath(home)), "utf8")
+    return startupPath
+  }
+
+  it("install falls back on ANY non-zero /Create: writes the Startup shim, starts the daemon now, and never calls /Run", async () => {
+    const home = tempHome()
+    try {
+      const appData = join(home, "AppData", "Roaming")
+      const calls: string[][] = []
+      const fake: SchtasksFn = async args => {
+        calls.push(args)
+        return { code: 1, stdout: "", stderr: "ERROR: Access is denied.\n" }
+      }
+      const spawned: Array<{ fullArgv: string[]; cwd: string; logPath: string }> = []
+      const out = captureStdout()
+      const err = captureStderr()
+      const code = await runWinInstall([], fake, home, {
+        appData,
+        probeAttempts: 1,
+        health: async () => null,
+        spawnServe: async opts => {
+          spawned.push(opts)
+          return 4242
+        },
+      })
+      out.restore()
+      err.restore()
+
+      expect(code).toBe(0)
+      // Only /Create ran; the fallback never retries the scheduled task.
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.[0]).toBe("/Create")
+
+      // The launcher is still written (it carries argv + redirection) and a
+      // Startup-folder shim calls it at logon.
+      expect(existsSync(schtasksTaskScriptPath(home))).toBe(true)
+      const startupPath = winStartupScriptPath(home, appData)
+      expect(existsSync(startupPath)).toBe(true)
+      expect(readFileSync(startupPath, "utf8")).toBe(
+        renderWinStartupShim(schtasksTaskScriptPath(home)),
+      )
+
+      // install leaves a daemon running NOW, not only at the next logon.
+      expect(spawned).toHaveLength(1)
+      expect(spawned[0]?.fullArgv).toContain("serve")
+
+      const text = out.chunks.join("") + err.chunks.join("")
+      expect(text).toContain("schtasks create failed")
+      expect(text.toLowerCase()).toContain("startup")
+      expect(text.toLowerCase()).toContain("no admin")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("detectWinDaemonMode selects startup-fallback only when the Startup shim is present", async () => {
+    const home = tempHome()
+    try {
+      const appData = join(home, "AppData", "Roaming")
+      expect(await detectWinDaemonMode(home, appData)).toBe("schtasks")
+      installStartupMarker(home, appData)
+      expect(await detectWinDaemonMode(home, appData)).toBe("startup-fallback")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("start in fallback mode spawns a detached serve and never calls schtasks", async () => {
+    const home = tempHome()
+    try {
+      const appData = join(home, "AppData", "Roaming")
+      installStartupMarker(home, appData)
+      let schtasksCalls = 0
+      const fake: SchtasksFn = async () => {
+        schtasksCalls++
+        return { code: 0, stdout: "", stderr: "" }
+      }
+      const spawned: string[][] = []
+      let probes = 0
+      const out = captureStdout()
+      const code = await runWinStart(fake, async () => null, 1, async () => null, {
+        home,
+        appData,
+        probeAttempts: 1,
+        health: async () => {
+          probes++
+          return probes === 1
+            ? null
+            : { url: "http://127.0.0.1:18790", version: "1.0.0", pid: 4242 }
+        },
+        spawnServe: async opts => {
+          spawned.push(opts.fullArgv)
+          return 4242
+        },
+      })
+      out.restore()
+
+      expect(code).toBe(0)
+      expect(schtasksCalls).toBe(0)
+      expect(spawned).toHaveLength(1)
+      expect(spawned[0]).toContain("serve")
+      expect(out.chunks.join("")).toContain("started")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("stop in fallback mode kills the daemon tree and never ends a scheduled task", async () => {
+    const home = tempHome()
+    try {
+      const appData = join(home, "AppData", "Roaming")
+      installStartupMarker(home, appData)
+      let schtasksCalls = 0
+      const fake: SchtasksFn = async () => {
+        schtasksCalls++
+        return { code: 0, stdout: "", stderr: "" }
+      }
+      const killed: number[] = []
+      let probes = 0
+      const out = captureStdout()
+      const code = await runWinStop(fake, {
+        home,
+        appData,
+        releaseDelayMs: 0,
+        health: async () => {
+          probes++
+          return probes === 1 ? { url: "http://127.0.0.1:18790", pid: 4242 } : null
+        },
+        killTree: async pid => {
+          killed.push(pid)
+          return 0
+        },
+      })
+      out.restore()
+
+      expect(code).toBe(0)
+      expect(schtasksCalls).toBe(0)
+      expect(killed).toEqual([4242])
+      expect(out.chunks.join("")).toContain("startup fallback")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("uninstall in fallback mode removes the Startup shim, stops the daemon, and leaves schtasks alone", async () => {
+    const home = tempHome()
+    try {
+      const appData = join(home, "AppData", "Roaming")
+      const startupPath = installStartupMarker(home, appData)
+      let schtasksCalls = 0
+      const fake: SchtasksFn = async () => {
+        schtasksCalls++
+        return { code: 0, stdout: "", stderr: "" }
+      }
+      const killed: number[] = []
+      let live = true
+      const out = captureStdout()
+      const code = await runWinUninstall(fake, {
+        home,
+        appData,
+        releaseDelayMs: 0,
+        health: async () =>
+          live ? { url: "http://127.0.0.1:18790", pid: 4242 } : null,
+        killTree: async pid => {
+          killed.push(pid)
+          live = false
+          return 0
+        },
+      })
+      out.restore()
+
+      expect(code).toBe(0)
+      expect(schtasksCalls).toBe(0)
+      expect(killed).toEqual([4242])
+      expect(existsSync(startupPath)).toBe(false)
+      expect(out.chunks.join("")).toContain("removed")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("status names the fallback instead of pretending a scheduled task is registered", async () => {
+    const home = tempHome()
+    try {
+      const appData = join(home, "AppData", "Roaming")
+      installStartupMarker(home, appData)
+      let schtasksCalls = 0
+      const fake: SchtasksFn = async () => {
+        schtasksCalls++
+        return { code: 0, stdout: "", stderr: "" }
+      }
+      const out = captureStdout()
+      const code = await runWinStatus(fake, {
+        home,
+        appData,
+        probeHealth: async () => ({ health: "ok", release: null, pid: 4242 }),
+      })
+      out.restore()
+
+      expect(code).toBe(0)
+      expect(schtasksCalls).toBe(0)
+      const text = out.chunks.join("")
+      expect(text).toContain("startup fallback")
+      expect(text).toContain("not a scheduled task")
+      expect(text).toContain("running (pid 4242)")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })
