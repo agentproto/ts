@@ -46,11 +46,11 @@ import {
 import { loadConfig } from "@agentproto/runtime/config"
 import {
   claudeSessionHeaders,
+  describeClaudeSessionAttestation,
   exitOnStdinClose,
   parseBridgeArgs,
-  readClaudeSessionId,
-  redactSessionId,
   stampOrigin,
+  urlForLog,
   watchParentExit,
   withSurface,
 } from "./mcp-bridge.logic.js"
@@ -66,7 +66,7 @@ export async function runMcpBridge(args: readonly string[]): Promise<number> {
 
   if (!process.env.AGENTPROTO_MCP_URL) {
     process.stderr.write(
-      `agentproto mcp-bridge: AGENTPROTO_MCP_URL not set, using ${url}\n`
+      `agentproto mcp-bridge: AGENTPROTO_MCP_URL not set, using ${urlForLog(url)}\n`
     )
   }
 
@@ -80,19 +80,14 @@ export async function runMcpBridge(args: readonly string[]): Promise<number> {
     // on every request so the daemon can attribute the call to the real
     // `cc:<id>` row. A header, not the URL, so the mount URL stays stable.
     const sessionHeaders = claudeSessionHeaders(process.env)
-    const attested = readClaudeSessionId(process.env)
-    if (attested) {
-      process.stderr.write(
-        `agentproto mcp-bridge: attesting Claude Code session ${redactSessionId(attested)}\n`
-      )
-    }
+    process.stderr.write(`${describeClaudeSessionAttestation(process.env, url)}\n`)
     const httpTransport = new StreamableHTTPClientTransport(new URL(url), {
       requestInit: { headers: sessionHeaders },
     })
     await client.connect(httpTransport)
   } catch (err) {
     process.stderr.write(
-      `agentproto mcp-bridge: failed to connect to daemon at ${url} — ` +
+      `agentproto mcp-bridge: failed to connect to daemon at ${urlForLog(url)} — ` +
         `${err instanceof Error ? err.message : String(err)}\n` +
         `  Is the daemon running? Start it: agentproto serve\n`
     )
@@ -165,7 +160,7 @@ export async function runMcpBridge(args: readonly string[]): Promise<number> {
   await server.connect(stdioTransport)
 
   process.stderr.write(
-    `agentproto mcp-bridge: connected to ${url}, ` +
+    `agentproto mcp-bridge: connected to ${urlForLog(url)}, ` +
       `proxying ${toolCount} tool(s) over stdio\n`
   )
 
