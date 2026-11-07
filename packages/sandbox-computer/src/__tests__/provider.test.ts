@@ -867,3 +867,105 @@ describe("computerSandboxProvider.remove — shared-box semantics", () => {
     await expect(computerSandboxProvider.remove!("cmp-does-not-exist")).resolves.toBeUndefined()
   })
 })
+
+describe("computerSandboxProvider.boot diagnostics on a failed running box", () => {
+  let controller: FakeController
+
+  beforeEach(async () => {
+    controller = new FakeController({ token: SERVICE_TOKEN })
+    await controller.start()
+  })
+  afterEach(async () => {
+    await controller.stop()
+    vi.restoreAllMocks()
+  })
+
+  function diagnostic(script: string): boolean {
+    return (
+      script === "ip -br addr" ||
+      script === "ip route" ||
+      script === "cat /etc/resolv.conf" ||
+      script === "getent hosts registry.npmjs.org" ||
+      script.startsWith("tail -n 40 ") ||
+      script.startsWith("ps -eo ")
+    )
+  }
+
+  it("attaches a redacted in-box snapshot to the error and still reclaims the box when the daemon never becomes healthy", async () => {
+    controller.serveFixesHealth = false
+    controller.options.execOutcome = (argv) => {
+      const script = argv[2] ?? ""
+      if (script === "ip -br addr") {
+        return { exitCode: 0, stdout: "1: lo: <LOOPBACK,UP> mtu 65536\n2: eth0: <BROADCAST,UP> mtu 1500", stderr: "" }
+      }
+      if (script === "ip route") return { exitCode: 0, stdout: "default via 10.0.0.1 dev eth0", stderr: "" }
+      if (script === "cat /etc/resolv.conf") return { exitCode: 0, stdout: "nameserver 10.0.0.2", stderr: "" }
+      if (script === "getent hosts registry.npmjs.org") return { exitCode: 2, stdout: "", stderr: "getent: not found" }
+      if (script.startsWith("tail -n 40 ")) {
+        return {
+          exitCode: 0,
+          stdout: "agentproto serve --auth-token 'token-abcdef-secret'\ndaemon: listen EADDRNOTAVAIL",
+          stderr: "",
+        }
+      }
+      if (script.startsWith("ps -eo ")) {
+        return { exitCode: 0, stdout: "  42 00:03 agentproto serve --auth-token abcdef123456", stderr: "" }
+      }
+      return undefined
+    }
+
+    const logs: string[] = []
+    let caught: unknown
+    try {
+      await computerSandboxProvider.boot(spec(controller.url), {
+        ...bootOpts,
+        log: (line: string) => logs.push(line),
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    const err = caught as Error & { bootDiagnostics?: string }
+    expect(err).toBeInstanceOf(Error)
+    expect(err.bootDiagnostics).toBeTruthy()
+    expect(err.bootDiagnostics).toContain("## ip -br addr")
+    expect(err.bootDiagnostics).toContain("eth0")
+    expect(err.bootDiagnostics).toContain("default via 10.0.0.1")
+    expect(err.bootDiagnostics).toContain("nameserver 10.0.0.2")
+    expect(err.bootDiagnostics).toContain("EADDRNOTAVAIL")
+    expect(err.bootDiagnostics).toContain("## agentproto processes")
+    // Secrets echoed by the daemon start line / process table are redacted.
+    expect(err.bootDiagnostics).not.toContain("token-abcdef-secret")
+    expect(err.bootDiagnostics).not.toContain("abcdef123456")
+    expect(err.bootDiagnostics).toContain("<redacted>")
+    // The same snapshot rides the phase error message and the boot log.
+    expect(err.message).toContain("--- boot diagnostics ---")
+    expect(err.message).toContain("EADDRNOTAVAIL")
+    expect(logs.join("\n")).toContain("boot diagnostics")
+    expect(controller.removed).toHaveLength(1)
+  }, 20_000)
+
+  it("keeps teardown bounded and still reclaims the box when the diagnostics exec hangs", async () => {
+    controller.serveFixesHealth = false
+    controller.options.execDelayMs = (argv) => {
+      const script = argv[2] ?? ""
+      return diagnostic(script) ? 6_000 : undefined
+    }
+
+    const started = Date.now()
+    let caught: unknown
+    try {
+      await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    } catch (err) {
+      caught = err
+    }
+    const elapsed = Date.now() - started
+
+    const err = caught as Error & { bootDiagnostics?: string }
+    expect(err).toBeInstanceOf(Error)
+    expect(err.bootDiagnostics).toBeTruthy()
+    expect(err.bootDiagnostics).toContain("timed out after")
+    expect(elapsed).toBeLessThan(10_000)
+    expect(controller.removed).toHaveLength(1)
+  }, 20_000)
+})
