@@ -54,6 +54,8 @@ import { checkDrive } from "./drive-gate.js"
 import {
   checkSuccessorDeclaration,
   handoverLineage,
+  isLiveSession,
+  resolveLiveParent,
   type LineageHandoverOutcome,
 } from "./lineage-handover.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
@@ -1265,8 +1267,10 @@ export function registerAgentTools(
       "needed: the daemon resolves your recorded parent from your own session " +
       "identity (also the AGENTPROTO_PARENT_SESSION_ID env var). Delivery tier " +
       "follows `urgency`; `interrupt: true` asks to cancel the parent's turn, " +
-      "honoured only when the operator allows it. Errors if this session has " +
-      "no recorded parent or the parent is gone.",
+      "honoured only when the operator allows it. If your parent is dead, the " +
+      "report goes to its live declared successor (else the nearest live " +
+      "ancestor) and you are re-parented onto it. Errors if this session has " +
+      "no recorded parent, or neither the parent nor any successor/ancestor is alive.",
     {
       message: z
         .string()
@@ -1368,22 +1372,52 @@ export function registerAgentTools(
           ],
         }
       }
-      const parentId = self.parentSessionId
+      let parentId = self.parentSessionId
       if (!parentId || parentId === selfId) {
         return fail(
           "message_parent: this session has no recorded parent — it was " +
             "spawned at the root, so there is no one to report up to."
         )
       }
-      const parent = registry.get(parentId)
+      let parent = registry.get(parentId)
       if (!parent) {
         return fail(`message_parent: parent session "${parentId}" no longer exists.`)
       }
-      if (parent.status !== "running" && parent.status !== "starting") {
-        return fail(
-          `message_parent: parent session "${parentId}" is not running ` +
-            `(status: ${parent.status}) — the message cannot be delivered.`
-        )
+      if (!isLiveSession(parent)) {
+        // Dead parent: re-attach to its live declared successor, else the
+        // nearest live ancestor, so the child regains a reachable parent (and
+        // the successor its drive rights). No live target: keep the error.
+        const deadParent = parent
+        const target = resolveLiveParent(registry, deadParent.id)
+        let moved = false
+        if (target && target.id !== selfId) {
+          try {
+            registry.reassignParent(selfId, target.id)
+            moved = true
+          } catch {
+            // A cycle (target inside this session's own subtree): leave the
+            // tree alone and report the original dead parent below.
+          }
+        }
+        if (!target || !moved) {
+          return fail(
+            `message_parent: parent session "${parentId}" is not running ` +
+              `(status: ${deadParent.status}) - the message cannot be delivered` +
+              (target ? "." : "; no live successor or ancestor to report to.")
+          )
+        }
+        registry.emitLineageHandover?.({
+          type: "session:lineage-handover",
+          sessionId: deadParent.id,
+          successorSessionId: target.id,
+          adopted: [selfId],
+          skipped: [],
+          reason: "message_parent",
+          actor: selfId,
+          ts: new Date().toISOString(),
+        })
+        parentId = target.id
+        parent = target
       }
       // The daemon-attested envelope: `from` comes from the verified caller
       // identity + the tree, never from the input. The parent sees it as an

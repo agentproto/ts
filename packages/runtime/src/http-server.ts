@@ -53,6 +53,8 @@ import type { UIMessageChunk } from "ai"
 import type { AgentprotoRawTranscriptRecord } from "@agentproto/transcript-fixtures"
 import type { ConversationStore } from "./conversations.js"
 import { isValidAppEmbedToken } from "./embed-tokens.js"
+import { checkSuccessorDeclaration, handoverLineage } from "./lineage-handover.js"
+import { promptCallerLabel } from "./session-owner.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor, SandboxSessionStats } from "./sessions.js"
@@ -8030,6 +8032,30 @@ async function handleSessions(
       json(400, invalidSpawnField)
       return true
     }
+    // The HTTP twin of `agent_start.succeeds` (agent-tools.ts): the new
+    // session takes over the replaced session's live children. Checked BEFORE
+    // the spawn so a refused declaration never creates a session. Pygmalion's
+    // `EngineClient` spawns its brain through this route.
+    const succeedsId = typeof b.succeeds === "string" ? b.succeeds.trim() : ""
+    let succeedsFrom: SessionDescriptor | undefined
+    if (succeedsId) {
+      succeedsFrom = registry.get(succeedsId)
+      if (!succeedsFrom) {
+        json(400, {
+          error: "succeeds_not_found",
+          message: `\`succeeds\` names session "${succeedsId}", which does not exist.`,
+        })
+        return true
+      }
+      const gate = checkSuccessorDeclaration({
+        callerSessionId: resolveCallerSessionIdFor?.(req),
+        from: succeedsFrom,
+      })
+      if (!gate.ok) {
+        json(403, { error: "succeeds_forbidden", message: gate.message })
+        return true
+      }
+    }
     const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset, sessionPresets)
     // The session a valid session token on THIS request was minted for (header only, never the body).
     const callerCredentialSessionId = resolveCredentialSessionIdFor?.(req)
@@ -8103,14 +8129,29 @@ async function handleSessions(
         allowPromptFromWarning = `allowPromptFrom apply failed: ${err instanceof Error ? err.message : String(err)}`
       }
     }
+    let lineageHandoverWarning: string | undefined
+    if (succeedsFrom && !result.deduped) {
+      try {
+        handoverLineage({
+          registry,
+          from: succeedsFrom.id,
+          to: result.descriptor.id,
+          reason: "succeeds",
+          actor: promptCallerLabel(resolveCallerSessionIdFor?.(req)),
+        })
+      } catch (err) {
+        lineageHandoverWarning = `lineage handover failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
     json(201, {
       ...sessionDescriptorForHttp(result.descriptor),
-      ...(result.warnings || operatorLabelWarning || allowPromptFromWarning
+      ...(result.warnings || operatorLabelWarning || allowPromptFromWarning || lineageHandoverWarning
         ? {
             warnings: [
               ...(result.warnings ?? []),
               ...(operatorLabelWarning ? [operatorLabelWarning] : []),
               ...(allowPromptFromWarning ? [allowPromptFromWarning] : []),
+              ...(lineageHandoverWarning ? [lineageHandoverWarning] : []),
             ],
           }
         : {}),

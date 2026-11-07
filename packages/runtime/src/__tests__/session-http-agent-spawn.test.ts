@@ -1222,3 +1222,74 @@ describe("POST /sessions/agent — AIP-66 managed cloud (cloud field)", () => {
     }
   })
 })
+
+describe("POST /sessions/agent - `succeeds` lineage handover, like agent_start (MCP)", () => {
+  async function start(registry: ReturnType<typeof createSessionsRegistry>) {
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(async () => fakeAgentSession()),
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    const spawn = (body: Record<string, unknown>) =>
+      fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", ...body }),
+      })
+    return { http, spawn }
+  }
+
+  function node(registry: ReturnType<typeof createSessionsRegistry>, parentSessionId?: string) {
+    return registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      ...(parentSessionId ? { parentSessionId } : {}),
+    })
+  }
+
+  it("an operator spawn with `succeeds` takes over the live children of the replaced session", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const oldBrain = node(registry)
+    const child = node(registry, oldBrain.id)
+    const { http, spawn } = await start(registry)
+    try {
+      const res = await spawn({ succeeds: oldBrain.id })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(child.id)?.parentSessionId).toBe(body.id)
+      expect(registry.get(oldBrain.id)?.succeededBy).toBe(body.id)
+      expect(registry.get(body.id)?.succeeds).toBe(oldBrain.id)
+    } finally {
+      await http.stop()
+      registry.shutdown()
+    }
+  })
+
+  it("`succeeds` naming an unknown session is refused before any session is created", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { http, spawn } = await start(registry)
+    try {
+      const res = await spawn({ succeeds: "sess_nope0000" })
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { error?: string; message?: string }
+      expect(body.error).toBe("succeeds_not_found")
+      expect(registry.list()).toHaveLength(0)
+    } finally {
+      await http.stop()
+      registry.shutdown()
+    }
+  })
+})
