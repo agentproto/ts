@@ -79,11 +79,13 @@ const postReviewInstruction = (placement, prNumber, repo) => {
   return placement === "sandbox"
     ? restPostReviewBlock({ repo, prNumber })
     : [
-        `   Run:`,
+        `   Run (the flag must match your verdict deterministically):`,
         `   \`\`\`bash`,
-        `   gh pr review ${prNumber} --comment --body "<your review markdown>"`,
+        `   gh pr review ${prNumber} --approve --body "<your review markdown>"`,
         `   \`\`\``,
-        `   Replace --comment with --approve or --request-changes as appropriate.`,
+        `   Use \`--approve\` when your verdict is approve (low-severity findings stay under an approve).`,
+        `   Use \`--request-changes\` ONLY for real correctness problems (bugs, broken contracts, security).`,
+        `   NEVER use \`--comment\` for a final verdict - GitHub does not count it as an approval.`,
       ].join("\n")
 }
 
