@@ -90,3 +90,27 @@ describe("mcp-bridge Claude Code session attestation", () => {
     expect(claudeSessionHeaders({ CLAUDE_CODE_SESSION_ID: "bad id" })).toEqual({})
   })
 })
+
+describe("mcp-bridge startup attestation line (stderr)", () => {
+  const line = () => stderr.filter(l => l.startsWith("[mcp-bridge] claude session header:"))
+
+  it("states sent with the first 8 chars, and whether callerSessionId is in the url", async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = ID
+    await runMcpBridge([])
+    expect(line()).toEqual([`[mcp-bridge] claude session header: sent (id=${ID.slice(0, 8)}); callerSessionId in url: yes\n`])
+  })
+
+  it("states not sent (unset)", async () => {
+    await runMcpBridge([])
+    expect(line()).toEqual(["[mcp-bridge] claude session header: not sent (CLAUDE_CODE_SESSION_ID unset); callerSessionId in url: yes\n"])
+  })
+
+  it("states not sent (invalid) and never echoes the value or url secrets", async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = "bad id!"
+    process.env.AGENTPROTO_MCP_URL = "http://127.0.0.1:18790/mcp?token=SECRET"
+    await runMcpBridge([])
+    expect(line()).toEqual(["[mcp-bridge] claude session header: not sent (CLAUDE_CODE_SESSION_ID invalid); callerSessionId in url: no\n"])
+    expect(stderr.join("")).not.toContain("SECRET")
+    expect(stderr.join("")).not.toContain("bad id!")
+  })
+})

@@ -169,3 +169,33 @@ export function claudeSessionHeaders(
 export function redactSessionId(id: string): string {
   return `${id.slice(0, 8)}...`
 }
+
+/** The single startup line describing the attestation decision. stderr only. */
+export function describeClaudeSessionAttestation(
+  env: Readonly<Record<string, string | undefined>>,
+  url: string,
+): string {
+  const id = readClaudeSessionId(env)
+  let callerInUrl = false
+  try {
+    callerInUrl = new URL(url).searchParams.has("callerSessionId")
+  } catch {
+    // unparseable URL: report "no", never echo it
+  }
+  const state = id
+    ? `sent (id=${id.slice(0, 8)})`
+    : `not sent (${CLAUDE_SESSION_ENV} ${env[CLAUDE_SESSION_ENV]?.trim() ? "invalid" : "unset"})`
+  return `[mcp-bridge] claude session header: ${state}; callerSessionId in url: ${callerInUrl ? "yes" : "no"}`
+}
+
+/** `url` for a log line: origin and path, query VALUES dropped (a token or key
+ *  may ride in them); only the parameter names are kept. */
+export function urlForLog(url: string): string {
+  try {
+    const u = new URL(url)
+    const keys = [...new Set(u.searchParams.keys())]
+    return `${u.origin}${u.pathname}${keys.length ? `?${keys.join("&")}` : ""}`
+  } catch {
+    return "<unparseable url>"
+  }
+}
