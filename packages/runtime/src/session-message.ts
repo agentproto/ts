@@ -347,6 +347,22 @@ export function messageFrom(
   }
 }
 
+/** The one shared, UNVERIFIED caller identity every Claude Desktop MCP entry
+ *  carries (`?callerSessionId=claude-desktop&host=claude-desktop`). It names a
+ *  host, not a session: no hook inbox or socket wake exists for it, so a caller
+ *  using it declares its own `cc:<session_id>` as `agent_start.parent`
+ *  (declared, never proven). */
+export const SHARED_CLAUDE_DESKTOP_ID = "claude-desktop"
+
+/** Header the stdio `mcp-bridge` sets from `CLAUDE_CODE_SESSION_ID` (the env
+ *  Claude Code gives its MCP child; the model cannot set it). Mirrored by
+ *  `CLAUDE_SESSION_HEADER` in the cli's mcp-bridge.logic.ts. Lets the daemon
+ *  attribute an otherwise shared-`claude-desktop` call to the real `cc:<id>` row. */
+export const CLAUDE_SESSION_HEADER = "x-agentproto-claude-session"
+
+/** A declared Claude Code address: `cc:<session_id>`. */
+export const DECLARED_CC_ADDRESS = /^cc:[A-Za-z0-9._-]{1,128}$/
+
 export function mintMessageId(): string {
   return `msg_${randomUUID().replace(/-/g, "").slice(0, 8)}`
 }
@@ -416,6 +432,20 @@ export function sanitizeLabel(label: string | undefined): string | undefined {
   if (!label) return undefined
   const clean = label.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 48)
   return clean.replace(/^_+|_+$/g, "") || undefined
+}
+
+/** The text prefix an unverified or anonymous sender's message carries
+ *  (`defaults.messaging.anonymousSend: "label"`), so the recipient sees it
+ *  in the body, not only in the envelope attributes. */
+export function unverifiedSenderPrefix(label: string | undefined): string {
+  return `[unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
+}
+
+/** The text prefix a reply carries when the message it answers came from an
+ *  unverified sender. The replier keeps its own (possibly verified) identity
+ *  in the envelope, so the label names the original sender instead. */
+export function replyToUnverifiedSenderPrefix(label: string | undefined): string {
+  return `[reply to unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
 }
 
 /** Attribute values are daemon-generated, but escape anyway (defence in

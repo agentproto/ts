@@ -103,6 +103,10 @@ const fixPrompt = (bindings) =>
 test('the first-pass review posts with gh on the host and ends with the typed verdict', () => {
   const text = reviewPrompt({})
   assert.match(text, /gh pr review 42/)
+  assert.match(text, /--approve` when your verdict is approve/)
+  assert.match(text, /--request-changes` ONLY for real correctness problems/)
+  assert.match(text, /--comment` NEVER for a final verdict/)
+  assert.doesNotMatch(text, /gh pr review 42 --comment/)
   assert.doesNotMatch(text, /curl -sS/)
   assert.match(text, /End your turn with ONLY a JSON object/)
   assert.match(text, /conclusion/)

@@ -142,6 +142,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "file_read",
   "file_write",
   "harness_capabilities",
+  "harness_list",
   "harness_preset_create",
   "harness_preset_delete",
   "harness_preset_list",

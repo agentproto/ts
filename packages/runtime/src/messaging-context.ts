@@ -31,6 +31,7 @@ export interface BuildMessagingPermissionContextInput {
     >,
     "peerGroups"
   > & {
+    anonymousSend?: "block" | "label"
     peerGroups?: readonly (readonly string[])[]
     grants?: readonly Grant[]
   }
@@ -75,6 +76,7 @@ export function buildMessagingPermissionContext(
       peerGroups: defaults.peerGroups,
       peerBinding: defaults.peerBinding,
       agentInterrupt: interrupt ? "allow" : "deny",
+      ...(defaults.anonymousSend ? { anonymousSend: defaults.anonymousSend } : {}),
     },
     ...(workspaceOfCwd ? { workspaceOfCwd } : {}),
     ...buildSessionGrantContext({ registry, grants }),

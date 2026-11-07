@@ -10,15 +10,26 @@
  * gateway-verified caller identity and the session tree.
  */
 
+import { homedir } from "node:os"
+import { join } from "node:path"
+
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 import type { Grant } from "@agentproto/policy"
 
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import {
+  shadowDeliveryGrant,
+  type DeliveryApplyConfig,
+  type Level,
+} from "@agentproto/delivery"
+
+import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
-import { decide, type PermissionContext } from "./permissions.js"
+import { ANONYMOUS_SEND_RULE, REPLY_RULE, decide, type PermissionContext } from "./permissions.js"
 import { warnPeerUnverified } from "./workspace-binding.js"
 import {
   createSessionMessage,
@@ -28,6 +39,8 @@ import {
   type MessageFilter,
   type MessageKind,
   type MessageUrgency,
+  replyToUnverifiedSenderPrefix,
+  unverifiedSenderPrefix,
   type SessionMessage,
 } from "./session-message.js"
 
@@ -70,6 +83,8 @@ export interface RegisterMessageToolsOptions {
   /** `defaults.messaging.agentInterrupt: "allow"` — let a session sender's
    *  `interrupt` cancel the recipient's turn. Off by default (→ `steer`). */
   allowInterrupt?: boolean
+  /** `defaults.messaging.anonymousSend` - "label" (default) or "block". */
+  anonymousSend?: "block" | "label"
   /** `mcp.noCallerIdentity` — how a call with no caller identity is handled.
    *  `block` (default) keeps the refusal; `accept` lets an identity-less
    *  `message_send` go out as the anonymous `claude-code` sender; `ask`
@@ -79,6 +94,12 @@ export interface RegisterMessageToolsOptions {
    *  resolve true only when it is approved. Absent ⇒ `ask` degrades to the
    *  `block` refusal (reported in the error text). */
   requestAnonymousMessageApproval?: (detail: AnonymousMessageApprovalDetail) => Promise<boolean>
+  /** `delivery.apply` (K6 funnel). A `message.*` type opted in routes a
+   *  message to a dead recipient to its live parent. Absent = off. */
+  deliveryApply?: DeliveryApplyConfig
+  /** Delivery ledger file for the lines the funnel writes (tests). Default
+   *  `<AGENTPROTO_HOME or ~/.agentproto>/delivery-ledger.jsonl`. */
+  ledgerPath?: string
 }
 
 /** What an `ask` approval gate is asked to allow. */
@@ -143,15 +164,18 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   /** `defaults.messaging.peerGroups` - the operator's workspace families.
    *  Empty (the default) = no cross-workspace link. */
   const peerGroups = opts.peerGroups ?? []
+  /** `defaults.messaging.anonymousSend` - "label" unless the operator set "block". */
+  const anonymousSendMode: "block" | "label" = opts.anonymousSend ?? "label"
   // One shared messaging context (messaging-context.ts) so the tools,
   // `POST /sessions/:id/messages` and `permissions_explain` cannot drift.
-  const policy: PermissionContext = buildMessagingPermissionContext({
+  const basePolicy: PermissionContext = buildMessagingPermissionContext({
     defaults: {
       allowSiblings: allowSiblings === true,
       allowSameWorkspace,
       peerGroups,
       peerBinding: opts.peerBinding ?? "slug",
       agentInterrupt: allowInterrupt ? "allow" : "deny",
+      anonymousSend: anonymousSendMode,
       grants: opts.messagingGrants ?? [],
     },
     registry,
@@ -263,6 +287,50 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         "read your inbox through your harness hook instead.",
     })
 
+  /** One ledger line per funnel-applied send (the producer is `message`; the
+   *  target stays the addressed session, `routedTo` names the parent that
+   *  took it). Nothing is written while the funnel is off. */
+  const writeFunnelLedger = (
+    msg: SessionMessage,
+    self: SessionDescriptor | undefined,
+    targetId: string,
+    r: { queued: boolean; delivered: { via: string } | null; refused?: "inbox-full" },
+    routedTo: string | undefined,
+  ): void => {
+    const level: Level = msg.urgency === "fyi" ? 1 : msg.urgency === "next-turn" ? 2 : 3
+    const outcome =
+      r.refused !== undefined
+        ? "dropped"
+        : routedTo !== undefined
+          ? "retargeted"
+          : r.queued
+            ? "queued"
+            : r.delivered?.via === "inbox"
+              ? "inbox"
+              : "delivered"
+    appendLedgerLine(
+      opts.ledgerPath ??
+        join(process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto"), DELIVERY_LEDGER_FILE),
+      {
+        ts: new Date().toISOString(),
+        producer: "message",
+        subscriptionId: "message:tool",
+        target: { kind: "session", id: targetId },
+        eventId: msg.id,
+        type: `message.${msg.kind ?? "message"}`,
+        subject: self?.id ?? "claude-code",
+        level,
+        cap: 3,
+        rule: "sender-urgency",
+        applied: true,
+        grant: shadowDeliveryGrant({ producer: {}, subject: self?.id ?? "claude-code", target: targetId }),
+        outcome,
+        ...(routedTo !== undefined ? { routedTo } : {}),
+        messageId: msg.id,
+      },
+    )
+  }
+
   /** Shared send path for `message_send` / `message_reply`. */
   const send = async (
     tool: string,
@@ -285,6 +353,18 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const recipient = registry.get(toId)
     if (!recipient) return fail("no_such_session", `${tool}: session "${toId}" does not exist.`)
+    // A reply to a message the caller received is admitted whatever the
+    // relation (permissions.ts REPLY_RULE); the context carries the lookup.
+    const policy: PermissionContext =
+      self && input.replyTo?.startsWith("msg_")
+        ? {
+            ...basePolicy,
+            reply: {
+              messageId: input.replyTo,
+              originalSenderOf: (id, mid) => registry.findReceivedMessage(id, mid)?.from.sessionId,
+            },
+          }
+        : basePolicy
     // One ACL for every messaging entry point (permissions.ts). An
     // identity-less caller is evaluated as the operator/human principal,
     // which is what it already is on the wire (the same principal an
@@ -295,6 +375,14 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       : ({ kind: "operator", via: "anonymous-local" } as const)
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
+    /** The message answers one the caller received from this recipient: it never interrupts. */
+    const answersReceived =
+      self !== undefined && policy.reply?.originalSenderOf(self.id, policy.reply.messageId) === recipient.id
+    /** The message being answered came from an unverified/anonymous sender: label the reply too. */
+    const originalFrom =
+      answersReceived && self && input.replyTo ? registry.findReceivedMessage(self.id, input.replyTo)?.from : undefined
+    const originalUnverified = originalFrom?.unverified === true || originalFrom?.anonymous === true
+    const replyToUnverified = self !== undefined && decision.rule === REPLY_RULE && originalUnverified
     const relation = decision.relation
     if (self && decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
@@ -321,6 +409,14 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const kind = input.kind ?? "report"
     const urgency = input.urgency ?? defaultUrgencyForKind(kind)
+    // `defaults.messaging.anonymousSend: "label"`: an identity-less caller, or
+    // a session sender admitted only because its identity is unverified, is
+    // delivered with a visible text prefix and capped at steer. "block"
+    // leaves an anonymous sender exactly as before (operator principal).
+    const labelled =
+      anonymousSendMode === "label" && (self
+        ? decision.rule === ANONYMOUS_SEND_RULE || replyToUnverified
+        : anonymous)
     let msg: SessionMessage
     try {
       msg = createSessionMessage({
@@ -328,7 +424,11 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         from: self
           ? messageFrom(self, relation)
           : { relation: "human", label: "claude-code", anonymous: true },
-        text: input.text,
+        text: labelled
+          ? (replyToUnverified
+              ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId)
+              : unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code")) + input.text
+          : input.text,
         kind,
         urgency,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
@@ -342,21 +442,47 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     const provenance = self ? `${relation}:${self.id}` : "anonymous:claude-code"
     try {
       const interrupt = decide(principal, "session.message.interrupt", resource, policy)
-      const r = await registry.sendMessage(msg, {
-        source: provenance,
-        origin: provenance,
-        decision,
-        ...(interrupt.allow ? { allowInterrupt: true } : {}),
-      })
+      const routed = await sendMessageWithDeadRecipientRoute(
+        registry,
+        msg,
+        {
+          source: provenance,
+          origin: provenance,
+          decision,
+          ...(interrupt.allow && !labelled && !answersReceived ? { allowInterrupt: true } : {}),
+        },
+        opts.deliveryApply,
+        parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
+      )
+      const r = routed.result
+      if (routed.applied) writeFunnelLedger(msg, self, recipient.id, r, routed.routedTo)
       return ok({
         messageId: r.messageId,
-        to: recipient.id,
+        to: routed.routedTo ?? recipient.id,
+        ...(routed.routedTo ? { routedFrom: recipient.id } : {}),
         relation,
         delivered: r.delivered,
         queued: r.queued,
         urgencyApplied: r.urgencyApplied,
         ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
-        ...(r.urgencyApplied !== urgency
+        ...(labelled
+          ? {
+              ...(replyToUnverified ? { replyToUnverified: true } : { unverified: true }),
+              note: `${
+                replyToUnverified
+                  ? "delivered as a reply to an unverified sender: the recipient sees the original sender as unverified"
+                  : "delivered unverified: the recipient sees the sender as unverified"
+              } and the urgency is capped at steer${
+                r.urgencyApplied !== urgency ? ` ("${urgency}" delivered as "${r.urgencyApplied}")` : ""
+              }`,
+            }
+          : {}),
+        ...(decision.rule === REPLY_RULE && recipient.kind === "external"
+          ? {
+              replyNote: `reply delivered to the external row "${recipient.id}" (its inbox/hook); a shared identity does not record which real session sent the original`,
+            }
+          : {}),
+        ...(!labelled && r.urgencyApplied !== urgency
           ? { note: `urgency "${urgency}" delivered as "${r.urgencyApplied}"` }
           : {}),
       })

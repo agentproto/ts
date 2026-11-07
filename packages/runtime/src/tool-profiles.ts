@@ -263,6 +263,7 @@ export const FULL_ONLY_TOOLS: readonly string[] = [
   "activities_list",
   "adapter_list",
   "adapter_models",
+  "harness_list",
   "agent_export",
   "agent_sessions_list",
   "agent_set_effort",

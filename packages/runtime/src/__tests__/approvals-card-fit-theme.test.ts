@@ -8,137 +8,72 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import vm from "node:vm"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "../approvals/engine.js"
-import { renderApprovalCardHtml } from "../approvals/card.js"
+import { approvalCardResourceUri, renderApprovalCardHtml } from "../approvals/card.js"
+import { connectCards, readCardHtml, runCardPage } from "./helpers/approvals-card-page.js"
 
 let home: string
 let engine: ApprovalsEngine
+let closeCards: (() => Promise<void>) | undefined
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "approvals-card-fit-"))
   engine = createApprovalsEngine({ homeDir: home, sessionEvents: createSessionEventBus() })
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await closeCards?.()
+  closeCards = undefined
   engine.dispose()
   rmSync(home, { recursive: true, force: true })
 })
 
-function pendingCard(): { id: string; html: string } {
-  const id = engine.request(
-    { kind: "send", title: "Send this email", preview: { to: "ana@example.com", amount: 12 }, payload: { x: 1 } },
+function request(expiresAt?: string): string {
+  return engine.request(
+    {
+      kind: "send",
+      title: "Send this email",
+      preview: { to: "ana@example.com", amount: 12 },
+      payload: { x: 1 },
+      ...(expiresAt ? { expiresAt } : {}),
+    },
     { sessionId: "sess_abc" },
   ).id
-  return { id, html: renderApprovalCardHtml(engine, id) }
 }
 
-function scriptOf(html: string): string {
-  const match = html.match(/<script>([\s\S]*?)<\/script>/)
-  if (!match) throw new Error("no inline script in the card")
-  return match[1]!
-}
-
-interface Posted {
-  jsonrpc?: string
-  id?: number
-  method?: string
-  params?: Record<string, unknown>
-}
-
-interface FakeEl {
-  textContent: string
-  disabled: boolean
-  style: Record<string, string>
-  attrs: Record<string, string>
-  listeners: Record<string, () => void>
-  getAttribute(name: string): string | null
-  addEventListener(type: string, fn: () => void): void
-}
-
-function fakeEl(attrs: Record<string, string> = {}): FakeEl {
-  const el: FakeEl = {
-    textContent: "",
-    disabled: false,
-    style: {},
-    attrs,
-    listeners: {},
-    getAttribute: name => el.attrs[name] ?? null,
-    addEventListener: (type, fn) => {
-      el.listeners[type] = fn
-    },
-  }
-  return el
-}
-
-/** Runs a card page's inline script against a stand-in browser that records
- *  every message posted to the host. */
-function runPage(html: string, bodyHeight: { value: number }, expires?: string) {
-  const posted: Posted[] = []
-  const rootAttrs: Record<string, string> = {}
-  const rootVars: Record<string, string> = {}
-  const els: Record<string, FakeEl> = {
-    approve: fakeEl(),
-    deny: fakeEl(),
-    actions: fakeEl(),
-    status: fakeEl(),
-    expiry: fakeEl(expires === undefined ? {} : { "data-expires": expires }),
-  }
-  let onMessage: (evt: { data: unknown; source?: unknown }) => void = () => {}
-  let resize: () => void = () => {}
-  class FakeResizeObserver {
-    constructor(cb: () => void) {
-      resize = cb
-    }
-    observe(): void {}
-  }
-  const parent = { postMessage: (msg: Posted) => void posted.push(msg) }
-  const win = {
-    parent,
-    addEventListener: (type: string, fn: (evt: { data: unknown; source?: unknown }) => void) => {
-      if (type === "message") onMessage = fn
-    },
-  }
-  const doc = {
-    documentElement: {
-      setAttribute: (k: string, v: string) => void (rootAttrs[k] = v),
-      style: {
-        setProperty: (k: string, v: string) => void (rootVars[k] = v),
-        removeProperty: (k: string) => void delete rootVars[k],
-      },
-    },
-    body: { getBoundingClientRect: () => ({ height: bodyHeight.value }) },
-    getElementById: (id: string) => els[id],
-  }
-  vm.runInNewContext(scriptOf(html), {
-    window: win,
-    document: doc,
-    ResizeObserver: FakeResizeObserver,
-    setInterval: () => 1,
-    clearInterval: () => {},
+/** The card template (which holds no approval) wired to a real cards surface. */
+async function pendingCard(opts: { bodyHeight?: { value: number }; autoInit?: boolean; expiresAt?: string } = {}) {
+  const id = request(opts.expiresAt)
+  const host = await connectCards(engine)
+  closeCards = host.close
+  const html = await readCardHtml(host.client, approvalCardResourceUri(id))
+  const page = runCardPage(html, {
+    callTool: host.callTool,
+    ...(opts.bodyHeight ? { bodyHeight: opts.bodyHeight } : {}),
+    ...(opts.autoInit !== undefined ? { autoInit: opts.autoInit } : {}),
   })
-  const reply = (id: number, result: unknown) => onMessage({ data: { jsonrpc: "2.0", id, result }, source: parent })
-  const replyFrom = (source: unknown, id: number, result: unknown) =>
-    onMessage({ data: { jsonrpc: "2.0", id, result }, source })
-  const sizes = () => posted.filter(m => m.method === "ui/notifications/size-changed").map(m => m.params?.height)
-  const flush = () => new Promise<void>(resolve => setImmediate(resolve))
-  return { posted, rootAttrs, rootVars, els, onMessage: (data: unknown) => onMessage({ data, source: parent }), onMessageFrom: (data: unknown, source: unknown) => onMessage({ data, source }), reply, replyFrom, resize: () => resize(), sizes, flush }
+  return { id, html, page }
+}
+
+/** Just the template, with no host to answer its tool calls. */
+function bareCard(opts: { bodyHeight?: { value: number } } = {}) {
+  const html = renderApprovalCardHtml("apr_x")
+  return { html, page: runCardPage(html, { autoInit: false, ...opts }) }
 }
 
 describe("approval card fits its content", () => {
-  it("the pending card source reports size-changed and observes the body", () => {
-    const { html } = pendingCard()
+  it("the card source reports size-changed and observes the body", () => {
+    const html = renderApprovalCardHtml("apr_x")
     expect(html).toContain("ui/notifications/size-changed")
     expect(html).toContain("ResizeObserver")
   })
 
   it("posts size-changed only after the handshake, then again on resize", async () => {
-    const { html } = pendingCard()
     const height = { value: 140.2 }
-    const page = runPage(html, height)
+    const { page } = bareCard({ bodyHeight: height })
     expect(page.posted[0]).toMatchObject({ method: "ui/initialize", id: 1 })
     expect(page.sizes()).toEqual([])
 
@@ -156,39 +91,42 @@ describe("approval card fits its content", () => {
   })
 
   it("shrinks after a decision: actions hidden, one result line, new size reported", async () => {
-    const { html, id } = pendingCard()
     const height = { value: 150 }
-    const page = runPage(html, height)
-    page.reply(1, { hostContext: {} })
+    const { page, id } = await pendingCard({ bodyHeight: height })
     await page.flush()
-
-    page.els.deny!.listeners.click!()
-    const call = page.posted.find(m => m.method === "tools/call")
-    expect(call?.params).toMatchObject({ name: "approval_card_decide", arguments: { approvalId: id, decision: "deny" } })
 
     height.value = 48
-    page.reply(call!.id!, { content: [] })
+    page.buttons(page.cards()[0]!).deny.click()
+    expect(page.calls("approval_card_decide")[0]?.params).toMatchObject({
+      name: "approval_card_decide",
+      arguments: { approvalId: id, decision: "deny" },
+    })
     await page.flush()
-    expect(page.els.actions!.style.display).toBe("none")
-    expect(page.els.status!.textContent).toBe("Refused")
+
+    const card = page.cards()[0]!
+    expect(page.actionsOf(card).style.display).toBe("none")
+    expect(page.statusOf(card)).toBe("Refused")
     expect(page.sizes().at(-1)).toBe(48)
   })
 
-  it("shows a short relative expiry line", () => {
-    const { html } = pendingCard()
+  it("shows a short relative expiry line", async () => {
     const soon = new Date(Date.now() + 12 * 60_000 - 5_000).toISOString()
-    const page = runPage(html, { value: 100 }, soon)
-    expect(page.els.expiry!.textContent).toBe("expires in 12 min")
+    const { page } = await pendingCard({ expiresAt: soon })
+    await page.flush()
+    expect(page.metaOf(page.cards()[0]!)).toBe("expires in 12 min")
   })
 
   it("the decided and not-found pages also report their size", async () => {
-    const { id } = pendingCard()
-    const { ticket } = engine.mintCardTicket(id)
+    const id = request()
+    const ticket = engine.mintCardTicket(id).ticket
     await engine.decideByCard(id, "approve", ticket, { ipAddress: "t", userAgent: "t" })
-    for (const html of [renderApprovalCardHtml(engine, id), renderApprovalCardHtml(engine, "missing")]) {
+    const host = await connectCards(engine)
+    closeCards = host.close
+    for (const target of [id, "apr_missing"]) {
+      const html = renderApprovalCardHtml(target)
       expect(html).toContain("ui/notifications/size-changed")
       expect(html).toContain("ResizeObserver")
-      const page = runPage(html, { value: 60 })
+      const page = runCardPage(html, { callTool: host.callTool, autoInit: false, bodyHeight: { value: 60 } })
       page.reply(1, { hostContext: { theme: "dark" } })
       await page.flush()
       expect(page.sizes()).toEqual([60])
@@ -197,23 +135,9 @@ describe("approval card fits its content", () => {
   })
 })
 
-describe("approval card exposes clipped values to assistive tech", () => {
-  it("a long value carries its full text in a hidden span and the tooltip; a short one stays plain", () => {
-    const long = "x".repeat(120)
-    const id = engine.request(
-      { kind: "send", title: "Long", preview: { note: long, short: "ok" }, payload: {} },
-      { sessionId: "sess_abc" },
-    ).id
-    const html = renderApprovalCardHtml(engine, id)
-    expect(html).toContain(`<dd title="${long}"><span aria-hidden="true">${long}</span><span class="sr-only">${long}</span></dd>`)
-    expect(html).toContain("<dt>Short</dt><dd>ok</dd>")
-  })
-})
-
 describe("approval card follows the host theme", () => {
   it("applies hostContext.theme and styles.variables to the root", async () => {
-    const { html } = pendingCard()
-    const page = runPage(html, { value: 100 })
+    const { page } = bareCard()
     page.reply(1, {
       hostContext: {
         theme: "dark",
@@ -226,8 +150,7 @@ describe("approval card follows the host theme", () => {
   })
 
   it("a partial host-context-changed keeps the variables applied earlier", async () => {
-    const { html } = pendingCard()
-    const page = runPage(html, { value: 100 })
+    const { page } = bareCard()
     page.reply(1, {
       hostContext: {
         theme: "dark",
@@ -236,10 +159,8 @@ describe("approval card follows the host theme", () => {
     })
     await page.flush()
 
-    page.onMessage({
-      jsonrpc: "2.0",
-      method: "ui/notifications/host-context-changed",
-      params: { styles: { variables: { "--color-text-primary": "#111111", "--color-border-primary": "#333333" } } },
+    page.notify("ui/notifications/host-context-changed", {
+      styles: { variables: { "--color-text-primary": "#111111", "--color-border-primary": "#333333" } },
     })
     expect(page.rootAttrs["data-theme"]).toBe("dark")
     expect(page.rootVars).toEqual({
@@ -250,18 +171,17 @@ describe("approval card follows the host theme", () => {
   })
 
   it("a theme-only host-context-changed switches the theme and keeps the variables", async () => {
-    const { html } = pendingCard()
-    const page = runPage(html, { value: 100 })
+    const { page } = bareCard()
     page.reply(1, { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#fafafa" } } } })
     await page.flush()
 
-    page.onMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "light" } })
+    page.notify("ui/notifications/host-context-changed", { theme: "light" })
     expect(page.rootAttrs["data-theme"]).toBe("light")
     expect(page.rootVars).toEqual({ "--color-text-primary": "#fafafa" })
   })
 
   it("the CSS reads the host variables with fallbacks and has no green/red fills", () => {
-    const { html } = pendingCard()
+    const { html } = bareCard()
     const css = html.match(/<style>([\s\S]*?)<\/style>/)![1]!
     for (const name of [
       "--color-text-primary",
@@ -275,17 +195,19 @@ describe("approval card follows the host theme", () => {
     expect(css).toContain("prefers-color-scheme: dark")
     expect(css).toMatch(/html, body \{ background: transparent/)
     expect(html).not.toMatch(/#16a34a|#dc2626/i)
-    expect(html).toContain(">Refuse<")
+    expect(html).toContain("Refuse")
     expect(html).not.toContain(">Deny<")
   })
 
   it("ignores responses and host-context-changed that do not come from window.parent", async () => {
-    const { html } = pendingCard()
-    const page = runPage(html, { value: 100 })
+    const { page } = bareCard()
     const stranger = { postMessage: () => {} }
 
-    page.replyFrom(stranger, 1, { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#fafafa" } } } })
-    page.replyFrom(undefined, 1, { hostContext: { theme: "dark" } })
+    page.deliver(
+      { jsonrpc: "2.0", id: 1, result: { hostContext: { theme: "dark", styles: { variables: { "--color-text-primary": "#fafafa" } } } } },
+      stranger,
+    )
+    page.deliver({ jsonrpc: "2.0", id: 1, result: { hostContext: { theme: "dark" } } }, undefined)
     await page.flush()
     expect(page.posted.some(m => m.method === "ui/notifications/initialized")).toBe(false)
     expect(page.rootAttrs["data-theme"]).toBeUndefined()
@@ -293,10 +215,16 @@ describe("approval card follows the host theme", () => {
 
     page.reply(1, { hostContext: { theme: "light" } })
     await page.flush()
-    page.onMessageFrom(
-      { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark" } },
-      stranger,
-    )
+    page.deliver({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark" } }, stranger)
     expect(page.rootAttrs["data-theme"]).toBe("light")
+  })
+
+  it("ignores a ui/notifications/tool-result that does not come from window.parent", async () => {
+    const { page } = bareCard()
+    page.reply(1, { hostContext: {} })
+    await page.flush()
+    const before = page.calls("approval_card_list").length
+    page.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: {} }, { postMessage: () => {} })
+    expect(page.calls("approval_card_list").length).toBe(before)
   })
 })

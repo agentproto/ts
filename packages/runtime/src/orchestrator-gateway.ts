@@ -811,6 +811,9 @@ export interface OrchestratorGatewayDeps {
    *  see `defaultAgentPromptInterrupt` above for the override/resolve
    *  precedence. Forwarded to `registerAgentTools`. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** EXPLICIT override for config.json `defaults.messaging.anonymousSend`.
+   *  Forwarded to `registerAgentTools`. */
+  messagingAnonymousSend?: "block" | "label"
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -881,6 +884,8 @@ export function createOrchestratorMcpServerFactory(
       messagingGrants: deps.messagingGrants ?? messagingDefaults.grants,
       messagingPeerBinding: deps.messagingPeerBinding ?? messagingDefaults.peerBinding,
       messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
+      ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
+      messagingAnonymousSend: deps.messagingAnonymousSend ?? messagingDefaults.anonymousSend,
       daemonMcpUrl: deps.daemonMcpUrl,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),
       ...(deps.taskLedger ? { taskLedger: deps.taskLedger } : {}),

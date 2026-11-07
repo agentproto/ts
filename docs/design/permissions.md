@@ -42,6 +42,7 @@ Legend for "Problem": **CT** = caller-trusted input, **DUP** = the same rule is 
 | Origin allowlist `daemon.allowedOrigins`, `daemon.strictOrigins`; widget embed token `?et=` | `config-schema.ts:521`, `:550` | `authorizeMcp` `:1696`, `checkSessionsToken` `:1747` | localhost defaults | Browser-CSRF defence only. It is not an identity, and that is fine as long as nothing treats it as one. |
 | Tunnel-bearer exemptions (`/health`, `/inbound/:slug`, app shell, `link-auth`, **`/relay/parent-message`**) | hard-coded | `http-server.ts:1625-1660` (relay at `:1644`) | | Each exemption has its own credential type (HMAC, link token, relay token). There are four token systems and none of them shares a store or a revocation path (see 1.5). |
 | `defaults.messaging.allowSiblings` | `config-schema.ts:1196` (hot, **writable**) | `message-tools.ts:142-143` only | false | **INC**: the HTTP route ignores it (`http-server.ts:7661` calls `isMessageAllowed(relation)` with no opts). **Self-widening**: `config_set` sits on every child's daemon mount (below). |
+| `defaults.messaging.anonymousSend` | `config-schema.ts` (hot, writable) | `permissions.ts` `decideMessage` (rule `messaging.anonymousSend`), `message-tools.ts`, `POST /sessions/:id/messages` | label | An unverified session sender (claimed external identity) and an identity-less `message_send` caller reach any live session, text prefixed `[unverified sender: ...]`, capped at steer. `block` restores `forbidden_recipient`. `agent_prompt` is untouched. |
 | `defaults.messaging.agentInterrupt` | `config-schema.ts:1206` (hot, writable) | `message-tools.ts` (`allowInterrupt`), relay `http-server.ts:3108+` | deny | HTTP senders with no caller id always get interrupt (`http-server.ts:7688`). Same self-widening as above. |
 | `defaults.agentPromptInterrupt` | `config-schema.ts:1186` | agent-tools / message_parent | false | |
 | `defaults.defaultRoleDepthCutoff`, `defaults.maxGrantableDelegation` | `config-schema.ts:915`, `:925` (hot, writable) | `role.ts` `resolveRole`, `role-registry.ts:55` | cutoff const / no cap | Hot-writable by any session via `config_set`. Depth only counts for scoped spawns (`session-spawn.ts:2548-2580`), so a bare `/mcp` spawn is depth 0 and resolves to **supervisor**. |
@@ -173,7 +174,7 @@ auth.profile.manage      auth_profile_create/delete/import
 config.write             config_set
 remote.publish           remote_enable, tunnel_create
 cron.schedule            cron_create/delete
-approval.decide          approval_card_decide (operator only, never delegable)
+approval.decide          approval_card_decide (operator only, never delegable); its one-time ticket comes from approval_card_list
 box.relay                relay grant use (box → host)
 ```
 

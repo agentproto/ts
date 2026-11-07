@@ -20,8 +20,8 @@ function scriptBody(script: string): string {
 }
 
 describe("APP_UI_DISCOVERY_TOOLS", () => {
-  it("is the read-only discovery pair", () => {
-    expect(APP_UI_DISCOVERY_TOOLS).toEqual(["adapter_list", "harness_preset_list"])
+  it("is the read-only discovery set (legacy + canonical harness listing)", () => {
+    expect(APP_UI_DISCOVERY_TOOLS).toEqual(["adapter_list", "harness_list", "harness_preset_list"])
   })
 })
 

@@ -28,30 +28,49 @@ already declared in `.github/agentic-review.json` + `.github/workflows/ci.yml`.
 Each rung has exactly one owner — don't reach into the next one.
 
 1. **Green gate.** Run this repo's own gate before calling anything done:
-   `agentproto.json` declares `scripts.test` as `pnpm test`
-   (`agentproto.json:7`, itself `pnpm -r --filter "./packages/**" --filter
-   "./adapters/**" test`, `package.json:19`). Don't invent your own bar.
+   **`pnpm gate`** (`scripts/gate.mjs`, declared as `scripts.gate` in
+   `agentproto.json`). It is the normal local gate: it takes a machine-wide
+   lock (`~/.agentproto/gate.lock`, `AGENTPROTO_GATE_SLOTS` slots, default 1;
+   waits in the foreground up to 8 min, then exits 75 — just re-run it),
+   refuses to start while the host-guard CRIT marker is armed (exit 69) or the
+   load average is above 1.5x the core count (exit 73), then runs CI's
+   `node scripts/agentflow/docs.mjs --check` and
+   `turbo run build check-types test --affected` under `nice -n 10` with
+   `--concurrency=2` and the shared turbo cache. `--affected` is the same scope
+   CI uses for PRs, so the local gate loses no coverage relative to it.
 
-   **Read the gate's exit code, not its output.** `pnpm test | tail -30`
-   reports **`tail`'s** exit status, not the test run's — a pipeline exits
+   **The full gate is the exception: `pnpm gate --full`** (same lock and docs
+   check, no `--affected`). The bare `pnpm test` + `pnpm check-types` pair is
+   **not** equivalent: it skips `build` and is unserialised, so prefer
+   `pnpm gate --full`. Reserve it for a change to
+   `turbo.json`, root `package.json`, `vitest.shared.ts`, or `pnpm-lock.yaml`,
+   or an explicit human request. `agentproto.json` still declares
+   `scripts.test` as `pnpm test` (`package.json:19`) for completion policies
+   that call it; don't invent your own bar.
+
+   **Read the gate's exit code, not its output.** `pnpm gate | tail -30`
+   reports **`tail`'s** exit status, not the gate's — a pipeline exits
    with its LAST command's status, so a red gate reads as exit 0 and you
    will report a passing gate that failed. `${PIPESTATUS[0]}` does not
    rescue it either: that's bash, and this repo's sessions run zsh, where
    it's `$pipestatus[1]` and the bash spelling silently expands to empty.
-   Redirect and check `$?` directly:
+   Redirect and check `$?` directly (the gate also prints `GATE_EXIT=<n>` as
+   its last line, equal to its real exit code; anything non-zero is red, 75
+   means "lock busy, re-run"):
 
    ```sh
-   pnpm test > /tmp/gate.log 2>&1; echo "EXIT=$?"   # then grep the log
+   pnpm gate > /tmp/gate.log 2>&1; echo "GATE_EXIT=$?"   # then grep the log
    ```
 
-   **`pnpm test` is necessary but not sufficient — the CI gate is `pnpm test`
-   AND `pnpm check-types`.** `check-types` (`tsc --noEmit`) runs as its own
-   step of CI's `typecheck` job, one of the pieces behind the `Build + test`
-   status (`.github/workflows/ci.yml`);
-   Vitest transpiles without type-checking, so a type error in a **test
-   file** sails through `pnpm test` and only fails in CI (this bit an executor:
-   a mistyped `vi.spyOn` mock passed the local gate, reddened CI). Run both,
-   each read by its own real exit code:
+   **Type errors are part of the gate.** `check-types` (`tsc --noEmit`) runs
+   as its own step of CI's `typecheck` job, one of the pieces behind the
+   `Build + test` status (`.github/workflows/ci.yml`); Vitest transpiles
+   without type-checking, so a type error in a **test file** sails through
+   `pnpm test` and only fails in CI (this bit an executor: a mistyped
+   `vi.spyOn` mock passed the local gate, reddened CI). `pnpm gate` runs
+   `check-types` and `test` together for the affected subgraph. With
+   `pnpm gate --full` (or the bare commands) run both, each read by its own
+   real exit code:
 
    ```sh
    pnpm check-types > /tmp/ct.log   2>&1; echo "CT_EXIT=$?"
@@ -61,13 +80,19 @@ Each rung has exactly one owner — don't reach into the next one.
 (Add `pnpm lint` too if the package defines it.)
 
     **Test ceiling.** `pnpm test` at the repo root runs `pnpm -r --workspace-concurrency=2 test`,
-    which invokes vitest in every package. Each package's vitest config reads the
-    `VITEST_MAX_WORKERS` env var (fallback: `Math.max(1, Math.floor(os.availableParallelism() / 4))`),
-    capping per-package worker count. Default on a 12-core machine: 3 workers per package.
+    which invokes vitest in every package. Only ~17 packages have a vitest config that
+    reads `VITEST_MAX_WORKERS` (via `vitest.shared.ts`); the other ~150 have no config
+    and fall back to vitest's default (`availableParallelism() - 1`, i.e. ~11 workers
+    on a 12-core machine). So the cap is **only effective when the env vars are
+    present**: `VITEST_MAX_FORKS` / `VITEST_MAX_THREADS` (read by vitest itself, so they
+    cover every package), `TURBO_CONCURRENCY` and `npm_config_workspace_concurrency`.
+    On this machine they are exported from `~/.zshenv`; in a shell or sandbox
+    without them, a full gate runs ~11 workers per package. Check with
+    `env | grep -E 'VITEST|TURBO_CONCURRENCY|workspace_concurrency'` before a full run.
 
     **Variable.** Set `VITEST_MAX_WORKERS` in the CI job's environment to adjust the
-    cap. Omit it to let vitest compute `Math.floor(os.availableParallelism() / 4)`
-    automatically per CI machine.
+    cap of the configured packages. Omit it to let vitest compute
+    `Math.floor(os.availableParallelism() / 4)` automatically per CI machine.
 
     **Préférence d'itération.** During iteration, prefer `pnpm --filter @agentproto/<pkg> test`
     over `pnpm test` to avoid saturating the machine with 24+ concurrent vitest processes.

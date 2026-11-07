@@ -84,6 +84,8 @@ import type {
 import { appUiToolId } from "./app-ui-apps.js"
 import {
   createSessionMessage,
+  DECLARED_CC_ADDRESS,
+  SHARED_CLAUDE_DESKTOP_ID,
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
@@ -583,6 +585,12 @@ export interface RegisterAgentToolsOptions {
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
    *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** `delivery.apply` for the message tools (dead-recipient route). */
+  deliveryApply?: RegisterMessageToolsOptions["deliveryApply"]
+  /** config.json `defaults.messaging.anonymousSend` - "label" (default) or
+   *  "block". Forwarded to `message_send` / `message_reply` and
+   *  `permissions_explain`. */
+  messagingAnonymousSend?: "block" | "label"
   /** `mcp.noCallerIdentity` — how the MCP gateway treats a call with no
    *  caller identity: `block` (default) refuses, `accept` allows an
    *  anonymous `message_send` as `claude-code`, `ask` parks it on a human
@@ -623,6 +631,8 @@ export function registerAgentTools(
     messagingPeerGroups,
     messagingGrants,
     messagingAgentInterrupt,
+    deliveryApply,
+    messagingAnonymousSend,
     noCallerIdentity,
     requestAnonymousMessageApproval,
     ensureLlmEndpointRunning,
@@ -773,7 +783,38 @@ export function registerAgentTools(
       // identify. A call that already carries an identity attaches under it
       // automatically, so a declaration there is refused rather than allowed to
       // re-parent (the caller's own `parentSessionId` hint is the existing path).
-      if (declaredParent !== undefined && (callerScope !== undefined || effectiveCaller() !== undefined)) {
+      // The shared, unverified `claude-desktop` identity names a host, not a
+      // session (no hook inbox / socket wake), so it may declare its own
+      // `cc:<session_id>` as parent: the child's follow-ups then reach a row that
+      // can be woken. Declared, not proven; only the `cc:` form is accepted.
+      const sharedDesktopCaller =
+        callerScope === undefined && effectiveCaller() === SHARED_CLAUDE_DESKTOP_ID
+      // A caller the bridge attested as `cc:<id>` (x-agentproto-claude-session)
+      // already attaches under that row. A declaration equal to it is redundant
+      // and accepted (no regression for clients that keep sending it); one that
+      // differs is refused: the attested identity wins, a declaration never
+      // re-parents it.
+      const attestedCc =
+        callerScope === undefined && effectiveCaller() !== undefined && DECLARED_CC_ADDRESS.test(effectiveCaller()!)
+      if (declaredParent !== undefined && attestedCc && declaredParent !== effectiveCaller()) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `agent_start: \`parent\` "${declaredParent}" differs from the Claude Code session this call is ` +
+                `attested as (\`${effectiveCaller()}\`); the call attaches under it automatically. Omit \`parent\`.`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (
+        declaredParent !== undefined &&
+        (callerScope !== undefined || effectiveCaller() !== undefined) &&
+        !sharedDesktopCaller &&
+        !attestedCc
+      ) {
         return {
           content: [
             {
@@ -781,6 +822,19 @@ export function registerAgentTools(
               text:
                 "agent_start: `parent` is only for callers without a session identity; " +
                 "this call is attributed to a session and attaches under it automatically.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (declaredParent !== undefined && sharedDesktopCaller && !DECLARED_CC_ADDRESS.test(declaredParent)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "agent_start: from the shared `claude-desktop` identity, `parent` must be your own " +
+                "declared Claude Code address `cc:<session_id>`.",
             },
           ],
           isError: true,
@@ -1452,8 +1506,10 @@ export function registerAgentTools(
       : {}),
     ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
     ...(noCallerIdentity ? { noCallerIdentity } : {}),
     ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
+    ...(deliveryApply ? { deliveryApply } : {}),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
   registerPermissionsTools(server, {
@@ -1471,6 +1527,7 @@ export function registerAgentTools(
     ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
     workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
   })
 
   // ── agent_output ───────────────────────────────────
@@ -2173,6 +2230,14 @@ export function registerAgentTools(
     })),
     modelCount: a.models?.length ?? 0,
   })
+  // `adapter_list` (legacy spelling) and `harness_list` (AIP-70 canonical
+  // spelling) are the SAME listing over the SAME lister: one handler, one
+  // projection, one paginated transformer. `adapter_list` keeps its exact
+  // pre-#2313 schema (`adapter` only) for old clients; `harness_list` adds
+  // the canonical `harness` name plus `adapter` as a compatibility alias.
+  // A call naming BOTH with different values is a caller bug, not an
+  // ambiguous preference — it fails closed rather than silently picking one.
+  type AdapterListInput = { harness?: string; adapter?: string }
   const adapterListSchema = z.object({
     adapter: z
       .string()
@@ -2180,11 +2245,58 @@ export function registerAgentTools(
       .describe("Keep only this adapter slug — lets a client fetch ONE adapter's detail."),
     ...pageParamsShape,
   })
-  type AdapterListInput = z.infer<typeof adapterListSchema>
+  const harnessListSchema = z.object({
+    harness: z
+      .string()
+      .optional()
+      .describe("Keep only this harness slug — canonical spelling of `adapter`."),
+    adapter: z
+      .string()
+      .optional()
+      .describe("Legacy alias for `harness`; when both are given they must match."),
+    ...pageParamsShape,
+  })
+  const listSlugFor = (tool: "adapter_list" | "harness_list", input: AdapterListInput): string | undefined => {
+    if (input.harness !== undefined && input.adapter !== undefined && input.harness !== input.adapter) {
+      throw new Error(
+        `${tool}: received both harness="${input.harness}" and adapter="${input.adapter}" — ` +
+          "when both are given they must name the same harness (omit one).",
+      )
+    }
+    return input.harness ?? input.adapter
+  }
+  const registerAdapterListing = (id: "adapter_list" | "harness_list", description: string, inputSchema: z.ZodType<AdapterListInput>): void => {
+    registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
+      id,
+      description,
+      inputSchema,
+      handler: async input => {
+        if (!listAgentAdapters) {
+          throw new Error(
+            `${id} is not enabled — the daemon was started without ` +
+              "an adapter lister. Wire `@agentproto/cli`'s " +
+              "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+          )
+        }
+        const slug = listSlugFor(id, input)
+        const adapters = await listAgentAdapters()
+        return slug ? adapters.filter(a => a.slug === slug) : adapters
+      },
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: compactAdapterItem,
+          keyOf: a => a.slug,
+          maxLimit: 200,
+          itemKey: "adapters",
+        }),
+      ],
+    })
+  }
 
-  registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
-    id: "adapter_list",
-    description: "Enumerate every agent CLI adapter installed on the host (claude-code, " +
+  registerAdapterListing(
+    "adapter_list",
+    "Enumerate every agent CLI adapter installed on the host (claude-code, " +
       "hermes, aider, …). Returns slug + display name + version + protocol + " +
       "an `installed` flag + a `modelCount` summary so callers can let users " +
       "pick from the installed set instead of guessing. Use before " +
@@ -2195,29 +2307,27 @@ export function registerAgentTools(
       "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
       "KB; page through it with `limit`/`cursor`). Pass `adapter` to scope " +
-      "the listing to one adapter before paging.",
-    inputSchema: adapterListSchema,
-    handler: async ({ adapter }) => {
-      if (!listAgentAdapters) {
-        throw new Error(
-          "adapter_list is not enabled — the daemon was started without " +
-            "an adapter lister. Wire `@agentproto/cli`'s " +
-            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-        )
-      }
-      const adapters = await listAgentAdapters()
-      return adapter ? adapters.filter(a => a.slug === adapter) : adapters
-    },
-    transformers: [
-      catchErrors(),
-      paginated({
-        project: compactAdapterItem,
-        keyOf: a => a.slug,
-        maxLimit: 200,
-        itemKey: "adapters",
-      }),
-    ],
-  })
+      "the listing to one adapter before paging. (Canonical spelling: " +
+      "`harness_list`; kept for older clients and daemons.)",
+    adapterListSchema,
+  )
+  registerAdapterListing(
+    "harness_list",
+    "Enumerate every agent CLI harness installed on the host (claude-code, " +
+      "hermes, aider, …) — the canonical name for `adapter_list`, which it " +
+      "behaves exactly like. Returns slug + display name + version + protocol + " +
+      "an `installed` flag + a `modelCount` summary so callers can let users " +
+      "pick from the installed set instead of guessing. Use before " +
+      "`agent_start` when the model doesn't already know what's available. " +
+      "COMPACT BY DEFAULT (and sized to fit the MCP result budget): each " +
+      "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
+      "`status`, `hint`, `modes`, `modelCount` — pass `full: true` " +
+      "(or `compact: false`) for the full " +
+      "manifest projection (model ids/details, commands/modes — hundreds of " +
+      "KB; page through it with `limit`/`cursor`). Pass `harness` (or its " +
+      "legacy alias `adapter`) to scope the listing to one harness before paging.",
+    harnessListSchema,
+  )
 
   // ── adapter_models ──────────────────────────────────────────────
   // Per-adapter model paging for clients that need ONE adapter's model list

@@ -6,9 +6,9 @@
  * Tools:
  *   app_install   loadAppHandle(dir) → validate → persist an installed-app record
  *   app_list      installed apps + a runs summary
- *   app_run       spawn a session per selected agent (default mastra-agent;
- *                 adapter/harness/model are pass-through, optional `sequence`
- *                 runs agents one-at-a-time under one appRunId)
+ *   app_run       spawn a session per selected agent (each agent resolves its
+ *                 own adapter/harness; model is pass-through, optional
+ *                 `sequence` runs agents one-at-a-time under one appRunId)
  *   app_status    fan out an app_run's sessions + the app's workflow runs
  *   app_stop      kill an app_run's sessions
  *
@@ -31,6 +31,7 @@ import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
 import type { AgentHandle, ToolRef } from "@agentproto/agent"
+import type { WorkflowHandle } from "@agentproto/workflow"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import type { ToolHandle } from "@agentproto/tool"
@@ -107,6 +108,17 @@ import { createHash, randomBytes } from "node:crypto"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
+/** Data-plane tools an app UI may only point at its own app (`args.appId`). */
+const APP_DATA_PLANE_TOOLS: ReadonlySet<string> = new Set([
+  "app_data_read",
+  "app_data_write",
+  "app_data_list",
+  "app_data_migrate",
+  "app_state_append",
+  "app_state_get",
+  "app_state_list",
+])
+
 /**
  * Local companion to the shared `paginated()` transformer for tools whose
  * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
@@ -142,13 +154,6 @@ function paginatedLegacyList<TItem extends object>(opts: {
     },
   }
 }
-
-/** mastra-agent's adapter slug — the one agent adapter this WP knows how to
- *  run an emitted AGENT.md under via its `agent` option (`--agent <path>`).
- *  No longer a silent fallback: an agent only lands here when its own
- *  `metadata.adapter`/`metadata.harness` (or a caller-passed `adapter`)
- *  names it. */
-const DEFAULT_AGENT_ADAPTER = "mastra-agent"
 
 /** A spawned session descriptor's terminal statuses (see `SessionStatus` in
  *  sessions.ts): clean exit, operator kill, or a crash/error. Any of these
@@ -300,6 +305,63 @@ function agentManifestReadError(app: InstalledApp, agentId: string, agentPath: s
   return `agent "${agentId}": could not read AGENT.md "${agentPath}": ${cause}${dirGone}`
 }
 
+type WorkflowStep = WorkflowHandle["steps"][number]
+
+/**
+ * Recursively collect every `agent.ref` in the step graph. Returns `false`
+ * when a `subworkflow` step is present: its own WORKFLOW.md is not loaded
+ * here, so the caller must keep resolving every agent of the app (the
+ * pre-filter behaviour).
+ */
+function collectAgentRefs(steps: readonly WorkflowStep[], out: Set<string>): boolean {
+  for (const step of steps) {
+    switch (step.kind) {
+      case "agent":
+        if (step.agent !== undefined) out.add(step.agent.ref)
+        break
+      case "map":
+      case "loop":
+        if (!collectAgentRefs(step.steps, out)) return false
+        break
+      case "parallel":
+        for (const branch of step.branches) {
+          if (!collectAgentRefs(branch.steps, out)) return false
+        }
+        break
+      case "subworkflow":
+        return false
+      default:
+        break
+    }
+  }
+  return true
+}
+
+/**
+ * The installed app that owns a workflow. A known WORKFLOW.md path wins:
+ * resolve its app root ({@link findAppRootFromFile}) and match an installed
+ * app by `dir`. No match (a WORKFLOW.md outside the registry) falls back to
+ * the workflow-id lookup, with one warning (unlike F40's tool lookup, that
+ * fallback IS the historical behaviour for a workflow the registry does not
+ * know.
+ */
+function resolveOwningApp(
+  appRegistry: AppRegistry,
+  workflowId: string,
+  workflowPath: string | undefined,
+): InstalledApp | undefined {
+  if (workflowPath !== undefined) {
+    const root = findAppRootFromFile(dirname(resolve(workflowPath)))
+    const byDir =
+      root !== undefined ? appRegistry.listApps().find(a => resolve(a.dir) === root) : undefined
+    if (byDir !== undefined) return byDir
+    console.warn(
+      `[workflow ${workflowId}] WORKFLOW.md at ${workflowPath} belongs to no installed app dir; resolved by workflow id`,
+    )
+  }
+  return appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+}
+
 /**
  * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
  * installed app — every agent id the app bundles resolves to a spawn adapter
@@ -326,18 +388,35 @@ function agentManifestReadError(app: InstalledApp, agentId: string, agentPath: s
  * `workflow_run_file` outside any app), so a `kind:"agent"` step using
  * `agent.ref` fails compilation naming "no agent refs are configured"
  * rather than a silently-empty map producing the same message either way.
+ *
+ * Pass `opts.steps` (the run's own step graph) to resolve ONLY the agents
+ * those steps reference; a `subworkflow` step has no loaded sub-graph here,
+ * so it keeps resolving every agent of the app. Pass `opts.workflowPath` to
+ * find the owning app by its WORKFLOW.md path first (falling back to the
+ * workflow-id lookup for a path outside the installed registry).
  */
 export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
   resolveRole?: ModelRoleResolver,
   resolveAgentAdapter?: AgentAdapterResolver,
+  opts?: { workflowPath?: string; steps?: WorkflowHandle["steps"] },
 ): Promise<Record<string, AgentRefResolution> | undefined> {
-  const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+  const app = resolveOwningApp(appRegistry, workflowId, opts?.workflowPath)
   if (!app) return undefined
+  // When the caller knows the workflow's step graph, resolve only the agents
+  // those steps reference: an unroutable agent the workflow never uses must
+  // not break the whole app. An unknown step shape (subworkflow) keeps the
+  // old "every agent" behaviour.
+  let referencedAgentIds: Set<string> | undefined
+  if (opts?.steps !== undefined) {
+    const ids = new Set<string>()
+    if (collectAgentRefs(opts.steps, ids)) referencedAgentIds = ids
+  }
   const refs: Record<string, AgentRefResolution> = {}
   const caps = new Map<string, Promise<AgentProjectionCaps>>()
   for (const agent of app.agents) {
+    if (referencedAgentIds !== undefined && !referencedAgentIds.has(agent.id)) continue
     let loaded: LoadedAgentManifest
     try {
       loaded = await loadAgentPromptDefaults(agent.path, resolveRole)
@@ -507,7 +586,7 @@ export interface AppToolCallDeps {
  * The `app_tool_call` gateway's whole behaviour minus allowlist resolution
  * — allowlist enforcement against the caller-supplied `declaredAllowlist`
  * UNION the read-only, non-secret `APP_UI_DISCOVERY_TOOLS` (`adapter_list`,
- * `harness_preset_list` — every app UI gets these for free, regardless of
+ * `harness_list`, `harness_preset_list` — every app UI gets these for free, regardless of
  * what it declared, so `@agentproto/app-client/runner-select`'s
  * `mountRunnerSelect` works out of the box) — then dispatch through the
  * daemon's own tools or an imported MCP server. Factored out of
@@ -770,6 +849,12 @@ async function dispatchAllowlistedAppTool(
       )
     }
     args = input.args ?? {}
+  }
+  if (APP_DATA_PLANE_TOOLS.has(input.tool) && args.appId !== undefined && args.appId !== input.appId) {
+    return errorResult(
+      `app_tool_call: app "${input.appId}" may only address its own data; ` +
+        `"${input.tool}" named app "${String(args.appId)}".`,
+    )
   }
   // App-UI install guard: an `app_install` routed through an app panel's
   // tool-call surface (`window.McpApp` bridge → this dispatcher) needs an
@@ -1520,16 +1605,6 @@ export async function performInstall(
     return {
       ok: false,
       error: `unknown daemon tool id(s) referenced by workflow step(s) — would otherwise fail at STEP-DISPATCH time: ${JSON.stringify(missingByWorkflow)}`,
-    }
-  }
-
-  if (handle.agents.length > 0 && !skipDaemonChecks) {
-    const resolved = resolveAgentAdapter ? await resolveAgentAdapter(DEFAULT_AGENT_ADAPTER) : null
-    if (!resolved) {
-      return {
-        ok: false,
-        error: `agent adapter "${DEFAULT_AGENT_ADAPTER}" could not be resolved — run \`agentproto install ${DEFAULT_AGENT_ADAPTER}\` first.`,
-      }
     }
   }
 
@@ -2286,7 +2361,7 @@ export function registerAppTools(
       "Remote installs are kept current with `app_resync`. Validates every " +
       "WORKFLOW.md `tool` step's id against the daemon's dispatchable tools (missing " +
       "ids are reported ALL at once, instead of failing one at a time at " +
-      "STEP-DISPATCH time) and checks the `mastra-agent` adapter resolves. Agent-" +
+      "STEP-DISPATCH time). Agent-" +
       "declared tool refs (workspace tools like `read_file`) are the adapter's own " +
       "business and are never validated here — see `unvalidatedAgentTools` on the " +
       "result. Re-installing the same appId upserts (and keeps its existing " +
@@ -2680,10 +2755,9 @@ export function registerAppTools(
         .string()
         .optional()
         .describe(
-          "Agent adapter slug. Omitted → EACH agent resolves its own (AGENT.md " +
-            "`metadata.adapter`/`metadata.harness` > `claude-*` model → `claude-code` > " +
-            "`mastra-agent`). Given → this slug is used for EVERY agent; sets `harness` " +
-            "when `harness` is absent.",
+          "Harness slug (`adapter` is the old name). Omitted: each agent resolves its " +
+            "own (AGENT.md `metadata.harness` or `metadata.adapter`, then the model " +
+            "prefix). Given: used for every agent; sets `harness` when `harness` is absent.",
         ),
       harness: z
         .string()
@@ -2773,8 +2847,8 @@ export function registerAppTools(
       let runAdapter = callerAdapter
       let runHarness = callerHarness
       const reportedRunner = () => ({
-        adapter: runAdapter ?? DEFAULT_AGENT_ADAPTER,
-        harness: runHarness ?? runAdapter ?? DEFAULT_AGENT_ADAPTER,
+        ...(runAdapter !== undefined ? { adapter: runAdapter } : {}),
+        ...(runHarness !== undefined ? { harness: runHarness } : {}),
       })
 
       // B — the AGENT.md reaches EVERY harness (AIP-42 is runner-agnostic):
@@ -2995,8 +3069,16 @@ export function registerAppTools(
         ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
       })
+      if (sessions.length === 0 && errors.length > 0) {
+        appRegistry.endRun(run.appRunId, {
+          status: "failed",
+          error: errors.map(e => `${e.agentId}: ${e.error}`).join("; "),
+        })
+      }
       return textResult({
         appRunId: run.appRunId,
+        status: run.status,
+        ...(run.endedAt ? { endedAt: run.endedAt } : {}),
         ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
         sessions,
