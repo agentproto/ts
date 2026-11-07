@@ -65,6 +65,7 @@ import {
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
+import { classifyAttestation, createAttestationLogGate } from "./claude-session-attest-log.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import { injectProviderKeysIntoEnv } from "./providers-store.js"
@@ -2583,8 +2584,22 @@ export async function startHttpServer(
     return !!qsToken && qsToken === auth.token
   }
 
+  // console.error on purpose: stderr is the daemon.log file (see above).
+  const attestationLog = createAttestationLogGate(line => console.error(line))
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
+    {
+      const rawHeader = req.headers[CLAUDE_SESSION_HEADER]
+      attestationLog(
+        classifyAttestation({
+          header: Array.isArray(rawHeader) ? rawHeader[0] : rawHeader,
+          query: parseCallerSessionIdQuery(req.url ?? ""),
+          shared: SHARED_CLAUDE_DESKTOP_ID,
+          trusted: externalClaimTrusted(req),
+        }),
+      )
+    }
     if (await enforceCallerIdentity(req, res, "/mcp")) return
     {
       const claimed = resolveCallerSessionId(req)
