@@ -3637,6 +3637,7 @@ export async function createGateway(
               handle.id,
               resolveModelRoleId,
               opts.resolveAgentAdapter,
+              { workflowPath: workflowMdPath, steps: handle.steps },
             ),
           })
         },
