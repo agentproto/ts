@@ -43,6 +43,7 @@ alike.
    Authorized to the human operator and to that declared successor only.
    The operator may also pass `to` to declare the successor in the same call
    (the repair path when the replacement was spawned without `succeeds`).
+   `POST /sessions/agent` accepts `succeeds` too (HTTP twin of `agent_start`).
 4. **`message_parent` fallback** - self-healing from the child side. When the
    recorded parent is dead, the report goes to its live declared successor
    (`succeededBy` chain), else the nearest live ancestor, and the child is
