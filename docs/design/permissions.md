@@ -174,7 +174,7 @@ auth.profile.manage      auth_profile_create/delete/import
 config.write             config_set
 remote.publish           remote_enable, tunnel_create
 cron.schedule            cron_create/delete
-approval.decide          approval_card_decide (operator only, never delegable)
+approval.decide          approval_card_decide (operator only, never delegable); its one-time ticket comes from approval_card_list
 box.relay                relay grant use (box → host)
 ```
 

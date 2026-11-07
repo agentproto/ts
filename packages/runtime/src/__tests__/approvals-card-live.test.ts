@@ -314,3 +314,85 @@ describe("expiry text shows the approval's own expiry only", () => {
     expect(page.metaOf(later!)).toBe("expires in 3 h")
   })
 })
+
+describe("the pending list keeps a card it decided", () => {
+  async function listPage(...titles: string[]) {
+    const ids = titles.map(t => request(t))
+    const { client, callTool } = await cardsHost()
+    const bodyHeight = { value: 100 }
+    const page = runCardPage(await readCardHtml(client, APPROVAL_PENDING_RESOURCE_URI), { callTool, bodyHeight })
+    await page.flush()
+    return { ids, page, bodyHeight }
+  }
+
+  it("Approve leaves both cards on screen: the first reads Approved with no buttons, the second keeps its buttons", async () => {
+    const { ids, page } = await listPage("First", "Second")
+    const [first, second] = page.cards()
+    expect(page.cards()).toHaveLength(2)
+
+    page.buttons(first!).approve.click()
+    await page.flush()
+
+    expect(engine.get(ids[0]!)?.status).toBe("approved")
+    expect(page.cards().map(c => page.titleOf(c))).toEqual(["First", "Second"])
+    expect(page.cards()[0]).toBe(first)
+    expect(page.statusOf(first!)).toBe("Approved")
+    expect(page.actionsOf(first!).style.display).toBe("none")
+    expect(page.metaOf(first!)).toBe("")
+    expect(page.statusOf(second!)).toBe("")
+    expect(page.actionsOf(second!).style.display).not.toBe("none")
+    expect(page.buttons(second!).approve.disabled).toBe(false)
+    expect(page.buttons(second!).deny.disabled).toBe(false)
+  })
+
+  it("Refuse reads Refused the same way", async () => {
+    const { ids, page } = await listPage("First", "Second")
+    const [first, second] = page.cards()
+
+    page.buttons(first!).deny.click()
+    await page.flush()
+
+    expect(engine.get(ids[0]!)?.status).toBe("denied")
+    expect(page.cards().map(c => page.titleOf(c))).toEqual(["First", "Second"])
+    expect(page.statusOf(first!)).toBe("Refused")
+    expect(page.actionsOf(first!).style.display).toBe("none")
+    expect(page.actionsOf(second!).style.display).not.toBe("none")
+  })
+
+  it("never shows Nothing to approve while a decided card is on screen, and keeps the cards across later refreshes", async () => {
+    const { page } = await listPage("Only", "Last")
+    const [only, last] = page.cards()
+
+    page.buttons(only!).approve.click()
+    await page.flush()
+    page.buttons(last!).deny.click()
+    await page.flush()
+
+    expect(page.cards()).toHaveLength(2)
+    expect(page.statusOf(only!)).toBe("Approved")
+    expect(page.statusOf(last!)).toBe("Refused")
+    expect(page.note.textContent).toBe("")
+
+    page.notify("ui/notifications/tool-result")
+    await page.flush()
+    expect(page.cards()).toHaveLength(2)
+    expect(page.statusOf(only!)).toBe("Approved")
+    expect(page.note.textContent).toBe("")
+  })
+
+  it("a new pending approval joins after the decided card; the height is reported after a decision", async () => {
+    const { page, bodyHeight } = await listPage("Decided")
+    bodyHeight.value = 180
+    page.buttons(page.cards()[0]!).approve.click()
+    await page.flush()
+    expect(page.sizes().at(-1)).toBe(180)
+
+    request("Newer")
+    page.notify("ui/notifications/tool-result")
+    await page.flush()
+
+    expect(page.cards().map(c => page.titleOf(c))).toEqual(["Decided", "Newer"])
+    expect(page.statusOf(page.cards()[0]!)).toBe("Approved")
+    expect(page.buttons(page.cards()[1]!).approve.disabled).toBe(false)
+  })
+})
