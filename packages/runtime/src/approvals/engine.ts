@@ -16,7 +16,7 @@
  * `decideTelegram` only from `POST /approvals/:id/decision/telegram` (gated
  * by a bot-bridge shared secret instead of an Origin — a webhook callback
  * has no browser Origin to check), `mintCardTicket`/`decideByCard` only
- * from the card resource's HTML / the `approval_card_decide` tool. The MCP
+ * from the app-only `approval_card_list` / `approval_card_decide` tools. The MCP
  * tools facing an agent (`approvals/tools.ts`) expose only `request` /
  * `get` / `wait` / `consume`.
  *

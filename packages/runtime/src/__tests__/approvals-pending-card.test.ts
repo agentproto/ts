@@ -437,7 +437,9 @@ describe("the card resources are templates", () => {
       board.approve.click()
       await page.flush()
       expect(engine.get(a)?.status).toBe("approved")
-      expect(page.note.textContent).toBe("Nothing to approve")
+      // The decided card stays on screen in its final state, so no empty note.
+      expect(page.cards().map(c => page.titleOf(c))).toEqual(["Send the Q3 report"])
+      expect(page.note.textContent).toBe("")
       await client.close()
     })
   })

@@ -452,7 +452,7 @@ function cardPageJs(approvalId: string | null): string {
     var preview = renderPreview(item.preview);
     if (preview) el.appendChild(preview);
     var card = {
-      id: item.id, el: el, ticket: '', expiresAt: '', busy: false, final: false,
+      id: item.id, el: el, ticket: '', expiresAt: '', busy: false, final: false, remembered: false,
       meta: node('div', 'meta'), actions: node('div', 'actions'),
       denyBtn: node('button', '', 'Refuse'), approveBtn: node('button', 'primary', 'Approve'),
       statusEl: node('div', 'status')
@@ -499,12 +499,18 @@ function cardPageJs(approvalId: string | null): string {
       if (item.status && item.status !== 'pending') {
         showFinal(card, item.status);
       } else {
+        if (card.remembered) {
+          card.remembered = false;
+          card.final = false;
+          card.actions.style.display = '';
+          card.statusEl.textContent = '';
+        }
         card.ticket = typeof item.ticket === 'string' ? item.ticket : '';
       }
       syncButtons(card);
     }
     var ids = _order.slice();
-    for (var j = 0; j < ids.length; j++) if (!seen[ids[j]]) dropCard(ids[j]);
+    for (var j = 0; j < ids.length; j++) if (!seen[ids[j]] && !_cards[ids[j]].remembered) dropCard(ids[j]);
     showEmptyNote();
     updateExpiry();
     reportSize();
@@ -531,8 +537,9 @@ function cardPageJs(approvalId: string | null): string {
     callTool('approval_card_decide', { approvalId: card.id, decision: decision, ticket: card.ticket }).then(function () {
       _deciding--;
       card.busy = false;
-      if (APPROVAL_ID) showFinal(card, decision === 'approve' ? 'approved' : 'denied');
-      else { dropCard(card.id); showEmptyNote(); }
+      showFinal(card, decision === 'approve' ? 'approved' : 'denied');
+      if (!APPROVAL_ID) card.remembered = true;
+      showEmptyNote();
       reportSize();
       refresh();
     }, function (err) {
