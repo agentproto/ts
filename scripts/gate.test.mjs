@@ -7,6 +7,7 @@ import { test } from "node:test"
 import {
   GateLockTimeout,
   acquireGateLock,
+  buildDocsCommand,
   buildGateCommand,
   critBlockReason,
   loadBlockReason,
@@ -152,8 +153,14 @@ test("buildGateCommand: affected by default, --full drops it, shared cache + bas
   assert.ok(affected.args.includes("--affected"))
   assert.ok(affected.args.includes("--concurrency=2"))
   assert.equal(affected.env.TURBO_SCM_BASE, "origin/main")
-  assert.match(affected.env.TURBO_CACHE_DIR, /\.agentproto[\\/]turbo-cache$/)
+  assert.equal(affected.env.TURBO_CACHE_DIR, "/h/.agentproto/turbo-cache")
   const full = buildGateCommand({ full: true, env: { TURBO_CACHE_DIR: "/c" } })
   assert.equal(full.args.includes("--affected"), false)
   assert.equal(full.env.TURBO_CACHE_DIR, "/c")
+})
+
+test("buildDocsCommand runs CI's pretest docs coverage check", () => {
+  const docs = buildDocsCommand()
+  assert.equal(docs.cmd, process.execPath)
+  assert.deepEqual(docs.args, ["scripts/agentflow/docs.mjs", "--check"])
 })

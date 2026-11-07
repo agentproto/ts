@@ -33,14 +33,16 @@ Each rung has exactly one owner — don't reach into the next one.
    lock (`~/.agentproto/gate.lock`, `AGENTPROTO_GATE_SLOTS` slots, default 1;
    waits in the foreground up to 8 min, then exits 75 — just re-run it),
    refuses to start while the host-guard CRIT marker is armed (exit 69) or the
-   load average is above 1.5x the core count (exit 73), then runs
+   load average is above 1.5x the core count (exit 73), then runs CI's
+   `node scripts/agentflow/docs.mjs --check` and
    `turbo run build check-types test --affected` under `nice -n 10` with
    `--concurrency=2` and the shared turbo cache. `--affected` is the same scope
    CI uses for PRs, so the local gate loses no coverage relative to it.
 
-   **The full gate is the exception: `pnpm gate --full`** (same lock, no
-   `--affected`; the bare `pnpm test` + `pnpm check-types` pair is equivalent
-   but unserialised, so prefer `pnpm gate --full`). Reserve it for a change to
+   **The full gate is the exception: `pnpm gate --full`** (same lock and docs
+   check, no `--affected`). The bare `pnpm test` + `pnpm check-types` pair is
+   **not** equivalent: it skips `build` and is unserialised, so prefer
+   `pnpm gate --full`. Reserve it for a change to
    `turbo.json`, root `package.json`, `vitest.shared.ts`, or `pnpm-lock.yaml`,
    or an explicit human request. `agentproto.json` still declares
    `scripts.test` as `pnpm test` (`package.json:19`) for completion policies

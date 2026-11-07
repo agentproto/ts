@@ -14,9 +14,10 @@
  *      dead is stale and is taken over.
  *   3. Waits in the FOREGROUND (poll 5 s, give up after 8 min) — never
  *      background-and-yield, see AGENTS.md.
- *   4. Runs `nice -n 10 turbo run build check-types test --affected` with the
- *      shared turbo cache. `--full` drops `--affected` (turbo.json, root
- *      package.json, vitest.shared.ts, pnpm-lock.yaml changes, or a human ask).
+ *   4. Runs CI's docs coverage check, then `nice -n 10 turbo run build
+ *      check-types test --affected` with the shared turbo cache. `--full` drops
+ *      `--affected` (turbo.json, root package.json, vitest.shared.ts,
+ *      pnpm-lock.yaml changes, or a human ask).
  *   5. Always releases the lock and prints `GATE_EXIT=<n>` as the last line.
  *
  * Exit codes: the gate command's own code, or 75 lock wait timed out
@@ -212,7 +213,14 @@ export function loadBlockReason(load1 = loadavg()[0], cores = cpus().length) {
 export function resolveTurboCacheDir(env = process.env) {
   if (env.AGENTPROTO_WORKTREES_TURBO_CACHE_DIR) return resolve(env.AGENTPROTO_WORKTREES_TURBO_CACHE_DIR)
   if (env.TURBO_CACHE_DIR) return env.TURBO_CACHE_DIR
-  return join(homedir(), ".agentproto", "turbo-cache")
+  // Honour env.HOME so an overridden HOME (tests, sandboxes) picks its own cache.
+  return join(env.HOME || homedir(), ".agentproto", "turbo-cache")
+}
+
+/** CI's unconditional pretest doc-coverage check, mirrored here because the
+ *  gate calls turbo directly and bypasses npm's `pretest` lifecycle hook. */
+export function buildDocsCommand() {
+  return { cmd: process.execPath, args: ["scripts/agentflow/docs.mjs", "--check"] }
 }
 
 export function buildGateCommand({ full = false, env = process.env } = {}) {
@@ -303,8 +311,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   process.on("exit", onSignal)
   try {
     const plan = buildGateCommand({ full: flags.has("--full"), env })
-    console.error(`gate: lock ${lock.path} held; running ${plan.cmd} ${plan.args.join(" ")}`)
+    const docs = buildDocsCommand()
+    console.error(
+      `gate: lock ${lock.path} held; running ${docs.cmd} ${docs.args.join(" ")} && ${plan.cmd} ${plan.args.join(" ")}`,
+    )
     if (flags.has("--dry-run")) return 0
+    const docsCode = await runForeground({ ...docs, env })
+    if (docsCode !== 0) {
+      console.error(`gate: docs coverage check failed (exit ${docsCode})`)
+      return docsCode
+    }
     return await runForeground(plan)
   } finally {
     lock.release()
