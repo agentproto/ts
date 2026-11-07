@@ -31,6 +31,7 @@ import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
 import type { AgentHandle, ToolRef } from "@agentproto/agent"
+import type { WorkflowHandle } from "@agentproto/workflow"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import type { ToolHandle } from "@agentproto/tool"
@@ -304,6 +305,63 @@ function agentManifestReadError(app: InstalledApp, agentId: string, agentPath: s
   return `agent "${agentId}": could not read AGENT.md "${agentPath}": ${cause}${dirGone}`
 }
 
+type WorkflowStep = WorkflowHandle["steps"][number]
+
+/**
+ * Recursively collect every `agent.ref` in the step graph. Returns `false`
+ * when a `subworkflow` step is present: its own WORKFLOW.md is not loaded
+ * here, so the caller must keep resolving every agent of the app (the
+ * pre-filter behaviour).
+ */
+function collectAgentRefs(steps: readonly WorkflowStep[], out: Set<string>): boolean {
+  for (const step of steps) {
+    switch (step.kind) {
+      case "agent":
+        if (step.agent !== undefined) out.add(step.agent.ref)
+        break
+      case "map":
+      case "loop":
+        if (!collectAgentRefs(step.steps, out)) return false
+        break
+      case "parallel":
+        for (const branch of step.branches) {
+          if (!collectAgentRefs(branch.steps, out)) return false
+        }
+        break
+      case "subworkflow":
+        return false
+      default:
+        break
+    }
+  }
+  return true
+}
+
+/**
+ * The installed app that owns a workflow. A known WORKFLOW.md path wins:
+ * resolve its app root ({@link findAppRootFromFile}) and match an installed
+ * app by `dir`. No match (a WORKFLOW.md outside the registry) falls back to
+ * the workflow-id lookup, with one warning (unlike F40's tool lookup, that
+ * fallback IS the historical behaviour for a workflow the registry does not
+ * know.
+ */
+function resolveOwningApp(
+  appRegistry: AppRegistry,
+  workflowId: string,
+  workflowPath: string | undefined,
+): InstalledApp | undefined {
+  if (workflowPath !== undefined) {
+    const root = findAppRootFromFile(dirname(resolve(workflowPath)))
+    const byDir =
+      root !== undefined ? appRegistry.listApps().find(a => resolve(a.dir) === root) : undefined
+    if (byDir !== undefined) return byDir
+    console.warn(
+      `[workflow ${workflowId}] WORKFLOW.md at ${workflowPath} belongs to no installed app dir; resolved by workflow id`,
+    )
+  }
+  return appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+}
+
 /**
  * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
  * installed app — every agent id the app bundles resolves to a spawn adapter
@@ -330,18 +388,35 @@ function agentManifestReadError(app: InstalledApp, agentId: string, agentPath: s
  * `workflow_run_file` outside any app), so a `kind:"agent"` step using
  * `agent.ref` fails compilation naming "no agent refs are configured"
  * rather than a silently-empty map producing the same message either way.
+ *
+ * Pass `opts.steps` (the run's own step graph) to resolve ONLY the agents
+ * those steps reference; a `subworkflow` step has no loaded sub-graph here,
+ * so it keeps resolving every agent of the app. Pass `opts.workflowPath` to
+ * find the owning app by its WORKFLOW.md path first (falling back to the
+ * workflow-id lookup for a path outside the installed registry).
  */
 export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
   resolveRole?: ModelRoleResolver,
   resolveAgentAdapter?: AgentAdapterResolver,
+  opts?: { workflowPath?: string; steps?: WorkflowHandle["steps"] },
 ): Promise<Record<string, AgentRefResolution> | undefined> {
-  const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+  const app = resolveOwningApp(appRegistry, workflowId, opts?.workflowPath)
   if (!app) return undefined
+  // When the caller knows the workflow's step graph, resolve only the agents
+  // those steps reference: an unroutable agent the workflow never uses must
+  // not break the whole app. An unknown step shape (subworkflow) keeps the
+  // old "every agent" behaviour.
+  let referencedAgentIds: Set<string> | undefined
+  if (opts?.steps !== undefined) {
+    const ids = new Set<string>()
+    if (collectAgentRefs(opts.steps, ids)) referencedAgentIds = ids
+  }
   const refs: Record<string, AgentRefResolution> = {}
   const caps = new Map<string, Promise<AgentProjectionCaps>>()
   for (const agent of app.agents) {
+    if (referencedAgentIds !== undefined && !referencedAgentIds.has(agent.id)) continue
     let loaded: LoadedAgentManifest
     try {
       loaded = await loadAgentPromptDefaults(agent.path, resolveRole)
