@@ -1,5 +1,18 @@
 # @agentproto/sentinel
 
+## 0.6.0
+
+### Minor Changes
+
+- bf69bc9: Add the `delivery.apply.types` switch so a classified level can drive delivery (wake/fyi/drop; an applied level 3 is delivered as a wake and never downgraded or dropped) per event type, shadow by default, for both session follows and sentinels.
+- 3f92da0: Record a shadow `grant` verdict (`allow`, `deny`, `unknown` or `error`) on every delivery ledger line. The check observes publish and wake capabilities but never changes delivery; a throwing or slow decision leaves delivery untouched and is recorded as `error`.
+
+### Patch Changes
+
+- Updated dependencies [bf69bc9]
+- Updated dependencies [3f92da0]
+  - @agentproto/delivery@0.3.0
+
 ## 0.5.0
 
 ### Minor Changes

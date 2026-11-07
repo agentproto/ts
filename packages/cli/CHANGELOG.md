@@ -1,5 +1,30 @@
 # @agentproto/cli
 
+## 1.35.0
+
+### Minor Changes
+
+- 9b4ba07: Give the Claude Desktop Chat tab one shared, declared `claude-desktop` identity: `install-mcp` pins the shared MCP URL (with `--dry-run` to print the entry without writing), `hook install --host claude-desktop` prints that URL and ignores `--session`, and messages from a claimed external id are labelled `unverified` in delivered text and inbox digests.
+
+### Patch Changes
+
+- f6036ca: Debug trail for the Claude Code session attestation: the `mcp-bridge` writes one stderr line at startup saying whether it sends `x-agentproto-claude-session` (first 8 characters of the id, or why not) and whether the URL carries `callerSessionId`; its log lines no longer print URL query values. The daemon logs one line per distinct outcome (header accepted and resolved to `cc:<id>`, header refused with the reason, header absent on a shared or anonymous connection), re-emitted at most every 10 minutes.
+- aac3b53: The stdio `mcp-bridge` now attests the real Claude Code session: when `CLAUDE_CODE_SESSION_ID` is in its environment (and well formed) it sends `x-agentproto-claude-session` on every request it proxies. The daemon resolves a call that carries that header and the shared `claude-desktop` identity (or none) to the external row `cc:<id>`, the one the hooks touch, so `agent_start` attaches children under it, `message_parent` reaches its hook inbox / socket wake, and sent messages are attributed `cc:<id>` (still unverified). A declared `agent_start.parent` equal to that row is accepted, a different one is refused.
+- f89c8df: `install-mcp --agent claude-desktop` also writes the shared Chat-tab identity into the Claude-3p profile's `claude_desktop_config.json` when that file exists. Before, only the `Claude/` profile was updated, so a Chat conversation in the other profile kept the old no-identity entry and sent as the anonymous `claude-code` sender.
+- 8db9149: Claude Desktop can show pending approvals as Approve / Refuse cards. The `approval-cards` MCP surface is now cards-only: it serves just `approval_card_decide`, a model-visible `approval_pending` tool whose definition links the new `ui://agentproto/approval/pending` widget (one card per pending approval, each with its own one-time ticket, plus a "Nothing to approve" state) and the card resources, with none of the daemon's root tools and no deferral wrapper, so the Desktop entry does not repeat the tool list of the main `agentproto` entry. `agentproto mcp-bridge --surface approval-cards` dials that surface and keeps the query string of `AGENTPROTO_MCP_URL`, and `agentproto install-mcp --approvals` prints (with `--write`, backs up the Desktop config and adds only) an `agentproto-approvals` entry. `install-mcp --uninstall` does not remove that entry; delete the `agentproto-approvals` key from the Desktop config by hand.
+- 37f5b4c: Fix the approval card never rendering in Claude Desktop. The card and terminal panel now send `ui/initialize` with `appInfo` and spec `appCapabilities` (they sent `clientInfo`, which Desktop drops), and the card's buttons stay disabled until the handshake succeeds while its details are in the HTML from the start. `install-mcp --approvals --write` now also writes the `agentproto-approvals` entry into the Claude-3p profile when its config exists, with a backup, using absolute node and cli script paths so a Dock-launched Desktop can start it, and reminds you to quit Claude (Cmd+Q) first.
+- bb3cc99: Add the canonical `harness_list` MCP tool. It shares `adapter_list`'s lister, compact/full projection, `{ adapters }` envelope, pagination, `fields` and truncation behaviour, and accepts `harness` (canonical) or `adapter` (legacy alias); naming both with different values is a clear validation error. `adapter_list` keeps its existing schema and payload byte-for-byte for older clients, and old daemons keep serving it. `harness_list` is classified full-only like `adapter_list` (no widening of named profiles or scoped-link tokens), while `APP_UI_DISCOVERY_TOOLS` — owned by `@agentproto/app-client` — gains `harness_list` alongside the legacy name. Consumer clients (Runner Select, Studio, VS Code) stay on `adapter_list` in this delivery.
+- 644f94b: Claude Code 2.1.317 writes no permission mode to `~/.claude/sessions/<pid>.json`, so a session started in bypassPermissions was treated as wakeable and a daemon message was reported delivered over the socket without reaching it. `agentproto hook inbox` now forwards the hook input's `permission_mode` on the touch, the external row records it (`externalPermissionMode`, refreshed on every touch that carries one), and the socket wake falls back to the inbox when the registration file or the row says bypassPermissions.
+- Updated dependencies [bf69bc9]
+- Updated dependencies [e039ae5]
+- Updated dependencies [bb3cc99]
+- Updated dependencies [3f92da0]
+  - @agentproto/sentinel@0.6.0
+  - @agentproto/sandbox-computer@0.7.2
+  - @agentproto/app-client@0.5.0
+  - @agentproto/apps@0.27.1
+  - create-agentproto-app@0.3.10
+
 ## 1.34.0
 
 ### Minor Changes
