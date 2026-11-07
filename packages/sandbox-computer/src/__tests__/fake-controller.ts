@@ -91,6 +91,9 @@ export interface FakeControllerOptions {
   detachStatus?: number
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
+  /** Delay an exec response by this many ms (models a controller/agent wedged
+   *  while a probe is outstanding). Return 0/undefined for no delay. */
+  execDelayMs?: (argv: string[], body: { timeoutSec: number }) => number | undefined
   /** `egressIp` reported on create and GET. Omitted from responses when undefined. */
   egressIp?: { id: string; publicIp: string } | null
   /** Slots served by `GET /v1/egress-pool`. A create that names a slot id
@@ -549,6 +552,8 @@ export class FakeController {
       ) {
         return reply(res, this.options.execTimeoutStatus, { error: "exec timed out" })
       }
+      const delayMs = this.options.execDelayMs?.(parsed.argv, parsed) ?? 0
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs))
       const out = this.runExec(id, parsed.argv, parsed)
       assertContract(execResponseSchema, out)
       return reply(res, 200, out)

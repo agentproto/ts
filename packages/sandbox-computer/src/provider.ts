@@ -148,6 +148,13 @@ const EXEC_TIMEOUT_MAX_SEC = 600
 const DETACHED_EXEC_THRESHOLD_MS = 90_000
 const DEFAULT_WAIT_READY_TIMEOUT_MS = 120_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
+/** Collect this snapshot only when a box reached `running` but the daemon
+ *  never came up (or attach failed) and it is about to be destroyed. Commands
+ *  run CONCURRENTLY, each capped, with one overall budget so teardown is never
+ *  delayed beyond it. */
+const BOOT_DIAGNOSTICS_TOTAL_MS = 20_000
+const BOOT_DIAGNOSTICS_COMMAND_TIMEOUT_MS = 4_000
+const BOOT_DIAGNOSTICS_MAX_CHARS = 4_096
 /** One budget for the whole provider-side boot (create -> running -> daemon
  *  healthy -> attach), so a wedge in any phase fails in bounded time instead
  *  of hanging the caller indefinitely. */
@@ -1196,6 +1203,123 @@ async function planEgressSlots(
   return { slots: candidates, hosts }
 }
 
+/** In-box commands run for {@link collectBootDiagnostics}. Order is the order
+ *  the sections appear in the snapshot, even though they execute in parallel. */
+const BOOT_DIAGNOSTIC_COMMANDS: ReadonlyArray<{ label: string; script: string }> = [
+  { label: "ip -br addr", script: "ip -br addr" },
+  { label: "ip route", script: "ip route" },
+  { label: "/etc/resolv.conf", script: "cat /etc/resolv.conf" },
+  { label: "getent hosts registry.npmjs.org", script: "getent hosts registry.npmjs.org" },
+  { label: `agentproto daemon log (last 40 lines of ${DAEMON_LOG_PATH})`, script: `tail -n 40 "${DAEMON_LOG_PATH}" 2>/dev/null` },
+  { label: "agentproto processes", script: "ps -eo pid,etime,cmd | grep -i agentproto | head" },
+]
+
+/** Strip anything that looks like a credential before the snapshot reaches
+ *  the host daemon log / the agent_start error. The in-box daemon log can
+ *  echo its own start line, which carries `--auth-token`. */
+function redactBootDiagnostics(text: string): string {
+  return text
+    .replace(/(--auth-token[=\s]+)(?:"[^"]*"|'[^']*'|\S+)/gi, "$1<redacted>")
+    .replace(/(\bprintf\s+%s\s+)(?:"[^"]*"|'[^']*'|\S+)(\s*>\s*"\$HOME\/\.agentproto-daemon\.token")/gi, "$1<redacted>$2")
+    .replace(/(authorization\s*:\s*bearer\s+)(\S+)/gi, "$1<redacted>")
+    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1<redacted>")
+    .replace(
+      /((?:[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key)[A-Za-z0-9_-]*)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)/gi,
+      "$1<redacted>",
+    )
+}
+
+function truncateBootDiagnostics(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= BOOT_DIAGNOSTICS_MAX_CHARS) return trimmed
+  const suffix = "\n... (boot diagnostics truncated)"
+  return trimmed.slice(0, BOOT_DIAGNOSTICS_MAX_CHARS - suffix.length) + suffix
+}
+
+function formatBootDiagnostic(
+  label: string,
+  result: { exitCode: number; stdout: string; stderr: string },
+): string {
+  const lines = [`## ${label}`]
+  const stdout = result.stdout.trim()
+  const stderr = result.stderr.trim()
+  if (stdout !== "") lines.push(stdout)
+  if (stderr !== "") lines.push(`[stderr] ${stderr}`)
+  if (stdout === "" && stderr === "") lines.push(`(no output; exit ${result.exitCode})`)
+  return lines.join("\n")
+}
+
+/** Bound a promise by `ms` without touching the underlying request: on timeout
+ *  the caller moves on (teardown is never delayed past the cap) and a late
+ *  rejection is swallowed by the attached handlers. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  if (ms <= 0) return Promise.reject(new Error(`${label}: diagnostics time budget exhausted`))
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}: timed out after ${ms}ms`)), ms)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      err => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+/** Best-effort in-box snapshot of a boot that reached `running` but whose
+ *  daemon never became healthy (or whose attach failed). Runs the short
+ *  commands concurrently, each bounded, and NEVER throws: whatever came back
+ *  is what the caller gets. */
+async function collectBootDiagnostics(client: ComputerControllerClient, id: string): Promise<string> {
+  const deadline = Date.now() + BOOT_DIAGNOSTICS_TOTAL_MS
+  const parts = await Promise.all(
+    BOOT_DIAGNOSTIC_COMMANDS.map(async ({ label, script }) => {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return `## ${label}\n(skipped: diagnostics time budget exhausted)`
+      const budgetMs = Math.min(BOOT_DIAGNOSTICS_COMMAND_TIMEOUT_MS, remaining)
+      try {
+        const result = await withTimeout(
+          client.exec(id, bashArgv(script), {
+            timeoutSec: Math.max(1, Math.ceil(budgetMs / 1000)),
+          }),
+          budgetMs,
+          label,
+        )
+        return formatBootDiagnostic(label, result)
+      } catch (err) {
+        return `## ${label}\n(error: ${err instanceof Error ? err.message : String(err)})`
+      }
+    }),
+  )
+  return truncateBootDiagnostics(redactBootDiagnostics(parts.join("\n\n")))
+}
+
+/** Attach the snapshot to the error AND the boot log. Mutates the error in
+ *  place (a plain Error or a ComputerSandboxError) so the phase message the
+ *  caller already has still carries the in-box evidence. */
+function attachBootDiagnostics(err: unknown, diagnostics: string, bootLog: (line: string) => void): void {
+  const text = diagnostics.trim()
+  if (text === "") return
+  bootLog(`boot diagnostics:\n${text}`)
+  if (typeof err !== "object" || err === null) return
+  try {
+    ;(err as { bootDiagnostics?: string }).bootDiagnostics = text
+  } catch {
+    // A frozen error cannot carry the extra property; the message append
+    // below is still the useful surface.
+  }
+  if (err instanceof Error) {
+    try {
+      err.message = `${err.message}\n\n--- boot diagnostics ---\n${text}`
+    } catch {
+      // Immutable message: bootDiagnostics is the fallback.
+    }
+  }
+}
+
 async function bootOnClient(
   client: ComputerControllerClient,
   spec: SandboxSpec,
@@ -1448,6 +1572,10 @@ async function bootOnClient(
   let daemonToken: string | undefined
   let published: readonly PortPublish[] = []
   let status: ComputerStatus
+  // Set once the box is running: a failure after this point (daemon healthy /
+  // attach) means the box exists and is about to be destroyed, so it is the
+  // only chance to see WHY from inside.
+  let boxRunning = false
 
   try {
     // Post-create cancellation MUST stay inside this try: the box id is now
@@ -1460,6 +1588,7 @@ async function bootOnClient(
         ? Math.min(config.waitReadyTimeoutMs, Math.max(1, deadlineLeft()))
         : Math.max(1, deadlineLeft())
     status = await waitRunning(client, sandboxId, runningTimeout, opts.signal)
+    boxRunning = true
     bootLog(`computer ${sandboxId} running`)
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
@@ -1475,6 +1604,18 @@ async function bootOnClient(
     // sandbox-e2b): propagate the original error but reclaim the box. The
     // box was created here and no session has attached to it, so force is
     // safe and keeps a stray controller-held slot from blocking the cleanup.
+    //
+    // When the box already reached running, grab a bounded in-box snapshot
+    // BEFORE destroying it: that is the only window in which the real cause
+    // (no route, DNS, a daemon that crashed on start) is still observable.
+    if (boxRunning && sandboxId !== undefined) {
+      try {
+        const diagnostics = await collectBootDiagnostics(client, sandboxId)
+        attachBootDiagnostics(err, diagnostics, bootLog)
+      } catch {
+        // Diagnostics are best-effort and must never change the failure.
+      }
+    }
     await client.remove(sandboxId, { force: true }).catch(() => undefined)
     throw err
   }
