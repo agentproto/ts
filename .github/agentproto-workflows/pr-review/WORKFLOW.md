@@ -91,8 +91,14 @@ continuity. When `lastReviewedSha` is empty, it's a first (full-diff) review.
 
 1. Read the diff with `git diff origin/<baseRef>...HEAD`.
 2. Inspect changed files with `read_file` / shell grep as needed.
-3. Call `gh pr review <prNumber>` FIRST (mandatory) with:
-   - `event`: --approve, --request-changes, or --comment
+3. Call `gh pr review <prNumber>` FIRST (mandatory) with a flag that matches
+   the verdict deterministically:
+   - `--approve` when the verdict is approve (low-severity findings stay under
+     an approve)
+   - `--request-changes` only for real correctness problems (bugs, broken
+     contracts, security)
+   - never `--comment` for a final verdict (GitHub does not count it as an
+     approval)
    - `body`: structured markdown review
 4. Write a changeset to `.changeset/pr-<prNumber>-agentic.md` if the PR
    touches published packages.

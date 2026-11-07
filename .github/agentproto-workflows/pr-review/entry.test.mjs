@@ -16,7 +16,9 @@ const prompt = (input) => workflow.steps[0].prompt({ input })
 test('default placement (no reviewerSandbox, no repo) reviews via gh CLI', () => {
   const text = prompt({ prNumber: 42 })
   assert.match(text, /Your job: review PR #42 and post a structured GitHub review\./)
-  assert.match(text, /gh pr review 42 --comment/)
+  assert.match(text, /gh pr review 42 --approve/)
+  assert.match(text, /NEVER use `--comment` for a final verdict/)
+  assert.doesNotMatch(text, /gh pr review 42 --comment/)
   assert.doesNotMatch(text, /curl -sS -X POST/)
   assert.doesNotMatch(text, /LOCAL run/)
   assert.match(text, /Write a changeset/)
@@ -44,7 +46,8 @@ test('reviewerSandbox + repo selects sandbox (shared delivery helper) delivery',
 test('reviewerSandbox without repo falls back to host (no clone target)', () => {
   const text = prompt({ prNumber: 7, reviewConfig: { reviewerSandbox: 'e2b' } })
   assert.doesNotMatch(text, /Phase 0: Workspace bootstrap/)
-  assert.match(text, /gh pr review 7 --comment/)
+  assert.match(text, /gh pr review 7 --approve/)
+  assert.doesNotMatch(text, /gh pr review 7 --comment/)
 })
 
 // ── local placement (new) ───────────────────────────────────────────────────

@@ -403,7 +403,7 @@ jobs:
       # the delivery helper, the agentproto-run driver, and both stamp scripts
       # share. Lives outside packages/**/adapters/**, so `pnpm test` misses it.
       - name: Run artifact-ledger tests
-        run: node --test scripts/lib/artifact-ledger.test.mjs .github/agentproto-workflows/lib/deliver-artifact.test.mjs
+        run: node --test scripts/lib/artifact-ledger.test.mjs .github/agentproto-workflows/lib/deliver-artifact.test.mjs .github/agentproto-workflows/lib/reconcile-review-state.test.mjs
 
       # Guards the shared local-daemon MCP contract (scripts/lib/daemon-mcp.mjs)
       # the `review.mjs --engine daemon` gate drives (token read, connect,
@@ -2475,6 +2475,30 @@ jobs:
             echo "::error::No review found for the reviewed commit $SHA — the reviewer reported success but nothing landed on the PR."
             exit 1
           fi
+
+      # Deterministic review-state guard for the HOST delivery path: a reviewer
+      # that STATES approve/request_changes in its structured verdict but posts
+      # the review as COMMENTED leaves the PR REVIEW_REQUIRED - GitHub does not
+      # count COMMENTED (PR #2616, run 42326443318). The prompts now pick the
+      # `gh pr review` flag deterministically; this is the belt-and-suspenders
+      # for a model that ignores them. The decision is pure and tested in
+      # lib/reconcile-review-state.mjs; this step only calls it.
+      - name: Reconcile review event with structured verdict
+        id: reconcile
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.verify.outputs.posted == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ steps.verify.outputs.reviewed_sha }}
+          VERDICT_PRIMARY: ${{ steps.reviewer-agentproto.outputs.summary-verdict }}
+          VERDICT_FALLBACK: ${{ steps.reviewer-agentproto-fallback.outputs.summary-verdict }}
+          VERDICT_OPENCODE: ${{ steps.reviewer-agentproto-opencode.outputs.summary-verdict }}
+        run: node .github/agentproto-workflows/lib/reconcile-review-state.mjs
 
       # Stamp a DETERMINISTIC @agentproto-bot provenance footer (session id +
       # label, supervisor/parent session, adapter+auth, sandbox, cost/tokens,
