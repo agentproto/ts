@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/delivery-github",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "@agentproto/delivery-github - GitHub producer rules for the delivery kernel: the triage verdict table, failure classes, coalesce keys and repeat keys.",
   "keywords": [
     "agentproto",

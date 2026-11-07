@@ -1,5 +1,48 @@
 # agentproto-vscode
 
+## 0.26.3
+
+### Patch Changes
+
+- Updated dependencies [1e91241]
+- Updated dependencies [2b55d79]
+- Updated dependencies [2aaff42]
+- Updated dependencies [b497a97]
+- Updated dependencies [e16955b]
+- Updated dependencies [50d52b7]
+- Updated dependencies [f6036ca]
+- Updated dependencies [f41f361]
+- Updated dependencies [45cc872]
+- Updated dependencies [29d0326]
+- Updated dependencies [aac3b53]
+- Updated dependencies [1b02d76]
+- Updated dependencies [a26a205]
+- Updated dependencies [bf69bc9]
+- Updated dependencies [8db9149]
+- Updated dependencies [37f5b4c]
+- Updated dependencies [9b4ba07]
+- Updated dependencies [f3598a8]
+- Updated dependencies [62e401d]
+- Updated dependencies [b1c085f]
+- Updated dependencies [bb3cc99]
+- Updated dependencies [bff5cc3]
+- Updated dependencies [402b87d]
+- Updated dependencies [e5d2279]
+- Updated dependencies [d87b343]
+- Updated dependencies [9a6479b]
+- Updated dependencies [2444253]
+- Updated dependencies [5ab5648]
+- Updated dependencies [3f92da0]
+- Updated dependencies [b798308]
+- Updated dependencies [644f94b]
+- Updated dependencies [47ca47d]
+- Updated dependencies [c399f6f]
+- Updated dependencies [b4230d0]
+- Updated dependencies [1fbc828]
+  - @agentproto/runtime@6.3.0
+  - @agentproto/apps@0.27.1
+  - @agentproto/mcp-app-host@0.1.4
+
 ## 0.26.2
 
 ### Patch Changes

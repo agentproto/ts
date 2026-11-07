@@ -1,5 +1,12 @@
 # @agentproto/apps
 
+## 0.27.1
+
+### Patch Changes
+
+- Updated dependencies [bb3cc99]
+  - @agentproto/app-client@0.5.0
+
 ## 0.27.0
 
 ### Minor Changes

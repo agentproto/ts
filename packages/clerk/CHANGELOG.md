@@ -1,5 +1,11 @@
 # @agentproto/clerk
 
+## 0.2.1
+
+### Patch Changes
+
+- bc18933: A clerk command's stderr is appended to `~/.agentproto/logs/clerk-<sessionId>.err` instead of being dropped, so a failing pass (exit 1) leaves a cause behind.
+
 ## 0.2.0
 
 ### Minor Changes
