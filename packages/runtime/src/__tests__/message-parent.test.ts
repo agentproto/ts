@@ -397,3 +397,108 @@ describe("message_parent — refusals", () => {
     }
   })
 })
+
+describe("message_parent — dead parent fallback (ts#2069)", () => {
+  async function report(registry: SessionsRegistry, childId: string) {
+    const h = await harness({ registry, callerSessionId: childId })
+    try {
+      return await h.client.callTool({ name: "message_parent", arguments: { message: "blocker: stuck" } })
+    } finally {
+      await h.close()
+    }
+  }
+
+  it("parent in error with a live declared successor: the report reaches the successor and the child is re-parented", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const oldBrain = spawnNode(registry, undefined, "brain")
+    const child = spawnNode(registry, oldBrain.id, "supervisor")
+    const newBrain = spawnNode(registry, undefined, "brain")
+    registry.setLineageSuccessor(oldBrain.id, newBrain.id)
+    registry.get(oldBrain.id)!.status = "error"
+    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
+
+    const result = await report(registry, child.id)
+
+    expect(isError(result)).toBeFalsy()
+    expect(JSON.parse(textOf(result))).toMatchObject({ ok: true, parentSessionId: newBrain.id })
+    expect(enqueue).toHaveBeenCalledTimes(1)
+    expect(enqueue.mock.calls[0]![0]).toBe(newBrain.id)
+    expect(registry.get(child.id)?.parentSessionId).toBe(newBrain.id)
+    registry.shutdown()
+  })
+
+  it("follows succeededBy through several dead hops to the first live session", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const brain1 = spawnNode(registry, undefined, "brain")
+    const child = spawnNode(registry, brain1.id, "supervisor")
+    const brain2 = spawnNode(registry, undefined, "brain")
+    const brain3 = spawnNode(registry, undefined, "brain")
+    registry.setLineageSuccessor(brain1.id, brain2.id)
+    registry.setLineageSuccessor(brain2.id, brain3.id)
+    registry.get(brain1.id)!.status = "error"
+    registry.get(brain2.id)!.status = "killed"
+    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
+
+    const result = await report(registry, child.id)
+
+    expect(isError(result)).toBeFalsy()
+    expect(JSON.parse(textOf(result))).toMatchObject({ ok: true, parentSessionId: brain3.id })
+    expect(enqueue.mock.calls[0]![0]).toBe(brain3.id)
+    expect(registry.get(child.id)?.parentSessionId).toBe(brain3.id)
+    registry.shutdown()
+  })
+
+  it("no successor: falls back to the nearest live ancestor", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnNode(registry, undefined, "root")
+    const mid = spawnNode(registry, root.id, "mid")
+    const child = spawnNode(registry, mid.id, "leaf")
+    registry.get(mid.id)!.status = "exited"
+    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
+
+    const result = await report(registry, child.id)
+
+    expect(isError(result)).toBeFalsy()
+    expect(JSON.parse(textOf(result))).toMatchObject({ ok: true, parentSessionId: root.id })
+    expect(enqueue.mock.calls[0]![0]).toBe(root.id)
+    expect(registry.get(child.id)?.parentSessionId).toBe(root.id)
+    registry.shutdown()
+  })
+
+  it("a dead successor with no live ancestor: clear error, nothing delivered, child untouched", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const oldBrain = spawnNode(registry, undefined, "brain")
+    const child = spawnNode(registry, oldBrain.id, "supervisor")
+    const newBrain = spawnNode(registry, undefined, "brain")
+    registry.setLineageSuccessor(oldBrain.id, newBrain.id)
+    registry.get(oldBrain.id)!.status = "error"
+    registry.get(newBrain.id)!.status = "exited"
+    const enqueue = vi.spyOn(registry, "enqueuePrompt")
+
+    const result = await report(registry, child.id)
+
+    expect(isError(result)).toBe(true)
+    expect(textOf(result)).toContain("not running")
+    expect(textOf(result)).toContain("error")
+    expect(textOf(result)).toContain("no live successor or ancestor")
+    expect(enqueue).not.toHaveBeenCalled()
+    expect(registry.get(child.id)?.parentSessionId).toBe(oldBrain.id)
+    registry.shutdown()
+  })
+
+  it("a live parent is never bypassed by a declared successor", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const parent = spawnNode(registry, undefined, "brain")
+    const child = spawnNode(registry, parent.id, "supervisor")
+    const other = spawnNode(registry, undefined, "brain-2")
+    registry.setLineageSuccessor(parent.id, other.id)
+    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
+
+    const result = await report(registry, child.id)
+
+    expect(JSON.parse(textOf(result))).toMatchObject({ ok: true, parentSessionId: parent.id })
+    expect(enqueue.mock.calls[0]![0]).toBe(parent.id)
+    expect(registry.get(child.id)?.parentSessionId).toBe(parent.id)
+    registry.shutdown()
+  })
+})

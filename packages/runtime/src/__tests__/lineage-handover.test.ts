@@ -442,6 +442,113 @@ describe("lineage handover - `session_adopt`", () => {
   })
 })
 
+describe("lineage handover - `session_adopt` with an explicit `to` (ts#2069)", () => {
+  it("the operator declares the successor and adopts in one call, with no prior declaration", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const brain = spawnNode(registry, undefined, "brain")
+    const supervisor = spawnNode(registry, brain.id, "supervisor")
+    const successor = spawnNode(registry, undefined, "brain-2")
+    registry.get(brain.id)!.status = "error"
+    expect(registry.get(brain.id)?.succeededBy).toBeUndefined()
+
+    const h = await lineageHarness({ registry })
+    try {
+      const res = await h.client.callTool({
+        name: "session_adopt",
+        arguments: { from: brain.id, to: successor.id, childIds: [supervisor.id] },
+      })
+      expect(isError(res)).toBe(false)
+      expect(JSON.parse(textOf(res))).toMatchObject({
+        ok: true,
+        from: brain.id,
+        to: successor.id,
+        adopted: [supervisor.id],
+        skipped: [],
+      })
+      expect(registry.get(supervisor.id)?.parentSessionId).toBe(successor.id)
+      expect(registry.get(brain.id)?.succeededBy).toBe(successor.id)
+      expect(registry.get(successor.id)?.succeeds).toBe(brain.id)
+    } finally {
+      await h.close()
+    }
+    registry.shutdown()
+  })
+
+  it("a session caller cannot use `to`: it would let any session seize a position", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const brain = spawnNode(registry, undefined, "brain")
+    const supervisor = spawnNode(registry, brain.id, "supervisor")
+    const successor = spawnNode(registry, undefined, "brain-2")
+
+    const h = await lineageHarness({ registry, callerSessionId: successor.id })
+    try {
+      const res = await h.client.callTool({
+        name: "session_adopt",
+        arguments: { from: brain.id, to: successor.id, childIds: [supervisor.id] },
+      })
+      expect(isError(res)).toBe(true)
+      expect(textOf(res)).toContain("operator")
+      expect(registry.get(supervisor.id)?.parentSessionId).toBe(brain.id)
+      expect(registry.get(brain.id)?.succeededBy).toBeUndefined()
+    } finally {
+      await h.close()
+    }
+    registry.shutdown()
+  })
+
+  it("refuses a `to` that contradicts an already declared successor", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const brain = spawnNode(registry, undefined, "brain")
+    const supervisor = spawnNode(registry, brain.id, "supervisor")
+    const declared = spawnNode(registry, undefined, "brain-2")
+    const other = spawnNode(registry, undefined, "brain-3")
+    registry.setLineageSuccessor(brain.id, declared.id)
+
+    const h = await lineageHarness({ registry })
+    try {
+      const res = await h.client.callTool({
+        name: "session_adopt",
+        arguments: { from: brain.id, to: other.id, childIds: [supervisor.id] },
+      })
+      expect(isError(res)).toBe(true)
+      expect(textOf(res)).toContain(declared.id)
+      expect(registry.get(supervisor.id)?.parentSessionId).toBe(brain.id)
+      expect(registry.get(brain.id)?.succeededBy).toBe(declared.id)
+    } finally {
+      await h.close()
+    }
+    registry.shutdown()
+  })
+
+  it("refuses a `to` that does not exist or is not live", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const brain = spawnNode(registry, undefined, "brain")
+    const supervisor = spawnNode(registry, brain.id, "supervisor")
+    const dead = spawnNode(registry, undefined, "brain-2")
+    registry.get(dead.id)!.status = "exited"
+
+    const h = await lineageHarness({ registry })
+    try {
+      const missing = await h.client.callTool({
+        name: "session_adopt",
+        arguments: { from: brain.id, to: "sess_nope0000", childIds: [supervisor.id] },
+      })
+      expect(isError(missing)).toBe(true)
+      const notLive = await h.client.callTool({
+        name: "session_adopt",
+        arguments: { from: brain.id, to: dead.id, childIds: [supervisor.id] },
+      })
+      expect(isError(notLive)).toBe(true)
+      expect(textOf(notLive)).toContain("not running")
+      expect(registry.get(supervisor.id)?.parentSessionId).toBe(brain.id)
+      expect(registry.get(brain.id)?.succeededBy).toBeUndefined()
+    } finally {
+      await h.close()
+    }
+    registry.shutdown()
+  })
+})
+
 describe("lineage handover - tree integrity", () => {
   it("never creates a cycle when the successor sits inside the moved child's subtree", async () => {
     const registry = createSessionsRegistry({ persist: false })

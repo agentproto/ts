@@ -26,7 +26,11 @@
  *      `agent_start.succeeds` declaration).
  *   2. EXPLICIT - the `session_adopt` MCP verb
  *      (`{ childIds, from }`), reserved to the human operator and to the
- *      DECLARED successor of `from`.
+ *      DECLARED successor of `from`. The operator may also name the successor
+ *      itself (`{ from, to, childIds }`) when none was declared.
+ *   3. SELF-HEALING - a child whose parent died calls `message_parent`; it is
+ *      re-parented onto the live successor (or nearest live ancestor) found
+ *      by `resolveLiveParent`.
  *
  * The declaration (`from.succeededBy = to` / `to.succeeds = from`) is
  * persisted on the descriptors, so "who is the successor of this row"
@@ -36,7 +40,12 @@
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 
 /** Why a handover ran - recorded on the `session:lineage-handover` event. */
-export type LineageHandoverReason = "continue-fresh" | "succeeds" | "session_adopt" | "restart"
+export type LineageHandoverReason =
+  | "continue-fresh"
+  | "succeeds"
+  | "session_adopt"
+  | "restart"
+  | "message_parent"
 
 /** The outcome of one handover. */
 export interface LineageHandoverOutcome {
@@ -71,6 +80,35 @@ export function liveChildrenOf(
   return registry
     .list({ includeArchived: true })
     .filter(d => d.parentSessionId === parentId && isLiveSession(d))
+}
+
+/**
+ * Where should a child of the dead session `deadParentId` report instead?
+ *
+ * Follows the declared `succeededBy` chain from the dead parent to the first
+ * live session; failing that, walks up the `parentSessionId` ancestors from
+ * the dead parent, nearest first, to the first live one. `undefined` when
+ * neither leads to a live session. A visited set guards against cycles in
+ * corrupted lineage data.
+ */
+export function resolveLiveParent(
+  registry: Pick<SessionsRegistry, "get">,
+  deadParentId: string,
+): SessionDescriptor | undefined {
+  const seen = new Set<string>([deadParentId])
+  let cursor = registry.get(deadParentId)
+  while (cursor?.succeededBy && !seen.has(cursor.succeededBy)) {
+    seen.add(cursor.succeededBy)
+    cursor = registry.get(cursor.succeededBy)
+    if (cursor && isLiveSession(cursor)) return cursor
+  }
+  cursor = registry.get(deadParentId)
+  while (cursor?.parentSessionId && !seen.has(cursor.parentSessionId)) {
+    seen.add(cursor.parentSessionId)
+    cursor = registry.get(cursor.parentSessionId)
+    if (cursor && isLiveSession(cursor)) return cursor
+  }
+  return undefined
 }
 
 /** Every child of `parentId`, live or not (id order for determinism). */
