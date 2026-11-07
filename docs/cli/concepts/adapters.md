@@ -28,7 +28,10 @@ Per the
 
 The CLI doesn't care about the scope — any package on the resolution
 path with a valid `AgentCliHandle` works. The conventions exist for
-human discoverability. Discovery (CLI ≥ 1.32.0) also accepts the
+human discoverability. The daemon's MCP surface exposes the same listing
+under `harness_list` (canonical) and `adapter_list` (legacy alias,
+retained for older clients and daemons): both accept the same slug
+filters and return the same payload. Discovery (CLI ≥ 1.32.0) also accepts the
 canonical AIP-70 `harness-` spelling — `@agentproto/harness-<slug>` or
 `@<vendor>/agentproto-harness-<slug>` — which wins a same-slug collision
 with the `adapter-` package; the bare `@agentproto/harness` package
@@ -247,7 +250,7 @@ resolves a slug in this order:
 3. **catalog** — `ACP_CATALOG`.
 
 So a published adapter is never shadowed by a generic spec, and your config
-overrides the built-in catalog. In `adapter_list` / `GET /adapters`, generic
+overrides the built-in catalog. In `harness_list` / `adapter_list` / `GET /adapters`, generic
 agents appear with status `available` (bin found on `PATH`) or `supported`
 (not installed — shows the install hint).
 
