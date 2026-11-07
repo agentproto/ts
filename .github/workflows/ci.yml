@@ -233,6 +233,11 @@ jobs:
       - name: Run ci-test-shards tests
         run: node --test scripts/ci-test-shards.test.mjs
 
+      # Guards scripts/gate.mjs: the machine-wide lock and the --affected
+      # narrowing that keep local gates from saturating the host.
+      - name: Run gate tests
+        run: node --test scripts/gate.test.mjs
+
       # `pnpm test` only covers packages/** and adapters/**, so the release
       # tooling in scripts/ would otherwise ship untested. These guard the
       # @agentproto/cli@0.5.0 incident (a console trace published as a release
