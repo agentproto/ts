@@ -225,7 +225,7 @@ coding-CLI orchestration:
 | `session_tree` | Session hierarchy (parent → children) |
 | `session_monitor` | Block until one of a set of sessions fires a lifecycle event |
 | `session_events_poll` | Drain runtime events |
-| `adapter_list` | List installed adapter CLIs |
+| `adapter_list` / `harness_list` | List installed agent harnesses; same payload, `harness_list` is the canonical spelling (`adapter_list` stays for older clients and daemons) |
 | `mcp_discovered_list` | MCPs discovered from other CLIs on this machine |
 | `tunnel_create` / `tunnel_list` / `tunnel_revoke` | Manage reverse tunnels (private by default; `tunnel_revoke` invalidates the signed link) |
 | `file_read` / `file_write` / `file_list` | Workspace filesystem |

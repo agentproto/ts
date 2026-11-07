@@ -374,7 +374,8 @@ export function handleToolCallRequest(
  * postMessage host's `tools/call` reply RESOLVES with them).
  *
  * `allowedTools`: when defined, only listed tool names — UNION
- * `APP_UI_DISCOVERY_TOOLS` (`adapter_list`, `harness_preset_list`, always
+ * `APP_UI_DISCOVERY_TOOLS` (`adapter_list`, `harness_list`,
+ * `harness_preset_list`, always
  * allowed so `@agentproto/app-client/runner-select`'s `mountRunnerSelect`
  * works out of the box) — are forwarded (403 otherwise). When `undefined`
  * (APP.md omits `ui.tools`), all tools pass. Mirrors the `ui.tools`
@@ -1235,7 +1236,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
 
   // The runner selector is injected alongside the McpApp bridge so a served
   // UI can call window.AgentprotoUI.mountRunnerSelect without hand-rolling
-  // its own harness/model picker — same discovery tools (adapter_list,
+  // its own harness/model picker — same discovery tools (adapter_list/harness_list,
   // harness_preset_list) callDaemonTool always allows above.
   const bridgeScript = buildBridgeScript(TOOL_CALL_PATH) + RUNNER_SELECT_SCRIPT
   const runJson = values.json === true

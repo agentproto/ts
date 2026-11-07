@@ -267,8 +267,8 @@ bundle that does not exist there).
 
 - **Native MCP mounts need an ACP harness.** Only adapters that speak the ACP
   protocol accept an MCP server list at session start. Print-mode and
-  proprietary adapters get no mounts from a bundle. `adapter_list` shows each
-  adapter's protocol.
+  proprietary adapters get no mounts from a bundle. `harness_list` (or the
+  legacy `adapter_list`) shows each adapter's protocol.
 - **Sandboxed spawns skip MCP mounts.** A session started in a sandbox does
   not receive bundle servers.
 - **Skills are applied at spawn by `hermes` only.** Claude Code and opencode

@@ -102,6 +102,14 @@ describe("MCP surface profile budgets", () => {
     expect(overlap, "FULL_ONLY_TOOLS entries also belong to a named profile").toEqual([])
   })
 
+  it("classifies harness_list as full-only, mirroring adapter_list", () => {
+    expect(FULL_ONLY_TOOLS).toContain("harness_list")
+    expect(CORE_PROFILE_TOOLS).not.toContain("harness_list")
+    expect(PROFILE_TOOLS.orchestrator).not.toContain("harness_list")
+    expect(APPS_PROFILE_TOOLS).not.toContain("harness_list")
+    expect(ADMIN_PROFILE_TOOLS).not.toContain("harness_list")
+  })
+
   it("lets full remain unrestricted and composes named profiles", () => {
     expect(resolveToolProfileAllowSet(undefined)).toBeUndefined()
     expect(resolveToolProfileAllowSet(["full"])).toBeUndefined()

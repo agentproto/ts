@@ -511,7 +511,7 @@ export interface AppToolCallDeps {
  * The `app_tool_call` gateway's whole behaviour minus allowlist resolution
  * — allowlist enforcement against the caller-supplied `declaredAllowlist`
  * UNION the read-only, non-secret `APP_UI_DISCOVERY_TOOLS` (`adapter_list`,
- * `harness_preset_list` — every app UI gets these for free, regardless of
+ * `harness_list`, `harness_preset_list` — every app UI gets these for free, regardless of
  * what it declared, so `@agentproto/app-client/runner-select`'s
  * `mountRunnerSelect` works out of the box) — then dispatch through the
  * daemon's own tools or an imported MCP server. Factored out of

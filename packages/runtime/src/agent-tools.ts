@@ -2230,6 +2230,14 @@ export function registerAgentTools(
     })),
     modelCount: a.models?.length ?? 0,
   })
+  // `adapter_list` (legacy spelling) and `harness_list` (AIP-70 canonical
+  // spelling) are the SAME listing over the SAME lister: one handler, one
+  // projection, one paginated transformer. `adapter_list` keeps its exact
+  // pre-#2313 schema (`adapter` only) for old clients; `harness_list` adds
+  // the canonical `harness` name plus `adapter` as a compatibility alias.
+  // A call naming BOTH with different values is a caller bug, not an
+  // ambiguous preference — it fails closed rather than silently picking one.
+  type AdapterListInput = { harness?: string; adapter?: string }
   const adapterListSchema = z.object({
     adapter: z
       .string()
@@ -2237,11 +2245,58 @@ export function registerAgentTools(
       .describe("Keep only this adapter slug — lets a client fetch ONE adapter's detail."),
     ...pageParamsShape,
   })
-  type AdapterListInput = z.infer<typeof adapterListSchema>
+  const harnessListSchema = z.object({
+    harness: z
+      .string()
+      .optional()
+      .describe("Keep only this harness slug — canonical spelling of `adapter`."),
+    adapter: z
+      .string()
+      .optional()
+      .describe("Legacy alias for `harness`; when both are given they must match."),
+    ...pageParamsShape,
+  })
+  const listSlugFor = (tool: "adapter_list" | "harness_list", input: AdapterListInput): string | undefined => {
+    if (input.harness !== undefined && input.adapter !== undefined && input.harness !== input.adapter) {
+      throw new Error(
+        `${tool}: received both harness="${input.harness}" and adapter="${input.adapter}" — ` +
+          "when both are given they must name the same harness (omit one).",
+      )
+    }
+    return input.harness ?? input.adapter
+  }
+  const registerAdapterListing = (id: "adapter_list" | "harness_list", description: string, inputSchema: z.ZodType<AdapterListInput>): void => {
+    registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
+      id,
+      description,
+      inputSchema,
+      handler: async input => {
+        if (!listAgentAdapters) {
+          throw new Error(
+            `${id} is not enabled — the daemon was started without ` +
+              "an adapter lister. Wire `@agentproto/cli`'s " +
+              "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+          )
+        }
+        const slug = listSlugFor(id, input)
+        const adapters = await listAgentAdapters()
+        return slug ? adapters.filter(a => a.slug === slug) : adapters
+      },
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: compactAdapterItem,
+          keyOf: a => a.slug,
+          maxLimit: 200,
+          itemKey: "adapters",
+        }),
+      ],
+    })
+  }
 
-  registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
-    id: "adapter_list",
-    description: "Enumerate every agent CLI adapter installed on the host (claude-code, " +
+  registerAdapterListing(
+    "adapter_list",
+    "Enumerate every agent CLI adapter installed on the host (claude-code, " +
       "hermes, aider, …). Returns slug + display name + version + protocol + " +
       "an `installed` flag + a `modelCount` summary so callers can let users " +
       "pick from the installed set instead of guessing. Use before " +
@@ -2252,29 +2307,27 @@ export function registerAgentTools(
       "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
       "KB; page through it with `limit`/`cursor`). Pass `adapter` to scope " +
-      "the listing to one adapter before paging.",
-    inputSchema: adapterListSchema,
-    handler: async ({ adapter }) => {
-      if (!listAgentAdapters) {
-        throw new Error(
-          "adapter_list is not enabled — the daemon was started without " +
-            "an adapter lister. Wire `@agentproto/cli`'s " +
-            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-        )
-      }
-      const adapters = await listAgentAdapters()
-      return adapter ? adapters.filter(a => a.slug === adapter) : adapters
-    },
-    transformers: [
-      catchErrors(),
-      paginated({
-        project: compactAdapterItem,
-        keyOf: a => a.slug,
-        maxLimit: 200,
-        itemKey: "adapters",
-      }),
-    ],
-  })
+      "the listing to one adapter before paging. (Canonical spelling: " +
+      "`harness_list`; kept for older clients and daemons.)",
+    adapterListSchema,
+  )
+  registerAdapterListing(
+    "harness_list",
+    "Enumerate every agent CLI harness installed on the host (claude-code, " +
+      "hermes, aider, …) — the canonical name for `adapter_list`, which it " +
+      "behaves exactly like. Returns slug + display name + version + protocol + " +
+      "an `installed` flag + a `modelCount` summary so callers can let users " +
+      "pick from the installed set instead of guessing. Use before " +
+      "`agent_start` when the model doesn't already know what's available. " +
+      "COMPACT BY DEFAULT (and sized to fit the MCP result budget): each " +
+      "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
+      "`status`, `hint`, `modes`, `modelCount` — pass `full: true` " +
+      "(or `compact: false`) for the full " +
+      "manifest projection (model ids/details, commands/modes — hundreds of " +
+      "KB; page through it with `limit`/`cursor`). Pass `harness` (or its " +
+      "legacy alias `adapter`) to scope the listing to one harness before paging.",
+    harnessListSchema,
+  )
 
   // ── adapter_models ──────────────────────────────────────────────
   // Per-adapter model paging for clients that need ONE adapter's model list

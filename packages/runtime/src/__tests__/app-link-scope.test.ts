@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { performAppToolCall, performBuiltinPanelToolCall } from "../app-tools.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
+import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 
 function bodyOf(result: { content: { text: string }[] }): unknown {
   return JSON.parse(result.content[0]!.text)
@@ -84,15 +85,20 @@ describe("performAppToolCall — scoped mode (linkClaims)", () => {
   })
 
   it("APP_UI_DISCOVERY_TOOLS are NOT automatically granted under a scoped link (fail-closed, no union)", async () => {
-    const dispatchTool = vi.fn(async () => ["x"])
-    const result = await performAppToolCall(
-      registryWithScopedApp(),
-      { appId: "@agentik/session-chat", tool: "adapter_list" },
-      { dispatchTool },
-      CLAIMS,
-    )
-    expect(dispatchTool).not.toHaveBeenCalled()
-    expect((result as { isError?: boolean }).isError).toBe(true)
+    // Includes the canonical `harness_list` added alongside the legacy
+    // `adapter_list`: a scoped token sees ONLY its own `ui.toolScope`, never
+    // the discovery union.
+    for (const tool of APP_UI_DISCOVERY_TOOLS) {
+      const dispatchTool = vi.fn(async () => ["x"])
+      const result = await performAppToolCall(
+        registryWithScopedApp(),
+        { appId: "@agentik/session-chat", tool },
+        { dispatchTool },
+        CLAIMS,
+      )
+      expect(dispatchTool, `${tool} must not dispatch under a scoped link`).not.toHaveBeenCalled()
+      expect((result as { isError?: boolean }).isError, `${tool} must be refused`).toBe(true)
+    }
   })
 
   it("app_link_mint is unconditionally refused through this gateway, scoped or not", async () => {
