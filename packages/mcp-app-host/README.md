@@ -44,7 +44,10 @@ connect, frame and base-uri. The transport only accepts messages whose
 Capabilities are advertised only when a handler exists: `openLinks`,
 `logging`, `message` and `updateModelContext`. Without a handler,
 `ui/open-link` returns "Method not found", and `ui/request-display-mode`
-returns the current mode.
+returns the current mode. With a `requestDisplayMode` handler, a mode that
+`hostContext.availableDisplayModes` does not list is declined the same way
+(current mode, handler not called), and so is a handler answer outside that
+list.
 
 ## Known limits
 
