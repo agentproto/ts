@@ -6,9 +6,9 @@
  * Tools:
  *   app_install   loadAppHandle(dir) → validate → persist an installed-app record
  *   app_list      installed apps + a runs summary
- *   app_run       spawn a session per selected agent (default mastra-agent;
- *                 adapter/harness/model are pass-through, optional `sequence`
- *                 runs agents one-at-a-time under one appRunId)
+ *   app_run       spawn a session per selected agent (each agent resolves its
+ *                 own adapter/harness; model is pass-through, optional
+ *                 `sequence` runs agents one-at-a-time under one appRunId)
  *   app_status    fan out an app_run's sessions + the app's workflow runs
  *   app_stop      kill an app_run's sessions
  *
@@ -153,13 +153,6 @@ function paginatedLegacyList<TItem extends object>(opts: {
     },
   }
 }
-
-/** mastra-agent's adapter slug — the one agent adapter this WP knows how to
- *  run an emitted AGENT.md under via its `agent` option (`--agent <path>`).
- *  No longer a silent fallback: an agent only lands here when its own
- *  `metadata.adapter`/`metadata.harness` (or a caller-passed `adapter`)
- *  names it. */
-const DEFAULT_AGENT_ADAPTER = "mastra-agent"
 
 /** A spawned session descriptor's terminal statuses (see `SessionStatus` in
  *  sessions.ts): clean exit, operator kill, or a crash/error. Any of these
@@ -1540,16 +1533,6 @@ export async function performInstall(
     }
   }
 
-  if (handle.agents.length > 0 && !skipDaemonChecks) {
-    const resolved = resolveAgentAdapter ? await resolveAgentAdapter(DEFAULT_AGENT_ADAPTER) : null
-    if (!resolved) {
-      return {
-        ok: false,
-        error: `agent adapter "${DEFAULT_AGENT_ADAPTER}" could not be resolved — run \`agentproto install ${DEFAULT_AGENT_ADAPTER}\` first.`,
-      }
-    }
-  }
-
   const refs = await readAppRefs(dir)
   // Frozen `services:` semantics — validated here so a malformed block fails
   // the install instead of launching a partial service set. Absent = the
@@ -2303,7 +2286,7 @@ export function registerAppTools(
       "Remote installs are kept current with `app_resync`. Validates every " +
       "WORKFLOW.md `tool` step's id against the daemon's dispatchable tools (missing " +
       "ids are reported ALL at once, instead of failing one at a time at " +
-      "STEP-DISPATCH time) and checks the `mastra-agent` adapter resolves. Agent-" +
+      "STEP-DISPATCH time). Agent-" +
       "declared tool refs (workspace tools like `read_file`) are the adapter's own " +
       "business and are never validated here — see `unvalidatedAgentTools` on the " +
       "result. Re-installing the same appId upserts (and keeps its existing " +
@@ -2697,10 +2680,9 @@ export function registerAppTools(
         .string()
         .optional()
         .describe(
-          "Agent adapter slug. Omitted → EACH agent resolves its own (AGENT.md " +
-            "`metadata.adapter`/`metadata.harness` > `claude-*` model → `claude-code` > " +
-            "`mastra-agent`). Given → this slug is used for EVERY agent; sets `harness` " +
-            "when `harness` is absent.",
+          "Harness slug (`adapter` is the old name). Omitted: each agent resolves its " +
+            "own (AGENT.md `metadata.harness` or `metadata.adapter`, then the model " +
+            "prefix). Given: used for every agent; sets `harness` when `harness` is absent.",
         ),
       harness: z
         .string()
@@ -2790,8 +2772,8 @@ export function registerAppTools(
       let runAdapter = callerAdapter
       let runHarness = callerHarness
       const reportedRunner = () => ({
-        adapter: runAdapter ?? DEFAULT_AGENT_ADAPTER,
-        harness: runHarness ?? runAdapter ?? DEFAULT_AGENT_ADAPTER,
+        ...(runAdapter !== undefined ? { adapter: runAdapter } : {}),
+        ...(runHarness !== undefined ? { harness: runHarness } : {}),
       })
 
       // B — the AGENT.md reaches EVERY harness (AIP-42 is runner-agnostic):
@@ -3012,8 +2994,16 @@ export function registerAppTools(
         ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
       })
+      if (sessions.length === 0 && errors.length > 0) {
+        appRegistry.endRun(run.appRunId, {
+          status: "failed",
+          error: errors.map(e => `${e.agentId}: ${e.error}`).join("; "),
+        })
+      }
       return textResult({
         appRunId: run.appRunId,
+        status: run.status,
+        ...(run.endedAt ? { endedAt: run.endedAt } : {}),
         ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
         sessions,
