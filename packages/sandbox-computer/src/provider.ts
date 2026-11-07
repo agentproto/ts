@@ -1220,10 +1220,11 @@ const BOOT_DIAGNOSTIC_COMMANDS: ReadonlyArray<{ label: string; script: string }>
 function redactBootDiagnostics(text: string): string {
   return text
     .replace(/(--auth-token[=\s]+)(?:"[^"]*"|'[^']*'|\S+)/gi, "$1<redacted>")
+    .replace(/(\bprintf\s+%s\s+)(?:"[^"]*"|'[^']*'|\S+)(\s*>\s*"\$HOME\/\.agentproto-daemon\.token")/gi, "$1<redacted>$2")
     .replace(/(authorization\s*:\s*bearer\s+)(\S+)/gi, "$1<redacted>")
     .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1<redacted>")
     .replace(
-      /((?:[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key)[A-Za-z0-9_-]*)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|\S+)/gi,
+      /((?:[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key)[A-Za-z0-9_-]*)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)/gi,
       "$1<redacted>",
     )
 }
