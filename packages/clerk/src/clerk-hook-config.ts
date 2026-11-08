@@ -17,7 +17,7 @@
  *
  *   1. the DAEMON default (`~/.agentproto/config.json` → `daemon.clerk`),
  *      else the built-in default: `enabled:false`, a 10-minute debounce and
- *      the `steward` routine;
+ *      NOTHING to run (`run: {}`);
  *   2. the WORKSPACE level (`.agentproto/hooks.json` → `hooks.clerk`, the
  *      same file that already carries the semantic hook rules - see
  *      `hooks-config.ts`);
@@ -62,7 +62,7 @@ export const CLERK_HOOK_EVENTS = ["turn_end"] as const
 export type ClerkHookEvent = (typeof CLERK_HOOK_EVENTS)[number]
 
 /** What a clerk pass launches. Exactly one of `routine` / `command` is
- *  expected; `routine` names an AIP-41 routine (e.g. `"steward"`), `command`
+ *  expected; `routine` names an AIP-41 routine (e.g. `"session-steward-hourly"`), `command`
  *  is a shell command run in the session's working directory. */
 export interface ClerkHookRun {
   /** Routine id to trigger (AIP-41). The daemon's routine registrar fires
@@ -96,14 +96,15 @@ export interface ClerkHookConfig {
   exclude?: string[]
 }
 
-/** The built-in default: DISABLED, 10-minute debounce, `steward` routine. */
+/** The built-in default: DISABLED, 10-minute debounce, nothing to run. A
+ *  clerk enabled without a `run` is a clean no-op (see the pass runner). */
 export const CLERK_HOOK_DEFAULT_DEBOUNCE_MS = 10 * 60_000
 
 export const CLERK_HOOK_DEFAULTS: ClerkHookConfig = {
   enabled: false,
   on: "turn_end",
   debounceMs: CLERK_HOOK_DEFAULT_DEBOUNCE_MS,
-  run: { routine: "steward" },
+  run: {},
 }
 
 /** Where a resolved field came from - used for diagnostics and tests. */
@@ -202,7 +203,7 @@ function statesRunArm(run: ClerkHookRun | undefined): boolean {
  * Merge a more specific `run` over an inherited one. The `routine` and
  * `command` arms are MUTUALLY EXCLUSIVE: a level that states one arm
  * replaces the other arm entirely (a per-field spread would keep the
- * built-in `routine: "steward"` alive under an agent that only names a
+ * inherited `routine` alive under an agent that only names a
  * `command`, and the runner, which tries the routine first, would never
  * run the command). `cwd` and `timeoutMs` are options of the pass, not of
  * an arm, so they are still inherited field by field.

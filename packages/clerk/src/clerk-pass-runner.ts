@@ -61,6 +61,9 @@ export interface ClerkPassRunnerOptions {
   anchorCwd?: (sessionCwd: string, cwd: string) => string
   /** Spawn the pass' command. Injectable for tests. */
   spawnCommand?: (spec: ClerkCommandSpec) => Promise<unknown> | unknown
+  /** Called once per pass that has nothing to run (`run` names neither a
+   *  routine nor a command). Default: one `console.info` line. */
+  onNothingToRun?: (context: { sessionId: string }) => void
   /** Diagnostic sink. */
   onError?: (err: unknown, context: { sessionId: string }) => void
 }
@@ -114,8 +117,10 @@ export function spawnClerkCommand(spec: ClerkCommandSpec): Promise<{ code: numbe
  *   - `run.command` → the command is checked against the command allowlist,
  *     then spawned detached in the session's working directory.
  *
- * A spec naming NEITHER is a configuration error: the pass is logged and
- * dropped (never a throw into the daemon's event loop).
+ * A spec naming NEITHER (the built-in default is `run: {}`) is a clean
+ * no-op: nothing is launched and one info line says why. It is not an error,
+ * so enabling the clerk without saying what to run never produces a failing
+ * pass.
  */
 export function createClerkPassRunner(opts: ClerkPassRunnerOptions) {
   const spawnCommand = opts.spawnCommand ?? spawnClerkCommand
@@ -123,6 +128,13 @@ export function createClerkPassRunner(opts: ClerkPassRunnerOptions) {
     opts.onError ??
     ((err: unknown, ctx: { sessionId: string }) =>
       console.error(`[runtime] clerk pass failed for session ${ctx.sessionId}:`, err))
+
+  const onNothingToRun =
+    opts.onNothingToRun ??
+    ((ctx: { sessionId: string }) =>
+      console.info(
+        `[runtime] clerk pass skipped for session ${ctx.sessionId}: the clerk is enabled but run names no routine or command (set run.routine or run.command)`,
+      ))
 
   return async function runClerkPass(input: ClerkPassInput): Promise<unknown> {
     const config: ClerkHookConfig = input.config
@@ -158,6 +170,7 @@ export function createClerkPassRunner(opts: ClerkPassRunnerOptions) {
         stderrLogPath: clerkStderrLogPath(input.sessionId),
       })
     }
-    throw new Error("clerk hook config names neither a routine nor a command to run")
+    onNothingToRun({ sessionId: input.sessionId })
+    return { skipped: "nothing-to-run" as const }
   }
 }
