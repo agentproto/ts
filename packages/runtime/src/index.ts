@@ -321,6 +321,7 @@ export {
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
 import { withToolDenyGate } from "./tool-deny-gate.js"
 import { boundaryFromMeta, boundaryRestartOptions } from "./app-boundary.js"
+import { createAppReadGrantResolver } from "./app-read-grants.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
@@ -2641,6 +2642,9 @@ export async function createGateway(
   // webhook notifier — a brain failure never throws into the exit path.
   // Limits come from `defaults.reactions.brainIngest`, read once at boot.
   const daemonConfig = await loadConfig()
+  // Operator-only read-only grants for apps (`apps.readGrants`); validated and
+  // logged once at boot. Never sourced from an app manifest.
+  const appReadGrants = createAppReadGrantResolver(daemonConfig.apps?.readGrants, { daemonWorkspace: workspace })
   const workspaceBrains = createWorkspaceBrains({
     limits: resolveBrainIngestLimits(daemonConfig.defaults?.reactions?.brainIngest),
   })
@@ -3604,6 +3608,7 @@ export async function createGateway(
         daemonMcpUrl,
         // Hidden from app-workflow sessions (app-boundary.ts).
         daemonWorkspace: workspace,
+        appReadGrants,
         // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
         // for `workflow_run_file` / `startFromFile`. `tool` steps resolve
         // through `createDaemonToolRegistry` — a per-handle registry scanning
@@ -4728,6 +4733,7 @@ export async function createGateway(
       dispatchTool,
       callImportedTool: (alias, tool, args) => callImportedAppTool(alias, tool, args, callerSessionId),
       daemonWorkspace: workspace,
+      appReadGrants,
       daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
       persist,

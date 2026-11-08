@@ -98,6 +98,7 @@ import type { AppStateEventInput } from "./app-state.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
 import { buildAppBoundary, isPathWithin, type AppBoundary } from "./app-boundary.js"
+import type { AppReadGrantResolver } from "./app-read-grants.js"
 import { ownedAppWorkspaceSlug } from "./app-workspace.js"
 import { copyFile, mkdir, readFile } from "node:fs/promises"
 
@@ -2088,6 +2089,8 @@ export function createWorkflowRunner(opts: {
   /** The daemon's own workspace root — kept out of reach of app-workflow
    *  sessions (their fs boundary hides it; see `app-boundary.ts`). */
   daemonWorkspace?: string
+  /** Operator-granted read-only paths per app id (`apps.readGrants`). Omitted ⇒ none. */
+  appReadGrants?: AppReadGrantResolver
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/workflow-runs.json */
   persistPath?: string
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
@@ -2185,6 +2188,7 @@ export function createWorkflowRunner(opts: {
       app,
       ...(run.workspace !== undefined ? { runWorkspace: run.workspace } : {}),
       extraReadOnly,
+      ...(opts.appReadGrants !== undefined ? { readGrants: opts.appReadGrants(app.appId) } : {}),
       ...(opts.daemonWorkspace !== undefined ? { daemonWorkspace: opts.daemonWorkspace } : {}),
     })
   }

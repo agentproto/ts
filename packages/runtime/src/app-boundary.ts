@@ -23,6 +23,7 @@
 import { existsSync, mkdirSync } from "node:fs"
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { canonicalizePath, resolveCommandSandbox, type SandboxMode } from "@agentproto/command-sandbox"
+import { findSecretsInTree } from "./app-read-grants.js"
 
 export const APP_BOUNDARY_META_KEY = "appBoundary"
 
@@ -36,6 +37,12 @@ export interface AppBoundary {
   readonly writable: readonly string[]
   readonly hidden: readonly string[]
   readonly enforce: AppBoundaryEnforce
+  /** Operator-granted read-only paths (a subset of `readOnly`, kept apart for
+   *  audit: `describeBoundary`, `app_list`). Absent = none. */
+  readonly readGrants?: readonly string[]
+  /** Secret files/dirs inside a read grant, denied for read and write even
+   *  though their parent is readable. Absent = none. */
+  readonly unreadable?: readonly string[]
 }
 
 export class FsZoneError extends Error {
@@ -72,6 +79,9 @@ export interface BuildAppBoundaryInput {
   readonly runWorkspace?: string
   /** Extra read-only trees (e.g. an explicit `app_run` cwd outside the app). */
   readonly extraReadOnly?: readonly string[]
+  /** Operator-granted read-only paths for this app (already validated by
+   *  `app-read-grants.ts`; never derived from the app manifest). */
+  readonly readGrants?: readonly string[]
   /** The daemon's own workspace root — hidden from the session. */
   readonly daemonWorkspace?: string
 }
@@ -83,7 +93,10 @@ export interface BuildAppBoundaryInput {
  */
 export function buildAppBoundary(input: BuildAppBoundaryInput): AppBoundary {
   const dir = resolve(input.app.dir)
+  const grants = (input.readGrants ?? []).map(p => resolve(p))
   const readOnly = [dir, ...(input.extraReadOnly ?? []).map(p => resolve(p))]
+  for (const g of grants) if (!readOnly.includes(g)) readOnly.push(g)
+  const unreadable = grants.flatMap(g => findSecretsInTree(g))
   const writable: string[] = []
   if (input.app.dataDir) writable.push(resolve(input.app.dataDir))
   if (input.runWorkspace) writable.push(resolve(input.runWorkspace))
@@ -111,6 +124,8 @@ export function buildAppBoundary(input: BuildAppBoundaryInput): AppBoundary {
     writable,
     hidden,
     enforce: input.app.boundaries?.enforce ?? "best-effort",
+    ...(grants.length > 0 ? { readGrants: grants } : {}),
+    ...(unreadable.length > 0 ? { unreadable } : {}),
   }
 }
 
@@ -132,7 +147,9 @@ export function boundaryFromMeta(
       typeof v.root !== "string" ||
       !strs(v.readOnly) ||
       !strs(v.writable) ||
-      !strs(v.hidden)
+      !strs(v.hidden) ||
+      (v.readGrants !== undefined && !strs(v.readGrants)) ||
+      (v.unreadable !== undefined && !strs(v.unreadable))
     ) {
       return undefined
     }
@@ -143,6 +160,8 @@ export function boundaryFromMeta(
       writable: v.writable,
       hidden: v.hidden,
       enforce: v.enforce === "required" ? "required" : "best-effort",
+      ...(v.readGrants !== undefined ? { readGrants: v.readGrants } : {}),
+      ...(v.unreadable !== undefined ? { unreadable: v.unreadable } : {}),
     }
   } catch {
     return undefined
@@ -157,7 +176,8 @@ export function boundaryMeta(b: AppBoundary): Record<string, string> {
 export function describeBoundary(b: AppBoundary): string {
   const ro = b.readOnly.join(", ") || "(none)"
   const rw = b.writable.join(", ") || "(none)"
-  return `read-only: ${ro}; writable: ${rw}`
+  const granted = b.readGrants?.length ? `; operator-granted read-only: ${b.readGrants.join(", ")}` : ""
+  return `read-only: ${ro}; writable: ${rw}${granted}`
 }
 
 function inAny(canon: string, zones: readonly string[]): boolean {
@@ -181,6 +201,9 @@ export function resolveBoundaryPath(
   }
   const candidate = isAbsolute(input) ? normalize(input) : normalize(join(b.root, input))
   const canon = canonicalizePath(candidate)
+  if (b.unreadable && inAny(canon, b.unreadable)) {
+    throw new FsZoneError(`path is a protected secret for app '${b.appId}': '${input}'`)
+  }
   if (mode === "write") {
     if (inAny(canon, b.writable)) return candidate
     if (inAny(canon, b.readOnly)) {
@@ -205,8 +228,14 @@ export function boundaryToSandboxZones(b: AppBoundary): {
   readOnly: string[]
   writable: string[]
   hidden: string[]
+  unreadable?: string[]
 } {
-  return { readOnly: [...b.readOnly], writable: [...b.writable], hidden: [...b.hidden] }
+  return {
+    readOnly: [...b.readOnly],
+    writable: [...b.writable],
+    hidden: [...b.hidden],
+    ...(b.unreadable?.length ? { unreadable: [...b.unreadable] } : {}),
+  }
 }
 
 export interface BoundaryEnforcementInput {

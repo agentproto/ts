@@ -597,6 +597,12 @@ const terminalPresetSchema: z.ZodType<TerminalPreset> = z
   })
   .passthrough()
 
+const appsConfigSchema = z
+  .object({
+    readGrants: z.record(z.string(), z.array(z.string())).optional(),
+  })
+  .passthrough()
+
 /**
  * Top-level mirror of `AgentprotoConfig`. `.passthrough()` at every level
  * (including here) means an unknown top-level key round-trips unchanged,
@@ -628,6 +634,7 @@ export const agentprotoConfigSchema = z
     defaults: spawnDefaultsConfigSchema.optional(),
     acpAgents: z.record(z.string(), acpAgentConfigEntrySchema).optional(),
     terminalPresets: z.record(z.string(), terminalPresetSchema).optional(),
+    apps: appsConfigSchema.optional(),
   })
   .passthrough()
 
@@ -688,6 +695,7 @@ type ConfigTopLevelKey =
   | "defaults"
   | "acpAgents"
   | "terminalPresets"
+  | "apps"
 
 type SchemaOutputMatchesInterfaceByKey = {
   [K in ConfigTopLevelKey]: Extends<NonNullable<ConfigSchemaOutput[K]>, NonNullable<AgentprotoConfig[K]>>
@@ -2257,6 +2265,21 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "advanced",
     label: "Terminal preset label",
     help: "Human-readable label surfaced in session listings. Not writable through config_set.",
+  },
+
+  {
+    path: "apps.readGrants.*",
+    schema: z.array(z.string().min(1)),
+    apply: "restart",
+    writable: false,
+    section: "advanced",
+    label: "App read-only grants",
+    help:
+      "Absolute paths outside an installed app's folder that the app may READ (never write), keyed by app id. " +
+      "Operator-only: hand-edit this file, then restart the daemon. Never taken from the app manifest. " +
+      "Refused: /, $HOME, ~/.ssh, ~/.aws, ~/.config, keychains, .env files; secret files inside a granted tree are masked. " +
+      "Each accepted or rejected entry is logged at boot and shown by app_list.",
+    default: [],
   },
 
   // ── daemon-adjacent (no dedicated UI section yet — features toggles) ──

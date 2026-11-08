@@ -132,6 +132,41 @@ describe("zoned sandbox policy", () => {
     expect(args).not.toContain("/host-repo")
   })
 
+  it("seatbelt: `unreadable` paths are denied for read+write AFTER every zone allow, so no zone re-opens them", () => {
+    const p = buildSeatbeltProfile({
+      ...zoned,
+      zones: { ...zoned.zones, unreadable: ["/apps/shared/.env"] },
+    })
+    const deny = p.indexOf('(deny file-read* file-write* (subpath "/apps/shared/.env"))')
+    expect(deny).toBeGreaterThan(-1)
+    expect(deny).toBeGreaterThan(p.indexOf('(allow file-read* (subpath "/apps/shared"))'))
+    expect(deny).toBeGreaterThan(p.lastIndexOf('(allow file-read* file-write* (subpath "/cfg"))'))
+    expect(buildSeatbeltProfile(zoned)).not.toContain("/apps/shared/.env")
+  })
+
+  it("bwrap: `unreadable` file -> /dev/null ro-bind, dir -> tmpfs, missing -> skipped, all mounted last", async () => {
+    const base = await mkdtemp(join(tmpdir(), "sbx-unread-"))
+    try {
+      const file = join(base, ".env")
+      const dir = join(base, ".ssh")
+      await writeFile(file, "S=1")
+      await mkdir(dir)
+      const args = buildBwrapArgs(["x"], {
+        ...zoned,
+        zones: { ...zoned.zones, unreadable: [file, dir, join(base, "missing")] },
+      })
+      const f = args.indexOf(file)
+      expect(args.slice(f - 2, f + 1)).toEqual(["--ro-bind", "/dev/null", file])
+      const d = args.indexOf(dir)
+      expect(args.slice(d - 1, d + 1)).toEqual(["--tmpfs", dir])
+      expect(args).not.toContain(join(base, "missing"))
+      expect(f).toBeGreaterThan(args.lastIndexOf("/runs/r1"))
+      expect(args.indexOf("--")).toBeGreaterThan(d)
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+
   it("canonicalizePath resolves symlinks in the existing prefix and keeps a non-existent tail", async () => {
     const base = await mkdtemp(join(tmpdir(), "sbx-canon-"))
     try {

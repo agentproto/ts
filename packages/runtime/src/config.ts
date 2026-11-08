@@ -821,6 +821,13 @@ export interface TerminalPreset {
   label?: string
 }
 
+export interface AppsConfig {
+  /** appId -> absolute paths outside the app folder the app may READ
+   *  (never write). Validated by `app-read-grants.ts`; hand-edit only. */
+  readGrants?: Record<string, string[]>
+  [unknown: string]: unknown
+}
+
 export interface AgentprotoConfig {
   version?: number
   daemon?: DaemonConfig
@@ -901,6 +908,9 @@ export interface AgentprotoConfig {
   /** User-defined named terminal/TUI presets. Local-only; never
    *  packaged in shared adapter manifests or defaults. */
   terminalPresets?: Record<string, TerminalPreset>
+  /** Operator-side settings for installed apps. Never read from an app
+   *  manifest: an app cannot grant itself anything here. */
+  apps?: AppsConfig
   /** Unknown keys preserved across save round-trips. */
   [unknown: string]: unknown
 }
