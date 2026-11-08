@@ -117,6 +117,46 @@ describe("createPermissionTelegramBridge", () => {
     bridge.stop()
   })
 
+  it("shows a 1500-character message in full, within Telegram's 4096-character limit", async () => {
+    const bridge = makeBridge()
+    bridge.start()
+    const text = `${"Bonjour ".repeat(187)}Fin.`
+    void registry.requestToolPermission({
+      toolName: "send_message",
+      text: "?",
+      rawInput: { alias: "agentpush", toolName: "send_message", args: { to: "marie", text } },
+    })
+    await until(() => tg.calls.length > 0)
+    const sent = String(tg.calls[0]!.body.text)
+    expect(sent).toContain(text)
+    expect(sent).not.toContain("(truncated)")
+    expect(sent.length).toBeLessThanOrEqual(4096)
+    bridge.stop()
+  })
+
+  it("truncates a 6000-character message under 4096 characters, closing line included", async () => {
+    const bridge = makeBridge()
+    bridge.start()
+    const outcome = registry.requestToolPermission({
+      toolName: "send_message",
+      text: "?",
+      rawInput: { alias: "agentpush", toolName: "send_message", args: { to: "marie", text: "x".repeat(6000) } },
+    })
+    await until(() => tg.calls.length > 0)
+    const sent = String(tg.calls[0]!.body.text)
+    expect(sent).toContain("(truncated)")
+    expect(sent.length).toBeLessThanOrEqual(4096)
+    expect(sent).toContain("Session:")
+
+    const allow = (tg.calls[0]!.body.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> })
+      .inline_keyboard.flat()[0]!
+    await bridge.handleUpdate(tap(allow.callback_data))
+    await outcome
+    const edit = tg.calls.find(c => c.method === "editMessageText")!
+    expect(String(edit.body.text).length).toBeLessThanOrEqual(4096)
+    bridge.stop()
+  })
+
   it("does not message for tools outside the configured list", async () => {
     const bridge = makeBridge()
     bridge.start()

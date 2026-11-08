@@ -20,7 +20,9 @@ import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 export const DEFAULT_BRIDGED_TOOLS: readonly string[] = ["send_message"]
 
 const CALLBACK_PREFIX = "perm:"
-const MAX_BODY_CHARS = 2500
+// Telegram rejects text over 4096 characters. This cap is for the whole card and
+// leaves room for the "... (truncated)" suffix and the outcome line added on close.
+const MAX_BODY_CHARS = 3800
 
 export interface PermissionTelegramBridgeOptions {
   events: Pick<SessionEventBus, "onAny">
@@ -75,7 +77,8 @@ function describe(p: PendingPermission): string {
     } catch {
       body = String(payload)
     }
-    if (body.length > MAX_BODY_CHARS) body = `${body.slice(0, MAX_BODY_CHARS)}\n... (truncated)`
+    const room = Math.max(0, MAX_BODY_CHARS - lines.join("\n").length - 2)
+    if (body.length > room) body = `${body.slice(0, room)}\n... (truncated)`
     lines.push("", body)
   } else {
     lines.push("", p.text)

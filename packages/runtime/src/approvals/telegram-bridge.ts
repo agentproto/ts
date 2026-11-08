@@ -27,8 +27,10 @@ import type { ApprovalsEngine } from "./engine.js"
 import type { ApprovalRecord } from "./types.js"
 
 const CALLBACK_PREFIX = "apr:"
-const MAX_BODY_CHARS = 2500
-const MAX_FIELD_CHARS = 500
+// Telegram rejects text over 4096 characters. The body leaves room for the
+// "... (truncated)" suffix and the outcome line appended when the card closes.
+const MAX_BODY_CHARS = 3800
+const MAX_FIELD_CHARS = 3000
 
 export interface ApprovalTelegramBridgeOptions {
   events: Pick<SessionEventBus, "onAny">
@@ -93,9 +95,11 @@ function describeApproval(record: ApprovalRecord): string {
     lines.push("", clip(renderValue(preview), MAX_FIELD_CHARS))
   }
   const by = record.requestedBy
-  lines.push("", "sessionId" in by ? `Session: ${by.sessionId}` : "Requested by the operator")
-  if (record.expiresAt) lines.push(`Expires: ${record.expiresAt}`)
-  return clip(lines.join("\n"), MAX_BODY_CHARS)
+  const footer = ["", "sessionId" in by ? `Session: ${by.sessionId}` : "Requested by the operator"]
+  if (record.expiresAt) footer.push(`Expires: ${record.expiresAt}`)
+  const tail = footer.join("\n")
+  // Only the head is cut when the card is too long: Session and Expires stay visible.
+  return `${clip(lines.join("\n"), MAX_BODY_CHARS - tail.length - 1)}\n${tail}`
 }
 
 export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions): ApprovalTelegramBridge {
