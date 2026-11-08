@@ -758,6 +758,13 @@ describe("defineApp — ui.toolScope (AIP-53 link-token scoping)", () => {
     ).toThrow(AppDefinitionError)
   })
 
+  it("accepts an empty toolScope entry for permissions_respond, whose permission id the daemon checks against the linked session", () => {
+    const app = defineApp({
+      ui: { html: "<html></html>", tools: ["permissions_respond"], toolScope: { permissions_respond: {} } },
+    })
+    expect(app.ui?.toolScope).toEqual({ permissions_respond: {} })
+  })
+
   it("throws when toolScope's own value isn't an object", () => {
     expect(() =>
       defineApp({

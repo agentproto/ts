@@ -51,6 +51,16 @@ export class AppDefinitionError extends Error {
   }
 }
 
+/**
+ * Tools that may carry an EMPTY `ui.toolScope` entry (`{}`): each takes an
+ * opaque id (no session argument to pin from a `$link.<claim>`), and the
+ * daemon itself checks, before dispatching under a link token, that the id
+ * belongs to the linked session (`@agentproto/runtime`'s app-tools.ts,
+ * `LINK_OWNERSHIP_CHECKS`, which must cover exactly this list). Any other
+ * tool still needs at least one claim-pinned argument.
+ */
+export const TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS: readonly string[] = Object.freeze(["permissions_respond"])
+
 export function defineApp(def: AppDefinition): AppHandle {
   if (def.id !== undefined && def.id.trim() === "") {
     throw new AppDefinitionError("`id` must be non-empty when present.")
@@ -188,7 +198,10 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       // An empty entry (`{}`) would make `toolId` callable with NO argument
       // constraint at all under a scoped link token — defeating the whole
       // point of scoping it rather than just leaving it out of `toolScope`.
-      if (Object.keys(argMap).length === 0) {
+      // Exception: a tool in `TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS`, whose only
+      // addressing argument is an opaque id the daemon resolves and checks
+      // against the link's session itself (nothing to pin from a claim).
+      if (Object.keys(argMap).length === 0 && !TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS.includes(toolId)) {
         throw new AppDefinitionError(
           `\`ui.toolScope.${toolId}\` is empty — a scoped tool needs at least one argName -> "$link.<claim>" constraint, or it shouldn't be in \`toolScope\` at all.`,
         )

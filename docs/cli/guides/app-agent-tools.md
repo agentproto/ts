@@ -88,6 +88,41 @@ opening it requires the holder's Telegram account to pass `POST
 above for why it's a UI-call concern only — it never touches an AGENT.md's
 own `tools:`.
 
+What a link-SESSION token can reach, and nothing more:
+
+- **Reads over HTTP**, for its own session only: `GET /sessions/:id`,
+  `/sessions/:id/events`, `/sessions/:id/events/stream` and
+  `/sessions/:id/capabilities`. Any other `/sessions/*` route (kill, PTY,
+  prompt, the plain `/stream` tail, another session's reads) and `/mcp`
+  stay behind the tunnel bearer.
+- **Tool calls** through its own app's `POST /apps/:appId/tool-call`, limited
+  to that app's `ui.toolScope`. A link is not read-only: if the app scopes a
+  write tool (e.g. `agent_prompt` or `agent_interrupt` with
+  `sessionId: "$link.sessionId"`), the token can call it, for its own
+  session only.
+
+A tool addressed by an opaque id instead of a session argument has nothing
+to pin from a claim. `permissions_respond` is the one such tool today: it is
+declared with an empty entry,
+
+```yaml
+ui:
+  tools: [permissions_list, permissions_respond]
+  toolScope:
+    permissions_list:
+      sessionId: "$link.sessionId"
+    permissions_respond: {}
+```
+
+and the daemon checks, before dispatching, that the permission `id` is a
+pending permission of the link's session (the same inbox `permissions_list`
+reads). An unknown id, or one parked by another session, is refused with
+nothing dispatched. `defineApp` accepts an empty entry only for tools the
+daemon checks this way (`TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS` in
+`@agentproto/app`, matched by `LINK_OWNERSHIP_CHECKS` in
+`packages/runtime/src/app-tools.ts`); for any other tool an empty entry is
+an authoring error, and the daemon refuses it under a link token as well.
+
 ## `appId` — filled in for you
 
 `app_data_read` / `app_data_write` / `app_data_list` / `app_run` and most

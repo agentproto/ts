@@ -590,6 +590,11 @@ export interface AppToolCallDeps {
    *  `exposes.tools` ids that are not in `ui.tools` (what `agentproto mcp-app`
    *  forwards), under the kill-switch's access limit. Absent = `ui.tools` only. */
   exposedToolsMode?: ExposedToolsMode
+  /** The daemon's pending-permission inbox lookup (the same source
+   *  `permissions_list` reads, `SessionsRegistry.listPendingPermissions`),
+   *  used by `LINK_OWNERSHIP_CHECKS` to check a `permissions_respond` under a
+   *  link token. Absent = that check fails closed. */
+  findPendingPermission?: (id: string) => { sessionId: string } | undefined
 }
 
 /**
@@ -798,6 +803,39 @@ export interface AppLinkScope {
   claims: Readonly<Record<string, string>>
 }
 
+/**
+ * Per-tool ownership checks for scoped mode, run after the claim-pinned
+ * arguments are resolved and before dispatch. For a tool addressed by an
+ * opaque id rather than a session argument, `ui.toolScope` has nothing to
+ * pin, so the daemon resolves the id itself and refuses one that does not
+ * belong to the link's session. Returns an error message, or `undefined`
+ * to let the call through. Keys must equal `@agentproto/app`'s
+ * `TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS` (the tools allowed an empty
+ * `toolScope` entry); an empty entry for any other tool is refused.
+ */
+const LINK_OWNERSHIP_CHECKS: Readonly<
+  Record<string, (args: Record<string, unknown>, claims: AppLinkScope["claims"], deps: AppToolCallDeps) => string | undefined>
+> = {
+  // Stricter than the retired session-chat mini-app, which let any pending
+  // permission id through: the id must be parked by the linked session.
+  // Unknown and foreign ids get the same message, so a link can't probe
+  // which ids exist elsewhere.
+  permissions_respond: (args, claims, deps) => {
+    const id = args.id
+    if (typeof id !== "string" || id === "") return `"permissions_respond" needs a string \`id\` under a scoped link token.`
+    if (!claims.sessionId) return `scoped link token carries no "$link.sessionId" claim (required by "permissions_respond").`
+    if (!deps.findPendingPermission) return `"permissions_respond" is not enabled under a scoped link token (no permission lookup wired).`
+    if (deps.findPendingPermission(id)?.sessionId !== claims.sessionId) {
+      return `permission "${id}" is not a pending permission of this link's session, refused.`
+    }
+    return undefined
+  },
+}
+
+/** Tool ids `LINK_OWNERSHIP_CHECKS` covers (exported for the drift test
+ *  against `@agentproto/app`'s `TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS`). */
+export const LINK_OWNERSHIP_CHECKED_TOOL_IDS: readonly string[] = Object.freeze(Object.keys(LINK_OWNERSHIP_CHECKS))
+
 function parseLinkClaimRef(claimRef: string): string | undefined {
   return claimRef.startsWith("$link.") ? claimRef.slice("$link.".length) : undefined
 }
@@ -875,6 +913,18 @@ async function dispatchAllowlistedAppTool(
           `app_tool_call: argument "${argName}" does not match this link's "${claimRef}" claim — refused.`,
         )
       }
+    }
+    const ownershipCheck = Object.hasOwn(LINK_OWNERSHIP_CHECKS, input.tool) ? LINK_OWNERSHIP_CHECKS[input.tool] : undefined
+    if (ownershipCheck) {
+      const refusal = ownershipCheck(scopedArgs, linkScope.claims, deps)
+      if (refusal) return errorResult(`app_tool_call: ${refusal}`)
+    } else if (Object.keys(argMap).length === 0) {
+      // `defineApp` only lets an ownership-checked tool declare `{}`; an
+      // empty entry reaching here otherwise would grant the tool with no
+      // constraint at all, so fail closed.
+      return errorResult(
+        `app_tool_call: tool "${input.tool}" has an empty ui.toolScope entry and no daemon ownership check, refused under a scoped link token.`,
+      )
     }
     args = scopedArgs
   } else {

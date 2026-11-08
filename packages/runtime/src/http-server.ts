@@ -1845,13 +1845,14 @@ export async function startHttpServer(
    * `appLinkTunnelBypass`): a valid Telegram-identity-bound link-SESSION
    * token (minted by `app_link_mint`, exchanged via `POST
    * /apps/:appId/link-auth`) is accepted ONLY for that token's own `POST
-   * /apps/:appId/tool-call` and its own session's three read routes
-   * (`GET /sessions/:id`, `/events`, `/events/stream`). Unlike `?et=`, this
-   * one IS meant to cross the tunnel boundary — it's the whole point of a
-   * link sent over Telegram — but it carries no more than that single
-   * session's read access plus whatever the app's own `ui.toolScope`
-   * grants, enforced again downstream (`dispatchAllowlistedAppTool`'s
-   * scoped mode for tool-call; the sessionId match itself for reads).
+   * /apps/:appId/tool-call` and its own session's four read routes
+   * (`GET /sessions/:id`, `/events`, `/events/stream`, `/capabilities`).
+   * Unlike `?et=`, this one IS meant to cross the tunnel boundary (it's the
+   * whole point of a link sent over Telegram) but it carries no more than
+   * that single session's read access plus whatever the app's own
+   * `ui.toolScope` grants, enforced again downstream
+   * (`dispatchAllowlistedAppTool`'s scoped mode and per-tool ownership
+   * checks for tool-call; the sessionId match itself for reads).
    */
   function tunnelBearerAllowed(
     req: IncomingMessage,
@@ -5906,7 +5907,15 @@ export async function startHttpServer(
               res,
               routeAppId,
               opts.appRegistry,
-              opts.appToolCallDeps ?? {},
+              {
+                // Scoped `permissions_respond` checks the id against the
+                // same inbox `permissions_list` reads (app-tools.ts,
+                // `LINK_OWNERSHIP_CHECKS`).
+                ...(opts.sessions
+                  ? { findPendingPermission: (id: string) => opts.sessions?.listPendingPermissions().find(p => p.id === id) }
+                  : {}),
+                ...opts.appToolCallDeps,
+              },
               linkAuth
                 ? { sessionId: linkAuth.sessionId, ...(linkAuth.telegramUserId ? { telegramUserId: linkAuth.telegramUserId } : {}) }
                 : undefined,

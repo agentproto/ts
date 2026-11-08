@@ -4,14 +4,17 @@
  * authorized link WITHOUT touching their general-purpose logic:
  *
  *   - `tunnelBearerAllowed`'s top-level tunnel-auth gate, for exactly
- *     `POST /apps/:appId/tool-call` (that one appId) and the three
+ *     `POST /apps/:appId/tool-call` (that one appId) and the four
  *     session-chat read routes (`GET /sessions/:id`, `/events`,
- *     `/events/stream`, that one sessionId);
+ *     `/events/stream`, `/capabilities`, that one sessionId);
  *   - the same tool-call route's `guardBrowserOrigin`/`authorize` pair,
  *     which run AFTER `tunnelBearerAllowed` on that one route.
  *
- * Deliberately narrow: a link-session token is read-only and single-app/
- * single-session by construction (its claims), so these predicates don't
+ * Deliberately narrow: a link-session token is single-app/single-session by
+ * construction (its claims). Over plain HTTP it only reads; anything it can
+ * change goes through the app's tool-call route, limited to the app's own
+ * `ui.toolScope` (claim-pinned arguments, plus the daemon's per-tool
+ * ownership checks, e.g. `permissions_respond`). So these predicates don't
  * need their own allowlist beyond "does this token's own claim match what
  * the URL names" — `dispatchAllowlistedAppTool`'s scoped mode is the
  * actual tool-level enforcement; this file only decides whether a given
@@ -58,12 +61,13 @@ export function appLinkToolCallAuth(
   return auth && auth.appId === appId ? auth : undefined
 }
 
-/** `/sessions/:id`, `/sessions/:id/events`, `/sessions/:id/events/stream` —
- *  the exact three read-only routes session-chat needs for one session.
- *  Every other `/sessions/*` route (pty, kill, chat, prompt, the plain
- *  `/stream` line-tail, …) is deliberately excluded: a link-session token
- *  grants read access to one session's transcript, nothing else. */
-const SESSION_READ_RE = /^\/sessions\/([^/]+)(?:\/events\/stream|\/events)?$/
+/** `/sessions/:id`, `/sessions/:id/events`, `/sessions/:id/events/stream`,
+ *  `/sessions/:id/capabilities`: the exact four GET routes session-chat
+ *  reads for one session. Every other `/sessions/*` route (pty, kill, chat,
+ *  prompt, the plain `/stream` line-tail, …) is deliberately excluded: the
+ *  HTTP side of a link-session token reads one session, nothing else; its
+ *  writes go only through the app's tool-call route and `ui.toolScope`. */
+const SESSION_READ_RE = /^\/sessions\/([^/]+)(?:\/events\/stream|\/events|\/capabilities)?$/
 
 export function appLinkSessionReadAuth(
   req: IncomingMessage,
