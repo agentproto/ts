@@ -179,8 +179,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
   },
   "cron.schedule": {
     routed: false,
-    enforcedAt: "/mcp auth only",
-    surfaces: ["cron_create", "cron_delete"],
+    enforcedAt:
+      "tool.invoke on /mcp: tool-deny-gate.ts withToolDenyGate refuses cron_* for a session whose AGENT manifest denies it (deny-only, through the tool.invoke row). The HTTP /cron routes are not gated: loopback or the tunnel bearer only, no session identity",
+    surfaces: ["cron_create", "cron_update", "cron_delete", "POST /cron", "PATCH /cron/:id", "DELETE /cron/:id"],
   },
   "approval.decide": {
     routed: false,
