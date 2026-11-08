@@ -42,7 +42,7 @@ const SAFE_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "daemonRoute",
   "tenantId",
   "installPackages",
-  "installAdapters",
+  "installHarnesses",
   "updateCliOnBoot",
   "cliVersion",
   "timeoutMs",

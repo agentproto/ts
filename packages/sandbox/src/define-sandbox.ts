@@ -1,5 +1,6 @@
 import { createDoctype } from "@agentproto/doctype"
 import { sandboxFrontmatterSchema } from "./schema.js"
+import { renamedSandboxKeyError } from "./renamed-keys.js"
 import type {
   SandboxRuntimeHandle,
   SandboxRuntimeInput,
@@ -48,6 +49,8 @@ const defineSandboxInner = createDoctype<
           .join("; ")}`,
       )
     }
+    const renamed = renamedSandboxKeyError(manifest)
+    if (renamed) throw new Error(`defineSandbox (AIP-36): ${renamed}`)
     // TODO: spec-36-specific cross-field rules (if/then/allOf in
     // the JSON Schema) — those don't translate to zod cleanly and
     // belong here. See @agentproto/operator's autonomy=gated rule.

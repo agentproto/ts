@@ -149,7 +149,7 @@ export interface RoutineRegistrar {
   /**
    * Scan, validate, and reconcile cron jobs for every routine found. Safe to
    * call repeatedly. A routine whose job the scheduler refuses (e.g. an
-   * unresolvable `target.agent.adapter`) lands in `errors`, never aborting
+   * unresolvable `target.agent.harness`) lands in `errors`, never aborting
    * the rest of the pass.
    */
   reconcile(): Promise<ReconcileResult>

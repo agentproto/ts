@@ -113,23 +113,35 @@ describe("defineHarness (AIP-45)", () => {
       expect(handle.mcp?.command).toBe("goose")
     })
 
-    it("requires `adapter` when protocol=proprietary", () => {
+    it("requires `harness` when protocol=proprietary", () => {
       expect(() =>
         defineHarness(
           minimal({ protocol: "proprietary", acp: undefined }),
         ),
-      ).toThrow(/`adapter` package is required when protocol=proprietary/)
+      ).toThrow(/`harness` package is required when protocol=proprietary/)
     })
 
-    it("accepts protocol=proprietary with adapter", () => {
+    it("accepts protocol=proprietary with the canonical harness field", () => {
       const handle = defineHarness(
         minimal({
           protocol: "proprietary",
           acp: undefined,
-          adapter: "@agentproto/adapter-gemini-cli",
+          harness: "@agentproto/harness-gemini-cli",
         }),
       )
-      expect(handle.adapter).toBe("@agentproto/adapter-gemini-cli")
+      expect(handle.harness).toBe("@agentproto/harness-gemini-cli")
+    })
+
+    it("rejects the pre-rename root adapter, naming harness", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            protocol: "proprietary",
+            acp: undefined,
+            adapter: "@agentproto/adapter-gemini-cli",
+          } as unknown as Partial<AgentCliDefinition>),
+        ),
+      ).toThrow(/adapter: `adapter` was renamed to `harness` \(AIP-45\)/)
     })
   })
 
@@ -249,6 +261,36 @@ body
       expect(frontmatter.id).toBe("hermes")
       expect(frontmatter.protocol).toBe("acp")
       expect(body).toMatch(/body/)
+    })
+
+    const proprietaryMd = (key: string) => `---
+name: pi
+id: pi
+description: Pi.
+version: 0.1.0
+bin: pi
+install:
+  - method: npm
+    package: pi
+version_check:
+  cmd: pi --version
+  parse: "(\\\\d+)"
+  range: ">=0.1.0"
+sandbox: ./SANDBOX.md
+protocol: proprietary
+${key}: "@agentproto/harness-pi"
+---
+`
+
+    it("accepts a HARNESS.md with a root harness field under the strict schema", () => {
+      const { frontmatter } = parseAgentCliManifest(proprietaryMd("harness"))
+      expect(frontmatter.harness).toBe("@agentproto/harness-pi")
+    })
+
+    it("rejects a HARNESS.md with the pre-rename root adapter, naming harness", () => {
+      expect(() => parseAgentCliManifest(proprietaryMd("adapter"))).toThrow(
+        /adapter: `adapter` was renamed to `harness` \(AIP-45\)/,
+      )
     })
 
     it("rejects empty frontmatter", () => {

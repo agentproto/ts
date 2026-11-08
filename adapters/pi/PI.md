@@ -21,7 +21,7 @@ auth:
     env: [ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, MOONSHOT_API_KEY]
 sandbox: ./SANDBOX.md
 protocol: proprietary
-adapter: "@agentproto/adapter-pi"
+harness: "@agentproto/adapter-pi"
 session:
   mode: persistent
   idle_timeout_ms: 1800000

@@ -5,7 +5,7 @@ describe("mastraController (defineHarness)", () => {
   it("is the proprietary mastra-controller arm, served by this package", () => {
     expect(mastraController.id).toBe("mastra-controller")
     expect(mastraController.protocol).toBe("proprietary")
-    expect(mastraController.adapter).toBe("@agentproto/adapter-mastra-controller")
+    expect(mastraController.harness).toBe("@agentproto/adapter-mastra-controller")
   })
 
   it("declares no static modes and claims streaming, tool calls, mode events and typed prompts", () => {

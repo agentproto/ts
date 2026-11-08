@@ -263,7 +263,7 @@ function toAdapterModes(modes: AgentCliMode[] | undefined): AdapterMode[] {
 const resolveFromHere = createRequire(import.meta.url)
 
 /**
- * `protocol: "proprietary"` handles carry an `adapter` field naming an npm
+ * `protocol: "proprietary"` handles carry a `harness` field naming an npm
  * package that `createProprietaryProtocolArm` (inside
  * `@agentproto/driver-agent-cli`) dynamic-`import()`s a SECOND time, at
  * session-start, to obtain the `createAgentCliClient` factory. That second
@@ -274,7 +274,7 @@ const resolveFromHere = createRequire(import.meta.url)
  * specifier resolves by successfully importing it above) can fail to
  * resolve there, because Node's ancestor `node_modules` walk for a bare
  * specifier starts from the IMPORTING module's own location, not this
- * one's. Rewrite `adapter` to the fully-resolved absolute path before
+ * one's. Rewrite `harness` to the fully-resolved absolute path before
  * handing the handle off: dynamic `import()` of an absolute path always
  * succeeds regardless of which module performs it, so the second import
  * is no longer sensitive to where in the dependency graph it runs. This
@@ -286,8 +286,8 @@ function withResolvedProprietaryAdapter(
   candidate: AgentCliHandle,
   packageSpecifier: string
 ): AgentCliHandle {
-  if (candidate.protocol !== "proprietary" || !candidate.adapter) return candidate
-  return { ...candidate, adapter: resolveFromHere.resolve(packageSpecifier) }
+  if (candidate.protocol !== "proprietary" || !candidate.harness) return candidate
+  return { ...candidate, harness: resolveFromHere.resolve(packageSpecifier) }
 }
 
 /**

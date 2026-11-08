@@ -312,6 +312,7 @@ import {
   isSandboxBootCancelledError,
   isSandboxEgressAllCoolingError,
   isSandboxBoxGoneError,
+  renamedSandboxKeyError,
   resolveLifecyclePolicy,
   SandboxHostBootFailedError,
   type SandboxAgentSessionHost,
@@ -2329,6 +2330,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_workspace_setup_failed"
         | "sandbox_preflight_failed"
         | "sandbox_preflight_invalid"
+        | "sandbox_spec_invalid"
         | "sandbox_egress_all_cooling"
         | "placement_invalid"
         | "sandbox_placement_exhausted"
@@ -7116,6 +7118,7 @@ export type SandboxBootResult =
         | "sandbox_workspace_setup_failed"
         | "sandbox_preflight_failed"
         | "sandbox_preflight_invalid"
+        | "sandbox_spec_invalid"
         | "sandbox_egress_all_cooling"
         | "device_spawn_unreachable"
         | "device_offline"
@@ -7260,7 +7263,7 @@ function withSandboxAdapterPackages(spec: SandboxSpec, adapter: string): Sandbox
 }
 
 /**
- * PLAN-F — semantic `config.installAdapters` slugs. Harness slugs the caller
+ * PLAN-F — semantic `config.installHarnesses` slugs (AIP-36). Harness slugs the caller
  * wants pre-installed in the box BEYOND the spawned adapter #1232 already
  * auto-injects — the "spawn a second agent in this box without reinstalling"
  * case. Each slug expands to `@agentproto/adapter-<slug>@latest` plus its
@@ -7268,12 +7271,12 @@ function withSandboxAdapterPackages(spec: SandboxSpec, adapter: string): Sandbox
  * and merges into `config.installPackages` with dedupe, so caller-declared
  * pins keep winning. Order: the #1232 auto-injection, the caller's existing
  * `installPackages` pins (verbatim, relative order preserved), then the
- * `installAdapters` expansions. Purely additive — a spec without the field
+ * `installHarnesses` expansions. Purely additive — a spec without the field
  * passes through unchanged.
  */
-function withSandboxInstallAdapters(spec: SandboxSpec): SandboxSpec {
+function withSandboxInstallHarnesses(spec: SandboxSpec): SandboxSpec {
   const slugs: string[] = []
-  for (const slug of spec.config.installAdapters ?? []) {
+  for (const slug of spec.config.installHarnesses ?? []) {
     if (typeof slug === "string" && slug.length > 0) slugs.push(slug)
   }
   if (slugs.length === 0) return spec
@@ -7596,6 +7599,12 @@ export async function bootSandboxAgentSession(opts: {
   preflightTimeoutMs?: number
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
+  // A pre-AIP-36-rename key (`config.installAdapters`) would boot a box that
+  // silently skips the install: refuse it, naming the new key.
+  const renamedKey = typeof opts.sandbox === "string" ? undefined : renamedSandboxKeyError(opts.sandbox)
+  if (renamedKey) {
+    return { ok: false, code: "sandbox_spec_invalid", message: `agent_start: ${renamedKey}` }
+  }
   const preflightIds = opts.preflight ?? []
   const preflightRegistry = opts.preflightRegistry ?? defaultPreflightRegistry
   const unknownProbes = unknownPreflightProbes(preflightIds, preflightRegistry)
@@ -7768,7 +7777,7 @@ export async function bootSandboxAgentSession(opts: {
     hasGitToken,
   )
   const rawSpec: SandboxSpec = await withSandboxAuthAutoPassthrough(
-    withSandboxInstallAdapters(
+    withSandboxInstallHarnesses(
       withSandboxAdapterPackages(
         withoutReservedSandboxEnv(
           typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,

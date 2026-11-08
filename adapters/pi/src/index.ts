@@ -199,7 +199,7 @@ export const pi: AgentCliHandle = defineHarness({
   systemPrompt: { via: "argv", flag: "--append-system-prompt" },
   sandbox: "./SANDBOX.md",
   protocol: "proprietary",
-  adapter: "@agentproto/adapter-pi",
+  harness: "@agentproto/adapter-pi",
   session: {
     mode: "persistent",
     idle_timeout_ms: 1_800_000,

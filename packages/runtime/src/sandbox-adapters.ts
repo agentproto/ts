@@ -196,7 +196,7 @@ export function sandboxAdapterBootPackages(
 }
 
 /**
- * Expand semantic `config.installAdapters` slugs into concrete npm specs.
+ * Expand semantic `config.installHarnesses` slugs into concrete npm specs.
  * Each slug becomes `@agentproto/adapter-<slug>@latest` plus the
  * `SANDBOX_ADAPTER_BOOT_PACKAGES` extras that slug declares. A slug unknown
  * to the catalog still expands (the box's boot-time npm install is the

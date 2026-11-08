@@ -7089,6 +7089,7 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
     code === "sandbox_preflight_invalid" ||
+    code === "sandbox_spec_invalid" ||
     code === "placement_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||

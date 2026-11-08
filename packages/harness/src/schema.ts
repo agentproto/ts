@@ -19,7 +19,10 @@ const ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,63}$/
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/
 const TAG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 const SEMVER_RANGE_PATTERN = /^[><=^~ \d.\-+\w*xX|, ]+$/
-const ADAPTER_PATTERN = /^@?[a-z0-9][a-z0-9-./]*$/
+const HARNESS_PACKAGE_PATTERN = /^@?[a-z0-9][a-z0-9-./]*$/
+/** The error for a HARNESS.md still using the pre-AIP-45-rename root key. */
+const HARNESS_ADAPTER_RENAMED =
+  "`adapter` was renamed to `harness` (AIP-45); write `harness: <npm package>`"
 const BIN_PATTERN = /^[A-Za-z0-9._\-/]+$/
 const MODE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 const OPTION_ID_PATTERN = /^[a-z0-9][a-z0-9_]{0,63}$/
@@ -666,7 +669,12 @@ export const agentCliFrontmatterSchema = z
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),
     acp: z.string().optional(),
     mcp: mcpBlockSchema.optional(),
-    adapter: z.string().regex(ADAPTER_PATTERN).optional(),
+    // AIP-45: npm package implementing AgentCliClient, REQUIRED when
+    // protocol=proprietary (enforced in defineHarness's validate()).
+    harness: z.string().regex(HARNESS_PACKAGE_PATTERN).optional(),
+    // AIP-45 renamed the root `adapter` to `harness`. Declared (never valid)
+    // so the old key fails naming the new one, not as an unrecognized key.
+    adapter: z.never({ error: HARNESS_ADAPTER_RENAMED }).optional(),
     print: printConfigSchema,
     session: sessionSchema.optional(),
     models: modelsSchema.optional(),

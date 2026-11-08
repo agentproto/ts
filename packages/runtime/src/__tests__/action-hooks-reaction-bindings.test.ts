@@ -363,7 +363,7 @@ describe("toReactionBinding", () => {
     const result = toReactionBinding(
       resolved({
         bindingId: "alpha/on/agentproto:session-completed/0",
-        target: { agent: { adapter: "claude-code", prompt: "hi" } },
+        target: { agent: { harness: "claude-code", prompt: "hi" } },
       }),
       deps,
     )
@@ -382,7 +382,7 @@ describe("toReactionBinding", () => {
     const authored = toReactionBinding(
       resolved({
         bindingId: "alpha/on/agentproto:session-completed/1",
-        target: { agent: { adapter: "claude-code", prompt: "hi", origin: "custom:origin" } },
+        target: { agent: { harness: "claude-code", prompt: "hi", origin: "custom:origin" } },
       }),
       deps,
     )
@@ -435,7 +435,7 @@ describe("shouldHandle", () => {
       getSessionFacts: (() => ({ origin: "reaction:other" })) as unknown as ReactionBindingDeps["getSessionFacts"],
       log: line => logs.push(line),
     })
-    const agentTarget = { agent: { adapter: "claude-code", prompt: "hi" } }
+    const agentTarget = { agent: { harness: "claude-code", prompt: "hi" } }
     const agent = toReactionBinding(resolved({ target: agentTarget }), reactionFacts.deps)
     expect(agent.ok).toBe(true)
     if (agent.ok) {

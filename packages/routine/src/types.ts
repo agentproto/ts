@@ -143,14 +143,13 @@ export interface TargetAction {
 }
 /**
  * Ergonomic sugar target — spawns an agent session directly (lowers to an
- * `agent_start` tool call in the runtime bridge). NOT part of the upstream
- * AIP-41 draft JSON Schema yet — see packages/routine/README.md "Runtime
- * bridge" section for the specs-repo follow-up this implies.
+ * `agent_start` tool call in the runtime bridge). Upstream AIP-41 declares it
+ * as `$defs.targetAgent`.
  */
 export interface TargetAgent {
   agent: {
-    /** Agent adapter slug (e.g. 'claude-code', 'hermes'). */
-    adapter: string
+    /** AIP-45 harness slug (e.g. 'claude-code', 'hermes'). */
+    harness: string
     /** Initial prompt / consigne sent to the spawned agent. */
     prompt: string
     model?: string

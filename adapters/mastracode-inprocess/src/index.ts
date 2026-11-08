@@ -5,7 +5,7 @@
  *
  * This is a `protocol: "proprietary"` manifest: `createAgentCliRuntime`
  * skips the subprocess spawn entirely for this protocol and instead
- * dynamic-imports `adapter` (this very package) and calls its exported
+ * dynamic-imports `harness` (this very package) and calls its exported
  * `createAgentCliClient(definition)` factory — see
  * `createProprietaryProtocolArm` in `@agentproto/driver-agent-cli`. The
  * factory itself lives in `./client.ts`; this file only builds and
@@ -84,7 +84,7 @@ export const mastracodeInprocess: AgentCliHandle = defineHarness({
       "mastracode usage, but that isolation is not a security sandbox.",
   },
   protocol: "proprietary",
-  adapter: "@agentproto/adapter-mastracode-inprocess",
+  harness: "@agentproto/adapter-mastracode-inprocess",
   session: {
     mode: "resumable",
     idle_timeout_ms: 1_800_000,

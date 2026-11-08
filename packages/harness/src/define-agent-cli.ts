@@ -75,9 +75,9 @@ export const defineHarness = createDoctype<AgentCliDefinition, AgentCliHandle>(
           "defineAgentCli (AIP-45): `mcp` block is required when protocol=mcp",
         )
       }
-      if (data.protocol === "proprietary" && !data.adapter) {
+      if (data.protocol === "proprietary" && !data.harness) {
         throw new Error(
-          "defineAgentCli (AIP-45): `adapter` package is required when protocol=proprietary",
+          "defineAgentCli (AIP-45): `harness` package is required when protocol=proprietary",
         )
       }
 
@@ -1323,15 +1323,15 @@ async function buildProtocolArm(
     case "mcp":
       throw new Error("createAgentCliRuntime: mcp protocol arm not yet implemented")
     case "proprietary":
-      if (!def.adapter) {
+      if (!def.harness) {
         // defineHarness's validate() already enforces this for manifests
         // built through it — this guards a hand-built AgentCliHandle that
         // bypassed that check.
         throw new Error(
-          "createAgentCliRuntime: proprietary protocol requires manifest.adapter",
+          "createAgentCliRuntime: proprietary protocol requires manifest.harness",
         )
       }
-      return createProprietaryProtocolArm({ adapter: def.adapter, definition: def })
+      return createProprietaryProtocolArm({ harness: def.harness, definition: def })
     case "print":
       // Unreachable: print is handled by the early-return in start() above.
       throw new Error("createAgentCliRuntime: print arm bypasses buildProtocolArm")

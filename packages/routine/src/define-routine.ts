@@ -1,5 +1,5 @@
 import { createDoctype } from "@agentproto/doctype"
-import { routineFrontmatterSchema } from "./schema.js"
+import { formatRoutineIssues, routineFrontmatterSchema } from "./schema.js"
 import type { RoutineDefinition, RoutineHandle } from "./types.js"
 
 /**
@@ -21,11 +21,7 @@ export const defineRoutine = createDoctype<RoutineDefinition, RoutineHandle>({
   validate(def) {
     const result = routineFrontmatterSchema.safeParse(def)
     if (!result.success) {
-      throw new Error(
-        `defineRoutine (AIP-41): ${result.error.issues
-          .map((i) => `${i.path.join(".")}: ${i.message}`)
-          .join("; ")}`,
-      )
+      throw new Error(`defineRoutine (AIP-41): ${formatRoutineIssues(result.error.issues)}`)
     }
     // TODO: spec-41-specific cross-field rules (if/then/allOf in
     // the JSON Schema) — those don't translate to zod cleanly and

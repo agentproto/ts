@@ -1,10 +1,11 @@
 /**
- * PLAN-F — semantic `config.installAdapters` field on sandbox specs. Harness
+ * PLAN-F — semantic `config.installHarnesses` field on sandbox specs (AIP-36). Harness
  * slugs ("hermes", "claude-code", …) instead of raw npm specs; the runtime
  * expands each into `@agentproto/adapter-<slug>@latest` plus the adapter's
  * declared boot extras and merges them into `config.installPackages` after
  * #1232's auto-injection of the spawned adapter. Caller pins always win;
- * a spec without the field is passed through byte-identical.
+ * a spec without the field is passed through byte-identical. The
+ * pre-rename `config.installAdapters` is refused before any box boots.
  *
  * Two layers are exercised:
  *   - pure: `sandboxInstallAdapterPackages` (expansion / dedupe / pin rules);
@@ -26,6 +27,7 @@ import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.
 import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
+import { INSTALL_ADAPTERS_RENAMED } from "@agentproto/sandbox"
 import { sandboxInstallAdapterPackages } from "../sandbox-adapters.js"
 
 describe("sandboxInstallAdapterPackages (pure)", () => {
@@ -80,7 +82,7 @@ describe("sandboxInstallAdapterPackages (pure)", () => {
   })
 })
 
-describe("spawnAgentSession sandbox — installAdapters expansion", () => {
+describe("spawnAgentSession sandbox — installHarnesses expansion", () => {
   let bootSpecs: SandboxSpec[]
   let registry: SessionsRegistry
   let workspace: string
@@ -181,18 +183,18 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
     await rm(boxWorkspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
   })
 
-  it("expands installAdapters slugs into installPackages, after caller pins", async () => {
+  it("expands installHarnesses slugs into installPackages, after caller pins", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "grok-cli",
       cwd: workspace,
       sandbox: {
         provider: "fake",
-        config: { installAdapters: ["hermes", "claude-code"] },
+        config: { installHarnesses: ["hermes", "claude-code"] },
       },
     })
     expect(result.ok).toBe(true)
     expect(bootSpecs[0]?.config).toEqual({
-      installAdapters: ["hermes", "claude-code"],
+      installHarnesses: ["hermes", "claude-code"],
       installPackages: [
         "@agentproto/adapter-grok-cli@latest",
         "@agentproto/adapter-hermes@latest",
@@ -204,6 +206,20 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
     })
   })
 
+  it("refuses the pre-rename installAdapters before booting, naming installHarnesses", async () => {
+    const result = await spawnAgentSession(deps, {
+      adapter: "grok-cli",
+      cwd: workspace,
+      sandbox: { provider: "fake", config: { installAdapters: ["hermes"] } },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe("sandbox_spec_invalid")
+      expect(result.message).toContain(INSTALL_ADAPTERS_RENAMED)
+    }
+    expect(bootSpecs).toEqual([])
+  })
+
   it("merges with the #1232 spawned-adapter injection, pins preserved", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "hermes",
@@ -212,7 +228,7 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
         provider: "fake",
         config: {
           installPackages: ["left-pad@1.3.0"],
-          installAdapters: ["claude-code"],
+          installHarnesses: ["claude-code"],
         },
       },
     })
@@ -224,7 +240,7 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
         "@agentproto/adapter-claude-code@latest",
         "@anthropic-ai/claude-code@latest",
       ],
-      installAdapters: ["claude-code"],
+      installHarnesses: ["claude-code"],
       sessionHolder: expect.any(String),
       workspaceSlug: "default",
     })
@@ -238,7 +254,7 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
         provider: "fake",
         config: {
           installPackages: ["@agentproto/adapter-hermes@0.4.12"],
-          installAdapters: ["hermes"],
+          installHarnesses: ["hermes"],
         },
       },
     })
@@ -248,13 +264,13 @@ describe("spawnAgentSession sandbox — installAdapters expansion", () => {
         "@agentproto/adapter-grok-cli@latest",
         "@agentproto/adapter-hermes@0.4.12",
       ],
-      installAdapters: ["hermes"],
+      installHarnesses: ["hermes"],
       sessionHolder: expect.any(String),
       workspaceSlug: "default",
     })
   })
 
-  it("no installAdapters field — zero diff on the boot spec", async () => {
+  it("no installHarnesses field — zero diff on the boot spec", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "hermes",
       cwd: workspace,

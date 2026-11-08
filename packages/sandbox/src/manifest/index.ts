@@ -16,6 +16,7 @@
 
 import matter from "gray-matter"
 import { sandboxFrontmatterSchema, type SandboxFrontmatter } from "../schema.js"
+import { renamedSandboxKeyError } from "../renamed-keys.js"
 import { defineSandbox } from "../define-sandbox.js"
 import type { SandboxDefinition, SandboxHandle } from "../types.js"
 
@@ -41,6 +42,8 @@ export function parseSandboxManifest(source: string): SandboxManifest {
         .join("; ")}`,
     )
   }
+  const renamed = renamedSandboxKeyError(result.data)
+  if (renamed) throw new Error(`parseSandboxManifest: invalid frontmatter — ${renamed}`)
   return { frontmatter: result.data, body: parsed.content }
 }
 
