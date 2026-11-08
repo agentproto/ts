@@ -65,9 +65,23 @@ async function ensureChromeLive(provider: ChromeLiveProvider, opts: BrowserAdapt
   // ledger was dead config for chrome-live and a blank ws-url never reached
   // the provider's port fallback.
   const persisted = await loadPersistedEnv(CHROME_LIVE_PROVIDER_ID)
+  // A ledger value that merely restates the step's own DEFAULT was accepted,
+  // not typed, so it must stay fallback-only: treating it as a pinned
+  // endpoint would flip a bare `browser start chrome-live` from
+  // dedicated-first to attach-first (e.g. a persisted `CHROME_LIVE_PORT=9222`).
+  // Older ledgers written before the CLI stopped persisting accepted defaults
+  // still carry them, hence the filter here as well as at write time.
+  const declaredDefaults = new Map<string, string>()
+  for (const step of provider.config) {
+    const envName = step.persist?.env
+    if (envName !== undefined && step.default !== undefined) declaredDefaults.set(envName, step.default)
+  }
+  const persistedEnv = Object.fromEntries(
+    Object.entries(persisted).filter(([name, value]) => declaredDefaults.get(name) !== value)
+  )
   const launchOpts = chromeLiveLaunchOptionsFrom({
     ...opts,
-    env: { ...persisted, ...opts.env },
+    env: { ...persistedEnv, ...opts.env },
   })
   const instance = await provider.launch(launchOpts, opts.log ? { log: opts.log } : {})
   const cdp = instance.endpoints.cdp
