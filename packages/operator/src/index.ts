@@ -48,7 +48,7 @@ export type {
 } from "./types.js"
 
 export { resolveOperator } from "./resolve.js"
-export { toolDenyGrants } from "./resolve-tools.js"
+export { exposedToolOptIn, toolDenyGrants } from "./resolve-tools.js"
 export { OperatorResolutionError, ROLE_CHAIN_MAX } from "./resolve-types.js"
 export type {
   IdentityEntry,

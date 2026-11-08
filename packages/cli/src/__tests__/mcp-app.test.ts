@@ -262,6 +262,27 @@ describe("runMcpApp — exposes.tools", () => {
     errSpy.mockRestore()
   })
 
+  it("exits 1, not legacy, when exposes.tools is an explicit empty list", async () => {
+    findInstalledAppDirMock.mockReturnValue("/apps/bureau")
+    readDeclaredExposedToolsMock.mockResolvedValue([])
+    readDeclaredUIToolsMock.mockResolvedValue(["app_run"])
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    expect(await runMcpApp(["bureau"])).toBe(1)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("nothing to serve"))
+    expect(toolMock).not.toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
+  it("warns on stderr and keeps serving for an unknown flag or extra argument (legacy invocations)", async () => {
+    readDeclaredUIToolsMock.mockResolvedValue(["app_run"])
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    await serve(["bureau", "--verbose", "extra"])
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("ignoring unknown flag --verbose"))
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("ignoring unexpected argument extra"))
+    expect(toolMock.mock.calls.map(c => c[0])).toEqual(["app_run"])
+    errSpy.mockRestore()
+  })
+
   it("keeps the legacy ui.tools behaviour, with a stderr warning, when exposes.tools is absent", async () => {
     readDeclaredUIToolsMock.mockResolvedValue(["app_run", "bureau.status"])
     const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)

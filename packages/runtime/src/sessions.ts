@@ -2304,6 +2304,13 @@ export interface SessionDescriptor {
    *  then nothing is evaluated. Copied from this registry onto a continuation
    *  successor (restart, continue-fresh), never taken from a request. */
   toolDenyGrants?: Grant[]
+  /** The tool names the AGENT manifest opted into with
+   *  `{kind: mcp, server: agentproto, allow: [...]}`. The `/mcp` gateway
+   *  registers an installed app's `write`/`approve` `exposes.tools` for this
+   *  session only when its MCP name matches one (a deny grant still wins).
+   *  Same provenance as {@link toolDenyGrants}: computed at spawn, copied onto
+   *  a continuation successor, never taken from a request. */
+  exposedToolOptIn?: string[]
   /** Ascending position among pinned sessions — the stored order behind
    *  the pinned group of the CLI table / VS Code webview list. Set by
    *  `registry.setPinned` (append-at-end) and `registry.reorderPinned`
@@ -5482,6 +5489,9 @@ export interface SessionsRegistry {
    *  `toolDenyGrants`. Daemon-internal: the restart / continue-fresh
    *  carry-forward copies them from the source row. No request path calls it. */
   setToolDenyGrants(id: string, grants: readonly Grant[] | undefined): SessionDescriptor
+  /** Stamp (or clear) the descriptor's `exposedToolOptIn`. Daemon-internal,
+   *  same carry-forward role as {@link setToolDenyGrants}. */
+  setExposedToolOptIn(id: string, optIn: readonly string[] | undefined): SessionDescriptor
   /** Record on the session event bus that a drive-tool prompt was accepted
    *  for `id`, and WHO sent it (`caller` = the trusted calling session id,
    *  or the literal `"operator"`). No-op when the registry was constructed
@@ -6287,6 +6297,8 @@ export interface SpawnAgentInput {
   /** The AGENT manifest's tool deny grants, recorded verbatim onto
    *  {@link SessionDescriptor.toolDenyGrants}. Computed by the spawn core. */
   toolDenyGrants?: readonly Grant[]
+  /** The AGENT manifest's opt-in names, recorded onto {@link SessionDescriptor.exposedToolOptIn}. */
+  exposedToolOptIn?: readonly string[]
   /** Resolved context-continuity policy — recorded verbatim onto
    *  {@link SessionDescriptor.contextContinuity}. */
   contextContinuity?: ResolvedContextContinuityPolicy
@@ -12868,6 +12880,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.operator ? { operator: input.operator } : {}),
         ...(input.operator && input.operatorDigest ? { operatorDigest: input.operatorDigest } : {}),
         ...(input.toolDenyGrants?.length ? { toolDenyGrants: [...input.toolDenyGrants] } : {}),
+        ...(input.exposedToolOptIn?.length ? { exposedToolOptIn: [...input.exposedToolOptIn] } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -13114,6 +13127,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.operator ? { operator: input.operator } : {}),
         ...(input.operator && input.operatorDigest ? { operatorDigest: input.operatorDigest } : {}),
         ...(input.toolDenyGrants?.length ? { toolDenyGrants: [...input.toolDenyGrants] } : {}),
+        ...(input.exposedToolOptIn?.length ? { exposedToolOptIn: [...input.exposedToolOptIn] } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -16024,6 +16038,15 @@ export function createSessionsRegistry(opts?: {
       if (!rt) throw new Error(`setToolDenyGrants: no session "${id}"`)
       if (!grants || grants.length === 0) delete rt.desc.toolDenyGrants
       else rt.desc.toolDenyGrants = [...grants]
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setExposedToolOptIn(id, optIn) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setExposedToolOptIn: no session "${id}"`)
+      if (!optIn || optIn.length === 0) delete rt.desc.exposedToolOptIn
+      else rt.desc.exposedToolOptIn = [...optIn]
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc

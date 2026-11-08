@@ -355,6 +355,26 @@ describe("readDeclaredExposedTools", () => {
     await expect(readDeclaredExposedTools(dir)).rejects.toThrow(/APP\.md.*access: read/s)
   })
 
+  it("loads an exposed id that is not in ui.tools (rule 1.6 lifted)", async () => {
+    const dir = await mktmp()
+    const fm = block("read").replace("tools: [bureau.status]", "tools: [app_run]")
+    await writeApp(dir, fm, [{ id: "bureau.status" }])
+    const resolved = await readDeclaredExposedTools(dir)
+    expect(resolved?.map(r => r.name)).toEqual(["bureau_status"])
+  })
+
+  it("throws on a malformed exposes.tools instead of falling back to the legacy ui.tools path", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, "exposes:\n  prefix: bureau\n  tools: not-a-list\nui:\n  path: x\n  tools: [app_run]\n")
+    await expect(readDeclaredExposedTools(dir)).rejects.toThrow(/exposes\.tools.*array/s)
+  })
+
+  it("resolves an explicit empty exposes.tools to [] (nothing exposed), not to the legacy fallback", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, "exposes:\n  prefix: bureau\n  tools: []\nui:\n  path: x\n  tools: [app_run]\n")
+    expect(await readDeclaredExposedTools(dir)).toEqual([])
+  })
+
   it("throws when the prefix is the first segment of a daemon tool name", async () => {
     const dir = await mktmp()
     await writeApp(dir, block("read", "app"), [{ id: "bureau.status" }])

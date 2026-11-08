@@ -9,7 +9,7 @@
  *     `loadAppHandle`. The daemon-tool-name checks (reserved prefix, daemon
  *     ids) only run when the caller passes `daemonToolNames`.
  *   - `validateExposedToolsAgainstBundle` checks the entries against the app's
- *     own bundled TOOL.md contracts and `ui.tools`; `defineApp` runs it.
+ *     own bundled TOOL.md contracts; `defineApp` runs it.
  *
  * The name rule lives ONLY in `exposedToolName`; the CLI and the daemon import
  * it rather than re-implementing it.
@@ -189,21 +189,15 @@ export function parseExposedTools(
 /**
  * Check the entries against the app's own bundled TOOL.md contracts: a non-
  * `imported:` id must resolve to one, and `access: read` is refused on a tool
- * that declares `mutates` or a `mutator`/`write` tag.
- *
- * Temporary (lifted when the daemon dispatches `exposes.tools` itself): every
- * id must also be in `ui.tools`, because `POST /apps/:appId/tool-call` only
- * accepts that allowlist.
+ * that declares `mutates` or a `mutator`/`write` tag. An exposed id need not be
+ * in `ui.tools`: the daemon dispatches `exposes.tools` itself.
  */
 export function validateExposedToolsAgainstBundle(
   exposes: { readonly tools?: readonly AppExposedTool[] },
-  ctx: { readonly tools: readonly ExposedToolBundledTool[]; readonly uiTools?: readonly string[] | undefined },
+  ctx: { readonly tools: readonly ExposedToolBundledTool[] },
   fail: Fail,
 ): void {
   for (const entry of exposes.tools ?? []) {
-    if (!(ctx.uiTools ?? []).includes(entry.id)) {
-      throw fail(`'exposes.tools' names '${entry.id}' which is not in 'ui.tools'; the tool-call route only accepts 'ui.tools' ids.`)
-    }
     if (entry.id.startsWith("imported:")) continue
     const tool = ctx.tools.find(t => t.id === entry.id)
     if (!tool) {

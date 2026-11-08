@@ -20,7 +20,7 @@
 
 import { isAbsolute, join, resolve as resolvePath } from "node:path"
 import { loadAgent } from "@agentproto/agent"
-import { toolDenyGrants } from "@agentproto/operator"
+import { exposedToolOptIn, toolDenyGrants } from "@agentproto/operator"
 import type { Grant } from "@agentproto/policy"
 import { stripOwner } from "@agentproto/app"
 import type { AgentAdapterResolver } from "./http-server.js"
@@ -110,6 +110,9 @@ export interface AgentManifestSpawnDefaults {
   /** `tool:invoke` deny grants of the manifest's `tools` deny items, for the
    *  call-time gate. Absent when the manifest has no deny item. */
   readonly toolDenyGrants?: Grant[]
+  /** MCP names/patterns from `{kind: mcp, server: agentproto, allow}` items: the agent's opt-in to
+   *  `write`/`approve` app-exposed tools. Absent when it lists none. */
+  readonly exposedToolOptIn?: string[]
   /** The manifest's `delegates_to`, resolved once here so the delegation gate
    *  evaluates a list frozen at spawn. Absent when it declares nothing. */
   readonly delegatesTo?: ManifestDelegates
@@ -148,6 +151,7 @@ export async function loadAgentManifestDefaults(
   const memory = parseAgentMemoryBinding(loaded.handle.memory)
   const model = typeof loaded.handle.model === "string" ? loaded.handle.model : undefined
   const denyGrants = toolDenyGrants(loaded.handle.tools ?? [])
+  const optIn = exposedToolOptIn(loaded.handle.tools ?? [])
   const delegatesTo = resolveManifestDelegatesTo(loaded.handle.delegates_to)
   const projected = projectAgentToSpawn(
     { path, handle: loaded.handle, body: loaded.body, ...(model !== undefined ? { model } : {}) },
@@ -168,6 +172,7 @@ export async function loadAgentManifestDefaults(
       ...(manifestHooks !== undefined ? { hooks: manifestHooks } : {}),
       ...(memory !== undefined ? { memory } : {}),
       ...(denyGrants.length > 0 ? { toolDenyGrants: denyGrants } : {}),
+      ...(optIn.length > 0 ? { exposedToolOptIn: optIn } : {}),
       ...(delegatesTo.kind !== "none" ? { delegatesTo } : {}),
       warnings: projected.warnings,
     },

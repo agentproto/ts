@@ -1788,6 +1788,7 @@ async function restartAgentSessionOnce(
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
+    if (prev.exposedToolOptIn) registry.setExposedToolOptIn(desc.id, prev.exposedToolOptIn)
     // A restart mints a NEW id, so the list pin must ride across explicitly —
     // same as `keepAlive` above. `pinned` is what exempts a keepAlive row
     // from the boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`);
@@ -2614,6 +2615,7 @@ async function restartAgentSessionOnce(
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
+    if (prev.exposedToolOptIn) registry.setExposedToolOptIn(desc.id, prev.exposedToolOptIn)
     // A restart mints a NEW id, so the list pin must ride across explicitly —
     // same as `keepAlive` above. `pinned` is what exempts a keepAlive row
     // from the boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`);

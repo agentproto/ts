@@ -10,6 +10,7 @@ import { defineOperator } from "../define-operator.js"
 import {
   OperatorResolutionError,
   resolveOperator,
+  exposedToolOptIn,
   toolDenyGrants,
   type OperatorSources,
 } from "../index.js"
@@ -191,6 +192,25 @@ describe("toolDenyGrants", () => {
     expect(call("srv/b")).toBe("deny")
     expect(call("srv/a")).toBe("allow")
     expect(call("other/b")).toBe("allow")
+  })
+})
+
+describe("exposedToolOptIn", () => {
+  it("collects the allow entries of the agentproto mcp items, without duplicates, and ignores other servers and deny", () => {
+    expect(
+      exposedToolOptIn([
+        "agentproto/plain",
+        { kind: "mcp", server: "agentproto", allow: ["jobkit_leads_upsert", "bureau_navigate"], deny: ["cron_create"] },
+        { kind: "mcp", server: "agentproto", allow: ["bureau_navigate"] },
+        { kind: "mcp", server: "other", allow: ["x"] },
+        { kind: "mcp", server: "agentproto" },
+      ]),
+    ).toEqual(["jobkit_leads_upsert", "bureau_navigate"])
+  })
+
+  it("is empty for a manifest with no mcp allow", () => {
+    expect(exposedToolOptIn([])).toEqual([])
+    expect(exposedToolOptIn(["bare_tool"])).toEqual([])
   })
 })
 

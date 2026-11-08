@@ -3364,6 +3364,7 @@ async function spawnAgentSessionOnce(
   let callerAgentRoleHash: string | undefined
   let callerAgentToolsHash: string | undefined
   let callerToolDenyGrants: Grant[] | undefined
+  let callerExposedToolOptIn: string[] | undefined
   // The manifest's `delegates_to`, resolved ONCE here and frozen on the
   // session (`meta.agentDelegatesTo`). The delegation gate reads the recorded
   // list, never the file, so a session that rewrote its own AGENT.md cannot
@@ -3430,6 +3431,7 @@ async function spawnAgentSessionOnce(
     callerAgentRoleHash = roleFingerprint.roleHash
     callerAgentToolsHash = roleFingerprint.toolsHash
     callerToolDenyGrants = d.toolDenyGrants
+    callerExposedToolOptIn = d.exposedToolOptIn
     callerAgentDelegates = d.delegatesTo
     callerAgentMemory = d.memory
     const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
@@ -5956,6 +5958,7 @@ async function spawnAgentSessionOnce(
         ...(recordedOperator ? { operator: recordedOperator } : {}),
         ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
         ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+        ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
         ...resumeLineageFields,
         onCancel: () => provisionAbort.abort(),
         workspaceSlug: resolvedSlug,
@@ -6321,6 +6324,7 @@ async function spawnAgentSessionOnce(
         ...(recordedOperator ? { operator: recordedOperator } : {}),
         ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
         ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+        ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -6624,6 +6628,7 @@ async function spawnAgentSessionOnce(
       ...(recordedOperator ? { operator: recordedOperator } : {}),
       ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
       ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+      ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
       ...resumeLineageFields,
       workspaceSlug: resolvedSlug,
       cwd,

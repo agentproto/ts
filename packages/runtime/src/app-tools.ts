@@ -26,7 +26,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
+import { loadAppHandle, loadAppBundledTools, parseExposedTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
@@ -76,6 +76,8 @@ import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, APP_DATA_ROOT_SUBDIR, defaultRemoteAppDataDir, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
 import { mintAppLinkToken } from "./app-link-token.js"
+import { DAEMON_TOOL_NAMES } from "./daemon-tool-names.generated.js"
+import { exposedAccessAllowed, planExposedTools, type ExposedToolsMode } from "./exposed-tools-policy.js"
 import {
   APP_INSTALL_EXCLUSIVE_ERROR,
   appInstallInputSchema,
@@ -580,6 +582,11 @@ function notEnabled(tool: string): ReturnType<typeof errorResult> {
 export interface AppToolCallDeps {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
   callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
+  /** `defaults.apps.exposedTools`, resolved by the caller. Set only by the HTTP
+   *  twin of `app_tool_call`: it then also accepts an installed app's
+   *  `exposes.tools` ids that are not in `ui.tools` (what `agentproto mcp-app`
+   *  forwards), under the kill-switch's access limit. Absent = `ui.tools` only. */
+  exposedToolsMode?: ExposedToolsMode
 }
 
 /**
@@ -792,6 +799,32 @@ function parseLinkClaimRef(claimRef: string): string | undefined {
   return claimRef.startsWith("$link.") ? claimRef.slice("$link.".length) : undefined
 }
 
+/**
+ * Run one of the app's OWN bundled TOOL.md contracts through its DRIVER.md
+ * implementations (AIP-30 `runTool`). `found: false` when the app bundles no
+ * such tool. Re-read from disk per call: the compiled handles are not
+ * persisted on the InstalledApp record. The registered data dir reaches the
+ * driver (only if it declares the name in sandbox.env.pass):
+ * docs/design/app-bundled-tool-data-dir.md.
+ */
+async function runBundledAppTool(
+  appDir: string,
+  toolId: string,
+  args: Record<string, unknown>,
+  appDataDir?: string,
+): Promise<{ found: false } | { found: true; output: unknown }> {
+  const bundled = await loadAppBundledTools(appDir)
+  const bundledTool = bundled.tools.find(t => t.id === toolId)
+  if (!bundledTool) return { found: false }
+  const output = await runTool({
+    tool: bundledTool,
+    candidates: bundled.drivers,
+    input: args,
+    ...(appDataDir !== undefined ? { hostEnv: { AGENTPROTO_APP_DATA_DIR: appDataDir } } : {}),
+  })
+  return { found: true, output }
+}
+
 async function dispatchAllowlistedAppTool(
   declaredAllowlist: readonly string[],
   input: { appId: string; tool: string; args?: Record<string, unknown> },
@@ -893,19 +926,8 @@ async function dispatchAllowlistedAppTool(
     // Re-read from disk per call, like the workflow path: the compiled
     // handles are not persisted on the InstalledApp record.
     if (appDir !== undefined) {
-      const bundled = await loadAppBundledTools(appDir)
-      const bundledTool = bundled.tools.find(t => t.id === input.tool)
-      if (bundledTool) {
-        // The registered data dir reaches the driver (only if it declares the
-        // name in sandbox.env.pass): docs/design/app-bundled-tool-data-dir.md.
-        const output = await runTool({
-          tool: bundledTool,
-          candidates: bundled.drivers,
-          input: args,
-          ...(appDataDir !== undefined ? { hostEnv: { AGENTPROTO_APP_DATA_DIR: appDataDir } } : {}),
-        })
-        return textResult(output)
-      }
+      const bundled = await runBundledAppTool(appDir, input.tool, args, appDataDir)
+      if (bundled.found) return textResult(bundled.output)
     }
     if (!deps.dispatchTool) return notEnabled("app_tool_call")
     const result = await deps.dispatchTool(input.tool, dispatchArgs)
@@ -938,6 +960,22 @@ export async function performAppToolCall(
   linkClaims?: Readonly<Record<string, string>>,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
   const installed = appRegistry.getApp(input.appId)
+  const exposedEntry = installed?.exposes?.tools?.find(t => t.id === input.tool)
+  if (
+    installed &&
+    exposedEntry &&
+    deps.exposedToolsMode !== undefined &&
+    linkClaims === undefined &&
+    !(installed.ui?.tools ?? []).includes(input.tool)
+  ) {
+    if (!exposedAccessAllowed(deps.exposedToolsMode, exposedEntry.access)) {
+      return errorResult(
+        `app_tool_call: tool "${input.tool}" of app "${input.appId}" is exposed as access: ${exposedEntry.access}, ` +
+          `which defaults.apps.exposedTools "${deps.exposedToolsMode}" does not allow.`,
+      )
+    }
+    return performExposedToolCall(appRegistry, { appId: input.appId, id: input.tool, args: input.args ?? {} }, deps)
+  }
   if (!installed || !installed.ui) {
     return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
   }
@@ -945,6 +983,41 @@ export async function performAppToolCall(
     ? { toolScope: installed.ui.toolScope ?? {}, claims: linkClaims }
     : undefined
   return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir, linkScope, installed.dataDir)
+}
+
+/**
+ * Run one entry of an installed app's `exposes.tools`: a bundled TOOL.md
+ * through its driver, or an `imported:<alias>/<tool>` id through the imported
+ * MCP server. Unlike `app_tool_call` it never falls through to the daemon's own
+ * tools, and `ui.tools` plays no part: the entry must be declared in
+ * `exposes.tools`. Who may call (access class, opt-in, kill-switch) is decided
+ * where the tool is registered or routed, not here.
+ */
+export async function performExposedToolCall(
+  appRegistry: AppRegistry,
+  input: { appId: string; id: string; args?: Record<string, unknown> },
+  deps: Pick<AppToolCallDeps, "callImportedTool">,
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
+  const installed = appRegistry.getApp(input.appId)
+  const entry = installed?.exposes?.tools?.find(t => t.id === input.id)
+  if (!installed || !entry) {
+    return errorResult(`exposed tool "${input.id}" is not declared in app "${input.appId}"'s exposes.tools.`)
+  }
+  const args = input.args ?? {}
+  try {
+    if (entry.id.startsWith("imported:")) {
+      if (!deps.callImportedTool) return notEnabled("exposed tool")
+      const rest = entry.id.slice("imported:".length)
+      const slash = rest.indexOf("/")
+      if (slash === -1) return errorResult(`malformed imported tool id "${entry.id}".`)
+      return textResult(await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), args))
+    }
+    const bundled = await runBundledAppTool(installed.dir, entry.id, args, installed.dataDir)
+    if (!bundled.found) return errorResult(`app "${input.appId}" bundles no TOOL.md "${entry.id}" any more.`)
+    return textResult(bundled.output)
+  } catch (err) {
+    return errorResult(err instanceof Error ? err.message : String(err))
+  }
 }
 
 /**
@@ -1519,6 +1592,9 @@ export async function resolveInstallDataDir(input: {
  *  installed copy and carry on. */
 export const APP_INSTALL_WORKTREE_REPOINT_REFUSED = "worktree-repoint-refused"
 
+/** Error-message prefix when a second app asks for an `exposes.prefix` another installed app holds. */
+export const APP_INSTALL_EXPOSED_PREFIX_TAKEN = "exposed-prefix-taken"
+
 export async function performInstall(
   dir: string,
   appRegistry: AppRegistry,
@@ -1574,6 +1650,27 @@ export async function performInstall(
 
   if (!handle.id) {
     return { ok: false, error: "the app has no `id` — set one in defineApp()/APP.md frontmatter to install it." }
+  }
+
+  const exposedPrefix = handle.exposes.prefix
+  if (exposedPrefix !== undefined && (handle.exposes.tools?.length ?? 0) > 0) {
+    try {
+      parseExposedTools(handle.exposes.tools, exposedPrefix, m => new Error(m), { daemonToolNames: DAEMON_TOOL_NAMES })
+    } catch (err) {
+      return { ok: false, error: `app_install: ${err instanceof Error ? err.message : String(err)}` }
+    }
+    const holder = appRegistry
+      .listApps()
+      .find(a => a.appId !== handle.id && a.exposes?.prefix === exposedPrefix && (a.exposes.tools?.length ?? 0) > 0)
+    if (holder) {
+      return {
+        ok: false,
+        error:
+          `${APP_INSTALL_EXPOSED_PREFIX_TAKEN}: exposes.prefix "${exposedPrefix}" is already used by installed app ` +
+          `"${holder.appId}". Two apps cannot share an MCP prefix; change 'exposes.prefix' or uninstall "${holder.appId}". ` +
+          "Reinstalling the same appId is unaffected.",
+      }
+    }
   }
 
   const installed = appRegistry.getApp(handle.id)
@@ -1711,7 +1808,9 @@ export async function performInstall(
     unvalidatedAgentTools,
     ...(handle.requires ? { requires: handle.requires } : {}),
     ...(handle.appRequirements.length > 0 ? { requiresApps: handle.appRequirements } : {}),
-    ...(handle.exposes.agents.length > 0 || handle.exposes.workflows.length > 0
+    ...(handle.exposes.agents.length > 0 ||
+    handle.exposes.workflows.length > 0 ||
+    (handle.exposes.tools?.length ?? 0) > 0
       ? { exposes: handle.exposes }
       : {}),
     ...(ui ? { ui } : {}),
@@ -3196,6 +3295,14 @@ export function registerAppTools(
           )
         }
       }
+      let exposedTools: { tools: string[]; skipped: Array<{ name: string; reason: string }> } | undefined
+      if (app && (app.exposes?.tools?.length ?? 0) > 0) {
+        const plan = await planExposedTools(appRegistry)
+        exposedTools = {
+          tools: plan.tools.filter(t => t.appId === app.appId).map(t => t.name),
+          skipped: plan.skipped.filter(x => x.appId === app.appId).map(({ name, reason }) => ({ name, reason })),
+        }
+      }
       return textResult({
         appRunId: run.appRunId,
         appId: run.appId,
@@ -3216,6 +3323,7 @@ export function registerAppTools(
         workflowRuns,
         ...(awaitingApprovals.length > 0 ? { awaitingApprovals } : {}),
         ...(state !== undefined ? { state } : {}),
+        ...(exposedTools !== undefined ? { exposedTools } : {}),
         ...(exposures.length > 0 || activations.length > 0
           ? {
               services: {

@@ -401,6 +401,18 @@ describe("worktrees.provision* keys", () => {
   })
 })
 
+describe("defaults.apps.exposedTools key", () => {
+  it("is a hot, writable switch defaulting to read, accepting off, read and all only", () => {
+    expect(findConfigKey("defaults.apps.exposedTools")).toMatchObject({ apply: "hot", writable: true, default: "read" })
+    for (const v of ["off", "read", "all"]) {
+      expect(validateConfigKeyValue("defaults.apps.exposedTools", v)).toEqual({ ok: true })
+    }
+    expect(validateConfigKeyValue("defaults.apps.exposedTools", "write").ok).toBe(false)
+    expect(validateConfig({ defaults: { apps: { exposedTools: "maybe" } } }).ok).toBe(false)
+    expect(validateConfig({ defaults: { apps: { exposedTools: "all" } } }).ok).toBe(true)
+  })
+})
+
 describe("defaults.spawn.defaultAgent keys", () => {
   it("registers root and nested with today's built-in defaults", () => {
     expect(findConfigKey("defaults.spawn.defaultAgent.root")).toMatchObject({

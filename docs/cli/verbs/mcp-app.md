@@ -47,8 +47,11 @@ exposes:
   `mcpName` starting with `approval` is refused; the prefix cannot be the first
   segment of a daemon tool name (`app`, `session`, ...); two entries cannot
   compute the same name.
-- **Temporary**: every `exposes.tools` id must also be in `ui.tools`, because
-  the tool-call route only accepts that allowlist today.
+- An id does not need to be in `ui.tools`: the daemon dispatches `exposes.tools`
+  itself, on the tool-call route and on its own `/mcp` gateway (see below). An
+  `exposes.tools` that is not an array is an error, and an explicit `[]` makes
+  `mcp-app` exit 1 (nothing to serve); neither falls back to `ui.tools`.
+- An unknown flag or extra argument is ignored with a stderr warning.
 
 ### `--access`
 
@@ -66,6 +69,28 @@ The app must already be installed (`agentproto app install <dir>`) and declare
 `exposes.tools` or a `ui.tools` allowlist in `APP.md`; `mcp-app` refuses to
 serve an app with neither rather than falling back to exposing every daemon
 tool.
+
+## The daemon `/mcp` gateway
+
+The same `exposes.tools` are registered on the daemon's own `/mcp` gateway as
+`<prefix>_<name>`, right after an `app_install` and without a restart (the
+gateway builds its tool list per request). Per-agent policy:
+
+- `access: read` tools are visible to every caller.
+- `write` and `approve` tools are visible only to a caller whose AGENT.md opted
+  in: `tools: [{ kind: mcp, server: agentproto, allow: [jobkit_leads_upsert] }]`
+  (exact names). The opt-in is stored on the session descriptor, like
+  the deny grants.
+- A deny grant, `denyTools` or an allow subset always wins: the exposed tools are
+  registered on the already-gated server.
+- No id, `mcpName` or computed name starting with `approval` is ever exposed.
+- A second `app_install` that claims a prefix already held by another appId is
+  refused (`exposed-prefix-taken`); reinstalling the same appId is fine.
+- Kill-switch `defaults.apps.exposedTools`: `read` (default), `off` (nothing),
+  `all` (every declared tool for every caller). The `/apps/:appId/tool-call`
+  route honors it too, so `mcp-app --access read,write` needs `all`.
+- In deferred-tools mode these tools are lazy like every non-core tool: they
+  appear through `tool_search`.
 
 ## Daemon dependency
 

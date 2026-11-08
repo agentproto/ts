@@ -71,28 +71,34 @@ The daemon (\`agentproto serve\`) does not need to be running to start this
 process — only to actually dispatch a tool call.
 `
 
-function parseArgs(args: readonly string[]): { appId?: string; access: Set<AppExposedToolAccess>; error?: string } {
+function parseArgs(args: readonly string[]): {
+  appId?: string
+  access: Set<AppExposedToolAccess>
+  warnings: string[]
+  error?: string
+} {
+  const warnings: string[] = []
   let appId: string | undefined
   let accessRaw = "read"
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
     if (a === "--access") {
       const v = args[++i]
-      if (v === undefined) return { access: new Set(), error: "--access needs a value" }
+      if (v === undefined) return { access: new Set(), warnings, error: "--access needs a value" }
       accessRaw = v
     } else if (a.startsWith("--access=")) accessRaw = a.slice("--access=".length)
-    else if (a.startsWith("-")) return { access: new Set(), error: `unknown flag ${a}` }
+    else if (a.startsWith("-")) warnings.push(`ignoring unknown flag ${a}`)
     else if (appId === undefined) appId = a
-    else return { access: new Set(), error: `unexpected argument ${a}` }
+    else warnings.push(`ignoring unexpected argument ${a}`)
   }
   const access = new Set<AppExposedToolAccess>()
   for (const part of accessRaw.split(",")) {
     if (!EXPOSED_TOOL_ACCESS.includes(part as AppExposedToolAccess)) {
-      return { access, error: `--access takes ${EXPOSED_TOOL_ACCESS.join(", ")} (comma-separated), got "${part}"` }
+      return { access, warnings, error: `--access takes ${EXPOSED_TOOL_ACCESS.join(", ")} (comma-separated), got "${part}"` }
     }
     access.add(part as AppExposedToolAccess)
   }
-  return { ...(appId !== undefined ? { appId } : {}), access }
+  return { ...(appId !== undefined ? { appId } : {}), access, warnings }
 }
 
 /** A JSON-Schema object's properties as a zod raw shape; undefined when it is not a flat object schema. */
@@ -122,6 +128,7 @@ export async function runMcpApp(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto mcp-app: ${parsed.error}\n${USAGE}`)
     return 2
   }
+  for (const w of parsed.warnings) process.stderr.write(`agentproto mcp-app: warning: ${w}\n`)
   const appId = parsed.appId
   if (!appId) {
     process.stderr.write(USAGE)
@@ -141,6 +148,14 @@ export async function runMcpApp(args: readonly string[]): Promise<number> {
     exposed = await readDeclaredExposedTools(appDir)
   } catch (err) {
     process.stderr.write(`agentproto mcp-app: invalid \`exposes.tools\`: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+
+  if (exposed?.length === 0) {
+    process.stderr.write(
+      `agentproto mcp-app: app "${appId}" declares \`exposes.tools: []\`, so there is nothing to serve. ` +
+        "List the tools to expose, or drop the `exposes` block to use the `ui.tools` allowlist.\n",
+    )
     return 1
   }
 

@@ -235,3 +235,19 @@ export function toolDenyGrants(tools: readonly ToolRef[], principal = "*"): Gran
   }
   return grants
 }
+
+/**
+ * The MCP names an agent opted into with `{kind: mcp, server: "agentproto",
+ * allow: [...]}`: exact tool names. The daemon's gateway
+ * reads them to decide whether a `write`/`approve` app-exposed tool is
+ * registered for the session. Deny is not handled here (it stays
+ * `toolDenyGrants`, and wins).
+ */
+export function exposedToolOptIn(tools: readonly ToolRef[], server = "agentproto"): string[] {
+  const out: string[] = []
+  for (const item of tools) {
+    if (!isMcp(item) || item.server !== server) continue
+    for (const name of item.allow ?? []) if (!out.includes(name)) out.push(name)
+  }
+  return out
+}
