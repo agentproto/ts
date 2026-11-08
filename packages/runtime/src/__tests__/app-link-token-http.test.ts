@@ -2,7 +2,7 @@
  * AIP-53 link-token scoping over the real HTTP surface: a Telegram-gated
  * link token, once exchanged via `POST /apps/:appId/link-auth`, widens
  * `tunnelBearerAllowed` (http-server.ts) ONLY for its own app's tool-call
- * route and its own session's four read routes — everything else (a
+ * route and its own session's four read routes; everything else (a
  * DIFFERENT session's reads, `/mcp`, `/sessions/:id/kill`, the PTY
  * upgrade) stays exactly as gated as plain `tunnel-bearer-gate.test.ts`
  * already proves for the no-token case.
