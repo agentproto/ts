@@ -71,7 +71,7 @@ export interface PrintArmOptions {
    *  exceptions only; never widens writes. */
   extraReadPaths?: string[]
   /** See `AgentCliStartOptions.fsZones`. */
-  fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[] }
+  fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[]; unreadable?: string[] }
   /**
    * The explicitly requested model id — when set, a wire event that
    * truthfully reports which model the agent ACTUALLY started on (today:

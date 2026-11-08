@@ -687,7 +687,7 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  `commandSandbox: "off"`) and, on claude-code, registers the writable
      *  zones as `additionalDirectories`. Only passed to adapters whose
      *  resolver entry sets `supportsFsZones`. */
-    fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[] }
+    fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[]; unreadable?: string[] }
     /** Don't load the host repo's CLAUDE.md/AGENTS.md above the session cwd
      *  (claude-code: `claudeMdExcludes`). Only passed to adapters whose
      *  resolver entry sets `supportsHostContextIsolation`. */

@@ -51,6 +51,7 @@ import {
 import { isOnDemandService, onDemandServiceState, startOnDemandService } from "./app-service-on-demand.js"
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
+import type { AppReadGrantResolver } from "./app-read-grants.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
 import { resolveMainRepoPath, resolveWorktreeIdentity } from "./worktree-identity.js"
 import { loadWorkspacesConfig } from "./workspaces-config.js"
@@ -1350,6 +1351,8 @@ export interface RegisterAppToolsOptions {
   /** The daemon's own workspace root — hidden from `app_run` sessions (see
    *  `app-boundary.ts`). */
   daemonWorkspace?: string
+  /** Operator-granted read-only paths per app id (`apps.readGrants`). Omitted ⇒ none. */
+  appReadGrants?: AppReadGrantResolver
   /** The daemon's own plain `/mcp` gateway URL — lets an `app_run` session
    *  get the gateway mount `agent_start` gives (scoped to the agent's
    *  declared tools, see `SpawnAgentSessionInput.allowTools`). Omitted ⇒ no
@@ -2742,6 +2745,7 @@ export function registerAppTools(
     app: InstalledApp & {
       dataDir: string
       dirMissing: boolean
+      operatorReadGrants?: string[]
       registryProblems?: string[]
       runs: {
         appRunId: string
@@ -2763,6 +2767,7 @@ export function registerAppTools(
     dataDir: app.dataDir,
     ...(app.source !== undefined ? { source: app.source } : {}),
     ...(app.dirMissing ? { dirMissing: true } : {}),
+    ...(app.operatorReadGrants ? { operatorReadGrants: app.operatorReadGrants } : {}),
     ...(app.registryProblems ? { registryProblems: app.registryProblems } : {}),
     agents: app.agents.map(a => a.id),
     workflows: app.workflows.map(w => w.id),
@@ -2773,7 +2778,7 @@ export function registerAppTools(
   const appListSchema = z.object({})
   type AppListInput = z.infer<typeof appListSchema>
 
-  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string; dirMissing: boolean; registryProblems?: string[] })[]>(server, {
+  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string; dirMissing: boolean; operatorReadGrants?: string[]; registryProblems?: string[] })[]>(server, {
     id: "app_list",
     description: "List installed apps, each with a summary of its app_run history. " +
       "COMPACT BY DEFAULT: each entry keeps appId/name/version/description/" +
@@ -2783,7 +2788,9 @@ export function registerAppTools(
       "installed record including ui/artifact/skill/dev details and the " +
       "full agent/workflow refs. `dirMissing: true` flags an install whose " +
       "`dir` no longer exists on disk (moved worktree, deleted checkout) — " +
-      "its ui panel (if any) serves an error page until reinstalled.",
+      "its ui panel (if any) serves an error page until reinstalled. " +
+      "`operatorReadGrants` lists the extra READ-ONLY paths the operator granted " +
+      "this app in `apps.readGrants` of the daemon config (absent when none).",
     inputSchema: appListSchema,
     handler: async () => {
       const runs = appRegistry.listRuns()
@@ -2793,6 +2800,9 @@ export function registerAppTools(
         ...app,
         dataDir: appDataDir(app),
         dirMissing: !existsSync(app.dir),
+        ...(opts.appReadGrants !== undefined && opts.appReadGrants(app.appId).length > 0
+          ? { operatorReadGrants: [...opts.appReadGrants(app.appId)] }
+          : {}),
         ...(issues.some(i => i.appId === app.appId)
           ? { registryProblems: issues.filter(i => i.appId === app.appId).flatMap(i => [...i.problems]) }
           : {}),
@@ -3046,6 +3056,7 @@ export function registerAppTools(
               app,
               // An operator-chosen cwd outside the app is readable, never writable.
               ...(input.cwd !== undefined ? { extraReadOnly: [input.cwd] } : {}),
+              ...(opts.appReadGrants !== undefined ? { readGrants: opts.appReadGrants(app.appId) } : {}),
               ...(opts.daemonWorkspace !== undefined ? { daemonWorkspace: opts.daemonWorkspace } : {}),
             }),
             ...(spawnPrompt ? { prompt: spawnPrompt } : {}),

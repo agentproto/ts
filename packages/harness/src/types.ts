@@ -1685,6 +1685,7 @@ export interface AgentCliFsZones {
   readOnly: string[]
   writable: string[]
   hidden?: string[]
+  unreadable?: string[]
 }
 
 /**
