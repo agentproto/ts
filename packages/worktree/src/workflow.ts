@@ -28,7 +28,8 @@ export const worktreeAgentInputSchema = z.object({
     .optional()
     .describe("Files written into the worktree before depsCmd runs, e.g. a package-manager config generated for this specific worktree."),
   task: z.string().describe("The prompt sent to the coding agent."),
-  adapter: z.string().optional().describe("Agent adapter slug. Default 'claude-code'."),
+  harness: z.string().optional().describe("Harness slug. Default 'claude-code'."),
+  adapter: z.string().optional().describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
   gateCmd: z.string().describe("Command run inside the worktree to check the agent's work, e.g. 'pnpm test'."),
   deleteBranch: z.boolean().optional().describe("Delete the worktree's branch on cleanup. Default true."),
 })
@@ -74,7 +75,7 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
     {
       kind: "agent",
       id: "code",
-      adapter: (b: Bindings) => input(b).adapter ?? "claude-code",
+      adapter: (b: Bindings) => input(b).harness ?? input(b).adapter ?? "claude-code",
       cwd: (b: Bindings) => (b.steps.provision as { cwd: string }).cwd,
       prompt: (b: Bindings) => input(b).task,
     },

@@ -152,6 +152,13 @@ export interface DefaultsAdapterConfig {
 export interface SpawnDefaultsConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
+  /** Per-harness defaults, keyed by harness slug (canonical). Read through
+   *  {@link harnessDefaultsFor} / {@link harnessDefaultsMap}, never directly:
+   *  they merge in the deprecated `adapters` block. */
+  harnesses?: Record<string, DefaultsAdapterConfig>
+  /** @deprecated Old name of {@link SpawnDefaultsConfig.harnesses}, still
+   *  read (a field set under `harnesses` wins) with a deprecation warning;
+   *  removed in the next major of @agentproto/runtime. */
   adapters?: Record<string, DefaultsAdapterConfig>
   /** Capability bundle ids auto-attached to every spawn — see
    *  {@link DefaultsAdapterConfig.bundles} for the per-adapter union partner. */
@@ -485,12 +492,42 @@ export function forwardedSubaccountAuthInputs(auth: ResolvedSpawnAuthMaterial): 
   }
 }
 
+/**
+ * One harness's defaults: `defaults.harnesses.<slug>` layered over the
+ * deprecated `defaults.adapters.<slug>`, field by field (a field set under
+ * `harnesses` wins; `auth` and the other blocks are replaced whole, not
+ * deep-merged). `undefined` when neither key names the slug.
+ */
+export function harnessDefaultsFor(
+  defaults: Pick<SpawnDefaultsConfig, "harnesses" | "adapters"> | undefined,
+  slug: string,
+): DefaultsAdapterConfig | undefined {
+  const legacy = defaults?.adapters?.[slug]
+  const canonical = defaults?.harnesses?.[slug]
+  if (legacy === undefined) return canonical
+  if (canonical === undefined) return legacy
+  return { ...legacy, ...canonical }
+}
+
+/** Every harness's merged defaults (see {@link harnessDefaultsFor}). */
+export function harnessDefaultsMap(
+  defaults: Pick<SpawnDefaultsConfig, "harnesses" | "adapters"> | undefined,
+): Record<string, DefaultsAdapterConfig> {
+  const slugs = new Set([...Object.keys(defaults?.adapters ?? {}), ...Object.keys(defaults?.harnesses ?? {})])
+  const out: Record<string, DefaultsAdapterConfig> = {}
+  for (const slug of slugs) {
+    const merged = harnessDefaultsFor(defaults, slug)
+    if (merged !== undefined) out[slug] = merged
+  }
+  return out
+}
+
 export function resolveSpawnDefaults(
   defaults: SpawnDefaultsConfig | undefined,
   adapterSlug: string,
   input: ResolveSpawnDefaultsInput,
 ): ResolvedSpawnDefaults {
-  const adapterDefaults = defaults?.adapters?.[adapterSlug]
+  const adapterDefaults = harnessDefaultsFor(defaults, adapterSlug)
 
   const options: Record<string, boolean | number | string> = {
     ...defaults?.options,
@@ -572,7 +609,7 @@ export function resolveBundleDefaults(
   adapterSlug: string,
   input: { bundles?: string[]; daemonMount?: boolean },
 ): ResolvedBundleDefaults {
-  const adapterDefaults = defaults?.adapters?.[adapterSlug]
+  const adapterDefaults = harnessDefaultsFor(defaults, adapterSlug)
   const bundleIds =
     input.bundles !== undefined
       ? input.bundles
@@ -593,7 +630,8 @@ export const BUILTIN_EXECUTOR_CONTEXT_PROFILE: Readonly<Record<string, string>> 
 
 /**
  * Context profile a spawn runs with: the caller's explicit `contextProfile`,
- * else `defaults.adapters.<slug>.contextProfile`, else the built-in executor
+ * else `defaults.harnesses.<slug>.contextProfile` (or the deprecated
+ * `defaults.adapters.<slug>`), else the built-in executor
  * default. Pure — `undefined` means "no profile" (the adapter's full intake).
  */
 export function resolveDefaultContextProfile(input: {
@@ -603,7 +641,7 @@ export function resolveDefaultContextProfile(input: {
   explicit?: string
 }): string | undefined {
   if (input.explicit !== undefined && input.explicit !== "") return input.explicit
-  const configured = input.defaults?.adapters?.[input.adapterSlug]?.contextProfile
+  const configured = harnessDefaultsFor(input.defaults, input.adapterSlug)?.contextProfile
   if (configured !== undefined) return configured === "" || configured === "full" ? undefined : configured
   return input.roleName === "executor" ? BUILTIN_EXECUTOR_CONTEXT_PROFILE[input.adapterSlug] : undefined
 }

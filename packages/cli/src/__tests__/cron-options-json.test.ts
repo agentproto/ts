@@ -65,7 +65,7 @@ describe("agentproto cron add --options-json", () => {
       "add",
       "--schedule",
       "0 */2 * * *",
-      "--adapter",
+      "--harness",
       "pi",
       "--model",
       "openrouter/z-ai/glm-5.3-flash",
@@ -81,7 +81,9 @@ describe("agentproto cron add --options-json", () => {
       action: Record<string, unknown>
     }
     expect(body.action.kind).toBe("agent")
-    expect(body.action.adapter).toBe("pi")
+    expect(body.action.harness).toBe("pi")
+    expect(body.action.adapter).toBeUndefined()
+    expect(stderrChunks.join("")).not.toContain("deprecated")
     expect(body.action.model).toBe("openrouter/z-ai/glm-5.3-flash")
     expect(body.action.cwd).toBe("/tmp/from-flag")
     expect(body.action.prompt).toBe("health check")
@@ -100,7 +102,7 @@ describe("agentproto cron add --options-json", () => {
         "add",
         "--schedule",
         "0 9 * * 1-5",
-        "--adapter",
+        "--harness",
         "pi",
         "--prompt",
         "standup",
@@ -120,7 +122,7 @@ describe("agentproto cron add --options-json", () => {
       "add",
       "--schedule",
       "* * * * *",
-      "--adapter",
+      "--harness",
       "pi",
       "--prompt",
       "x",
@@ -137,7 +139,7 @@ describe("agentproto cron add --options-json", () => {
       "add",
       "--schedule",
       "* * * * *",
-      "--adapter",
+      "--harness",
       "pi",
       "--prompt",
       "x",
@@ -154,7 +156,7 @@ describe("agentproto cron add --options-json", () => {
       "add",
       "--schedule",
       "* * * * *",
-      "--adapter",
+      "--harness",
       "pi",
       "--prompt",
       "x",
@@ -178,6 +180,23 @@ describe("agentproto cron add --options-json", () => {
     ])
     expect(code).toBe(2)
     expect(httpPostJson).not.toHaveBeenCalled()
-    expect(stderrChunks.join("")).toContain("only applies to --adapter")
+    expect(stderrChunks.join("")).toContain("only applies to --harness")
+  })
+
+  it("still accepts the deprecated --adapter, sending harness and warning on stderr", async () => {
+    const code = await runCron([
+      "add",
+      "--schedule",
+      "0 9 * * 1-5",
+      "--adapter",
+      "claude-code",
+      "--prompt",
+      "daily standup",
+    ])
+    expect(code).toBe(0)
+    const body = httpPostJson.mock.calls[0]![1] as { action: Record<string, unknown> }
+    expect(body.action).toMatchObject({ kind: "agent", harness: "claude-code", prompt: "daily standup" })
+    expect(body.action.adapter).toBeUndefined()
+    expect(stderrChunks.join("")).toContain("agentproto cron add: `--adapter` is deprecated and will be removed in the next major of @agentproto/runtime; use `--harness`")
   })
 })

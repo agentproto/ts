@@ -2,7 +2,7 @@
  * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5 + WP6 + WP7 + WP-D.
  *
  * WP7 (judge-gate): a gate may be a judge AGENT instead of a shell command —
- * `gate: { judge: { adapter, model?, prompt, timeoutMs? } }`. When the trigger
+ * `gate: { judge: { harness, model?, prompt, timeoutMs? } }`. When the trigger
  * fires the supervisor spawns a short-lived agent (resolveAgentAdapter →
  * spawnAgent), prompts it with the rubric (+ a minimal context tail of the
  * watched session output), waits for its turn-end on the bus, reads the final
@@ -170,8 +170,12 @@ export interface ShellGateSpec {
  */
 export interface JudgeGateSpec {
   judge: {
-    /** Agent CLI adapter slug used to spawn the judge (e.g. "claude-code"). */
-    adapter: string
+    /** Harness slug used to spawn the judge (e.g. "claude-code"). One of
+     *  `harness` / `adapter` is required; `attachPolicy` mirrors the
+     *  resolved slug into both. */
+    harness?: string
+    /** @deprecated Alias of `harness`; removed in the next major of @agentproto/runtime. */
+    adapter?: string
     /** Optional model identifier forwarded to the adapter. */
     model?: string
     /** The rubric / instructions for the judge. The supervisor appends a
@@ -1188,14 +1192,15 @@ export function createCompletionPolicySupervisor(opts: {
       if (!resolveAgentAdapter) {
         return { passed: false, exitCode: 1, reason: "judge gate not enabled (no adapter resolver)" }
       }
+      const judgeHarness = spec.harness ?? spec.adapter ?? ""
       let resolved
       try {
-        resolved = await resolveAgentAdapter(spec.adapter)
+        resolved = await resolveAgentAdapter(judgeHarness)
       } catch (err) {
         return { passed: false, exitCode: 1, reason: `judge adapter resolve failed: ${err instanceof Error ? err.message : String(err)}` }
       }
       if (!resolved) {
-        return { passed: false, exitCode: 1, reason: `judge adapter '${spec.adapter}' not found` }
+        return { passed: false, exitCode: 1, reason: `judge harness '${judgeHarness}' not found` }
       }
 
       // WP-D: resolve the judge's own billing pin, if requested. Failure here
@@ -1203,7 +1208,7 @@ export function createCompletionPolicySupervisor(opts: {
       let judgeAuth: ResolvedAuthSpec | undefined
       if (spec.access?.profileRef || spec.access?.profileRefs?.length) {
         const authResult = await resolveAccessProfileAuth({
-          adapter: spec.adapter,
+          adapter: judgeHarness,
           ...(spec.access?.profileRef ? { profileRef: spec.access.profileRef } : {}),
           ...(spec.access?.profileRefs?.length ? { profileRefs: spec.access.profileRefs } : {}),
           authDescriptor: resolved.authDescriptor,
@@ -1275,7 +1280,7 @@ export function createCompletionPolicySupervisor(opts: {
           workspaceSlug: "default",
           cwd,
           agentSession,
-          adapterSlug: spec.adapter,
+          adapterSlug: judgeHarness,
           adapterConfigDir: adapterConfigDirFor(judgeSessionId),
           label: `judge:${state.policyId}`,
           // PR #800: groups machine-run gate sessions in the VS Code tree.
@@ -1684,9 +1689,14 @@ export function createCompletionPolicySupervisor(opts: {
     const group = resolveGroup(input)
     if (input.gate && isJudgeGate(input.gate)) {
       const j = input.gate.judge
-      if (typeof j.adapter !== "string" || j.adapter.length === 0) {
-        throw new Error("judge gate requires a non-empty adapter")
+      const judgeHarness = j.harness || j.adapter
+      if (typeof judgeHarness !== "string" || judgeHarness.length === 0) {
+        throw new Error("judge gate requires a non-empty harness")
       }
+      // One resolved slug under both keys: persisted policies and old
+      // readers of `judge.adapter` keep working.
+      j.harness = judgeHarness
+      j.adapter = judgeHarness
       if (typeof j.prompt !== "string" || j.prompt.length === 0) {
         throw new Error("judge gate requires a non-empty prompt")
       }

@@ -334,7 +334,7 @@ describe("cron_create schema — agent action is agent_start's own shape", () =>
     expect(ran.isError).toBe(false)
     expect(JSON.parse(ran.text).result).toEqual({
       ok: true,
-      summary: "spawned session sess_spawned (adapter=claude-code)",
+      summary: "spawned session sess_spawned (harness=claude-code)",
     })
 
     expect(dispatchTool).toHaveBeenCalledTimes(1)

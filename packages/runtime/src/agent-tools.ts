@@ -40,6 +40,7 @@ import type {
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
 import { ROLE_ALIAS_DEPRECATION } from "./agent-ref.js"
+import { adapterDeprecation, conflictingHarnessAlias, patchListResult, resolveHarnessAlias } from "./harness-alias.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "@agentproto/cloud-agent"
 import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
@@ -274,7 +275,7 @@ export const compactAgentStartDescriptor = (
   command: desc.command,
   pid: desc.pid,
   ...(desc.adapterSlug ? { adapterSlug: desc.adapterSlug } : {}),
-  ...(desc.harness ? { harness: desc.harness } : {}),
+  ...((desc.harness ?? desc.adapterSlug) ? { harness: desc.harness ?? desc.adapterSlug } : {}),
   ...(desc.adapterProvider ? { adapterProvider: desc.adapterProvider } : {}),
   ...(desc.model ? { model: desc.model } : {}),
   ...(desc.activeModel ? { activeModel: desc.activeModel } : {}),
@@ -766,8 +767,8 @@ export function registerAgentTools(
       // BINDING item 3) — the lightest-weight harness against a small local
       // model. Lowest precedence: an explicit adapter/harness/preset choice
       // always wins.
-      const adapter =
-        input.adapter ?? input.harness ?? preset?.adapter ?? preset?.harness ?? (input.inference ? "pi" : undefined)
+      const harnessChoice = resolveHarnessAlias(input, preset)
+      const adapter = harnessChoice.harness ?? (input.inference ? "pi" : undefined)
       // AIP-66 `cloud` spawn with no adapter/harness/preset choice: the
       // VENDOR's cloud adapter is resolved inside spawnAgentSession
       // (resolveCloudSpawn) — pass the placeholder its `adapter: string`
@@ -776,7 +777,7 @@ export function registerAgentTools(
       // (`cloud_spawn_refused`, naming the vendor's allowed harnesses).
       if (!adapter && !input.cloud) {
         return {
-          content: [{ type: "text", text: "agent_start: adapter is required unless the selected preset provides one." }],
+          content: [{ type: "text", text: "agent_start: harness is required unless the selected preset provides one." }],
           isError: true,
         }
       }
@@ -902,10 +903,17 @@ export function registerAgentTools(
         },
         {
           ...spawnInput,
-          ...(input.role !== undefined && input.agent === undefined
-            ? { harnessWarnings: [ROLE_ALIAS_DEPRECATION] }
-            : {}),
+          ...((): { harnessWarnings?: string[] } => {
+            const harnessWarnings = [
+              ...(input.role !== undefined && input.agent === undefined ? [ROLE_ALIAS_DEPRECATION] : []),
+              ...harnessChoice.warnings.map(w => `agent_start: ${w}`),
+            ]
+            return harnessWarnings.length > 0 ? { harnessWarnings } : {}
+          })(),
           adapter: adapter ?? CLOUD_ADAPTER_PLACEHOLDER,
+          // Both keys carry the ONE resolved slug, so the spawn core's
+          // `harness ?? adapter` reads and its `adapter` reads agree.
+          ...(adapter ? { harness: adapter } : {}),
           // Auto-stamp the source channel (#session-visibility): when the
           // caller didn't pass an explicit `origin`, fall back to the connecting
           // client's `?origin=` label so a bridge-client spawn (cowork/vscode/
@@ -2128,6 +2136,7 @@ export function registerAgentTools(
     command: s.command,
     cwd: s.cwd,
     adapterSlug: s.adapterSlug,
+    harness: s.harness ?? s.adapterSlug,
     model: s.model,
     busy: s.busy,
     awaitingInput: s.awaitingInput,
@@ -2300,7 +2309,12 @@ export function registerAgentTools(
     }
     return input.harness ?? input.adapter
   }
+  // `harness_list` wraps its rows under the canonical `harnesses` key and
+  // mirrors them under the deprecated `adapters` key for old readers;
+  // `adapter_list` keeps its `adapters` wrapper. Every old name used (the
+  // tool itself, or an `adapter` argument) adds a dated warning.
   const registerAdapterListing = (id: "adapter_list" | "harness_list", description: string, inputSchema: z.ZodType<AdapterListInput>): void => {
+    const canonical = id === "harness_list"
     registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
       id,
       description,
@@ -2308,7 +2322,7 @@ export function registerAgentTools(
       handler: async input => {
         if (!listAgentAdapters) {
           throw new Error(
-            `${id} is not enabled — the daemon was started without ` +
+            `${id} is not enabled: the daemon was started without ` +
               "an adapter lister. Wire `@agentproto/cli`'s " +
               "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
           )
@@ -2319,11 +2333,18 @@ export function registerAgentTools(
       },
       transformers: [
         catchErrors(),
+        patchListResult<AdapterListInput>({
+          ...(canonical ? { from: "harnesses", alias: "adapters" } : {}),
+          warnings: input => [
+            ...(canonical ? [] : [adapterDeprecation("adapter_list", "harness_list")]),
+            ...(canonical && input.adapter !== undefined ? [adapterDeprecation("adapter", "harness")] : []),
+          ],
+        }),
         paginated({
           project: compactAdapterItem,
           keyOf: a => a.slug,
           maxLimit: 200,
-          itemKey: "adapters",
+          itemKey: canonical ? "harnesses" : "adapters",
         }),
       ],
     })
@@ -2342,8 +2363,9 @@ export function registerAgentTools(
       "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
       "KB; page through it with `limit`/`cursor`). Pass `adapter` to scope " +
-      "the listing to one adapter before paging. (Canonical spelling: " +
-      "`harness_list`; kept for older clients and daemons.)",
+      "the listing to one adapter before paging. DEPRECATED: use " +
+      "`harness_list` (rows under `harnesses`); this name is removed in the " +
+      "next major of @agentproto/runtime.",
     adapterListSchema,
   )
   registerAdapterListing(
@@ -2359,8 +2381,9 @@ export function registerAgentTools(
       "`status`, `hint`, `modes`, `modelCount` — pass `full: true` " +
       "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
-      "KB; page through it with `limit`/`cursor`). Pass `harness` (or its " +
-      "legacy alias `adapter`) to scope the listing to one harness before paging.",
+      "KB; page through it with `limit`/`cursor`). Rows come under " +
+      "`harnesses` (`adapters` repeats them, deprecated). Pass `harness` (or " +
+      "its deprecated alias `adapter`) to scope the listing to one harness before paging.",
     harnessListSchema,
   )
 
@@ -2370,44 +2393,83 @@ export function registerAgentTools(
   // with `adapter` + `full: true` returns the same rows, but a runaway model
   // list (opencode is ~700 ids) can still trip the result cap; this tool
   // pages the models themselves.
+  type HarnessModelsInput = { harness?: string; adapter?: string; limit?: number; cursor?: string }
+  const harnessModelsSchema = z.object({
+    harness: z.string().optional().describe("Harness slug whose declared models to list."),
+    adapter: z
+      .string()
+      .optional()
+      .describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
+    ...pageParamsShape,
+  })
   const adapterModelsSchema = z.object({
     adapter: z.string().describe("Adapter slug whose declared models to list."),
     ...pageParamsShape,
   })
-  type AdapterModelsInput = z.infer<typeof adapterModelsSchema>
-
-  registerBuiltinTool<AdapterModelsInput, AdapterModelRow[]>(server, {
-    id: "adapter_models",
-    description: "List the models ONE agent CLI adapter declares, pageable with " +
-      "`limit`/`cursor`. Use this instead of `adapter_list`'s `full: true` when " +
-      "you need a single adapter's model ids but the full manifest could exceed " +
-      "the MCP result cap. Each row carries `id` and, when the manifest states " +
-      "them, `provider`/`mode`.",
-    inputSchema: adapterModelsSchema,
-    handler: async ({ adapter }) => {
-      if (!listAgentAdapters) {
-        throw new Error(
-          "adapter_models is not enabled — the daemon was started without " +
-            "an adapter lister. Wire `@agentproto/cli`'s " +
-            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-        )
-      }
-      const found = (await listAgentAdapters()).find(a => a.slug === adapter)
-      if (!found) throw new Error(`adapter_models: adapter "${adapter}" was not found.`)
-      const detailed = found.modelDetails
-      if (detailed && detailed.length > 0) return detailed
-      return (found.models ?? []).map(id => ({ id }))
-    },
-    transformers: [
-      catchErrors(),
-      paginated({
-        project: (row: AdapterModelRow) => row,
-        keyOf: (row: AdapterModelRow) => row.id,
-        maxLimit: 500,
-        itemKey: "models",
-      }),
-    ],
-  })
+  const registerModelListing = (id: "adapter_models" | "harness_models", description: string, inputSchema: z.ZodType<HarnessModelsInput>): void => {
+    const canonical = id === "harness_models"
+    registerBuiltinTool<HarnessModelsInput, AdapterModelRow[]>(server, {
+      id,
+      description,
+      inputSchema,
+      handler: async input => {
+        if (!listAgentAdapters) {
+          throw new Error(
+            `${id} is not enabled: the daemon was started without ` +
+              "an adapter lister. Wire `@agentproto/cli`'s " +
+              "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+          )
+        }
+        if (conflictingHarnessAlias(input)) {
+          throw new Error(
+            `${id}: received both harness="${input.harness}" and adapter="${input.adapter}": ` +
+              "when both are given they must name the same harness (omit one).",
+          )
+        }
+        const slug = input.harness ?? input.adapter
+        if (!slug) throw new Error(`${id}: \`harness\` is required.`)
+        const found = (await listAgentAdapters()).find(a => a.slug === slug)
+        if (!found) {
+          throw new Error(canonical
+            ? `${id}: harness "${slug}" was not found.`
+            : `${id}: adapter "${slug}" was not found.`)
+        }
+        const detailed = found.modelDetails
+        if (detailed && detailed.length > 0) return detailed
+        return (found.models ?? []).map(id => ({ id }))
+      },
+      transformers: [
+        catchErrors(),
+        patchListResult<HarnessModelsInput>({
+          warnings: input => canonical
+            ? (input.adapter !== undefined ? [adapterDeprecation("adapter", "harness")] : [])
+            : [adapterDeprecation("adapter_models", "harness_models")],
+        }),
+        paginated({
+          project: (row: AdapterModelRow) => row,
+          keyOf: (row: AdapterModelRow) => row.id,
+          maxLimit: 500,
+          itemKey: "models",
+        }),
+      ],
+    })
+  }
+  registerModelListing(
+    "adapter_models",
+    "List the models ONE agent CLI adapter declares, pageable with " +
+      "`limit`/`cursor`. DEPRECATED: use `harness_models` (argument " +
+      "`harness`); this name is removed in the next major of @agentproto/runtime.",
+    adapterModelsSchema,
+  )
+  registerModelListing(
+    "harness_models",
+    "List the models ONE harness declares, pageable with `limit`/`cursor`. " +
+      "Use this instead of `harness_list`'s `full: true` when you need a " +
+      "single harness's model ids but the full manifest could exceed the MCP " +
+      "result cap. Each row carries `id` and, when the manifest states them, " +
+      "`provider`/`mode`. Canonical name of the deprecated `adapter_models`.",
+    harnessModelsSchema,
+  )
 
   // ── harness_capabilities ────────────────────────────────────────
   server.tool(
@@ -2461,58 +2523,79 @@ export function registerAgentTools(
     }
   )
 
-  // ── adapter_install ───────────────────────────────────────────
-  server.tool(
+  // ── harness_install / adapter_install ─────────────────────────
+  // One handler, two names: `harness_install` is canonical, `adapter_install`
+  // is the deprecated spelling and its result carries a dated warning.
+  const registerInstall = (id: "adapter_install" | "harness_install", description: string): void => {
+    const canonical = id === "harness_install"
+    server.tool(
+      id,
+      description,
+      {
+        slug: z
+          .string()
+          .describe(canonical
+            ? "Harness slug to install (e.g. `gemini-cli`, `claude-code`)."
+            : "Adapter slug to install (e.g. `gemini-cli`, `claude-code`)."),
+      },
+      async ({ slug }) => {
+        if (!installAgentAdapter) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `${id} is not enabled: the daemon was started without ` +
+                  "an adapter installer. Wire `@agentproto/cli`'s " +
+                  "`installAdapter` via `createGateway({ installAgentAdapter })`.",
+              },
+            ],
+            isError: true,
+          }
+        }
+        try {
+          const result = await installAgentAdapter(slug)
+          // A failed install is a real DOMAIN result the caller must read
+          // (`ok:false` + `message`), NOT an MCP error: deliberately no
+          // `isError` here so the structured result survives the client's
+          // result-unwrapping (an isError result is turned into a thrown
+          // string, discarding the payload). isError is reserved for the
+          // "not enabled" / thrown-exception faults, below.
+          const body = canonical
+            ? result
+            : { ...result, warnings: [adapterDeprecation("adapter_install", "harness_install")] }
+          return {
+            content: [{ type: "text", text: JSON.stringify(body) }],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${id} failed: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+    )
+  }
+  registerInstall(
     "adapter_install",
-    "Install an agent CLI adapter (harness) by slug that `adapter_list` " +
-      "reports as not-yet-`ready` — both acp-catalog CLIs (`npm i -g " +
-      "<package>`, e.g. gemini-cli) and first-party workspace adapters " +
-      "(the manifest install pipeline). Returns the outcome + the adapter's " +
+    "Install an agent CLI adapter (harness) by slug. DEPRECATED: use " +
+      "`harness_install` (same argument, same result); this name is removed " +
+      "in the next major of @agentproto/runtime.",
+  )
+  registerInstall(
+    "harness_install",
+    "Install a harness (agent CLI) by slug that `harness_list` " +
+      "reports as not-yet-`ready`: both acp-catalog CLIs (`npm i -g " +
+      "<package>`, e.g. gemini-cli) and first-party workspace harnesses " +
+      "(the manifest install pipeline). Returns the outcome + the harness's " +
       "re-read status so a UI can refresh a row. Ordinary install failures " +
-      "come back as `ok:false` (not an error), so call it and read the result.",
-    {
-      slug: z
-        .string()
-        .describe("Adapter slug to install (e.g. `gemini-cli`, `claude-code`)."),
-    },
-    async ({ slug }) => {
-      if (!installAgentAdapter) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "adapter_install is not enabled — the daemon was started without " +
-                "an adapter installer. Wire `@agentproto/cli`'s " +
-                "`installAdapter` via `createGateway({ installAgentAdapter })`.",
-            },
-          ],
-          isError: true,
-        }
-      }
-      try {
-        const result = await installAgentAdapter(slug)
-        // A failed install is a real DOMAIN result the caller must read
-        // (`ok:false` + `message`), NOT an MCP error — deliberately no
-        // `isError` here so the structured result survives the client's
-        // result-unwrapping (an isError result is turned into a thrown
-        // string, discarding the payload). isError is reserved for the
-        // "not enabled" / thrown-exception faults, below.
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `adapter_install failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
+      "come back as `ok:false` (not an error), so call it and read the result. " +
+      "Canonical name of the deprecated `adapter_install`.",
   )
 
   // ── catalog_models ────────────────────────────────────────────
@@ -2544,7 +2627,11 @@ export function registerAgentTools(
     adapterModes: e.adapterModes,
   })
   const catalogModelsSchema = z.object({
-    adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
+    harness: z.string().optional().describe("Keep only routes reachable via this harness slug."),
+    adapter: z
+      .string()
+      .optional()
+      .describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
     vendor: z.string().optional().describe("Keep only this vendor's entry."),
     route: z.string().optional().describe("Keep only routes with this route id."),
     runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
@@ -2575,8 +2662,9 @@ export function registerAgentTools(
             "`createGateway({ listCatalogModels })`.",
         )
       }
+      const harness = input.harness ?? input.adapter
       const catalog = await listCatalogModels({
-        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...(harness ? { adapter: harness } : {}),
         ...(input.vendor ? { vendor: input.vendor } : {}),
         ...(input.route ? { route: input.route } : {}),
         ...(input.runnableOnly ? { runnableOnly: true } : {}),
@@ -2592,6 +2680,9 @@ export function registerAgentTools(
     },
     transformers: [
       catchErrors(),
+      patchListResult<CatalogModelsInput>({
+        warnings: input => (input.adapter !== undefined ? [adapterDeprecation("adapter", "harness")] : []),
+      }),
       paginated({
         project: compactCatalogRouteItem,
         maxLimit: 200,
@@ -2751,9 +2842,12 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
             "Accepts either `sessionId` or its alias `id`.",
         ),
       id: sessionIdAliasField,
+      harness: z.string().optional().describe(
+        "Override harness slug (e.g. 'claude-code', 'hermes') when the session " +
+          "is not in the registry. Required when passing a raw harness-native id."
+      ),
       adapter: z.string().optional().describe(
-        "Override adapter slug (e.g. 'claude-code', 'hermes') when the session " +
-          "is not in the registry. Required when passing a raw adapter-native id."
+        "Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."
       ),
       cwd: z.string().optional().describe(
         "Override cwd (absolute path) — required for claude-code when the session " +
@@ -2777,14 +2871,19 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
       const result = await doExport({
         sessionId,
         registry: ops.registry,
-        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...((input.harness ?? input.adapter) ? { adapter: input.harness ?? input.adapter } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.format ? { format: input.format } : {}),
         ...(input.source ? { source: input.source } : {}),
       })
       const isError = result.content.startsWith("Error:")
       return {
-        content: [{ type: "text" as const, text: result.content }],
+        content: [
+          { type: "text" as const, text: result.content },
+          ...(input.adapter !== undefined
+            ? [{ type: "text" as const, text: `warning: agent_export: ${adapterDeprecation("adapter", "harness")}` }]
+            : []),
+        ],
         ...(isError ? { isError: true as const } : {}),
       }
     },

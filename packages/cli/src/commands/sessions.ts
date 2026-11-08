@@ -63,6 +63,7 @@ import {
   humaniseDelta,
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
+import { harnessFlag } from "../util/harness-flag.js"
 import { waitForPolicy } from "./_policy-wait.js"
 import {
   StatsFlagError,
@@ -168,9 +169,10 @@ Usage:
                                             [--label <text>] [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
   agentproto sessions export <id-or-name> [--json] [-o|--output <file>]
-                             [--source auto|native|daemon] [--adapter <name>]
+                             [--source auto|native|daemon] [--harness <name>]
   agentproto sessions story <id-or-name> [--json] [--no-color]
-                             [--source auto|native|daemon] [--adapter <name>]
+                             [--source auto|native|daemon] [--harness <name>]
+                             (--adapter is a deprecated alias of --harness)
   agentproto sessions find <query> [--status <status>] [--limit N] [--json]
                              (case-insensitive match on id prefix, label,
                               title, cwd or workspace slug; reads the per-session
@@ -1166,7 +1168,7 @@ async function runStart(args: readonly string[]): Promise<number> {
   }
 
   const body: Record<string, unknown> = {}
-  if (slug) body.adapter = slug
+  if (slug) body.harness = slug
   if (values.preset) body.presetId = values.preset
   // Default cwd to the shell directory (like git/npm) when neither --cwd nor
   // --workspace is given, instead of silently using the daemon active
@@ -1563,7 +1565,7 @@ async function runShow(args: readonly string[]): Promise<number> {
   const header = [
     `${desc.id}${name ? `  ${name}` : ""}`,
     `  status:   ${desc.status}${desc.endedReason ? ` (${desc.endedReason})` : ""}`,
-    `  kind:     ${desc.kind}${desc.adapterSlug ? ` · ${desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
+    `  kind:     ${desc.kind}${(desc.harness ?? desc.adapterSlug) ? ` · ${desc.harness ?? desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
     ...(desc.provisioning
       ? [`  provision: ${provisioningLabel(desc.provisioning)} (state ${desc.provisioning.state}, phase ${desc.provisioning.phase})`]
       : []),
@@ -3672,6 +3674,7 @@ async function runExport(args: readonly string[]): Promise<number> {
     options: {
       json: { type: "boolean" },
       output: { type: "string", short: "o" },
+      harness: { type: "string" },
       adapter: { type: "string" },
       cwd: { type: "string" },
       source: { type: "string" },
@@ -3708,7 +3711,8 @@ async function runExport(args: readonly string[]): Promise<number> {
 
   const fmt = values.json ? "json" : "markdown"
   const qs = new URLSearchParams({ format: fmt })
-  if (values.adapter) qs.set("adapter", values.adapter)
+  const harness = harnessFlag(values, "agentproto sessions export")
+  if (harness) qs.set("harness", harness)
   if (values.cwd) qs.set("cwd", values.cwd)
   if (values.source) qs.set("source", values.source)
 
@@ -3765,6 +3769,7 @@ async function runStory(args: readonly string[]): Promise<number> {
     strict: true,
     options: {
       json: { type: "boolean" },
+      harness: { type: "string" },
       adapter: { type: "string" },
       cwd: { type: "string" },
       source: { type: "string" },
@@ -3801,7 +3806,8 @@ async function runStory(args: readonly string[]): Promise<number> {
   const endpoint = report.found
 
   const qs = new URLSearchParams({ format: "json" })
-  if (values.adapter) qs.set("adapter", values.adapter)
+  const harness = harnessFlag(values, "agentproto sessions story")
+  if (harness) qs.set("harness", harness)
   if (values.cwd) qs.set("cwd", values.cwd)
   if (values.source) qs.set("source", values.source)
 

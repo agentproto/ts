@@ -222,7 +222,7 @@ subprocess):
 ```
 worktree-agent run \
   --repo <abs repo root> --slug <id> --task "<prompt>" --gate "<check cmd>" \
-  [--base origin/main] [--adapter claude-code] [--deps-cmd "pnpm install --prefer-offline"] \
+  [--base origin/main] [--harness claude-code] [--deps-cmd "pnpm install --prefer-offline"] \
   [--copy-glob <glob>]... [--no-cleanup] [--yes]
 ```
 

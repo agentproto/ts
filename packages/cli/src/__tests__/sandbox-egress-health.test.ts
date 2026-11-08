@@ -88,14 +88,15 @@ describe("agentproto sandbox egress-health", () => {
       ],
     }
     const { d, get, post } = deps({ status: 200, body: probe })
-    const code = await runSandbox(["egress-health", "--probe", "opencode/big-pickle", "--adapter", "opencode"], undefined, d)
+    const code = await runSandbox(["egress-health", "--probe", "opencode/big-pickle", "--harness", "opencode"], undefined, d)
     expect(code).toBe(1)
     expect(get).not.toHaveBeenCalled()
     expect(post).toHaveBeenCalledWith(
       "http://127.0.0.1:18790/sandboxes/egress-health/probe",
-      { model: "opencode/big-pickle", adapter: "opencode" },
+      { model: "opencode/big-pickle", harness: "opencode" },
       "tok",
     )
+    expect(cap.err()).not.toContain("deprecated")
     expect(cap.out()).toMatch(/a\s+203\.0\.113\.1\s+OK\s+answered \(cleared 1\)/)
     expect(cap.out()).toMatch(/b\s+203\.0\.113\.2\s+KO/)
   })
@@ -115,6 +116,7 @@ describe("agentproto sandbox egress-health", () => {
   it("rejects bad flag combinations with exit 2 before contacting the daemon", async () => {
     const { d, get, post } = deps({ status: 200, body: report })
     expect(await runSandbox(["egress-health", "--adapter", "opencode"], undefined, d)).toBe(2)
+    expect(await runSandbox(["egress-health", "--harness", "opencode"], undefined, d)).toBe(2)
     expect(await runSandbox(["egress-health", "--probe", "m", "--model", "m"], undefined, d)).toBe(2)
     expect(await runSandbox(["egress-health", "--bogus"], undefined, d)).toBe(2)
     expect(get).not.toHaveBeenCalled()
@@ -132,5 +134,13 @@ describe("agentproto sandbox egress-health", () => {
     const none: SandboxExecCliDeps = { discover: async () => ({ found: null, stale: [] }) as never }
     expect(await runSandbox(["egress-health"], undefined, none)).toBe(SANDBOX_EXEC_INFRA_EXIT)
     expect(cap.err()).toContain("no live daemon found")
+  })
+
+  it("--probe still accepts the deprecated --adapter, sending harness and warning on stderr", async () => {
+    const probe = { ok: true, provider: "computer", model: "m", adapter: "opencode", results: [] }
+    const { d, post } = deps({ status: 200, body: probe })
+    await runSandbox(["egress-health", "--probe", "m", "--adapter", "opencode"], undefined, d)
+    expect(post.mock.calls[0]?.[1]).toEqual({ model: "m", harness: "opencode" })
+    expect(cap.err()).toContain("agentproto sandbox egress-health: `--adapter` is deprecated and will be removed in the next major of @agentproto/runtime; use `--harness`")
   })
 })

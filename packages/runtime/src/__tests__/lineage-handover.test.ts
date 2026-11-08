@@ -296,7 +296,7 @@ describe("lineage handover - `agent_start.succeeds`", () => {
     try {
       const res = await h.client.callTool({
         name: "agent_start",
-        arguments: { adapter: "mock-adapter", cwd: "/tmp", succeeds: brain.id, label: "brain-2" },
+        arguments: { harness: "mock-adapter", cwd: "/tmp", succeeds: brain.id, label: "brain-2" },
       })
       expect(isError(res)).toBe(false)
       const body = JSON.parse(textOf(res))
@@ -336,7 +336,7 @@ describe("lineage handover - `agent_start.succeeds`", () => {
     try {
       const res = await stranger.client.callTool({
         name: "agent_start",
-        arguments: { adapter: "mock-adapter", cwd: "/tmp", succeeds: brain.id },
+        arguments: { harness: "mock-adapter", cwd: "/tmp", succeeds: brain.id },
       })
       expect(isError(res)).toBe(true)
       expect(textOf(res)).toContain("succeeds")
@@ -359,7 +359,7 @@ describe("lineage handover - `agent_start.succeeds`", () => {
     try {
       const res = await h.client.callTool({
         name: "agent_start",
-        arguments: { adapter: "mock-adapter", cwd: "/tmp", succeeds: brain.id },
+        arguments: { harness: "mock-adapter", cwd: "/tmp", succeeds: brain.id },
       })
       expect(isError(res)).toBe(false)
       const body = JSON.parse(textOf(res))
@@ -621,7 +621,7 @@ describe("lineage handover - tree integrity", () => {
     try {
       const res = await h.client.callTool({
         name: "agent_start",
-        arguments: { adapter: "mock-adapter", cwd: "/tmp", succeeds: brain.id },
+        arguments: { harness: "mock-adapter", cwd: "/tmp", succeeds: brain.id },
       })
       expect(isError(res)).toBe(false)
       const body = JSON.parse(textOf(res))

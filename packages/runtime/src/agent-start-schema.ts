@@ -104,18 +104,20 @@ export const mcpServerMountsOverrideSchema = z
   })
 
 export const agentStartInputShape = {
+  harness: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `Harness slug (e.g. 'claude-code', 'hermes'); omit when \`presetId\` supplies one.`
+    ),
   adapter: z
     .string()
     .min(1)
     .optional()
     .describe(
-      `Adapter slug (e.g. 'claude-code', 'hermes'); omit when \`presetId\` supplies one.`
+      `Deprecated alias of \`harness\` (same values); removed in the next major of @agentproto/runtime. Using it adds a warning.`
     ),
-  harness: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(`Alias for \`adapter\` — same values, whichever your caller produces.`),
   presetId: z
     .string()
     .min(1)

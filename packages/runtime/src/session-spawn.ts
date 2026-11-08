@@ -73,6 +73,7 @@ import {
   resolveBundleDefaults,
   resolveDefaultContextProfile,
   type SpawnDefaultsConfig,
+  harnessDefaultsFor,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
   type AuthEcho,
@@ -4624,7 +4625,7 @@ async function spawnAgentSessionOnce(
     // The layers are each valid alone but can conflict once layered key by
     // key (a request's continueFreshAtPct under the daemon's compactAtPct):
     // a 400 that says which layer sets what, never a 500.
-    const adapterDefaults = configDefaults?.adapters?.[input.adapter]
+    const adapterDefaults = harnessDefaultsFor(configDefaults, input.adapter)
     return {
       ok: false,
       code: "invalid_context_settings",
@@ -4637,7 +4638,7 @@ async function spawnAgentSessionOnce(
             block: layerContextSettings(configDefaults?.contextContinuity, configDefaults?.contextSettings),
           },
           {
-            name: `adapter ${input.adapter}`,
+            name: `harness ${input.adapter}`,
             block: layerContextSettings(adapterDefaults?.contextContinuity, adapterDefaults?.contextSettings),
           },
           { name: "request", block: layerContextSettings(input.contextContinuity, input.contextSettings) },

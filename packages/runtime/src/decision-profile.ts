@@ -43,7 +43,8 @@ export type DecisionEntitlement = "free-only" | "subscription"
 export interface DecisionEscalationTarget {
   /** A harness/user preset id (resolved through the existing preset stores). */
   readonly preset?: string
-  /** Or an explicit adapter + model (+ auth profile). */
+  /** Or an explicit harness + model (+ auth profile). Internal key; the
+   *  input spells it `harness` (see {@link DecisionProfileInput}). */
   readonly adapter?: string
   readonly model?: string
   readonly profileRef?: string
@@ -100,7 +101,9 @@ const PROFILE_ALIASES: Readonly<Record<string, DecisionProfileId>> = {
 export interface DecisionProfileInput {
   readonly profile?: string
   readonly jev?: boolean
-  readonly escalation?: DecisionEscalationTarget & { readonly timeoutMs?: number }
+  /** `harness` is canonical; `adapter` (from the target type) is its
+   *  deprecated alias, and `harness` wins when both are set. */
+  readonly escalation?: DecisionEscalationTarget & { readonly harness?: string; readonly timeoutMs?: number }
   readonly reviewTimeoutMs?: number
 }
 
@@ -123,7 +126,7 @@ export function resolveExecProfile(
   const target: DecisionEscalationTarget = e
     ? {
         ...(e.preset !== undefined ? { preset: e.preset } : {}),
-        ...(e.adapter !== undefined ? { adapter: e.adapter } : {}),
+        ...((e.harness ?? e.adapter) !== undefined ? { adapter: e.harness ?? e.adapter } : {}),
         ...(e.model !== undefined ? { model: e.model } : {}),
         ...(e.profileRef !== undefined ? { profileRef: e.profileRef } : {}),
         ...(e.roleDefault !== undefined ? { roleDefault: e.roleDefault } : {}),
@@ -305,7 +308,7 @@ export async function resolveAndValidateTarget(
   }
 
   const user = fields.preset as (UserPreset & Record<string, unknown>) | undefined
-  const adapter = fields.adapter ?? user?.adapter ?? user?.harness
+  const adapter = fields.adapter ?? user?.harness ?? user?.adapter
   const model = reviewerModel(fields)
   const verdict = validateSpawnTarget(profile, {
     adapter,

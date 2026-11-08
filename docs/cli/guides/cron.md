@@ -11,7 +11,7 @@ Status: Stable
 ## How it works
 
 - Jobs persist to `~/.agentproto/cron-jobs.json` and survive daemon restarts.
-- Exactly one action kind per job: `--adapter` spawns a brand-new agent session
+- Exactly one action kind per job: `--harness` spawns a brand-new agent session
   and prompts it, `--command` runs an allowlisted shell command, and
   `--target-session` re-prompts an existing session in place (a session id, or
   `agent:<label>` resolved to a session at fire time).
@@ -30,7 +30,7 @@ Requires a running daemon ([`serve`](../verbs/serve.md) or
 
 ```bash
 agentproto cron add --schedule "0 9 * * 1-5" \
-  --adapter claude-code \
+  --harness claude-code \
   --prompt "Summarize what changed in this repo since yesterday and flag anything that needs me." \
   --label "morning-brief"
 ```
@@ -44,7 +44,7 @@ The flags you will actually touch (verified against `cron add --help`):
 | Flag | What it does |
 |------|--------------|
 | `--schedule <expr>` | Required. 5-field cron expression, local time. |
-| `--adapter <slug>` + `--prompt <text>` | Spawn a fresh agent session each fire. |
+| `--harness <slug>` + `--prompt <text>` (`--adapter` is a deprecated alias) | Spawn a fresh agent session each fire. |
 | `--command <cmd>` + `--args <arg>` | Run an allowlisted shell command (repeat `--args` for more). |
 | `--target-session <id>` + `--prompt <text>` | Re-prompt a session in place (id or `agent:<label>`); no new session is spawned. |
 | `--label <text>` | Human-readable name shown by `cron list`. |

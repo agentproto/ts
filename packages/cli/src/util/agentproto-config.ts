@@ -25,6 +25,9 @@ export interface AdapterDefaults {
 export interface AgentprotoConfig {
   adapters?: string[]
   defaults?: {
+    /** Per-harness defaults (canonical). */
+    harnesses?: Record<string, AdapterDefaults>
+    /** @deprecated Old name of `harnesses`, still read as a fallback. */
     adapters?: Record<string, AdapterDefaults>
     [key: string]: unknown
   }
@@ -81,10 +84,11 @@ export async function removeAdapterFromConfig(pkg: string): Promise<void> {
 }
 
 /**
- * Write `defaults.adapters.<slug>.auth.mode`, preserving any other keys the
+ * Write `defaults.harnesses.<slug>.auth.mode`, preserving any other keys the
  * operator already set on that block. With `onlyIfMissing`, an existing
- * `auth` block is left untouched — so an explicit subscription choice is
- * never silently flipped to api-key.
+ * `auth` block (under `harnesses`, or the deprecated `adapters` key) is left
+ * untouched: so an explicit subscription choice is never silently flipped
+ * to api-key.
  *
  * Returns true when the file changed.
  */
@@ -95,11 +99,19 @@ export async function setAdapterAuthMode(
 ): Promise<boolean> {
   const cfg = await loadAgentprotoConfig()
   const defaults = (cfg.defaults ??= {})
-  const adapters = (defaults.adapters ??= {})
-  const entry = (adapters[slug] ??= {})
-  if (opts.onlyIfMissing && entry.auth !== undefined) return false
-  if (entry.auth?.mode === mode) return false
-  entry.auth = { ...(entry.auth ?? {}), mode }
+  const legacyAuth = defaults.adapters?.[slug]?.auth
+  const harnesses = (defaults.harnesses ??= {})
+  const entry = (harnesses[slug] ??= {})
+  const currentAuth = entry.auth ?? legacyAuth
+  if (opts.onlyIfMissing && currentAuth !== undefined) {
+    if (Object.keys(entry).length === 0) delete harnesses[slug]
+    if (Object.keys(harnesses).length === 0) delete defaults.harnesses
+    return false
+  }
+  if (currentAuth?.mode === mode) return false
+  // `auth` blocks replace whole across the two keys, so carry the legacy
+  // block's other fields over rather than dropping them.
+  entry.auth = { ...(currentAuth ?? {}), mode }
   await saveAgentprotoConfig(cfg)
   return true
 }

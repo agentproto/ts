@@ -40,7 +40,16 @@ function raw(result: unknown): Record<string, unknown> {
 }
 
 function rows(result: unknown): unknown[] {
-  return raw(result).adapters as unknown[]
+  const body = raw(result)
+  return (body.harnesses ?? body.adapters) as unknown[]
+}
+
+/** The listing body without the deprecation `warnings` (adapter_list) and
+ *  without the deprecated `adapters` mirror (harness_list), so the two
+ *  tools' rows compare as equal. */
+function listing(result: unknown): Record<string, unknown> {
+  const { warnings: _w, adapters, harnesses, ...rest } = raw(result)
+  return { ...rest, rows: harnesses ?? adapters }
 }
 
 function isError(result: unknown): boolean {
@@ -75,13 +84,18 @@ describe("harness_list", () => {
     await h.close()
   })
 
-  it("is equivalent to adapter_list: same compact rows, same { adapters } envelope", async () => {
+  it("is equivalent to adapter_list: same compact rows, under `harnesses` with a deprecated `adapters` mirror", async () => {
     const h = await harness(async () => THREE)
     const canonical = await h.client.callTool({ name: "harness_list", arguments: {} })
     const legacy = await h.client.callTool({ name: "adapter_list", arguments: {} })
-    expect(raw(canonical)).toEqual(raw(legacy))
-    expect(raw(canonical)).toEqual({
-      adapters: THREE.map(a => ({
+    expect(listing(canonical)).toEqual(listing(legacy))
+    expect(raw(canonical).adapters).toEqual(raw(canonical).harnesses)
+    expect(raw(canonical).warnings).toBeUndefined()
+    expect(raw(legacy).warnings).toEqual([
+      "`adapter_list` is deprecated and will be removed in the next major of @agentproto/runtime; use `harness_list`",
+    ])
+    expect(listing(canonical)).toEqual({
+      rows: THREE.map(a => ({
         slug: a.slug,
         name: a.name,
         version: a.version,
@@ -96,10 +110,10 @@ describe("harness_list", () => {
 
   it("is equivalent on the full / compact:false escape hatches", async () => {
     const h = await harness(async () => THREE)
-    expect(raw(await h.client.callTool({ name: "harness_list", arguments: { full: true } })))
-      .toEqual(raw(await h.client.callTool({ name: "adapter_list", arguments: { full: true } })))
-    expect(raw(await h.client.callTool({ name: "harness_list", arguments: { compact: false } })))
-      .toEqual(raw(await h.client.callTool({ name: "adapter_list", arguments: { compact: false } })))
+    expect(listing(await h.client.callTool({ name: "harness_list", arguments: { full: true } })))
+      .toEqual(listing(await h.client.callTool({ name: "adapter_list", arguments: { full: true } })))
+    expect(listing(await h.client.callTool({ name: "harness_list", arguments: { compact: false } })))
+      .toEqual(listing(await h.client.callTool({ name: "adapter_list", arguments: { compact: false } })))
     await h.close()
   })
 
@@ -128,7 +142,7 @@ describe("harness_list", () => {
     expect(text).toMatch(/harness="claude-code"/)
     expect(text).toMatch(/adapter="aider"/)
     // No silent fallback: the conflicting call resolves no rows at all.
-    expect(text).not.toMatch(/"adapters"/)
+    expect(text).not.toMatch(/"adapters"|"harnesses"/)
     await h.close()
   })
 
@@ -178,15 +192,15 @@ describe("harness_list", () => {
 
     const compact = raw(await h.client.callTool({ name: "harness_list", arguments: {} }))
     expect(compact.truncated).toBeUndefined()
-    expect((compact.adapters as unknown[]).length).toBe(2)
-    expect((compact.adapters as Array<{ modelCount: number }>)[0]!.modelCount).toBe(20_000)
+    expect((compact.harnesses as unknown[]).length).toBe(2)
+    expect((compact.harnesses as Array<{ modelCount: number }>)[0]!.modelCount).toBe(20_000)
 
     const full = raw(await h.client.callTool({ name: "harness_list", arguments: { full: true } }))
     expect(full.truncated).toBe(true)
     expect(full.totalBytes as number).toBeGreaterThan(100_000)
 
     const legacyFull = raw(await h.client.callTool({ name: "adapter_list", arguments: { full: true } }))
-    expect(full).toEqual(legacyFull)
+    expect(legacyFull.truncated).toBe(true)
     await h.close()
   })
 })

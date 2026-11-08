@@ -103,6 +103,7 @@ import {
   setAdapterAuthMode,
 } from "../util/agentproto-config.js"
 import { discoverDaemon } from "./_daemon-helpers.js"
+import { harnessFlags } from "../util/harness-flag.js"
 import { describeExpiry, profileStatuses } from "../reauth/auth-status.js"
 import { runAuthReauth } from "../reauth/run.js"
 
@@ -207,7 +208,8 @@ Examples:
 
   agentproto auth provider set anthropic sk-ant-…
   agentproto auth provider set openrouter sk-or-… --base-url https://…
-  agentproto auth provider set anthropic sk-ant-… --adapter claude-code
+  agentproto auth provider set anthropic sk-ant-… --harness claude-code
+      (--adapter <slug> is a deprecated alias of --harness)
   agentproto auth provider list [--json]
   agentproto auth provider rm openai
 
@@ -230,15 +232,16 @@ reach the provider. Explicit env (FOO_API_KEY=… serve) always wins.
 
 Usage:
   agentproto auth provider set <provider> <api-key> [--base-url <url>]
-                             [--adapter <slug>...]
+                             [--harness <slug>...]
   agentproto auth provider list [--json]
   agentproto auth provider rm  <provider>
 
-\`set\` also opts the matching adapter(s) into api-key billing (writes
-\`defaults.adapters.<slug>.auth.mode\`) and asks a running daemon to reload the
+\`set\` also opts the matching harness(es) into api-key billing (writes
+\`defaults.harnesses.<slug>.auth.mode\`) and asks a running daemon to reload the
 provider store, so no manual JSON edit or daemon restart is required. Without
---adapter, enabled adapters whose declared provider matches are updated, plus
-the canonical adapter for anthropic/openai/google/xai.
+--harness, enabled harnesses whose declared provider matches are updated, plus
+the canonical harness for anthropic/openai/google/xai. --adapter is a
+deprecated alias of --harness.
 
 Known providers (env var): ${Object.entries(PROVIDER_ENV_VARS)
   .map(([p, e]) => {
@@ -286,6 +289,7 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
     allowPositionals: true,
     options: {
       "base-url": { type: "string" },
+      harness: { type: "string", multiple: true },
       adapter: { type: "string", multiple: true },
     },
   })
@@ -308,7 +312,7 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
 
   const explicit = [
     ...new Set(
-      (values.adapter ?? [])
+      harnessFlags(values, "agentproto auth provider set")
         .flatMap(value => value.split(","))
         .map(value => value.trim())
         .filter(Boolean)
@@ -332,13 +336,13 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
     if (changed.length > 0) {
       process.stdout.write(
         `  ✓ api-key auth enabled for ${changed.join(", ")} ` +
-          `(defaults.adapters.<slug>.auth.mode)\n`,
+          `(defaults.harnesses.<slug>.auth.mode)\n`,
       )
     }
     if (kept.length > 0) {
       process.stdout.write(
         `  kept the existing auth mode for ${kept.join(", ")} ` +
-          `(delete its defaults.adapters.<slug>.auth block to switch)\n`,
+          `(delete its defaults.harnesses.<slug>.auth block to switch)\n`,
       )
     }
   }
@@ -398,7 +402,7 @@ function catalogSlugForAdapterId(id: string): string | undefined {
 /**
  * Which adapters should receive the api-key auth block.
  *
- * Explicit `--adapter` slugs are always honored. Otherwise we look at the
+ * Explicit `--harness` slugs are always honored. Otherwise we look at the
  * adapters already enabled in config, resolve each, and keep the ones whose
  * declared `provider` matches. If that yields nothing (fresh machine, auth
  * before install), fall back to the canonical adapter map above.

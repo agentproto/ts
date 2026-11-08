@@ -9,16 +9,19 @@ This doc holds the field-level detail cut from the tool's schema to keep
 `Details: tool_help {name:"agent_start", topic:"worktree"}` — pass that
 `topic` to get just one section, or omit it for the whole doc.
 
-## adapter
-
-Adapter slug — one of the installed `@agentproto/adapter-*` packages (e.g.
-'claude-code', 'hermes', 'aider'). Omit only when `presetId` names a saved
-preset with an adapter.
-
 ## harness
 
-Canonical harness slug — alias for `adapter`. Accepts the same values; use
-whichever field your caller produces.
+Harness slug: one of the installed harnesses (`harness_list`; packages
+`@agentproto/adapter-*`, e.g. 'claude-code', 'hermes', 'aider'). Omit only
+when `presetId` names a saved preset with a harness. Resolution order:
+`harness ?? adapter ?? preset.harness ?? preset.adapter`.
+
+## adapter
+
+Deprecated alias of `harness`: same values, and `harness` wins when both are
+set. Using it adds a warning to the result's `warnings` (and a
+`session:harness-warning` event): "`adapter` is deprecated and will be
+removed in the next major of @agentproto/runtime; use `harness`".
 
 ## presetId
 

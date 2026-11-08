@@ -491,7 +491,7 @@ describe("CronScheduler", () => {
 
       const result = await scheduler.run(job.id)
 
-      expect(result).toEqual({ ok: true, summary: "spawned session sess_bypass (adapter=mock)" })
+      expect(result).toEqual({ ok: true, summary: "spawned session sess_bypass (harness=mock)" })
       expect(dispatchTool).toHaveBeenCalledOnce()
       expect(dispatchTool).toHaveBeenCalledWith("agent_start", {
         adapter: "mock",

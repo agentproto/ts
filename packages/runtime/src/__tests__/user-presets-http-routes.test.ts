@@ -239,7 +239,7 @@ describe("user-preset (favorite) authoring — REST routes", () => {
         recent?: RecentSpawnConfigShape[]
       }
       expect(withFlag.recent).toEqual([
-        { adapter: "hermes", model: "deepseek", cwd: "/tmp/a", recent: true },
+        { harness: "hermes", adapter: "hermes", model: "deepseek", cwd: "/tmp/a", recent: true },
       ])
     }, undefined, sessions)
   })

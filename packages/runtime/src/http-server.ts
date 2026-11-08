@@ -324,6 +324,7 @@ import { parsePostureInput } from "./canonical-posture.js"
 import { clerkHooksInputSchema } from "@agentproto/clerk"
 import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import { ROLE_ALIAS_DEPRECATION } from "./agent-ref.js"
+import { ADAPTER_FIELD_DEPRECATION, adapterDeprecation } from "./harness-alias.js"
 import {
   deleteUserPreset,
   deriveRecentSpawnConfigs,
@@ -4999,7 +5000,11 @@ export async function startHttpServer(
           return
         }
 
-        if (path === "/adapters" && req.method === "GET") {
+        // `GET /harnesses` is canonical (`{ harnesses }`, plus the same rows
+        // under the deprecated `adapters` key for old readers); `GET
+        // /adapters` is the deprecated spelling and carries a dated warning.
+        if ((path === "/harnesses" || path === "/adapters") && req.method === "GET") {
+          const canonical = path === "/harnesses"
           if (!opts.listAgentAdapters) {
             res.writeHead(501, { "content-type": "application/json" })
             res.end(
@@ -5015,7 +5020,9 @@ export async function startHttpServer(
           try {
             const adapters = await opts.listAgentAdapters()
             res.writeHead(200, { "content-type": "application/json" })
-            res.end(JSON.stringify({ adapters }))
+            res.end(JSON.stringify(canonical
+              ? { harnesses: adapters, adapters }
+              : { adapters, warnings: [adapterDeprecation("GET /adapters", "GET /harnesses")] }))
           } catch (err) {
             res.writeHead(500, { "content-type": "application/json" })
             res.end(
@@ -5051,7 +5058,7 @@ export async function startHttpServer(
         // "bad slug". `POST /adapters/:slug/install`.
         {
           const installMatch = path.match(
-            /^\/adapters\/([^/]+)\/install$/,
+            /^\/(harnesses|adapters)\/([^/]+)\/install$/,
           )
           if (installMatch && req.method === "POST") {
             if (!opts.installAgentAdapter) {
@@ -5066,13 +5073,14 @@ export async function startHttpServer(
               )
               return
             }
-            const slug = decodeURIComponent(installMatch[1]!)
+            const legacyInstall = installMatch[1] === "adapters"
+            const slug = decodeURIComponent(installMatch[2]!)
             if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
               res.writeHead(400, { "content-type": "application/json" })
               res.end(
                 JSON.stringify({
                   error: "invalid_slug",
-                  message: `invalid adapter slug '${slug}' — slugs are lower-kebab.`,
+                  message: `invalid harness slug '${slug}': slugs are lower-kebab.`,
                 }),
               )
               return
@@ -5080,7 +5088,9 @@ export async function startHttpServer(
             try {
               const result = await opts.installAgentAdapter(slug)
               res.writeHead(200, { "content-type": "application/json" })
-              res.end(JSON.stringify(result))
+              res.end(JSON.stringify(legacyInstall
+                ? { ...result, warnings: [adapterDeprecation("POST /adapters/:slug/install", "POST /harnesses/:slug/install")] }
+                : result))
             } catch (err) {
               res.writeHead(500, { "content-type": "application/json" })
               res.end(
@@ -5116,7 +5126,8 @@ export async function startHttpServer(
             )
             const runnableOnlyParam = qs.get("runnableOnly")
             const catalog = await opts.listCatalogModels({
-              ...(qs.get("adapter") ? { adapter: qs.get("adapter")! } : {}),
+              // `?harness=` is canonical, `?adapter=` its deprecated alias.
+              ...((qs.get("harness") || qs.get("adapter")) ? { adapter: (qs.get("harness") || qs.get("adapter"))! } : {}),
               ...(qs.get("vendor") ? { vendor: qs.get("vendor")! } : {}),
               ...(qs.get("route") ? { route: qs.get("route")! } : {}),
               ...(runnableOnlyParam === "true" ? { runnableOnly: true } : {}),
@@ -5305,7 +5316,12 @@ export async function startHttpServer(
             await saveUserPreset((body ?? {}) as UserPreset)
             const saved = await getUserPreset(String(body?.id ?? ""))
             res.writeHead(200, { "content-type": "application/json" })
-            res.end(JSON.stringify({ preset: saved }))
+            res.end(JSON.stringify({
+              preset: saved,
+              ...(body?.adapter !== undefined
+                ? { warnings: [`POST /user-presets: ${ADAPTER_FIELD_DEPRECATION}`] }
+                : {}),
+            }))
           } catch (err) {
             const status = err instanceof ZodError ? 400 : 500
             res.writeHead(status, { "content-type": "application/json" })
@@ -6492,6 +6508,18 @@ async function sendJsonNegotiated(
   res.end(out)
 }
 
+/** The harness slug of a spawn body: `harness ?? adapter ?? preset.harness
+ *  ?? preset.adapter` (`adapter` is the deprecated alias; the warning for it
+ *  rides `harnessWarnings`, see `buildSpawnSessionHttpArgs`). */
+function httpHarnessOf(
+  b: Record<string, unknown>,
+  preset: { harness?: string; adapter?: string } | undefined,
+): string | undefined {
+  const harness = typeof b.harness === "string" && b.harness.length > 0 ? b.harness : undefined
+  const adapter = typeof b.adapter === "string" && b.adapter.length > 0 ? b.adapter : undefined
+  return harness ?? adapter ?? preset?.harness ?? preset?.adapter
+}
+
 /**
  * Shared body → `spawnAgentSession` input mapper used by BOTH
  * `POST /sessions/agent` and the create-variant `POST /sessions/chat`, so the
@@ -6634,8 +6662,10 @@ export function buildSpawnSessionHttpArgs(
     modelPolicyParsed !== undefined ? { modelPolicy: modelPolicyParsed } : {}
   return {
     adapter,
+    // The ONE resolved slug under both keys (`harness ?? adapter ?? preset`),
+    // so the spawn core's `harness ?? adapter` and `adapter` reads agree.
+    ...(adapter && adapter !== CLOUD_ADAPTER_PLACEHOLDER ? { harness: adapter } : {}),
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
-    ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
     // ONE `agent` reference (AGENT.md path, agent id, or role name) resolved
     // into `agentId`/`agentPath`/`role` by the spawn core (agent-ref.ts).
     ...(typeof b.agent === "string" && b.agent.length > 0 ? { agent: b.agent } : {}),
@@ -6739,9 +6769,15 @@ export function buildSpawnSessionHttpArgs(
       ? { boardId: b.boardId }
       : {}),
     ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
-    ...(typeof b.role === "string" && b.role.length > 0 && !(typeof b.agent === "string" && b.agent.length > 0)
-      ? { harnessWarnings: [ROLE_ALIAS_DEPRECATION] }
-      : {}),
+    ...((): { harnessWarnings?: string[] } => {
+      const harnessWarnings = [
+        ...(typeof b.role === "string" && b.role.length > 0 && !(typeof b.agent === "string" && b.agent.length > 0)
+          ? [ROLE_ALIAS_DEPRECATION]
+          : []),
+        ...(typeof b.adapter === "string" ? [`POST /sessions/agent: ${ADAPTER_FIELD_DEPRECATION}`] : []),
+      ]
+      return harnessWarnings.length > 0 ? { harnessWarnings } : {}
+    })(),
     ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
     ...browserField,
     ...(b.orchestrator !== undefined
@@ -7618,11 +7654,16 @@ async function handleSandboxes(
       {
         model: parsed.data.model,
         ...(parsed.data.provider ? { provider: parsed.data.provider } : {}),
-        ...(parsed.data.adapter ? { adapter: parsed.data.adapter } : {}),
+        ...((parsed.data.harness ?? parsed.data.adapter) ? { adapter: parsed.data.harness ?? parsed.data.adapter } : {}),
       },
       { ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}) },
     )
-    json(report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502, report)
+    json(
+      report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502,
+      parsed.data.adapter !== undefined
+        ? { ...report, warnings: [`sandbox egress-health probe: ${ADAPTER_FIELD_DEPRECATION}`] }
+        : report,
+    )
     return true
   }
   const match = path.match(/^\/sandboxes\/([^/]+)\/alive$/)
@@ -8023,13 +8064,7 @@ async function handleSessions(
     // placeholder its `adapter: string` type demands is passed instead.
     const cloud = typeof b.cloud === "string" && b.cloud.length > 0 ? b.cloud : undefined
     const adapter =
-      typeof b.adapter === "string"
-        ? b.adapter
-        : typeof b.harness === "string"
-          ? b.harness
-          : (preset?.adapter ??
-            preset?.harness ??
-            (b.inference ? "pi" : cloud ? CLOUD_ADAPTER_PLACEHOLDER : ""))
+      httpHarnessOf(b, preset) ?? (b.inference ? "pi" : cloud ? CLOUD_ADAPTER_PLACEHOLDER : "")
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -8206,12 +8241,7 @@ async function handleSessions(
       json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
       return true
     }
-    const adapter =
-      typeof b.adapter === "string"
-        ? b.adapter
-        : typeof b.harness === "string"
-          ? b.harness
-          : preset?.adapter ?? preset?.harness ?? (b.inference ? "pi" : "")
+    const adapter = httpHarnessOf(b, preset) ?? (b.inference ? "pi" : "")
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -10128,7 +10158,8 @@ code { color: #9ad; }
       reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
     )
     const fmt = qs.get("format") === "json" ? "json" as const : "markdown" as const
-    const adapterOverride = qs.get("adapter") ?? undefined
+    // `?harness=` is canonical, `?adapter=` its deprecated alias.
+    const adapterOverride = qs.get("harness") || qs.get("adapter") || undefined
     const cwdOverride = qs.get("cwd") ?? undefined
     const sourceParam = qs.get("source")
     const source =

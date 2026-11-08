@@ -39,7 +39,7 @@ and Moonshot are listed with `agentproto provider-preset list`.
 
 ```bash
 agentproto preset add fast-deepseek --label "Fast DeepSeek" \
-  --adapter hermes --model deepseek/deepseek-v4-pro --gateway openrouter \
+  --harness hermes --model deepseek/deepseek-v4-pro --gateway openrouter \
   --profile openrouter-api --posture bypass --effort high \
   --tag fast --allow-list zero-cost
 agentproto preset resolve fast-deepseek --harness hermes

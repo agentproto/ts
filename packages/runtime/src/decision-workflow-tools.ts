@@ -59,6 +59,7 @@ import { resolveJevApiKey, resolveJevConfig } from "./jev-client.js"
 import { createReviewPackLoader } from "./review-pack-loader.js"
 import type { ReviewRecoveryConfig } from "./review-reviewer-host.js"
 import { resolveRepo, type ReviewRun, type ReviewRunInput, type ReviewRunner } from "./review-runner.js"
+import { adapterDeprecation } from "./harness-alias.js"
 
 export const DECISION_WORKFLOW_ID = "decision-route"
 
@@ -893,7 +894,8 @@ const profileShape = {
       escalation: z
         .object({
           preset: z.string().optional(),
-          adapter: z.string().optional(),
+          harness: z.string().optional(),
+          adapter: z.string().optional().describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
           model: z.string().optional(),
           profileRef: z.string().optional(),
           roleDefault: z.boolean().optional(),
@@ -910,12 +912,25 @@ const profileShape = {
 
 const asJson = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] })
 
-/** Never an MCP error for a stage: an exception becomes `{ ok:false }` data. */
-async function guarded<T>(step: string, fn: () => Promise<T> | T) {
+/** Never an MCP error for a stage: an exception becomes `{ ok:false }` data.
+ *  A deprecated `profileOptions.escalation.adapter` in the input adds a
+ *  dated `warnings` entry to an object result. */
+async function guarded<T>(
+  input: { profileOptions?: { escalation?: { adapter?: string } } },
+  step: string,
+  fn: () => Promise<T> | T,
+) {
+  const warnings = input.profileOptions?.escalation?.adapter !== undefined
+    ? [`decision ${step}: ${adapterDeprecation("profileOptions.escalation.adapter", "profileOptions.escalation.harness")}`]
+    : []
+  const withWarnings = (value: unknown) =>
+    warnings.length > 0 && value !== null && typeof value === "object" && !Array.isArray(value)
+      ? { ...(value as object), warnings: [...(((value as { warnings?: unknown }).warnings as string[] | undefined) ?? []), ...warnings] }
+      : value
   try {
-    return asJson(await fn())
+    return asJson(withWarnings(await fn()))
   } catch (e) {
-    return asJson({ ok: false, step, error: e instanceof Error ? e.message : String(e) })
+    return asJson(withWarnings({ ok: false, step, error: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -940,7 +955,7 @@ export function registerDecisionWorkflowTools(server: McpServer, deps: DecisionW
       head: z.string().optional(),
       supplied: z.record(z.string(), z.unknown()).optional().describe("Consumer-built evidence (same export policy applies)."),
     },
-    (i, extra) => guarded("collect-evidence", () => stageCollectEvidence({ ...ctxOf({ ...i, policy: i.policy ?? "" }, extra), policy: i.policy, ...(i.policyPath ? { policyPath: i.policyPath } : {}), cwd: i.cwd, ...(i.base ? { base: i.base } : {}), ...(i.head ? { head: i.head } : {}), ...(i.supplied ? { supplied: i.supplied } : {}) }, deps)),
+    (i, extra) => guarded(i, "collect-evidence", () => stageCollectEvidence({ ...ctxOf({ ...i, policy: i.policy ?? "" }, extra), policy: i.policy, ...(i.policyPath ? { policyPath: i.policyPath } : {}), cwd: i.cwd, ...(i.base ? { base: i.base } : {}), ...(i.head ? { head: i.head } : {}), ...(i.supplied ? { supplied: i.supplied } : {}) }, deps)),
   )
 
   server.tool(
@@ -948,7 +963,7 @@ export function registerDecisionWorkflowTools(server: McpServer, deps: DecisionW
     "Step 2 of `decision-route`: apply the DECISION.md rules/floors with ZERO model calls. " +
       "`settled:true` means a rule decided; otherwise later stages run.",
     { ...profileShape, evidence: z.record(z.string(), z.unknown()) },
-    (i, extra) => guarded("apply-rules", () => stageRules({ ...ctxOf(i, extra), evidence: i.evidence })),
+    (i, extra) => guarded(i, "apply-rules", () => stageRules({ ...ctxOf(i, extra), evidence: i.evidence })),
   )
 
   server.tool(
@@ -957,7 +972,7 @@ export function registerDecisionWorkflowTools(server: McpServer, deps: DecisionW
       "profile-gated). Skipped when rules settled it, the policy disables the classifier or the " +
       "profile disables Jev. Normal low confidence is NOT a human request — it flows to escalation.",
     { ...profileShape, evidence: z.record(z.string(), z.unknown()), rules: z.record(z.string(), z.unknown()) },
-    (i, extra) => guarded("classify", () => stageClassify({ ...ctxOf(i, extra), evidence: i.evidence, rules: i.rules }, deps)),
+    (i, extra) => guarded(i, "classify", () => stageClassify({ ...ctxOf(i, extra), evidence: i.evidence, rules: i.rules }, deps)),
   )
 
   server.tool(
@@ -975,7 +990,7 @@ export function registerDecisionWorkflowTools(server: McpServer, deps: DecisionW
       rules: z.record(z.string(), z.unknown()),
     },
     (i, extra) =>
-      guarded("escalate", () =>
+      guarded(i, "escalate", () =>
         stageEscalate({ ...ctxOf(i, extra), evidence: i.evidence, classify: i.classify, rules: i.rules }, deps),
       ),
   )
@@ -995,7 +1010,7 @@ export function registerDecisionWorkflowTools(server: McpServer, deps: DecisionW
       freeBindings: z.record(z.string(), z.string()).optional().describe("Free-only overrides. Default: deep→deep-free."),
     },
     (i, extra) =>
-      guarded("select-review", () =>
+      guarded(i, "select-review", () =>
         stageSelectReview(
           {
             ...ctxOf(i, extra),
@@ -1026,7 +1041,7 @@ export function registerDecisionWorkflowTools(server: McpServer, deps: DecisionW
       nocache: z.boolean().optional(),
     },
     (i, extra) =>
-      guarded("run-review", () =>
+      guarded(i, "run-review", () =>
         stageRunReview(
           {
             ...ctxOf(i, extra),
@@ -1056,7 +1071,7 @@ export function registerDecisionWorkflowTools(server: McpServer, deps: DecisionW
       review: z.record(z.string(), z.unknown()),
     },
     (i, extra) =>
-      guarded("validate-verdict", () =>
+      guarded(i, "validate-verdict", () =>
         stageValidateVerdict({
           ...ctxOf(i, extra),
           escalate: i.escalate,

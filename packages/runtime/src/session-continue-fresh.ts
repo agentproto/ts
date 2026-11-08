@@ -66,13 +66,11 @@ export interface ContinueAgentSessionFreshOptions {
   contextContinuity?: import("./context-continuity.js").ContextContinuityPolicy
   /** Optional base directory for checkpoint storage (tests). */
   baseDir?: string
-  /** Override the adapter (driver slug) for the fresh session — the
-   *  cross-harness handoff axis. Alias of `harness`; when both are set,
-   *  `harness` wins for the descriptor's `harness` label but this still
-   *  picks the driver. Omitted -> carried forward from `prev`, unchanged. */
+  /** @deprecated Alias of `harness`; `harness` wins when both are set.
+   *  Removed in the next major of @agentproto/runtime. */
   adapter?: string
-  /** Override the canonical harness slug for the fresh session. Alias of
-   *  `adapter` — set either or both. Omitted -> carried forward from `prev`. */
+  /** Override the harness for the fresh session: the cross-harness
+   *  handoff axis (canonical). Omitted -> carried forward from `prev`. */
   harness?: string
   /** Override the model for the fresh session. Omitted -> carried forward
    *  from `prev`, unchanged. */
@@ -320,7 +318,7 @@ function pruneSettledContinuedSources(): void {
 
 function continuationRequestKey(opts: ContinueAgentSessionFreshOptions): string {
   return canonicalize({
-    adapter: opts.adapter ?? opts.harness,
+    adapter: opts.harness ?? opts.adapter,
     harness: opts.harness ?? opts.adapter,
     model: opts.model,
     access: opts.access,
@@ -377,11 +375,10 @@ async function continueAgentSessionFreshOnce(
 
   // Cross-harness handoff (SPEC gap #5): each axis below is independently
   // overridable — omitted falls back to `prev`'s own value, exactly like
-  // `session_restart`'s override axes. `adapter` picks the driver; `harness`
-  // is the descriptor label (defaults to `adapter` inside `spawnAgentSession`
-  // when unset) — set either or both.
-  const adapter = opts.adapter ?? opts.harness ?? prev.adapterSlug ?? prev.harness ?? "claude-code"
-  const harness = opts.harness ?? opts.adapter ?? prev.harness
+  // `session_restart`'s override axes. `harness` is canonical and `adapter`
+  // its deprecated alias: `harness ?? adapter`, then the prior session's.
+  const adapter = opts.harness ?? opts.adapter ?? prev.harness ?? prev.adapterSlug ?? "claude-code"
+  const harness = adapter
   const model = opts.model ?? prev.model
   const access = opts.access ?? formatAccessForSpawn(prev)
   // `prev.route` was resolved for the OLD adapter's gateway. Carrying it

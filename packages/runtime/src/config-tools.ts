@@ -168,6 +168,19 @@ export interface ConfigKeyDescriptor {
   enum?: string[]
   min?: number
   max?: number
+  /** Present on a deprecated alias key (`defaults.adapters.*`,
+   *  `daemon.adapterCacheRetentionDays`): the canonical path and the dated
+   *  deprecation line. */
+  deprecated?: { replacedBy: string; message: string }
+}
+
+/** The deprecated spelling a canonical harness key falls back to when it is
+ *  unset in the file (`defaults.harnesses.*` → `defaults.adapters.*`,
+ *  `daemon.harnessCacheRetentionDays` → `daemon.adapterCacheRetentionDays`). */
+function legacyHarnessPath(path: string): string | undefined {
+  if (path.startsWith("defaults.harnesses.")) return "defaults.adapters." + path.slice("defaults.harnesses.".length)
+  if (path === "daemon.harnessCacheRetentionDays") return "daemon.adapterCacheRetentionDays"
+  return undefined
 }
 
 export interface ConfigGetInput {
@@ -572,8 +585,11 @@ async function describeKey(
   liveCfg: AgentprotoConfig,
   deps: ConfigToolsDeps,
 ): Promise<ConfigKeyDescriptor> {
-  const rawValue = getConfigKey(liveCfg, path)
-  const bootValue = getConfigKey(deps.bootConfig, path)
+  // A canonical harness key left unset reads its deprecated twin (the same
+  // fallback the daemon applies), so `effective` reports what is in force.
+  const legacyPath = legacyHarnessPath(path)
+  const rawValue = getConfigKey(liveCfg, path) ?? (legacyPath ? getConfigKey(liveCfg, legacyPath) : undefined)
+  const bootValue = getConfigKey(deps.bootConfig, path) ?? (legacyPath ? getConfigKey(deps.bootConfig, legacyPath) : undefined)
   const envRaw = entry.env ? process.env[entry.env] : undefined
   const envParser = entry.env ? ENV_PARSERS[entry.env] : undefined
   const envParsed = envRaw !== undefined && envParser ? envParser(envRaw) : undefined
@@ -629,6 +645,7 @@ async function describeKey(
     section: entry.section,
     ...(displayDefault !== undefined ? { default: displayDefault } : {}),
     ...deriveValueType(entry.schema),
+    ...(entry.deprecated ? { deprecated: entry.deprecated } : {}),
   }
 }
 

@@ -154,7 +154,7 @@ describe("agent_start — presetId resolution", () => {
       arguments: { presetId: "axes-only", cwd: "/tmp" },
     })) as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
     expect(res.isError).toBe(true)
-    expect(res.content?.[0]?.text).toContain("adapter is required")
+    expect(res.content?.[0]?.text).toContain("harness is required")
     expect(startSession).not.toHaveBeenCalled()
   })
 })
