@@ -83,6 +83,8 @@ export interface RegisterDaemonHealthToolsOptions {
    *  `AppRegistry.listIssues`). Surfaced as `appRegistryIssues` — empty when
    *  the registry is clean — so a bad record is reported, not thrown on. */
   modelCooldowns?: () => readonly ModelCooldownEntry[]
+  /** Message-delivery warnings (see `SessionsRegistry.wakeWarnings`); empty when clean. */
+  warnings?: () => readonly { kind: string; sessionId: string; message: string }[]
   appRegistryIssues?: () => readonly {
     kind: string
     appId: string | null
@@ -139,6 +141,7 @@ export function registerDaemonHealthTools(
         turnStallAfterMs: opts.turnStallAfterMs ?? 0,
         version: opts.version ?? null,
         build: opts.build ?? null,
+        warnings: opts.warnings?.() ?? [],
         appRegistryIssues: opts.appRegistryIssues?.() ?? [],
         appRegistryRepairs: opts.appRegistryRepairs?.() ?? [],
         modelCooldowns: opts.modelCooldowns?.() ?? [],

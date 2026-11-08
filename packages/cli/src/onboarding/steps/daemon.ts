@@ -122,6 +122,21 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
   }
 }
 
+/** Message-delivery warnings the daemon raised (one per receiver): a Claude Code
+ *  session in bypassPermissions was messaged while it would hold the wake. */
+function pushWakeWarnings(checks: StepCheck[], info: DaemonHealthInfo): void {
+  const held = (info.warnings ?? []).filter((w) => w.kind === "held-by-receiver-bypass")
+  if (held.length === 0) return
+  checks.push({
+    id: "daemon.wake",
+    title: "Waking Claude Code sessions in bypassPermissions",
+    status: "warn",
+    detail: `${held.map((w) => w.sessionId).join(", ")} hold messages from other sessions until crossSessionInbound is "accept"`,
+    fix: "agentproto doctor --fix",
+    data: { sessions: held.map((w) => w.sessionId) },
+  })
+}
+
 /**
  * F4 — node/adapter mismatch. Global `@agentproto/adapter-*` packages resolve
  * relative to the CLI's own install (`registry/manifest-loader.ts`'s
@@ -311,6 +326,7 @@ async function detectLinux(ctx: StepContext): Promise<StepCheck[]> {
     if (unit !== null) checks.push(await checkPlistPath(ctx, unit, extractUnitPathValue))
   }
   if (health.info) {
+    pushWakeWarnings(checks, health.info)
     const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
     if (mismatch) checks.push(mismatch)
   }
@@ -357,6 +373,7 @@ export const daemonStep: OnboardingStep = {
       const health = await checkHealth(ctx, installed)
       const checks = [health.check, task]
       if (health.info) {
+        pushWakeWarnings(checks, health.info)
         const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
         if (mismatch) checks.push(mismatch)
       }
@@ -379,6 +396,7 @@ export const daemonStep: OnboardingStep = {
         },
       ]
       if (health.info) {
+        pushWakeWarnings(checks, health.info)
         const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
         if (mismatch) checks.push(mismatch)
       }
@@ -390,6 +408,7 @@ export const daemonStep: OnboardingStep = {
     const checks = [health.check, await checkService(ctx, plistXml, plistPath)]
     if (plistXml !== null) checks.push(await checkPlistPath(ctx, plistXml))
     if (health.info) {
+      pushWakeWarnings(checks, health.info)
       const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
       if (mismatch) checks.push(mismatch)
     }

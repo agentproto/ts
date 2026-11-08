@@ -85,6 +85,29 @@ describe("agent_start.parent from the shared claude-desktop identity", () => {
     expect(targets).not.toContain("claude-desktop")
   })
 
+  it("message_parent carries the wake outcome and its hint back to the child", async () => {
+    const registry = setup()
+    const desk = await connect(registry, "claude-desktop")
+    const res = await desk.call("agent_start", { adapter: "mock", cwd: "/tmp", parent: "cc:abc" })
+    const child = registry.get(json(res).id)!
+    const wake = {
+      written: true,
+      reason: "held-by-receiver-bypass",
+      sessionId: "cc:abc",
+      hint: "set crossSessionInbound to accept in ~/.claude/settings.json (agentproto doctor --fix)",
+    }
+    vi.spyOn(registry, "sendMessage").mockResolvedValue({
+      messageId: "msg_x",
+      delivered: { via: "inbox" },
+      queued: false,
+      urgencyApplied: "next-turn",
+      wake: wake as any,
+    })
+    const asChild = await connect(registry, child.id, false)
+    const sent = await asChild.call("message_parent", { message: "done" })
+    expect(json(sent).wake).toEqual(wake)
+  })
+
   it("without a declared parent the child still attaches under the shared row", async () => {
     const registry = setup()
     const desk = await connect(registry, "claude-desktop")
