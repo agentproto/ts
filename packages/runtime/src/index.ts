@@ -1890,11 +1890,12 @@ export interface CreateGatewayOptions {
    *  (SPEC §5) so UIs can discover every runnable model + route without
    *  trial-and-error against a spawn. */
   listCatalogModels?: CatalogModelsLister
-  /** Optional browser adapter resolver — when provided, enables the
-   *  `start_browser` MCP tool (launches Camofox / Bureau / Chromium). */
+  /** Optional browser adapter resolver, used by the HTTP
+   *  `POST /sessions/browser` route only (no MCP tool since P4).
+   *  P4b: removed with that route. */
   resolveBrowserAdapter?: BrowserAdapterResolver
-  /** Optional browser adapter lister — when provided, enables the
-   *  `browser_adapter_list` MCP tool. */
+  /** Optional browser adapter lister, used by the HTTP browser routes only
+   *  (no MCP tool since P4). P4b: removed with them. */
   listBrowserAdapters?: BrowserAdapterLister
   /** Optional PTY factory (node-pty wrapper, typically from the cli
    *  layer's `loadNodePtyFactory()`). When provided, enables
@@ -4672,22 +4673,13 @@ export async function createGateway(
     // neither BRAVE_SEARCH_API_KEY nor SERPER_API_KEY is set.
     registerWebSearchTools(server)
     registerBrowserTools(server, {
-      registry: sessions,
       mcpProxy,
       // `defaults.browser.builtin` decides the registered surface. Read once
       // per `/mcp` session (registration fixes the tool list): a config
-      // change applies on the next MCP session, no daemon restart.
+      // change applies on the next MCP session, no daemon restart. Every
+      // browser tool forwards to Bureau; a legacy "on" is read as "proxy".
       builtin: resolveBrowserBuiltin((await loadConfig()).defaults?.browser),
       ...(callerSessionId ? { callerSessionId } : {}),
-      ...(opts.resolveBrowserAdapter
-        ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
-        : {}),
-      ...(opts.listBrowserAdapters
-        ? { listBrowserAdapters: opts.listBrowserAdapters }
-        : {}),
-      // browser_upload_file may attach files from the agent's own workspace
-      // (merged over the ~/.pygmalion/data default + the env allowlist).
-      uploadAllowDirs: [opts.workspace],
     })
     // MCP Apps host verbs — same root-/mcp-only exposure as mcp_imported_*.
     registerMcpAppHostTools(server, { service: mcpAppsHost })

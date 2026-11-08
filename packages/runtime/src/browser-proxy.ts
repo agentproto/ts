@@ -1,22 +1,27 @@
 /**
- * One-version bridge from the daemon's `browser_*` tools to a Bureau MCP
- * import. `defaults.browser.builtin` decides what the daemon registers:
+ * The bridge from the daemon's `browser_*` tools to Bureau, the local browser
+ * service imported as an MCP. `defaults.browser.builtin` decides what the
+ * daemon registers:
  *
  *   - `"off"`   only `fetch_page` (a plain HTTP read); no browser tool at all.
- *   - `"proxy"` the daemon browser tools forward to Bureau; a tool Bureau has
- *               no twin for refuses with `browser:use_bureau` instead of
- *               falling back to the daemon's own chrome-live path.
- *   - `"on"`    today's behaviour (the default).
+ *   - `"proxy"` (the default) the daemon browser tools forward to Bureau.
  *
- * A config that only names `defaults.browser.proxyImport` (no `builtin`)
- * resolves to `"on"`, so existing installs keep exactly their old behaviour:
- * the six legacy tools proxy and every other tool keeps its local path.
- * `"proxy"` is opt-in through `builtin: "proxy"`.
+ * A legacy `"on"` (the retired chrome-live path) is read as `"proxy"` with a
+ * one-line warning, never refused, so an old config file still boots.
+ * `defaults.browser.proxyImport` names the imported MCP alias and defaults
+ * to `"bureau"`. When that import is absent, every relayed tool answers an
+ * error naming Bureau.
+ *
+ * Two tools are relays adapted on the daemon side, since Bureau has no twin:
+ * `browser_extract_text` reads Bureau's `browser_get_dom` and runs the
+ * daemon's own `extractPageText`, and `browser_scroll` sends Bureau's
+ * `browser_evaluate` a FIXED script built here (the selector rides in as
+ * JSON data, never as code).
  *
  * The argument shapes below are copied from Bureau's tool catalogue, not from
  * this file's own schemas. Since agentproto/bureau#41 every Bureau page tool
  * takes `tabId` and an optional `instance`, so both are forwarded as-is.
- * `sessionId` is the daemon's own browser-session selector and is consumed
+ * `sessionId` is the retired daemon browser-session selector and is consumed
  * here without being forwarded (the result notes it was ignored). A daemon
  * field Bureau has no twin for is dropped and listed in the result's `notes`
  * (`browser_screencast_start` drops `quality`, `everyNthFrame`, `maxWidth` and
@@ -29,30 +34,50 @@
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import type { ProxyCallContext, ProxyCallOutcome } from "./mcp-proxy.js"
+import { extractPageText } from "./page-text.js"
 
 export const BROWSER_PROXY_DEPRECATED =
-  "The daemon browser_* tools proxy to Bureau; \"off\" (defaults.browser.builtin) is the end state: mount the Bureau MCP and call its tools directly."
+  "The daemon browser_* tools proxy to Bureau: mount the Bureau MCP and call its tools directly."
 
 /** How much of the built-in browser surface the daemon registers. */
-export type BrowserBuiltinMode = "off" | "proxy" | "on"
+export type BrowserBuiltinMode = "off" | "proxy"
+
+/** The imported MCP alias the tools forward to when `proxyImport` is unset. */
+export const DEFAULT_BROWSER_PROXY_IMPORT = "bureau"
+
+/** The one-line warning a legacy `builtin: "on"` produces. */
+export const LEGACY_BUILTIN_ON_WARNING =
+  'defaults.browser.builtin "on" is retired and read as "proxy": the daemon browser tools forward to Bureau. ' +
+  'Set it to "proxy" or "off" to silence this warning.'
+
+let warnedLegacyOn = false
+
+function warnLegacyOnOnce(message: string): void {
+  if (warnedLegacyOn) return
+  warnedLegacyOn = true
+  console.warn(`[browser] ${message}`)
+}
 
 /**
- * Resolve `defaults.browser.builtin`. Backward compatibility wins: a config
- * that only sets `proxyImport` keeps today's `"on"` behaviour (the six legacy
- * tools proxy, everything else keeps its local path), and an absent value is
- * `"on"` too. `"proxy"` is opt-in through an explicit `builtin: "proxy"`.
- * Unknown values are treated as `"on"` rather than silently disabling a
- * browser tool surface.
+ * Resolve `defaults.browser.builtin`. Only an explicit `"off"` turns the
+ * browser surface off; anything else is `"proxy"`. A legacy `"on"` is read
+ * as `"proxy"` and reported through `warn` (by default once per process on
+ * the daemon log, since this runs once per `/mcp` session).
  */
 export function resolveBrowserBuiltin(
-  browser:
-    | { builtin?: string | undefined; proxyImport?: string | undefined }
-    | undefined,
+  browser: { builtin?: string | undefined } | undefined,
+  warn: (message: string) => void = warnLegacyOnOnce,
 ): BrowserBuiltinMode {
-  if (browser?.builtin === "off" || browser?.builtin === "proxy" || browser?.builtin === "on") {
-    return browser.builtin
-  }
-  return "on"
+  if (browser?.builtin === "off") return "off"
+  if (browser?.builtin === "on") warn(LEGACY_BUILTIN_ON_WARNING)
+  return "proxy"
+}
+
+/** Resolve `defaults.browser.proxyImport`, `"bureau"` when unset. */
+export function resolveBrowserProxyImport(
+  browser: { proxyImport?: string | undefined } | undefined,
+): string {
+  return browser?.proxyImport || DEFAULT_BROWSER_PROXY_IMPORT
 }
 
 /** The daemon browser tools this proxy covers. */
@@ -193,46 +218,6 @@ export function bureauToolName(toolName: ProxiedBrowserToolName): string {
   return MAPPINGS[toolName].target
 }
 
-/**
- * Daemon browser tools Bureau has no twin for, mapped to the Bureau tool a
- * caller should use instead. In `"proxy"` mode these refuse with
- * `browser:use_bureau` rather than falling back to the daemon's chrome-live
- * path.
- */
-export const BROWSER_USE_BUREAU: Readonly<Record<string, string>> = {
-  browser_adapter_list: "browser_list_instances",
-  browser_extract_text: "browser_evaluate",
-  browser_new_tab: "browser_navigate",
-  browser_scroll: "browser_evaluate",
-  browser_select: "browser_evaluate",
-  browser_status: "browser_list_instances",
-  browser_upload_file: "browser_act",
-  browser_wait_for: "browser_evaluate",
-  start_browser: "browser_list_instances",
-  stop_browser: "browser_close_tab",
-}
-
-export function isBureauOnlyTool(name: string): boolean {
-  return Object.prototype.hasOwnProperty.call(BROWSER_USE_BUREAU, name)
-}
-
-/** The `browser:use_bureau` message for a tool with no Bureau twin. */
-export function browserUseBureauMessage(toolName: string): string {
-  const target = BROWSER_USE_BUREAU[toolName] ?? "browser_list_instances"
-  return (
-    `browser:use_bureau: ${toolName} is not proxied to Bureau; ` +
-    `call Bureau's ${target} instead.`
-  )
-}
-
-/** The `browser:use_bureau` refusal for a tool with no Bureau twin. */
-export function browserUseBureauResult(toolName: string): CallToolResult {
-  return {
-    content: [{ type: "text", text: browserUseBureauMessage(toolName) }],
-    isError: true,
-  }
-}
-
 /** Map one daemon tool input to the Bureau argument object + drop notes. */
 export function mapBrowserProxyArgs(
   toolName: ProxiedBrowserToolName,
@@ -291,6 +276,56 @@ function markDeprecated(result: unknown, notes: readonly string[]): Record<strin
   }
 }
 
+function errorResult(text: string): CallToolResult {
+  return { content: [{ type: "text", text }], isError: true }
+}
+
+/** The error a relayed tool answers when the Bureau import cannot serve it. */
+export function bureauUnavailableMessage(toolName: string, alias: string, error: string): string {
+  if (error.startsWith("unknown alias")) {
+    return (
+      `${toolName}: Bureau is not imported: no imported MCP is named "${alias}" ` +
+      "(defaults.browser.proxyImport). The daemon browser tools only forward to Bureau: " +
+      `import the Bureau MCP under "${alias}" (mcp_import) or point defaults.browser.proxyImport at its alias.`
+    )
+  }
+  return `${toolName}: Bureau (imported MCP "${alias}") is unavailable: ${error}`
+}
+
+type BureauCall =
+  | { ok: true; result: unknown }
+  | { ok: false; error: CallToolResult }
+
+/**
+ * Call one Bureau tool on behalf of a daemon tool. A transport failure (no
+ * import, not connected) becomes an error naming Bureau; a Bureau tool error
+ * is handed back unchanged as `error`.
+ */
+async function callBureau(input: {
+  proxy: BrowserProxyCaller
+  alias: string
+  toolName: string
+  target: string
+  args: Record<string, unknown>
+  callerSessionId?: string | undefined
+}): Promise<BureauCall> {
+  const outcome = await input.proxy.callTool(
+    input.alias,
+    input.target,
+    input.args,
+    input.callerSessionId ? { callerSessionId: input.callerSessionId } : undefined,
+  )
+  if (!outcome.ok) {
+    return { ok: false, error: errorResult(bureauUnavailableMessage(input.toolName, input.alias, outcome.error)) }
+  }
+  // A Bureau tool error is the caller's evidence (browser:not_owner,
+  // browser:awaiting_consent, ...): return it exactly as received.
+  if (isRecord(outcome.result) && outcome.result.isError === true) {
+    return { ok: false, error: outcome.result as CallToolResult }
+  }
+  return { ok: true, result: outcome.result }
+}
+
 /** Call the Bureau tool and return an MCP tool result for the daemon tool. */
 export async function callProxiedBrowserTool(input: {
   proxy: BrowserProxyCaller
@@ -300,22 +335,160 @@ export async function callProxiedBrowserTool(input: {
   callerSessionId?: string
 }): Promise<CallToolResult> {
   const { args, notes } = mapBrowserProxyArgs(input.toolName, input.toolInput)
-  const outcome = await input.proxy.callTool(
-    input.alias,
-    bureauToolName(input.toolName),
+  const call = await callBureau({
+    proxy: input.proxy,
+    alias: input.alias,
+    toolName: input.toolName,
+    target: bureauToolName(input.toolName),
     args,
-    input.callerSessionId ? { callerSessionId: input.callerSessionId } : undefined,
-  )
-  if (!outcome.ok) {
-    return {
-      content: [{ type: "text", text: `${input.toolName}: ${outcome.error}` }],
-      isError: true,
+    callerSessionId: input.callerSessionId,
+  })
+  if (!call.ok) return call.error
+  return markDeprecated(call.result, notes) as CallToolResult
+}
+
+/** The `tabId`/`instance` pair every Bureau page tool takes. */
+function pageTarget(input: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (typeof input.tabId === "string") out.tabId = input.tabId
+  if (typeof input.instance === "string") out.instance = input.instance
+  return out
+}
+
+/**
+ * One field of a Bureau tool result: `structuredContent` first, else the
+ * first text block parsed as JSON.
+ */
+function resultField(result: unknown, key: string): unknown {
+  if (!isRecord(result)) return undefined
+  if (isRecord(result.structuredContent) && key in result.structuredContent) {
+    return result.structuredContent[key]
+  }
+  const content = Array.isArray(result.content) ? result.content : []
+  for (const block of content) {
+    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") continue
+    try {
+      const parsed: unknown = JSON.parse(block.text)
+      if (isRecord(parsed) && key in parsed) return parsed[key]
+    } catch {
+      // Not JSON: try the next block.
     }
   }
-  // A Bureau tool error is the caller's evidence (browser:not_owner,
-  // browser:awaiting_consent, …): return it exactly as received.
-  if (isRecord(outcome.result) && outcome.result.isError === true) {
-    return outcome.result as CallToolResult
+  return undefined
+}
+
+function okResult(value: Record<string, unknown>, notes: readonly string[]): CallToolResult {
+  return markDeprecated(
+    { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value },
+    notes,
+  ) as CallToolResult
+}
+
+function sessionIdNotes(input: Record<string, unknown>): string[] {
+  return input.sessionId !== undefined
+    ? ['ignored "sessionId": Bureau identifies the caller session itself']
+    : []
+}
+
+/**
+ * `browser_extract_text`: read the tab's DOM through Bureau's
+ * `browser_get_dom`, then purify it with the daemon's `extractPageText` (the
+ * same extractor `fetch_page` uses). The page URL comes from a second, fixed
+ * `location.href` read and is best-effort.
+ */
+export async function callBureauExtractText(input: {
+  proxy: BrowserProxyCaller
+  alias: string
+  toolInput: Record<string, unknown>
+  callerSessionId?: string
+}): Promise<CallToolResult> {
+  const toolName = "browser_extract_text"
+  const target = pageTarget(input.toolInput)
+  const dom = await callBureau({
+    proxy: input.proxy,
+    alias: input.alias,
+    toolName,
+    target: "browser_get_dom",
+    args: target,
+    callerSessionId: input.callerSessionId,
+  })
+  if (!dom.ok) return dom.error
+  const html = resultField(dom.result, "html")
+  if (typeof html !== "string") {
+    return errorResult(`${toolName}: Bureau browser_get_dom returned no html`)
   }
-  return markDeprecated(outcome.result, notes) as CallToolResult
+  const location = await callBureau({
+    proxy: input.proxy,
+    alias: input.alias,
+    toolName,
+    target: "browser_evaluate",
+    args: { ...target, expression: "location.href", returnByValue: true },
+    callerSessionId: input.callerSessionId,
+  })
+  const href = location.ok ? resultField(location.result, "value") : undefined
+  const url = typeof href === "string" ? href : ""
+  try {
+    const { title, text } = await extractPageText(html, url || "about:blank")
+    return okResult({ title, text, url }, sessionIdNotes(input.toolInput))
+  } catch (err) {
+    return errorResult(`${toolName}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/**
+ * The fixed `browser_scroll` script. Its only variable part is one JSON
+ * literal of data: a selector is a JSON string, x/y are finite numbers, and
+ * nothing a caller sends is ever spliced in as code.
+ */
+export function buildScrollExpression(input: { selector?: string; x?: number; y?: number }): string {
+  const finite = (n: number | undefined) => (typeof n === "number" && Number.isFinite(n) ? n : 0)
+  const data =
+    typeof input.selector === "string"
+      ? { selector: input.selector }
+      : { x: finite(input.x), y: finite(input.y) }
+  return (
+    "(() => {" +
+    ` const a = ${JSON.stringify(data)};` +
+    ' if (typeof a.selector === "string") {' +
+    " const el = document.querySelector(a.selector);" +
+    ' if (!el) throw new Error("browser_scroll: no element matches selector " + JSON.stringify(a.selector));' +
+    ' el.scrollIntoView({ block: "center", inline: "center" });' +
+    " } else {" +
+    " window.scrollBy(a.x, a.y);" +
+    " }" +
+    " return { scrollX: window.scrollX, scrollY: window.scrollY };" +
+    " })()"
+  )
+}
+
+/**
+ * `browser_scroll`: Bureau's `browser_evaluate` with the fixed script from
+ * `buildScrollExpression`. No caller-supplied expression reaches Bureau.
+ */
+export async function callBureauScroll(input: {
+  proxy: BrowserProxyCaller
+  alias: string
+  toolInput: Record<string, unknown>
+  callerSessionId?: string
+}): Promise<CallToolResult> {
+  const t = input.toolInput
+  const call = await callBureau({
+    proxy: input.proxy,
+    alias: input.alias,
+    toolName: "browser_scroll",
+    target: "browser_evaluate",
+    args: {
+      ...pageTarget(t),
+      expression: buildScrollExpression({
+        ...(typeof t.selector === "string" ? { selector: t.selector } : {}),
+        ...(typeof t.x === "number" ? { x: t.x } : {}),
+        ...(typeof t.y === "number" ? { y: t.y } : {}),
+      }),
+      awaitPromise: false,
+      returnByValue: true,
+    },
+    callerSessionId: input.callerSessionId,
+  })
+  if (!call.ok) return call.error
+  return markDeprecated(call.result, sessionIdNotes(t)) as CallToolResult
 }

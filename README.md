@@ -165,7 +165,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `list_sandbox_providers` / `setup_sandbox_provider` | Sandbox provider catalog and credentials |
 | `sandbox_exec` | Run one command in a sandbox box (ephemeral, or an existing `sandboxId`) and return exit code + stdout/stderr |
 | `list_eval_reporters` / `setup_eval_reporter` | Eval-reporter backends (e.g. Langfuse) |
-| `start_browser` / `stop_browser` / `browser_status` | Manage browser sessions |
+| `browser_navigate` / `browser_extract_text` / `browser_click` / … / `list_browsers` | Browser page tools, forwarded to the Bureau MCP (`defaults.browser.proxyImport`, default `bureau`); `fetch_page` reads a URL without a browser |
 | `mcp_discovered_list` / `mcp_imported_list` / `mcp_import` / `mcp_imported_remove` | Discover and curate imported MCP servers |
 | `mcp_imported_status` / `mcp_imported_tool_list` / `mcp_imported_call` | Proxy imported MCP tools |
 | `skill_import` / `skill_imported_list` / `skill_imported_remove` / `skill_resync` | Curate imported skills (a `SKILL.md` folder is copied into `~/.agentproto/skills/<id>/`) for per-session delivery |

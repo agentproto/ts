@@ -158,18 +158,15 @@ export interface SpawnDefaultsConfig {
   /** Browser integration (TARGET-STATE: Bureau owns the browser). */
   browser?: {
     /** How much of the built-in browser surface the daemon registers:
-     *  `"off"` keeps only `fetch_page` (a plain HTTP read); `"proxy"` forwards
-     *  the daemon browser tools to the `proxyImport` Bureau server and refuses
-     *  the ones Bureau has no twin for (`browser:use_bureau`); `"on"` is
-     *  today's behaviour. Default `"on"`, and a config that only names
-     *  `proxyImport` stays `"on"` so existing installs keep exactly their old
-     *  behaviour. Read in the per-`/mcp`-session registration pass, so a
-     *  change applies on the next MCP session. */
+     *  `"off"` keeps only `fetch_page` (a plain HTTP read); `"proxy"` (the
+     *  default) forwards the daemon browser tools to the `proxyImport`
+     *  Bureau server. `"on"` is the retired chrome-live mode, still accepted
+     *  and read as `"proxy"` with a warning. Read in the per-`/mcp`-session
+     *  registration pass, so a change applies on the next MCP session. */
     builtin?: "off" | "proxy" | "on"
-    /** Alias of an imported MCP that is a Bureau server (e.g. `bureau`).
-     *  Set: the daemon's browser interaction tools forward to the
-     *  Bureau tool of the same name, and the built-in `browser` bundle
-     *  mounts that import. Unset: every tool behaves exactly as before. */
+    /** Alias of the imported MCP that is a Bureau server; the daemon browser
+     *  tools forward to it, `"bureau"` when unset. A set value also makes the
+     *  built-in `browser` bundle mount that import. */
     proxyImport?: string
   }
   contextContinuity?: ContextContinuityPolicy
