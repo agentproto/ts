@@ -261,6 +261,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "session_follows",
   "session_gc",
   "session_judge_jev",
+  "session_labels",
   "session_list",
   "session_mark_completed",
   "session_migrate",
