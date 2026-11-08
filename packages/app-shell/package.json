@@ -1,0 +1,57 @@
+{
+  "name": "@agentproto/app-shell",
+  "version": "0.1.0",
+  "description": "@agentproto/app-shell: a framework-free shell for agent apps: CSS design tokens, component styles, kit persistence and sidebar/topbar markup. Plain ESM and CSS, no runtime dependency; works from a single-file HTML build or a React/Vite app.",
+  "keywords": [
+    "agentproto",
+    "app-shell",
+    "design-tokens",
+    "css",
+    "open-standard"
+  ],
+  "homepage": "https://agentproto.sh/docs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/app-shell"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./tokens.css": "./src/tokens.css",
+    "./components.css": "./src/components.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.9.9",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
