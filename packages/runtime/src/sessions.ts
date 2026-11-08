@@ -13696,9 +13696,11 @@ export function createSessionsRegistry(opts?: {
 
       // A network reply can be lost after the forge accepted the create.
       // Repeating the reporting call must not manufacture a second
-      // provenance link for the same PR.
+      // provenance link for the same PR. Keyed on the url alone: the stamper,
+      // `pr_open` and the reconciler label the same PR with different
+      // adapters, and each new record fires the sentinel auto-link.
       const existing = rt.desc.openedPrs ?? []
-      if (!existing.some(pr => pr.adapter === input.adapter && pr.url === input.url)) {
+      if (!existing.some(pr => pr.url === input.url)) {
         rt.desc.openedPrs = [
           ...existing,
           {

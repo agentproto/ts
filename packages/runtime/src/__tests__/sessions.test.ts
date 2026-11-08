@@ -1943,7 +1943,7 @@ describe("createSessionsRegistry", () => {
 
       // A retried/duplicate report (either lane of pr-provenance-reconciler.ts
       // re-observing the same PR, or a genuine network retry) must not fire
-      // the hook again — recordOpenedPr's own (adapter, url) dedupe gates it.
+      // the hook again — recordOpenedPr's own url dedupe gates it.
       reg.recordOpenedPr(session.id, {
         adapter: "github",
         number: 42,
@@ -1951,6 +1951,30 @@ describe("createSessionsRegistry", () => {
       })
       expect(onOpenedPr).toHaveBeenCalledTimes(1)
 
+      reg.shutdown()
+    })
+
+    it("the same PR url reported under two adapter labels fires onOpenedPr once", () => {
+      const onOpenedPr = vi.fn()
+      const reg = createSessionsRegistry({ persistPath, onOpenedPr })
+      const session = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        command: "git",
+        args: ["status"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+      const url = "https://github.com/acme/widgets/pull/44"
+
+      reg.recordOpenedPr(session.id, { adapter: "claude-code", number: 44, url })
+      reg.recordOpenedPr(session.id, { adapter: "gh", number: 44, url })
+
+      expect(onOpenedPr).toHaveBeenCalledTimes(1)
+      expect(reg.get(session.id)?.openedPrs).toHaveLength(1)
       reg.shutdown()
     })
 

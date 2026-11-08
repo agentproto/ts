@@ -18,10 +18,11 @@
  * takes effect on the very next PR, no restart).
  *
  * Idempotent: `recordOpenedPr` itself only fires this hook once per
- * genuinely NEW `(adapter, url)` pair (its own dedupe guard), and this
- * module additionally checks the store for an existing sentinel on the same
- * `(subject, sessionId)` before creating one — belt-and-braces against a
- * race or a sentinel someone already created by hand for the same PR.
+ * genuinely NEW PR url (its own dedupe guard), and this module additionally
+ * checks the store AND an in-flight claim set for an existing watch on the same
+ * `(subject, sessionId)` before creating one. The claim set matters because the
+ * store only sees a sentinel after `provider.create` resolves, so two
+ * concurrent links would otherwise both pass the store check.
  *
  * Strictly best-effort: a missing `gh`, an unavailable provider, or a
  * `create()` failure is logged and swallowed — auto-link must never affect
@@ -107,6 +108,12 @@ export interface SentinelAutoLinker {
 export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): SentinelAutoLinker {
   const log = opts.log ?? ((line: string): void => console.warn(line))
 
+  // `(subject, owner)` pairs whose watch is being created right now. The
+  // store only learns about a sentinel after `provider.create` resolves, so
+  // without this a second concurrent link for the same PR passes
+  // `alreadyWatching` and creates an identical twin.
+  const inFlight = new Set<string>()
+
   const alreadyWatching = (subject: string, sessionId: string): boolean =>
     opts.store
       .list()
@@ -131,9 +138,21 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
     const subject = `github:${parsed.repo}#${parsed.number}`
     const parentId = opts.resolveParentSession?.(sessionId)
     const owners = parentId && parentId !== sessionId ? [sessionId, parentId] : [sessionId]
-    const pending = owners.filter(owner => !alreadyWatching(subject, owner))
+    // Check and claim in one synchronous step (no await between them).
+    const pending = owners.filter(
+      owner => !alreadyWatching(subject, owner) && !inFlight.has(`${subject}\u0000${owner}`),
+    )
     if (pending.length === 0) return
+    const claimed = pending.map(owner => `${subject}\u0000${owner}`)
+    for (const key of claimed) inFlight.add(key)
+    try {
+      await watchPending(subject, parsed.number, pending)
+    } finally {
+      for (const key of claimed) inFlight.delete(key)
+    }
+  }
 
+  const watchPending = async (subject: string, prNumber: number, pending: string[]): Promise<void> => {
     const urgency = (await opts.autoWatchUrgency?.()) ?? "next-turn"
 
     // Same order as `sentinel_watch` (agentpush > webhook > local-gh). A
@@ -157,7 +176,7 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
           until: { kind: "subject_terminal" },
           target: { kind: "session", sessionId: owner, urgency },
           provider: slug,
-          label: `auto:pr#${parsed.number}`,
+          label: `auto:pr#${prNumber}`,
           group: owner,
         }
         const id = mintSentinelId()
