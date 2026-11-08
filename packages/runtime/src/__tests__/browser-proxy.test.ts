@@ -16,7 +16,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 
 import { registerBrowserTools, setLiveBrowserInstance } from "../browser-tools.js"
-import { resolveBrowserBuiltin } from "../browser-proxy.js"
+import { isBureauOnlyTool, isProxiedBrowserTool, resolveBrowserBuiltin } from "../browser-proxy.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { builtinBrowserBundle, effectiveBundles, type Bundle } from "../bundles.js"
 import type { ImportedMcpsConfig } from "../mcp-imports.js"
@@ -338,9 +338,6 @@ describe("browser proxy - tools with no Bureau twin", () => {
       input: { sessionId: "browser-session", selector: "#s", value: "v" },
       target: "browser_evaluate",
     },
-    { tool: "browser_screencast_start", input: { sessionId: "browser-session" }, target: "browser_screenshot" },
-    { tool: "browser_screencast_frame", input: { sessionId: "browser-session" }, target: "browser_screenshot" },
-    { tool: "browser_screencast_stop", input: { sessionId: "browser-session" }, target: "browser_screenshot" },
     {
       tool: "browser_upload_file",
       input: { sessionId: "browser-session", selector: "#f", paths: ["/tmp/does-not-matter"] },
@@ -415,6 +412,181 @@ describe("browser proxy - tools with no Bureau twin", () => {
       }
     })
   }
+})
+
+describe("browser proxy - screencast forwards to Bureau browser_record_*", () => {
+  const SESSION_NOTE = 'ignored "sessionId": Bureau identifies the caller session itself'
+  const cases: Array<{
+    tool: string
+    input: Record<string, unknown>
+    target: string
+    expectedArgs: Record<string, unknown>
+    expectedNotes: string[]
+  }> = [
+    {
+      tool: "browser_screencast_start",
+      input: { sessionId: "s", tabId: "t1", instance: "inst-1", fps: 5, format: "png" },
+      target: "browser_record_start",
+      expectedArgs: { tabId: "t1", instance: "inst-1", fps: 5, format: "png" },
+      expectedNotes: [SESSION_NOTE],
+    },
+    {
+      tool: "browser_screencast_start",
+      input: { sessionId: "s", tabId: "t1", quality: 50, everyNthFrame: 2, maxWidth: 800, maxHeight: 600 },
+      target: "browser_record_start",
+      expectedArgs: { tabId: "t1" },
+      expectedNotes: [
+        'dropped "quality" (no Bureau equivalent)',
+        'dropped "everyNthFrame" (no Bureau equivalent)',
+        'dropped "maxWidth" (no Bureau equivalent)',
+        'dropped "maxHeight" (no Bureau equivalent)',
+        SESSION_NOTE,
+      ],
+    },
+    {
+      tool: "browser_screencast_frame",
+      input: { sessionId: "s", tabId: "t1", instance: "inst-1" },
+      target: "browser_record_frame",
+      expectedArgs: { tabId: "t1", instance: "inst-1" },
+      expectedNotes: [SESSION_NOTE],
+    },
+    {
+      tool: "browser_screencast_stop",
+      input: { sessionId: "s", tabId: "t1", instance: "inst-1", encode: false },
+      target: "browser_record_stop",
+      expectedArgs: { tabId: "t1", instance: "inst-1", encode: false },
+      expectedNotes: [SESSION_NOTE],
+    },
+  ]
+
+  for (const c of cases) {
+    it(`${c.tool} → Bureau ${c.target} with ${JSON.stringify(c.expectedArgs)}`, async () => {
+      const { client, proxy, cleanup } = await makeSetup({ proxyImport: "bureau", builtin: "proxy" })
+      try {
+        const res = await client.callTool({ name: c.tool, arguments: c.input })
+        expect(res.isError).toBeFalsy()
+        expect(proxy.callTool).toHaveBeenCalledTimes(1)
+        expect(proxy.callTool).toHaveBeenCalledWith("bureau", c.target, c.expectedArgs, {
+          callerSessionId: CALLER,
+        })
+        const forwarded = (proxy.callTool.mock.calls as unknown[][])[0]?.[2]
+        expect(forwarded).not.toHaveProperty("sessionId")
+        expect(res.structuredContent).toMatchObject({ ok: true })
+        expect((res.structuredContent as { deprecated?: string }).deprecated).toContain("proxy to Bureau")
+        expect((res.structuredContent as { notes?: string[] }).notes ?? []).toEqual(c.expectedNotes)
+      } finally {
+        await cleanup()
+      }
+    })
+  }
+
+  it("returns a Bureau start result unchanged and invents no viewPath or mjpegPath", async () => {
+    const bureauStart = {
+      content: [{ type: "text" as const, text: '{"recordingId":"rec-1"}' }],
+      structuredContent: { recordingId: "rec-1", fps: 3 },
+    }
+    const { client, cleanup } = await makeSetup({
+      proxyImport: "bureau",
+      builtin: "proxy",
+      proxy: fakeProxy(bureauStart),
+    })
+    try {
+      const res = await client.callTool({
+        name: "browser_screencast_start",
+        arguments: { sessionId: "s", tabId: "t1" },
+      })
+      expect(res.content).toEqual(bureauStart.content)
+      expect(res.structuredContent).toMatchObject({ recordingId: "rec-1", fps: 3 })
+      expect(res.structuredContent).not.toHaveProperty("viewPath")
+      expect(res.structuredContent).not.toHaveProperty("mjpegPath")
+      expect(res.structuredContent).not.toHaveProperty("latestFramePath")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  for (const code of [
+    "browser:not_owner",
+    "browser:recording_active",
+    "browser:recording_not_found",
+    "browser:recording_cancelled",
+  ]) {
+    for (const tool of ["browser_screencast_start", "browser_screencast_frame", "browser_screencast_stop"]) {
+      it(`${tool} returns Bureau's ${code} unchanged`, async () => {
+        const bureauError = {
+          content: [{ type: "text" as const, text: code }],
+          isError: true,
+        }
+        const { client, cleanup } = await makeSetup({
+          proxyImport: "bureau",
+          builtin: "proxy",
+          proxy: fakeProxy(bureauError),
+        })
+        try {
+          const res = await client.callTool({ name: tool, arguments: { sessionId: "s", tabId: "t1" } })
+          expect(res.isError).toBe(true)
+          expect(res.content).toEqual([{ type: "text", text: code }])
+          expect(res.structuredContent).toBeUndefined()
+        } finally {
+          await cleanup()
+        }
+      })
+    }
+  }
+
+  it("isBureauOnlyTool is false for the three tools, and they are proxied", () => {
+    for (const tool of ["browser_screencast_start", "browser_screencast_frame", "browser_screencast_stop"]) {
+      expect(isBureauOnlyTool(tool)).toBe(false)
+      expect(isProxiedBrowserTool(tool)).toBe(true)
+    }
+  })
+
+  it('"on" mode keeps the chrome-live implementation and never calls Bureau', async () => {
+    const screencastStart = vi.fn(async () => ({ targetId: "tgt-1", index: 0 }))
+    const screencastFrame = vi.fn(async () => null)
+    const screencastStop = vi.fn(async () => ({ targetId: "tgt-1", frameCount: 0, total: 0, frames: [] }))
+    const instance = {
+      id: "chrome-live",
+      port: 9222,
+      baseUrl: "http://127.0.0.1:9222",
+      wasAlreadyRunning: true,
+      healthy: true,
+      stop: async () => {},
+      screencastStart,
+      screencastFrame,
+      screencastStop,
+    }
+    const { client, proxy, registry, cleanup } = await makeSetup({ proxyImport: "bureau", builtin: "on" })
+    try {
+      const id = registry.registerBrowser({
+        adapterId: "chrome-live",
+        port: 9222,
+        baseUrl: "http://127.0.0.1:9222",
+        wasAlreadyRunning: false,
+        stop: async () => {},
+      }).id
+      setLiveBrowserInstance(id, instance as never)
+
+      const started = await client.callTool({
+        name: "browser_screencast_start",
+        arguments: { sessionId: id, tabId: "t1", fps: 5 },
+      })
+      expect(started.isError).toBeFalsy()
+      expect(JSON.parse(textOf(started) ?? "{}")).toMatchObject({
+        viewPath: `/sessions/${id}/screencast`,
+        mjpegPath: `/sessions/${id}/screencast.mjpg`,
+      })
+      await client.callTool({ name: "browser_screencast_frame", arguments: { sessionId: id } })
+      await client.callTool({ name: "browser_screencast_stop", arguments: { sessionId: id } })
+
+      expect(screencastStart).toHaveBeenCalledTimes(1)
+      expect(screencastFrame).toHaveBeenCalledTimes(1)
+      expect(screencastStop).toHaveBeenCalledTimes(1)
+      expect(proxy.callTool).not.toHaveBeenCalled()
+    } finally {
+      await cleanup()
+    }
+  })
 })
 
 describe("browser proxy - error passthrough", () => {
