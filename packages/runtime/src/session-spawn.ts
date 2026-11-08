@@ -3629,11 +3629,16 @@ async function spawnAgentSessionOnce(
   // (turning `bundleIds` into `mcpServers` entries, below) needs
   // `~/.agentproto/bundles.json` + the imported-MCP set, so it happens later,
   // once `mintedSessionId` exists.
-  const { bundleIds, daemonMount: explicitDaemonMount } = resolveBundleDefaults(
+  const resolvedBundleDefaults = resolveBundleDefaults(
     configDefaults,
     input.adapter,
     { bundles: input.bundles, daemonMount: input.daemonMount },
   )
+  // AIP-66 §4: a managed cloud agent has no MCP surface (the vendor owns the
+  // harness). Explicit `bundles`/`daemonMount` were already refused by name
+  // above; what reaches here is a config default, which is skipped silently.
+  const bundleIds = cloudResolved ? [] : resolvedBundleDefaults.bundleIds
+  const explicitDaemonMount = cloudResolved ? false : resolvedBundleDefaults.daemonMount
   const bundleSkillsUnion = new Set<string>()
   // Spawn-time role (see role.ts). Resolved BEFORE the orchestrator/
   // hermes-default mcpServers decisions below so `toolPolicy.delegation`
@@ -4220,11 +4225,13 @@ async function spawnAgentSessionOnce(
   // ANY adapter, scoped to exactly that list — the declaration is the
   // capability ask, same as a workflow agent step (`agentStepMcpServers`).
   const allowTools = input.allowTools?.length ? input.allowTools : undefined
-  if (allowTools && (mcpServers || input.sandbox !== undefined || !daemonMcpUrl)) {
+  if (allowTools && (mcpServers || cloudResolved || input.sandbox !== undefined || !daemonMcpUrl)) {
     spawnWarnings.push(
       `agent_start: tools allowlist (${allowTools.join(", ")}) not applied — ` +
         (mcpServers
           ? "the caller supplied its own mcpServers."
+          : cloudResolved
+            ? "a managed cloud agent takes no MCP mounts (AIP-66 section 4)."
           : input.sandbox !== undefined
             ? "a sandbox spawn cannot reach this daemon's loopback /mcp."
             : "the daemon has no /mcp URL configured."),
@@ -4232,6 +4239,7 @@ async function spawnAgentSessionOnce(
   }
   if (
     !mcpServers &&
+    !cloudResolved &&
     daemonMcpUrl &&
     (allowTools ? input.sandbox === undefined : shouldInjectDaemonSelfMount(input.adapter, input.sandbox))
   ) {
@@ -4447,6 +4455,7 @@ async function spawnAgentSessionOnce(
     parentSessionId &&
     buildOrchestratorMcp &&
     input.orchestrator !== false &&
+    !cloudResolved &&
     input.sandbox === undefined
   ) {
     // No `caller` ceiling on purpose: report-back is universal, not a
@@ -4526,7 +4535,7 @@ async function spawnAgentSessionOnce(
   // for a browser never suppresses the self-mount / report-back channel,
   // and an explicit `mcpServers: []` opt-out still only opts out of those.
   // A caller entry already named like the browser mount wins as-is.
-  const browserMode = resolveBrowserMode({
+  const browserMode = cloudResolved ? "off" : resolveBrowserMode({
     explicit: input.browser,
     role: role.browser,
     preset: presetBrowser,
