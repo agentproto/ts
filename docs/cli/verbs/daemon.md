@@ -14,7 +14,8 @@ Runs `agentproto serve` as a background service via the host's
 service manager. Today: **macOS launchd**, **Linux systemd --user**
 (with a detached-serve pidfile fallback when the box has no usable
 systemd user session) and **Windows Task Scheduler** (per-user
-scheduled task at logon).
+scheduled task at logon, with a Startup-folder fallback when group
+policy refuses the task).
 
 The daemon picks up its config from `~/.agentproto/config.json` via
 `daemon.*` keys. Configure once, then `daemon install` captures the
@@ -54,7 +55,7 @@ Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
   `loginctl enable-linger $USER` is off (they never run it for you).
 - **Windows:** `agentproto daemon install` registers a **per-user
   scheduled task** (`schtasks /Create /TN agentproto-daemon /SC ONLOGON
-  /F` — no admin required) whose payload is a generated
+  /F`) whose payload is a generated
   `~/.agentproto/agentproto-daemon.cmd` launcher that captures the same
   `node cli.mjs serve …` argv snapshot the macOS plist does, and merges
   stdout+stderr into `~/.agentproto/daemon.log`. `install` then starts
@@ -63,6 +64,22 @@ Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
   `/health` with the same three-part shape as the macOS branch. The
   task runs at user logon, so the daemon survives closing the terminal
   window.
+
+  A per-user ONLOGON task normally needs no admin rights. **A managed
+  enterprise account can still be refused by group policy**, where
+  `schtasks /Create` exits non-zero (typically `Access is denied`,
+  localized in the display language). When that happens, `install` falls
+  back to a launcher in
+  `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` that calls
+  the same `.cmd`. That needs no admin rights and creates no scheduled
+  task. `install` also starts the daemon immediately with a detached
+  `serve`, so it leaves a running daemon rather than only a next-logon
+  promise. In this mode `start`/`restart` spawn the detached serve,
+  `stop` kills its process tree, `status` says
+  `startup fallback ... not a scheduled task`, and `uninstall` removes
+  the Startup launcher and stops the process. The fallback is used only
+  after `schtasks /Create` fails; a successful task registration removes
+  any stale Startup launcher.
 
 ## Subverbs
 
