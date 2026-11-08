@@ -2375,6 +2375,97 @@ describe("BRIEF-D: app-bundled TOOL.md/DRIVER.md tool steps", () => {
     expect(res).toEqual({ name: "known_tool", args: { x: 1 } })
   })
 
+  describe("data dir of a bundled CLI tool (docs/design/app-bundled-tool-data-dir.md)", () => {
+    const NAME = "AGENTPROTO_APP_DATA_DIR"
+    const ambient = process.env[NAME]
+    afterEach(() => {
+      if (ambient === undefined) delete process.env[NAME]
+      else process.env[NAME] = ambient
+    })
+
+    /** A bundled tool whose driver prints the data dir variable and the cwd
+     *  it sees; `pass` is what the driver declares in sandbox.env.pass. */
+    async function buildDataDirApp(pass: string[]): Promise<void> {
+      await writeBundledManifest(dir, "tools", "where", "TOOL.md", {
+        schema: "agentproto/tool/v1",
+        id: "where",
+        name: "Where",
+        description: "Reports the data dir the subprocess sees.",
+        version: "1.0.0",
+        inputs: { type: "object", properties: {} },
+        outputs: { type: "object", required: ["dataDir"], properties: { dataDir: { type: ["string", "null"] } } },
+      })
+      await writeBundledManifest(dir, "drivers", "where-cli", "DRIVER.md", {
+        schema: "agentproto/driver/v1",
+        id: "where-cli",
+        name: "Where CLI Driver",
+        description: "Echoes AGENTPROTO_APP_DATA_DIR.",
+        version: "1.0.0",
+        kind: "cli",
+        implements: [
+          {
+            tool: "where",
+            version: "*",
+            metadata: {
+              cli: {
+                argv: [
+                  "-e",
+                  "console.log(JSON.stringify({dataDir: process.env.AGENTPROTO_APP_DATA_DIR ?? null}))",
+                ],
+                outputFormat: "json",
+              },
+            },
+          },
+        ],
+        metadata: { cli: { bin: process.execPath, sandbox: { env: { pass } } } },
+      })
+    }
+
+    async function callWhere(dataDir: string | undefined): Promise<unknown> {
+      const appRegistry = createAppRegistry()
+      appRegistry.upsertApp({
+        appId: "@test/where-app",
+        dir,
+        ...(dataDir !== undefined ? { dataDir } : {}),
+        agents: [],
+        workflows: [],
+        unvalidatedAgentTools: [],
+        ui: { path: join(dir, "index.html"), tools: ["where"] },
+      })
+      const { client } = await setup({ appRegistry })
+      const res = await client.callTool({
+        name: "app_tool_call",
+        arguments: { appId: "@test/where-app", tool: "where", args: {} },
+      })
+      expect(isError(res)).toBe(false)
+      return parseToolJson(res)
+    }
+
+    it("hands the registered dataDir to a driver that declares AGENTPROTO_APP_DATA_DIR", async () => {
+      delete process.env[NAME]
+      await buildDataDirApp([NAME])
+      expect(await callWhere("/registered/real-data")).toEqual({ dataDir: "/registered/real-data" })
+    })
+
+    it("the registered dataDir wins over the daemon's own AGENTPROTO_APP_DATA_DIR", async () => {
+      process.env[NAME] = "/ambient/other"
+      await buildDataDirApp([NAME])
+      expect(await callWhere("/registered/real-data")).toEqual({ dataDir: "/registered/real-data" })
+    })
+
+    it("a driver that does not declare the variable gets nothing", async () => {
+      delete process.env[NAME]
+      await buildDataDirApp(["PATH"])
+      expect(await callWhere("/registered/real-data")).toEqual({ dataDir: null })
+    })
+
+    it("an installed record without a dataDir injects nothing (unchanged behaviour)", async () => {
+      delete process.env[NAME]
+      await buildDataDirApp([NAME])
+      expect(await callWhere(undefined)).toEqual({ dataDir: null })
+    })
+  })
+
   it("runs the app driver for the app tool step and the daemon passthrough for the other — agent-free", async () => {
     await buildBundledApp()
     const { client, appRegistry } = await setup()
