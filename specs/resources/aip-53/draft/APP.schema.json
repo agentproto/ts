@@ -448,25 +448,6 @@
             "port"
           ]
         },
-        "oneOf": [
-          {
-            "required": [
-              "entry"
-            ],
-            "properties": {
-              "command": false,
-              "args": false
-            }
-          },
-          {
-            "required": [
-              "command"
-            ],
-            "properties": {
-              "entry": false
-            }
-          }
-        ],
         "allOf": [
           {
             "if": {
@@ -490,6 +471,25 @@
               "required": [
                 "port"
               ]
+            }
+          }
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "entry"
+            ],
+            "properties": {
+              "command": false,
+              "args": false
+            }
+          },
+          {
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "entry": false
             }
           }
         ]
@@ -555,6 +555,92 @@
     }
   },
   "$defs": {
+    "exposedTool": {
+      "type": "object",
+      "required": [
+        "id",
+        "access",
+        "description"
+      ],
+      "additionalProperties": false,
+      "description": "One entry of `exposes.tools`. The MCP name is computed from `exposes.prefix` and `mcpName` (else `id`); see the AIP-53 section `Exposed tools and resources`.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "pattern": "^approval"
+          },
+          "description": "A TOOL.md id the app bundles, or `imported:<alias>/<tool>` for a tool of one of the app's imported MCP servers. An id starting with `approval` is refused: deciding an approval never goes through this registry. A host's own tool names are refused too (loader rule)."
+        },
+        "access": {
+          "enum": [
+            "read",
+            "write",
+            "approve"
+          ],
+          "description": "Access class. `read` is visible to every caller by default; `write` and `approve` are visible only to a caller that opted in by exact MCP name."
+        },
+        "description": {
+          "type": "string",
+          "pattern": "\\S",
+          "maxLength": 300,
+          "description": "Written for a model; non-blank, at most 300 characters."
+        },
+        "inputSchema": {
+          "type": "object",
+          "description": "JSON Schema object for the tool's input. Defaults to the bundled TOOL.md `inputs`. On an `imported:` entry whose schema declares `properties`, a host drops every undeclared input key before the call, unless `additionalProperties` is `true`."
+        },
+        "mcpName": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+          "not": {
+            "pattern": "^approval"
+          },
+          "description": "Replaces the id as the source of the MCP name (no `:`, `/` or `.`). Required for an `imported:` id. A name starting with `approval` is refused."
+        },
+        "approvalArg": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the input argument that carries an approval reference. Only for `access: approve`; a shape hint, not a guarantee."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "approvalArg"
+            ]
+          },
+          "then": {
+            "properties": {
+              "access": {
+                "const": "approve"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "pattern": "^imported:"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mcpName"
+            ],
+            "properties": {
+              "access": {
+                "const": "read"
+              }
+            }
+          }
+        }
+      ]
+    },
     "stepId": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$",
