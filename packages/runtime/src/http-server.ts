@@ -6802,7 +6802,7 @@ export function buildSpawnSessionHttpArgs(
                 : b.notifyParentOnCrash === "false"
                   ? false
                   : undefined
-          return n ? { notifyParentOnCrash: true } : {}
+          return n !== undefined ? { notifyParentOnCrash: n } : {}
         })()
       : {}),
     ...sentinelField,

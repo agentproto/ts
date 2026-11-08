@@ -2836,7 +2836,8 @@ export interface SessionDescriptor {
     sessionId: string
     url: string
   }
-  /** Opt-in (default false/absent): when this session crashes
+  /** Resolved at spawn (true for an executor with a parent unless opted out;
+   *  absent means off): when this session crashes
    *  (`markCrashed` → `session:exited` with `status:"error"`/
    *  `reason:"crashed"`), the supervisor-notify subscriber
    *  (`supervisor-notify.ts`) delivers a `[child-crashed]` notice to its

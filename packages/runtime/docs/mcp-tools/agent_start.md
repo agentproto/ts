@@ -207,7 +207,8 @@ session later crashes (adapter process gone between turns), the parent
 (`parentSessionId`, direct or inherited) is told via `[child-crashed]
 <label/id>: <reason> — <lastError>` — enqueued immediately if the parent is
 alive and idle, or queued for its next turn (never interrupting an
-in-flight one) if it's busy. Default false. The free external webhook
+in-flight one) if it's busy. Default true for an `executor` that has a
+declared or attached parent, false otherwise; pass `false` to opt out. The free external webhook
 (`notifyUrl`) already fires on any crash regardless of this flag — this
 only adds the direct signal into the parent's OWN session, for a delegating
 supervisor that wants to react to a child's death without polling.
