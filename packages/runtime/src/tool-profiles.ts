@@ -390,6 +390,7 @@ export const FULL_ONLY_TOOLS: readonly string[] = [
   "session_follow",
   "session_follows",
   "session_judge_jev",
+  "session_labels",
   "session_mark_completed",
   "session_migrate",
   "session_queue_deliver",

@@ -24,6 +24,7 @@ import type {
   SessionsRegistry,
 } from "./sessions.js"
 import { applyBracketedPasteWrap } from "./sessions.js"
+import { resolveSessionLabels, SessionLabelsInputError, sessionLabelsInputShape } from "./session-labels.js"
 import { getSlug } from "./sessions.js"
 import { launchedByOf, launchedByText } from "./launched-by.js"
 import { canonicalOperatorRef, operatorDigestStale } from "./session-operator.js"
@@ -7294,6 +7295,26 @@ export function registerSessionTools(
           ],
           isError: true,
         }
+      }
+    }
+  )
+
+  // ── session_labels ──────────────────────────────────────────────
+  // Narrow read: session ids in, `{id, label?, operatorLabel?, adapter?,
+  // state?}` out. Exists so an app UI can list it in `ui.tools` instead of
+  // `session_list`. See session-labels.ts; details: tool_help {name:"session_labels"}.
+  server.tool(
+    "session_labels",
+    "Look up the display label of 1 to 100 sessions by id. Read-only, cheap, and " +
+      "returns nothing but `{id, label?, operatorLabel?, adapter?, state?}` per id, " +
+      "in input order (an unknown id gives `{id}` alone). Details: tool_help {name:\"session_labels\"}.",
+    sessionLabelsInputShape,
+    async input => {
+      try {
+        return { content: [{ type: "text", text: JSON.stringify(resolveSessionLabels(registry, input.ids)) }] }
+      } catch (err) {
+        if (!(err instanceof SessionLabelsInputError)) throw err
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true }
       }
     }
   )
