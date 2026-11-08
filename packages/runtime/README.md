@@ -267,15 +267,28 @@ Only `permission-resolved` (the final decision) transits the chat stream today. 
 
 The daemon, `POST /sessions/browser` and the CLI resolve browser adapters (`camofox`, `bureau`, `chromium`, `chrome-live`) through one table, `defaultBrowserAdapterResolution()`, backed by the `@agentproto/adapter-browser` facade.
 
-chrome-live additionally exposes ONE model — the agent's own, OWNED tab — through `registerBrowserTools`' `browser_navigate` / `browser_extract_text` / `browser_get_dom` / `browser_click` / `browser_fill` / `browser_evaluate` / `browser_scroll` / `browser_press_key` / `browser_select` / `browser_wait_for` (plus `browser_screenshot` / `browser_screencast_*`, which predate this set; `browser_new_tab` opens a FRESH tab in the agent's window, `browser_list_tabs` lists the agent-owned tab ids, and `browser_upload_file` attaches local files to an `<input type=file>` via CDP `DOM.setFileInputFiles` — absolute paths inside an upload allowlist only: the agent's workspace + `~/.pygmalion/data` by default, extended by `AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS`). Every page tool accepts a `tabId` to pick a tab among those. `fetch_page` is the zero-browser fast path: a plain HTTP read, use it first for any public page and escalate to `start_browser` + these only on `blocked: true` or when the page needs JS/interaction.
+The daemon's MCP browser tools no longer drive any of these adapters (P4b deletes the chrome-live implementation; only the HTTP routes above still reach it). Every browser tool forwards to Bureau, the local browser service imported as an MCP, with the calling session id on each call so Bureau's tab ownership applies per agent session:
+
+| Daemon tool | Bureau tool |
+| --- | --- |
+| `browser_navigate`, `browser_click`, `browser_fill`, `browser_evaluate`, `browser_get_dom`, `browser_press_key`, `browser_screenshot` | same name |
+| `browser_list_tabs` | `browser_list_owned_tabs` |
+| `list_browsers` | `browser_list_instances` (Bureau instances, not session descriptors; a `notes` entry says so) |
+| `browser_screencast_start` / `_frame` / `_stop` | `browser_record_start` / `_frame` / `_stop` (pass the owned `tabId`; `fps`, `format` and `encode` are forwarded, `quality`, `everyNthFrame`, `maxWidth` and `maxHeight` are dropped and noted) |
+| `browser_extract_text` | `browser_get_dom`, then the daemon's own `extractPageText` (the `fetch_page` extractor): returns `{ title, text, url }` |
+| `browser_scroll` | `browser_evaluate` with a fixed daemon-built script: `scrollIntoView` for a `selector` (passed as JSON data, never as code), `scrollBy` for `x`/`y`. No caller expression reaches Bureau through this tool. |
+
+`tabId` and an optional `instance` are forwarded; the retired `sessionId` is accepted and ignored (noted in the result). `fetch_page` is the zero-browser fast path: a plain HTTP read, use it first for any public page and escalate to `browser_navigate` + `browser_extract_text` only on `blocked: true` or when the page needs JS/interaction.
+
+Removed, with no Bureau twin: `browser_select`, `browser_wait_for`, `browser_upload_file`, `browser_new_tab`, `start_browser`, `stop_browser`, `browser_status`, `browser_adapter_list`. Bureau gives each caller session its own tab on first use, so `browser_navigate` replaces `start_browser` + `browser_new_tab`.
 
 `defaults.browser.builtin` decides how much of that surface the daemon registers:
 
-- `"off"`: only `fetch_page` (a plain HTTP read, no browser). No other browser tool is listed or callable.
-- `"proxy"`: the daemon browser tools forward to the Bureau MCP named by `defaults.browser.proxyImport`. `browser_press_key` is proxied too, `browser_list_tabs` maps to Bureau's `browser_list_owned_tabs`, and `list_browsers` maps to `browser_list_instances` (so it returns Bureau instances, not the daemon's browser-session descriptors; the result carries a `notes` entry saying so). `tabId` and an optional `instance` are forwarded. Every tool Bureau has no twin for (`browser_extract_text`, `browser_scroll`, `browser_select`, `browser_wait_for`, `browser_new_tab`, `browser_upload_file`, `start_browser`, `stop_browser`, `browser_status`, `browser_adapter_list`) refuses with `browser:use_bureau` and names the Bureau tool to use instead. `browser_screencast_start` / `_frame` / `_stop` are proxied to Bureau's `browser_record_start` / `_frame` / `_stop` (pass the owned `tabId`; `fps`, `format` and `encode` are forwarded, `quality`, `everyNthFrame`, `maxWidth` and `maxHeight` are dropped and noted). It never falls back to the daemon's own chrome-live path.
-- `"on"` (default): today's behaviour. This includes a config that sets only `defaults.browser.proxyImport`: the six legacy tools proxy and every other tool keeps its local path, exactly as on main.
+- `"proxy"` (default): the tools above, forwarded to the Bureau MCP named by `defaults.browser.proxyImport` (`bureau` when unset). When that import is absent, each tool answers an error naming Bureau and the alias; it never falls back to a local browser.
+- `"off"`: only `fetch_page`. No other browser tool is listed or callable.
+- A legacy `"on"` (the retired chrome-live mode) is still read, as `"proxy"`, with a one-line warning in the daemon log. It never blocks the boot.
 
-`"proxy"` is opt-in through `builtin: "proxy"`. The tool list is fixed when `registerBrowserTools` runs, once per `/mcp` session, so a config change applies on the next MCP session rather than mid-session; no daemon restart is needed.
+The tool list is fixed when `registerBrowserTools` runs, once per `/mcp` session, so a config change applies on the next MCP session rather than mid-session; no daemon restart is needed.
 
 ## License
 

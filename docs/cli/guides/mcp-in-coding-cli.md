@@ -229,7 +229,7 @@ coding-CLI orchestration:
 | `mcp_discovered_list` | MCPs discovered from other CLIs on this machine |
 | `tunnel_create` / `tunnel_list` / `tunnel_revoke` | Manage reverse tunnels (private by default; `tunnel_revoke` invalidates the signed link) |
 | `file_read` / `file_write` / `file_list` | Workspace filesystem |
-| `start_browser` / `stop_browser` | Browser session lifecycle |
+| `browser_navigate` / `browser_extract_text` / `browser_scroll` / … | Browser page tools, forwarded to the Bureau MCP |
 | `session_usage` | Per-session cost + token usage, live |
 | `list_sandbox_providers` | List configured sandbox providers (e.g. e2b) |
 | `setup_sandbox_provider` | Configure a sandbox provider's credentials |
