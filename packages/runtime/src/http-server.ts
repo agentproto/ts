@@ -3213,6 +3213,43 @@ export async function startHttpServer(
     return false
   }
 
+  /**
+   * Gate for a mutating route that was historically open to any loopback
+   * caller: the same credential the mutating /sessions/* routes require.
+   * A foreign browser Origin is refused unless it carries the bearer
+   * (`guardBrowserOrigin`), then the per-boot token, an allowlisted Origin
+   * or a widget embed token is required (`checkSessionsToken`), and a write
+   * that carries a body must be JSON so a cross-origin `text/plain` "simple"
+   * request, which needs no preflight, cannot reach the handler.
+   *
+   * Returns `true` when it has REJECTED the request (wrote the response);
+   * the caller must stop.
+   */
+  function rejectUnlessAuthenticatedWrite(
+    req: IncomingMessage,
+    res: ServerResponse,
+    label: string,
+  ): boolean {
+    if (guardBrowserOrigin(req, res)) return true
+    const gate = checkSessionsToken(req)
+    if (gate !== "ok") {
+      rejectUnauthorizedSession(req, res, gate)
+      return true
+    }
+    const method = req.method ?? "GET"
+    if ((method === "POST" || method === "PUT" || method === "PATCH") && !isJsonContentType(req)) {
+      res.writeHead(415, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "unsupported_media_type",
+          message: `Writes to ${label} must send \`content-type: application/json\`.`,
+        }),
+      )
+      return true
+    }
+    return false
+  }
+
   // CORS for the loopback gateway. The Guilde web app (localhost:3041) and
   // other local dev pages probe /health + read-only routes from the browser;
   // without these headers the browser blocks the response. But a credentialed
@@ -5246,7 +5283,9 @@ export async function startHttpServer(
         // (VS Code, cloud operator) provisions through these routes rather
         // than writing the files itself. The credential is INPUT-only: the
         // create response returns metadata + a fingerprint, never the secret.
-        // Same auth policy as the peer read routes above (no session gate).
+        // Reads share the policy of the peer read routes above (no session
+        // gate); writes (create / patch / delete) take the per-boot token,
+        // see `rejectUnlessAuthenticatedWrite`.
         if (path === "/auth/profiles" && req.method === "GET") {
           try {
             const qs = new URLSearchParams(
@@ -5268,6 +5307,7 @@ export async function startHttpServer(
           return
         }
         if (path === "/auth/profiles" && req.method === "POST") {
+          if (rejectUnlessAuthenticatedWrite(req, res, "/auth/profiles")) return
           const body = (await readJsonBody(req)) as {
             id?: unknown
             endpoint?: unknown
@@ -5315,6 +5355,7 @@ export async function startHttpServer(
         }
         const authProfileMatch = path.match(/^\/auth\/profiles\/(.+)$/)
         if (authProfileMatch && req.method === "DELETE") {
+          if (rejectUnlessAuthenticatedWrite(req, res, "/auth/profiles")) return
           const id = decodeURIComponent(authProfileMatch[1] ?? "")
           try {
             const result = await deleteAuthProfile(id, defaultProfileProvisionDeps())
@@ -5338,6 +5379,7 @@ export async function startHttpServer(
           return
         }
         if (authProfileMatch && req.method === "PATCH") {
+          if (rejectUnlessAuthenticatedWrite(req, res, "/auth/profiles")) return
           const id = decodeURIComponent(authProfileMatch[1] ?? "")
           const body = (await readJsonBody(req)) as {
             label?: unknown
@@ -6088,6 +6130,12 @@ export async function startHttpServer(
           opts.listRegisteredToolIds &&
           (path.startsWith("/apps/") || path.startsWith("/scopes/"))
         ) {
+          // Applying / unapplying installs or removes tools and agents (and
+          // `POST` may install from a `dir`): same gate as the mutating
+          // /sessions/* routes. `GET /scopes/:id/apps` stays open.
+          if (/^\/apps\/[^/]+\/apply$/.test(path) && (req.method === "POST" || req.method === "DELETE")) {
+            if (rejectUnlessAuthenticatedWrite(req, res, "/apps/:appId/apply")) return
+          }
           const handled = await handleApps(
             req,
             res,
