@@ -1,6 +1,6 @@
 # @agentproto/runtime
 
-The long-running gateway that turns an agentproto workspace into a live runtime. Composes the MCP server (CRUD verbs), HTTP transport, HEARTBEAT.md autonomy loop, conversation persistence, and the **sessions registry** (agent CLIs, raw spawns, and real PTY-backed terminals).
+The long-running gateway that turns an agentproto workspace into a live runtime. Composes the MCP server (CRUD verbs), HTTP transport, HEARTBEAT.md autonomy loop (deprecated: use cron or routines), conversation persistence, and the **sessions registry** (agent CLIs, raw spawns, and real PTY-backed terminals).
 
 Used directly by [`@agentproto/cli`](../cli/README.md)'s `agentproto serve` verb. Also embeddable when you want to host the same surface inside another Node process (the playground gateway, app-specific deployments, etc.).
 
