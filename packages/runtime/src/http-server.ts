@@ -9041,7 +9041,7 @@ code { color: #9ad; }
     return true
   }
   // POST /sessions/:id/touch — register or refresh an `external` row before
-  // it reads its inbox. Body `{ host, name?, hostSessionId?, cwd?, permissionMode? }`. Only
+  // it reads its inbox. Body `{ host, name?, hostSessionId?, entrypoint?, cwd?, permissionMode? }`. Only
   // honoured on a trusted request (loopback or daemon bearer, as `/mcp`).
   const touchMatch = path.match(/^\/sessions\/([^/]+)\/touch$/)
   if (touchMatch && req.method === "POST") {
@@ -9067,6 +9067,9 @@ code { color: #9ad; }
       ...(typeof b.name === "string" ? { name: b.name } : {}),
       ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
       ...(typeof b.hostSessionId === "string" ? { hostSessionId: b.hostSessionId } : {}),
+      ...(typeof b.entrypoint === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(b.entrypoint)
+        ? { entrypoint: b.entrypoint }
+        : {}),
       ...(typeof b.permissionMode === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(b.permissionMode)
         ? { permissionMode: b.permissionMode }
         : {}),

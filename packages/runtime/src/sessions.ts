@@ -3074,6 +3074,10 @@ export interface SessionDescriptor {
    *  chat (e.g. Claude's `hostSessionId`), so the daemon row can be matched
    *  back to the client that registered it. */
   externalHostSessionId?: string
+  /** `kind: "external"` only: the host's own entrypoint tag for this chat,
+   *  as its registration file reports it (Claude Desktop: `claude-desktop-3p`).
+   *  Read-only metadata; nothing in the daemon branches on it. */
+  externalEntrypoint?: string
   /** `kind: "external"` only: the permission mode the host's hooks last
    *  reported (Claude's `permission_mode`, e.g. `bypassPermissions`). The
    *  socket wake reads it when the host's registration file carries no mode. */
@@ -4894,6 +4898,8 @@ export interface SessionsRegistry {
     name?: string
     cwd?: string
     hostSessionId?: string
+    /** Host registration `entrypoint` (e.g. `claude-desktop-3p`); absent leaves the stored one. */
+    entrypoint?: string
     /** Host-reported permission mode; absent leaves the stored one as is. */
     permissionMode?: string
   }): SessionDescriptor | undefined
@@ -13819,6 +13825,7 @@ export function createSessionsRegistry(opts?: {
         if (input.name) desc.name = input.name
         if (input.cwd) desc.cwd = input.cwd
         if (input.hostSessionId) desc.externalHostSessionId = input.hostSessionId
+        if (input.entrypoint) desc.externalEntrypoint = input.entrypoint
         if (input.permissionMode) desc.externalPermissionMode = input.permissionMode
         schedulePersist()
         return desc
@@ -13837,6 +13844,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.name ? { name: input.name } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.hostSessionId ? { externalHostSessionId: input.hostSessionId } : {}),
+        ...(input.entrypoint ? { externalEntrypoint: input.entrypoint } : {}),
         ...(input.permissionMode ? { externalPermissionMode: input.permissionMode } : {}),
       }
       const rt: SessionRuntime = {

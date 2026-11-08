@@ -51,7 +51,7 @@ starts with \`sess_\` (a daemon-spawned session); else \`cc:\` + the payload's
 \`session_id\`; else $AGENTPROTO_SESSION_ID when the payload has no session id.
 $CLAUDE_CODE_SESSION_ID is never read. For a \`cc:\` id it first registers the
 per-chat row (\`POST /sessions/<id>/touch\`, host \`claude-desktop\` plus
-name/hostSessionId from the Claude registry and cwd from the payload); a
+name/hostSessionId/entrypoint from the Claude registry and cwd from the payload); a
 failed touch never fails the hook. Event name: --event, else the payload's
 \`hook_event_name\`, else UserPromptSubmit.
 
@@ -345,9 +345,10 @@ export function resolveInboxSessionId(
 export interface ClaudeSessionFields {
   name?: string
   hostSessionId?: string
+  entrypoint?: string
 }
 
-/** Read `name` and `hostSessionId` for `sessionId` from the Claude registry
+/** Read `name`, `hostSessionId` and `entrypoint` for `sessionId` from the Claude registry
  *  (`<dir>/*.json`). Only `*.json` entries are ever read: a sibling `*.key`
  *  is never opened. A missing dir, unreadable file, or no match yields none. */
 export function claudeSessionFields(
@@ -365,6 +366,7 @@ export function claudeSessionFields(
         return {
           ...(typeof record.name === "string" ? { name: record.name } : {}),
           ...(typeof record.hostSessionId === "string" ? { hostSessionId: record.hostSessionId } : {}),
+          ...(typeof record.entrypoint === "string" ? { entrypoint: record.entrypoint } : {}),
         }
       } catch {
         /* unreadable / malformed entry: try the next one */
