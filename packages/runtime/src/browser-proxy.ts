@@ -17,7 +17,10 @@
  * this file's own schemas. Since agentproto/bureau#41 every Bureau page tool
  * takes `tabId` and an optional `instance`, so both are forwarded as-is.
  * `sessionId` is the daemon's own browser-session selector and is consumed
- * here without being forwarded or reported. Nothing else is dropped.
+ * here without being forwarded (the result notes it was ignored). A daemon
+ * field Bureau has no twin for is dropped and listed in the result's `notes`
+ * (`browser_screencast_start` drops `quality`, `everyNthFrame`, `maxWidth` and
+ * `maxHeight`; Bureau's recorder is driven by `fps` and `format`).
  *
  * Every successful proxied result carries `deprecated`; a Bureau tool error
  * is returned unchanged (a caller relies on its own code, e.g.
@@ -62,6 +65,9 @@ export type ProxiedBrowserToolName =
   | "browser_screenshot"
   | "browser_press_key"
   | "browser_list_tabs"
+  | "browser_screencast_start"
+  | "browser_screencast_frame"
+  | "browser_screencast_stop"
   | "list_browsers"
 
 interface BrowserToolMapping {
@@ -88,6 +94,9 @@ interface BrowserToolMapping {
  *   browser_screenshot { tabId?, instance?, format?, quality?, fullPage?, selector?, path?, session? }
  *   browser_press_key  { key, tabId?, instance?, selector?, count?, modifiers? }
  *   browser_list_owned_tabs  { instance? }
+ *   browser_record_start  { tabId, instance?, fps?, format? }
+ *   browser_record_frame  { tabId, instance? }
+ *   browser_record_stop   { tabId, instance?, encode? }
  *   browser_list_instances   { instance? }
  */
 const MAPPINGS: Record<ProxiedBrowserToolName, BrowserToolMapping> = {
@@ -146,6 +155,24 @@ const MAPPINGS: Record<ProxiedBrowserToolName, BrowserToolMapping> = {
     consumed: ["sessionId"],
     dropped: [],
   },
+  browser_screencast_start: {
+    target: "browser_record_start",
+    forward: ["tabId", "instance", "fps", "format"],
+    consumed: ["sessionId"],
+    dropped: ["quality", "everyNthFrame", "maxWidth", "maxHeight"],
+  },
+  browser_screencast_frame: {
+    target: "browser_record_frame",
+    forward: ["tabId", "instance"],
+    consumed: ["sessionId"],
+    dropped: [],
+  },
+  browser_screencast_stop: {
+    target: "browser_record_stop",
+    forward: ["tabId", "instance", "encode"],
+    consumed: ["sessionId"],
+    dropped: [],
+  },
   list_browsers: {
     target: "browser_list_instances",
     forward: ["instance"],
@@ -178,9 +205,6 @@ export const BROWSER_USE_BUREAU: Readonly<Record<string, string>> = {
   browser_new_tab: "browser_navigate",
   browser_scroll: "browser_evaluate",
   browser_select: "browser_evaluate",
-  browser_screencast_frame: "browser_screenshot",
-  browser_screencast_start: "browser_screenshot",
-  browser_screencast_stop: "browser_screenshot",
   browser_status: "browser_list_instances",
   browser_upload_file: "browser_act",
   browser_wait_for: "browser_evaluate",

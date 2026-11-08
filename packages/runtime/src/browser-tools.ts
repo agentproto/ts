@@ -22,7 +22,7 @@
  *   browser_press_key       chrome-live only: press Enter/Tab/arrows/… on an owned tab
  *   browser_select          chrome-live only: choose an option in a <select> on an owned tab
  *   browser_wait_for        chrome-live only: wait for an element to be visible/enabled, or for text
- *   browser_screencast_*    chrome-live only: live view + mp4 recording of an owned tab (start/frame/stop)
+ *   browser_screencast_*    live view + mp4 recording of an owned tab (start/frame/stop): chrome-live in "on" mode, forwarded to Bureau's browser_record_* in "proxy" mode
  *
  * ONE model for chrome-live: every one of these addresses the agent's OWN
  * tab (opened by `browser_navigate`, never a foreign one) — there is no
@@ -1779,8 +1779,11 @@ export function registerBrowserTools(
 
   server.tool(
     "browser_screencast_start",
-    "chrome-live only. Start a live screencast of the agent's OWN tab (the dedicated Chrome by default, or the user's own Chrome on an explicit attachIntent ask) " +
+    "Start a live screencast of the agent's OWN tab (the dedicated Chrome by default, or the user's own Chrome on an explicit attachIntent ask) " +
       "(CDP Page.startScreencast; never a foreign tab, never the desktop). " +
+      "In `defaults.browser.builtin: \"proxy\"` mode this forwards to Bureau's `browser_record_start`: pass the owned `tabId` " +
+      "(required by Bureau), optionally `instance`, `fps` and `format`; `quality`, `everyNthFrame`, `maxWidth` and `maxHeight` " +
+      "are dropped and listed in `notes`, and the result is Bureau's (no `viewPath`/`mjpegPath`). Otherwise chrome-live only. " +
       "Frames stream to the daemon HTTP surface: open the daemon URL + viewPath " +
       "(`/sessions/<sessionId>/screencast`) in a browser, or expose it remotely with `tunnel_create` " +
       "over the daemon's HTTP port. `browser_screencast_frame` (or the .jpg endpoint) grabs the latest " +
@@ -1796,10 +1799,22 @@ export function registerBrowserTools(
       everyNthFrame: z.number().int().min(1).optional(),
       maxWidth: z.number().int().min(1).optional(),
       maxHeight: z.number().int().min(1).optional(),
+      tabId: z
+        .string()
+        .optional()
+        .describe("Owned tab to record. Forwarded to Bureau, which requires it; unused by chrome-live."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
+      fps: z
+        .number()
+        .optional()
+        .describe("Frames per second Bureau keeps (default 3, clamped to [1, 10]). Forwarded to Bureau only."),
     },
     async input => {
-      const refused = refuseWithoutTwin("browser_screencast_start")
-      if (refused) return refused
+      const proxied = await tryProxy("browser_screencast_start", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_screencast_start: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1848,14 +1863,23 @@ export function registerBrowserTools(
 
   server.tool(
     "browser_screencast_frame",
-    "chrome-live only. Return the latest buffered screencast frame of the agent's tab as base64, " +
-      "plus how many frames arrived since `browser_screencast_start`. `frame: null` means no frame yet.",
+    "Return the latest buffered screencast frame of the agent's tab as base64, " +
+      "plus how many frames arrived since `browser_screencast_start`. `frame: null` means no frame yet. " +
+      "In `\"proxy\"` mode this forwards to Bureau's `browser_record_frame` (pass the owned `tabId`); otherwise chrome-live only.",
     {
       sessionId: z.string().min(1).describe("Browser session id (adapter `chrome-live`)."),
+      tabId: z
+        .string()
+        .optional()
+        .describe("Owned tab being recorded. Forwarded to Bureau, which requires it; unused by chrome-live."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
     },
     async input => {
-      const refused = refuseWithoutTwin("browser_screencast_frame")
-      if (refused) return refused
+      const proxied = await tryProxy("browser_screencast_frame", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_screencast_frame: session "${input.sessionId}" not found.`)
       const adapterId = desc.browserAdapterId ?? ""
@@ -1882,16 +1906,30 @@ export function registerBrowserTools(
 
   server.tool(
     "browser_screencast_stop",
-    "chrome-live only. Stop the live screencast started with `browser_screencast_start`. When ffmpeg " +
+    "Stop the live screencast started with `browser_screencast_start`. When ffmpeg " +
       "is on PATH and at least 2 frames were captured, the buffered frames are encoded to an mp4 saved " +
       "in the session directory; the tool returns its path. Without ffmpeg, the frames are dropped and " +
-      "the response explains why (nothing live is ever left on the instance).",
+      "the response explains why (nothing live is ever left on the instance). " +
+      "In `\"proxy\"` mode this forwards to Bureau's `browser_record_stop` (pass the owned `tabId`, optionally " +
+      "`instance` and `encode`) and returns Bureau's result; otherwise chrome-live only.",
     {
       sessionId: z.string().min(1).describe("Browser session id (adapter `chrome-live`)."),
+      tabId: z
+        .string()
+        .optional()
+        .describe("Owned tab being recorded. Forwarded to Bureau, which requires it; unused by chrome-live."),
+      instance: z
+        .string()
+        .optional()
+        .describe("Bureau instance id, forwarded as-is when the tools proxy to Bureau."),
+      encode: z
+        .boolean()
+        .optional()
+        .describe("Encode the frames into video.mp4 (default true). Forwarded to Bureau only."),
     },
     async input => {
-      const refused = refuseWithoutTwin("browser_screencast_stop")
-      if (refused) return refused
+      const proxied = await tryProxy("browser_screencast_stop", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_screencast_stop: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
