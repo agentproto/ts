@@ -2,7 +2,7 @@
 "@agentproto/runtime": minor
 ---
 
-The daemon's browser tools go through Bureau only. `browser_navigate`, `browser_click`, `browser_fill`, `browser_evaluate`, `browser_get_dom`, `browser_press_key`, `browser_screenshot`, `browser_list_tabs` (to `browser_list_owned_tabs`), `list_browsers` (to `browser_list_instances`) and `browser_screencast_start/frame/stop` (to `browser_record_*`) forward to the imported Bureau MCP with the calling session id. `browser_extract_text` reads Bureau's `browser_get_dom` and extracts the text on the daemon; `browser_scroll` sends Bureau's `browser_evaluate` a fixed scroll script, with the selector passed as data. `sessionId` is now optional and ignored.
+The daemon's browser tools go through Bureau only. `browser_navigate`, `browser_click`, `browser_fill`, `browser_evaluate`, `browser_get_dom`, `browser_press_key`, `browser_screenshot`, `browser_list_tabs` (to `browser_list_owned_tabs`), `list_browsers` (to `browser_list_instances`) and `browser_screencast_start/frame/stop` (to `browser_record_*`) forward to the imported Bureau MCP with the calling session id. `browser_extract_text` reads Bureau's `browser_get_dom` and extracts the text on the daemon; `browser_scroll` sends Bureau's `browser_evaluate` a fixed scroll script, with the selector passed as data. `sessionId` is now optional on every relayed tool and ignored: the daemon forwards the calling session's identity to Bureau itself, so a model never has to supply or invent an id.
 
 Removed, with no Bureau twin: `browser_select`, `browser_wait_for`, `browser_upload_file`, `browser_new_tab`, `start_browser`, `stop_browser`, `browser_status`, `browser_adapter_list`.
 

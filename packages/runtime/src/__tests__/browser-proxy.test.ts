@@ -383,6 +383,51 @@ describe("relayed tools forward to Bureau with the caller identity", () => {
     }
   })
 
+  it("every relayed tool works without sessionId and reaches Bureau with the caller identity", async () => {
+    const minimal: Record<string, Record<string, unknown>> = {
+      list_browsers: {},
+      browser_navigate: { url: "https://example.com" },
+      browser_screenshot: {},
+      browser_extract_text: {},
+      browser_get_dom: {},
+      browser_click: { selector: "#go" },
+      browser_fill: { selector: "#q", value: "x" },
+      browser_evaluate: { expression: "1" },
+      browser_scroll: { y: 10 },
+      browser_press_key: { key: "Enter" },
+      browser_list_tabs: {},
+      browser_screencast_start: { tabId: "t1" },
+      browser_screencast_frame: { tabId: "t1" },
+      browser_screencast_stop: { tabId: "t1" },
+    }
+    const proxy = {
+      callTool: vi.fn<CallToolFn>(async (_alias, toolName) =>
+        toolName === "browser_get_dom"
+          ? { ok: true as const, result: { structuredContent: { html: "<html><title>T</title><body><p>hi</p></body></html>" } } }
+          : { ok: true as const, result: OK_RESULT },
+      ),
+    }
+    const { client, cleanup } = await makeSetup({ proxy })
+    try {
+      const tools = (await client.listTools()).tools.filter(t => t.name !== "fetch_page")
+      expect(tools.map(t => t.name).sort()).toEqual(Object.keys(minimal).sort())
+      for (const tool of tools) {
+        expect((tool.inputSchema as { required?: string[] }).required ?? []).not.toContain("sessionId")
+        proxy.callTool.mockClear()
+        const res = await client.callTool({ name: tool.name, arguments: minimal[tool.name]! })
+        expect(res.isError, `${tool.name}: ${textOf(res)}`).toBeFalsy()
+        expect(proxy.callTool.mock.calls.length, tool.name).toBeGreaterThan(0)
+        for (const call of proxy.callTool.mock.calls) {
+          expect(call[0]).toBe("bureau")
+          expect(call[2]).not.toHaveProperty("sessionId")
+          expect(call[3]).toEqual({ callerSessionId: CALLER })
+        }
+      }
+    } finally {
+      await cleanup()
+    }
+  })
+
   it("every relayed tool except the two adapted relays is in the proxy mapping", () => {
     for (const tool of RELAYED_TOOLS) {
       if (tool === "fetch_page" || tool === "browser_extract_text" || tool === "browser_scroll") continue
