@@ -4909,6 +4909,16 @@ export async function createGateway(
       mode: await resolveExposedToolsMode(),
       optIn: callerSessionId ? sessions.get(callerSessionId)?.exposedToolOptIn : undefined,
       callImportedTool: (alias, tool, args) => callImportedAppTool(alias, tool, args, callerSessionId),
+      // Cached by the import registry: a re-list only on first connect or an expired TTL.
+      listImportedTools: async alias => {
+        const out = await mcpProxy.listTools(alias)
+        return out.ok ? out.tools : undefined
+      },
+      readImportedResource: async (alias, uri) => {
+        const out = await mcpProxy.readResource(alias, uri)
+        if (!out.ok) throw new Error(`imported "${alias}" could not read ${uri}: ${out.error}`)
+        return out.result
+      },
     })
     // Server-side per-session summariser backing the agents-overview panel.
     // Heuristic today (no LLM in @agentproto/runtime) — see summarize-session-tool.ts.

@@ -32,6 +32,15 @@ exposes:
       access: read
       mcpName: list_instances   # mandatory for an imported id
       description: List the browser instances.
+    - id: imported:bureau/browser_screenshot
+      access: read
+      mcpName: screenshot
+      description: Capture the current page.
+      inputSchema:              # only these keys reach the import
+        type: object
+        properties: { instance: { type: string } }
+  resources:                # ui:// views relayed on the daemon /mcp gateway
+    - ui://bureau/screenshot
 ```
 
 - **Name**: `<prefix>_<name>`, from the single `exposedToolName` function. The
@@ -91,6 +100,28 @@ gateway builds its tool list per request). Per-agent policy:
   route honors it too, so `mcp-app --access read,write` needs `all`.
 - In deferred-tools mode these tools are lazy like every non-core tool: they
   appear through `tool_search`.
+
+An `imported:<alias>/<tool>` entry behaves like the original tool on the
+gateway:
+
+- Its result is the import's own `CallToolResult`, unchanged: content blocks
+  (images included), `structuredContent`, `isError` and `_meta`. A bundled tool
+  still answers with its output as one JSON text block.
+- Its `tools/list` entry carries the imported tool's `_meta.ui` (the MCP Apps
+  widget link, `resourceUri` unchanged), read from the import registry's cached
+  tool list.
+- When the entry declares `inputSchema` with `properties`, any other input key
+  is dropped before the imported call (unless `additionalProperties: true`).
+  This is how an exposed screenshot loses the import's file-writing `path`.
+
+`exposes.resources` is the per-app allowlist of `ui://` views: distinct
+`ui://` URIs, and at least one `imported:` entry to relay them from. The
+gateway registers exactly those URIs and relays their `resources/read` to the
+app's imports (first that answers wins). Any other URI is answered as an
+unknown resource, even when an import serves it, and `resources/list` shows
+only the allowlisted ones. `defaults.apps.exposedTools: off` registers none.
+The `/apps/:appId/tool-call` route (and so `mcp-app`) keeps its JSON-in-text
+envelope for an imported result.
 
 ## Daemon dependency
 

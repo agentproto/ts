@@ -92,7 +92,13 @@ export async function planExposedTools(
     }
 
     try {
-      parseExposedTools(declared, app.exposes?.prefix, m => new Error(m), { daemonToolNames: DAEMON_TOOL_NAMES })
+      parseExposedTools(
+        declared,
+        app.exposes?.prefix,
+        m => new Error(m),
+        { daemonToolNames: DAEMON_TOOL_NAMES },
+        app.exposes?.resources,
+      )
     } catch (err) {
       skipAll(`invalid exposes.tools: ${err instanceof Error ? err.message : String(err)}`)
       continue

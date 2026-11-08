@@ -831,7 +831,7 @@ export function normalizeManifestFields(
 
   let exposes: AppExposes = { agents: [], workflows: [] }
   if (input.exposes !== undefined) {
-    if (!isRecord(input.exposes)) throw fail("'exposes' must be an object { agents, workflows, prefix, tools }.")
+    if (!isRecord(input.exposes)) throw fail("'exposes' must be an object { agents, workflows, prefix, tools, resources }.")
     const agents = stringList(input.exposes.agents, "exposes.agents", fail)
     const workflows = stringList(input.exposes.workflows, "exposes.workflows", fail)
     for (const id of agents) {
@@ -848,12 +848,13 @@ export function normalizeManifestFields(
         )
       }
     }
-    const exposed = parseExposedTools(input.exposes.tools, input.exposes.prefix, fail)
+    const exposed = parseExposedTools(input.exposes.tools, input.exposes.prefix, fail, {}, input.exposes.resources)
     exposes = {
       agents,
       workflows,
       ...(exposed.prefix !== undefined ? { prefix: exposed.prefix } : {}),
       ...(exposed.tools.length > 0 ? { tools: exposed.tools } : {}),
+      ...(exposed.resources !== undefined && exposed.resources.length > 0 ? { resources: exposed.resources } : {}),
     }
   }
 

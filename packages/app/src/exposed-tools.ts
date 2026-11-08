@@ -25,6 +25,7 @@ const PREFIX_RE = /^[a-z][a-z0-9]{1,15}$/
 const MCP_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 const ENTRY_KEYS = new Set(["id", "access", "description", "inputSchema", "mcpName", "approvalArg"])
 const MUTATOR_TAGS = new Set(["mutator", "write"])
+const UI_RESOURCE_RE = /^ui:\/\/[^\s]+$/
 
 type Fail = (message: string) => Error
 
@@ -82,12 +83,47 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
 }
 
-/** Structural validation of `exposes.prefix` + `exposes.tools`. */
+/**
+ * Structural validation of `exposes.prefix` + `exposes.tools`, and of
+ * `exposes.resources` when given: a list of distinct `ui://` URIs the gateway
+ * may relay to the app's imported MCP servers, so it needs at least one
+ * `imported:` tool to relay from.
+ */
 export function parseExposedTools(
   rawTools: unknown,
   rawPrefix: unknown,
   fail: Fail,
   reserved: ExposedToolReservedNames = {},
+  rawResources?: unknown,
+): { prefix?: string; tools: AppExposedTool[]; resources?: string[] } {
+  const parsed = parseTools(rawTools, rawPrefix, fail, reserved)
+  if (rawResources === undefined) return parsed
+  const resources = parseExposedResources(rawResources, fail)
+  if (resources.length > 0 && !parsed.tools.some(t => t.id.startsWith("imported:"))) {
+    throw fail("'exposes.resources' needs an 'imported:' entry in 'exposes.tools': a resource is relayed from that import.")
+  }
+  return { ...parsed, resources }
+}
+
+/** `exposes.resources`: an array of distinct `ui://` URIs. */
+export function parseExposedResources(raw: unknown, fail: Fail): string[] {
+  if (!Array.isArray(raw)) throw fail("'exposes.resources' must be an array of 'ui://' URIs.")
+  const seen = new Set<string>()
+  raw.forEach((uri, i) => {
+    if (typeof uri !== "string" || !UI_RESOURCE_RE.test(uri)) {
+      throw fail(`'exposes.resources[${i}]' must be a 'ui://' URI, got ${JSON.stringify(uri)}.`)
+    }
+    if (seen.has(uri)) throw fail(`'exposes.resources[${i}]': duplicate URI '${uri}'.`)
+    seen.add(uri)
+  })
+  return [...seen]
+}
+
+function parseTools(
+  rawTools: unknown,
+  rawPrefix: unknown,
+  fail: Fail,
+  reserved: ExposedToolReservedNames,
 ): { prefix?: string; tools: AppExposedTool[] } {
   const daemonNames = new Set(reserved.daemonToolNames ?? [])
 

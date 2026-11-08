@@ -40,6 +40,10 @@ Collisions: (a) dans une app, deux entrées au même nom: erreur au load. (b) de
 - Schéma d'entrée réel: `inputSchema` ou `inputs` du TOOL.md converti comme `zodFromJsonInputs` (`to-mcp-tool.ts:119`), annotations MCP `readOnlyHint` (read) / `destructiveHint` (write, approve) via `resolveAnnotations` (`to-mcp-tool.ts:~142`).
 - CLI `agentproto mcp-app <appId>` (`cli/src/commands/mcp-app.ts`): remplace la boucle `:100` (`readDeclaredUITools`, `:86`) par les entrées `exposes.tools` filtrées par `--access read` (défaut; `--access read,write,approve` explicite), nom calculé, schéma réel, redirection vers `POST /apps/:appId/tool-call` avec l'id d'origine (`callScopedTool`, `:140`). `readDeclaredUITools` (`app-serve.ts:566`) lit le YAML brut sans validation: ajouter `readDeclaredExposedTools` qui passe par le validateur partagé. `app-mcp-server.ts` (standalone, `:52-54`) reste sur `ui.tools`, hors périmètre.
 
+### Outils importés et vues `ui://` (2026-11-08)
+
+Un id `imported:` se comporte sur le gateway comme l'outil d'origine: `performExposedToolCall` rend le `CallToolResult` de l'import tel quel (blocs, `structuredContent`, `isError`, `_meta`), `registerExposedAppTools` recopie son `_meta.ui` sur `tools/list` (depuis la liste en cache du registre d'imports), et une entrée qui déclare `inputSchema` ne transmet que les clés déclarées. `exposes.resources: string[]` (URI `ui://` distinctes, au moins une entrée `imported:`) est la liste blanche des vues: le gateway enregistre ces URI seulement et relaie leur `resources/read` vers les imports de l'app; toute autre URI reste inconnue, et `resources/list` n'est jamais relayé en entier. La route `/apps/:appId/tool-call` garde son enveloppe texte.
+
 ## 4. Politique par agent
 
 - `read`: enregistré pour tout appelant, sauf coupe-circuit opérateur `defaults.apps.exposedTools: "read"(défaut)|"off"|"all"`, relu à la requête comme `resolveMessagingDefaults` (`index.ts:~4287`).
