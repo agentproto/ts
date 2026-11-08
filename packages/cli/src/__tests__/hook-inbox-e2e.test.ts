@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createSessionsRegistry, startHttpServer, createRuntimeEvents, fileConversationStore } from "@agentproto/runtime"
@@ -74,5 +74,43 @@ describe("hook inbox end-to-end against a real gateway", () => {
     writes.length = 0
     expect(await run()).toBe(0)
     expect(writes.join("")).toContain("hello from e2e")
+  })
+
+  it("exposes hostSessionId and entrypoint from the Claude registration file on GET /sessions/cc:<id>", async () => {
+    const sessionsDir = join(tmp, "claude-sessions")
+    mkdirSync(sessionsDir)
+    writeFileSync(
+      join(sessionsDir, "4242.json"),
+      JSON.stringify({
+        sessionId: "chat-desk",
+        name: "Supervisor",
+        hostSessionId: "local_abc-123",
+        entrypoint: "claude-desktop-3p",
+      }),
+    )
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+    const payload = JSON.stringify({ session_id: "chat-desk", cwd: tmp })
+    expect(await runHook(["inbox"], { readStdin: async () => payload, env: {}, claudeSessionsDir: sessionsDir })).toBe(0)
+
+    const res = await fetch(`${base}/sessions/cc:chat-desk`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      id: "cc:chat-desk",
+      kind: "external",
+      externalHostSessionId: "local_abc-123",
+      externalEntrypoint: "claude-desktop-3p",
+    })
+  })
+
+  it("leaves both fields absent when the registration file has neither", async () => {
+    const sessionsDir = join(tmp, "claude-sessions-bare")
+    mkdirSync(sessionsDir)
+    writeFileSync(join(sessionsDir, "1.json"), JSON.stringify({ sessionId: "chat-bare", name: "Bare" }))
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+    const payload = JSON.stringify({ session_id: "chat-bare", cwd: tmp })
+    await runHook(["inbox"], { readStdin: async () => payload, env: {}, claudeSessionsDir: sessionsDir })
+    const row = (await (await fetch(`${base}/sessions/cc:chat-bare`)).json()) as Record<string, unknown>
+    expect(row.externalHostSessionId).toBeUndefined()
+    expect(row.externalEntrypoint).toBeUndefined()
   })
 })
