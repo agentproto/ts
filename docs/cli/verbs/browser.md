@@ -10,9 +10,11 @@ agentproto browser status  <session-id>            [--json]
 ```
 
 Manage browser service sessions (Camofox, Bureau, Chromium, chrome-live) registered on
-the local daemon. The daemon hosts the MCP tools (`start_browser`,
-`stop_browser`, …); the CLI is an HTTP wrapper over the same routes for
-shell scripting and inspection.
+the local daemon. The CLI is an HTTP wrapper over the daemon's
+`/sessions/browser` routes for shell scripting and inspection. The daemon's
+MCP browser tools no longer use these sessions: they forward to Bureau (see
+the runtime README), and `start_browser` / `stop_browser` / `browser_status`
+are gone. This verb is removed in P4b.
 
 Requires a running daemon ([`serve.md`](./serve.md) or
 [`daemon.md`](./daemon.md)). Discovery reads `~/.agentproto/runtime.json`.
@@ -38,27 +40,17 @@ kills only the Chrome it launched itself, never your Chrome. Cookies are
 read-only. See the
 [adapter README](../../../adapters/browser-chrome/README.md#chrome-live-your-running-chrome).
 
-`chrome-live` is also the only adapter that can screencast. The MCP tools
-`browser_screencast_start` / `browser_screencast_frame` /
-`browser_screencast_stop` stream the agent's **own tab** (CDP
-`Page.startScreencast` — never a foreign tab, never the desktop) as it
-works. `start` returns `viewPath` `/sessions/<sessionId>/screencast`:
-open it on the daemon's HTTP port for an HTML viewer, with `.mjpg`
-(MJPEG stream) and `.jpg` (latest frame) on the same path; to watch from
-another machine, put a tunnel over the daemon's HTTP port in front of it
-(see [`tunnel.md`](./tunnel.md)). `stop` encodes the frames buffered since
-`start` to an `mp4` in the session directory when `ffmpeg` is on `PATH`.
-
-With `defaults.browser.builtin: "proxy"` the three tools no longer refuse:
-they forward to Bureau's `browser_record_start` / `browser_record_frame` /
-`browser_record_stop`. Pass the owned `tabId` (Bureau requires it) and
-optionally `instance`; `start` also forwards `fps` and `format`, `stop`
-forwards `encode`. `quality`, `everyNthFrame`, `maxWidth` and `maxHeight` have
-no Bureau equivalent and are dropped, listed in the result's `notes`. The
-result is Bureau's own (no `viewPath`), and Bureau's error codes
+The MCP tools `browser_screencast_start` / `browser_screencast_frame` /
+`browser_screencast_stop` forward to Bureau's `browser_record_start` /
+`browser_record_frame` / `browser_record_stop`. Pass the owned `tabId` (Bureau
+requires it) and optionally `instance`; `start` also forwards `fps` and
+`format`, `stop` forwards `encode`. `quality`, `everyNthFrame`, `maxWidth` and
+`maxHeight` have no Bureau equivalent and are dropped, listed in the result's
+`notes`. The result is Bureau's own, and Bureau's error codes
 (`browser:not_owner`, `browser:recording_active`,
 `browser:recording_not_found`, `browser:recording_cancelled`) come back
-unchanged. In `"on"` mode nothing changes.
+unchanged. The daemon's `/sessions/<sessionId>/screencast` HTTP viewer only
+serves a chrome-live session started through this CLI.
 
 ## Subverbs
 

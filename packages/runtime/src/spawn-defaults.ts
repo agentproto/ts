@@ -32,6 +32,7 @@ import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
+import { reauthCommand, type ReauthHint } from "@agentproto/auth"
 import { providerEnvVar } from "./providers-store.js"
 import {
   layerContextSettings,
@@ -158,18 +159,15 @@ export interface SpawnDefaultsConfig {
   /** Browser integration (TARGET-STATE: Bureau owns the browser). */
   browser?: {
     /** How much of the built-in browser surface the daemon registers:
-     *  `"off"` keeps only `fetch_page` (a plain HTTP read); `"proxy"` forwards
-     *  the daemon browser tools to the `proxyImport` Bureau server and refuses
-     *  the ones Bureau has no twin for (`browser:use_bureau`); `"on"` is
-     *  today's behaviour. Default `"on"`, and a config that only names
-     *  `proxyImport` stays `"on"` so existing installs keep exactly their old
-     *  behaviour. Read in the per-`/mcp`-session registration pass, so a
-     *  change applies on the next MCP session. */
+     *  `"off"` keeps only `fetch_page` (a plain HTTP read); `"proxy"` (the
+     *  default) forwards the daemon browser tools to the `proxyImport`
+     *  Bureau server. `"on"` is the retired chrome-live mode, still accepted
+     *  and read as `"proxy"` with a warning. Read in the per-`/mcp`-session
+     *  registration pass, so a change applies on the next MCP session. */
     builtin?: "off" | "proxy" | "on"
-    /** Alias of an imported MCP that is a Bureau server (e.g. `bureau`).
-     *  Set: the daemon's browser interaction tools forward to the
-     *  Bureau tool of the same name, and the built-in `browser` bundle
-     *  mounts that import. Unset: every tool behaves exactly as before. */
+    /** Alias of the imported MCP that is a Bureau server; the daemon browser
+     *  tools forward to it, `"bureau"` when unset. A set value also makes the
+     *  built-in `browser` bundle mount that import. */
     proxyImport?: string
   }
   contextContinuity?: ContextContinuityPolicy
@@ -1242,13 +1240,18 @@ export const FILE_BASED_AUTH_SOURCES: ReadonlySet<string> = new Set(["codex", "g
  */
 export class SubscriptionSourceError extends Error {
   readonly code: "unsupported_auth_source" | "auth_source_unresolved"
+  /** Set when logging in again fixes it: the exact `agentproto auth reauth ...`
+   *  command, mirrored in the message and surfaced as `details.reauth`. */
+  readonly reauth?: ReauthHint
   constructor(
     code: "unsupported_auth_source" | "auth_source_unresolved",
     message: string,
+    reauth?: ReauthHint,
   ) {
     super(message)
     this.name = "SubscriptionSourceError"
     this.code = code
+    if (reauth !== undefined) this.reauth = reauth
   }
 }
 
@@ -1316,6 +1319,11 @@ export async function resolveSubscriptionCredential(
           `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`
       throw new SubscriptionSourceError("unsupported_auth_source", message)
     }
+    const claudeReauth: ReauthHint = {
+      command: reauthCommand(CLAUDE_CODE_OAUTH_SOURCE),
+      source: CLAUDE_CODE_OAUTH_SOURCE,
+      reason: "missing",
+    }
     let token: string
     try {
       token = await resolveSourceToken(input.source)
@@ -1323,15 +1331,18 @@ export async function resolveSubscriptionCredential(
       throw new SubscriptionSourceError(
         "auth_source_unresolved",
         `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
-          `found — run \`claude\` and /login (or \`claude setup-token\`) first ` +
-          `(${err instanceof Error ? err.message : String(err)}).`,
+          `found — run \`${claudeReauth.command}\` (or \`claude\` and /login, or \`claude setup-token\`) ` +
+          `to log in again (${err instanceof Error ? err.message : String(err)}).`,
+        claudeReauth,
       )
     }
     if (!token) {
       throw new SubscriptionSourceError(
         "auth_source_unresolved",
         `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
-          `found — run \`claude\` and /login (or \`claude setup-token\`) first.`,
+          `found — run \`${claudeReauth.command}\` (or \`claude\` and /login, or \`claude setup-token\`) ` +
+          `to log in again.`,
+        claudeReauth,
       )
     }
     return { credential: token, source: CLAUDE_CODE_OAUTH_SOURCE }

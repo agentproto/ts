@@ -11,117 +11,76 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 
 import { registerBrowserTools } from "../browser-tools.js"
-import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import {
   configureBrowserObservers,
   loadBrowserObserverModule,
   registerBrowserObserver,
   resetBrowserObservers,
-  type BrowserAttachEvent,
   type BrowserObserver,
 } from "../browser-observers.js"
 
+// Attach/detach events came from the retired `start_browser`; P4b deletes
+// this seam once Pygmalion's recorder moves to Bureau. The per-call hooks
+// and the screenshot transform still wrap the Bureau-relayed tools.
+
+const SHOT = { data: "AAAA", format: "png", width: 100, height: 50 }
+
 let tmp: string
-let registry: SessionsRegistry
 let filled: unknown[]
-let evaluated: unknown[]
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "browser-observers-test-"))
-  registry = createSessionsRegistry({ persistPath: join(tmp, "sessions.json") })
   filled = []
-  evaluated = []
   configureBrowserObservers({ log: () => {} })
 })
 
 afterEach(() => {
   resetBrowserObservers()
-  registry.shutdown()
   rmSync(tmp, { recursive: true, force: true })
 })
 
 async function setup() {
   const server = new McpServer({ name: "test-browser", version: "0.0.1" })
   registerBrowserTools(server, {
-    registry,
-    resolveBrowserAdapter: id =>
-      id === "chrome-live"
-        ? {
-            id,
-            name: "Chrome Live",
-            description: "fake",
-            defaultPort: 9222,
-            healthPath: "/json/version",
-            ensure: async () => ({
-              id,
-              port: 9222,
-              baseUrl: "http://127.0.0.1:9222",
-              wasAlreadyRunning: true,
-              healthy: true,
-              stop: async () => {},
-              screenshot: async () => ({ data: "AAAA", format: "png" as const, width: 100, height: 50 }),
-              fill: async options => {
-                filled.push(options)
-              },
-              click: async () => {},
-              evaluate: async options => {
-                evaluated.push(options)
-                return { value: "page-value" as never, truncated: false }
-              },
-            }),
-          }
-        : undefined,
+    loadProxyImport: async () => "bureau",
+    mcpProxy: {
+      callTool: async (_alias, toolName, args) => {
+        if (toolName === "browser_fill") filled.push(args)
+        const body: Record<string, unknown> = toolName === "browser_screenshot" ? { ...SHOT } : { ok: true }
+        return { ok: true, result: { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body } }
+      },
+    },
   })
   const [ct, st] = InMemoryTransport.createLinkedPair()
   await server.connect(st)
   const client = new Client({ name: "test-client", version: "0.0.1" })
   await client.connect(ct)
-  const started = await client.callTool({ name: "start_browser", arguments: { adapter: "chrome-live" } })
-  const { sessionId } = JSON.parse((started.content as Array<{ text: string }>)[0]!.text) as { sessionId: string }
-  return { client, sessionId }
+  return { client, sessionId: "s" }
 }
 
 describe("O1: empty by default", () => {
   it("returns the same screenshot and fill results with no observer", async () => {
     const { client, sessionId } = await setup()
     const shot = await client.callTool({ name: "browser_screenshot", arguments: { sessionId } })
-    expect(shot.structuredContent).toEqual({ data: "AAAA", format: "png", width: 100, height: 50 })
+    expect(shot.structuredContent).toMatchObject(SHOT)
     const fill = await client.callTool({ name: "browser_fill", arguments: { sessionId, selector: "#q", value: "x" } })
     expect(fill.isError).toBeFalsy()
   })
 })
 
-describe("O5: attach, detach, calls", () => {
-  it("fires attach once, paired before/after per call, and detach exactly once", async () => {
+describe("O5: calls", () => {
+  it("fires paired before/after hooks per call", async () => {
     const events: string[] = []
     registerBrowserObserver("t", {
-      onAttach: e => void events.push(`attach:${e.provider}`),
-      onDetach: e => void events.push(`detach:${e.reason}`),
       beforeCall: e => void events.push(`before:${e.tool}:${e.callId}`),
       afterCall: e => void events.push(`after:${e.tool}:${e.callId}:${e.ok}`),
     })
     const { client, sessionId } = await setup()
     await client.callTool({ name: "browser_click", arguments: { sessionId, selector: "#go" } })
-    await client.callTool({ name: "stop_browser", arguments: { sessionId } })
-    await client.callTool({ name: "stop_browser", arguments: { sessionId } })
-    expect(events[0]).toBe("attach:chrome-live")
     const before = events.find(e => e.startsWith("before:click"))!
     const after = events.find(e => e.startsWith("after:click"))!
     expect(before.split(":")[2]).toBe(after.split(":")[2])
     expect(after.endsWith(":true")).toBe(true)
-    expect(events.filter(e => e.startsWith("detach"))).toEqual(["detach:stop"])
-  })
-})
-
-describe("O5: capture handle on attach", () => {
-  it("lets the observer screenshot and evaluate on the owned tab", async () => {
-    let handle: BrowserAttachEvent["capture"]
-    registerBrowserObserver("t", { onAttach: e => void (handle = e.capture) })
-    await setup()
-    expect(handle).toBeDefined()
-    expect(await handle!.screenshot("tab-1")).toMatchObject({ data: "AAAA", format: "png" })
-    expect(await handle!.evaluate("1+1", "tab-1")).toBe("page-value")
-    expect(evaluated).toEqual([{ expression: "1+1", returnByValue: true }])
   })
 })
 
@@ -150,9 +109,6 @@ describe("O7: redaction before the observer is called", () => {
 describe("O4: best-effort observers", () => {
   it("a throwing observer does not change the tool result", async () => {
     registerBrowserObserver("bad", {
-      onAttach: () => {
-        throw new Error("boom")
-      },
       beforeCall: () => {
         throw new Error("boom")
       },
@@ -163,7 +119,7 @@ describe("O4: best-effort observers", () => {
     const { client, sessionId } = await setup()
     const shot = await client.callTool({ name: "browser_screenshot", arguments: { sessionId } })
     expect(shot.isError).toBeFalsy()
-    expect(shot.structuredContent).toEqual({ data: "AAAA", format: "png", width: 100, height: 50 })
+    expect(shot.structuredContent).toMatchObject(SHOT)
   })
 
   it("a hung observer delays the call by at most its budget", async () => {

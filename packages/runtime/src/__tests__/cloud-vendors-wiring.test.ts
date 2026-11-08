@@ -53,14 +53,17 @@ function parseToolJson(result: unknown): any {
   return JSON.parse(text)
 }
 
-async function setup(startSession: (...args: any[]) => Promise<AgentSessionLike>) {
+async function setup(
+  startSession: (...args: any[]) => Promise<AgentSessionLike>,
+  extra: { daemonMcpUrl?: string } = {},
+) {
   const registry = createSessionsRegistry({ persist: false })
   const resolveAgentAdapter = vi.fn<AgentAdapterResolver>(async () => ({
     startSession: startSession as any,
     commandPreview: "mock-adapter",
   }))
   const server = new McpServer({ name: "agent-start-cloud-server", version: "0.0.0" })
-  registerAgentTools(server, { registry, resolveAgentAdapter })
+  registerAgentTools(server, { registry, resolveAgentAdapter, ...extra })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "agent-start-cloud-client", version: "0.0.0" })
@@ -194,6 +197,54 @@ describe("agent_start - cloud spawn", () => {
     const desc = registry.get(body.id)
     expect(cloudMetaOf(desc as any)).toEqual({ vendor: "anthropic" })
     expect(cloudSessionIdOf(desc as any)).toBeUndefined()
+  })
+
+  it("a cloud spawn with default mounts reaches the adapter with no mcpServers (AIP-66 section 4)", async () => {
+    const startSession = vi.fn(async (_opts: Record<string, any>) => mockSession("acp_uuid_nomcp"))
+    // A daemon with a /mcp URL: on-host spawns get the self-mount by default,
+    // which the vendor-owned harness cannot take.
+    const { client } = await setup(startSession, { daemonMcpUrl: "http://127.0.0.1:1/mcp" })
+
+    const body = parseToolJson(
+      await client.callTool({
+        name: "agent_start",
+        arguments: { adapter: "claude-code", cloud: "anthropic", prompt: "hi", cwd: "/tmp" },
+      }),
+    )
+    expect(body.id).toMatch(/^sess_/)
+    const opts = startSession.mock.calls[0]![0] as Record<string, any>
+    expect(opts.mcpServers ?? []).toEqual([])
+
+    // An explicit mcpServers stays refused by name.
+    const refused = (await client.callTool({
+      name: "agent_start",
+      arguments: { adapter: "claude-code", cloud: "anthropic", mcpServers: [{ name: "x" }] },
+    })) as { isError?: boolean; content?: Array<{ text?: string }> }
+    expect(refused.isError).toBe(true)
+    expect(refused.content?.[0]?.text).toContain("mcpServers")
+  })
+
+  it("a cloud spawn with `orchestrator: true` mounts nothing and warns (AIP-66 section 4)", async () => {
+    const startSession = vi.fn(async (_opts: Record<string, any>) => mockSession("acp_uuid_noorch"))
+    const { client } = await setup(startSession, { daemonMcpUrl: "http://127.0.0.1:1/mcp" })
+
+    const body = parseToolJson(
+      await client.callTool({
+        name: "agent_start",
+        arguments: {
+          adapter: "claude-code",
+          cloud: "anthropic",
+          orchestrator: true,
+          prompt: "hi",
+          cwd: "/tmp",
+        },
+      }),
+    )
+    expect(body.id).toMatch(/^sess_/)
+    const opts = startSession.mock.calls[0]![0] as Record<string, any>
+    // No scoped-orchestrator (or any other) MCP entry reaches the adapter.
+    expect(opts.mcpServers ?? []).toEqual([])
+    expect(body.warnings?.some((w: string) => w.includes("orchestrator"))).toBe(true)
   })
 
   it("re-attach prefers meta.cloud.sessionId over the ACP uuid as the resume target", async () => {
