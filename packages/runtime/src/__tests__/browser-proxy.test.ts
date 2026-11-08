@@ -301,7 +301,7 @@ describe("relayed tools forward to Bureau with the caller identity", () => {
         expect(proxy?.callTool).toHaveBeenCalledWith("bureau", c.target, c.expectedArgs, {
           callerSessionId: CALLER,
         })
-        expect((res.structuredContent as { deprecated?: string }).deprecated).toContain("proxy to Bureau")
+        expect((res.structuredContent as { deprecated?: string }).deprecated).toContain("Answered by Bureau")
         expect((res.structuredContent as { notes?: string[] }).notes ?? []).toEqual(c.expectedNotes)
       } finally {
         await cleanup()
@@ -619,6 +619,62 @@ describe("a missing Bureau import gives a clear error", () => {
       const res = await client.callTool({ name: "browser_screenshot", arguments: {} })
       expect(res.isError).toBe(true)
       expect(textOf(res)).toContain("browser_screenshot: Bureau is not reachable")
+    } finally {
+      await cleanup()
+    }
+  })
+})
+
+describe("browser proxy - result is never hidden by the deprecation marker", () => {
+  const TEXT_ONLY = {
+    content: [{ type: "text" as const, text: '{"tabs":[{"id":"t1"}]}' }],
+  }
+
+  it("a text-only Bureau result keeps its content first and gets no structuredContent", async () => {
+    const { client, cleanup } = await makeSetup({ proxy: fakeProxy(TEXT_ONLY) })
+    try {
+      const res = await client.callTool({ name: "browser_list_tabs", arguments: {} })
+      expect(res.isError).toBeFalsy()
+      expect(res.structuredContent).toBeUndefined()
+      const content = res.content as Array<{ type: string; text: string }>
+      expect(content[0]).toEqual(TEXT_ONLY.content[0])
+      expect(content.at(-1)?.text).toContain("Answered by Bureau")
+      const meta = res._meta as Record<string, { deprecated?: string }>
+      expect(meta["agentproto/deprecated"]?.deprecated).toContain("Answered by Bureau")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("a Bureau result with structuredContent keeps its fields and carries the marker", async () => {
+    const upstream = {
+      content: [{ type: "text" as const, text: '{"tabs":[]}' }],
+      structuredContent: { tabs: [] },
+    }
+    const { client, cleanup } = await makeSetup({ proxy: fakeProxy(upstream) })
+    try {
+      const res = await client.callTool({ name: "browser_list_tabs", arguments: {} })
+      const sc = res.structuredContent as { tabs: unknown[]; deprecated?: string }
+      expect(sc.tabs).toEqual([])
+      expect(sc.deprecated).toContain("Answered by Bureau")
+      expect(res.content).toEqual(upstream.content)
+      const meta = res._meta as Record<string, { deprecated?: string }>
+      expect(meta["agentproto/deprecated"]?.deprecated).toContain("Answered by Bureau")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("lists the argument notes in _meta when upstream is text-only", async () => {
+    const { client, cleanup } = await makeSetup({ proxy: fakeProxy(TEXT_ONLY) })
+    try {
+      const res = await client.callTool({
+        name: "browser_navigate",
+        arguments: { sessionId: "s", url: "https://example.com" },
+      })
+      expect(res.structuredContent).toBeUndefined()
+      const meta = res._meta as Record<string, { notes?: string[] }>
+      expect(meta["agentproto/deprecated"]?.notes).toEqual([SESSION_NOTE])
     } finally {
       await cleanup()
     }

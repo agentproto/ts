@@ -27,7 +27,8 @@
  * (`browser_screencast_start` drops `quality`, `everyNthFrame`, `maxWidth` and
  * `maxHeight`; Bureau's recorder is driven by `fps` and `format`).
  *
- * Every successful proxied result carries `deprecated`; a Bureau tool error
+ * Every successful proxied result carries the `deprecated` marker in `_meta`
+ * (never in a `structuredContent` the upstream did not send); a Bureau tool error
  * is returned unchanged (a caller relies on its own code, e.g.
  * `browser:not_owner`).
  */
@@ -37,7 +38,11 @@ import type { ProxyCallContext, ProxyCallOutcome } from "./mcp-proxy.js"
 import { extractPageText } from "./page-text.js"
 
 export const BROWSER_PROXY_DEPRECATED =
-  "The daemon browser_* tools proxy to Bureau: mount the Bureau MCP and call its tools directly."
+  "Answered by Bureau through the daemon's deprecated browser_* proxy. " +
+  "Prefer calling Bureau's own tools (bureau MCP or the Bureau app's exposed tools)."
+
+/** The `_meta` key carrying the deprecation marker on a proxied result. */
+export const BROWSER_PROXY_META_KEY = "agentproto/deprecated"
 
 /** How much of the built-in browser surface the daemon registers. */
 export type BrowserBuiltinMode = "off" | "proxy"
@@ -257,9 +262,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Mark a successful upstream result as proxied. The marker rides on the
- * top level and on `structuredContent` (what a modern client reads); the
- * original `content` blocks are preserved.
+ * Mark a successful upstream result as proxied without hiding it. The marker
+ * always rides in `_meta`. When upstream answered with `structuredContent` it
+ * is merged there too; otherwise no `structuredContent` is created (a client
+ * that reads it first would show only the marker) and the notice is a trailing
+ * text block after the untouched upstream `content`.
  */
 function markDeprecated(result: unknown, notes: readonly string[]): Record<string, unknown> {
   const base = isRecord(result) ? result : {}
@@ -267,13 +274,13 @@ function markDeprecated(result: unknown, notes: readonly string[]): Record<strin
     deprecated: BROWSER_PROXY_DEPRECATED,
     ...(notes.length > 0 ? { notes: [...notes] } : {}),
   }
-  return {
-    ...base,
-    ...marker,
-    ...(isRecord(base.structuredContent)
-      ? { structuredContent: { ...base.structuredContent, ...marker } }
-      : { structuredContent: marker }),
+  const meta = { ...(isRecord(base._meta) ? base._meta : {}), [BROWSER_PROXY_META_KEY]: marker }
+  if (isRecord(base.structuredContent)) {
+    return { ...base, _meta: meta, structuredContent: { ...base.structuredContent, ...marker } }
   }
+  const content = Array.isArray(base.content) ? base.content : []
+  const notice = [BROWSER_PROXY_DEPRECATED, ...notes.map(n => `note: ${n}`)].join("\n")
+  return { ...base, _meta: meta, content: [...content, { type: "text", text: notice }] }
 }
 
 function errorResult(text: string): CallToolResult {
