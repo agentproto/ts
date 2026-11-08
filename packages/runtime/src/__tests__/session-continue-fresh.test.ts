@@ -64,6 +64,7 @@ const fakeRegistry = {
   setPromptPolicy: vi.fn(),
   setOperator: vi.fn(),
   setToolDenyGrants: vi.fn(),
+  setExposedToolOptIn: vi.fn(),
   setPinned: vi.fn(),
 } as unknown as SpawnAgentSessionDeps["registry"]
 
@@ -86,6 +87,7 @@ describe("continueAgentSessionFresh", () => {
     fakeRegistry.setPromptPolicy = vi.fn()
     fakeRegistry.setOperator = vi.fn()
     fakeRegistry.setToolDenyGrants = vi.fn()
+    fakeRegistry.setExposedToolOptIn = vi.fn()
     fakeRegistry.setPinned = vi.fn(() => ({ id: "sess_new" }) as SessionDescriptor)
     wireMarkRetired()
   })
@@ -412,6 +414,26 @@ describe("continueAgentSessionFresh", () => {
     expect(fakeRegistry.setToolDenyGrants).toHaveBeenCalledWith("sess_new", grants)
     const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
     expect((input as unknown as Record<string, unknown>).toolDenyGrants).toBeUndefined()
+  })
+
+  it("copies exposedToolOptIn from the source row onto the fresh session, and stamps none when the source has none", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const prev = { ...makePrev(), exposedToolOptIn: ["jobkit_leads_upsert"] } as unknown as SessionDescriptor
+    await continueAgentSessionFresh({ registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }, prev, {
+      baseDir: "/tmp/checkpoints",
+    })
+    expect(fakeRegistry.setExposedToolOptIn).toHaveBeenCalledWith("sess_new", ["jobkit_leads_upsert"])
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect((input as unknown as Record<string, unknown>).exposedToolOptIn).toBeUndefined()
+
+    vi.mocked(fakeRegistry.setExposedToolOptIn).mockClear()
+    await continueAgentSessionFresh({ registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }, makePrev(), {
+      baseDir: "/tmp/checkpoints",
+    })
+    expect(fakeRegistry.setExposedToolOptIn).not.toHaveBeenCalled()
   })
 
   it("stamps no toolDenyGrants on the fresh session when the source row has none", async () => {

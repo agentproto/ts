@@ -225,6 +225,8 @@ export interface SpawnDefaultsConfig {
      *  when its creds are registered, else `cloudflare-managed` when
      *  registered, else `cloudflare-quick` (reported as not stable). */
     exposeProvider?: string
+    /** Which installed-app `exposes.tools` the /mcp gateway registers. Default "read". */
+    exposedTools?: "off" | "read" | "all"
   }
   /** Inter-session messaging policy (AIP-46 §Session messages). */
   messaging?: {

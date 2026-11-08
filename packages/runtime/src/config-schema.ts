@@ -273,7 +273,13 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .optional(),
     traceRedactor: z.string().optional(),
     agentPromptInterrupt: z.boolean().optional(),
-    apps: z.object({ exposeProvider: z.string().min(1).optional() }).passthrough().optional(),
+    apps: z
+      .object({
+        exposeProvider: z.string().min(1).optional(),
+        exposedTools: z.enum(["off", "read", "all"]).optional(),
+      })
+      .passthrough()
+      .optional(),
     messaging: z
       .object({
         allowSiblings: z.boolean().optional(),
@@ -1595,6 +1601,20 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help:
       "Tunnel provider slug for an app service that declares `expose` (AIP-53). Unset: " +
       "cloudflare-provisioned when registered, else cloudflare-managed, else cloudflare-quick (not stable).",
+  },
+  {
+    path: "defaults.apps.exposedTools",
+    schema: z.enum(["off", "read", "all"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "App exposed tools on the MCP gateway",
+    help:
+      "Which `exposes.tools` of installed apps the /mcp gateway registers as `<prefix>_<name>`. " +
+      "\"read\" (default): access: read tools for every caller; write/approve tools only for a caller whose AGENT.md opted in " +
+      "(`tools: [{kind: mcp, server: agentproto, allow: [...]}]`). \"off\": none. \"all\": every declared tool for every caller. " +
+      "A deny always wins. Takes effect on the next /mcp request.",
+    default: "read",
   },
   {
     path: "defaults.traceRedactor",

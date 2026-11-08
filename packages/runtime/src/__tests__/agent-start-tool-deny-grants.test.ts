@@ -21,7 +21,7 @@ function parseToolJson(result: unknown): any {
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content
   const text = content?.find(c => c.type === "text")?.text
   if (!text) throw new Error("tool returned no text content")
-  return JSON.parse(text)
+  try { return JSON.parse(text) } catch { throw new Error(text) }
 }
 
 const fakeSession = (): AgentSessionLike => ({
@@ -108,6 +108,31 @@ describe("agent_start from an AGENT.md records its tool deny grants on the descr
       expect(desc, id).toBeDefined()
       expect("toolDenyGrants" in desc!, id).toBe(false)
     }
+  })
+
+  it("records the mcp allow entries on the descriptor as exposedToolOptIn, next to the deny grants", async () => {
+    const path = await writeAgent("optin", [
+      "tools:",
+      "  - kind: mcp",
+      "    server: agentproto",
+      "    allow: [jobkit_leads_upsert, bureau_navigate]",
+      "    deny: [cron_create]",
+      "  - kind: mcp",
+      "    server: agentpush",
+      "    allow: [send_message]",
+    ])
+    const { registry, start } = await setup()
+    const body = await start(path)
+    expect(registry.get(body.id)?.exposedToolOptIn).toEqual(["jobkit_leads_upsert", "bureau_navigate"])
+    expect(registry.get(body.id)?.toolDenyGrants).toHaveLength(1)
+  })
+
+  it("records no exposedToolOptIn for a manifest without an agentproto allow, nor for a spawn with no AGENT.md", async () => {
+    const { registry, start } = await setup()
+    const body = await start(await writeAgent("noallow", ["tools:", "  - kind: mcp", "    server: agentproto", "    deny: [cron_create]"]))
+    expect("exposedToolOptIn" in registry.get(body.id)!).toBe(false)
+    const desc = registry.spawnAgent({ workspaceSlug: "default", cwd: home, agentSession: fakeSession(), adapterSlug: "mock" })
+    expect("exposedToolOptIn" in registry.get(desc.id)!).toBe(false)
   })
 
   it("records no field for a spawn with no AGENT.md", async () => {

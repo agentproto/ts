@@ -193,6 +193,8 @@ import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { resolveNoCallerIdentity } from "./mcp-config.js"
+import { registerExposedAppTools } from "./app-exposed-tools.js"
+import { resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import type { AnonymousMessageApprovalDetail } from "./message-tools.js"
 import { resolveTaskDefaults } from "./task-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
@@ -4891,6 +4893,16 @@ export async function createGateway(
       new Set(builtinPanelApps.map(app => app.id)),
     )
     registerMcpApps(server, [...builtinPanelApps, ...installedAppUiApps])
+    // Installed apps' `exposes.tools` as `<prefix>_<name>`. Registered through
+    // the wrapped `server`, so ?denyTools / ?allowTools / the caller's deny
+    // grants (gatedServer) all apply; the caller's AGENT.md opt-in decides
+    // whether a write/approve tool is offered. Read fresh per request.
+    await registerExposedAppTools(server, {
+      appRegistry,
+      mode: await resolveExposedToolsMode(),
+      optIn: callerSessionId ? sessions.get(callerSessionId)?.exposedToolOptIn : undefined,
+      callImportedTool: (alias, tool, args) => callImportedAppTool(alias, tool, args, callerSessionId),
+    })
     // Server-side per-session summariser backing the agents-overview panel.
     // Heuristic today (no LLM in @agentproto/runtime) — see summarize-session-tool.ts.
     registerSummarizeSessionTool(server, {

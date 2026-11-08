@@ -590,9 +590,11 @@ export async function readDeclaredUITools(appDir: string): Promise<string[] | un
 /**
  * The app's `exposes.tools`, validated by the same rules `defineApp` applies
  * (plus the daemon-name checks only the CLI/daemon can make) and resolved to
- * MCP name + real input schema. `undefined` when the app declares none (the
- * caller falls back to `ui.tools`); throws with the first violated rule when
- * the block is invalid, so a bad APP.md never half-registers.
+ * MCP name + real input schema. `undefined` only when the app declares no
+ * `exposes.tools` key at all (the caller falls back to `ui.tools`); a
+ * malformed value (not an array) throws instead of silently falling back, as
+ * does the first violated rule, so a bad APP.md never half-registers. An
+ * explicit `[]` resolves to `[]` (nothing exposed).
  */
 export async function readDeclaredExposedTools(appDir: string): Promise<ResolvedExposedTool[] | undefined> {
   const appMdPath = join(appDir, ".agentproto", "APP.md")
@@ -606,19 +608,14 @@ export async function readDeclaredExposedTools(appDir: string): Promise<Resolved
   const exposes = data.exposes
   if (!exposes || typeof exposes !== "object") return undefined
   const rawTools = (exposes as Record<string, unknown>).tools
-  if (!Array.isArray(rawTools) || rawTools.length === 0) return undefined
+  if (rawTools === undefined) return undefined
 
   const fail = (msg: string) => new Error(`${appMdPath}: ${msg}`)
   const parsed = parseExposedTools(rawTools, (exposes as Record<string, unknown>).prefix, fail, {
     daemonToolNames: DAEMON_TOOL_NAMES,
   })
-  const ui = data.ui
-  const uiTools =
-    ui && typeof ui === "object" && Array.isArray((ui as Record<string, unknown>).tools)
-      ? ((ui as Record<string, unknown>).tools as unknown[]).filter((t): t is string => typeof t === "string")
-      : undefined
   const { tools: bundled } = await loadAppBundledTools(appDir)
-  validateExposedToolsAgainstBundle(parsed, { tools: bundled, uiTools }, fail)
+  validateExposedToolsAgainstBundle(parsed, { tools: bundled }, fail)
   return resolveExposedTools(parsed, bundled)
 }
 

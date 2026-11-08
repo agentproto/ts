@@ -132,11 +132,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       ? { tools: Object.freeze(fields.exposes.tools.map(t => Object.freeze({ ...t }))) }
       : {}),
   })
-  validateExposedToolsAgainstBundle(
-    exposes,
-    { tools, uiTools: def.ui?.tools },
-    msg => new AppDefinitionError(msg),
-  )
+  validateExposedToolsAgainstBundle(exposes, { tools }, msg => new AppDefinitionError(msg))
   const accepts = Object.freeze({ ...fields.accepts })
   const uiExtensions =
     def.ui === undefined || def.ui.extensions === undefined

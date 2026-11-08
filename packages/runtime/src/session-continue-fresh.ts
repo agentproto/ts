@@ -463,6 +463,7 @@ async function continueAgentSessionFreshOnce(
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
   if (prev.operator) registry.setOperator(fresh.id, prev.operator, prev.operatorDigest)
   if (prev.toolDenyGrants) registry.setToolDenyGrants(fresh.id, prev.toolDenyGrants)
+  if (prev.exposedToolOptIn) registry.setExposedToolOptIn(fresh.id, prev.exposedToolOptIn)
   // `pinned` (and its `pinnedOrder` slot) survives a continuation exactly like
   // `keepAlive` above: it is the only flag exempting a keepAlive row from the
   // boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`), so dropping

@@ -471,6 +471,24 @@ describe("session_restart", () => {
     registry.shutdown()
   })
 
+  it("carries exposedToolOptIn forward onto the restarted session's new id", async () => {
+    const { client, registry, close } = await buildHarness()
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      exposedToolOptIn: ["jobkit_leads_upsert"],
+    } as never)
+    expect(registry.get(prev.id)).toMatchObject({ exposedToolOptIn: ["jobkit_leads_upsert"] })
+    registry.kill(prev.id)
+    const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
+    expect(result.isError).toBeFalsy()
+    expect(registry.get(toolJson(result).id as string)).toMatchObject({ exposedToolOptIn: ["jobkit_leads_upsert"] })
+    await close()
+    registry.shutdown()
+  })
+
   it("carries toolDenyGrants forward onto the restarted session's new id, and adds none when the source had none", async () => {
     const { client, registry, close } = await buildHarness()
     const grants = [

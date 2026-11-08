@@ -24,6 +24,7 @@ import "./sentinel-platform.js"
 
 import { buildLabeledStatsReport } from "./process-stats.js"
 import { loadConfig } from "./config.js"
+import { resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
@@ -14148,8 +14149,13 @@ async function handleAppUiToolCall(
         : {}
   }
   const installed = appRegistry.getApp(appId)
-  const result = installed?.ui
-    ? await performAppToolCall(appRegistry, { appId, tool, args }, deps, linkClaims)
+  const result = installed?.ui || (installed?.exposes?.tools?.length ?? 0) > 0
+    ? await performAppToolCall(
+        appRegistry,
+        { appId, tool, args },
+        { ...deps, exposedToolsMode: await resolveExposedToolsMode() },
+        linkClaims,
+      )
     : await performBuiltinPanelToolCall(
         resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))?.tools,
         { appId, tool, args },

@@ -133,10 +133,9 @@ describe("exposes.tools through loadAppHandle / defineApp", () => {
     ).rejects.toThrow(/jobkit\.ghost.*TOOL\.md/)
   })
 
-  it("refuses (temporary rule) an exposed id that is not in ui.tools", async () => {
-    await expect(
-      loadWith(exposesYaml("jobkit", [read("jobkit.list")], ["jobkit.other"]), [{ id: "jobkit.list" }]),
-    ).rejects.toThrow(/ui\.tools/)
+  it("loads an exposed id that is not in ui.tools (the daemon dispatches exposes.tools itself)", async () => {
+    const app = await loadWith(exposesYaml("jobkit", [read("jobkit.list")], ["jobkit.other"]), [{ id: "jobkit.list" }])
+    expect(app.exposes.tools?.map(t => t.id)).toEqual(["jobkit.list"])
   })
 
   it("refuses an approval* id", async () => {
