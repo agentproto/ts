@@ -152,15 +152,26 @@ Each rung has exactly one owner — don't reach into the next one.
    provisions arrives gate-ready. A worktree made by bare `git worktree add`
    still needs both by hand.
 
-   **Share the build cache across worktrees: export `TURBO_CACHE_DIR`.**
-   `pnpm build` runs through turbo, whose filesystem cache otherwise lives in
-   each worktree's own `.turbo/` — so every worktree rebuilds all ~103 tasks
-   from cold (~53s) even when another worktree already built the identical
-   inputs. Pointing every worktree at one directory turns that into a cache
-   restore, and a hit needs no `node_modules` at all: turbo just unpacks
-   `dist/`. CI shares the same artifacts over the remote cache
-   (`TURBO_API`/`TURBO_TEAM`/`TURBO_TOKEN`, see `.github/workflows/ci.yml`);
-   `TURBO_CACHE_DIR` is the local, offline, zero-credential equivalent.
+   **The build cache is already shared across worktrees `agentproto worktree
+   new` provisions: `TURBO_CACHE_DIR` only needs a manual export for a
+   worktree made by bare `git worktree add`.** `pnpm build` runs through
+   turbo, whose filesystem cache otherwise lives in each worktree's own
+   `.turbo/`, so every worktree would rebuild all ~103 tasks from cold
+   (~53s) even when another worktree already built the identical inputs.
+   `runSetup` (`packages/worktree/src/lifecycle.ts`) closes that for you: it
+   points every `worktree.setup` hook's env at one shared directory
+   (`resolveWorktreesTurboCacheDir`, `packages/worktree/src/env.ts`:
+   `AGENTPROTO_WORKTREES_TURBO_CACHE_DIR` override > an already-exported
+   `TURBO_CACHE_DIR` > `~/.agentproto/turbo-cache`), so the `pnpm build` the
+   setup hook runs restores from cache instead of paying that cost, and
+   `agentproto worktree new`'s non-JSON output prints the resolved path so
+   you can `export TURBO_CACHE_DIR=...` the same value for builds you run
+   manually, later, in a plain shell (that injection covers only the setup
+   run itself; a fresh shell has no memory of it). CI shares the same
+   artifacts over the remote cache (`TURBO_API`/`TURBO_TEAM`/`TURBO_TOKEN`,
+   see `.github/workflows/ci.yml`); `TURBO_CACHE_DIR` is the local, offline,
+   zero-credential equivalent, and for a bare `git worktree add` worktree
+   (no `worktree.setup` run at all), still export it yourself.
 2. **Open the PR.** `gh pr create` — ready, not draft. A ready PR is the
    point: it hands off into the declared flow (agentic review → `APPROVED` →
    maintainer judge → `alwaysEscalateGlobs` escalating migrations/auth/

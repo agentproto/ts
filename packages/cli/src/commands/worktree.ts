@@ -82,6 +82,7 @@ import {
   reclaimOneSandboxCheckpoint,
   planSandboxCheckpointGc,
   applySandboxCheckpointGc,
+  resolveWorktreesTurboCacheDir,
   type WorktreeStatusEntry,
   type GcPlanEntry,
   type GcApplyOutcome,
@@ -1025,6 +1026,18 @@ async function runNew(args: readonly string[]): Promise<number> {
       process.stdout.write(JSON.stringify(provisioned, null, 2) + "\n")
     } else {
       process.stdout.write(`worktree created  ${provisioned.cwd}  (branch ${provisioned.branch})\n`)
+      // `runSetup` already pointed the setup hooks (pnpm install/build) at the
+      // shared cache (see lifecycle.ts's runSetup), so this worktree is
+      // gate-ready. That injection only covers the setup run itself, though:
+      // a LATER manual `pnpm build`/`turbo run build` typed into a plain shell
+      // opened in this worktree starts a fresh process with no memory of it.
+      // Print the same resolved value here so copy-pasting one export line
+      // gets manual builds the same cache hit, instead of requiring a trip to
+      // AGENTS.md to rediscover the var name and precedence.
+      process.stdout.write(
+        `turbo cache      ${resolveWorktreesTurboCacheDir()}  ` +
+          `(export TURBO_CACHE_DIR=... to reuse it in manual builds run outside \`worktree.setup\`)\n`,
+      )
     }
     return 0
   } catch (err) {
