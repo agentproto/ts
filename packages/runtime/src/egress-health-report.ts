@@ -212,6 +212,9 @@ export const sandboxEgressHealthInputSchema = z.object(sandboxEgressHealthInputS
 export const sandboxEgressProbeInputSchema = z.object({
   provider: z.string().optional(),
   model: z.string().min(1),
+  /** Harness to probe with (default opencode). */
+  harness: z.string().optional(),
+  /** @deprecated Alias of `harness`; removed in the next major of @agentproto/runtime. */
   adapter: z.string().optional(),
 })
 

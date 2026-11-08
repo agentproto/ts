@@ -200,7 +200,7 @@ export async function resolveReviewerPreset(
     return { adapter: harness.harnessSlug, model: harness.defaultModel, access: { profileRef: harness.profileRef } }
   }
   const user = await (lookups.getUserPreset ?? getUserPreset)(preset)
-  const adapter = user?.adapter ?? user?.harness
+  const adapter = user?.harness ?? user?.adapter
   if (user && adapter) return { adapter, preset: user }
   return undefined
 }
@@ -224,7 +224,7 @@ export function reviewerFingerprint(fields: Pick<SpawnAgentSessionInput, "adapte
       )
     : undefined
   return stableStringify({
-    adapter: fields.adapter ?? user?.adapter ?? user?.harness,
+    adapter: fields.adapter ?? user?.harness ?? user?.adapter,
     model: reviewerModel(fields),
     profile: reviewerProfileRef(fields),
     config,

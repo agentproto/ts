@@ -16,6 +16,7 @@
 import { z } from "zod"
 import type { Grant } from "@agentproto/policy"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
+import { adapterDeprecation } from "./harness-alias.js"
 // The browser entry: the same pure URL helpers, without pulling node:crypto in.
 import { resolvePairPageUrl, DEFAULT_PAIR_PAGE } from "@agentproto/secrets/pairing/browser"
 import type {
@@ -253,6 +254,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
   .object({
     skills: z.array(z.string()).optional(),
     options: optionsMapSchema.optional(),
+    harnesses: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
     adapters: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
     bundles: z.array(z.string()).optional(),
     browser: z
@@ -428,6 +430,7 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     turnStallAfterMs: z.number().optional(),
     reviewSessionRetentionDays: z.number().optional(),
     sessionRetentionDays: z.number().optional(),
+    harnessCacheRetentionDays: z.number().optional(),
     adapterCacheRetentionDays: z.number().optional(),
     claudeSocketWake: z.boolean().optional(),
   })
@@ -747,7 +750,10 @@ export interface ConfigKeyEntry {
   /** Effective default when the key is absent. Omitted when there is no
    *  single default (e.g. the default is conditional, or the daemon
    *  requires the operator to set it explicitly). */
-  default?: unknown
+  default?: unknown  /** Set on a key kept only as a deprecated alias: `replacedBy` is the
+   *  canonical path, `message` the dated deprecation line. The key still
+   *  works (read as a fallback of `replacedBy`). */
+  deprecated?: { replacedBy: string; message: string }
 }
 
 const bool = z.boolean()
@@ -765,6 +771,147 @@ const brainIngestWorkspacesSchema = z.array(z.string().min(1))
 /** `defaults.reactions.clerk.workspaces` - workspace slugs whose clerk passes
  *  are dispatched by the durable reaction instead of the legacy dispatch. */
 const clerkReactionWorkspacesSchema = z.array(z.string().min(1))
+
+/** `defaults.harnesses.*`: per-harness spawn defaults. Each key is also
+ *  exposed under its deprecated `defaults.adapters.*` spelling (see
+ *  {@link deprecatedAdapterDefaultsKey}). */
+const HARNESS_DEFAULTS_KEYS: readonly ConfigKeyEntry[] = [
+  {
+    path: "defaults.harnesses.*.skills",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness default skills",
+    help: "Skills auto-applied to spawns of this harness (unioned with the global default).",
+  },
+  {
+    path: "defaults.harnesses.*.options",
+    schema: optionsMapSchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness default options",
+    help: "AIP-45 options auto-applied to spawns of this harness.",
+  },
+  {
+    path: "defaults.harnesses.*.bundles",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness default capability bundles",
+    help: "Bundle ids (bundle_list) auto-attached to spawns of this harness (unioned with the global default).",
+  },
+  {
+    path: "defaults.harnesses.*.daemonMount",
+    schema: z.boolean(),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness daemon self-mount opt-in",
+    help: "Explicitly mount the daemon's own scoped /mcp for spawns of this harness, for harnesses outside the default self-mount allowlist (opencode, codex, gemini, …).",
+    default: false,
+  },
+  {
+    path: "defaults.harnesses.*.contextProfile",
+    schema: z.string(),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness context profile",
+    help: "Context profile (full, lean, …) for spawns of this harness that name none. opencode executors default to lean; set full to opt out.",
+  },
+  {
+    path: "defaults.harnesses.*.contextContinuity",
+    schema: contextContinuityPolicySchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness context-continuity policy",
+    help: "Legacy alias of defaults.harnesses.<slug>.contextSettings: per-harness context-settings fragment, layered over the global block. Each setting layers on its own.",
+  },
+  {
+    path: "defaults.harnesses.*.contextSettings",
+    schema: contextContinuityPolicySchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness context settings",
+    help: "AIP-46 name of defaults.harnesses.<slug>.contextContinuity: per-harness context-settings fragment layered over the global block. Each setting layers on its own; a key here wins over the same key in contextContinuity.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.mode",
+    schema: z.enum(["subscription", "api-key"]),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness auth mode",
+    help: "\"subscription\" or \"api-key\". Omitted ⇒ resolver picks by ordered preference.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.token",
+    schema: str,
+    apply: "hot",
+    secret: true,
+    writable: false,
+    section: "harnesses",
+    label: "Harness subscription token",
+    help: "Subscription bearer token. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.source",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness subscription source",
+    help: "Opt-in self-refreshing subscription source, e.g. \"claude-code-oauth\".",
+  },
+  {
+    path: "defaults.harnesses.*.auth.apiKey",
+    schema: str,
+    apply: "hot",
+    secret: true,
+    writable: false,
+    section: "harnesses",
+    label: "Harness API key",
+    help: "Explicit API key for \"api-key\" mode. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.provider",
+    schema: CatalogProviderSchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness auth provider pin",
+    help: "Per-harness provider pin, overriding the harness's fixed/model-derived provider.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.loginFile",
+    schema: z.boolean(),
+    apply: "hot",
+    writable: false,
+    section: "harnesses",
+    label: "Harness box-login bridge marker",
+    help:
+      "Per-spawn box-login bridge marker (see box-login-bridge.ts): stamped by the host on the auth block it forwards into a sandbox box, never set from config, because a static value would outlive the file it describes. Accepted here so the key is classified and explicitly not writable.",
+  },
+
+]
+
+/** The deprecated `defaults.adapters.*` twin of a `defaults.harnesses.*`
+ *  key: same schema and behaviour, flagged `deprecated`. A field set under
+ *  `defaults.harnesses.<slug>` wins over the same field here. */
+function deprecatedAdapterDefaultsKey(entry: ConfigKeyEntry): ConfigKeyEntry {
+  const replacedBy = entry.path
+  return {
+    ...entry,
+    path: entry.path.replace(/^defaults\.harnesses\./, "defaults.adapters."),
+    label: `${entry.label} (deprecated)`,
+    deprecated: { replacedBy, message: adapterDeprecation("defaults.adapters", "defaults.harnesses") },
+  }
+}
 
 export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   // ── mcp ──
@@ -1051,14 +1198,28 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: 0,
   },
   {
+    path: "daemon.harnessCacheRetentionDays",
+    schema: num,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Harness cache retention (days)",
+    help: "Delete the cache content (pnpm store, opencode snapshot/tool-output/log) of dead sessions' ~/.agentproto/adapter-config/<id> dirs after this many quiet days. Resume data is kept. 0/negative disables.",
+    default: 1,
+  },
+  {
     path: "daemon.adapterCacheRetentionDays",
     schema: num,
     apply: "restart",
     writable: true,
     section: "daemon",
-    label: "Adapter cache retention (days)",
-    help: "Delete the cache content (pnpm store, opencode snapshot/tool-output/log) of dead sessions' ~/.agentproto/adapter-config/<id> dirs after this many quiet days. Resume data is kept. 0/negative disables.",
+    label: "Adapter cache retention (days) (deprecated)",
+    help: "Deprecated name of daemon.harnessCacheRetentionDays, read only when that key is unset.",
     default: 1,
+    deprecated: {
+      replacedBy: "daemon.harnessCacheRetentionDays",
+      message: adapterDeprecation("daemon.adapterCacheRetentionDays", "daemon.harnessCacheRetentionDays"),
+    },
   },
   {
     path: "daemon.claudeSocketWake",
@@ -1949,128 +2110,10 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: [],
   },
 
-  // ── harnesses: per-adapter defaults ──
-  {
-    path: "defaults.adapters.*.skills",
-    schema: strArray,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter default skills",
-    help: "Skills auto-applied to spawns of this adapter (unioned with the global default).",
-  },
-  {
-    path: "defaults.adapters.*.options",
-    schema: optionsMapSchema,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter default options",
-    help: "AIP-45 options auto-applied to spawns of this adapter.",
-  },
-  {
-    path: "defaults.adapters.*.bundles",
-    schema: strArray,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter default capability bundles",
-    help: "Bundle ids (bundle_list) auto-attached to spawns of this adapter (unioned with the global default).",
-  },
-  {
-    path: "defaults.adapters.*.daemonMount",
-    schema: z.boolean(),
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter daemon self-mount opt-in",
-    help: "Explicitly mount the daemon's own scoped /mcp for spawns of this adapter, for harnesses outside the default self-mount allowlist (opencode, codex, gemini, …).",
-    default: false,
-  },
-  {
-    path: "defaults.adapters.*.contextProfile",
-    schema: z.string(),
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter context profile",
-    help: "Context profile (full, lean, …) for spawns of this adapter that name none. opencode executors default to lean; set full to opt out.",
-  },
-  {
-    path: "defaults.adapters.*.contextContinuity",
-    schema: contextContinuityPolicySchema,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter context-continuity policy",
-    help: "Legacy alias of defaults.adapters.<slug>.contextSettings: per-adapter context-settings fragment, layered over the global block. Each setting layers on its own.",
-  },
-  {
-    path: "defaults.adapters.*.contextSettings",
-    schema: contextContinuityPolicySchema,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter context settings",
-    help: "AIP-46 name of defaults.adapters.<slug>.contextContinuity: per-adapter context-settings fragment layered over the global block. Each setting layers on its own; a key here wins over the same key in contextContinuity.",
-  },
-  {
-    path: "defaults.adapters.*.auth.mode",
-    schema: z.enum(["subscription", "api-key"]),
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter auth mode",
-    help: "\"subscription\" or \"api-key\". Omitted ⇒ resolver picks by ordered preference.",
-  },
-  {
-    path: "defaults.adapters.*.auth.token",
-    schema: str,
-    apply: "hot",
-    secret: true,
-    writable: false,
-    section: "harnesses",
-    label: "Adapter subscription token",
-    help: "Subscription bearer token. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
-  },
-  {
-    path: "defaults.adapters.*.auth.source",
-    schema: str,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter subscription source",
-    help: "Opt-in self-refreshing subscription source, e.g. \"claude-code-oauth\".",
-  },
-  {
-    path: "defaults.adapters.*.auth.apiKey",
-    schema: str,
-    apply: "hot",
-    secret: true,
-    writable: false,
-    section: "harnesses",
-    label: "Adapter API key",
-    help: "Explicit API key for \"api-key\" mode. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
-  },
-  {
-    path: "defaults.adapters.*.auth.provider",
-    schema: CatalogProviderSchema,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter auth provider pin",
-    help: "Per-adapter provider pin, overriding the adapter's fixed/model-derived provider.",
-  },
-  {
-    path: "defaults.adapters.*.auth.loginFile",
-    schema: z.boolean(),
-    apply: "hot",
-    writable: false,
-    section: "harnesses",
-    label: "Adapter box-login bridge marker",
-    help:
-      "Per-spawn box-login bridge marker (see box-login-bridge.ts): stamped by the host on the auth block it forwards into a sandbox box, never set from config, because a static value would outlive the file it describes. Accepted here so the key is classified and explicitly not writable.",
-  },
+  // ── harnesses: per-harness defaults (canonical), then the deprecated
+  // `defaults.adapters.*` spellings of the same keys ──
+  ...HARNESS_DEFAULTS_KEYS,
+  ...HARNESS_DEFAULTS_KEYS.map(deprecatedAdapterDefaultsKey),
 
   // ── harnesses: user ACP agents ──
   //

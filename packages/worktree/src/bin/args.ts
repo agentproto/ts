@@ -2,7 +2,7 @@ import { resolve } from "node:path"
 import type { WorktreeAgentInput } from "../workflow.js"
 
 export const USAGE = `usage: worktree-agent run --repo <abs repo root> --slug <id> --task "<prompt>" --gate "<check cmd>"
-  [--base <ref>] [--adapter <slug>] [--deps-cmd "<cmd>"] [--copy-glob <glob>]...
+  [--base <ref>] [--harness <slug>] [--deps-cmd "<cmd>"] [--copy-glob <glob>]...
   [--link <path>]... [--write-file <json>]... [--no-cleanup] [--yes]
 
   --repo        Absolute (or cwd-relative) path to the git repository root.
@@ -10,7 +10,7 @@ export const USAGE = `usage: worktree-agent run --repo <abs repo root> --slug <i
   --task        The prompt sent to the coding agent.
   --gate        Command run inside the worktree to check the agent's work.
   --base        Ref to cut the worktree branch from. Default 'origin/main'.
-  --adapter     Agent adapter slug. Default 'claude-code'.
+  --harness     Harness slug. Default 'claude-code'. (--adapter is a deprecated alias.)
   --deps-cmd    Command to install deps inside the worktree.
   --copy-glob   Gitignored glob to copy into the worktree (repeatable).
   --link        Gitignored dir/file to symlink from the host repo into the worktree
@@ -26,7 +26,13 @@ export class CliUsageError extends Error {}
 export interface ParsedCli {
   input: WorktreeAgentInput
   yes: boolean
+  /** Deprecation lines for the caller to print on stderr (e.g. `--adapter`). */
+  warnings: string[]
 }
+
+/** The stderr line for the deprecated `--adapter` flag. */
+export const ADAPTER_FLAG_DEPRECATION =
+  "worktree-agent: `--adapter` is deprecated and will be removed in the next major of @agentproto/runtime; use `--harness`"
 
 /** Parse `worktree-agent run <flags>` into a `WorktreeAgentInput` + CLI-only options. */
 export function parseArgs(argv: readonly string[]): ParsedCli {
@@ -40,6 +46,7 @@ export function parseArgs(argv: readonly string[]): ParsedCli {
   let task: string | undefined
   let gateCmd: string | undefined
   let base: string | undefined
+  let harness: string | undefined
   let adapter: string | undefined
   let depsCmd: string | undefined
   const copyGlobs: string[] = []
@@ -71,6 +78,9 @@ export function parseArgs(argv: readonly string[]): ParsedCli {
         break
       case "--base":
         base = nextValue(arg, ++i)
+        break
+      case "--harness":
+        harness = nextValue(arg, ++i)
         break
       case "--adapter":
         adapter = nextValue(arg, ++i)
@@ -131,11 +141,11 @@ export function parseArgs(argv: readonly string[]): ParsedCli {
     gateCmd: gateCmd!,
     deleteBranch,
     ...(base !== undefined ? { base } : {}),
-    ...(adapter !== undefined ? { adapter } : {}),
+    ...((harness ?? adapter) !== undefined ? { harness: harness ?? adapter } : {}),
     ...(depsCmd !== undefined ? { depsCmd } : {}),
     ...(copyGlobs.length > 0 ? { copyGlobs } : {}),
     ...(linkPaths.length > 0 ? { linkPaths } : {}),
     ...(writeFiles.length > 0 ? { writeFiles } : {}),
   }
-  return { input, yes }
+  return { input, yes, warnings: adapter !== undefined ? [ADAPTER_FLAG_DEPRECATION] : [] }
 }

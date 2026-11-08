@@ -86,7 +86,7 @@ describe("agent_start, compact descriptor by default", () => {
     const body = parseToolJson(
       await client.callTool({
         name: "agent_start",
-        arguments: { adapter: "claude-code", cwd: "/tmp", model: "gpt-5" },
+        arguments: { harness: "claude-code", cwd: "/tmp", model: "gpt-5" },
       }),
     )
 
@@ -117,7 +117,7 @@ describe("agent_start, compact descriptor by default", () => {
     const body = parseToolJson(
       await client.callTool({
         name: "agent_start",
-        arguments: { adapter: "claude-code", cwd: "/tmp" },
+        arguments: { harness: "claude-code", cwd: "/tmp" },
       }),
     )
     expect(body.commandsRef).toEqual({ tool: "session_commands", sessionId: body.id })
@@ -130,7 +130,7 @@ describe("agent_start, full:true restores the raw descriptor", () => {
     const raw = parseToolJson(
       await client.callTool({
         name: "agent_start",
-        arguments: { adapter: "claude-code", cwd: "/tmp", model: "gpt-5", full: true },
+        arguments: { harness: "claude-code", cwd: "/tmp", model: "gpt-5", full: true },
       }),
     )
     const descriptor = lastDescriptor()
@@ -155,7 +155,7 @@ describe("agent_start, fields allowlist", () => {
     const body = parseToolJson(
       await client.callTool({
         name: "agent_start",
-        arguments: { adapter: "claude-code", cwd: "/tmp", model: "gpt-5", fields: ["id", "model"] },
+        arguments: { harness: "claude-code", cwd: "/tmp", model: "gpt-5", fields: ["id", "model"] },
       }),
     )
     expect(Object.keys(body).sort()).toEqual(["id", "model"])

@@ -53,7 +53,7 @@ agentproto sessions story    <id-or-name> [--json] [--no-color]
                                            [--source auto|native|daemon]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
                                            [--source auto|native|daemon]
-                                           [--adapter <slug>] [--cwd <dir>]
+                                           [--harness <slug>] [--cwd <dir>]
 agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
                                            [--error-kind <kind>] [--next-step <text>]
                                            [--question <text>] [--note <text>] [--json]
@@ -818,7 +818,7 @@ running ones.
 | `--json` | markdown | Emit the raw `ExportedSession` JSON instead of rendered markdown. |
 | `--output <file>`, `-o` | stdout | Write to a file instead of stdout. |
 | `--source <auto\|native\|daemon>` | `auto` | Which backend to read. `auto` prefers the adapter's own native store (claude-code JSONL, hermes SQLite) and falls back to agentproto's `events.jsonl` capture when there isn't one or it can't be read; `native`/`daemon` force one and surface its own error instead of falling back. |
-| `--adapter <slug>` | from registry | Override the adapter slug — required with `--source native` when exporting a raw adapter-native id that isn't in the registry. |
+| `--harness <slug>` | from registry | Override the harness slug: required with `--source native` when exporting a raw harness-native id that isn't in the registry. `--adapter` is a deprecated alias of `--harness`: it still works and prints a deprecation line on stderr. |
 | `--cwd <dir>` | from registry | Override the working directory — required for a claude-code native export when the session isn't in the registry (used to locate the JSONL file). |
 
 The `/sessions/:id/export` route accepts the same `format`

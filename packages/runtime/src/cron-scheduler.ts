@@ -219,7 +219,7 @@ function hostAdapterSlugOf(action: CronAction): string | undefined {
         ? action.inputs
         : undefined
   if (!fields || fields.sandbox !== undefined) return undefined
-  const slug = fields.adapter ?? fields.harness
+  const slug = fields.harness ?? fields.adapter
   return typeof slug === "string" && slug.length > 0 ? slug : undefined
 }
 
@@ -1131,7 +1131,7 @@ export function createCronScheduler(opts: {
       ok: true,
       sessionId,
       summary: sessionId
-        ? `spawned session ${sessionId} (adapter=${action.adapter ?? action.harness ?? "preset"})`
+        ? `spawned session ${sessionId} (harness=${action.harness ?? action.adapter ?? "preset"})`
         : `agent_start: ${summary}`,
     }
   }

@@ -2421,7 +2421,11 @@ export interface SessionDescriptor {
    * independent sessions. It is append-only and persists with the descriptor
    * so a restarted daemon can still show the hand-off / review links. */
   openedPrs?: readonly OpenedPullRequest[]
-  /** Adapter slug for agent-cli sessions — restart uses this with
+  /** @deprecated Read {@link SessionDescriptor.harness}: it is always set
+   *  wherever this is, and `adapterSlug` will be removed in the next major
+   *  of @agentproto/runtime.
+   *
+   *  Adapter slug for agent-cli sessions: restart uses this with
    *  `/sessions/agent` to spin up a fresh ACP runtime. ALSO stamped on a
    *  conversation-terminal PTY (`isConversationTerminal` — a native
    *  provider TUI launch like `claude`, classified at `spawnPty`), so the
@@ -2462,9 +2466,11 @@ export interface SessionDescriptor {
    */
   nativeHooks?: readonly HookCapabilityView[]
   /**
-   * Canonical harness slug for agent-cli sessions — the same identity as
-   *  `adapterSlug`, recorded under the canonical axis name. Falls back to
-   *  `adapterSlug` when not explicitly set. Undefined for pty/command kinds. */
+   * Canonical harness slug for agent-cli sessions (and conversation
+   *  terminals): the same identity as the deprecated `adapterSlug`. Always
+   *  set on every read surface whenever `adapterSlug` is (`stampHarness`),
+   *  including rows persisted before this field existed. Undefined for
+   *  plain-shell PTYs and command kinds. */
   harness?: string
   /**
    * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
@@ -3328,7 +3334,10 @@ export interface SessionSummary {
   agentsMdMode?: AgentsMdMode
   /** Resolved workspace RULES.md path — see `SessionDescriptor.rulesMd`. */
   rulesMd?: string
+  /** @deprecated Read `harness`; removed in the next major of @agentproto/runtime. */
   adapterSlug?: string
+  /** Canonical harness slug: see `SessionDescriptor.harness`. */
+  harness?: string
   mode?: string
   model?: string
   costUsd?: number
@@ -3418,6 +3427,16 @@ export function isShellOnlyRow(
 }
 
 /** Project a full SessionDescriptor down to the panel summary shape. */
+/**
+ * Make `harness` the always-present canonical slug: a descriptor that only
+ * carries the deprecated `adapterSlug` (a row persisted before `harness`
+ * existed, a restart path that only copied `adapterSlug`) gets `harness`
+ * stamped from it. Never overwrites an explicit `harness`.
+ */
+export function stampHarness(desc: Pick<SessionDescriptor, "adapterSlug" | "harness">): void {
+  if (desc.harness === undefined && desc.adapterSlug) desc.harness = desc.adapterSlug
+}
+
 function toSessionSummary(desc: SessionDescriptor): SessionSummary {
   return {
     id: desc.id,
@@ -3461,6 +3480,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     agentsMdMode: desc.agentsMdMode,
     rulesMd: desc.rulesMd,
     adapterSlug: desc.adapterSlug,
+    harness: desc.harness ?? desc.adapterSlug,
     mode: desc.mode,
     model: desc.model,
     costUsd: desc.costUsd,
@@ -13459,7 +13479,7 @@ export function createSessionsRegistry(opts?: {
         // Same rule as spawnAgent: a NEW spawn's label is a slug, not a
         // human rename — let a later derived title outrank it.
         ...(input.label ? { renamedByUser: false } : {}),
-        ...(conversationSlug ? { adapterSlug: conversationSlug } : {}),
+        ...(conversationSlug ? { adapterSlug: conversationSlug, harness: conversationSlug } : {}),
         ...(conversationSlug && RESUME_STRATEGIES[conversationSlug]?.spawnArgs
           ? { nativeTerminalResume: true }
           : {}),
@@ -14777,6 +14797,7 @@ export function createSessionsRegistry(opts?: {
         .map(rt => {
           const desc = rt.desc
           expireExternalIfStale(rt)
+          stampHarness(desc)
           stampReadLiveness(desc)
           stampInterrupted(desc)
           stampCurrentStatus(rt)
@@ -14833,6 +14854,7 @@ export function createSessionsRegistry(opts?: {
       const slice = all.slice(offset, offset + limit)
       const summaries = slice.map(rt => {
         const desc = rt.desc
+        stampHarness(desc)
         stampReadLiveness(desc)
         stampInterrupted(desc)
         stampCurrentStatus(rt)
@@ -14858,6 +14880,7 @@ export function createSessionsRegistry(opts?: {
       const desc = rt?.desc
       if (rt && desc) {
         expireExternalIfStale(rt)
+        stampHarness(desc)
         stampReadLiveness(desc)
         stampInterrupted(desc)
         stampCurrentStatus(rt)
@@ -16851,6 +16874,9 @@ function loadHistorySnapshot(
   const now = new Date().toISOString()
   for (const desc of sorted) {
     if (sessions.has(desc.id)) continue // collision with a live entry — keep live
+    // Legacy rows carry only `adapterSlug`: read it once as `harness` (data
+    // compatibility, rewritten as both on the next persist).
+    stampHarness(desc)
     const wasAlive = desc.status === "running" || desc.status === "starting"
     // An external row has no process to have died with the daemon: it simply
     // expires (lazily) like any other, and a later sighting revives it.

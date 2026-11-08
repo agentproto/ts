@@ -1,6 +1,6 @@
 /**
  * `agentproto cron add  --schedule <cron> [--command <cmd> --args <arg>...
- *                         | --adapter <slug> --prompt <text>]
+ *                         | --harness <slug> --prompt <text>]
  *                        [--label <text>] [--once]`
  * `agentproto cron list [--json]`
  * `agentproto cron remove <id>`
@@ -23,13 +23,14 @@ import {
   httpDelete,
 } from "./_daemon-helpers.js"
 import { parseDuration } from "../util/duration.js"
+import { harnessFlag } from "../util/harness-flag.js"
 
 const USAGE = `agentproto cron — manage durable cron jobs on the daemon
 
 Usage:
   agentproto cron add --schedule <cron-expr>
                       (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
-| --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
+| --harness <slug> --prompt <text> [--cwd <dir>] [--model <id>]
                         | --target-session <id> --prompt <text>)
                       [--options-json <json|@file>] [--label <text>] [--once]
                       [--notify always|onFailure] [--json]
@@ -54,7 +55,9 @@ success in their inbox as fyi and only a non-zero exit wakes them.
 
 Three action kinds:
   --command <cmd>         Run an allowlisted shell command.
-  --adapter <slug>        Spawn a brand-new agent session and prompt it.
+  --harness <slug>        Spawn a brand-new agent session and prompt it.
+                          (--adapter is a deprecated alias, removed in the
+                          next major of @agentproto/runtime.)
   --target-session <id>   Re-prompt an existing, already-running session in
                           place — no new session is spawned. Use for a
                           durable session a cron job periodically checks in on.
@@ -68,15 +71,15 @@ Three action kinds:
   \`agentproto sessions start\` does at a fixed time. The daemon validates the
   merged fields with the same agent_start schema (mcpServers, accessProfile,
   worktree, sandbox, label, title, auth, …). Discrete flags (--cwd, --model,
-  --adapter) win over a colliding key in --options-json. A "kind" key is
+  --harness) win over a colliding key in --options-json. A "kind" key is
   refused — the action kind comes from the discrete flags only.
 
 Examples:
   agentproto cron add --schedule "* * * * *" --command echo --args hello --once
-  agentproto cron add --schedule "0 9 * * 1-5" --adapter claude-code --prompt "daily standup"
+  agentproto cron add --schedule "0 9 * * 1-5" --harness claude-code --prompt "daily standup"
   agentproto cron add --schedule "*/15 * * * *" --target-session sess_abc123 --prompt "status?"
   agentproto cron add --schedule "*/15 * * * *" --target-session agent:pm --prompt "status?"
-  agentproto cron add --schedule "0 */2 * * *" --adapter pi --model openrouter/z-ai/glm-5.3-flash \
+  agentproto cron add --schedule "0 */2 * * *" --harness pi --model openrouter/z-ai/glm-5.3-flash \
     --prompt "health check" --options-json '{"mcpServers":[{"name":"gateway","transport":"http","ref":"http://127.0.0.1:18790/mcp"}]}'
   agentproto cron list --json
   agentproto cron remove <id>
@@ -123,6 +126,7 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
       schedule:         { type: "string" },
       command:          { type: "string" },
       args:             { type: "string", multiple: true },
+      harness:          { type: "string" },
       adapter:          { type: "string" },
       "target-session": { type: "string" },
       prompt:           { type: "string" },
@@ -142,22 +146,23 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     process.stderr.write("agentproto cron add: --schedule is required\n\n" + USAGE)
     return 2
   }
-  const kindsGiven = [values.command, values.adapter, values["target-session"]].filter(Boolean).length
+  const harness = harnessFlag(values, "agentproto cron add")
+  const kindsGiven = [values.command, harness, values["target-session"]].filter(Boolean).length
   if (kindsGiven === 0) {
     process.stderr.write(
-      "agentproto cron add: one of --command, --adapter, or --target-session is required\n\n" + USAGE,
+      "agentproto cron add: one of --command, --harness, or --target-session is required\n\n" + USAGE,
     )
     return 2
   }
   if (kindsGiven > 1) {
     process.stderr.write(
-      "agentproto cron add: --command, --adapter, and --target-session are mutually exclusive\n\n" + USAGE,
+      "agentproto cron add: --command, --harness, and --target-session are mutually exclusive\n\n" + USAGE,
     )
     return 2
   }
-  if (values.adapter && !values.prompt) {
+  if (harness && !values.prompt) {
     process.stderr.write(
-      "agentproto cron add: --prompt is required when using --adapter\n\n" + USAGE,
+      "agentproto cron add: --prompt is required when using --harness\n\n" + USAGE,
     )
     return 2
   }
@@ -192,9 +197,9 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
   // spawn fields; --command / --target-session actions have no equivalent.
   let extraAgentFields: Record<string, unknown> | undefined
   if (values["options-json"] !== undefined) {
-    if (!values.adapter) {
+    if (!harness) {
       process.stderr.write(
-        "agentproto cron add: --options-json only applies to --adapter (agent) jobs\n",
+        "agentproto cron add: --options-json only applies to --harness (agent) jobs\n",
       )
       return 2
     }
@@ -277,7 +282,7 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
           // daemon validates the merged fields with the agent_start schema.
           ...extraAgentFields,
           kind: "agent" as const,
-          adapter: values.adapter as string,
+          harness: harness as string,
           prompt: values.prompt as string,
           ...(values.cwd ? { cwd: values.cwd } : {}),
           ...(values.model ? { model: values.model } : {}),

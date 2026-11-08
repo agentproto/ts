@@ -141,7 +141,7 @@ describe("user_preset_save / user_preset_list / user_preset_delete", () => {
       await client.callTool({ name: "user_preset_list", arguments: { includeRecent: true } }),
     )
     expect(res.recent).toEqual([
-      { adapter: "hermes", model: "deepseek", cwd: "/tmp/a", recent: true },
+      { harness: "hermes", adapter: "hermes", model: "deepseek", cwd: "/tmp/a", recent: true },
     ])
   })
 

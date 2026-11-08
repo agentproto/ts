@@ -64,6 +64,7 @@ import type { ActivityProjector } from "./activities.js"
 import { registerTaskTools } from "./task-tools.js"
 import type { TaskLedger } from "./task-ledger.js"
 import { matchesSessionGrant } from "./session-owner.js"
+import { ADAPTER_FIELD_DEPRECATION, judgeGateAdapterWarnings } from "./harness-alias.js"
 import {
   activityCounts,
   ACTIVITY_KINDS,
@@ -175,7 +176,8 @@ const compactActivityRecord = (a: ActivityRecord) => ({
  *
  * Union of three variants:
  *   • shell  — `{ command, args?, cwd?, timeoutMs? }`
- *   • judge  — `{ judge: { adapter, model?, prompt, timeoutMs? } }` (WP7)
+ *   • judge : `{ judge: { harness, model?, prompt, timeoutMs? } }` (WP7;
+ *     `adapter` is the deprecated alias of `harness`)
  *   • cost   — `{ costBudget: { maxCostUsd, window, scope }, sessionId? }` (phase 4)
  */
 export const gateInputSchema = z.union([
@@ -187,7 +189,8 @@ export const gateInputSchema = z.union([
   }),
   z.object({
     judge: z.object({
-      adapter: z.string().min(1).describe("Agent adapter slug to spawn (e.g. \"claude-code\")."),
+      harness: z.string().min(1).optional().describe("Harness slug to spawn the judge with (e.g. \"claude-code\"). Required unless the deprecated `adapter` is given."),
+      adapter: z.string().min(1).optional().describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
       model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
       prompt: z.string().min(1).describe("Rubric / instructions for the judge. The supervisor appends a VERDICT instruction."),
       timeoutMs: z.number().int().positive().optional().describe("Max wall-clock for the judge before kill + FAIL. Default 120 000."),
@@ -1113,14 +1116,15 @@ export function registerOrchestrationTools(
   if (workflowRunner) {
     const workflowStepSchema = z.object({
       label: z.string(),
-      adapter: z.string().optional().describe("Agent adapter slug to spawn a NEW session for this step."),
+      harness: z.string().optional().describe("Harness slug to spawn a NEW session for this step."),
+      adapter: z.string().optional().describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
       prompt: z.string().optional().describe("Prompt to send after spawning/reusing a session."),
       sessionRef: z
         .string()
         .optional()
         .describe(
           "Reuse the session spawned by an earlier step (any prior stage), by that step's `label`. " +
-            "Ignored if `adapter` is set. Lets a later-stage step act on an earlier stage's output " +
+            "Ignored if `harness` is set. Lets a later-stage step act on an earlier stage's output " +
             "(e.g. a 'verify' step reusing a 'produce' step's session).",
         ),
       cacheable: z.boolean().optional().describe("Cache this step's output under the run's cacheKey (opt-in; for idempotent/pure steps only)."),
@@ -1138,7 +1142,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe(
           "Run this step's session inside a sandbox instead of on the host — " +
-            "same semantics as `agent_start.sandbox`. Only meaningful with `adapter`.",
+            "same semantics as `agent_start.sandbox`. Only meaningful with `harness`.",
         ),
       policy: z
         .discriminatedUnion("awaiting", [
@@ -1191,9 +1195,27 @@ export function registerOrchestrationTools(
           ),
       },
       async input => {
-        const run = await workflowRunner.start({ ...input, ...(callerSessionId ? { callerSessionId } : {}) })
+        // `harness` is canonical; the runner still reads `adapter`, so the
+        // ONE resolved slug is handed over under that key.
+        let usedAdapterAlias = false
+        const stages = input.stages.map(stage => ({
+          ...stage,
+          steps: stage.steps.map(({ harness, ...step }) => {
+            if (step.adapter !== undefined) usedAdapterAlias = true
+            const slug = harness ?? step.adapter
+            return { ...step, ...(slug !== undefined ? { adapter: slug } : {}) }
+          }),
+        }))
+        const run = await workflowRunner.start({ ...input, stages, ...(callerSessionId ? { callerSessionId } : {}) })
         return {
-          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              runId: run.runId,
+              status: run.status,
+              ...(usedAdapterAlias ? { warnings: [`workflow_start: ${ADAPTER_FIELD_DEPRECATION}`] } : {}),
+            }),
+          }],
         }
       },
     )
@@ -1874,8 +1896,16 @@ export function registerOrchestrationTools(
             onFail: input.onFail,
             next: input.next as AttachPolicyInput["next"],
           })
+          const warnings = judgeGateAdapterWarnings(input, "policy_attach")
           return {
-            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }) }],
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                policyId: state.policyId,
+                status: state.status,
+                ...(warnings.length > 0 ? { warnings } : {}),
+              }),
+            }],
           }
         } catch (err) {
           return {
@@ -2355,12 +2385,19 @@ export function registerOrchestrationTools(
             "Contact ref / channel to poll — forwarded as `source` to poll_inbound " +
               "(e.g. a phone number '+33612345678' or a webhook channel name).",
           ),
+        harness: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Harness slug to spawn when new messages arrive (e.g. 'claude-code'). " +
+              "Required unless the deprecated `adapter` is given.",
+          ),
         adapter: z
           .string()
           .min(1)
-          .describe(
-            "Agent adapter slug to spawn when new messages arrive (e.g. 'claude-code').",
-          ),
+          .optional()
+          .describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
         promptTemplate: z
           .string()
           .min(1)
@@ -2412,8 +2449,23 @@ export function registerOrchestrationTools(
           ),
       },
       async input => {
-        const desc = inboundWatcher.start(input)
-        return { content: [{ type: "text", text: JSON.stringify(desc) }] }
+        const { harness, adapter, ...rest } = input
+        const slug = harness ?? adapter
+        if (!slug) {
+          return {
+            content: [{ type: "text", text: "inbound_watcher_start: `harness` is required." }],
+            isError: true,
+          }
+        }
+        const desc = inboundWatcher.start({ ...rest, adapter: slug })
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(adapter !== undefined
+              ? { ...desc, warnings: [`inbound_watcher_start: ${ADAPTER_FIELD_DEPRECATION}`] }
+              : desc),
+          }],
+        }
       },
     )
 

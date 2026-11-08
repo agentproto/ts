@@ -153,6 +153,7 @@ export const APPS_PROFILE_TOOLS: readonly string[] = [
  */
 export const ADMIN_PROFILE_TOOLS: readonly string[] = [
   "adapter_install",
+  "harness_install",
   "auth_profile_create",
   "auth_profile_delete",
   "auth_profile_import",
@@ -264,6 +265,7 @@ export const FULL_ONLY_TOOLS: readonly string[] = [
   "adapter_list",
   "adapter_models",
   "harness_list",
+  "harness_models",
   "agent_export",
   "agent_sessions_list",
   "agent_set_effort",

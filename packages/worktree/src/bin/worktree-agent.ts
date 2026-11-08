@@ -21,7 +21,8 @@ async function main(): Promise<void> {
     process.stderr.write(`${err.message}\n`)
     process.exit(1)
   }
-  const { input, yes } = parsed
+  const { input, yes, warnings } = parsed
+  for (const line of warnings) process.stderr.write(`${line}\n`)
 
   const host = await connectDaemonAgentSessionHost()
   try {

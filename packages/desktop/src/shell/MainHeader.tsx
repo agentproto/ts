@@ -44,7 +44,7 @@ export function MainHeader({
           <span className={`dot ${kind}`} />
           {statusText(session)}
         </span>
-        {session.adapterSlug ? <span className="tag adapter">{session.adapterSlug}</span> : null}
+        {(session.harness ?? session.adapterSlug) ? <span className="tag adapter">{session.harness ?? session.adapterSlug}</span> : null}
         {session.model ? <span className="tag">{session.model}</span> : null}
         {pct !== null ? (
           <span className="metric">

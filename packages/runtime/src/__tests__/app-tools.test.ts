@@ -1680,7 +1680,7 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
       {
         agentId: "foo-worker",
         error:
-          'agent "foo-worker" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run',
+          'agent "foo-worker" has no harness: set metadata.harness in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass harness to app_run',
       },
     ])
   })
@@ -2008,7 +2008,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     await client.callTool({ name: "app_install", arguments: { dir } })
     const handle = await loadWorkflowHandle(join(dir, ".agentproto", "workflows", "do-thing-unroutable", "WORKFLOW.md"))
     await expect(resolveAgentRefsForWorkflow(appRegistry, handle.id)).rejects.toThrow(
-      'agent "worker" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run',
+      'agent "worker" has no harness: set metadata.harness in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass harness to app_run',
     )
   })
 
@@ -2129,8 +2129,8 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     // No resolver / an unresolvable role never leaks the raw `role:` string —
     // and with no metadata adapter the ref now fails loudly (no adapter)
     // instead of silently falling back to mastra-agent.
-    await expect(compileWith()).rejects.toThrow(/has no adapter/)
-    await expect(compileWith(async () => undefined)).rejects.toThrow(/has no adapter/)
+    await expect(compileWith()).rejects.toThrow(/has no harness/)
+    await expect(compileWith(async () => undefined)).rejects.toThrow(/has no harness/)
   })
 
   it("resolveAgentModelRef passes plain ids through and only resolves role: refs", async () => {

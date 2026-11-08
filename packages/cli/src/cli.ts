@@ -158,7 +158,7 @@ Usage:
                                            Claude Desktop approval cards: print / add the agentproto-approvals entry
   agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
                                            alias of \`agentproto setup\` (the wizard)
-  agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
+  agentproto cron      add --schedule <cron> (--command <cmd> | --harness <slug> --prompt <text>) [--once]
   agentproto cron      list [--json]
   agentproto cron      remove <id>
   agentproto cron      run    <id>

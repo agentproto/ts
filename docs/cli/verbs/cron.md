@@ -3,7 +3,7 @@
 ```text
 agentproto cron add --schedule <cron-expr>
                     (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
-                     | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
+                     | --harness <slug> --prompt <text> [--cwd <dir>] [--model <id>]
                                        [--options-json <json|@file>]
                      | --target-session <id> --prompt <text>)
                     [--label <text>] [--once] [--notify always|onFailure] [--json]
@@ -52,13 +52,13 @@ deactivates the job (it stays listed, inactive).
 
 ## Action kinds
 
-Exactly one per job — `--command`, `--adapter`, and `--target-session` are
+Exactly one per job: `--command`, `--harness`, and `--target-session` are
 mutually exclusive, and passing none or more than one exits `2`.
 
 | Kind | Flag | What it does |
 |------|------|--------------|
 | Command | `--command <cmd>` | Runs an allowlisted shell command. Must be listed in `<workspace>/.agentproto/allowed-commands.json`. |
-| Agent | `--adapter <slug>` | Spawns a **brand-new** agent session and prompts it. Requires `--prompt`. |
+| Agent | `--harness <slug>` | Spawns a **brand-new** agent session and prompts it. Requires `--prompt`. |
 | Prompt-session | `--target-session <id>` | Re-prompts an existing session **in place** — no new session is spawned. Requires `--prompt`. Accepts a session id or the label-target spelling `agent:<label>`, which is resolved to a session at fire time: a live session with that label, else an ended (non-retired) one, revived in place.
 
 ## Subverbs
@@ -73,12 +73,12 @@ next run.
 | `--schedule <cron-expr>` | *(required)* | 5-field expression, local time. |
 | `--command <cmd>` | — | Allowlisted command to run. |
 | `--args <arg>` | — | Argument for `--command`; repeatable. |
-| `--adapter <slug>` | — | Adapter to spawn a fresh session from. |
+| `--harness <slug>` | — | Harness to spawn a fresh session from. `--adapter` is a deprecated alias of `--harness`: it still works and prints a deprecation line on stderr. |
 | `--target-session <id>` | — | Session to re-prompt in place — a session id, or `agent:<label>` resolved to a session at fire time. |
-| `--prompt <text>` | — | The turn to send. Required with `--adapter` or `--target-session`. |
+| `--prompt <text>` | — | The turn to send. Required with `--harness` or `--target-session`. |
 | `--cwd <dir>` | — | Working dir (command and agent kinds). |
 | `--model <id>` | — | Model override (agent kind). |
-| `--options-json <json\|@file>` | — | Extra `agent_start` spawn fields beyond the discrete flags (agent kind only). Inline JSON or `@<file>`. Discrete flags (`--cwd`, `--model`, `--adapter`) win on collision. A `kind` key is refused. |
+| `--options-json <json\|@file>` | — | Extra `agent_start` spawn fields beyond the discrete flags (agent kind only). Inline JSON or `@<file>`. Discrete flags (`--cwd`, `--model`, `--harness`) win on collision. A `kind` key is refused. |
 | `--timeout-ms <duration>` | — | Command timeout (command kind). Bare integer or explicit `ms` suffix only; `s`/`m`/`h` are rejected because the flag name already declares milliseconds. |
 | `--label <text>` | — | Human-readable label, shown by `list`. |
 | `--notify <mode>` | `always` | `always` wakes followers on success; `onFailure` makes a successful command run an `fyi` inbox entry and only a non-zero exit wakes. |
@@ -124,7 +124,7 @@ agentproto cron add --schedule "*/30 * * * *" --command curl --args -fsS http://
 
 # Weekday-morning standup — a fresh agent session each time
 agentproto cron add --schedule "0 9 * * 1-5" \
-  --adapter claude-code --prompt "daily standup" --label "standup"
+  --harness claude-code --prompt "daily standup" --label "standup"
 
 # Check in on a long-lived session every 15 minutes, in place
 agentproto cron add --schedule "*/15 * * * *" \
@@ -135,7 +135,7 @@ agentproto cron add --schedule "*/15 * * * *" \
   --target-session agent:pm --prompt "status?"
 
 # Spawn an agent with a custom MCP server every 2 hours
-agentproto cron add --schedule "0 */2 * * *" --adapter my-adapter \
+agentproto cron add --schedule "0 */2 * * *" --harness my-adapter \
   --prompt "health check" \
   --options-json '{"mcpServers":[{"name":"gateway","transport":"http","ref":"http://127.0.0.1:18790/mcp"}]}'
 
@@ -148,5 +148,5 @@ agentproto cron remove <id>
 ## See also
 
 - [`serve.md`](./serve.md) — the daemon that owns the scheduler
-- [`sessions.md`](./sessions.md) — the sessions `--adapter` spawns and `--target-session` re-prompts
+- [`sessions.md`](./sessions.md): the sessions `--harness` spawns and `--target-session` re-prompts
 - [`policy.md`](./policy.md) — completion gates, the other way to drive work without watching it

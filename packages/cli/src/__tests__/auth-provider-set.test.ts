@@ -1,6 +1,6 @@
 /**
  * `agentproto auth provider set` must finish the job: store the key, write
- * the `defaults.adapters.<slug>.auth` block the spawn resolver requires, and
+ * the `defaults.harnesses.<slug>.auth` block the spawn resolver requires, and
  * ask a running daemon to reload the provider store.
  *
  * Before this, the key was stored but ignored with a message asking the user
@@ -18,6 +18,7 @@ import { runAuth } from "../commands/auth.js"
 interface Config {
   defaults?: {
     adapters?: Record<string, { auth?: { mode?: string } }>
+    harnesses?: Record<string, { auth?: { mode?: string } }>
   }
   adapters?: string[]
 }
@@ -87,15 +88,38 @@ describe("agentproto auth provider set — writes adapter auth defaults", () => 
     ])
 
     expect(code).toBe(0)
-    expect(readConfig().defaults?.adapters?.["claude-code"]?.auth?.mode).toBe(
+    expect(readConfig().defaults?.harnesses?.["claude-code"]?.auth?.mode).toBe(
       "api-key",
     )
     expect(io.lines.join("")).toMatch(/api-key auth enabled for claude-code/)
     io.restore()
   })
 
-  it("honors an explicit --adapter slug", async () => {
+  it("honors an explicit --harness slug", async () => {
     const io = captureStdout()
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    const code = await runAuth([
+      "provider",
+      "set",
+      "anthropic",
+      "sk-ant-test",
+      "--harness",
+      "opencode",
+    ])
+
+    expect(code).toBe(0)
+    expect(readConfig().defaults?.harnesses?.["opencode"]?.auth?.mode).toBe(
+      "api-key",
+    )
+    expect(stderr.mock.calls.map(c => String(c[0])).join("")).not.toContain("deprecated")
+    stderr.mockRestore()
+    io.restore()
+  })
+
+  it("still honors the deprecated --adapter slug, with a stderr warning", async () => {
+    const io = captureStdout()
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     const code = await runAuth([
       "provider",
@@ -107,9 +131,13 @@ describe("agentproto auth provider set — writes adapter auth defaults", () => 
     ])
 
     expect(code).toBe(0)
-    expect(readConfig().defaults?.adapters?.["opencode"]?.auth?.mode).toBe(
+    expect(readConfig().defaults?.harnesses?.["opencode"]?.auth?.mode).toBe(
       "api-key",
     )
+    expect(stderr.mock.calls.map(c => String(c[0])).join("")).toContain(
+      "agentproto auth provider set: `--adapter` is deprecated and will be removed in the next major of @agentproto/runtime; use `--harness`",
+    )
+    stderr.mockRestore()
     io.restore()
   })
 
@@ -127,6 +155,9 @@ describe("agentproto auth provider set — writes adapter auth defaults", () => 
     expect(readConfig().defaults?.adapters?.["claude-code"]?.auth?.mode).toBe(
       "subscription",
     )
+    // The legacy block still counts as "already chosen": nothing is
+    // written under the canonical key either.
+    expect(readConfig().defaults?.harnesses).toBeUndefined()
     expect(io.lines.join("")).toMatch(/kept the existing auth mode/)
     io.restore()
   })

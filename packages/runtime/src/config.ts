@@ -30,6 +30,7 @@ import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
+import { adapterDeprecation } from "./harness-alias.js"
 import type { ModelRolesConfig } from "./model-roles.js"
 import type { FollowTriageInput } from "./follow-triage.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
@@ -228,7 +229,10 @@ export interface DaemonConfig {
    *  cache paths of its `~/.agentproto/adapter-config/<id>/` dir (pnpm store,
    *  opencode snapshot/tool-output/log), keeping what a resume reads.
    *  Default 1; `0` / negative disables. Set via `agentproto config set
-   *  daemon.adapterCacheRetentionDays <days>`. */
+   *  daemon.harnessCacheRetentionDays <days>`. */
+  harnessCacheRetentionDays?: number
+  /** @deprecated Old name of `harnessCacheRetentionDays`, read only when
+   *  that key is unset; removed in the next major of @agentproto/runtime. */
   adapterCacheRetentionDays?: number
 }
 
@@ -969,6 +973,32 @@ function sanitizeAcpAgents(
  * again, since the hash is the only memory kept, not a boolean per path.
  */
 const warnedInvalidConfigHashes = new Map<string, string>()
+/** Same once-per-(path, content) memory, for the deprecated harness keys. */
+const warnedDeprecatedConfigHashes = new Map<string, string>()
+
+/**
+ * The deprecated `adapter` spellings a config still uses, one dated line
+ * each. Read-only: the daemon never rewrites the file to migrate them; the
+ * old keys keep working as a fallback of the new ones.
+ */
+export function harnessConfigDeprecations(cfg: AgentprotoConfig): string[] {
+  const out: string[] = []
+  if (cfg.defaults?.adapters !== undefined) {
+    out.push(adapterDeprecation("defaults.adapters", "defaults.harnesses") +
+      " (a field set under defaults.harnesses.<slug> wins)")
+  }
+  if (cfg.daemon?.adapterCacheRetentionDays !== undefined) {
+    out.push(adapterDeprecation("daemon.adapterCacheRetentionDays", "daemon.harnessCacheRetentionDays"))
+  }
+  return out
+}
+
+/** `daemon.harnessCacheRetentionDays`, falling back to the deprecated
+ *  `daemon.adapterCacheRetentionDays`. */
+export function harnessCacheRetentionDays(cfg: AgentprotoConfig): number | undefined {
+  const value = cfg.daemon?.harnessCacheRetentionDays ?? cfg.daemon?.adapterCacheRetentionDays
+  return typeof value === "number" ? value : undefined
+}
 
 function hashConfigContent(raw: string): string {
   return createHash("sha256").update(raw, "utf8").digest("hex")
@@ -995,6 +1025,14 @@ export async function loadConfig(path?: string): Promise<AgentprotoConfig> {
       // `acpHandleFromSpec` time, with precise field-level messages.
       if (cfg.acpAgents !== undefined) {
         cfg.acpAgents = sanitizeAcpAgents(cfg.acpAgents, target)
+      }
+      const deprecations = harnessConfigDeprecations(cfg)
+      if (deprecations.length > 0) {
+        const contentHash = hashConfigContent(raw)
+        if (warnedDeprecatedConfigHashes.get(target) !== contentHash) {
+          warnedDeprecatedConfigHashes.set(target, contentHash)
+          for (const line of deprecations) console.warn(`[runtime/config] ${target}: ${line}`)
+        }
       }
       const validation = validateConfig(cfg)
       if (!validation.ok) {

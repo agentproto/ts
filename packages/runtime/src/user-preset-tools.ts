@@ -27,6 +27,7 @@ import {
 } from "./user-presets.js"
 import type { SessionsRegistry } from "./sessions.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
+import { ADAPTER_FIELD_DEPRECATION } from "./harness-alias.js"
 import {
   resolveSessionConfig,
   type HarnessPresetOverlay,
@@ -67,11 +68,11 @@ export function registerUserPresetTools(server: McpServer, deps: UserPresetTools
     "user_preset_list",
     "List the user's saved spawn presets (\"favorites\") from " +
       "`~/.agentproto/presets.json`. Each preset is a reusable, named " +
-      "subset of the spawn/session config axes (adapter, model, route, " +
+      "subset of the spawn/session config axes (harness, model, route, " +
       "access, posture, effort, contextProfile, cwd, skills, bundles, " +
       "browser) plus `lastUsedAt` (ISO 8601), stamped the last time a spawn " +
       "resolved a `presetId` to it. Pass `includeRecent: true` to ALSO " +
-      "return up to 5 distinct recent spawn configurations (adapter, model, " +
+      "return up to 5 distinct recent spawn configurations (harness, model, " +
       "profileRef, cwd) derived from this host's own recent session " +
       "history, each marked `recent: true` — not persisted, a candidate " +
       "list for \"save as favorite\" rather than an actual preset.",
@@ -157,7 +158,12 @@ export function registerUserPresetTools(server: McpServer, deps: UserPresetTools
       try {
         await saveUserPreset(input as UserPreset)
         const saved = await getUserPreset(input.id)
-        return text({ preset: saved })
+        return text({
+          preset: saved,
+          ...(input.adapter !== undefined
+            ? { warnings: [`user_preset_save: ${ADAPTER_FIELD_DEPRECATION}`] }
+            : {}),
+        })
       } catch (err) {
         return errorText(`user_preset_save failed: ${err instanceof Error ? err.message : String(err)}`)
       }

@@ -10,7 +10,7 @@ agentproto sandbox exec   <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeou
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
                           [--file <local>:<boxPath> ...] [--json] -- <command...>
 agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>]
-                                 [--adapter <slug>] [--json]
+                                 [--harness <slug>] [--json]
 ```
 
 Browse the daemon's **sandbox ledger** (every box the daemon has booted,
@@ -231,7 +231,7 @@ and run it by path. Provider errors never echo the full command: it is cut to
 ```bash
 agentproto sandbox egress-health                        # the pool + active cooldowns
 agentproto sandbox egress-health --model opencode/big-pickle
-agentproto sandbox egress-health --probe opencode/big-pickle --adapter opencode
+agentproto sandbox egress-health --probe opencode/big-pickle --harness opencode
 ```
 
 Shows the provider's **egress address pool** (slot, public IP, boxes in use)
@@ -252,7 +252,7 @@ Requires a running daemon.
 | `--provider <slug>` | `computer` | Provider whose pool to show (or probe). |
 | `--model <id>` | — | Narrow the cooldown list to one model. Mutually exclusive with `--probe`. |
 | `--probe <model>` | off | Re-probe every slot from each address; on demand only. |
-| `--adapter <slug>` | `opencode` | Adapter the probe runs; only accepted with `--probe`. |
+| `--harness <slug>` | `opencode` | Harness the probe runs; only accepted with `--probe`. `--adapter` is a deprecated alias of `--harness`: it still works and prints a deprecation line on stderr. |
 | `--json` | `false` | Print the daemon's response as JSON instead of the human table. |
 
 Exit codes: `0` healthy; `1` when a probe returns a `ko`/`error` verdict;

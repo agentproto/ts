@@ -109,6 +109,7 @@ import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-env
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { createHash, randomBytes } from "node:crypto"
+import { ADAPTER_FIELD_DEPRECATION } from "./harness-alias.js"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
 
@@ -262,7 +263,7 @@ function defaultAdapterForModel(model: string | undefined): string | undefined {
  * change than this bug fix.
  */
 function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): string | undefined {
-  const value = metadata?.adapter ?? metadata?.harness
+  const value = metadata?.harness ?? metadata?.adapter
   return typeof value === "string" && value.trim().length > 0 ? value : undefined
 }
 
@@ -295,7 +296,7 @@ function resolveAgentSpawnAdapter(
  *  put this in an `app_run` run's `errors` list (per-agent) or throw it
  *  (workflow agent-ref resolution). */
 function noAdapterError(agentId: string): string {
-  return `agent "${agentId}" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run`
+  return `agent "${agentId}" has no harness: set metadata.harness in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass harness to app_run`
 }
 
 /** The shared failure for an installed app's AGENT.md that cannot be read at
@@ -2919,21 +2920,20 @@ export function registerAppTools(
         .string()
         .optional()
         .describe("When passed, refuse to run if the app is not applied to this scope."),
-      adapter: z
-        .string()
-        .optional()
-        .describe(
-          "Harness slug (`adapter` is the old name). Omitted: each agent resolves its " +
-            "own (AGENT.md `metadata.harness` or `metadata.adapter`, then the model " +
-            "prefix). Given: used for every agent; sets `harness` when `harness` is absent.",
-        ),
       harness: z
         .string()
         .optional()
         .describe(
-          "Canonical harness slug (defaults to `adapter`, or to each agent's resolved " +
-            "adapter when neither is given). Recorded on the run + each session; sets " +
-            "`adapter` when `adapter` is absent.",
+          "Harness slug. Omitted: each agent resolves its own (AGENT.md " +
+            "`metadata.harness`, or the deprecated `metadata.adapter`, then the model " +
+            "prefix). Given: used for every agent and recorded on the run + each session.",
+        ),
+      adapter: z
+        .string()
+        .optional()
+        .describe(
+          "Deprecated alias of `harness` (`harness` wins when both are set); removed in " +
+            "the next major of @agentproto/runtime. Using it adds a warning.",
         ),
       model: z
         .string()
@@ -3004,8 +3004,10 @@ export function registerAppTools(
       // agent whose metadata and model route resolve to nothing lands in the
       // run's `errors` instead. A caller-given adapter/harness still wins for
       // EVERY agent.
-      const callerAdapter = input.adapter ?? input.harness
-      const callerHarness = callerAdapter === undefined ? undefined : (input.harness ?? input.adapter)!
+      // `harness` is canonical, `adapter` its deprecated alias (warns).
+      const callerAdapter = input.harness ?? input.adapter
+      const callerHarness = callerAdapter
+      const appRunWarnings = input.adapter !== undefined ? [`app_run: ${ADAPTER_FIELD_DEPRECATION}`] : []
       const model = input.model
 
       // Run-level `adapter`/`harness` (recorded on the run, echoed by the
@@ -3197,6 +3199,7 @@ export function registerAppTools(
             status: run.status,
             sessions,
             ...(errors.length > 0 ? { errors } : {}),
+            ...(appRunWarnings.length > 0 ? { warnings: appRunWarnings } : {}),
           })
         }
 
@@ -3224,6 +3227,7 @@ export function registerAppTools(
           ...(run.endedAt ? { endedAt: run.endedAt } : {}),
           sessions,
           ...(errors.length > 0 ? { errors } : {}),
+          ...(appRunWarnings.length > 0 ? { warnings: appRunWarnings } : {}),
         })
       }
 
@@ -3252,6 +3256,7 @@ export function registerAppTools(
         ...(model !== undefined ? { model } : {}),
         sessions,
         ...(errors.length > 0 ? { errors } : {}),
+        ...(appRunWarnings.length > 0 ? { warnings: appRunWarnings } : {}),
       })
     },
   )

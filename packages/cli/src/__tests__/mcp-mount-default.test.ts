@@ -28,14 +28,15 @@ function harness(ids: string[], seed: { bundle?: Bundle; config?: AgentprotoConf
 }
 
 describe("agentproto mcp mount-default", () => {
-  it("creates bundle harness-<adapter> and links it into defaults.adapters.<adapter>.bundles, keeping other config", async () => {
+  it("creates bundle harness-<adapter> and links it into defaults.harnesses.<adapter>.bundles, keeping other config", async () => {
     const h = harness(["a", "b"], { config: { defaults: { skills: ["s"], adapters: { "claude-code": { skills: ["k"] } } } } })
     const r = await mountDefault("claude-code", ["a", "b"], h.deps)
     expect(r).toMatchObject({ bundleId: "harness-claude-code", bundle: "created", added: ["a", "b"], linked: true })
     expect(h.state.bundles.get("harness-claude-code")).toMatchObject({ mcpImports: ["a", "b"], skills: [] })
     expect(h.state.config.defaults).toEqual({
       skills: ["s"],
-      adapters: { "claude-code": { skills: ["k"], bundles: ["harness-claude-code"] } },
+      adapters: { "claude-code": { skills: ["k"] } },
+      harnesses: { "claude-code": { bundles: ["harness-claude-code"] } },
     })
   })
 
@@ -45,7 +46,7 @@ describe("agentproto mcp mount-default", () => {
     const r2 = await mountDefault("hermes", ["a", "b"], h.deps)
     expect(r2).toMatchObject({ bundle: "updated", added: ["b"], linked: false })
     expect(h.state.bundles.get("harness-hermes")?.mcpImports).toEqual(["a", "b"])
-    expect(h.state.config.defaults?.adapters?.hermes?.bundles).toEqual(["harness-hermes"])
+    expect(h.state.config.defaults?.harnesses?.hermes?.bundles).toEqual(["harness-hermes"])
     const r3 = await mountDefault("hermes", ["b"], h.deps)
     expect(r3).toMatchObject({ bundle: "unchanged", added: [], linked: false })
   })

@@ -188,7 +188,7 @@ import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
 import { migrateSandboxSession } from "./session-migrate.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
-import { loadConfig } from "./config.js"
+import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
@@ -1449,6 +1449,12 @@ export {
 export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
 export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
 export { decomposeMode, composeMode } from "./session-config.js"
+export {
+  ADAPTER_FIELD_DEPRECATION,
+  HARNESS_ALIAS_REMOVAL,
+  adapterDeprecation,
+  resolveHarnessAlias,
+} from "./harness-alias.js"
 export type {
   SessionConfig,
   EffortLevel,
@@ -1532,6 +1538,8 @@ export {
 export { isAgentCliAuthConfigured } from "./auth-probe.js"
 export {
   resolveSpawnDefaults,
+  harnessDefaultsFor,
+  harnessDefaultsMap,
   normalizeSkillsOption,
   credentialFingerprint,
   resolveAuthSpec,
@@ -2826,10 +2834,9 @@ export async function createGateway(
   }
   // Adapter-config cache retention (adapter-config-retention.ts): a dead
   // lineage's cache content goes after 1 quiet day unless configured.
+  const harnessCacheRetention = harnessCacheRetentionDays(daemonConfig)
   const adapterCacheRetention =
-    typeof daemonConfig.daemon?.adapterCacheRetentionDays === "number"
-      ? { maxAgeDays: daemonConfig.daemon.adapterCacheRetentionDays }
-      : {}
+    harnessCacheRetention !== undefined ? { maxAgeDays: harnessCacheRetention } : {}
   // "Box is gone" restart hook (restart-scheduler's `sandbox-gone` policy) —
   // the gateway-wired executor behind `registry.triggerSandboxGoneRestart`.
   // Moves a dead box session to a FRESH box via the SAME `restartAgentSession`

@@ -19,6 +19,7 @@ import {
   resolveSessionConfig,
   type HarnessPresetOverlay,
 } from "@agentproto/runtime"
+import { harnessFlag } from "../util/harness-flag.js"
 
 const USAGE = `agentproto preset — manage saved spawn configurations
 
@@ -30,7 +31,7 @@ Usage:
   agentproto preset delete <id>
 
 Axis flags for add:
-  --adapter <slug>          harness (e.g. hermes)
+  --harness <slug>          harness (e.g. hermes); --adapter is a deprecated alias
   --model <ref>             model identity/ref
   --gateway <id>            billing gateway/route
   --base-url <url>          custom gateway URL (requires --gateway)
@@ -51,7 +52,7 @@ preset-default:<id>, request). The same resolution runs at spawn time.
 
 Examples:
   agentproto preset add example-preset --label "Example preset" \\
-    --adapter <harness> --model <vendor/model> --gateway <gateway> \\
+    --harness <harness> --model <vendor/model> --gateway <gateway> \\
     --profile <profile-ref> --posture bypass --effort high \\
     --tag <tag> --allow-list <allow-list-id>
   agentproto preset resolve example-preset --harness <harness>
@@ -89,11 +90,11 @@ async function list(args: readonly string[]): Promise<number> {
     process.stdout.write("No user presets. Add one with `agentproto preset add <id> --label <label>`.\n")
     return 0
   }
-  process.stdout.write(`${"ID".padEnd(22)}  ${"LABEL".padEnd(28)}  ADAPTER        MODEL\n`)
+  process.stdout.write(`${"ID".padEnd(22)}  ${"LABEL".padEnd(28)}  HARNESS        MODEL\n`)
   for (const preset of presets) {
     process.stdout.write(
       `${preset.id.padEnd(22)}  ${preset.label.padEnd(28)}  ` +
-        `${(preset.adapter ?? "—").padEnd(13)}  ${preset.model ?? "—"}\n`,
+        `${(preset.harness ?? preset.adapter ?? "—").padEnd(13)}  ${preset.model ?? "—"}\n`,
     )
   }
   return 0
@@ -180,6 +181,7 @@ async function add(args: readonly string[]): Promise<number> {
     allowPositionals: true,
     options: {
       label: { type: "string" },
+      harness: { type: "string" },
       adapter: { type: "string" },
       model: { type: "string" },
       gateway: { type: "string" },
@@ -213,7 +215,10 @@ async function add(args: readonly string[]): Promise<number> {
   const preset: UserPreset = {
     id,
     label: values.label,
-    ...(values.adapter ? { adapter: values.adapter } : {}),
+    ...((): { harness?: string } => {
+      const harness = harnessFlag(values, "agentproto preset add")
+      return harness ? { harness } : {}
+    })(),
     ...(values.model ? { model: values.model } : {}),
     ...(values.gateway
       ? { route: { gateway: values.gateway, ...(values["base-url"] ? { baseUrl: values["base-url"] } : {}) } }

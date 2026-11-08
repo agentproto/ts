@@ -62,6 +62,7 @@ import {
   type SandboxCheckpointGcApplyResult,
 } from "@agentproto/worktree"
 import { discoverDaemon, httpGetJson, type DaemonDiscoveryReport } from "./_daemon-helpers.js"
+import { harnessFlag } from "../util/harness-flag.js"
 
 const USAGE = `agentproto sandbox — connect to sandbox providers
 
@@ -75,7 +76,7 @@ Usage:
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
                           [--file <local>:<boxPath> ...] [--json] -- <command...>
   agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>]
-                                   [--adapter <slug>] [--json]
+                                   [--harness <slug>] [--json]
 
 list   Show the sandbox ledger — every box the daemon booted, reconnected
        to, paused, or stopped, with its current state and idle-expiry.
@@ -216,7 +217,8 @@ egress-health
                          \`model-answers\` preflight for <model> from each
                          address, and clears or sets that address's cooldown.
                          Run on demand only; there is no automatic schedule.
-  --adapter <slug>       Adapter the probe runs (default: opencode).
+  --harness <slug>       Harness the probe runs (default: opencode).
+                         --adapter is a deprecated alias.
   --json                 Print the daemon's response as JSON.
 
 Credentials: provider API keys (e.g. BOX_API_KEY, E2B_API_KEY) must be set
@@ -1380,7 +1382,7 @@ async function runEgressHealth(args: readonly string[], deps: SandboxExecCliDeps
   const usage = (message: string): number => {
     process.stderr.write(
       `agentproto sandbox egress-health: ${message}\n` +
-        "  Usage: agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>] [--adapter <slug>] [--json]\n",
+        "  Usage: agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>] [--harness <slug>] [--json]\n",
     )
     return 2
   }
@@ -1394,6 +1396,7 @@ async function runEgressHealth(args: readonly string[], deps: SandboxExecCliDeps
         provider: { type: "string" },
         model: { type: "string" },
         probe: { type: "string" },
+        harness: { type: "string" },
         adapter: { type: "string" },
         json: { type: "boolean" },
       },
@@ -1403,7 +1406,8 @@ async function runEgressHealth(args: readonly string[], deps: SandboxExecCliDeps
   }
   const { values } = parsed
   if (values.probe !== undefined && values.probe === "") return usage("--probe expects a model id.")
-  if (values.adapter !== undefined && values.probe === undefined) return usage("--adapter only applies with --probe.")
+  const harness = harnessFlag(values, "agentproto sandbox egress-health")
+  if (harness !== undefined && values.probe === undefined) return usage("--harness only applies with --probe.")
   if (values.probe !== undefined && values.model !== undefined) return usage("--model and --probe are exclusive; --probe names the model.")
 
   const infra = (message: string): number => {
@@ -1423,7 +1427,7 @@ async function runEgressHealth(args: readonly string[], deps: SandboxExecCliDeps
         {
           model: values.probe,
           ...(values.provider !== undefined ? { provider: values.provider } : {}),
-          ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
+          ...(harness !== undefined ? { harness } : {}),
         },
         report.found.token,
       )

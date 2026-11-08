@@ -250,6 +250,7 @@ import {
   loadTerminalGateMode,
 } from "./command-allowlist.js"
 import { archivedInclusiveRegistry, resolveSessionRef, sessionRefSchema } from "./session-ref.js"
+import { adapterDeprecation } from "./harness-alias.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -320,7 +321,10 @@ export interface SessionTreeNode {
   secondsSinceLastActivity?: number
   toolCallsThisTurn?: number
   depth: number
+  /** @deprecated Read `harness`; removed in the next major of @agentproto/runtime. */
   adapterSlug?: string
+  /** Canonical harness slug (always set when `adapterSlug` is). */
+  harness?: string
   parentSessionId?: string
   /** Source label this session was spawned from ("claude-code", "vscode",
    *  "cron", …) — the descriptor's `origin`. Present on every node, but it's
@@ -613,6 +617,7 @@ export function buildSessionTree(
     toolCallsThisTurn: s.toolCallsThisTurn,
     depth: s.depth ?? 0,
     ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+    ...((s.harness ?? s.adapterSlug) ? { harness: s.harness ?? s.adapterSlug } : {}),
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
     ...(s.origin ? { origin: s.origin } : {}),
     ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
@@ -917,7 +922,10 @@ export interface SessionListCompactItem {
   /** What was actually run — quoted joined, same string the full record carries. */
   command: string
   cwd?: string
+  /** @deprecated Read `harness`; removed in the next major of @agentproto/runtime. */
   adapterSlug?: string
+  /** Canonical harness slug (always set when `adapterSlug` is). */
+  harness?: string
   model?: string
   busy?: boolean
   awaitingInput?: boolean
@@ -1040,6 +1048,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   command: s.command,
   cwd: s.cwd,
   adapterSlug: s.adapterSlug,
+  harness: s.harness ?? s.adapterSlug,
   model: s.model,
   busy: s.busy,
   awaitingInput: s.awaitingInput,
@@ -2831,9 +2840,9 @@ export function registerSessionTools(
     "session_continue_fresh",
     "Spawn a NEW agent session that continues the work of an existing " +
       "session with a structured checkpoint as its initial prompt. By " +
-      "default the new session uses the same adapter, harness, model, " +
-      "route, access profile, posture, effort, and cwd — pass `harness`/" +
-      "`adapter`, `model`, and/or `access.profileRef` to override any of " +
+      "default the new session uses the same harness, model, " +
+      "route, access profile, posture, effort, and cwd: pass `harness` " +
+      "(deprecated alias `adapter`), `model`, and/or `access.profileRef` to override any of " +
       "those three axes, enabling a CROSS-harness handoff (e.g. claude-code " +
       "-> opencode). An overridden axis is validated for model x profile " +
       "eligibility the same way `agent_start` validates it — an ineligible " +
@@ -2849,19 +2858,17 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe(
-          "Override the canonical harness slug for the fresh session — the " +
-            "cross-harness handoff axis (e.g. 'opencode'). Alias of `adapter`; " +
-            "set either or both. Omitted -> carried forward from the prior " +
-            "session, unchanged."
+          "Override the harness slug for the fresh session: the " +
+            "cross-harness handoff axis (e.g. 'opencode'). Omitted -> carried " +
+            "forward from the prior session, unchanged."
         ),
       adapter: z
         .string()
         .min(1)
         .optional()
         .describe(
-          "Override the adapter slug for the fresh session — alias of " +
-            "`harness`. Set either or both. Omitted -> carried forward from " +
-            "the prior session, unchanged."
+          "Deprecated alias of `harness` (`harness` wins when both are set); " +
+            "removed in the next major of @agentproto/runtime. Using it adds a warning."
         ),
       model: z
         .string()
@@ -2992,6 +2999,9 @@ export function registerSessionTools(
                   checkpointId: result.checkpoint.checkpointId,
                   checkpointPath: result.checkpoint.checkpointPath,
                   handoff: result.descriptor.handoff,
+                  ...(input.adapter !== undefined
+                    ? { warnings: [`session_continue_fresh: ${adapterDeprecation("adapter", "harness")}`] }
+                    : {}),
                 },
                 null,
                 2,
@@ -4081,7 +4091,7 @@ export function registerSessionTools(
     "Return the orchestrator session hierarchy as a nested tree. Each root " +
       "is a session with no parent (or whose parent is outside the visible scope); " +
       "its `children` array holds direct sub-sessions, recursively. Each node " +
-      "carries `id`, `label`, `status`, `depth`, `adapterSlug`, `parentSessionId`, " +
+      "carries `id`, `label`, `status`, `depth`, `harness` (and the deprecated `adapterSlug`), `parentSessionId`, " +
       "`continuedFrom` (set when the node was spawned by `session_continue_fresh` " +
       "— a checkpoint-handoff edge distinct from tree nesting: the node is the " +
       "SOURCE session's sibling, not its child; the full record's `handoff` " +
@@ -4232,6 +4242,7 @@ export function registerSessionTools(
           toolCallsThisTurn: s.toolCallsThisTurn,
           depth: s.depth ?? 0,
           ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+          ...((s.harness ?? s.adapterSlug) ? { harness: s.harness ?? s.adapterSlug } : {}),
           ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
           ...(s.origin ? { origin: s.origin } : {}),
           ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),

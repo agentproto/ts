@@ -29,13 +29,40 @@ Per the
 The CLI doesn't care about the scope — any package on the resolution
 path with a valid `AgentCliHandle` works. The conventions exist for
 human discoverability. The daemon's MCP surface exposes the same listing
-under `harness_list` (canonical) and `adapter_list` (legacy alias,
-retained for older clients and daemons): both accept the same slug
-filters and return the same payload. Discovery (CLI ≥ 1.32.0) also accepts the
+under `harness_list` (canonical, rows under `harnesses`) and `adapter_list`
+(deprecated alias, rows under `adapters`, retained for older clients and
+daemons): both accept the same slug filters. Discovery (CLI ≥ 1.32.0) also accepts the
 canonical AIP-70 `harness-` spelling — `@agentproto/harness-<slug>` or
 `@<vendor>/agentproto-harness-<slug>` — which wins a same-slug collision
 with the `adapter-` package; the bare `@agentproto/harness` package
 never matches a slug.
+
+## `harness` is the canonical name, `adapter` is deprecated
+
+Per the AIP-70 glossary, the agent CLI a session runs is its **harness**.
+Every surface that took `adapter` now takes `harness`; the old name still
+works, and every use of it returns a dated warning: "`adapter` is
+deprecated and will be removed in the next major of @agentproto/runtime;
+use `harness`". A later major release removes the old names.
+
+| Surface | Canonical | Deprecated alias (still works, warns) |
+| ------- | --------- | -------------------------------------- |
+| MCP tools | `harness_list`, `harness_models`, `harness_install` | `adapter_list`, `adapter_models`, `adapter_install` |
+| List key | `harnesses` (in `harness_list`, `GET /harnesses`) | `adapters` (repeated next to `harnesses` for now) |
+| Tool argument | `harness` (`agent_start`, `session_continue_fresh`, `app_run`, `catalog_models`, `harness_models`, `agent_export`, `user_preset_save`, `workflow_start` steps, `inbound_watcher_start`, judge gates `judge.harness`, decision `profileOptions.escalation.harness`) | `adapter` |
+| HTTP | `GET /harnesses`, `POST /harnesses/:slug/install`, `harness` in the `POST /sessions/agent` body, `?harness=` on `GET /sessions/:id/export` and `GET /catalog/models` | `GET /adapters`, `POST /adapters/:slug/install`, `adapter`, `?adapter=` |
+| Session descriptor | `harness` (always set when the session has one) | `adapterSlug` (same value) |
+| CLI flag | `--harness` (`cron add`, `preset add`, `auth provider set`, `sandbox egress-health`, `sessions export`/`story`, `worktree-agent run`) | `--adapter` (prints the warning on stderr) |
+| Config | `defaults.harnesses.<slug>.*`, `daemon.harnessCacheRetentionDays` | `defaults.adapters.<slug>.*`, `daemon.adapterCacheRetentionDays` |
+
+Resolution is always `harness ?? adapter ?? preset.harness ?? preset.adapter`.
+In config, a field set under `defaults.harnesses.<slug>` wins over the same
+field under `defaults.adapters.<slug>`; the daemon reads the old key as a
+fallback and logs the warning once, it never rewrites your config file.
+`config_get` lists the new keys and flags the old ones with
+`deprecated: { replacedBy, message }`. The package names
+(`@agentproto/adapter-<slug>`) and the `~/.agentproto/adapter-config/<id>`
+directory are unchanged.
 
 ## Installing
 

@@ -40,6 +40,9 @@ export interface SessionDescriptor {
   title?: string
   name?: string
   cwd?: string
+  /** Canonical harness slug (always set by the daemon when `adapterSlug` is). */
+  harness?: string
+  /** @deprecated Read `harness`; kept for daemons older than the rename. */
   adapterSlug?: string
   model?: string
   costUsd?: number

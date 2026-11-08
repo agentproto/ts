@@ -35,7 +35,7 @@ import { shouldInjectDaemonSelfMount, slugifyMcpImportName } from "./session-spa
 import { sameNativeUpstream } from "./mcp-import-resolve.js"
 import { loadConfig as loadConfigReal, type AgentprotoConfig } from "./config.js"
 import { loadBundles as loadBundlesReal, type BundlesFile } from "./bundles.js"
-import { resolveBundleDefaults } from "./spawn-defaults.js"
+import { harnessDefaultsMap, resolveBundleDefaults } from "./spawn-defaults.js"
 
 /** How a harness reaches one imported MCP by default:
  *  - `native`   — a default bundle mounts it as a native mcpServers entry;
@@ -470,7 +470,7 @@ async function buildSkillsInventory(
   const defaults = {
     global: cfg.defaults?.skills ?? [],
     byAdapter: Object.fromEntries(
-      Object.entries(cfg.defaults?.adapters ?? {})
+      Object.entries(harnessDefaultsMap(cfg.defaults))
         .filter(([, v]) => (v.skills?.length ?? 0) > 0)
         .map(([slug, v]) => [slug, v.skills ?? []]),
     ),
