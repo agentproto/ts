@@ -16,6 +16,7 @@ import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
 import { ONBOARDING_STEPS } from "../onboarding/registry.js"
 import { hasRequiredFailure, runChecks, summarize, type ReportSummary } from "../onboarding/run.js"
+import { checkHookPath, HOOK_STEP_ID, realHookBinLookup, type HookBinLookup } from "./doctor-hook-path.js"
 import { createStepContext } from "../onboarding/context.js"
 import type { OnboardingStep, StepContext, StepReport, StepStatus } from "../onboarding/types.js"
 
@@ -28,12 +29,15 @@ Options:
   --fix           set "crossSessionInbound": "accept" in ~/.claude/settings.json so a
                   Claude Code session in bypassPermissions accepts messages from other
                   sessions (backs the file up first, keeps every other key, prints the diff)
+                  also prints, without writing it, the diff that would put an absolute
+                  path in the \`agentproto hook\` commands when they do not resolve in
+                  your login shell PATH
   --json          machine-readable report (attach it to bug reports)
   --only <step>   run only this step (repeatable)
   --skip <step>   skip this step (repeatable)
   -h, --help      show this help
 
-Steps: preflight, workspace, daemon, agents, auth, clients, devices, skills, local-models
+Steps: preflight, workspace, daemon, agents, auth, clients, devices, skills, local-models, hooks
 
 Exit code is 1 when a required step (preflight, workspace, daemon, agents)
 reports a missing or broken check, 0 otherwise.
@@ -53,6 +57,9 @@ export interface DoctorDeps {
   /** Claude Code user settings file `--fix` edits. Default
    *  `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`. */
   claudeSettingsFile?: string
+  /** Resolves a command in the login shell / this process. When absent the
+   *  hook PATH check is skipped (tests); the real deps shell out. */
+  hookBinLookup?: HookBinLookup
 }
 
 export interface CrossSessionInboundFix {
@@ -132,12 +139,22 @@ function renderFix(fix: CrossSessionInboundFix): string {
   )
 }
 
+function renderHookPathFix(p: { file: string; diff: string }): string {
+  return (
+    `\nfix: the \`agentproto hook\` commands in ${p.file} do not resolve in your login shell PATH.\n` +
+    `     Proposed change, NOT written (apply it yourself, or export the PATH instead):\n${p.diff}\n`
+  )
+}
+
 export interface DoctorJson {
   version: string
   platform: string
   steps: StepReport[]
   summary: ReportSummary
   fix?: CrossSessionInboundFix
+  /** Proposed hook command change when `--fix` is given and the hook PATH
+   *  check warned. Never written. */
+  hookPathFix?: { file: string; absolute: string; diff: string }
 }
 
 function cliVersion(): string {
@@ -150,6 +167,7 @@ const REAL_DEPS: DoctorDeps = {
   stdout: process.stdout,
   stderr: process.stderr,
   env: process.env,
+  hookBinLookup: realHookBinLookup,
 }
 
 const GLYPH: Record<StepStatus, string> = { ok: "✓", warn: "!", missing: "✗", broken: "✗", skipped: "-" }
@@ -207,7 +225,7 @@ export async function runDoctor(args: readonly string[], deps: DoctorDeps = REAL
     deps.stderr.write(`agentproto doctor: ${err instanceof Error ? err.message : String(err)}\n\n${USAGE}`)
     return 2
   }
-  const known = new Set(deps.steps.map((s) => s.id))
+  const known = new Set([...deps.steps.map((s) => s.id), HOOK_STEP_ID])
   const unknown = [...(values.only ?? []), ...(values.skip ?? [])].filter((id) => !known.has(id))
   if (unknown.length > 0) {
     deps.stderr.write(
@@ -221,21 +239,30 @@ export async function runDoctor(args: readonly string[], deps: DoctorDeps = REAL
     ...(values.only ? { only: values.only } : {}),
     ...(values.skip ? { skip: values.skip } : {}),
   })
+  const settingsFile =
+    deps.claudeSettingsFile ?? join(deps.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json")
+  const hookRun =
+    deps.hookBinLookup &&
+    !(values.skip ?? []).includes(HOOK_STEP_ID) &&
+    (!values.only || values.only.includes(HOOK_STEP_ID))
+      ? await checkHookPath(settingsFile, deps.hookBinLookup)
+      : undefined
+  if (hookRun?.report) reports.push(hookRun.report)
+  const hookPathFix = values.fix ? hookRun?.proposal : undefined
   const meta = { version: ctx.cliVersion, platform: `${ctx.platform}/${ctx.arch}` }
 
   const fix = values.fix
-    ? applyCrossSessionInboundFix(
-        deps.claudeSettingsFile ?? join(deps.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json"),
-      )
+    ? applyCrossSessionInboundFix(settingsFile)
     : undefined
 
   if (values.json) {
-    const json: DoctorJson = { ...meta, steps: reports, summary: summarize(reports), ...(fix ? { fix } : {}) }
+    const json: DoctorJson = { ...meta, steps: reports, summary: summarize(reports), ...(fix ? { fix } : {}), ...(hookPathFix ? { hookPathFix } : {}) }
     deps.stdout.write(JSON.stringify(json, null, 2) + "\n")
   } else {
     const color = deps.stdout.isTTY === true && deps.env.NO_COLOR === undefined
     deps.stdout.write(renderHuman(reports, meta, color))
     if (fix) deps.stdout.write(renderFix(fix))
+    if (hookPathFix) deps.stdout.write(renderHookPathFix(hookPathFix))
   }
   return hasRequiredFailure(reports) || fix?.status === "failed" ? 1 : 0
 }

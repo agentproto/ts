@@ -220,7 +220,7 @@ export const agentStartInputShape = {
   notifyParentOnCrash: mcpBool
     .optional()
     .describe(
-      `Notify this session's parent in-band if it later crashes. Default false.`
+      `Notify this session's parent in-band if it later crashes. Default true for an executor with a declared or attached parent, false otherwise; pass false to opt out.`
     ),
   sentinel: mcpBool
     .optional()

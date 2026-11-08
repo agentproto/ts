@@ -2182,9 +2182,10 @@ export interface SpawnAgentSessionInput {
    *  `parentSessionId`, if any — enqueued immediately when the parent is
    *  alive and idle, queued for its next turn when busy (never
    *  interrupted). Recorded verbatim onto {@link SessionDescriptor
-   *  .notifyParentOnCrash}; see that field's doc. Default false — the free
-   *  external webhook path (`notifyUrl`) already fires regardless of this
-   *  flag. */
+   *  .notifyParentOnCrash}; see that field's doc. Default true for an
+   *  `executor` that has a declared or attached parent, false otherwise;
+   *  an explicit `false` always opts out. The free external webhook path
+   *  (`notifyUrl`) fires regardless of this flag. */
   notifyParentOnCrash?: boolean
   /** A REMOTE parent (host relay) forwarded by the host into a BOX daemon's
    *  `agent_start`: the parent session lives in the HOST daemon's registry,
@@ -4526,6 +4527,14 @@ async function spawnAgentSessionOnce(
       configDefaults?.spawn?.defaultAgent,
     )
   }
+  // Crash notice to the supervisor: an explicit `notifyParentOnCrash` (true or
+  // false) always wins; otherwise an executor with a declared or attached
+  // parent opts in, so a delegating supervisor hears about a silent death
+  // without having to remember the flag. Resolved once here (role is final)
+  // and recorded on the descriptor, so a restart inherits the same answer.
+  const notifyParentOnCrash =
+    input.notifyParentOnCrash ??
+    (parentSessionId !== undefined && role.name === "executor")
   // Context-intake default (config `defaults.adapters.<slug>.contextProfile`,
   // else the built-in executor default) — role is final here.
   const effectiveContextProfile = resolveDefaultContextProfile({
@@ -6010,7 +6019,7 @@ async function spawnAgentSessionOnce(
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
-        ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
         meta: spawnDescriptorMeta(),
         ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
@@ -6715,7 +6724,7 @@ async function spawnAgentSessionOnce(
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
       ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
-      ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+      ...(notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       meta: spawnDescriptorMeta(),
       ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
