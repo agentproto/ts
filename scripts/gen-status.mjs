@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * gen-status.mjs — classifies every pnpm workspace package into a tier and
+ * gen-status.mjs: classifies every pnpm workspace package into a tier and
  * writes STATUS.md, a table of the result. STATUS.md is git-ignored: it is
  * generated on demand (`pnpm status`), never committed. computeStatus() is
  * also the classifier behind scripts/gen-spec-packages-doc.mjs.

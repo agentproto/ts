@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * gen-spec-packages-doc.mjs — generates docs/reference/spec-packages.md, one
+ * gen-spec-packages-doc.mjs: generates docs/reference/spec-packages.md, one
  * row per package in the `spec-reference` tier (the packages that only
  * implement an AIP file format), classified by scripts/gen-status.mjs.
  *
