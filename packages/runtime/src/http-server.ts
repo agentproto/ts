@@ -5892,6 +5892,32 @@ export async function startHttpServer(
         // Cron routes — only registered when the gateway was built with
         // a CronScheduler. /cron, /cron/:id, /cron/:id/run.
         if (opts.cronScheduler && path.startsWith("/cron")) {
+          // Non-GET is a mutating action (create / update / delete / fire a
+          // job that can spawn agents or run commands): same gate as the
+          // mutating /sessions/* routes. A foreign browser Origin is refused
+          // unless it carries the bearer, then the per-boot token (or an
+          // allowlisted Origin) is required, and a body-carrying write must
+          // be JSON so a cross-origin `text/plain` "simple" request, which
+          // needs no preflight, cannot reach the handler. GET stays open,
+          // like the other read-only routes.
+          if ((req.method ?? "GET") !== "GET") {
+            if (guardBrowserOrigin(req, res)) return
+            const gate = checkSessionsToken(req)
+            if (gate !== "ok") {
+              rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+            if ((req.method === "POST" || req.method === "PATCH") && !isJsonContentType(req)) {
+              res.writeHead(415, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "unsupported_media_type",
+                  message: "Writes to /cron must send `content-type: application/json`.",
+                }),
+              )
+              return
+            }
+          }
           const handled = await handleCron(req, res, path, opts.cronScheduler)
           if (handled) return
         }
@@ -13400,9 +13426,10 @@ async function handleCron(
         ...(b.notify !== undefined
           ? { notify: b.notify as import("./cron-scheduler.js").CronNotify }
           : {}),
-        // This route is operator/loopback-gated and carries no session
-        // identity, so the creator is always the operator. `agentproto cron
-        // add`, hooks and desktop create jobs here.
+        // This route is gated by the operator token (or an allowlisted
+        // Origin) and carries no session identity, so the creator is always
+        // the operator. `agentproto cron add` and other operator clients
+        // create jobs here.
         createdBy: { kind: "operator" },
       })
       json(201, job)
