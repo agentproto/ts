@@ -224,6 +224,29 @@ describe("agent_start - cloud spawn", () => {
     expect(refused.content?.[0]?.text).toContain("mcpServers")
   })
 
+  it("a cloud spawn with `orchestrator: true` mounts nothing and warns (AIP-66 section 4)", async () => {
+    const startSession = vi.fn(async (_opts: Record<string, any>) => mockSession("acp_uuid_noorch"))
+    const { client } = await setup(startSession, { daemonMcpUrl: "http://127.0.0.1:1/mcp" })
+
+    const body = parseToolJson(
+      await client.callTool({
+        name: "agent_start",
+        arguments: {
+          adapter: "claude-code",
+          cloud: "anthropic",
+          orchestrator: true,
+          prompt: "hi",
+          cwd: "/tmp",
+        },
+      }),
+    )
+    expect(body.id).toMatch(/^sess_/)
+    const opts = startSession.mock.calls[0]![0] as Record<string, any>
+    // No scoped-orchestrator (or any other) MCP entry reaches the adapter.
+    expect(opts.mcpServers ?? []).toEqual([])
+    expect(body.warnings?.some((w: string) => w.includes("orchestrator"))).toBe(true)
+  })
+
   it("re-attach prefers meta.cloud.sessionId over the ACP uuid as the resume target", async () => {
     const startSession = vi.fn(async (_opts: Record<string, any>) => mockSession("acp_uuid_row"))
     const { client, registry } = await setup(startSession)

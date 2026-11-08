@@ -4228,13 +4228,13 @@ async function spawnAgentSessionOnce(
   if (allowTools && (mcpServers || cloudResolved || input.sandbox !== undefined || !daemonMcpUrl)) {
     spawnWarnings.push(
       `agent_start: tools allowlist (${allowTools.join(", ")}) not applied — ` +
-        (mcpServers
-          ? "the caller supplied its own mcpServers."
-          : cloudResolved
-            ? "a managed cloud agent takes no MCP mounts (AIP-66 section 4)."
-          : input.sandbox !== undefined
-            ? "a sandbox spawn cannot reach this daemon's loopback /mcp."
-            : "the daemon has no /mcp URL configured."),
+        (cloudResolved
+          ? "a managed cloud agent takes no MCP mounts (AIP-66 section 4)."
+          : mcpServers
+            ? "the caller supplied its own mcpServers."
+            : input.sandbox !== undefined
+              ? "a sandbox spawn cannot reach this daemon's loopback /mcp."
+              : "the daemon has no /mcp URL configured."),
     )
   }
   if (
@@ -4287,6 +4287,12 @@ async function spawnAgentSessionOnce(
       sandboxOrchestratorForward = narrowSandboxOrchestratorForward(
         typeof input.orchestrator === "object" ? input.orchestrator : true,
         callerScope,
+      )
+    }
+  } else if (cloudResolved) {
+    if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
+      spawnWarnings.push(
+        "agent_start: `orchestrator` ignored for a managed cloud agent — it takes no MCP mounts (AIP-66 section 4).",
       )
     }
   } else if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
@@ -4535,7 +4541,7 @@ async function spawnAgentSessionOnce(
   // for a browser never suppresses the self-mount / report-back channel,
   // and an explicit `mcpServers: []` opt-out still only opts out of those.
   // A caller entry already named like the browser mount wins as-is.
-  const browserMode = cloudResolved ? "off" : resolveBrowserMode({
+  const browserMode = cloudResolved ? false : resolveBrowserMode({
     explicit: input.browser,
     role: role.browser,
     preset: presetBrowser,
