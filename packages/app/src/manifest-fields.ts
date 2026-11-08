@@ -23,6 +23,7 @@ import type {
   AppSetupWhen,
 } from "./types.js"
 import { parseVersionRange } from "./version-range.js"
+import { parseExposedTools } from "./exposed-tools.js"
 
 export const APP_PLACEMENTS: readonly AppPlacement[] = ["local", "box", "any", "split"]
 
@@ -830,7 +831,7 @@ export function normalizeManifestFields(
 
   let exposes: AppExposes = { agents: [], workflows: [] }
   if (input.exposes !== undefined) {
-    if (!isRecord(input.exposes)) throw fail("'exposes' must be an object { agents, workflows }.")
+    if (!isRecord(input.exposes)) throw fail("'exposes' must be an object { agents, workflows, prefix, tools }.")
     const agents = stringList(input.exposes.agents, "exposes.agents", fail)
     const workflows = stringList(input.exposes.workflows, "exposes.workflows", fail)
     for (const id of agents) {
@@ -847,7 +848,13 @@ export function normalizeManifestFields(
         )
       }
     }
-    exposes = { agents, workflows }
+    const exposed = parseExposedTools(input.exposes.tools, input.exposes.prefix, fail)
+    exposes = {
+      agents,
+      workflows,
+      ...(exposed.prefix !== undefined ? { prefix: exposed.prefix } : {}),
+      ...(exposed.tools.length > 0 ? { tools: exposed.tools } : {}),
+    }
   }
 
   let accepts: AppAccepts = { tasks: false }

@@ -212,8 +212,16 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(app.workspace ? { workspace: app.workspace.id } : {}),
     ...requiresFrontmatter(app),
     ...(app.placement !== undefined && app.placement !== "any" ? { placement: app.placement } : {}),
-    ...(app.exposes && (app.exposes.agents.length > 0 || app.exposes.workflows.length > 0)
-      ? { exposes: { agents: app.exposes.agents, workflows: app.exposes.workflows } }
+    ...(app.exposes &&
+    (app.exposes.agents.length > 0 || app.exposes.workflows.length > 0 || (app.exposes.tools?.length ?? 0) > 0)
+      ? {
+          exposes: {
+            agents: app.exposes.agents,
+            workflows: app.exposes.workflows,
+            ...(app.exposes.prefix !== undefined ? { prefix: app.exposes.prefix } : {}),
+            ...(app.exposes.tools && app.exposes.tools.length > 0 ? { tools: app.exposes.tools } : {}),
+          },
+        }
       : {}),
     ...(app.accepts?.tasks ? { accepts: { tasks: true } } : {}),
     ...(uiFrontmatter !== undefined ? { ui: uiFrontmatter } : {}),

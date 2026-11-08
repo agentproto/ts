@@ -1,7 +1,7 @@
 # `agentproto mcp-app`
 
 ```text
-agentproto mcp-app <appId>
+agentproto mcp-app <appId> [--access read[,write][,approve]]
 agentproto mcp-app --http <appDir> [--port N] [--host H] [--tenants <file.json>]
 ```
 
@@ -11,18 +11,60 @@ Codex/Cursor/Windsurf client the full daemon `/mcp` gateway (~177 core tools
 including `command_execute`, fs, `agent_*`).
 
 Unlike [`mcp-bridge`](./mcp-bridge.md), which proxies every daemon tool
-verbatim, `mcp-app` reads the target app's `ui.tools` allowlist off its
-installed `APP.md` and registers exactly those tools, one MCP tool per
-allowlisted name. Each call forwards a generic `{ args }` payload to the
-daemon's `POST /apps/:appId/tool-call` route — the same allowlist+dispatch
-path (`performAppToolCall`) the browser bridge (`agentproto app serve`) and
-the `app_tool_call` MCP verb already share, so this surface can't drift from
-either and the allowlist is enforced server-side too, not just by this
-process's own tool registration.
+verbatim, `mcp-app` reads the target app's `exposes.tools` off its installed
+`APP.md` and registers only those tools. Each call forwards to the daemon's
+`POST /apps/:appId/tool-call` route with the tool's ORIGINAL id (the same
+allowlist+dispatch path (`performAppToolCall`) the browser bridge
+(`agentproto app serve`) and the `app_tool_call` MCP verb already share), so the
+allowlist is enforced server-side too, not just by this process's own tool
+registration. Design: [`exposes-tools-contract.md`](../../design/exposes-tools-contract.md).
 
-The app must already be installed (`agentproto app install <dir>`) and must
-declare a `ui.tools` allowlist in `APP.md` — `mcp-app` refuses to serve an app
-with no declared allowlist rather than falling back to exposing every daemon
+## `exposes.tools`
+
+```yaml
+exposes:
+  prefix: bureau            # mandatory, [a-z][a-z0-9]{1,15}, no "_"
+  tools:
+    - id: bureau.status
+      access: read          # read | write | approve
+      description: Bureau health and the running browser instances.
+    - id: imported:bureau/browser_list_instances
+      access: read
+      mcpName: list_instances   # mandatory for an imported id
+      description: List the browser instances.
+```
+
+- **Name**: `<prefix>_<name>`, from the single `exposedToolName` function. The
+  name is `mcpName` (else the id) without a leading `<prefix>.` or `<prefix>_`,
+  with every character outside `[a-zA-Z0-9_-]` replaced by `_`. It is at most
+  64 characters and never contains `:` or `/`.
+- **Schema**: the tool's real input schema, from `inputSchema` or the bundled
+  `TOOL.md` `inputs`. A tool with neither falls back to a free `{ args }` object.
+- **Annotations**: `read` tools carry `readOnlyHint`, `write` and `approve`
+  tools carry `destructiveHint`.
+- **Validation** (at load, and again here): `access: read` is refused on a
+  `TOOL.md` that declares `mutates` or a `mutator`/`write` tag; an id or
+  `mcpName` starting with `approval` is refused; the prefix cannot be the first
+  segment of a daemon tool name (`app`, `session`, ...); two entries cannot
+  compute the same name.
+- **Temporary**: every `exposes.tools` id must also be in `ui.tools`, because
+  the tool-call route only accepts that allowlist today.
+
+### `--access`
+
+`--access read` is the default: write and approve tools are not registered and
+a stderr line reports how many were hidden. Opt in with
+`--access read,write` (or `read,write,approve`).
+
+### Apps without `exposes.tools`
+
+The previous behaviour is kept: every `ui.tools` name is registered verbatim
+with a generic `{ args }` payload, and a warning goes to stderr. Declare
+`exposes.tools` to scope it.
+
+The app must already be installed (`agentproto app install <dir>`) and declare
+`exposes.tools` or a `ui.tools` allowlist in `APP.md`; `mcp-app` refuses to
+serve an app with neither rather than falling back to exposing every daemon
 tool.
 
 ## Daemon dependency
@@ -72,7 +114,9 @@ closes or the process is killed.
 
 ```text
 agentproto mcp-app: no installed app "my-book" — run `agentproto app install <dir>` first.
-agentproto mcp-app: app "my-book" has no `ui.tools` allowlist declared in APP.md — mcp-app requires an explicit allowlist to scope what a buyer's MCP client can see. Add `ui: { tools: [...] }` to APP.md.
+agentproto mcp-app: app "my-book" has no `ui.tools` allowlist declared in APP.md — mcp-app requires an explicit allowlist to scope what a buyer's MCP client can see. Add `exposes: { prefix, tools: [...] }` (or `ui: { tools: [...] }`) to APP.md.
+agentproto mcp-app: invalid `exposes.tools`: <APP.md path>: <reason>
+agentproto mcp-app: --access takes read, write, approve (comma-separated), got "admin"
 ```
 
 ## See also

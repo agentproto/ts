@@ -46,6 +46,16 @@ export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFrom
 export type { AppUiPeek } from "./load-app.js"
 export { loadAppBundledTools } from "./load-app-tools.js"
 export {
+  exposedToolName,
+  parseExposedTools,
+  resolveExposedTools,
+  validateExposedToolsAgainstBundle,
+  EXPOSED_TOOL_ACCESS,
+  EXPOSED_TOOL_NAME_MAX,
+  EXPOSED_TOOL_DESCRIPTION_MAX,
+} from "./exposed-tools.js"
+export type { ExposedToolBundledTool, ExposedToolReservedNames, ResolvedExposedTool } from "./exposed-tools.js"
+export {
   parseServiceList,
   DEFAULT_SERVICE_IDLE_STOP_MS,
   DEFAULT_SERVICE_START_TIMEOUT_MS,
@@ -69,6 +79,8 @@ export { refKey, stripOwner } from "./refs.js"
 export { versionSatisfies } from "./version-range.js"
 export type {
   AppDefinition,
+  AppExposedTool,
+  AppExposedToolAccess,
   AppHandle,
   AgentEntry,
   DoctypeHandle,

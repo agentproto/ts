@@ -27,6 +27,7 @@ import {
   readDeclaredUIPort,
   resolveRequestedPort,
   readDeclaredUITools,
+  readDeclaredExposedTools,
   readDeclaredCategory,
   readDeclaredLibraryBookIds,
   callDaemonTool,
@@ -297,6 +298,67 @@ describe("readDeclaredUITools", () => {
   it("returns undefined for a missing APP.md", async () => {
     const dir = await mktmp()
     expect(await readDeclaredUITools(dir)).toBeUndefined()
+  })
+})
+
+describe("readDeclaredExposedTools", () => {
+  async function writeApp(dir: string, frontmatter: string, tools: { id: string; tags?: string[] }[] = []) {
+    await mkdir(join(dir, ".agentproto"), { recursive: true })
+    await writeFile(join(dir, ".agentproto", "APP.md"), `---\n${frontmatter}---\n`, "utf8")
+    for (const t of tools) {
+      await mkdir(join(dir, ".agentproto", "tools", t.id), { recursive: true })
+      await writeFile(
+        join(dir, ".agentproto", "tools", t.id, "TOOL.md"),
+        [
+          "---",
+          "schema: agentproto/tool/v1",
+          `id: ${t.id}`,
+          `name: ${t.id}`,
+          `description: Tool ${t.id}.`,
+          "version: 1.0.0",
+          "inputs:",
+          "  type: object",
+          "  properties:",
+          "    q: { type: string }",
+          "outputs: { type: object, properties: {} }",
+          ...(t.tags ? [`tags: [${t.tags.join(", ")}]`] : []),
+          "---",
+          "",
+        ].join("\n"),
+        "utf8",
+      )
+    }
+  }
+  const block = (access: string, prefix = "bureau") =>
+    `exposes:\n  prefix: ${prefix}\n  tools:\n    - id: bureau.status\n      access: ${access}\n      description: Bureau status.\nui:\n  path: .agentproto/ui/index.html\n  tools: [bureau.status]\n`
+
+  it("returns the computed MCP name and the TOOL.md input schema", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, block("read"), [{ id: "bureau.status" }])
+    const resolved = await readDeclaredExposedTools(dir)
+    expect(resolved?.map(r => [r.entry.id, r.name, r.entry.access])).toEqual([
+      ["bureau.status", "bureau_status", "read"],
+    ])
+    expect(resolved?.[0]?.inputs).toMatchObject({ type: "object", properties: { q: { type: "string" } } })
+  })
+
+  it("returns undefined when exposes.tools is absent or the APP.md is missing", async () => {
+    const dir = await mktmp()
+    expect(await readDeclaredExposedTools(dir)).toBeUndefined()
+    await writeApp(dir, "schema: app/v1\nui:\n  path: .agentproto/ui/index.html\n  tools: [app_run]\n")
+    expect(await readDeclaredExposedTools(dir)).toBeUndefined()
+  })
+
+  it("throws, naming APP.md, when read is declared on a mutator-tagged tool", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, block("read"), [{ id: "bureau.status", tags: ["mutator"] }])
+    await expect(readDeclaredExposedTools(dir)).rejects.toThrow(/APP\.md.*access: read/s)
+  })
+
+  it("throws when the prefix is the first segment of a daemon tool name", async () => {
+    const dir = await mktmp()
+    await writeApp(dir, block("read", "app"), [{ id: "bureau.status" }])
+    await expect(readDeclaredExposedTools(dir)).rejects.toThrow(/reserved/)
   })
 })
 
