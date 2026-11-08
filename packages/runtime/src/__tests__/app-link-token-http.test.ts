@@ -2,7 +2,7 @@
  * AIP-53 link-token scoping over the real HTTP surface: a Telegram-gated
  * link token, once exchanged via `POST /apps/:appId/link-auth`, widens
  * `tunnelBearerAllowed` (http-server.ts) ONLY for its own app's tool-call
- * route and its own session's three read routes — everything else (a
+ * route and its own session's four read routes; everything else (a
  * DIFFERENT session's reads, `/mcp`, `/sessions/:id/kill`, the PTY
  * upgrade) stays exactly as gated as plain `tunnel-bearer-gate.test.ts`
  * already proves for the no-token case.
@@ -112,8 +112,8 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
       unvalidatedAgentTools: [],
       ui: {
         path: join(dir, "ui.html"),
-        tools: ["conversation_read"],
-        toolScope: { conversation_read: { sessionId: "$link.sessionId" } },
+        tools: ["conversation_read", "permissions_respond"],
+        toolScope: { conversation_read: { sessionId: "$link.sessionId" }, permissions_respond: {} },
       },
     })
 
@@ -208,7 +208,50 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
     })
   })
 
-  it("a link-session token grants NOTHING beyond the three read routes + its own tool-call: /mcp, kill, and the PTY route stay gated", async () => {
+  it("GET /sessions/:id/capabilities is allowed for the token's OWN session over the tunnel and refused for a DIFFERENT session", async () => {
+    await withServer(async (base, registry) => {
+      const mine = spawnSession(registry)
+      const other = spawnSession(registry)
+      const sessionToken = mintSessionToken(APP_ID, mine.id)
+      const headers = { ...FORWARDED, authorization: `Bearer ${sessionToken}` }
+
+      expect((await fetch(`${base}/sessions/${mine.id}/capabilities`, { headers })).status).toBe(200)
+      expect((await fetch(`${base}/sessions/${other.id}/capabilities`, { headers })).status).toBe(401)
+    })
+  })
+
+  it("permissions_respond over the tool-call route checks the permission id against the daemon's pending-permission inbox", async () => {
+    await withServer(async (base, registry) => {
+      const mine = spawnSession(registry)
+      const other = spawnSession(registry)
+      const pending = [
+        { id: "perm_mine", sessionId: mine.id },
+        { id: "perm_other", sessionId: other.id },
+      ]
+      // The route reads the registry at call time, so stubbing the inbox
+      // here is enough: no permission-hold driver needed.
+      registry.listPendingPermissions = (() => pending) as unknown as typeof registry.listPendingPermissions
+      const sessionToken = mintSessionToken(APP_ID, mine.id)
+      const call = async (id: string) => {
+        const res = await fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/tool-call`, {
+          method: "POST",
+          headers: { ...FORWARDED, authorization: `Bearer ${sessionToken}`, "content-type": "application/json" },
+          body: JSON.stringify({ tool: "permissions_respond", args: { id, decision: "approve" } }),
+        })
+        expect(res.status).toBe(200)
+        return (await res.json()) as { isError?: boolean; content: { text: string }[] }
+      }
+
+      const allowed = await call("perm_mine")
+      expect(allowed.isError).toBeUndefined()
+      expect(JSON.parse(allowed.content[0]!.text)).toEqual({ ok: true, args: { id: "perm_mine", decision: "approve" } })
+
+      expect((await call("perm_other")).isError).toBe(true)
+      expect((await call("perm_unknown")).isError).toBe(true)
+    })
+  })
+
+  it("a link-session token grants NOTHING beyond the four read routes + its own tool-call: /mcp, kill, and the PTY route stay gated", async () => {
     await withServer(async (base, registry) => {
       const mine = spawnSession(registry)
       const sessionToken = mintSessionToken(APP_ID, mine.id)

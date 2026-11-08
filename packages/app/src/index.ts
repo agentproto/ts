@@ -39,7 +39,7 @@
 
 export const SPEC_NAME = "app/v1" as const
 
-export { defineApp, AppDefinitionError } from "./define-app.js"
+export { defineApp, AppDefinitionError, TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS } from "./define-app.js"
 export { emitApp, renderAgentManifest } from "./emit.js"
 export type { AgentManifestLayout, RenderAgentManifestTarget, RenderedAgentManifest } from "./emit.js"
 export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFromMarkdownText } from "./load-app.js"

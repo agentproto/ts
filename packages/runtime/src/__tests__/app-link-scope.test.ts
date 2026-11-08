@@ -8,7 +8,8 @@
  */
 
 import { describe, expect, it, vi } from "vitest"
-import { performAppToolCall, performBuiltinPanelToolCall } from "../app-tools.js"
+import { LINK_OWNERSHIP_CHECKED_TOOL_IDS, performAppToolCall, performBuiltinPanelToolCall } from "../app-tools.js"
+import { TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS } from "@agentproto/app"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 
@@ -161,6 +162,103 @@ describe("performAppToolCall — scoped mode (linkClaims)", () => {
     )
     expect(dispatchTool).toHaveBeenCalledWith("session_rename", { sessionId: "sess_abc", name: "x" })
     expect((result as { isError?: boolean }).isError).toBeUndefined()
+  })
+})
+
+describe("performAppToolCall, scoped mode: per-tool ownership checks", () => {
+  function registryWithPermissionsRespond(): AppRegistry {
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@agentik/session-chat",
+      dir: "/nonexistent",
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: {
+        path: "/x.html",
+        tools: ["permissions_respond", "session_kill"],
+        toolScope: { permissions_respond: {}, session_kill: {} },
+      },
+    })
+    return appRegistry
+  }
+
+  const PENDING = [
+    { id: "perm_mine", sessionId: "sess_abc" },
+    { id: "perm_other", sessionId: "sess_SOMEONE_ELSE" },
+  ]
+  const findPendingPermission = (id: string) => PENDING.find(p => p.id === id)
+
+  it("permissions_respond for a permission of the LINKED session is dispatched unchanged", async () => {
+    const dispatchTool = vi.fn(async () => ({ ok: true }))
+    const result = await performAppToolCall(
+      registryWithPermissionsRespond(),
+      { appId: "@agentik/session-chat", tool: "permissions_respond", args: { id: "perm_mine", decision: "approve" } },
+      { dispatchTool, findPendingPermission },
+      CLAIMS,
+    )
+    expect(dispatchTool).toHaveBeenCalledWith("permissions_respond", { id: "perm_mine", decision: "approve" })
+    expect((result as { isError?: boolean }).isError).toBeUndefined()
+  })
+
+  it("permissions_respond for a permission of ANOTHER session is refused, nothing dispatched", async () => {
+    const dispatchTool = vi.fn(async () => ({ ok: true }))
+    const result = await performAppToolCall(
+      registryWithPermissionsRespond(),
+      { appId: "@agentik/session-chat", tool: "permissions_respond", args: { id: "perm_other", decision: "approve" } },
+      { dispatchTool, findPendingPermission },
+      CLAIMS,
+    )
+    expect(dispatchTool).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(JSON.stringify(bodyOf(result))).toMatch(/not a pending permission of this link's session/)
+  })
+
+  it("permissions_respond for an UNKNOWN permission id is refused, nothing dispatched", async () => {
+    const dispatchTool = vi.fn(async () => ({ ok: true }))
+    const result = await performAppToolCall(
+      registryWithPermissionsRespond(),
+      { appId: "@agentik/session-chat", tool: "permissions_respond", args: { id: "perm_nope", decision: "deny" } },
+      { dispatchTool, findPendingPermission },
+      CLAIMS,
+    )
+    expect(dispatchTool).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+  })
+
+  it("permissions_respond with no id, or with no permission lookup wired, fails closed", async () => {
+    const dispatchTool = vi.fn(async () => ({ ok: true }))
+    const noId = await performAppToolCall(
+      registryWithPermissionsRespond(),
+      { appId: "@agentik/session-chat", tool: "permissions_respond", args: { decision: "approve" } },
+      { dispatchTool, findPendingPermission },
+      CLAIMS,
+    )
+    const noLookup = await performAppToolCall(
+      registryWithPermissionsRespond(),
+      { appId: "@agentik/session-chat", tool: "permissions_respond", args: { id: "perm_mine", decision: "approve" } },
+      { dispatchTool },
+      CLAIMS,
+    )
+    expect(dispatchTool).not.toHaveBeenCalled()
+    expect((noId as { isError?: boolean }).isError).toBe(true)
+    expect((noLookup as { isError?: boolean }).isError).toBe(true)
+  })
+
+  it("an EMPTY toolScope entry for a tool with no ownership check is refused under a scoped link", async () => {
+    const dispatchTool = vi.fn(async () => ({ ok: true }))
+    const result = await performAppToolCall(
+      registryWithPermissionsRespond(),
+      { appId: "@agentik/session-chat", tool: "session_kill", args: { sessionId: "sess_SOMEONE_ELSE" } },
+      { dispatchTool, findPendingPermission },
+      CLAIMS,
+    )
+    expect(dispatchTool).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+  })
+
+  it("the ownership-check table covers exactly the tools defineApp lets declare an empty toolScope entry", () => {
+    expect([...LINK_OWNERSHIP_CHECKED_TOOL_IDS].sort()).toEqual([...TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS].sort())
   })
 })
 
