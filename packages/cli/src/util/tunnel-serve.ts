@@ -19,7 +19,8 @@ import {
   type TunnelServerOptions,
 } from "@agentproto/acp/tunnel"
 import { loadImportedMcps } from "@agentproto/runtime/mcp-imports"
-import { HOST_SCOPE_HEADER, type GatewayHandle } from "@agentproto/runtime"
+import { HOST_SCOPE_HEADER, PUBLIC_BASE_HEADER, signPublicBase, type GatewayHandle } from "@agentproto/runtime"
+import { resolvePairPageUrl } from "@agentproto/secrets/pairing"
 import type { PtyFactory } from "./pty-factory.js"
 
 /** The `createTunnelServer` options common to `serve --connect` and pairing —
@@ -60,16 +61,41 @@ export interface BuildTunnelServerOptionsInput {
    * header, those routes 403 unless the request is loopback-local.
    */
   pairingScope?: "host"
+  /**
+   * The public base (origin plus path prefix, e.g.
+   * `https://<fp>.agentproto.cloud/d/<fp>`) the far end reaches this gateway at.
+   * A pairing's traffic arrives on the gateway's loopback socket with
+   * `Host: 127.0.0.1` and no forwarding headers (the pair page's service worker
+   * strips `/d/<fp>` before it enters the tunnel), so the gateway cannot work
+   * the base out itself. Injected like `authorization` as a daemon-signed
+   * `PUBLIC_BASE_HEADER`; the tunnel server overrides a same-named frame header,
+   * and the gateway ignores any value it did not sign.
+   */
+  publicBase?: string
+}
+
+/**
+ * Public base of a paired daemon as the pair page serves it: the pair page's
+ * origin (`pairing.pairPage`, `{fp}` filled in) plus the service-worker scope
+ * `/d/<fp>`. Undefined when the page setting does not resolve.
+ */
+export function pairingPublicBase(pairPage: string, daemonFingerprint: string): string | undefined {
+  try {
+    return `${new URL(resolvePairPageUrl(pairPage, daemonFingerprint)).origin}/d/${daemonFingerprint}`
+  } catch {
+    return undefined
+  }
 }
 
 export function buildDaemonTunnelServerOptions(
   input: BuildTunnelServerOptionsInput,
 ): CommonTunnelServerOptions {
-  const { gateway, label, spawnPty, announcedTools, injectAuthToken, pairingScope } = input
+  const { gateway, label, spawnPty, announcedTools, injectAuthToken, pairingScope, publicBase } = input
   const childLabelPrefix = input.childLabelPrefix ?? "pair"
   const injectHeaders: Record<string, string> = {
     ...(injectAuthToken ? { authorization: `Bearer ${injectAuthToken}` } : {}),
     ...(pairingScope === "host" ? { [HOST_SCOPE_HEADER]: "1" } : {}),
+    ...(publicBase ? { [PUBLIC_BASE_HEADER]: signPublicBase(publicBase) } : {}),
   }
 
   return {

@@ -269,6 +269,11 @@ export interface PairingChannelContext {
    *  pending: the daemon sends `hello` (so the phone can show the code), but
    *  every request is refused until `confirmPending` opens the gate. */
   pending?: boolean
+  /** The DAEMON's own identity fingerprint (not the client's `fingerprint`
+   *  above). The pair page serves a paired daemon under
+   *  `https://<this>.<pair domain>/d/<this>/`, so `serve` needs it to tell the
+   *  gateway its public base. Set by the registry on every served channel. */
+  daemonFingerprint?: string
 }
 
 /** Handle to a live served channel — the registry closes it on teardown. */
@@ -884,8 +889,10 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
         let capturedHello: import("@agentproto/secrets/pairing").PairingHello | null = null
         let legacyPeer = false
         let wrapped: E2eFrameSink
+        let daemonFingerprint: string | undefined
         try {
           const identity = await deps.loadIdentity()
+          daemonFingerprint = await identityFingerprint(identity.x25519.pub)
           wrapped = await daemonHandshakeOverSink(
             sink,
             async helloBytes => {
@@ -991,7 +998,10 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
         serving = true
         const gate = ctx.pending ? pending.get(ctx.fingerprint)?.gate : undefined
         if (gate) gate.live = wrapped
-        const handle = deps.serve(gate ? gatePendingSink(wrapped, gate) : wrapped, ctx)
+        const handle = deps.serve(gate ? gatePendingSink(wrapped, gate) : wrapped, {
+          ...ctx,
+          ...(daemonFingerprint ? { daemonFingerprint } : {}),
+        })
         channels.add(handle)
         if (!ctx.pending) {
           onlineCounts.set(ctx.fingerprint, (onlineCounts.get(ctx.fingerprint) ?? 0) + 1)

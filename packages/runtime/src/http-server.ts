@@ -1164,6 +1164,9 @@ export interface RuntimeHttpServerOptions {
      *  falls through to the gateway's `defaults.mcp.profile`; the query
      *  wins when it names at least one known profile. */
     profile?: readonly string[],
+    /** Public base (origin + optional prefix) this request reached the daemon
+     *  at, from `resolvePublicBase`; panel html bakes it in. */
+    requestBaseUrl?: string,
   ) => Promise<McpServer>
   /**
    * Optional — when wired, every `/mcp` request carrying a
@@ -2649,6 +2652,7 @@ export async function startHttpServer(
       surface,
       credentialSessionOf(req),
       profile,
+      requestHttpBaseUrl(req),
     )
     await serveMcp(req, res, server, callerSessionId)
   }

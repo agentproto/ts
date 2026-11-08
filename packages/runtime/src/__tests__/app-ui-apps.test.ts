@@ -86,6 +86,28 @@ describe("makeInstalledAppUiApps", () => {
     expect(initData).toEqual({ appId: "@test/ui-app", tools: ["read_file"] })
   })
 
+  it("bakes the request's public base (prefix included) into each panel's html, per call", async () => {
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "<html><head></head><body>Panel</body></html>", "utf8")
+    appRegistry.upsertApp({
+      appId: "@test/ui-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath, tools: [] },
+    })
+    const cache = createUiHtmlCache()
+    const base = "https://fp.agentproto.cloud/d/fp"
+    const withBase = await makeInstalledAppUiApps(appRegistry, cache, new Set(), base)
+    const other = await makeInstalledAppUiApps(appRegistry, cache, new Set(), "https://abc.trycloudflare.com")
+    const without = await makeInstalledAppUiApps(appRegistry, cache, new Set())
+    expect(withBase[0]!.html).toContain(`window.__AGENTPROTO_BASEURL__=${JSON.stringify(base)}`)
+    expect(other[0]!.html).toContain('window.__AGENTPROTO_BASEURL__="https://abc.trycloudflare.com"')
+    expect(other[0]!.html).not.toContain("fp.agentproto.cloud")
+    expect(without[0]!.html).not.toContain("__AGENTPROTO_BASEURL__")
+  })
+
   it("skips an app whose derived tool id collides with an existing tool, with a console.warn", async () => {
     const uiPath = join(dir, "index.html")
     await writeFile(uiPath, "<html></html>", "utf8")
@@ -303,6 +325,19 @@ describe("makeInstalledAppUiApps", () => {
 })
 
 describe("injectMcpAppBridge", () => {
+  it("injects the public base before the bridge when given one, and only once", () => {
+    const html = "<html><head></head><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html, "https://fp.agentproto.cloud/d/fp")
+    expect(out).toContain('window.__AGENTPROTO_BASEURL__="https://fp.agentproto.cloud/d/fp"')
+    expect(out.indexOf("__AGENTPROTO_BASEURL__")).toBeLessThan(out.indexOf("window.McpApp"))
+    expect(injectMcpAppBridge(out, "https://fp.agentproto.cloud/d/fp")).toBe(out)
+  })
+
+  it("escapes a base that would close the script tag", () => {
+    const out = injectMcpAppBridge("<html><head></head></html>", "https://a.test/</script><b>")
+    expect(out).not.toContain("</script><b>")
+  })
+
   it("injects the bridge right after <head> when present", () => {
     const html = "<html><head><title>t</title></head><body>Panel</body></html>"
     const out = injectMcpAppBridge(html)

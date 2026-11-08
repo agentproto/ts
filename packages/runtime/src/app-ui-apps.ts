@@ -225,6 +225,21 @@ function injectAfterStructuralTag(html: string, script: string): string {
   return script + html
 }
 
+/** `window.__AGENTPROTO_BASEURL__` assignment for the public base this page was
+ *  reached at (origin plus any `/d/<id>` prefix), so an app builds absolute
+ *  links against it instead of `location` or 127.0.0.1. `<` is escaped so the
+ *  value cannot close the script. */
+function publicBaseScript(baseUrl: string): string {
+  return `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl).replace(/</g, "\\u003c")};</script>`
+}
+
+/** Apply the public base to already bridge-injected html (the cached form);
+ *  a no-op when this exact assignment is already present. */
+export function injectPublicBaseUrl(html: string, baseUrl: string): string {
+  const script = publicBaseScript(baseUrl)
+  return html.includes(script) ? html : injectAfterStructuralTag(html, script)
+}
+
 /** Inject `MCP_APP_BRIDGE_SCRIPT` followed by the two
  *  `window.AgentprotoUI` scripts (`DISPLAY_MODE_SCRIPT`, then
  *  `RUNNER_SELECT_SCRIPT`) — every installed app UI gets the shared
@@ -242,11 +257,13 @@ function injectAfterStructuralTag(html: string, script: string): string {
  *  app panel CONSUMES `window.McpApp.connect()`, so matching any mention
  *  would skip injection for exactly the documents that need it, leaving
  *  `window.McpApp` undefined in the host iframe. */
-export function injectMcpAppBridge(html: string): string {
+export function injectMcpAppBridge(html: string, baseUrl?: string): string {
   const hasBridge = /window\.McpApp\s*=/.test(html)
   const hasUiNamespace = /window\.AgentprotoUI\s*=/.test(html)
-  if (hasBridge && hasUiNamespace) return html
+  const baseScript = baseUrl && !html.includes(publicBaseScript(baseUrl)) ? publicBaseScript(baseUrl) : ""
+  if (hasBridge && hasUiNamespace && !baseScript) return html
   const script =
+    baseScript +
     (hasBridge ? "" : MCP_APP_BRIDGE_SCRIPT) +
     (hasUiNamespace ? "" : DISPLAY_MODE_SCRIPT + RUNNER_SELECT_SCRIPT)
   return injectAfterStructuralTag(html, script)
@@ -362,9 +379,7 @@ export function injectStandaloneAppBridge(
   baseUrl?: string,
 ): string {
   const hasUiNamespace = /window\.AgentprotoUI\s*=/.test(html)
-  const baseUrlScript = baseUrl
-    ? `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl).replace(/</g, "\\u003c")};</script>`
-    : ""
+  const baseUrlScript = baseUrl ? publicBaseScript(baseUrl) : ""
   const script =
     baseUrlScript +
     STANDALONE_REST_BRIDGE_SCRIPT +
@@ -419,6 +434,9 @@ export async function makeInstalledAppUiApps(
   appRegistry: AppRegistry,
   cache: UiHtmlCache,
   existingToolNames: Set<string>,
+  /** Public base of the request building this server (see `resolvePublicBase`);
+   *  baked into each app's html. Absent: the html is served without one. */
+  baseUrl?: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<AgnoMcpApp<any, any>[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -460,7 +478,8 @@ export async function makeInstalledAppUiApps(
             })
           }
           try {
-            return await cache.get(ui.path, app.updatedAt)
+            const cached = await cache.get(ui.path, app.updatedAt)
+            return baseUrl ? injectPublicBaseUrl(cached, baseUrl) : cached
           } catch (err) {
             return renderAppUiErrorHtml({
               appName,

@@ -93,7 +93,7 @@ import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { DEFAULT_BUCKET, resolveBucketSlug } from "./workspace-buckets.js"
 import { makeBuiltinPanelApps } from "./builtin-apps.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
-import { resolvePublicAppOrigins } from "./public-origins.js"
+import { deriveWsBaseUrl, resolvePublicAppOrigins } from "./public-origins.js"
 import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
 import { registerAppPullTools } from "./app-pull-tools.js"
@@ -404,6 +404,15 @@ export type {
 // `buildDaemonTunnelServerOptions` (which sets it) and http-server.ts's own
 // `handleDeviceInference` (which checks it) share one literal, not two.
 export { HOST_SCOPE_HEADER } from "./http-server.js"
+// Public-base resolver + the daemon-signed header carrying it on the pairing
+// path / link-guard (packages/cli sets it, http-server.ts reads it).
+export {
+  PUBLIC_BASE_HEADER,
+  deriveWsBaseUrl,
+  resolvePublicBase,
+  signPublicBase,
+} from "./public-origins.js"
+export type { PublicBase, PublicBaseSource } from "./public-origins.js"
 export { startHttpServer } from "./http-server.js"
 export { createSessionsRegistry } from "./sessions.js"
 export { createRuntimeEvents } from "./events.js"
@@ -494,7 +503,7 @@ export type {
 // runner-select), exported so a host — or a local harness that stands in for
 // one, `scripts/dev/display-mode-host-harness.mjs` — can serve an app UI
 // through the exact same path the daemon does instead of re-deriving it.
-export { injectMcpAppBridge, MCP_APP_BRIDGE_SCRIPT } from "./app-ui-apps.js"
+export { injectMcpAppBridge, injectPublicBaseUrl, MCP_APP_BRIDGE_SCRIPT } from "./app-ui-apps.js"
 export { registerBrainTools } from "./brain-tools.js"
 export {
   registerWebSearchTools,
@@ -4226,7 +4235,13 @@ export async function createGateway(
     surface?: string,
     credentialSessionId?: string,
     profileOverride?: readonly string[],
+    requestBaseUrl?: string,
   ) => {
+    // Public base of THIS request (tunnel, rendezvous, link-guard), falling
+    // back to the boot-time value for callers with no request (internal tool
+    // server).
+    const panelHttpBaseUrl = requestBaseUrl ?? publicHttpOrigin
+    const panelWsBaseUrl = requestBaseUrl ? deriveWsBaseUrl(requestBaseUrl) : ptyWsBaseUrl
     // `?surface=approval-cards` (human-facing MCP Apps host, never an agent
     // session) is a cards-only server: it branches off here, before any root
     // tool or deferral wrapper exists. See `buildApprovalCardsServer` for the
@@ -4793,9 +4808,9 @@ export async function createGateway(
     const builtinPanelApps = [
       ...makeBuiltinPanelApps({
         listSessions: listSessionsFiltered,
-        // httpBaseUrl = this daemon's own origin (SSE stream + bridge
-        // fallback for the live-session widget).
-        httpBaseUrl: publicHttpOrigin,
+        // httpBaseUrl = the public base this request reached the daemon at
+        // (SSE stream + bridge fallback for the live-session widget).
+        httpBaseUrl: panelHttpBaseUrl,
         // The session-chat widget is a thin launcher for the installed
         // `@agentik/session-chat` studio app — same call-time-resolved check
         // `registerSessionTools` above gets, so the mount decision here and
@@ -4839,7 +4854,7 @@ export async function createGateway(
       ...(opts.spawnPty != null
         ? [
             makeTerminalPanelApp({
-              wsBaseUrl: ptyWsBaseUrl,
+              wsBaseUrl: panelWsBaseUrl,
               ...(token ? { token } : {}),
               async spawnOrAttach(input) {
                 if (input.sessionId) {
@@ -4891,6 +4906,7 @@ export async function createGateway(
       appRegistry,
       appUiHtmlCache,
       new Set(builtinPanelApps.map(app => app.id)),
+      panelHttpBaseUrl,
     )
     registerMcpApps(server, [...builtinPanelApps, ...installedAppUiApps])
     // Installed apps' `exposes.tools` as `<prefix>_<name>`. Registered through
