@@ -209,16 +209,14 @@ async function runBrowserStart(args: readonly string[]): Promise<number> {
     const ledger = await loadLedger(ledgerPath, slug)
     const configSteps = (adapterHandle.config ?? []) as AgentCliSetupStep[]
     const missingStepIds = configSteps
-      .filter((s) => s.kind === "prompt" && !ledger.steps[s.id] && !s.default)
+      .filter((s) => s.kind === "prompt" && !ledger.steps[s.id] && s.default === undefined)
       .map((s) => s.id)
 
     if (missingStepIds.length > 0) {
       if (values["non-interactive"]) {
         process.stderr.write(
           `agentproto browser start: missing required config for '${adapterId}'.\n` +
-            `  Run \`agentproto browser install ${adapterId}\` first, or pass these flags:\n` +
-            missingStepIds.map((id) => `    --${id}`).join("\n") +
-            "\n",
+            `  Run \`agentproto browser install ${adapterId}\` first (missing: ${missingStepIds.join(", ")}).\n`,
         )
         return 2
       }
@@ -490,11 +488,15 @@ async function runBrowserStatus(args: readonly string[]): Promise<number> {
     return 1
   }
 
-  // Live health probe — 3 s timeout, best-effort.
+  // Live health probe: 3 s timeout, best-effort. The probe path is the
+  // adapter's declared `healthPath`, not a hardcoded `/health`: chrome-live's
+  // base URL is Chrome's own remote-debugging endpoint, which serves
+  // `/json/version` (its declared healthPath) and nothing at `/health`.
   let healthy: boolean | null = null
   let healthBody: unknown = null
   if (desc.browserBaseUrl) {
-    const healthUrl = `${desc.browserBaseUrl}/health`
+    const healthPath = getBrowserAdapter(desc.browserAdapterId ?? "")?.healthPath ?? "/health"
+    const healthUrl = `${desc.browserBaseUrl.replace(/\/$/, "")}${healthPath}`
     const ac = new AbortController()
     const t = setTimeout(() => ac.abort(), 3000)
     try {

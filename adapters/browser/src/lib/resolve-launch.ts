@@ -14,7 +14,7 @@ import type { BrowserAdapterHandle, BrowserAdapterStartOptions, BrowserAdapterIn
  * Path: `$AGENTPROTO_HOME/browser-adapters/<adapterId>.json`
  * (same convention as the CLI's `browserAdapterLedgerPath()`).
  */
-async function loadPersistedEnv(adapterId: string): Promise<Record<string, string>> {
+export async function loadPersistedEnv(adapterId: string): Promise<Record<string, string>> {
   const base = process.env["AGENTPROTO_HOME"] ?? join(homedir(), ".agentproto")
   const ledgerPath = join(base, "browser-adapters", `${adapterId}.json`)
   try {

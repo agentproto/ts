@@ -159,6 +159,12 @@ export interface ChromeLiveProviderConfig {
   /** How long to wait for the user to click "Allow". Default 60s. */
   consentTimeoutMs?: number
   /**
+   * Keep-alive ping cadence (ms) for the browser websocket, sent as a silent
+   * `Browser.getVersion` over the existing connection, never a new socket, so
+   * it never re-triggers Chrome's consent dialog. Default 25s; `0` disables.
+   */
+  heartbeatIntervalMs?: number
+  /**
    * Read `GET /json/version` and connect to the advertised
    * `webSocketDebuggerUrl` (Chrome 155+ exposes a per-launch browser UUID:
    * `ws://127.0.0.1:9222/devtools/browser/<uuid>`; the id-less URL answers
@@ -832,6 +838,14 @@ const HEALTH_TIMEOUT_MS = 5_000
 const DISCOVERY_TIMEOUT_MS = 1_500
 /** Grace before SIGKILL when stopping a Chrome this provider auto-launched. */
 const OWNED_STOP_GRACE_MS = 5_000
+/**
+ * Keep-alive ping cadence for the browser websocket. Chrome (the remote
+ * debugging toggle especially) drops a debugging websocket that has been
+ * silent for a while; a periodic `Browser.getVersion` over the SAME connection
+ * (no new socket, so no new "Allow" dialog) keeps it from being reaped. `0`
+ * disables the heartbeat.
+ */
+const HEARTBEAT_INTERVAL_MS = 25_000
 
 function errnoCode(err: unknown): string | undefined {
   for (let e: unknown = err, depth = 0; e && depth < 4; depth++) {
@@ -857,6 +871,7 @@ const DESCRIPTION =
 
 export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}): ChromeLiveProvider {
   const consentTimeoutMs = config.consentTimeoutMs ?? CHROME_LIVE_DEFAULT_CONSENT_TIMEOUT_MS
+  const heartbeatIntervalMs = config.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS
   const entries = new Map<string, LiveEntry>()
   const connecting = new Map<string, Promise<LiveEntry>>()
   const discovering = new Map<number, Promise<string>>()
@@ -964,6 +979,18 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       ...(ctx.log ? { log: ctx.log } : {}),
       ...(owned ? { ownedChrome: owned } : {}),
     }
+    // Keep the browser websocket alive so Chrome's idle reaper (the remote
+    // debugging toggle especially) doesn't drop a connection that simply went
+    // quiet between agent turns. Sent over the SAME socket, never a new one,
+    // so this never re-triggers the "Allow" consent dialog. A dropped connection
+    // is still surfaced by `onClose` below; this only prevents silent idle drops.
+    let heartbeat: NodeJS.Timeout | undefined
+    if (heartbeatIntervalMs > 0) {
+      heartbeat = setInterval(() => {
+        void conn.send("Browser.getVersion").catch(() => {})
+      }, heartbeatIntervalMs)
+      heartbeat.unref?.()
+    }
     // Our sessions are flat: a closed tab of ours shows up as detachedFromTarget on the browser session.
     conn.onEvent((event) => {
       if (event.method !== "Target.detachedFromTarget" || event.sessionId) return
@@ -971,6 +998,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       if (targetId) forget(entry, targetId)
     })
     conn.onClose((reason) => {
+      if (heartbeat) clearInterval(heartbeat)
       if (entry.state !== "open") return
       entry.state = "dropped"
       if (entries.get(url) === entry) entries.delete(url)
@@ -1546,6 +1574,10 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         kind: "prompt",
         prompt: "Full browser websocket URL instead of the port (leave blank for ws://127.0.0.1:<port>/devtools/browser)",
         type: "text",
+        // Empty is a valid answer: it falls back to the port (CHROME_LIVE_PORT,
+        // then 9222) via `endpoint()`. Declaring the empty default marks the step
+        // optional so `agentproto browser start` does not treat it as required.
+        default: "",
         persist: { env: CHROME_LIVE_WS_URL_ENV },
       },
     ],
