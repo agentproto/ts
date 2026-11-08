@@ -85,12 +85,12 @@ describe("createApprovalTelegramBridge", () => {
       ...over,
     })
 
-  const request = () =>
+  const request = (preview: unknown = { recipe: "linkedin", version: "1.0.1", tool: "linkedin_react", preview: "React to post 42" }) =>
     engine.request(
       {
         kind: "bureau.recipe-write",
         title: "linkedin · linkedin_react",
-        preview: { recipe: "linkedin", version: "1.0.1", tool: "linkedin_react", preview: "React to post 42" },
+        preview,
         payload: { requestId: "req_1" },
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       },
@@ -182,6 +182,40 @@ describe("createApprovalTelegramBridge", () => {
     // The real user can still decide afterwards.
     await bridge.handleUpdate(tap(data))
     expect(engine.get(record.id)!.status).toBe("approved")
+    bridge.stop()
+  })
+
+  it("shows a 1500-character comment in full, within Telegram's 4096-character limit", async () => {
+    const bridge = makeBridge()
+    bridge.start()
+    const comment = `${"Bonjour ".repeat(187)}Fin.`
+    expect(comment.length).toBeGreaterThan(1500 - 10)
+    request({ tool: "linkedin_react", comment })
+    await until(() => tg.calls.length > 0)
+    const text = String(tg.calls[0]!.body.text)
+    expect(text).toContain(comment)
+    expect(text).not.toContain("(truncated)")
+    expect(text.length).toBeLessThanOrEqual(4096)
+    bridge.stop()
+  })
+
+  it("truncates a 6000-character comment under 4096 characters and keeps Session and Expires", async () => {
+    const bridge = makeBridge()
+    bridge.start()
+    const record = request({ tool: "linkedin_react", comment: "x".repeat(6000) })
+    await until(() => tg.calls.length > 0)
+    const text = String(tg.calls[0]!.body.text)
+    expect(text).toContain("(truncated)")
+    expect(text.length).toBeLessThanOrEqual(4096)
+    expect(text).toContain("Session: sess_abc")
+    expect(text).toContain(`Expires: ${record.expiresAt}`)
+
+    const { ticket } = engine.mintCardTicket(record.id)
+    await engine.decideByCard(record.id, "deny", ticket, evidence)
+    await until(() => tg.calls.some(c => c.method === "editMessageText"))
+    const closed = String(tg.calls.find(c => c.method === "editMessageText")!.body.text)
+    expect(closed).toContain("Denied via ui_card")
+    expect(closed.length).toBeLessThanOrEqual(4096)
     bridge.stop()
   })
 
