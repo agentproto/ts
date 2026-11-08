@@ -15,7 +15,8 @@
  *     true`, carrying a `telegramUserId` claim): it is never, by itself,
  *     enough to call a tool or read a session — see app-link-auth.ts's
  *     `authorizeAppLink`, the only function that ever turns one into the
- *     next kind.
+ *     next kind. It is reusable until its own `exp` (each exchange needs
+ *     fresh `initData` from the claimed Telegram user).
  *   - `"session"` — minted by `authorizeAppLink` only after the opener's
  *     Telegram Mini App `initData` verified against the daemon's own
  *     stored bot token AND named the exact `telegramUserId` the link
@@ -197,16 +198,6 @@ export function mintAppLinkSessionToken(input: MintAppLinkSessionTokenInput): { 
 
 export function verifyAppLinkSessionToken(token: string, keyPath?: string): VerifyAppLinkTokenResult {
   return decode(token, ensureAppLinkSigningKey(keyPath), "session")
-}
-
-/** The raw signature half of a token (everything after the first `.`) —
- *  used as the single-use key in `app-link-auth.ts`'s consumed-token set.
- *  Two tokens can share a signature only if they share a key and payload,
- *  so this is as good a dedup key as the whole token string, without
- *  holding onto the (slightly larger) payload half in memory. */
-export function appLinkTokenSignature(token: string): string {
-  const dot = token.indexOf(".")
-  return dot === -1 ? token : token.slice(dot + 1)
 }
 
 /** Extract a bearer-shaped token from a request: `Authorization: Bearer
