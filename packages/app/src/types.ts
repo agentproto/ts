@@ -567,6 +567,15 @@ export interface AppRequirement {
    * call anything (dependency only).
    */
   readonly workflows?: readonly string[]
+  /**
+   * Provider tools granted to the consumer's own agents: the MCP names the
+   * provider's `exposes.tools` entries compute (`<prefix>_<n>`, e.g.
+   * `bureau_navigate`), never their ids. A session the host runs from one of
+   * the consumer's AGENT.md files sees them on the gateway at the provider's
+   * declared access, as if its AGENT.md had opted in by name. No other caller
+   * gains anything. Omitted or empty = nothing granted.
+   */
+  readonly tools?: readonly string[]
 }
 
 /** One entry of `requires.apps` — a bare id (dependency only) or an
@@ -598,7 +607,7 @@ export type AppExposedToolAccess = "read" | "write" | "approve"
 
 /** One `exposes.tools` entry: a tool the app offers to MCP clients. */
 export interface AppExposedTool {
-  /** Id of a bundled TOOL.md, or `imported:<alias>/<tool>` (read only, needs `mcpName`). */
+  /** Id of a bundled TOOL.md, or `imported:<alias>/<tool>` (needs `mcpName`). */
   readonly id: string
   readonly access: AppExposedToolAccess
   /** Written for a model, at most 300 characters. */
@@ -693,7 +702,7 @@ export interface AppDefinition {
    * app depends on (`["@acme/shared"]`, same as `requires: { apps: [...] }`)
    * or the object form `{ browser?, fs?, gpu?, secrets?, apps? }` — where each
    * `apps` entry may be a bare id (dependency only) or an
-   * {@link AppRequirement} object (`{ id, version?, workflows? }`) declaring
+   * {@link AppRequirement} object (`{ id, version?, workflows?, tools? }`) declaring
    * the version range the provider must satisfy and which of its exposed
    * workflows this consumer may call via `app_call`.
    */

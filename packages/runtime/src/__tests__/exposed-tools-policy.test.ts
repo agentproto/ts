@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -88,6 +88,37 @@ describe("planExposedTools", () => {
       expect(plan.skipped.length).toBeGreaterThan(0)
       expect(plan.skipped.every(s => /approval|invalid/.test(s.reason))).toBe(true)
     } finally {
+      await cleanup()
+    }
+  })
+
+  it("skips one invalid entry alone and keeps the app's other tools, logging the app, the tool and the reason", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const { registry, cleanup } = await registryWith([
+      {
+        appId: "@t/bureau",
+        prefix: "bureau",
+        tools: [
+          tool("bureau.status"),
+          tool("bureau.broken", "read", { description: "" }),
+          tool("imported:bureau/browser_navigate", "write", { mcpName: "navigate" }),
+          tool("imported:bureau/browser_click", "write"),
+        ],
+      },
+    ])
+    try {
+      const plan = await planExposedTools(registry)
+      expect(plan.tools.map(t => t.name)).toEqual(["bureau_status", "bureau_navigate"])
+      expect(plan.skipped.map(s => [s.appId, s.name])).toEqual([
+        ["@t/bureau", "bureau_broken"],
+        ["@t/bureau", "imported:bureau/browser_click"],
+      ])
+      expect(plan.skipped[0]?.reason).toMatch(/description/)
+      expect(plan.skipped[1]?.reason).toMatch(/mcpName/)
+      const logged = warn.mock.calls.map(c => String(c[0]))
+      expect(logged.some(l => l.includes('"@t/bureau"') && l.includes("bureau.broken") && l.includes("description"))).toBe(true)
+    } finally {
+      warn.mockRestore()
       await cleanup()
     }
   })

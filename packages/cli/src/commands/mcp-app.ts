@@ -258,12 +258,18 @@ export async function callScopedTool(
   url: string,
   tool: string,
   args: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<CallToolResult> {
+  // The calling session, when this server runs inside one: the route needs it
+  // for a write/approve tool and forwards it to an imported tool.
+  const headers: Record<string, string> = { "content-type": "application/json" }
+  const self = env.AGENTPROTO_SESSION_ID?.trim()
+  if (self) headers["x-agentproto-caller-session-id"] = self
   let response: Response
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ tool, args }),
     })
   } catch (err) {

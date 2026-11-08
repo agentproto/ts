@@ -98,6 +98,27 @@ describe("exposes.tools through loadAppHandle / defineApp", () => {
     ])
   })
 
+  it("loads an APP.md exposing an imported tool at access: write and access: approve", async () => {
+    const app = await loadWith([
+      "exposes:",
+      "  prefix: bureau",
+      "  tools:",
+      "    - id: imported:bureau/browser_navigate",
+      "      access: write",
+      "      mcpName: navigate",
+      '      description: "Open a URL in a tab the caller owns."',
+      "      inputSchema: { type: object, properties: { url: { type: string } } }",
+      "    - id: imported:bureau/browser_evaluate",
+      "      access: approve",
+      "      mcpName: evaluate",
+      '      description: "Run a script in a tab, after approval."',
+    ])
+    expect(app.exposes.tools?.map(t => [t.id, t.access])).toEqual([
+      ["imported:bureau/browser_navigate", "write"],
+      ["imported:bureau/browser_evaluate", "approve"],
+    ])
+  })
+
   it("leaves an app without exposes.tools exactly as before", async () => {
     const app = await loadWith([])
     expect(app.exposes).toEqual({ agents: [], workflows: [] })

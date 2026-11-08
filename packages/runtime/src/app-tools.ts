@@ -27,7 +27,7 @@ import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
-import { loadAppHandle, loadAppBundledTools, parseExposedTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
+import { exposedToolName, loadAppHandle, loadAppBundledTools, parseExposedTools, peekAppUi, type AppExposedTool, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
@@ -79,7 +79,16 @@ import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, APP_DATA_ROOT_SUBDIR, defaultRemoteAppDataDir, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
 import { mintAppLinkToken } from "./app-link-token.js"
 import { DAEMON_TOOL_NAMES } from "./daemon-tool-names.generated.js"
-import { exposedAccessAllowed, planExposedTools, type ExposedToolsMode } from "./exposed-tools-policy.js"
+import {
+  appVersionProblem,
+  exposedToolVisible,
+  planExposedTools,
+  unexposedRequiredTools,
+  unmetRequires,
+  type ExposedToolCaller,
+  type ExposedToolsMode,
+  type UnmetRequirement,
+} from "./exposed-tools-policy.js"
 import {
   APP_INSTALL_EXCLUSIVE_ERROR,
   appInstallInputSchema,
@@ -584,7 +593,19 @@ function notEnabled(tool: string): ReturnType<typeof errorResult> {
 
 export interface AppToolCallDeps {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
-  callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
+  /** `callerSessionId` is the calling session, forwarded to the imported MCP
+   *  server (Bureau binds tab ownership to it). */
+  callImportedTool?: (
+    alias: string,
+    tool: string,
+    args: Record<string, unknown>,
+    callerSessionId?: string,
+  ) => Promise<unknown>
+  /** Who is calling: the session (forwarded to an imported tool), its AGENT.md
+   *  opt-in and its app's `requires.apps` grants. A `write`/`approve` exposed
+   *  tool on the HTTP twin needs a caller session plus an opt-in or a grant
+   *  (or mode `all`), like on the gateway. */
+  caller?: ExposedToolCaller
   /** `defaults.apps.exposedTools`, resolved by the caller. Set only by the HTTP
    *  twin of `app_tool_call`: it then also accepts an installed app's
    *  `exposes.tools` ids that are not in `ui.tools` (what `agentproto mcp-app`
@@ -970,7 +991,12 @@ async function dispatchAllowlistedAppTool(
           `app_tool_call: malformed imported tool id "${input.tool}" — expected "imported:<alias>/<toolName>".`,
         )
       }
-      const result = await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), dispatchArgs)
+      const result = await deps.callImportedTool(
+        rest.slice(0, slash),
+        rest.slice(slash + 1),
+        dispatchArgs,
+        deps.caller?.sessionId,
+      )
       return textResult(result)
     }
     // G1: an allowlisted id that names one of the app's OWN bundled TOOL.md
@@ -1021,12 +1047,8 @@ export async function performAppToolCall(
     linkClaims === undefined &&
     !(installed.ui?.tools ?? []).includes(input.tool)
   ) {
-    if (!exposedAccessAllowed(deps.exposedToolsMode, exposedEntry.access)) {
-      return errorResult(
-        `app_tool_call: tool "${input.tool}" of app "${input.appId}" is exposed as access: ${exposedEntry.access}, ` +
-          `which defaults.apps.exposedTools "${deps.exposedToolsMode}" does not allow.`,
-      )
-    }
+    const refusal = exposedCallRefusal(installed, exposedEntry, deps.exposedToolsMode, deps.caller)
+    if (refusal !== undefined) return errorResult(`app_tool_call: tool "${input.tool}" of app "${input.appId}" ${refusal}`)
     // The app_tool_call surfaces (UI bridge, REST) keep their JSON-in-text
     // envelope for an imported result, like an imported `ui.tools` id.
     const out = await dispatchExposedEntry(appRegistry, { appId: input.appId, id: input.tool, args: input.args ?? {} }, deps)
@@ -1039,6 +1061,33 @@ export async function performAppToolCall(
     ? { toolScope: installed.ui.toolScope ?? {}, claims: linkClaims }
     : undefined
   return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir, linkScope, installed.dataDir)
+}
+
+/**
+ * Why the HTTP twin refuses this `exposes.tools` call, or undefined when it may
+ * run. Same visibility rule as the gateway (`exposedToolVisible`); a `write` or
+ * `approve` tool also needs a caller session, so an anonymous request only
+ * ever reaches `read` tools.
+ */
+function exposedCallRefusal(
+  installed: InstalledApp,
+  entry: AppExposedTool,
+  mode: ExposedToolsMode,
+  caller: ExposedToolCaller | undefined,
+): string | undefined {
+  if (entry.access !== "read" && caller?.sessionId === undefined) {
+    return `is exposed as access: ${entry.access}, which needs a caller session; none was given.`
+  }
+  let name: string
+  try {
+    name = exposedToolName(installed.exposes?.prefix ?? "", entry)
+  } catch (err) {
+    return `has no MCP name: ${err instanceof Error ? err.message : String(err)}`
+  }
+  if (exposedToolVisible(mode, { appId: installed.appId, entry, name }, caller)) return undefined
+  return entry.access === "read"
+    ? `is exposed as access: read, which defaults.apps.exposedTools "${mode}" does not allow.`
+    : `is exposed as access: ${entry.access}; the caller's AGENT.md does not opt in to "${name}" and its app's requires.apps does not grant it.`
 }
 
 /**
@@ -1057,7 +1106,7 @@ export async function performAppToolCall(
 export async function performExposedToolCall(
   appRegistry: AppRegistry,
   input: { appId: string; id: string; args?: Record<string, unknown> },
-  deps: Pick<AppToolCallDeps, "callImportedTool">,
+  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller">,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult> | CallToolResult> {
   const out = await dispatchExposedEntry(appRegistry, input, deps)
   if (!("imported" in out)) return out.result
@@ -1088,7 +1137,7 @@ function argsDeclaredBy(
 async function dispatchExposedEntry(
   appRegistry: AppRegistry,
   input: { appId: string; id: string; args?: Record<string, unknown> },
-  deps: Pick<AppToolCallDeps, "callImportedTool">,
+  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller">,
 ): Promise<{ result: ReturnType<typeof textResult> | ReturnType<typeof errorResult> } | { imported: unknown }> {
   const installed = appRegistry.getApp(input.appId)
   const entry = installed?.exposes?.tools?.find(t => t.id === input.id)
@@ -1106,6 +1155,7 @@ async function dispatchExposedEntry(
         rest.slice(0, slash),
         rest.slice(slash + 1),
         argsDeclaredBy(entry.inputSchema, args),
+        deps.caller?.sessionId,
       )
       return { imported }
     }
@@ -1207,17 +1257,6 @@ export const MAX_APP_CALL_TIMEOUT_MS = 300_000
 /** Poll interval while awaiting a run's terminal status. */
 const APP_CALL_POLL_INTERVAL_MS = 500
 
-/** `versionSatisfies` throws on a malformed version or range; a refusal is a
- *  result, never an exception. A missing provider version fails closed. */
-function checkVersion(providerVersion: string | undefined, range: string): string | undefined {
-  if (providerVersion === undefined) return "has no recorded version"
-  try {
-    return versionSatisfies(providerVersion, range) ? undefined : `is installed at version ${providerVersion}`
-  } catch (err) {
-    return `has an unusable version (${err instanceof Error ? err.message : String(err)})`
-  }
-}
-
 function appCallLog(input: { callerAppId: string; appId: string; workflow: string }, durationMs: number, ok: boolean): void {
   console.error(
     `app_call: caller=${input.callerAppId} provider=${input.appId} workflow=${input.workflow} durationMs=${durationMs} ok=${ok}`,
@@ -1282,7 +1321,7 @@ export async function performAppCall(
   }
   // 6. The provider's installed version must satisfy the declared range.
   if (declared.version !== undefined) {
-    const problem = checkVersion(provider.version, declared.version)
+    const problem = appVersionProblem(provider.version, declared.version)
     if (problem !== undefined) {
       return {
         ok: false,
@@ -1701,7 +1740,13 @@ export async function performInstall(
   resolveAgentAdapter?: AgentAdapterResolver,
   opts?: PerformInstallOptions,
 ): Promise<
-  | { ok: true; record: Awaited<ReturnType<typeof appRegistry.upsertApp>>; services?: AppServiceInstallReport }
+  | {
+      ok: true
+      record: Awaited<ReturnType<typeof appRegistry.upsertApp>>
+      services?: AppServiceInstallReport
+      /** `requires.apps` entries that do not hold yet; each grants nothing until it does. */
+      unmetRequires?: UnmetRequirement[]
+    }
   | { ok: false; error: string }
 > {
   // `loadAppHandle` reads `ui.path` eagerly and throws when it's missing —
@@ -1750,6 +1795,11 @@ export async function performInstall(
   if (!handle.id) {
     return { ok: false, error: "the app has no `id` — set one in defineApp()/APP.md frontmatter to install it." }
   }
+
+  // AIP-53 Requirements rule 1: every requires.apps[].tools name must be
+  // exposed by its provider when that provider is installed.
+  const unexposed = unexposedRequiredTools(appRegistry, handle.appRequirements)
+  if (unexposed !== undefined) return { ok: false, error: `app_install: ${unexposed}` }
 
   const exposedPrefix = handle.exposes.prefix
   if (exposedPrefix !== undefined && (handle.exposes.tools?.length ?? 0) > 0) {
@@ -1960,7 +2010,13 @@ export async function performInstall(
     }
   }
 
-  return { ok: true, record, ...(services !== undefined ? { services } : {}) }
+  const unmet = unmetRequires(appRegistry, record.requiresApps)
+  return {
+    ok: true,
+    record,
+    ...(services !== undefined ? { services } : {}),
+    ...(unmet.length > 0 ? { unmetRequires: unmet } : {}),
+  }
 }
 
 /** What an install reports about the app's services: spawn failures and,
@@ -1979,9 +2035,23 @@ function serviceInstallReport(result: EnsureAppServiceOwnersResult): AppServiceI
   return Object.keys(report).length > 0 ? report : undefined
 }
 
-/** `app_install`'s payload: the record, plus the service report when any. */
-function installPayload(result: { record: object; services?: AppServiceInstallReport }): object {
-  return result.services !== undefined ? { ...result.record, services: result.services } : result.record
+/** `{ unmetRequires }` for an app listing, recomputed from the registry; empty when every dependency holds. */
+function unmetRequiresField(appRegistry: AppRegistry, app: InstalledApp): { unmetRequires?: UnmetRequirement[] } {
+  const unmet = unmetRequires(appRegistry, app.requiresApps)
+  return unmet.length > 0 ? { unmetRequires: unmet } : {}
+}
+
+/** `app_install`'s payload: the record, plus the service report and the unmet `requires.apps` when any. */
+function installPayload(result: {
+  record: object
+  services?: AppServiceInstallReport
+  unmetRequires?: UnmetRequirement[]
+}): object {
+  return {
+    ...result.record,
+    ...(result.services !== undefined ? { services: result.services } : {}),
+    ...(result.unmetRequires !== undefined ? { unmetRequires: result.unmetRequires } : {}),
+  }
 }
 
 /**
@@ -2570,7 +2640,9 @@ export function registerAppTools(
       "and any mismatch is refused before anything is installed. A remote app's `ui.build` command is NOT " +
       "run unless `allowBuild: true` (git only; a `.agentapp` never builds) — without it the UI bundle must " +
       "already be in the source. " +
-      "Remote installs are kept current with `app_resync`. Validates every " +
+      "Remote installs are kept current with `app_resync`. A `requires.apps[].tools` name the installed " +
+      "provider does not expose refuses the install; a provider that is missing or unmet does not, and is " +
+      "reported in `unmetRequires` (reason not-installed, version-mismatch or tool-not-exposed). Validates every " +
       "WORKFLOW.md `tool` step's id against the daemon's dispatchable tools (missing " +
       "ids are reported ALL at once, instead of failing one at a time at " +
       "STEP-DISPATCH time). Agent-" +
@@ -2849,6 +2921,7 @@ export function registerAppTools(
       dirMissing: boolean
       operatorReadGrants?: string[]
       registryProblems?: string[]
+      unmetRequires?: UnmetRequirement[]
       runs: {
         appRunId: string
         status: string
@@ -2871,6 +2944,7 @@ export function registerAppTools(
     ...(app.dirMissing ? { dirMissing: true } : {}),
     ...(app.operatorReadGrants ? { operatorReadGrants: app.operatorReadGrants } : {}),
     ...(app.registryProblems ? { registryProblems: app.registryProblems } : {}),
+    ...(app.unmetRequires ? { unmetRequires: app.unmetRequires } : {}),
     agents: app.agents.map(a => a.id),
     workflows: app.workflows.map(w => w.id),
     requires: app.requires,
@@ -2892,7 +2966,9 @@ export function registerAppTools(
       "`dir` no longer exists on disk (moved worktree, deleted checkout) — " +
       "its ui panel (if any) serves an error page until reinstalled. " +
       "`operatorReadGrants` lists the extra READ-ONLY paths the operator granted " +
-      "this app in `apps.readGrants` of the daemon config (absent when none).",
+      "this app in `apps.readGrants` of the daemon config (absent when none). " +
+      "`unmetRequires` lists the `requires.apps` entries that do not hold right now " +
+      "(absent when every dependency holds).",
     inputSchema: appListSchema,
     handler: async () => {
       const runs = appRegistry.listRuns()
@@ -2910,6 +2986,7 @@ export function registerAppTools(
           : {}),
         // A completed self-heal, not a problem: reported apart.
         ...(repairs.has(app.appId) ? { registryRepair: repairs.get(app.appId) } : {}),
+        ...unmetRequiresField(appRegistry, app),
         runs: runs
           .filter(r => r.appId === app.appId)
           .map(r => ({
@@ -3522,7 +3599,7 @@ export function registerAppTools(
         if (dep.version === undefined) continue
         const provider = appRegistry.getApp(dep.id)
         if (!provider) continue
-        const problem = checkVersion(provider.version, dep.version)
+        const problem = appVersionProblem(provider.version, dep.version)
         if (problem !== undefined) {
           return errorResult(
             `app_apply: app "${input.appId}" requires "${dep.id}" ${dep.version}, but "${dep.id}" ${problem}.`,

@@ -24,7 +24,7 @@ import "./sentinel-platform.js"
 
 import { buildLabeledStatsReport } from "./process-stats.js"
 import { loadConfig } from "./config.js"
-import { resolveExposedToolsMode } from "./exposed-tools-policy.js"
+import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
@@ -5902,6 +5902,11 @@ export async function startHttpServer(
               if (guardBrowserOrigin(req, res)) return
               if (!authorize(req, res)) return
             }
+            // The calling session (same trust rules as the /mcp gateway): it
+            // reaches an imported tool, and its AGENT.md opt-in and app grants
+            // decide whether a write/approve exposed tool may run.
+            const toolCallerId = linkAuth ? undefined : resolveCallerSessionId(req)
+            const toolCallerDesc = toolCallerId ? opts.sessions?.get(toolCallerId) : undefined
             await handleAppUiToolCall(
               req,
               res,
@@ -5915,6 +5920,15 @@ export async function startHttpServer(
                   ? { findPendingPermission: (id: string) => opts.sessions?.listPendingPermissions().find(p => p.id === id) }
                   : {}),
                 ...opts.appToolCallDeps,
+                ...(toolCallerId
+                  ? {
+                      caller: {
+                        sessionId: toolCallerId,
+                        optIn: toolCallerDesc?.exposedToolOptIn,
+                        grants: exposedToolGrantsFor(opts.appRegistry, toolCallerDesc?.meta),
+                      },
+                    }
+                  : {}),
               },
               linkAuth
                 ? { sessionId: linkAuth.sessionId, ...(linkAuth.telegramUserId ? { telegramUserId: linkAuth.telegramUserId } : {}) }

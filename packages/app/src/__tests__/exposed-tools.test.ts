@@ -7,7 +7,7 @@ import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { defineApp } from "../define-app.js"
 import { loadAppHandle } from "../load-app.js"
-import { exposedToolName, parseExposedTools, resolveExposedTools } from "../exposed-tools.js"
+import { checkExposedTools, exposedToolName, parseExposedTools, resolveExposedTools } from "../exposed-tools.js"
 
 const soloAgent = () =>
   defineAgent({
@@ -163,12 +163,40 @@ describe("parseExposedTools", () => {
     expect(() => parseExposedTools([entry(), entry()], "bureau", fail)).toThrow(/duplicate/)
   })
 
-  it("only lets an imported id through as read with an explicit mcpName", () => {
+  it("lets an imported id through at any access class, with an explicit mcpName", () => {
     const imp = { id: "imported:bureau/x", access: "read", description: "d", mcpName: "x" }
     expect(() => parseExposedTools([imp], "bureau", fail)).not.toThrow()
+    expect(parseExposedTools([{ ...imp, access: "write" }], "bureau", fail).tools[0]?.access).toBe("write")
+    expect(
+      parseExposedTools([{ ...imp, access: "approve", approvalArg: "approvalId" }], "bureau", fail).tools[0]?.access,
+    ).toBe("approve")
     expect(() => parseExposedTools([{ ...imp, mcpName: undefined }], "bureau", fail)).toThrow(/mcpName/)
-    expect(() => parseExposedTools([{ ...imp, access: "write" }], "bureau", fail)).toThrow(/read/)
     expect(() => parseExposedTools([{ ...imp, mcpName: "a/b" }], "bureau", fail)).toThrow(/mcpName/)
+  })
+
+  it("checkExposedTools keeps the valid entries and lists each refused one with its reason", () => {
+    const out = checkExposedTools(
+      [
+        entry({ id: "bureau.status" }),
+        { id: "imported:bureau/browser_click", access: "write", description: "d" },
+        entry({ id: "bureau.status" }),
+        entry({ id: "bureau.ok", description: "" }),
+        { id: "imported:bureau/browser_navigate", access: "write", description: "d", mcpName: "navigate" },
+      ],
+      "bureau",
+      fail,
+    )
+    expect(out.tools.map(t => t.id)).toEqual(["bureau.status", "imported:bureau/browser_navigate"])
+    expect(out.refused.map(r => [r.index, r.id])).toEqual([
+      [1, "imported:bureau/browser_click"],
+      [2, "bureau.status"],
+      [3, "bureau.ok"],
+    ])
+    expect(out.refused[0]?.reason).toMatch(/mcpName/)
+    expect(out.refused[1]?.reason).toMatch(/duplicate/)
+    expect(out.refused[2]?.reason).toMatch(/description/)
+    // A list-level fault still throws.
+    expect(() => checkExposedTools([entry()], undefined, fail)).toThrow(/prefix/)
   })
 
   it("restricts approvalArg to access: approve, and requires a short description", () => {

@@ -1082,6 +1082,12 @@ export const CALLER_SESSION_ID_HEADER = "x-agentproto-caller-session-id"
  *  `app_*` tool call that omits one, since the model driving the session has
  *  no way to know its own appId unless told. Absent on any other spawn. */
 export const APP_ID_ENV = "AGENTPROTO_APP_ID"
+/** Descriptor `meta` key naming the installed app whose own AGENT.md the
+ *  session runs. Stamped by the spawn core from an `app_run` spawn's `appId`
+ *  (never from a request), carried across a restart or a continue-fresh, and
+ *  never inherited by a child. The gateway reads it to apply the app's
+ *  `requires.apps[].tools` grants (exposed-tools-policy.ts). */
+export const APP_AGENT_META_KEY = "appAgent"
 /** Set for a spawn whose composed prompt carries an AGENTS.md POINTER to a
  *  file outside the session cwd (the daemon resolves AGENTS.md up to the git
  *  toplevel, but a session's own workspace tools are confined to its cwd).

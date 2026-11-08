@@ -23,7 +23,7 @@ import type {
   AppSetupWhen,
 } from "./types.js"
 import { parseVersionRange } from "./version-range.js"
-import { parseExposedTools } from "./exposed-tools.js"
+import { EXPOSED_TOOL_NAME_MAX, parseExposedTools } from "./exposed-tools.js"
 
 export const APP_PLACEMENTS: readonly AppPlacement[] = ["local", "box", "any", "split"]
 
@@ -77,8 +77,13 @@ function bool(v: unknown, key: string, fail: Fail): boolean {
   return v
 }
 
+const REQUIREMENT_KEYS = new Set(["id", "version", "workflows", "tools"])
+const REQUIRES_KEYS = new Set(["browser", "fs", "gpu", "secrets", "apps"])
+// Verbatim `requires.apps[].tools` item pattern from AIP-53 APP.schema.json: `<prefix>_<n>`.
+const REQUIRED_TOOL_NAME_RE = /^[a-z][a-z0-9]{1,15}_[a-zA-Z0-9-](?:[a-zA-Z0-9_-]*[a-zA-Z0-9-])?$/
+
 /** Parse one `requires.apps` entry — a bare id or an
- *  `{ id, version?, workflows? }` object. Shared by the array element check
+ *  `{ id, version?, workflows?, tools? }` object. Shared by the array element check
  *  and the object form's `apps` list so both accept exactly the same shape. */
 function appRequirementEntry(entry: unknown, key: string, fail: Fail): AppRequirement {
   if (typeof entry === "string") {
@@ -109,23 +114,43 @@ function appRequirementEntry(entry: unknown, key: string, fail: Fail): AppRequir
       throw fail(`'${key}.workflows' must be an array of non-empty strings.`)
     }
   }
-  const extra = Object.keys(entry).filter(k => k !== "id" && k !== "version" && k !== "workflows")
+  const tools = entry.tools
+  if (tools !== undefined) {
+    if (!Array.isArray(tools)) {
+      throw fail(`'${key}.tools' must be an array of the provider's tool MCP names (e.g. bureau_navigate).`)
+    }
+    tools.forEach((t, j) => {
+      if (typeof t !== "string" || t.length > EXPOSED_TOOL_NAME_MAX || !REQUIRED_TOOL_NAME_RE.test(t)) {
+        throw fail(
+          `'${key}.tools[${j}]' must be an MCP name '<prefix>_<name>' of at most ${EXPOSED_TOOL_NAME_MAX} characters, ` +
+            `got ${JSON.stringify(t)}; name the provider tool's MCP name, not its exposes.tools id.`,
+        )
+      }
+      if (tools.indexOf(t) !== j) throw fail(`'${key}.tools[${j}]': duplicate tool name '${t}'.`)
+    })
+  }
+  const extra = Object.keys(entry).filter(k => !REQUIREMENT_KEYS.has(k))
   if (extra.length > 0) {
-    throw fail(`'${key}.${extra[0]}' is not a supported requires.apps entry field (expected id, version, workflows).`)
+    throw fail(`'${key}.${extra[0]}' is not a supported requires.apps entry field (expected ${[...REQUIREMENT_KEYS].join(", ")}).`)
   }
   return {
     id,
     ...(version !== undefined ? { version } : {}),
     ...(workflows !== undefined ? { workflows: [...workflows] as string[] } : {}),
+    ...(tools !== undefined ? { tools: [...tools] as string[] } : {}),
   }
 }
 
 function appRequirementList(v: unknown, key: string, fail: Fail): readonly AppRequirement[] {
   if (v === undefined) return []
   if (!Array.isArray(v)) {
-    throw fail(`'${key}' must be an array of non-empty strings or { id, version?, workflows? } objects.`)
+    throw fail(`'${key}' must be an array of non-empty strings or { id, version?, workflows?, tools? } objects.`)
   }
-  return v.map((e, i) => appRequirementEntry(e, `${key}[${i}]`, fail))
+  const entries = v.map((e, i) => appRequirementEntry(e, `${key}[${i}]`, fail))
+  entries.forEach((e, i) => {
+    if (entries.findIndex(o => o.id === e.id) !== i) throw fail(`'${key}[${i}]': duplicate app id '${e.id}'.`)
+  })
+  return entries
 }
 
 const SERVICE_NAME_RE = /^[a-z][a-z0-9-]*$/
@@ -814,6 +839,10 @@ export function normalizeManifestFields(
       requirements = { ...requirements, apps: requires }
       appRequirements = appRequirementList(r, "requires", fail)
     } else if (isRecord(r)) {
+      const extra = Object.keys(r).find(k => !REQUIRES_KEYS.has(k))
+      if (extra !== undefined) {
+        throw fail(`'requires.${extra}' is not a supported requires field (expected ${[...REQUIRES_KEYS].join(", ")}).`)
+      }
       const apps = appRequirementList(r.apps, "requires.apps", fail)
       requirements = {
         browser: bool(r.browser, "requires.browser", fail),

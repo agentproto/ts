@@ -33,6 +33,7 @@ import {
   type SpawnAgentSessionResult,
 } from "./session-spawn.js"
 import {
+  APP_AGENT_META_KEY,
   CALLER_SESSION_ID_HEADER,
   carrySessionPin,
   type SessionDescriptor,
@@ -440,6 +441,8 @@ async function continueAgentSessionFreshOnce(
     ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
     // The fresh session stays inside the same app boundary as `prev`.
     ...(boundaryFromMeta(prev.meta) ? { appBoundary: boundaryFromMeta(prev.meta)! } : {}),
+    // Still the same app's agent (its requires.apps tool grants, its APP_ID_ENV).
+    ...(prev.meta?.[APP_AGENT_META_KEY] ? { appId: prev.meta[APP_AGENT_META_KEY] } : {}),
     // The internal role spelling `spawnAgentSession` takes; the `role` alias
     // warning is emitted only by the MCP/HTTP handlers, so none is produced
     // here. Placed before `opts.spawn` so an explicit request still wins.
