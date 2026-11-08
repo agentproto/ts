@@ -464,6 +464,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         delivered: r.delivered,
         queued: r.queued,
         urgencyApplied: r.urgencyApplied,
+        ...(r.wake ? { wake: r.wake } : {}),
         ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
         ...(labelled
           ? {

@@ -1672,6 +1672,7 @@ export interface RuntimeHttpServerOptions {
     sandboxSessions?: () => SandboxSessionStats
     /** Installed-app registry records that loaded partial/unusable. Kept in
      *  sync with the `daemon_health` MCP tool's `appRegistryIssues`. */
+    warnings?: () => readonly { kind: string; sessionId: string; message: string }[]
     appRegistryIssues?: () => readonly {
       kind: string
       appId: string | null
@@ -2896,6 +2897,7 @@ export async function startHttpServer(
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
+        warnings: opts.meta.warnings?.() ?? [],
         appRegistryIssues: opts.meta.appRegistryIssues?.() ?? [],
         appRegistryRepairs: opts.meta.appRegistryRepairs?.() ?? [],
         modelCooldowns: opts.meta.modelCooldowns?.() ?? [],

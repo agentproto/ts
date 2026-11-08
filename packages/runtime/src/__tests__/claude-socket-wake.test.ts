@@ -6,7 +6,7 @@
  * registration directory and a fake key file. `net` is never mocked.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createServer, type Server } from "node:net"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -28,6 +28,7 @@ interface Harness {
   socketDir: string
   pid: number
   socketPath: string
+  settingsFile: string
   frames: Array<Record<string, unknown>>
   connections: number
   server: Server
@@ -83,7 +84,8 @@ async function startHarness(opts: { permissionMode?: string } = {}): Promise<Har
     server.listen(socketPath, resolve)
   })
 
-  return { root, claudeSessionsDir, socketDir, pid, socketPath, frames, connections, server }
+  const settingsFile = join(root, "claude-settings.json")
+  return { root, claudeSessionsDir, socketDir, pid, socketPath, settingsFile, frames, connections, server }
 }
 
 async function stopHarness(h: Harness): Promise<void> {
@@ -96,6 +98,7 @@ function config(h: Harness, overrides: Partial<ClaudeSocketWakeConfig> = {}): Cl
     enabled: true,
     claudeSessionsDir: h.claudeSessionsDir,
     socketDir: h.socketDir,
+    claudeSettingsFile: h.settingsFile,
     ...overrides,
   }
 }
@@ -193,7 +196,8 @@ describe("claude-socket wake adapter", () => {
       writeFileSync(join(h.claudeSessionsDir, `${h.pid}.json`), JSON.stringify({ pid: h.pid, sessionId: "chat-1" }))
     })
 
-    it("skips the socket when the row reports bypassPermissions", async () => {
+    it("writes the socket when the row reports bypassPermissions and crossSessionInbound is accept", async () => {
+      writeFileSync(h.settingsFile, JSON.stringify({ crossSessionInbound: "accept", other: 1 }))
       const result = await wakeClaudeSocket({
         sessionId: "cc:chat-1",
         text: "wake",
@@ -201,9 +205,9 @@ describe("claude-socket wake adapter", () => {
         config: config(h),
         rowPermissionMode: "bypassPermissions",
       })
-      expect(result).toMatchObject({ written: false, reason: "bypass-permissions", pid: h.pid })
-      await new Promise(resolve => setTimeout(resolve, 50))
-      expect(h.connections).toBe(0)
+      expect(result).toMatchObject({ written: true, reason: "written", pid: h.pid })
+      expect(result.hint).toBeUndefined()
+      await waitFor(() => h.frames.length === 2)
     })
 
     it("still writes the socket when the row reports auto", async () => {
@@ -224,17 +228,36 @@ describe("claude-socket wake adapter", () => {
       h = await startHarness({ permissionMode: "bypassPermissions" })
     })
 
-    it("does not write the socket and reports the inbox fallback", async () => {
+    it("writes the socket when crossSessionInbound is accept", async () => {
+      writeFileSync(h.settingsFile, JSON.stringify({ crossSessionInbound: "accept" }))
       const result = await wakeClaudeSocket({
         sessionId: "cc:chat-1",
         text: "wake",
         urgency: "next-turn",
         config: config(h),
       })
-      expect(result).toMatchObject({ written: false, reason: "bypass-permissions", pid: h.pid })
-      await new Promise(resolve => setTimeout(resolve, 50))
-      expect(h.frames).toHaveLength(0)
-      expect(h.connections).toBe(0)
+      expect(result).toMatchObject({ written: true, reason: "written", pid: h.pid })
+      await waitFor(() => h.frames.length === 2)
+      expect(h.frames[1]).toMatchObject({ type: "user", priority: "next" })
+    })
+
+    it.each([
+      ["the settings file is missing", undefined],
+      ["the key is absent", JSON.stringify({ theme: "dark" })],
+      ["the key is hold", JSON.stringify({ crossSessionInbound: "hold" })],
+      ["the file is not JSON", "{ nope"],
+    ])("still sends the frame but reports held-by-receiver-bypass when %s", async (_name, content) => {
+      if (content !== undefined) writeFileSync(h.settingsFile, content)
+      const result = await wakeClaudeSocket({
+        sessionId: "cc:chat-1",
+        text: "wake",
+        urgency: "next-turn",
+        config: config(h),
+      })
+      expect(result).toMatchObject({ written: true, reason: "held-by-receiver-bypass", pid: h.pid })
+      expect(result.hint).toContain("crossSessionInbound")
+      expect(result.hint).toContain("agentproto doctor --fix")
+      await waitFor(() => h.frames.length === 2)
     })
   })
 })
@@ -320,43 +343,60 @@ describe("claude-socket wake through the sessions registry", () => {
     expect(h.frames).toHaveLength(0)
   })
 
-  it("records the fallback for a bypassPermissions target and still delivers to the inbox", async () => {
+  const bypassFile = () =>
     writeFileSync(
       join(h.claudeSessionsDir, `${h.pid}.json`),
       JSON.stringify({ pid: h.pid, sessionId: "chat-1", permissionMode: "bypassPermissions", status: "idle" }),
     )
-    const res = await registry.sendMessage(
-      createSessionMessage({
-        to: "cc:chat-1",
-        from: { relation: "system" },
-        kind: "notice",
-        urgency: "next-turn",
-        text: "fallback",
-      }),
-    )
-    expect(res.wake).toMatchObject({ written: false, reason: "bypass-permissions" })
-    expect(registry.listInbox("cc:chat-1")!.map(m => m.text)).toEqual(["fallback"])
-    await new Promise(resolve => setTimeout(resolve, 50))
-    expect(h.frames).toHaveLength(0)
+  const nextTurn = (text: string) =>
+    createSessionMessage({ to: "cc:chat-1", from: { relation: "system" }, kind: "notice", urgency: "next-turn", text })
+
+  it("delivers to a bypassPermissions target over the socket when crossSessionInbound is accept", async () => {
+    bypassFile()
+    writeFileSync(h.settingsFile, JSON.stringify({ crossSessionInbound: "accept" }))
+    const res = await registry.sendMessage(nextTurn("accepted"))
+    expect(res.delivered).toEqual({ via: "socket" })
+    expect(res.wake).toMatchObject({ written: true, reason: "written" })
+    expect(registry.listInbox("cc:chat-1")).toEqual([])
+    expect(registry.wakeWarnings()).toEqual([])
+    await waitFor(() => h.frames.length >= 2)
   })
 
-  it("falls back to the inbox when the touched row reports bypassPermissions and the file has no mode", async () => {
+  it("sends the frame to a bypass target without the setting, parks it in the inbox and warns once", async () => {
+    bypassFile()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    try {
+      const res = await registry.sendMessage(nextTurn("held"))
+      expect(res.delivered).toEqual({ via: "inbox" })
+      expect(res.wake).toMatchObject({ written: true, reason: "held-by-receiver-bypass" })
+      expect(res.wake?.hint).toContain("agentproto doctor --fix")
+      expect(registry.listInbox("cc:chat-1")!.map(m => m.text)).toEqual(["held"])
+      await waitFor(() => h.frames.length >= 2)
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/^\[socket-wake\] to=cc:chat-1 written=true reason=held-by-receiver-bypass pid=\d+ rowMode=/),
+      )
+
+      await registry.sendMessage(nextTurn("held again"))
+      const warnings = registry.wakeWarnings()
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toMatchObject({ kind: "held-by-receiver-bypass", sessionId: "cc:chat-1", pid: h.pid })
+      expect(warnings[0]!.message).toContain("agentproto doctor --fix")
+
+      writeFileSync(h.settingsFile, JSON.stringify({ crossSessionInbound: "accept" }))
+      await registry.sendMessage(nextTurn("fixed"))
+      expect(registry.wakeWarnings()).toEqual([])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("holds a bypass target reported only by the touched row when the setting is missing", async () => {
     writeFileSync(join(h.claudeSessionsDir, `${h.pid}.json`), JSON.stringify({ pid: h.pid, sessionId: "chat-1" }))
     registry.touchExternal({ id: "cc:chat-1", host: "claude-desktop", permissionMode: "bypassPermissions" })
-    const res = await registry.sendMessage(
-      createSessionMessage({
-        to: "cc:chat-1",
-        from: { relation: "system" },
-        kind: "notice",
-        urgency: "next-turn",
-        text: "row-mode",
-      }),
-    )
+    const res = await registry.sendMessage(nextTurn("row-mode"))
     expect(res.delivered).toEqual({ via: "inbox" })
-    expect(res.wake).toMatchObject({ written: false, reason: "bypass-permissions" })
+    expect(res.wake).toMatchObject({ written: true, reason: "held-by-receiver-bypass" })
     expect(registry.listInbox("cc:chat-1")!.map(m => m.text)).toEqual(["row-mode"])
-    await new Promise(resolve => setTimeout(resolve, 50))
-    expect(h.frames).toHaveLength(0)
   })
 
   it("writes the socket when the touched row reports auto, and follows a later switch to bypass", async () => {
@@ -371,7 +411,7 @@ describe("claude-socket wake through the sessions registry", () => {
     registry.touchExternal({ id: "cc:chat-1", permissionMode: "bypassPermissions" })
     const res = await registry.sendMessage(msg("two"))
     expect(res.delivered).toEqual({ via: "inbox" })
-    expect(res.wake).toMatchObject({ reason: "bypass-permissions" })
+    expect(res.wake).toMatchObject({ reason: "held-by-receiver-bypass" })
   })
 
   it("does not wake when the daemon flag is off", async () => {

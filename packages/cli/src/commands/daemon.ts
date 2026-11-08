@@ -303,6 +303,9 @@ export interface DaemonHealthInfo {
   path?: string | null
   workspace?: string
   uptimeMs?: number
+  /** Message-delivery warnings (absent on an older daemon), e.g. a bypassPermissions
+   *  Claude Code receiver that holds wakes until `crossSessionInbound` is `accept`. */
+  warnings?: { kind: string; sessionId: string; message: string }[]
   /** Sandbox-session restart bookkeeping — absent on a daemon that predates
    *  detach-on-shutdown. `attached` is what a restart now would detach (the
    *  box keeps running); `reattach` is how the booted daemon's reattach pass

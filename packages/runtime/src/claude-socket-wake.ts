@@ -19,10 +19,16 @@
  *
  * This adapter is OFF by default (`daemon.claudeSocketWake`). It only writes
  * for envelope level 2 and above (next-turn / steer). Level 1 (fyi) and level
- * 0 write nothing. A `bypassPermissions` target, a missing registration, a
+ * 0 write nothing. A missing registration, a
  * missing socket, a socket that is not a user-owned socket, or a missing key
  * all fall back to the existing inbox delivery and report why. The key is
  * read at call time and is never logged or persisted.
+ *
+ * A `bypassPermissions` target is written to as well. Claude Code holds a
+ * peer message that carries no permission class (cause `no-mode-asserted`)
+ * unless the user's settings say `"crossSessionInbound": "accept"`; the
+ * daemon reads that setting (read-only, never writes it) and reports
+ * `held-by-receiver-bypass` with a hint when it is missing.
  */
 
 import { randomUUID } from "node:crypto"
@@ -58,6 +64,30 @@ export function defaultClaudeSessionsDir(
   return join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sessions")
 }
 
+export function defaultClaudeUserSettingsFile(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json")
+}
+
+/** Claude Code's user-scope `crossSessionInbound` (`accept` | `hold` | `refuse`),
+ *  or undefined when the file or key is absent or unreadable. Read-only. */
+export async function readCrossSessionInbound(settingsFile: string): Promise<string | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(settingsFile, "utf8"))
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined
+    const value = (parsed as Record<string, unknown>).crossSessionInbound
+    return typeof value === "string" ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export const HELD_BY_RECEIVER_BYPASS_HINT =
+  "the receiver runs in bypassPermissions and Claude Code holds messages from other sessions until " +
+  "crossSessionInbound is set to accept in ~/.claude/settings.json (agentproto doctor --fix); " +
+  "the message is also parked in its inbox and shows at its next prompt"
+
 export interface ClaudeSocketWakeConfig {
   /** The `daemon.claudeSocketWake` opt-in. Default false. */
   enabled?: boolean
@@ -66,6 +96,9 @@ export interface ClaudeSocketWakeConfig {
   claudeSessionsDir?: string
   /** Directory holding `<pid>.sock`. Default `/tmp/cc-socks`. */
   socketDir?: string
+  /** Claude Code's user settings file, read-only, for `crossSessionInbound`.
+   *  Default `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`. */
+  claudeSettingsFile?: string
   connectTimeoutMs?: number
   writeTimeoutMs?: number
   /** Test seams. */
@@ -86,7 +119,7 @@ export type ClaudeSocketWakeReason =
   | "urgency"
   | "not-external"
   | "no-registration"
-  | "bypass-permissions"
+  | "held-by-receiver-bypass"
   | "no-socket"
   | "unsafe-socket"
   | "no-key"
@@ -99,6 +132,8 @@ export interface ClaudeSocketWakeOutcome {
   pid?: number
   socketPath?: string
   error?: string
+  /** Plain-words explanation for a written wake the receiver will hold. */
+  hint?: string
 }
 
 /** The `<session_id>` part of an external `cc:<session_id>` row id. */
@@ -287,7 +322,7 @@ export async function wakeClaudeSocket(input: {
   const socketDir = config.socketDir ?? CLAUDE_SOCKET_WAKE_DEFAULT_SOCKET_DIR
   const registration = await findClaudeSessionRegistration(claudeSessionId, claudeSessionsDir)
   if (!registration) return reason("no-registration")
-  if (isBypassPermissions(registration, rowPermissionMode)) return reason("bypass-permissions", { pid: registration.pid })
+  const bypass = isBypassPermissions(registration, rowPermissionMode)
 
   const socketPath = claudeSocketPath(socketDir, registration.pid)
   const socketState = await checkSocket(socketPath)
@@ -330,6 +365,20 @@ export async function wakeClaudeSocket(input: {
       socketPath,
       error: error instanceof Error ? error.message : String(error),
     })
+  }
+  if (bypass) {
+    const accepted =
+      (await readCrossSessionInbound(config.claudeSettingsFile ?? defaultClaudeUserSettingsFile())) === "accept"
+    if (!accepted) {
+      return {
+        written: true,
+        reason: "held-by-receiver-bypass",
+        sessionId,
+        pid: registration.pid,
+        socketPath,
+        hint: HELD_BY_RECEIVER_BYPASS_HINT,
+      }
+    }
   }
   return { written: true, reason: "written", sessionId, pid: registration.pid, socketPath }
 }

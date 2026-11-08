@@ -6001,6 +6001,10 @@ export interface SessionsRegistry {
   noteSandboxReattachUnserved(count: number): void
   /** Live + restart bookkeeping for `/health` and `daemon_health`. */
   sandboxSessionStats(): SandboxSessionStats
+  /** Daemon-health warnings raised by message delivery (one per receiver):
+   *  a bypassPermissions Claude Code session was messaged while its
+   *  `crossSessionInbound` setting would make it hold the wake. */
+  wakeWarnings(): readonly WakeWarning[]
   /** Record that a checkpoint was just written for a live session (the
    *  checkpoint route, the `session_checkpoint` tool), so a native
    *  compaction right after it is reported as guarded. No-op for an
@@ -6040,6 +6044,14 @@ export interface SandboxReattachOutcome {
 }
 
 /** Restart bookkeeping for sandbox sessions, as surfaced on `/health`. */
+export interface WakeWarning {
+  kind: "held-by-receiver-bypass"
+  sessionId: string
+  pid?: number
+  since: string
+  message: string
+}
+
 export interface SandboxSessionStats {
   /** Provider-box sessions currently attached and live in this daemon — the
    *  number a restart right now would DETACH rather than kill. */
@@ -6961,6 +6973,7 @@ export function createSessionsRegistry(opts?: {
       : DEFAULT_EXTERNAL_SESSION_LIVENESS_MS
   const externalNowMs = opts?.externalNow ?? Date.now
   const claudeSocketWake = opts?.claudeSocketWake
+  const wakeWarningsByReceiver = new Map<string, WakeWarning>()
   /** Lazily expire an `external` row whose last sighting fell out of the
    *  liveness window: there is no process whose exit could flip it, so every
    *  read/deliver path calls this first. Terminal status carries no
@@ -14153,7 +14166,26 @@ export function createSessionsRegistry(opts?: {
             config: claudeSocketWake,
             ...(rt.desc.externalPermissionMode ? { rowPermissionMode: rt.desc.externalPermissionMode } : {}),
           })
-          if (wake.written) {
+          const held = wake.reason === "held-by-receiver-bypass"
+          ;(held ? console.warn : console.info)(
+            `[socket-wake] to=${msg.to} written=${wake.written} reason=${wake.reason} ` +
+              `pid=${wake.pid ?? "-"} rowMode=${rt.desc.externalPermissionMode ?? "-"}`,
+          )
+          if (held && !wakeWarningsByReceiver.has(msg.to)) {
+            wakeWarningsByReceiver.set(msg.to, {
+              kind: "held-by-receiver-bypass",
+              sessionId: msg.to,
+              ...(wake.pid !== undefined ? { pid: wake.pid } : {}),
+              since: new Date().toISOString(),
+              message:
+                `${msg.to} runs in bypassPermissions and Claude Code holds messages from other sessions ` +
+                `until crossSessionInbound is "accept": run \`agentproto doctor --fix\``,
+            })
+          }
+          if (wake.reason === "written") wakeWarningsByReceiver.delete(msg.to)
+          // A held wake is not a delivery: the receiver parks it, so the
+          // inbox copy below is what the session actually sees.
+          if (wake.written && !held) {
             const delivered: SessionMessage = {
               ...msg,
               delivered: { via: "socket", at: new Date().toISOString() },
@@ -16435,6 +16467,9 @@ export function createSessionsRegistry(opts?: {
     },
     noteSandboxReattachUnserved(count) {
       reattachBoot.unserved = Math.max(0, Math.floor(count))
+    },
+    wakeWarnings() {
+      return [...wakeWarningsByReceiver.values()]
     },
     sandboxSessionStats() {
       let attached = 0

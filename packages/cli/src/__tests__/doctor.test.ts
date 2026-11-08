@@ -3,7 +3,10 @@
  * flag validation. Runs the real step registry over a fake StepContext.
  */
 
-import { describe, it, expect } from "vitest"
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, it, expect } from "vitest"
 import { runDoctor, type DoctorDeps, type DoctorJson } from "../commands/doctor.js"
 import { ONBOARDING_STEPS } from "../onboarding/registry.js"
 import type { OnboardingStep } from "../onboarding/types.js"
@@ -179,5 +182,94 @@ describe("agentproto doctor", () => {
     const h = harness()
     expect(await runDoctor(["--help"], h.deps)).toBe(0)
     expect(h.out()).toContain("agentproto doctor [--json]")
+  })
+})
+
+describe("agentproto doctor --fix", () => {
+  let dir: string
+  let file: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "doctor-fix-"))
+    file = join(dir, "settings.json")
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  function fixHarness() {
+    const h = harness()
+    return { ...h, deps: { ...h.deps, claudeSettingsFile: file } }
+  }
+  const backups = () => readdirSync(dir).filter((f) => f.includes(".bak-"))
+
+  it("adds crossSessionInbound accept, keeps every other key, backs up, prints the diff", async () => {
+    const original = { theme: "dark", permissions: { allow: ["Bash(ls)"] }, hooks: { Stop: [] } }
+    writeFileSync(file, JSON.stringify(original, null, 2))
+    const h = fixHarness()
+    expect(await runDoctor(["--fix"], h.deps)).toBe(0)
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...original, crossSessionInbound: "accept" })
+    expect(backups()).toHaveLength(1)
+    expect(JSON.parse(readFileSync(join(dir, backups()[0]!), "utf8"))).toEqual(original)
+    expect(readdirSync(dir).filter((f) => f.includes(".tmp-"))).toEqual([])
+    expect(h.out()).toContain('+   "crossSessionInbound": "accept"')
+    expect(h.out()).toContain("backup:")
+  })
+
+  it("is idempotent: a second run changes nothing and makes no second backup", async () => {
+    writeFileSync(file, JSON.stringify({ theme: "dark" }))
+    await runDoctor(["--fix"], fixHarness().deps)
+    const after = readFileSync(file, "utf8")
+    const h = fixHarness()
+    expect(await runDoctor(["--fix"], h.deps)).toBe(0)
+    expect(readFileSync(file, "utf8")).toBe(after)
+    expect(backups()).toHaveLength(1)
+    expect(h.out()).toContain("nothing changed")
+  })
+
+  it("leaves an explicit crossSessionInbound value alone", async () => {
+    const text = JSON.stringify({ crossSessionInbound: "refuse" })
+    writeFileSync(file, text)
+    expect(await runDoctor(["--fix"], fixHarness().deps)).toBe(0)
+    expect(readFileSync(file, "utf8")).toBe(text)
+    expect(backups()).toEqual([])
+  })
+
+  it("creates the file when it does not exist", async () => {
+    expect(await runDoctor(["--fix"], fixHarness().deps)).toBe(0)
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ crossSessionInbound: "accept" })
+  })
+
+  it("refuses to touch a settings file it cannot parse", async () => {
+    writeFileSync(file, "{ // comment\n}")
+    const h = fixHarness()
+    expect(await runDoctor(["--fix"], h.deps)).toBe(1)
+    expect(readFileSync(file, "utf8")).toBe("{ // comment\n}")
+    expect(h.out()).toContain("NOT changed")
+  })
+
+  it("never writes without --fix", async () => {
+    await runDoctor([], fixHarness().deps)
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  it("reports the fix in --json", async () => {
+    const h = fixHarness()
+    await runDoctor(["--json", "--fix"], h.deps)
+    const json: DoctorJson = JSON.parse(h.out())
+    expect(json.fix).toMatchObject({ file, status: "added" })
+  })
+
+  it("the daemon step warns, with the fix, when /health lists a held bypass receiver", async () => {
+    const h = harness({
+      ctx: {
+        health: {
+          version: "1.0.0",
+          uptimeMs: 65_000,
+          pid: 4242,
+          warnings: [{ kind: "held-by-receiver-bypass", sessionId: "cc:abc", message: "x" }],
+        },
+      },
+    })
+    expect(await runDoctor([], h.deps)).toBe(0)
+    expect(h.out()).toContain("! Waking Claude Code sessions in bypassPermissions")
+    expect(h.out()).toContain("→ fix: agentproto doctor --fix")
   })
 })

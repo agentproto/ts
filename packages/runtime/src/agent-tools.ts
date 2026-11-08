@@ -1500,6 +1500,7 @@ export function registerAgentTools(
       }
       const applied = {
         urgencyApplied: result.urgencyApplied,
+        ...(result.wake ? { wake: result.wake } : {}),
         ...(result.urgencyApplied !== urgency && result.delivered?.via !== "wait"
           ? { note: `requested urgency "${urgency}" was delivered as "${result.urgencyApplied}"` }
           : {}),

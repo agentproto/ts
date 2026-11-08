@@ -78,7 +78,7 @@ Usage:
   agentproto auth      <login|status|logout> [--host <url>] [--label <name>]
   agentproto config    <show|path|get|set|unset|edit> [args]
   agentproto daemon    <install|uninstall|start|stop|status|logs> [args]
-  agentproto doctor    [--json] [--only <step>...] [--skip <step>...]
+  agentproto doctor    [--json] [--fix] [--only <step>...] [--skip <step>...]
                                            read-only check of this install
   agentproto install   <slug> [--force] [--dry-run] [--skip-setup] [--allow-unverified]
                        <slug> ∈ { <adapter-slug> | runtime-profile/<name> }
@@ -267,7 +267,7 @@ Examples:
   agentproto config set daemon.allowedOrigins https://guilde.work
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
-  agentproto doctor                    # check the whole install (read-only)
+  agentproto doctor                    # check the whole install (--fix: let bypass sessions accept messages)
   agentproto setup                         # guided first run (wizard)
 `
 
