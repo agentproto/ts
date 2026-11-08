@@ -20,6 +20,7 @@
     "harness-upgrades",
     "workflows",
     "sentinels",
-    "daemon-memory"
+    "daemon-memory",
+    "agent-comms"
   ]
 }
