@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { defineSandbox } from "../define-sandbox.js"
+import { parseSandboxManifest } from "../manifest/index.js"
+import { INSTALL_ADAPTERS_RENAMED } from "../renamed-keys.js"
 
 describe("defineSandbox (AIP-36)", () => {
   it("imports cleanly", () => {
@@ -44,5 +46,28 @@ describe("defineSandbox (AIP-36)", () => {
       expect(handle.factory).toBeUndefined()
       expect(handle.capabilities).toBeUndefined()
     })
+  })
+})
+
+describe("config.installHarnesses (AIP-36 rename of installAdapters)", () => {
+  const md = (key: string) => `---\nprovider: e2b\nconfig:\n  ${key}: [hermes]\n---\n`
+
+  it("defineSandbox accepts installHarnesses", () => {
+    const handle = defineSandbox({ provider: "e2b", config: { installHarnesses: ["hermes"] } })
+    expect(handle.config.installHarnesses).toEqual(["hermes"])
+  })
+
+  it("defineSandbox rejects the pre-rename installAdapters, naming installHarnesses", () => {
+    expect(() => defineSandbox({ provider: "e2b", config: { installAdapters: ["hermes"] } })).toThrow(
+      INSTALL_ADAPTERS_RENAMED,
+    )
+  })
+
+  it("parseSandboxManifest accepts installHarnesses", () => {
+    expect(parseSandboxManifest(md("installHarnesses")).frontmatter.config.installHarnesses).toEqual(["hermes"])
+  })
+
+  it("parseSandboxManifest rejects the pre-rename installAdapters, naming installHarnesses", () => {
+    expect(() => parseSandboxManifest(md("installAdapters"))).toThrow(INSTALL_ADAPTERS_RENAMED)
   })
 })

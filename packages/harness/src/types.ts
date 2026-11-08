@@ -1011,7 +1011,7 @@ export interface AgentCliDefinition {
   /** REQUIRED when protocol=mcp. */
   mcp?: AgentCliMcpBlock
   /** REQUIRED when protocol=proprietary. NPM package implementing AgentCliClient. */
-  adapter?: string
+  harness?: string
   /** OPTIONAL when protocol=print. Declares the one-shot CLI surface. */
   print?: AgentCliPrintConfig
   session?: AgentCliSession

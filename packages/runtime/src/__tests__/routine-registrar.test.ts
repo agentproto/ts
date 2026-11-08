@@ -109,29 +109,29 @@ describe("routineTargetToToolCall", () => {
 
   it("target.agent lowers to an agent_start tool call", () => {
     const call = routineTargetToToolCall({
-      agent: { adapter: "claude-code", prompt: "say hi", model: "sonnet", cwd: "/tmp/x" },
+      agent: { harness: "claude-code", prompt: "say hi", model: "sonnet", cwd: "/tmp/x" },
     })
     expect(call).toEqual({
       tool: "agent_start",
-      inputs: { adapter: "claude-code", prompt: "say hi", model: "sonnet", cwd: "/tmp/x" },
+      inputs: { harness: "claude-code", prompt: "say hi", model: "sonnet", cwd: "/tmp/x" },
     })
   })
 
   it("target.agent omits optional fields when absent", () => {
-    const call = routineTargetToToolCall({ agent: { adapter: "claude-code", prompt: "say hi" } })
-    expect(call).toEqual({ tool: "agent_start", inputs: { adapter: "claude-code", prompt: "say hi" } })
+    const call = routineTargetToToolCall({ agent: { harness: "claude-code", prompt: "say hi" } })
+    expect(call).toEqual({ tool: "agent_start", inputs: { harness: "claude-code", prompt: "say hi" } })
   })
 
   it("target.agent stamps origin:routine:<id> when a routineId is passed", () => {
-    const call = routineTargetToToolCall({ agent: { adapter: "claude-code", prompt: "say hi" } }, "demo-gc")
+    const call = routineTargetToToolCall({ agent: { harness: "claude-code", prompt: "say hi" } }, "demo-gc")
     expect(call).toEqual({
       tool: "agent_start",
-      inputs: { adapter: "claude-code", prompt: "say hi", origin: "routine:demo-gc" },
+      inputs: { harness: "claude-code", prompt: "say hi", origin: "routine:demo-gc" },
     })
   })
 
   it("target.agent omits origin when no routineId is passed", () => {
-    const call = routineTargetToToolCall({ agent: { adapter: "claude-code", prompt: "say hi" } })
+    const call = routineTargetToToolCall({ agent: { harness: "claude-code", prompt: "say hi" } })
     expect(call.inputs).not.toHaveProperty("origin")
   })
 
@@ -139,7 +139,7 @@ describe("routineTargetToToolCall", () => {
     const call = routineTargetToToolCall(
       {
         agent: {
-          adapter: "claude-code",
+          harness: "claude-code",
           prompt: "supervise",
           access: { profileRef: "claude-subs-agentik" },
           role: "supervisor",
@@ -153,7 +153,7 @@ describe("routineTargetToToolCall", () => {
     expect(call).toEqual({
       tool: "agent_start",
       inputs: {
-        adapter: "claude-code",
+        harness: "claude-code",
         prompt: "supervise",
         access: { profileRef: "claude-subs-agentik" },
         role: "supervisor",
@@ -166,7 +166,7 @@ describe("routineTargetToToolCall", () => {
 
   it("target.agent keeps its own origin over the routine stamp", () => {
     const call = routineTargetToToolCall(
-      { agent: { adapter: "claude-code", prompt: "x", origin: "ops" } },
+      { agent: { harness: "claude-code", prompt: "x", origin: "ops" } },
       "demo-gc",
     )
     expect(call.inputs.origin).toBe("ops")
@@ -175,7 +175,7 @@ describe("routineTargetToToolCall", () => {
   it("target.agent rejects a field agent_start's schema rejects", () => {
     expect(() =>
       routineTargetToToolCall(
-        { agent: { adapter: "claude-code", prompt: "x", worktree: { slug: "Not Kebab" } } },
+        { agent: { harness: "claude-code", prompt: "x", worktree: { slug: "Not Kebab" } } },
         "bad",
       ),
     ).toThrow(/routine 'bad' target.agent: invalid agent_start fields: worktree/)
@@ -380,12 +380,12 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
       writeRoutine(
         workspace,
         "bad-adapter",
-        "schema: routine/v1\nid: bad-adapter\ndescription: test\nschedule:\n  kind: cron\n  cron: \"50 20 * * *\"\ntarget:\n  agent:\n    adapter: claude-subs-agentik\n    prompt: hi",
+        "schema: routine/v1\nid: bad-adapter\ndescription: test\nschedule:\n  kind: cron\n  cron: \"50 20 * * *\"\ntarget:\n  agent:\n    harness: claude-subs-agentik\n    prompt: hi",
       )
       writeRoutine(
         workspace,
         "good",
-        "schema: routine/v1\nid: good\ndescription: test\nschedule:\n  kind: cron\n  cron: \"* * * * *\"\ntarget:\n  agent:\n    adapter: claude-code\n    prompt: hi",
+        "schema: routine/v1\nid: good\ndescription: test\nschedule:\n  kind: cron\n  cron: \"* * * * *\"\ntarget:\n  agent:\n    harness: claude-code\n    prompt: hi",
       )
       const result = await registrar.reconcile()
       expect(result.registered).toEqual(["good"])
@@ -417,13 +417,26 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     writeRoutine(
       workspace,
       "agent-demo",
-      "schema: routine/v1\nid: agent-demo\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  agent:\n    adapter: claude-code\n    prompt: say hi",
+      "schema: routine/v1\nid: agent-demo\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  agent:\n    harness: claude-code\n    prompt: say hi",
     )
     const result = await registrar.trigger("agent-demo")
     expect(result.ok).toBe(true)
     expect(calls).toEqual([
-      { name: "agent_start", inputs: { adapter: "claude-code", prompt: "say hi", origin: "routine:agent-demo" } },
+      { name: "agent_start", inputs: { harness: "claude-code", prompt: "say hi", origin: "routine:agent-demo" } },
     ])
+  })
+
+  it("reconcile() refuses a routine still using the pre-rename adapter key, naming harness", async () => {
+    const { workspace, calls, registrar } = setup()
+    writeRoutine(
+      workspace,
+      "legacy-agent",
+      "schema: routine/v1\nid: legacy-agent\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  agent:\n    adapter: claude-code\n    prompt: say hi",
+    )
+    const result = await registrar.reconcile()
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]!.error).toContain("was renamed to `target.agent.harness`")
+    expect(calls).toEqual([])
   })
 
   it("trigger() dispatches a workflow-target routine as workflow_run_file", async () => {
@@ -578,7 +591,7 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
     const calls: Array<{ name: string; args: unknown }> = []
     const server = new McpServer({ name: "test", version: "0.0.1" })
     for (const name of ["worktree_gc", "agent_start", "workflow_run_file"]) {
-      server.tool(name, `stub ${name}`, { apply: z.boolean().optional(), adapter: z.string().optional(), prompt: z.string().optional(), path: z.string().optional(), input: z.record(z.string(), z.unknown()).optional(), cwd: z.string().optional() }, async args => {
+      server.tool(name, `stub ${name}`, { apply: z.boolean().optional(), harness: z.string().optional(), adapter: z.string().optional(), prompt: z.string().optional(), path: z.string().optional(), input: z.record(z.string(), z.unknown()).optional(), cwd: z.string().optional() }, async args => {
         calls.push({ name, args })
         return { content: [{ type: "text", text: `${name} ok` }] }
       })
@@ -606,7 +619,7 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
     writeRoutine(
       workspace,
       "agent-demo",
-      "schema: routine/v1\nid: agent-demo\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  agent:\n    adapter: claude-code\n    prompt: say hi",
+      "schema: routine/v1\nid: agent-demo\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  agent:\n    harness: claude-code\n    prompt: say hi",
     )
     writeRoutine(
       workspace,
@@ -642,7 +655,7 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
       const toolCall = calls.find(c => c.name === "worktree_gc")!
       expect(toolCall.args).toEqual({ apply: true })
       const agentCall = calls.find(c => c.name === "agent_start")!
-      expect(agentCall.args).toEqual({ adapter: "claude-code", prompt: "say hi", origin: "routine:agent-demo" })
+      expect(agentCall.args).toEqual({ harness: "claude-code", prompt: "say hi", origin: "routine:agent-demo" })
       const workflowCall = calls.find(c => c.name === "workflow_run_file")!
       expect(workflowCall.args).toEqual({
         path: join(workspace, "WORKFLOW.md"),
