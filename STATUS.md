@@ -61,6 +61,7 @@ agentproto | `packages/agentproto-placeholder` | core | product runtime package 
 @agentproto/app | `packages/app` | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-client | `packages/app-client` | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-config | `packages/app-config` | core | product runtime package consumed by the runtime/cli |
+@agentproto/app-shell | `packages/app-shell` | core | product runtime package consumed by the runtime/cli |
 @agentproto/apps | `packages/apps` | core | product runtime package consumed by the runtime/cli |
 @agentproto/auth | `packages/auth` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/batch | `packages/batch` | core | product runtime package consumed by the runtime/cli |
