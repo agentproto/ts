@@ -58,6 +58,9 @@ describe("pairing registry over an in-memory rendezvous", () => {
     expect(hello.label).toBe("test-host")
     expect(served).toHaveLength(1)
     expect(served[0]).toMatchObject({ mode: "offer", name: "phone", pending: true })
+    // serve learns the DAEMON's fingerprint (not the client's) to build its public base.
+    expect(served[0]!.daemonFingerprint).toBe(offer.fingerprint)
+    expect(served[0]!.daemonFingerprint).not.toBe(served[0]!.fingerprint)
 
     // Pending: in memory only, not listed, not in pairings.json.
     const pending = await registry.listPending()
@@ -96,7 +99,7 @@ describe("pairing registry over an in-memory rendezvous", () => {
     await second.startAutoconnect()
     const client2 = await reconnect(rv, pairRoot, daemon, "phone")
     expect((await client2.ready()).label).toBe("test-host")
-    expect(served.at(-1)).toMatchObject({ mode: "reconnect", fingerprint })
+    expect(served.at(-1)).toMatchObject({ mode: "reconnect", fingerprint, daemonFingerprint: offer.fingerprint })
     expect(second.isOnline(fingerprint as string)).toBe(true)
     await client2.close()
     // Let the loop re-park before afterEach shuts down (see the abort-vs-dial

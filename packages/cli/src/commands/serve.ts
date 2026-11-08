@@ -89,6 +89,7 @@ import {
   decodePairingReply,
   parseOfferUrl,
   deriveOfferTokens,
+  DEFAULT_PAIR_PAGE,
 } from "@agentproto/secrets/pairing"
 import {
   DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS,
@@ -124,7 +125,7 @@ import {
 } from "@agentproto/runtime"
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
-import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
+import { buildDaemonTunnelServerOptions, pairingPublicBase } from "../util/tunnel-serve.js"
 import { dialRendezvous } from "@agentproto/pairing-host"
 import { resolveProxyDialOptions } from "../util/proxy-dial.js"
 import { homedir } from "node:os"
@@ -762,6 +763,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const cfgPairing = cfg.pairing ?? {}
   let gateway: GatewayHandle
   const servePairedChannel = (sink: E2eFrameSink, ctx: PairingChannelContext): PairingChannelHandle => {
+    const publicBase = ctx.daemonFingerprint
+      ? pairingPublicBase(cfgPairing.pairPage ?? DEFAULT_PAIR_PAGE, ctx.daemonFingerprint)
+      : undefined
     const server = createTunnelServer({
       sink,
       ...buildDaemonTunnelServerOptions({
@@ -776,6 +780,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // anything the far end's hello claims, only what THIS pairing was
         // actually granted (see PairingChannelContext.scope's doc comment).
         ...(ctx.scope ? { pairingScope: ctx.scope } : {}),
+        // Where the pair page serves this daemon (`<fp>.<domain>/d/<fp>`), so
+        // app pages and links stop pointing at 127.0.0.1.
+        ...(publicBase ? { publicBase } : {}),
       }),
       // Pairing channels are always E2E. Advertise bucket padding so a newer
       // peer pads; an older peer ignores the capability and stays unpadded.

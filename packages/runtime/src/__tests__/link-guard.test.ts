@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { createServer, type Server } from "node:http"
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http"
 import { createLinkGuard, parseTtlMs, COOKIE_NAME, DEFAULT_TTL_MS } from "../remote-providers/link-guard.js"
+import { PUBLIC_BASE_HEADER, resolvePublicBase, signPublicBase } from "../public-origins.js"
+
+/** GET with a caller-chosen Host (fetch cannot set it). Resolves the target's echoed headers. */
+function echoHeaders(port: number, headers: Record<string, string>): Promise<IncomingHttpHeaders> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path: "/echo-headers", headers }, res => {
+      const chunks: Buffer[] = []
+      res.on("data", c => chunks.push(c as Buffer))
+      res.on("end", () => resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")) as IncomingHttpHeaders))
+    })
+    req.on("error", reject)
+    req.end()
+  })
+}
 
 /** A tiny real HTTP target the guard proxies to — a Vite-shaped dev server
  *  stand-in: a normal page plus the two paths the guard must block. */
@@ -117,6 +131,47 @@ describe("createLinkGuard", () => {
     expect(proxied.status).toBe(200)
     expect(await proxied.text()).toContain("hello /hello")
     expect(proxied.headers.get("x-robots-tag")).toBe("noindex")
+  })
+
+  describe("public base forwarding", () => {
+    async function authed(): Promise<{ port: number; cookie: string }> {
+      const { base, handle } = await setup()
+      const first = await fetch(`${base}/?t=${handle.token}`, { redirect: "manual" })
+      return { port: handle.port, cookie: readSetCookie(first)!.split(";")[0]! }
+    }
+
+    it("forwards x-forwarded-proto https and a daemon-signed public base for a public Host", async () => {
+      const { port, cookie } = await authed()
+      const seen = await echoHeaders(port, { cookie, host: "demo.example.test" })
+      expect(seen["x-forwarded-host"]).toBe("demo.example.test")
+      expect(seen["x-forwarded-proto"]).toBe("https")
+      expect(
+        resolvePublicBase({ host: "127.0.0.1:1", [PUBLIC_BASE_HEADER]: seen[PUBLIC_BASE_HEADER] }),
+      ).toMatchObject({ baseUrl: "https://demo.example.test", source: "trusted-header" })
+    })
+
+    it("keeps a client-supplied x-forwarded-proto and strips a client-supplied public base header", async () => {
+      const { port, cookie } = await authed()
+      const spoofed = signPublicBase("https://evil.example.test/d/x")
+      const seen = await echoHeaders(port, {
+        cookie,
+        host: "demo.example.test",
+        "x-forwarded-proto": "http",
+        [PUBLIC_BASE_HEADER]: spoofed,
+      })
+      expect(seen["x-forwarded-proto"]).toBe("http")
+      expect(seen[PUBLIC_BASE_HEADER]).not.toBe(spoofed)
+      expect(
+        resolvePublicBase({ host: "127.0.0.1:1", [PUBLIC_BASE_HEADER]: seen[PUBLIC_BASE_HEADER] }).baseUrl,
+      ).toBe("http://demo.example.test")
+    })
+
+    it("never signs a base for a loopback Host", async () => {
+      const { port, cookie } = await authed()
+      const seen = await echoHeaders(port, { cookie, host: `127.0.0.1:${port}` })
+      expect(seen[PUBLIC_BASE_HEADER]).toBeUndefined()
+      expect(seen["x-forwarded-proto"]).toBeUndefined()
+    })
   })
 
   it("blocks /@fs/ and source maps even with a valid cookie", async () => {
