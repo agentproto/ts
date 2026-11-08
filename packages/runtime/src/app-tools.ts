@@ -29,6 +29,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { exposedToolName, loadAppHandle, loadAppBundledTools, parseExposedTools, peekAppUi, type AppExposedTool, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
+import { gatewayToolRefusal } from "./tool-deny-gate.js"
+import type { ToolLists } from "./tool-subset.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
 import type { AgentHandle, ToolRef } from "@agentproto/agent"
@@ -611,6 +613,10 @@ export interface AppToolCallDeps {
    *  `exposes.tools` ids that are not in `ui.tools` (what `agentproto mcp-app`
    *  forwards), under the kill-switch's access limit. Absent = `ui.tools` only. */
   exposedToolsMode?: ExposedToolsMode
+  /** The request's `?denyTools=` / `?allowTools=`, same wire contract as
+   *  `/mcp`: an exposed tool they filter out is refused, like the gateway's
+   *  wrapped server never registers it. */
+  toolLists?: ToolLists
   /** The daemon's pending-permission inbox lookup (the same source
    *  `permissions_list` reads, `SessionsRegistry.listPendingPermissions`),
    *  used by `LINK_OWNERSHIP_CHECKS` to check a `permissions_respond` under a
@@ -1047,7 +1053,7 @@ export async function performAppToolCall(
     linkClaims === undefined &&
     !(installed.ui?.tools ?? []).includes(input.tool)
   ) {
-    const refusal = exposedCallRefusal(installed, exposedEntry, deps.exposedToolsMode, deps.caller)
+    const refusal = exposedCallRefusal(installed, exposedEntry, deps.exposedToolsMode, deps.caller, deps.toolLists)
     if (refusal !== undefined) return errorResult(`app_tool_call: tool "${input.tool}" of app "${input.appId}" ${refusal}`)
     // The app_tool_call surfaces (UI bridge, REST) keep their JSON-in-text
     // envelope for an imported result, like an imported `ui.tools` id.
@@ -1065,15 +1071,17 @@ export async function performAppToolCall(
 
 /**
  * Why the HTTP twin refuses this `exposes.tools` call, or undefined when it may
- * run. Same visibility rule as the gateway (`exposedToolVisible`); a `write` or
- * `approve` tool also needs a caller session, so an anonymous request only
- * ever reaches `read` tools.
+ * run. Same rules as the gateway: its deny grants and deny/allow lists
+ * (`gatewayToolRefusal`, any access class), then its visibility rule
+ * (`exposedToolVisible`); a `write` or `approve` tool also needs a caller
+ * session, so an anonymous request only ever reaches `read` tools.
  */
 function exposedCallRefusal(
   installed: InstalledApp,
   entry: AppExposedTool,
   mode: ExposedToolsMode,
   caller: ExposedToolCaller | undefined,
+  toolLists: ToolLists | undefined,
 ): string | undefined {
   if (entry.access !== "read" && caller?.sessionId === undefined) {
     return `is exposed as access: ${entry.access}, which needs a caller session; none was given.`
@@ -1084,6 +1092,12 @@ function exposedCallRefusal(
   } catch (err) {
     return `has no MCP name: ${err instanceof Error ? err.message : String(err)}`
   }
+  const gateRefusal = gatewayToolRefusal(name, {
+    ...toolLists,
+    denyGrants: caller?.denyGrants,
+    callerSessionId: caller?.sessionId,
+  })
+  if (gateRefusal !== undefined) return `("${name}") ${gateRefusal}`
   if (exposedToolVisible(mode, { appId: installed.appId, entry, name }, caller)) return undefined
   return entry.access === "read"
     ? `is exposed as access: read, which defaults.apps.exposedTools "${mode}" does not allow.`

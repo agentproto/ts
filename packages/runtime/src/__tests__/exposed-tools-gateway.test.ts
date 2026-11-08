@@ -176,8 +176,8 @@ async function call(callerId: string | undefined, name: string, args: Record<str
 
 const install = (dir: string) => call(undefined, "app_install", { dir })
 
-async function toolCallRoute(appId: string, tool: string, callerId?: string) {
-  const res = await fetch(`${gateway.url}/apps/${encodeURIComponent(appId)}/tool-call`, {
+async function toolCallRoute(appId: string, tool: string, callerId?: string, query = "") {
+  const res = await fetch(`${gateway.url}/apps/${encodeURIComponent(appId)}/tool-call${query}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -415,6 +415,51 @@ describe("exposes.tools on the /mcp gateway", () => {
     const res = await call(denied, "jobkit_leads_upsert", { q: "x" })
     expect(res.isError).toBe(true)
     expect(res.text).toContain("tool_denied")
+
+    // The REST twin refuses it too, while the same grant still opens it to an undenied agent.
+    const rest = await toolCallRoute("@test/jobkit", "jobkit.leads.upsert", denied)
+    expect(rest.isError).toBe(true)
+    expect(rest.text).toContain("is denied for this session")
+    const allowed = spawnCaller({ meta: { appAgent: "@test/pyg" } })
+    expect((await toolCallRoute("@test/jobkit", "jobkit.leads.upsert", allowed)).isError).toBe(false)
+  })
+
+  it("POST /apps/:appId/tool-call applies the caller's deny grants to an opted-in write and to a read", async () => {
+    await install(await buildApp({ id: "@test/jobkit", prefix: "jobkit" }))
+    const denied = spawnCaller({
+      exposedToolOptIn: ["jobkit_leads_upsert"],
+      toolDenyGrants: [
+        { principal: "*", effect: "deny", actions: [{ action: "tool:invoke", scope: "agentproto/jobkit_list" }] },
+        { principal: "*", effect: "deny", actions: [{ action: "tool:invoke", scope: "agentproto/jobkit_leads_upsert" }] },
+      ],
+    })
+    for (const tool of ["jobkit.list", "jobkit.leads.upsert"]) {
+      const res = await toolCallRoute("@test/jobkit", tool, denied)
+      expect(res.isError, tool).toBe(true)
+      expect(res.text).toContain("is denied for this session")
+    }
+    expect(JSON.parse((await toolCallRoute("@test/jobkit", "jobkit.list")).text)).toEqual({ listed: true, q: "z" })
+  })
+
+  it("POST /apps/:appId/tool-call honours ?allowTools and ?denyTools like /mcp", async () => {
+    await install(await buildApp({ id: "@test/jobkit", prefix: "jobkit" }))
+    const optedIn = spawnCaller({ exposedToolOptIn: ["jobkit_leads_upsert"] })
+
+    const outsideAllow = await toolCallRoute("@test/jobkit", "jobkit.leads.upsert", optedIn, "?allowTools=jobkit_list")
+    expect(outsideAllow.isError).toBe(true)
+    expect(outsideAllow.text).toContain("denyTools/allowTools")
+    const insideAllow = await toolCallRoute("@test/jobkit", "jobkit.list", optedIn, "?allowTools=jobkit_list")
+    expect(JSON.parse(insideAllow.text)).toEqual({ listed: true, q: "z" })
+    const prefixAllow = await toolCallRoute("@test/jobkit", "jobkit.leads.upsert", optedIn, "?allowTools=jobkit_*")
+    expect(prefixAllow.isError, prefixAllow.text).toBe(false)
+
+    const denied = await toolCallRoute("@test/jobkit", "jobkit.list", undefined, "?denyTools=jobkit_list")
+    expect(denied.isError).toBe(true)
+    expect(denied.text).toContain("denyTools/allowTools")
+    // Deny wins over allow.
+    const both = await toolCallRoute("@test/jobkit", "jobkit.list", undefined, "?allowTools=jobkit_list&denyTools=jobkit_list")
+    expect(both.isError).toBe(true)
+    expect(JSON.parse((await toolCallRoute("@test/jobkit", "jobkit.list")).text)).toEqual({ listed: true, q: "z" })
   })
 
   it("refuses to install a consumer whose requires.apps[].tools names a tool the installed provider does not expose", async () => {

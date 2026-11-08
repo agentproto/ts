@@ -5903,8 +5903,9 @@ export async function startHttpServer(
               if (!authorize(req, res)) return
             }
             // The calling session (same trust rules as the /mcp gateway): it
-            // reaches an imported tool, and its AGENT.md opt-in and app grants
-            // decide whether a write/approve exposed tool may run.
+            // reaches an imported tool, its AGENT.md opt-in and app grants
+            // decide whether a write/approve exposed tool may run, and its
+            // deny grants refuse one like the gateway does.
             const toolCallerId = linkAuth ? undefined : resolveCallerSessionId(req)
             const toolCallerDesc = toolCallerId ? opts.sessions?.get(toolCallerId) : undefined
             await handleAppUiToolCall(
@@ -5926,9 +5927,15 @@ export async function startHttpServer(
                         sessionId: toolCallerId,
                         optIn: toolCallerDesc?.exposedToolOptIn,
                         grants: exposedToolGrantsFor(opts.appRegistry, toolCallerDesc?.meta),
+                        denyGrants: toolCallerDesc?.toolDenyGrants,
                       },
                     }
                   : {}),
+                // Same `?denyTools=` / `?allowTools=` wire contract as `/mcp`.
+                toolLists: {
+                  denyTools: parseToolListQuery(req.url ?? "", "denyTools"),
+                  allowTools: parseToolListQuery(req.url ?? "", "allowTools"),
+                },
               },
               linkAuth
                 ? { sessionId: linkAuth.sessionId, ...(linkAuth.telegramUserId ? { telegramUserId: linkAuth.telegramUserId } : {}) }

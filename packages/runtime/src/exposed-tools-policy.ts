@@ -26,6 +26,7 @@ import {
   type AppExposedToolAccess,
   type AppRequirement,
 } from "@agentproto/app"
+import type { Grant } from "@agentproto/policy"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import { loadConfig } from "./config.js"
 import { DAEMON_TOOL_NAMES } from "./daemon-tool-names.generated.js"
@@ -200,6 +201,10 @@ export interface ExposedToolCaller {
   readonly optIn?: readonly string[] | undefined
   /** {@link exposedToolGrantKey} keys from {@link exposedToolGrantsFor}. */
   readonly grants?: ReadonlySet<string> | undefined
+  /** The session's tool deny grants (`SessionDescriptor.toolDenyGrants`). The
+   *  gateway applies them through its wrapped server; a surface that runs an
+   *  exposed tool without registering it applies them itself. */
+  readonly denyGrants?: readonly Grant[] | undefined
 }
 
 /**
