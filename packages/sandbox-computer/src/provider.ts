@@ -261,12 +261,18 @@ interface ComputerSandboxConfig {
   /** Run `npm i -g @agentproto/cli@<cliVersion>` before starting the daemon
    *  when the health probe finds it not already up. Default true. */
   updateCliOnBoot?: boolean
-  /** CLI version pin for the on-boot install. Default `@latest`. */
+  /** CLI version pin for the on-boot install. Default `@latest`. A baked CLI
+   *  already satisfies `latest` (the image refresh keeps it current); an exact
+   *  version must equal the baked one, anything else installs. */
   cliVersion?: string
   /** Extra npm specs installed globally ALONGSIDE the CLI update (single
    *  `npm i -g`) — e.g. the adapter about to be spawned. Ignored when
    *  `updateCliOnBoot` is false. */
   installPackages?: string[]
+  /** Always run the on-boot `npm i -g`, even when the image already carries a
+   *  CLI and every `installPackages` entry that satisfies the request (see
+   *  `cliVersion`). Default false. Env: `COMPUTER_FORCE_INSTALL=1`. */
+  forceInstall?: boolean
   /** Extra setup commands run (idempotent required) before the start. */
   setupCommands?: string[]
   /** How long to wait for the computer to reach `running` after create/resume. */
@@ -423,6 +429,10 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     }),
     updateCliOnBoot: typeof config.updateCliOnBoot === "boolean" ? config.updateCliOnBoot : undefined,
     cliVersion: str(config.cliVersion),
+    forceInstall:
+      typeof config.forceInstall === "boolean"
+        ? config.forceInstall
+        : TRUTHY.has((process.env.COMPUTER_FORCE_INSTALL ?? "").toLowerCase()),
     installPackages: Array.isArray(config.installPackages)
       ? config.installPackages.filter((p): p is string => typeof p === "string" && p.length > 0)
       : undefined,
@@ -1594,7 +1604,7 @@ async function bootOnClient(
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
     throwIfBootCancelled(opts.signal, sandboxId)
     daemonToken = await withinDeadline("daemon healthy", () =>
-      daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin, daemonEnv),
+      daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin, daemonEnv, bootLog),
     )
     bootLog(`computer ${sandboxId} daemon healthy`)
     throwIfBootCancelled(opts.signal, sandboxId)
@@ -1691,6 +1701,7 @@ async function connectOnClient(
     workspace,
     mcpOrigin,
     splitBoxEnv(opts.env).daemonEnv,
+    (line) => opts.log?.(`[sandbox-computer] boot: ${line}`),
   )
 
   // `expose: "private"` is the `sandbox_attach` rendezvous: it hands an
@@ -1812,6 +1823,7 @@ async function daemonHealthyOrThrow(
   workspace: string,
   mcpOrigin: string,
   daemonEnv: Record<string, string>,
+  log: (line: string) => void = () => {},
 ): Promise<string | undefined> {
   // A daemon that is already up (template-autostarted, or started by an older
   // provider) is left as is, so `daemonEnv` only reaches daemons started here.
@@ -1835,14 +1847,20 @@ async function daemonHealthyOrThrow(
   }
 
   const detachedIo = createDetachedExecIo(client, id)
-  if (config.updateCliOnBoot !== false && !(await cliAlreadyPresent(client, id, config))) {
-    const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
-    const install = await detachedExec(
-      detachedIo,
-      `${USER_BIN_PATH_EXPORT}npm i -g --prefix "$HOME/.local" @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`,
-      { timeoutMs: UPDATE_CLI_TIMEOUT_MS },
-    )
-    if (install.exitCode !== 0) throw bootStepError("CLI install", id, install)
+  if (config.updateCliOnBoot !== false) {
+    const baked = await bakedToolchainSatisfies(client, id, config)
+    if (baked.satisfied) {
+      log(`npm install skipped: ${baked.reason}`)
+    } else {
+      log(`npm install needed: ${baked.reason}`)
+      const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
+      const install = await detachedExec(
+        detachedIo,
+        `${USER_BIN_PATH_EXPORT}npm i -g --prefix "$HOME/.local" @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`,
+        { timeoutMs: UPDATE_CLI_TIMEOUT_MS },
+      )
+      if (install.exitCode !== 0) throw bootStepError("CLI install", id, install)
+    }
   }
   for (const command of config.setupCommands ?? []) {
     const setup = await detachedExec(detachedIo, command, { timeoutMs: EXEC_TIMEOUT_MAX_SEC * 1000 })
@@ -1886,23 +1904,100 @@ async function startDaemonAndWait(
   }
 }
 
-/** True when the computer image already carries an `agentproto` CLI that
- *  satisfies the config: the install is then pure boot latency. An extra
- *  `installPackages` list or a pinned `cliVersion` the baked CLI does not
- *  match still forces the install. */
-async function cliAlreadyPresent(
+/** Marker the in-box package-version probe carries (test controllers key on it). */
+export const BAKED_PACKAGES_MARKER = "# agentproto-baked-packages"
+
+/**
+ * Whether the image already carries what the boot install would put there, so
+ * the `npm i -g` (20 s to minutes, and a hard failure on a bad egress path) is
+ * pure boot latency. Decided from the box itself, with cheap execs:
+ *
+ *  - the CLI is on PATH and its version satisfies `cliVersion`: `latest` (or
+ *    unset) accepts whatever is baked (the image refresh pipeline owns
+ *    freshness), an exact `x.y.z` must equal the baked version, anything else
+ *    installs;
+ *  - every `installPackages` entry is present in the SAME global tree as that
+ *    CLI (an adapter only loads from there) and satisfies its own tag by the
+ *    same rule: no tag or `@latest` accepts the baked version, an exact version
+ *    must match, a range or another dist-tag installs.
+ *
+ * Any doubt (probe fails, output unreadable, `forceInstall`) installs, which
+ * is the previous behavior. One install covers the CLI and all extras together
+ * so a partial refresh never splits them across two npm prefixes.
+ */
+async function bakedToolchainSatisfies(
   client: ComputerControllerClient,
   id: string,
   config: ComputerSandboxConfig,
-): Promise<boolean> {
-  if ((config.installPackages ?? []).length > 0) return false
+): Promise<{ satisfied: boolean; reason: string }> {
+  if (config.forceInstall === true) return { satisfied: false, reason: "forceInstall is set" }
   const probe = await hardExec(client, id, bashArgv(`${USER_BIN_PATH_EXPORT}agentproto --version`), 20)
-  if (probe.exitCode !== 0) return false
+  if (probe.exitCode !== 0) return { satisfied: false, reason: "no agentproto CLI in the image" }
+  const haveCli = semverCore(probe.stdout)
   const pin = config.cliVersion
-  if (!pin || pin === "latest") return true
-  const want = semverCore(pin)
-  const have = semverCore(probe.stdout)
-  return want !== null && want === have
+  if (pin && pin !== "latest") {
+    const want = semverCore(pin)
+    if (want === null || want !== haveCli) {
+      return { satisfied: false, reason: `baked CLI ${haveCli ?? "?"} does not match cliVersion ${pin}` }
+    }
+  }
+  const wanted = (config.installPackages ?? []).map(parseNpmSpec)
+  if (wanted.length === 0) return { satisfied: true, reason: `baked CLI ${haveCli ?? "?"} satisfies ${pin ?? "latest"}` }
+
+  const names = [...new Set(wanted.map((w) => w.name))]
+  const versions = await readBakedVersions(client, id, names)
+  if (versions === null) return { satisfied: false, reason: "baked package versions could not be read" }
+  for (const w of wanted) {
+    const have = versions.get(w.name)
+    if (have === undefined) return { satisfied: false, reason: `${w.name} is not baked next to the CLI` }
+    if (w.tag !== "" && w.tag !== "latest") {
+      const want = exactVersion(w.tag)
+      if (want === null) return { satisfied: false, reason: `${w.name}@${w.tag} is not an exact version` }
+      if (semverCore(have) !== want) {
+        return { satisfied: false, reason: `baked ${w.name} ${have} does not match ${w.tag}` }
+      }
+    }
+  }
+  const list = wanted.map((w) => `${w.name} ${versions.get(w.name)}`).join(", ")
+  return { satisfied: true, reason: `baked CLI ${haveCli ?? "?"} and ${list} satisfy the request` }
+}
+
+/** `name@tag` split on the last `@` past position 0 (a scope's own `@` stays in the name). */
+function parseNpmSpec(spec: string): { name: string; tag: string } {
+  const at = spec.lastIndexOf("@")
+  return at > 0 ? { name: spec.slice(0, at), tag: spec.slice(at + 1) } : { name: spec, tag: "" }
+}
+
+/** `x.y.z[-pre]` when the whole tag is one (leading `v` allowed), else null. */
+function exactVersion(tag: string): string | null {
+  const match = /^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(tag)
+  return match ? (match[1] as string) : null
+}
+
+/** Versions of the named packages in the global tree the PATH's `agentproto`
+ *  lives in (null when that tree cannot be determined or the exec fails). */
+async function readBakedVersions(
+  client: ComputerControllerClient,
+  id: string,
+  names: string[],
+): Promise<Map<string, string> | null> {
+  const js =
+    'const fs=require("fs");const[root,...names]=process.argv.slice(1);' +
+    'for(const n of names){try{console.log(n+"\\t"+JSON.parse(fs.readFileSync(root+"/"+n+"/package.json","utf8")).version)}catch{}}'
+  const script =
+    `${USER_BIN_PATH_EXPORT}${BAKED_PACKAGES_MARKER}\n` +
+    'bin="$(readlink -f "$(command -v agentproto)")" || exit 3\n' +
+    'case "$bin" in */node_modules/*) ;; *) exit 4 ;; esac\n' +
+    'root="${bin%%/node_modules/*}/node_modules"\n' +
+    `node -e ${shQuote(js)} "$root" ${names.map(shQuote).join(" ")}`
+  const out = await hardExec(client, id, bashArgv(script), 20)
+  if (out.exitCode !== 0) return null
+  const versions = new Map<string, string>()
+  for (const line of out.stdout.split("\n")) {
+    const [name, version] = line.trim().split("\t")
+    if (name && version) versions.set(name, version)
+  }
+  return versions
 }
 
 /** `major.minor.patch[-prerelease]` of the first version-looking token,

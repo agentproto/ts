@@ -283,6 +283,91 @@ describe("computerSandboxProvider.boot", () => {
     expect(await installsFor("v1.26.0")).toBe(false)
   })
 
+  describe("baked toolchain (skip the boot npm install)", () => {
+    const OPENCODE = "@agentproto/adapter-opencode"
+    const installs = (): boolean => controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))
+    const reset = (): void => {
+      controller.execs.length = 0
+      controller.serveSeen = false
+    }
+    const bootWith = async (extra: Record<string, unknown>, log?: (line: string) => void): Promise<boolean> => {
+      reset()
+      await computerSandboxProvider.boot(spec(controller.url, extra), { ...bootOpts, ...(log ? { log } : {}) })
+      return installs()
+    }
+
+    beforeEach(() => {
+      controller.cliBaked = true
+      controller.bakedCliVersion = "1.27.0"
+      controller.bakedPackages = { [OPENCODE]: "1.9.0" }
+    })
+
+    it("skips the install when the baked CLI and adapter satisfy an @latest request", async () => {
+      expect(await bootWith({ installPackages: [`${OPENCODE}@latest`] })).toBe(false)
+      expect(controller.serveSeen).toBe(true)
+      expect(await bootWith({ installPackages: [OPENCODE], cliVersion: "latest" })).toBe(false)
+    })
+
+    it("accepts an exact adapter pin only when it equals the baked version", async () => {
+      expect(await bootWith({ installPackages: [`${OPENCODE}@1.9.0`] })).toBe(false)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@1.10.0`] })).toBe(true)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@1.9`] })).toBe(true)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@^1.9.0`] })).toBe(true)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@next`] })).toBe(true)
+    })
+
+    it("installs everything in one npm call when the CLI is baked but an adapter is missing", async () => {
+      expect(await bootWith({ installPackages: [`${OPENCODE}@latest`, "@agentproto/adapter-claude-sdk@latest"] })).toBe(true)
+      const script = controller.execs.map((e) => e.argv[2] ?? "").find((x) => x.includes("npm i -g")) ?? ""
+      expect(script).toContain("@agentproto/cli@'latest'")
+      expect(script).toContain("adapter-opencode@latest")
+      expect(script).toContain("adapter-claude-sdk@latest")
+    })
+
+    it("installs when the baked CLI does not match the pinned cliVersion even if the adapter does", async () => {
+      expect(await bootWith({ cliVersion: "1.30.0", installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+      expect(await bootWith({ cliVersion: "1.27.0", installPackages: [`${OPENCODE}@latest`] })).toBe(false)
+    })
+
+    it("installs when the baked versions cannot be read", async () => {
+      controller.bakedPackagesFail = true
+      expect(await bootWith({ installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+    })
+
+    it("installs when forceInstall is set, with or without extra packages", async () => {
+      expect(await bootWith({ forceInstall: true })).toBe(true)
+      expect(await bootWith({ forceInstall: true, installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+    })
+
+    it("reads forceInstall from COMPUTER_FORCE_INSTALL", async () => {
+      vi.stubEnv("COMPUTER_FORCE_INSTALL", "1")
+      try {
+        expect(await bootWith({ installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+
+    it("logs why the install was skipped or needed", async () => {
+      const lines: string[] = []
+      await bootWith({ installPackages: [`${OPENCODE}@latest`] }, (l) => lines.push(l))
+      expect(lines.some((l) => /boot: npm install skipped: baked CLI 1\.27\.0 and @agentproto\/adapter-opencode 1\.9\.0/.test(l))).toBe(true)
+      lines.length = 0
+      await bootWith({ installPackages: [`${OPENCODE}@2.0.0`] }, (l) => lines.push(l))
+      expect(lines.some((l) => /boot: npm install needed: baked @agentproto\/adapter-opencode 1\.9\.0 does not match 2\.0\.0/.test(l))).toBe(true)
+    })
+
+    it("keeps the single boot deadline over the probe execs", async () => {
+      controller.options.execDelayMs = (argv) => ((argv[2] ?? "").includes("# agentproto-baked-packages") ? 400 : undefined)
+      await expect(
+        computerSandboxProvider.boot(
+          spec(controller.url, { installPackages: [`${OPENCODE}@latest`], bootDeadlineMs: 150 }),
+          bootOpts,
+        ),
+      ).rejects.toMatchObject({ code: "sandbox_boot_timeout" })
+    })
+  })
+
   it("restarts a healthy daemon on connect when its recorded origin is stale", async () => {
     const gw = { gatewayUrl: "http://127.0.0.1:{hostPort}", maxSessions: 99 }
     controller.options.publishedPorts = [{ host: 20011, guest: 18790 }]
