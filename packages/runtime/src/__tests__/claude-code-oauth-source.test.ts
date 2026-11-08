@@ -100,6 +100,24 @@ describe("verifyLocalLoginPresent (file-based / external login)", () => {
     expect(err).toBeInstanceOf(SubscriptionSourceError)
     expect((err as SubscriptionSourceError).code).toBe("auth_source_unresolved")
     expect((err as Error).message).toMatch(/no codex login found/)
+    // The file-based login has a built-in re-login: the message names it.
+    expect((err as Error).message).toContain("agentproto auth reauth codex")
+    expect((err as SubscriptionSourceError).reauth).toMatchObject({
+      command: "agentproto auth reauth codex",
+      source: "codex",
+      reason: "missing",
+    })
+  })
+
+  it("names no reauth command for an adapter whose login agentproto cannot re-run", async () => {
+    resolveRecipeMethod.mockReturnValue({ recipe: { id: "mastracode" }, method: { source: {} } })
+    resolveSourceSpec.mockRejectedValue(new Error("no credential source resolved"))
+
+    const err = await verifyLocalLoginPresent("mastracode", "mastracode").catch(e => e)
+    expect(err).toBeInstanceOf(SubscriptionSourceError)
+    expect((err as SubscriptionSourceError).reauth).toBeUndefined()
+    expect((err as Error).message).toContain("mastracode login")
+    expect((err as Error).message).not.toContain("auth reauth")
   })
 
   it("fails LOUD when the source resolves to an empty token", async () => {

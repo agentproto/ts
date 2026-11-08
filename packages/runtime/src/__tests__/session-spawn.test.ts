@@ -121,7 +121,12 @@ import {
   type SpawnClaim,
 } from "../session-spawn.js"
 import { buildCatalogModels, type CatalogAdapterInput } from "../catalog-models.js"
-import { registerSubaccountProvider, unregisterSubaccountProvider, type AuthProfile } from "@agentproto/auth"
+import {
+  AuthReauthRequiredError,
+  registerSubaccountProvider,
+  unregisterSubaccountProvider,
+  type AuthProfile,
+} from "@agentproto/auth"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
@@ -5267,6 +5272,13 @@ describe("spawnAgentSession — auth.source self-refreshing subscription (Mode 3
     if (result.ok) throw new Error("expected failure")
     expect(result.code).toBe("auth_source_unresolved")
     expect(result.message).toContain("claude-code-oauth")
+    // The fix is named, not just the symptom.
+    expect(result.message).toContain("agentproto auth reauth claude-code-oauth")
+    expect(result.details?.reauth).toMatchObject({
+      command: "agentproto auth reauth claude-code-oauth",
+      source: "claude-code-oauth",
+      reason: "missing",
+    })
     expect(registry.list()).toHaveLength(0)
   })
 
@@ -5526,6 +5538,8 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     expect(result.ok).toBe(false)
     if (result.ok) throw new Error("expected failure")
     expect(result.code).toBe("auth_source_unresolved")
+    expect(result.message).toContain("agentproto auth reauth claude-code-oauth")
+    expect(result.details?.reauth).toMatchObject({ command: "agentproto auth reauth claude-code-oauth" })
     expect(registry.list()).toHaveLength(0)
   })
 
@@ -5947,6 +5961,62 @@ describe("resolveAccessProfileAuth — opencode console org profile on the Zen r
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.code).toBe("access_profile_ineligible")
+  })
+})
+
+// A sub-account profile whose PARENT account's session is expired or missing
+// must fail with the command that fixes it, never a bare 403.
+describe("resolveAccessProfileAuth — parent account needs a re-login", () => {
+  const profile: AuthProfile = {
+    id: "opencode-ws01",
+    endpoint: "opencode-go",
+    method: "api-key",
+    source: "opencode-console",
+    subaccount: { kind: "org", id: "wrk_1" },
+  }
+  afterEach(() => {
+    unregisterSubaccountProvider("opencode-console-test")
+  })
+
+  it("surfaces the reauth command in the message and as details.reauth", async () => {
+    const command = "agentproto auth reauth opencode-ws01"
+    registerSubaccountProvider({
+      id: "opencode-console-test",
+      source: "opencode-console",
+      kinds: ["org"],
+      list: async () => ({ account: { id: "acct" }, subaccounts: [] }),
+      resolve: async () => {
+        throw new AuthReauthRequiredError(
+          {
+            command,
+            profile: "opencode-ws01",
+            source: "opencode-console",
+            reason: "expired",
+            parent: { label: "user@example.test", expiredAt: 1_700_000_000_000 },
+          },
+          `the session of user@example.test expired. Run \`${command}\` to log in again, then retry.`,
+        )
+      },
+    })
+    authProfileState.profiles = { "opencode-ws01": profile }
+    const result = await resolveAccessProfileAuth({
+      adapter: "opencode",
+      profileRef: "opencode-ws01",
+      authDescriptor: { modelDerivedApiKey: true },
+      model: "opencode-go/kimi-k2.7",
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("auth_source_unresolved")
+    expect(result.message).toContain(command)
+    expect(result.message).not.toMatch(/\b403\b/)
+    expect(result.details?.reauth).toEqual({
+      command,
+      profile: "opencode-ws01",
+      source: "opencode-console",
+      reason: "expired",
+      parent: { label: "user@example.test", expiredAt: 1_700_000_000_000 },
+    })
   })
 })
 

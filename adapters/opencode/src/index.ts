@@ -563,4 +563,5 @@ export {
   OpencodeAccountExpiredError,
   OpencodeOrgOwnerNotFoundError,
 } from "./subaccounts.js"
+export { createOpencodeReauthAdapter, opencodeReauth } from "./reauth.js"
 export type { AgentCliHandle, AgentCliRuntime }

@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { migrateLegacySubaccountProfile, registerSubaccountProvider, SubaccountError, unregisterSubaccountProvider } from "@agentproto/auth"
+import {
+  migrateLegacySubaccountProfile,
+  reauthHintOf,
+  registerSubaccountProvider,
+  SubaccountError,
+  unregisterSubaccountProvider,
+} from "@agentproto/auth"
 import {
   OpencodeAccountExpiredError,
   OpencodeOrgOwnerNotFoundError,
@@ -515,7 +521,7 @@ describe("opencode console sub-account provider", () => {
       expect(err.name).toBe("SubaccountError")
       expect(err.profileId).toBe("opencode-ws01")
       expect(err.orgId).toBe("org_a")
-      expect(err.accounts).toEqual([{ email: "user1@example.test", expiresAt: NOW - 1000 }])
+      expect(err.accounts).toEqual([{ id: "acc_1", email: "user1@example.test", expiresAt: NOW - 1000 }])
       expect(err.message).toContain("user1@example.test")
       expect(err.message).toContain(new Date(NOW - 1000).toISOString())
       expect(err.message).not.toMatch(/403/)
@@ -591,5 +597,100 @@ describe("opencode console sub-account provider", () => {
       expect(db.prepare("SELECT active_account_id FROM account_state").get()).toEqual({ active_account_id: "acc_2" })
       db.close()
     })
+  })
+})
+
+describe("opencode console: a login that needs redoing names the command that fixes it", () => {
+  const dirs: string[] = []
+  const track = (f: Fixture) => {
+    dirs.push(f.dir)
+    return f
+  }
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+  const deps = (f: Fixture, fetchImpl: unknown = vi.fn()) => ({
+    dbPath: f.dbPath,
+    now: () => NOW,
+    fetch: fetchImpl as typeof fetch,
+  })
+
+  it("an expired parent session: the message and details.reauth carry `agentproto auth reauth <profile>`", async () => {
+    const f = track(await makeDb({ expiry: NOW - 1000 }))
+    const err = (await resolveOpencodeConsoleOrg("org_a", "opencode-ws01", deps(f)).catch((e: unknown) => e)) as Error
+    expect(err.message).toContain("`agentproto auth reauth opencode-ws01`")
+    expect(err.message).toMatch(/one re-login of the parent account fixes every sub-account/)
+    expect(err.message).not.toMatch(/\b403\b/)
+    expect(reauthHintOf(err)).toMatchObject({
+      command: "agentproto auth reauth opencode-ws01",
+      profile: "opencode-ws01",
+      source: "opencode-console",
+      reason: "expired",
+      parent: { id: "acc_1", label: "user1@example.test", expiredAt: NOW - 1000 },
+    })
+    expect(JSON.stringify(reauthHintOf(err))).not.toContain(TOKEN)
+  })
+
+  it("no stored login at all: reason missing, still the command", async () => {
+    const f = track(await makeDb({ accounts: 0 }))
+    const err = (await readOpencodeConsoleAccount(deps(f)).catch((e: unknown) => e)) as Error
+    expect(reauthHintOf(err)).toMatchObject({ command: "agentproto auth reauth opencode-console", reason: "missing" })
+    expect(err.message).toContain("agentproto auth reauth opencode-console")
+  })
+
+  it("no opencode.db: reason missing and the command", async () => {
+    const f = track(await makeDb())
+    const err = (await readOpencodeConsoleAccount({ ...deps(f), dbPath: join(f.dir, "absent.db") }).catch(
+      (e: unknown) => e,
+    )) as Error
+    expect(reauthHintOf(err)).toMatchObject({ reason: "missing" })
+    expect(err.message).toContain("agentproto auth reauth opencode-console")
+  })
+
+  it("no login owns the sub-account: the typed error carries the profile's reauth command", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+    const fetchMock = vi.fn(async (url: string | URL | Request) =>
+      String(url).endsWith("/api/orgs") ? jsonResponse([{ id: "org_other" }]) : jsonResponse({}, 404),
+    )
+    const err = (await resolveOpencodeConsoleOrg("org_z", "opencode-ws09", deps(f, fetchMock)).catch(
+      (e: unknown) => e,
+    )) as OpencodeOrgOwnerNotFoundError
+    expect(err).toBeInstanceOf(OpencodeOrgOwnerNotFoundError)
+    expect(reauthHintOf(err)).toMatchObject({
+      command: "agentproto auth reauth opencode-ws09",
+      reason: "missing",
+      profile: "opencode-ws09",
+    })
+    expect(err.message).toContain("agentproto auth reauth opencode-ws09")
+  })
+
+  it("the console rejects the stored session (401/403 on the config fetch): rejected, not a bare 403", async () => {
+    const f = track(await makeDb())
+    const fetchMock = vi.fn(async () => jsonResponse({ error: "forbidden" }, 403))
+    const err = (await resolveOpencodeConsoleOrg("org_a", "opencode-ws01", deps(f, fetchMock)).catch(
+      (e: unknown) => e,
+    )) as Error
+    expect(reauthHintOf(err)).toMatchObject({ command: "agentproto auth reauth opencode-ws01", reason: "rejected" })
+    expect(err.message).toContain("`agentproto auth reauth opencode-ws01`")
+    expect(err.message).not.toContain(TOKEN)
+  })
+
+  it("every login is refused by /api/orgs: rejected with the command", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async () => jsonResponse({ error: "unauthorized" }, 401))
+    const err = (await resolveOpencodeConsoleOrg("org_b", "opencode-ws02", deps(f, fetchMock)).catch(
+      (e: unknown) => e,
+    )) as Error
+    expect(reauthHintOf(err)).toMatchObject({ command: "agentproto auth reauth opencode-ws02", reason: "rejected" })
+  })
+
+  it("a failure a re-login cannot fix carries no reauth hint (network down)", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async () => jsonResponse({ error: "boom" }, 500))
+    const err = (await resolveOpencodeConsoleOrg("org_b", "opencode-ws02", deps(f, fetchMock)).catch(
+      (e: unknown) => e,
+    )) as Error
+    expect(err).toBeInstanceOf(SubaccountError)
+    expect(reauthHintOf(err)).toBeUndefined()
   })
 })

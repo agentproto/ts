@@ -967,7 +967,7 @@ export async function resolveAccessProfileAuth(input: {
           ok: false,
           code: err.code,
           message: err.message,
-          details: { adapter, profile: profile.id },
+          details: { adapter, profile: profile.id, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err
@@ -994,7 +994,7 @@ export async function resolveAccessProfileAuth(input: {
           ok: false,
           code: err.code,
           message: err.message,
-          details: { adapter, profile: profile.id },
+          details: { adapter, profile: profile.id, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err
@@ -1013,7 +1013,7 @@ export async function resolveAccessProfileAuth(input: {
           ok: false,
           code: err.code,
           message: err.message,
-          details: { adapter, profile: profile.id },
+          details: { adapter, profile: profile.id, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err
@@ -5189,7 +5189,7 @@ async function spawnAgentSessionOnce(
           ok: false,
           code: err.code,
           message: `agent_start: ${err.message}`,
-          details: { adapter: input.adapter },
+          details: { adapter: input.adapter, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err

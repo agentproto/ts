@@ -32,6 +32,7 @@ import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
+import { reauthCommand, type ReauthHint } from "@agentproto/auth"
 import { providerEnvVar } from "./providers-store.js"
 import {
   layerContextSettings,
@@ -1277,13 +1278,18 @@ export const FILE_BASED_AUTH_SOURCES: ReadonlySet<string> = new Set(["codex", "g
  */
 export class SubscriptionSourceError extends Error {
   readonly code: "unsupported_auth_source" | "auth_source_unresolved"
+  /** Set when logging in again fixes it: the exact `agentproto auth reauth ...`
+   *  command, mirrored in the message and surfaced as `details.reauth`. */
+  readonly reauth?: ReauthHint
   constructor(
     code: "unsupported_auth_source" | "auth_source_unresolved",
     message: string,
+    reauth?: ReauthHint,
   ) {
     super(message)
     this.name = "SubscriptionSourceError"
     this.code = code
+    if (reauth !== undefined) this.reauth = reauth
   }
 }
 
@@ -1351,6 +1357,11 @@ export async function resolveSubscriptionCredential(
           `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`
       throw new SubscriptionSourceError("unsupported_auth_source", message)
     }
+    const claudeReauth: ReauthHint = {
+      command: reauthCommand(CLAUDE_CODE_OAUTH_SOURCE),
+      source: CLAUDE_CODE_OAUTH_SOURCE,
+      reason: "missing",
+    }
     let token: string
     try {
       token = await resolveSourceToken(input.source)
@@ -1358,15 +1369,18 @@ export async function resolveSubscriptionCredential(
       throw new SubscriptionSourceError(
         "auth_source_unresolved",
         `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
-          `found — run \`claude\` and /login (or \`claude setup-token\`) first ` +
-          `(${err instanceof Error ? err.message : String(err)}).`,
+          `found — run \`${claudeReauth.command}\` (or \`claude\` and /login, or \`claude setup-token\`) ` +
+          `to log in again (${err instanceof Error ? err.message : String(err)}).`,
+        claudeReauth,
       )
     }
     if (!token) {
       throw new SubscriptionSourceError(
         "auth_source_unresolved",
         `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
-          `found — run \`claude\` and /login (or \`claude setup-token\`) first.`,
+          `found — run \`${claudeReauth.command}\` (or \`claude\` and /login, or \`claude setup-token\`) ` +
+          `to log in again.`,
+        claudeReauth,
       )
     }
     return { credential: token, source: CLAUDE_CODE_OAUTH_SOURCE }
