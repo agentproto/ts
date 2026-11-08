@@ -619,6 +619,9 @@ export interface AppExposes {
   readonly prefix?: string
   /** Tools offered to MCP clients. Absent = the app exposes nothing new. */
   readonly tools?: readonly AppExposedTool[]
+  /** `ui://` resources of the app's imported MCP servers that the /mcp gateway
+   *  may relay on `resources/read`. Any other URI is answered as unknown. */
+  readonly resources?: readonly string[]
 }
 
 /** What the app accepts from other agents over A2A. */

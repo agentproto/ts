@@ -131,6 +131,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(fields.exposes.tools !== undefined
       ? { tools: Object.freeze(fields.exposes.tools.map(t => Object.freeze({ ...t }))) }
       : {}),
+    ...(fields.exposes.resources !== undefined ? { resources: Object.freeze([...fields.exposes.resources]) } : {}),
   })
   validateExposedToolsAgainstBundle(exposes, { tools }, msg => new AppDefinitionError(msg))
   const accepts = Object.freeze({ ...fields.accepts })

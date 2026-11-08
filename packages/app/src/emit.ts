@@ -220,6 +220,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
             workflows: app.exposes.workflows,
             ...(app.exposes.prefix !== undefined ? { prefix: app.exposes.prefix } : {}),
             ...(app.exposes.tools && app.exposes.tools.length > 0 ? { tools: app.exposes.tools } : {}),
+            ...(app.exposes.resources && app.exposes.resources.length > 0 ? { resources: app.exposes.resources } : {}),
           },
         }
       : {}),

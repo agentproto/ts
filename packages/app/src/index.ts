@@ -47,6 +47,7 @@ export type { AppUiPeek } from "./load-app.js"
 export { loadAppBundledTools } from "./load-app-tools.js"
 export {
   exposedToolName,
+  parseExposedResources,
   parseExposedTools,
   resolveExposedTools,
   validateExposedToolsAgainstBundle,

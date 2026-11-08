@@ -32,7 +32,7 @@
 
 import { promises as fs } from "node:fs"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js"
+import { ToolListChangedNotificationSchema, type ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
 import {
   DEFAULT_TOOL_CACHE_TTL_MS,
   DEAD_CONNECTION_RE,
@@ -548,6 +548,35 @@ export class McpProxyRegistry {
         handle.tools = null
         handle.toolsFetchedAt = 0
         handle.lastError = msg
+      }
+      return { ok: false, error: msg }
+    }
+  }
+
+  /**
+   * Relay one `resources/read` to an import. No allowlist here: the caller
+   * (the /mcp gateway's exposed resources) decides which URIs may reach it.
+   */
+  async readResource(
+    alias: string,
+    uri: string,
+  ): Promise<{ ok: true; result: ReadResourceResult } | { ok: false; error: string }> {
+    const handle = await this.connectIfNeeded(alias)
+    if (!handle) return { ok: false, error: `unknown alias "${alias}"` }
+    const client = handle.client
+    if (!client) return { ok: false, error: handle.lastError ?? "client not connected" }
+    try {
+      return { ok: true, result: await client.readResource({ uri }) }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (DEAD_CONNECTION_RE.test(msg)) {
+        await safeClose(client)
+        if (handle.client === client) {
+          handle.client = null
+          handle.tools = null
+          handle.toolsFetchedAt = 0
+          handle.lastError = msg
+        }
       }
       return { ok: false, error: msg }
     }

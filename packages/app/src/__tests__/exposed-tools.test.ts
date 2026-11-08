@@ -185,6 +185,49 @@ describe("parseExposedTools", () => {
   it("rejects a name longer than 64 characters", () => {
     expect(() => parseExposedTools([entry({ id: `bureau.${"a".repeat(60)}` })], "bureau", fail)).toThrow(/64/)
   })
+
+  describe("exposes.resources", () => {
+    const imp = { id: "imported:bureau/browser_screenshot", access: "read", description: "d", mcpName: "screenshot" }
+    const uris = ["ui://bureau/screenshot", "ui://bureau/recording"]
+
+    it("accepts distinct ui:// URIs next to an imported entry", () => {
+      expect(parseExposedTools([imp], "bureau", fail, {}, uris).resources).toEqual(uris)
+      expect(parseExposedTools([imp], "bureau", fail).resources).toBeUndefined()
+    })
+
+    it("rejects a non-ui:// URI, a duplicate and a wrong type", () => {
+      expect(() => parseExposedTools([imp], "bureau", fail, {}, ["https://bureau/screenshot"])).toThrow(/ui:\/\//)
+      expect(() => parseExposedTools([imp], "bureau", fail, {}, ["ui://"])).toThrow(/ui:\/\//)
+      expect(() => parseExposedTools([imp], "bureau", fail, {}, [uris[0], uris[0]])).toThrow(/duplicate/)
+      expect(() => parseExposedTools([imp], "bureau", fail, {}, "ui://bureau/screenshot")).toThrow(/array/)
+      expect(() => parseExposedTools([imp], "bureau", fail, {}, [{ uri: uris[0] }])).toThrow(/ui:\/\//)
+    })
+
+    it("survives an APP.md load, and a bad URI fails the load", async () => {
+      const handle = await loadWith([
+        "exposes:",
+        "  prefix: bureau",
+        "  tools:",
+        "    - { id: imported:bureau/browser_screenshot, access: read, description: d, mcpName: screenshot }",
+        `  resources: [${uris.join(", ")}]`,
+      ])
+      expect(handle.exposes.resources).toEqual(uris)
+      await expect(
+        loadWith([
+          "exposes:",
+          "  prefix: bureau",
+          "  tools:",
+          "    - { id: imported:bureau/browser_screenshot, access: read, description: d, mcpName: screenshot }",
+          "  resources: [https://example.com/x]",
+        ]),
+      ).rejects.toThrow(/ui:\/\//)
+    })
+
+    it("needs an imported entry to relay from", () => {
+      expect(() => parseExposedTools([entry()], "bureau", fail, {}, uris)).toThrow(/imported/)
+      expect(() => parseExposedTools(undefined, undefined, fail, {}, uris)).toThrow(/imported/)
+    })
+  })
 })
 
 describe("resolveExposedTools", () => {

@@ -26,6 +26,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { loadAppHandle, loadAppBundledTools, parseExposedTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
@@ -975,7 +976,10 @@ export async function performAppToolCall(
           `which defaults.apps.exposedTools "${deps.exposedToolsMode}" does not allow.`,
       )
     }
-    return performExposedToolCall(appRegistry, { appId: input.appId, id: input.tool, args: input.args ?? {} }, deps)
+    // The app_tool_call surfaces (UI bridge, REST) keep their JSON-in-text
+    // envelope for an imported result, like an imported `ui.tools` id.
+    const out = await dispatchExposedEntry(appRegistry, { appId: input.appId, id: input.tool, args: input.args ?? {} }, deps)
+    return "imported" in out ? textResult(out.imported) : out.result
   }
   if (!installed || !installed.ui) {
     return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
@@ -993,31 +997,72 @@ export async function performAppToolCall(
  * tools, and `ui.tools` plays no part: the entry must be declared in
  * `exposes.tools`. Who may call (access class, opt-in, kill-switch) is decided
  * where the tool is registered or routed, not here.
+ *
+ * An imported result is the import's own `CallToolResult`, returned as is
+ * (content blocks, `structuredContent`, `isError`, `_meta`), so the exposed
+ * tool behaves like the original one; a bundled tool's output is wrapped as
+ * JSON text like everywhere else.
  */
 export async function performExposedToolCall(
   appRegistry: AppRegistry,
   input: { appId: string; id: string; args?: Record<string, unknown> },
   deps: Pick<AppToolCallDeps, "callImportedTool">,
-): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult> | CallToolResult> {
+  const out = await dispatchExposedEntry(appRegistry, input, deps)
+  if (!("imported" in out)) return out.result
+  return asCallToolResult(out.imported) ?? textResult(out.imported)
+}
+
+/** `value` when it has the shape of an MCP `CallToolResult` (a `content` array). */
+function asCallToolResult(value: unknown): CallToolResult | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
+  return Array.isArray((value as { content?: unknown }).content) ? (value as CallToolResult) : undefined
+}
+
+/**
+ * `args` without the keys `inputSchema` does not declare, so an exposed entry
+ * can narrow the imported tool (e.g. drop a `path` that writes a file). No
+ * declared `properties`, or `additionalProperties: true`: `args` unchanged.
+ */
+function argsDeclaredBy(
+  inputSchema: Readonly<Record<string, unknown>> | undefined,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const properties = inputSchema?.properties
+  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) return args
+  if (inputSchema?.additionalProperties === true) return args
+  return Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(properties, key)))
+}
+
+async function dispatchExposedEntry(
+  appRegistry: AppRegistry,
+  input: { appId: string; id: string; args?: Record<string, unknown> },
+  deps: Pick<AppToolCallDeps, "callImportedTool">,
+): Promise<{ result: ReturnType<typeof textResult> | ReturnType<typeof errorResult> } | { imported: unknown }> {
   const installed = appRegistry.getApp(input.appId)
   const entry = installed?.exposes?.tools?.find(t => t.id === input.id)
   if (!installed || !entry) {
-    return errorResult(`exposed tool "${input.id}" is not declared in app "${input.appId}"'s exposes.tools.`)
+    return { result: errorResult(`exposed tool "${input.id}" is not declared in app "${input.appId}"'s exposes.tools.`) }
   }
   const args = input.args ?? {}
   try {
     if (entry.id.startsWith("imported:")) {
-      if (!deps.callImportedTool) return notEnabled("exposed tool")
+      if (!deps.callImportedTool) return { result: notEnabled("exposed tool") }
       const rest = entry.id.slice("imported:".length)
       const slash = rest.indexOf("/")
-      if (slash === -1) return errorResult(`malformed imported tool id "${entry.id}".`)
-      return textResult(await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), args))
+      if (slash === -1) return { result: errorResult(`malformed imported tool id "${entry.id}".`) }
+      const imported = await deps.callImportedTool(
+        rest.slice(0, slash),
+        rest.slice(slash + 1),
+        argsDeclaredBy(entry.inputSchema, args),
+      )
+      return { imported }
     }
     const bundled = await runBundledAppTool(installed.dir, entry.id, args, installed.dataDir)
-    if (!bundled.found) return errorResult(`app "${input.appId}" bundles no TOOL.md "${entry.id}" any more.`)
-    return textResult(bundled.output)
+    if (!bundled.found) return { result: errorResult(`app "${input.appId}" bundles no TOOL.md "${entry.id}" any more.`) }
+    return { result: textResult(bundled.output) }
   } catch (err) {
-    return errorResult(err instanceof Error ? err.message : String(err))
+    return { result: errorResult(err instanceof Error ? err.message : String(err)) }
   }
 }
 
@@ -1658,7 +1703,13 @@ export async function performInstall(
   const exposedPrefix = handle.exposes.prefix
   if (exposedPrefix !== undefined && (handle.exposes.tools?.length ?? 0) > 0) {
     try {
-      parseExposedTools(handle.exposes.tools, exposedPrefix, m => new Error(m), { daemonToolNames: DAEMON_TOOL_NAMES })
+      parseExposedTools(
+        handle.exposes.tools,
+        exposedPrefix,
+        m => new Error(m),
+        { daemonToolNames: DAEMON_TOOL_NAMES },
+        handle.exposes.resources,
+      )
     } catch (err) {
       return { ok: false, error: `app_install: ${err instanceof Error ? err.message : String(err)}` }
     }
