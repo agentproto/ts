@@ -14154,8 +14154,8 @@ export function createSessionsRegistry(opts?: {
       // written wake IS the delivery, so it is never also parked in the
       // inbox — a later Stop/UserPromptSubmit hook would re-inject a parked
       // copy and the session would see the message twice. Every other case
-      // (fyi, disabled, any skip/fallback) lands in the inbox for the hook /
-      // `inbox_list` to pull.
+      // (fyi, disabled, any skip/fallback, a wake held by a bypassPermissions
+      // receiver) lands in the inbox for the hook / `inbox_list` to pull.
       if (msg.urgency === "fyi" || rt.desc.kind === "external") {
         let wake: ClaudeSocketWakeOutcome | undefined
         if (rt.desc.kind === "external" && claudeSocketWake?.enabled) {

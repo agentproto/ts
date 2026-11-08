@@ -204,8 +204,10 @@ export interface DaemonConfig {
    *  (`cc:<session_id>` rows). When true, a level 2+ message (next-turn /
    *  steer) also wakes the idle Claude Code process over its per-session
    *  unix socket, instead of waiting for the next hook poll. Level 1 (fyi)
-   *  and `bypassPermissions` targets always fall back to the inbox. Default
-   *  false. Set via `agentproto config set daemon.claudeSocketWake true`. */
+   *  always falls back to the inbox. A `bypassPermissions` target is written
+   *  to too, but Claude Code holds the message unless the user's
+   *  `crossSessionInbound` is `accept`; the held message is also parked in the
+   *  inbox (`agentproto doctor --fix`). Default false. Set via `agentproto config set daemon.claudeSocketWake true`. */
   claudeSocketWake?: boolean
   /** On-disk retention for REVIEW-LANE sessions (`origin: "review"` /
    *  `review:` label): a terminal review session whose last activity is older

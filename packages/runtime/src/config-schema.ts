@@ -1065,7 +1065,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "daemon",
     label: "Claude Code socket wake",
-    help: "Wake an idle external Claude Code session over its per-session unix socket for level 2+ messages (next-turn / steer). fyi and bypassPermissions targets still use the inbox. Off by default.",
+    help: "Wake an idle external Claude Code session over its per-session unix socket for level 2+ messages (next-turn / steer). fyi messages still use the inbox. A bypassPermissions target is written to as well, but Claude Code holds the message until crossSessionInbound is set to accept in ~/.claude/settings.json (agentproto doctor --fix); until then it is also parked in the inbox. Off by default.",
     default: false,
   },
   {
