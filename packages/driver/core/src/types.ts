@@ -129,6 +129,8 @@ export interface ExecuteArgs {
 export interface DriverContext {
   /** Resolved secrets keyed by env-var name. Hosts MUST NOT log values. */
   secrets: Record<string, string>
+  /** Non-secret host environment (see `runTool`'s `hostEnv`). Optional: only set when the host provides one. */
+  hostEnv?: Record<string, string>
   /** The provider's auth state at dispatch time. */
   authState: "unknown" | "unauthed" | "authed" | "expired"
   /** Free-form, namespaced (CLI runtimes stash sandbox handle, HTTP runtimes stash baseUrl, …). */

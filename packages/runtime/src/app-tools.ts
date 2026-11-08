@@ -798,6 +798,7 @@ async function dispatchAllowlistedAppTool(
   deps: AppToolCallDeps,
   appDir?: string,
   linkScope?: AppLinkScope,
+  appDataDir?: string,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
   // `app_link_mint` is privileged (mints a scoped token — app-link-token.ts)
   // and must NEVER be reachable through this gateway at all, scoped or not:
@@ -895,7 +896,14 @@ async function dispatchAllowlistedAppTool(
       const bundled = await loadAppBundledTools(appDir)
       const bundledTool = bundled.tools.find(t => t.id === input.tool)
       if (bundledTool) {
-        const output = await runTool({ tool: bundledTool, candidates: bundled.drivers, input: args })
+        // The registered data dir reaches the driver (only if it declares the
+        // name in sandbox.env.pass): docs/design/app-bundled-tool-data-dir.md.
+        const output = await runTool({
+          tool: bundledTool,
+          candidates: bundled.drivers,
+          input: args,
+          ...(appDataDir !== undefined ? { hostEnv: { AGENTPROTO_APP_DATA_DIR: appDataDir } } : {}),
+        })
         return textResult(output)
       }
     }
@@ -936,7 +944,7 @@ export async function performAppToolCall(
   const linkScope: AppLinkScope | undefined = linkClaims
     ? { toolScope: installed.ui.toolScope ?? {}, claims: linkClaims }
     : undefined
-  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir, linkScope)
+  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir, linkScope, installed.dataDir)
 }
 
 /**
