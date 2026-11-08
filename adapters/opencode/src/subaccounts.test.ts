@@ -4,6 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { migrateLegacySubaccountProfile, registerSubaccountProvider, SubaccountError, unregisterSubaccountProvider } from "@agentproto/auth"
 import {
+  OpencodeAccountExpiredError,
+  OpencodeOrgOwnerNotFoundError,
   createOpencodeSubaccountProvider,
   listOpencodeConsoleOrgs,
   parseLegacyOpencodeConsoleSource,
@@ -464,5 +466,130 @@ describe("opencode console sub-account provider", () => {
     expect(out.credential).toBe(TOKEN)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(String((fetchMock.mock.calls as unknown[][])[0]![0])).toContain("/api/config")
+  })
+  describe("per-account ownership (the owning login, never the active one)", () => {
+    const CONFIG = { config: { provider: { "opencode-go": {} } } }
+    const setExpiry = async (dbPath: string, id: string, expiry: number) => {
+      const specifier = ["node", "sqlite"].join(":")
+      const { DatabaseSync } = (await import(specifier)) as typeof import("node:sqlite")
+      const db = new DatabaseSync(dbPath)
+      db.prepare("UPDATE account SET token_expiry = ? WHERE id = ?").run(expiry, id)
+      db.close()
+    }
+    /** acc_1 owns org_a, acc_2 owns org_b; /api/config 403s unless the bearer owns the org. */
+    const consoleFetch = () =>
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url)
+        const h = init?.headers as Record<string, string>
+        const owns: Record<string, string> = { [`Bearer ${TOKEN}`]: "org_a", "Bearer st_OTHER_2": "org_b" }
+        if (u.endsWith("/api/orgs")) return jsonResponse(owns[h.authorization!] ? [{ id: owns[h.authorization!] }] : [], 200)
+        if (u.endsWith("/api/config")) {
+          return owns[h.authorization!] === h["x-org-id"] ? jsonResponse(CONFIG) : jsonResponse({ error: "forbidden" }, 403)
+        }
+        return jsonResponse({}, 404)
+      })
+    const run = (orgId: string, profile: string, f: Fixture, fetchMock: ReturnType<typeof consoleFetch>) =>
+      resolveOpencodeConsoleOrg(orgId, profile, {
+        dbPath: f.dbPath,
+        now: () => NOW,
+        fetch: fetchMock as unknown as typeof fetch,
+      })
+
+    it("active = the other login: the profile still gets the token of the login that owns its org", async () => {
+      const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+      const fetchMock = consoleFetch()
+      expect((await run("org_a", "opencode-ws01", f, fetchMock)).credential).toBe(TOKEN)
+      expect((await run("org_b", "opencode-hodl", f, fetchMock)).credential).toBe("st_OTHER_2")
+    })
+
+    it("owner expired, other login (active) still valid: names the owner by email and expiry, not a bare 403", async () => {
+      const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+      const fetchMock = consoleFetch()
+      // the daemon saw acc_1 while its session was still valid ...
+      await run("org_a", "opencode-ws01", f, fetchMock)
+      await setExpiry(f.dbPath, "acc_1", NOW - 1000)
+      fetchMock.mockClear()
+      const err = (await run("org_a", "opencode-ws01", f, fetchMock).catch((e: unknown) => e)) as OpencodeAccountExpiredError
+      expect(err).toBeInstanceOf(OpencodeAccountExpiredError)
+      expect(err).toBeInstanceOf(SubaccountError)
+      expect(err.name).toBe("SubaccountError")
+      expect(err.profileId).toBe("opencode-ws01")
+      expect(err.orgId).toBe("org_a")
+      expect(err.accounts).toEqual([{ email: "user1@example.test", expiresAt: NOW - 1000 }])
+      expect(err.message).toContain("user1@example.test")
+      expect(err.message).toContain(new Date(NOW - 1000).toISOString())
+      expect(err.message).not.toMatch(/403/)
+      expect(err.message).not.toContain(TOKEN)
+      expect(err.message).not.toContain("st_OTHER_2")
+      // the valid login's token is never sent to /api/config for an org it does not own
+      expect(fetchMock.mock.calls.some(c => String(c[0]).endsWith("/api/config"))).toBe(false)
+    })
+
+    it("owner expired and never seen valid: reports the expired login as the likely owner, not a bare 403", async () => {
+      const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+      await setExpiry(f.dbPath, "acc_1", NOW - 1000)
+      const err = (await run("org_a", "opencode-ws01", f, consoleFetch()).catch((e: unknown) => e)) as Error
+      expect(err).toBeInstanceOf(OpencodeAccountExpiredError)
+      expect(err.message).toContain("user1@example.test")
+      expect(err.message).toContain(new Date(NOW - 1000).toISOString())
+      expect(err.message).not.toMatch(/403/)
+    })
+
+    it("no login owns the sub-account: typed error names profile, sub-account and the parent emails tried", async () => {
+      const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+      const err = (await run("org_z", "opencode-ws09", f, consoleFetch()).catch((e: unknown) => e)) as OpencodeOrgOwnerNotFoundError
+      expect(err).toBeInstanceOf(OpencodeOrgOwnerNotFoundError)
+      expect(err).toBeInstanceOf(SubaccountError)
+      expect(err.profileId).toBe("opencode-ws09")
+      expect(err.orgId).toBe("org_z")
+      expect(err.tried).toEqual(["user1@example.test", "user2@example.test"])
+      expect(err.message).toMatch(/opencode-ws09/)
+      expect(err.message).toMatch(/org_z/)
+      expect(err.message).toMatch(/user1@example\.test.*user2@example\.test/)
+      expect(err.message).toMatch(/log in/i)
+      expect(err.message).not.toContain(TOKEN)
+      expect(err.message).not.toContain("st_OTHER_2")
+    })
+
+    it("caches each login's org list: a second resolve does not call /api/orgs again", async () => {
+      const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+      const fetchMock = consoleFetch()
+      await run("org_a", "opencode-ws01", f, fetchMock)
+      await run("org_a", "opencode-ws01", f, fetchMock)
+      await run("org_b", "opencode-hodl", f, fetchMock)
+      const orgsCalls = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/api/orgs"))
+      expect(orgsCalls.length).toBe(2)
+    })
+
+    it("a cached 'not owned' answer is re-checked once before failing with no owner", async () => {
+      const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+      let acc1Orgs = [{ id: "org_a" }]
+      const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const h = init?.headers as Record<string, string>
+        if (String(url).endsWith("/api/orgs")) {
+          return jsonResponse(h.authorization === `Bearer ${TOKEN}` ? acc1Orgs : [{ id: "org_b" }])
+        }
+        return jsonResponse(CONFIG)
+      })
+      const call = (org: string) =>
+        resolveOpencodeConsoleOrg(org, "opencode-new", {
+          dbPath: f.dbPath,
+          now: () => NOW,
+          fetch: fetchMock as unknown as typeof fetch,
+        })
+      await expect(call("org_new")).rejects.toBeInstanceOf(OpencodeOrgOwnerNotFoundError)
+      acc1Orgs = [{ id: "org_a" }, { id: "org_new" }]
+      expect((await call("org_new")).credential).toBe(TOKEN)
+    })
+
+    it("never writes account_state while picking the owner", async () => {
+      const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
+      await run("org_a", "opencode-ws01", f, consoleFetch())
+      const specifier = ["node", "sqlite"].join(":")
+      const { DatabaseSync } = (await import(specifier)) as typeof import("node:sqlite")
+      const db = new DatabaseSync(f.dbPath, { readOnly: true })
+      expect(db.prepare("SELECT active_account_id FROM account_state").get()).toEqual({ active_account_id: "acc_2" })
+      db.close()
+    })
   })
 })

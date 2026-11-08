@@ -21,6 +21,7 @@
  * log the operator out of opencode itself. An expired session fails loud.
  */
 
+import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import {
@@ -227,9 +228,89 @@ export interface ResolvedOpencodeConsoleOrg {
 }
 
 /**
+ * No stored console login owns the pinned sub-account (org). `tried` holds the
+ * parent account emails that were checked; the missing piece is a login to the
+ * parent account that owns the org. Never carries a token.
+ */
+export class OpencodeOrgOwnerNotFoundError extends SubaccountError {
+  readonly code = "opencode_org_owner_not_found"
+  constructor(
+    readonly profileId: string,
+    readonly orgId: string,
+    /** Emails (or ids) of the console logins whose org list was checked. */
+    readonly tried: string[],
+    /** Logins that could not be checked, with the reason. */
+    readonly unchecked: string[] = [],
+  ) {
+    const triedStr = tried.length > 0 ? tried.join(", ") : "(none)"
+    const uncheckedStr = unchecked.length > 0 ? `; could not check: ${unchecked.join(", ")}` : ""
+    super(
+      `profile "${profileId}": sub-account ${orgId} is not owned by any logged-in opencode console account ` +
+        `(parent accounts tried: ${triedStr}${uncheckedStr}). ` +
+        `The login of the parent account that owns it is missing: ${loginHint()}`,
+    )
+  }
+}
+
+/**
+ * The login that owns (or, with `knownOwner: false`, may own) the pinned
+ * sub-account has an expired console session that agentproto does not refresh
+ * (refreshing would rotate opencode's own token). Never carries a token.
+ */
+export class OpencodeAccountExpiredError extends SubaccountError {
+  readonly code = "opencode_account_expired"
+  constructor(
+    readonly profileId: string,
+    readonly orgId: string,
+    readonly accounts: Array<{ email: string; expiresAt: number }>,
+    /** true: this login was seen listing the org; false: it is the only login that could own it. */
+    readonly knownOwner: boolean,
+  ) {
+    const list = accounts.map(a => `${a.email} (expired at ${new Date(a.expiresAt).toISOString()})`).join(", ")
+    super(
+      knownOwner
+        ? `profile "${profileId}": sub-account ${orgId} belongs to the opencode console account ${list}, ` +
+            `whose session is expired and is not refreshed here. ${loginHint()}`
+        : `profile "${profileId}": sub-account ${orgId} is not owned by any valid opencode console login; ` +
+            `the expired session of ${list} may be its parent account (expired sessions are not refreshed here, ` +
+            `so its orgs cannot be checked). ${loginHint()}`,
+    )
+  }
+}
+
+const ORG_CACHE_TTL_MS = 5 * 60_000
+
+interface OrgCacheEntry {
+  orgIds: Set<string>
+  at: number
+}
+
+/** Per-login org lists, keyed by db + account id + a hash of the bearer (a new login or a rotated token misses). */
+const orgCache = new Map<string, OrgCacheEntry>()
+/** Last org list ever seen per db + account id, no TTL: tells an expired login's orgs apart from a stranger's. */
+const lastKnownOrgs = new Map<string, Set<string>>()
+
+function orgCacheKey(dbPath: string, row: AccountRow): string {
+  const tokenHash = createHash("sha256").update(row.access_token).digest("hex").slice(0, 16)
+  return `${dbPath}\0${row.id}\0${tokenHash}`
+}
+
+function parseOrgs(body: unknown): OpencodeConsoleOrg[] {
+  return (Array.isArray(body) ? body : [])
+    .filter((o): o is { id: string; name?: string } => typeof (o as { id?: unknown })?.id === "string")
+    .map(o => ({ id: o.id, name: typeof o.name === "string" ? o.name : o.id }))
+}
+
+/**
  * Resolve a pinned org to what the spawn needs: the bearer and the org's
  * provider block (which names the org id in its `x-opencode-org-id` header).
- * Fails loud — never falls back to another org or an ambient login.
+ *
+ * The token comes from the stored login that OWNS the org (its `/api/orgs`
+ * lists it), never from whichever login happens to be active. When several
+ * logins are stored, ownership is always proven before `/api/config` is
+ * called, so a valid login is never sent to an org it does not own. Fails
+ * loud — never falls back to another org or an ambient login — and never
+ * writes to opencode.db.
  */
 export async function resolveOpencodeConsoleOrg(
   orgId: string,
@@ -239,87 +320,110 @@ export async function resolveOpencodeConsoleOrg(
   const dbPath = deps.dbPath ?? opencodeDbPath()
   const now = deps.now ?? Date.now
   const { accounts, activeId } = await readAllOpencodeConsoleAccounts(deps)
-  if (accounts.length === 0 || !accounts.some(a => a.access_token)) {
+  const withToken = accounts.filter(a => a.access_token)
+  if (withToken.length === 0) {
     throw new SubaccountError(`no opencode console account in ${dbPath}. ${loginHint()}`)
   }
 
-  const ordered: Array<{ row: AccountRow; isActive: boolean }> = []
-  if (activeId) {
-    const active = accounts.find(a => a.id === activeId)
-    if (active) ordered.push({ row: active, isActive: true })
-  }
-  for (const a of accounts) {
-    if (ordered.some(o => o.row.id === a.id)) continue
-    ordered.push({ row: a, isActive: false })
-  }
-
-  const tried: string[] = []
-  const expiredList: string[] = []
-  const failedList: string[] = []
-  // With a single usable login there is nothing to choose between: go straight
-  // to the config fetch, as before, so its error names the org and the account.
+  const label = (row: AccountRow) => row.email ?? row.id
   const current = now()
-  const usable = ordered.filter(e => e.row.access_token && !isExpired(e.row, current)).length
-  if (usable === 0) {
-    const expired = ordered.filter(e => e.row.access_token && isExpired(e.row, current))
-    if (expired.length === 1) {
-      const r = expired[0]!.row
-      throw new SubaccountError(`the opencode console session for ${r.email ?? r.id} expired at ${new Date(r.token_expiry as number).toISOString()}. ${loginHint()}`)
-    }
+  const usableRows = withToken.filter(r => !isExpired(r, current))
+  const expiredRows = withToken.filter(r => isExpired(r, current))
+  // The active login is only asked first, a tie-break that saves a round trip.
+  const askOrder = [...usableRows].sort((a, b) => Number(b.id === activeId) - Number(a.id === activeId))
+  const expiredInfo = (rows: AccountRow[]) =>
+    rows.map(r => ({ email: label(r), expiresAt: r.token_expiry as number }))
+
+  // A lone stored login has nothing to choose between: straight to the config
+  // fetch, whose error names the org and the account.
+  const single = withToken.length === 1
+  if (single && usableRows.length === 0) {
+    const r = expiredRows[0]!
+    throw new SubaccountError(`the opencode console session for ${label(r)} expired at ${new Date(r.token_expiry as number).toISOString()}. ${loginHint()}`)
   }
 
-  for (const entry of ordered) {
-    const row = entry.row
-    if (!row.access_token) continue
-    if (isExpired(row, current)) {
-      expiredList.push(`${row.email ?? row.id} (${row.id})`)
-      continue
-    }
-    const account = accountFromRow(row, typeof row.token_expiry === "number" ? row.token_expiry : undefined)
-    tried.push(`${row.email ?? row.id} (${row.id})`)
-    if (usable > 1) {
-      let orgs: OpencodeConsoleOrg[]
-      try {
-        const body = await consoleGet(account, "/api/orgs", deps)
-        orgs = (Array.isArray(body) ? body : [])
-          .filter((o): o is { id: string; name?: string } => typeof (o as { id?: unknown })?.id === "string")
-          .map(o => ({ id: o.id, name: typeof o.name === "string" ? o.name : o.id }))
-      } catch (err) {
-        // One broken account must not hide the org held by another one. The
-        // account is skipped, not tried blind: without the org list there is no
-        // proof it holds the org, and /api/config could answer for another one.
-        failedList.push(`${row.email ?? row.id} (${err instanceof Error ? err.message : String(err)})`)
-        continue
+  let owner: AccountRow | undefined = single ? usableRows[0] : undefined
+  const failed = new Map<string, string>()
+  if (!owner) {
+    const findOwner = async (fresh: boolean): Promise<{ owner?: AccountRow; usedCache: boolean }> => {
+      let usedCache = false
+      failed.clear()
+      for (const row of askOrder) {
+        const key = orgCacheKey(dbPath, row)
+        const hit = orgCache.get(key)
+        let orgIds: Set<string>
+        if (!fresh && hit && now() - hit.at < ORG_CACHE_TTL_MS) {
+          orgIds = hit.orgIds
+          usedCache = true
+        } else {
+          try {
+            const body = await consoleGet(accountFromRow(row), "/api/orgs", deps)
+            orgIds = new Set(parseOrgs(body).map(o => o.id))
+          } catch (err) {
+            // One broken login must not hide the org held by another one. It is
+            // skipped, not tried blind: without its org list there is no proof it
+            // holds the org, and /api/config could answer for another one.
+            failed.set(label(row), err instanceof Error ? err.message : String(err))
+            continue
+          }
+          orgCache.set(key, { orgIds, at: now() })
+          lastKnownOrgs.set(`${dbPath}\0${row.id}`, orgIds)
+        }
+        if (orgIds.has(orgId)) return { owner: row, usedCache }
       }
-      if (!orgs.some(o => o.id === orgId)) continue
+      return { usedCache }
     }
-    let provider: unknown
-    try {
-      const body = (await consoleGet(account, "/api/config", deps, orgId)) as {
-        config?: { provider?: unknown }
-      }
-      provider = body?.config?.provider
-    } catch (err) {
-      throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
-          `— the console account ${account.email ?? account.id} may not belong to that org. ${loginHint()}`,
+    let found = await findOwner(false)
+    // A cached "not owned" may predate the operator joining the org: re-check once.
+    if (!found.owner && found.usedCache) found = await findOwner(true)
+    owner = found.owner
+  }
+
+  if (!owner) {
+    if (expiredRows.length > 0) {
+      const known = expiredRows.filter(r => lastKnownOrgs.get(`${dbPath}\0${r.id}`)?.has(orgId))
+      if (known.length > 0) throw new OpencodeAccountExpiredError(profileId, orgId, expiredInfo(known), true)
+      // Strangers that never listed the org cannot be ruled out: the expired
+      // sessions are the only logins that could own it.
+      if (failed.size === 0) throw new OpencodeAccountExpiredError(profileId, orgId, expiredInfo(expiredRows), false)
+    }
+    if (failed.size > 0 && failed.size === usableRows.length) {
+      const failedStr = [...failed].map(([who, why]) => `${who} (${why})`).join(", ")
+      throw new SubaccountError(
+        `profile "${profileId}": sub-account ${orgId} could not be matched to a console account (org list failed: ${failedStr}). ${loginHint()}`,
       )
     }
-    if (!provider || typeof provider !== "object" || Object.keys(provider).length === 0) {
-      throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} returned no provider config.`,
-      )
-    }
-    return {
+    throw new OpencodeOrgOwnerNotFoundError(
+      profileId,
       orgId,
-      credential: account.accessToken,
-      extraEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) },
-    }
+      usableRows.map(label),
+      [
+        ...expiredRows.map(r => `${label(r)} (expired at ${new Date(r.token_expiry as number).toISOString()})`),
+        ...[...failed].map(([who, why]) => `${who} (${why})`),
+      ],
+    )
   }
 
-  const triedStr = tried.length > 0 ? tried.join(", ") : "(none)"
-  const expiredStr = expiredList.length > 0 ? `; expired: ${expiredList.join(", ")}` : ""
-  const failedStr = failedList.length > 0 ? `; org list failed: ${failedList.join(", ")}` : ""
-  throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} not found in any console account (tried: ${triedStr}${expiredStr}${failedStr}). ${loginHint()}`,
-  )
+  const account = accountFromRow(owner, typeof owner.token_expiry === "number" ? owner.token_expiry : undefined)
+  let provider: unknown
+  try {
+    const body = (await consoleGet(account, "/api/config", deps, orgId)) as {
+      config?: { provider?: unknown }
+    }
+    provider = body?.config?.provider
+  } catch (err) {
+    throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
+        `— the console account ${account.email ?? account.id} may not belong to that org. ${loginHint()}`,
+    )
+  }
+  if (!provider || typeof provider !== "object" || Object.keys(provider).length === 0) {
+    throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} returned no provider config.`)
+  }
+  return {
+    orgId,
+    credential: account.accessToken,
+    extraEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) },
+  }
 }
 
 /**
