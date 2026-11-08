@@ -247,7 +247,7 @@ describe("event routines end to end", () => {
         "  on: agentproto:session-completed",
         "target:",
         "  agent:",
-        "    adapter: claude-code",
+        "    harness: claude-code",
         "    prompt: say hi",
       ])
       await registrar.reconcile()

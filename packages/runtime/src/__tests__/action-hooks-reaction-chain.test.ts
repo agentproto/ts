@@ -106,7 +106,7 @@ function toolTarget(tool: string): string[] {
 }
 
 function agentTarget(): string[] {
-  return ["  agent:", "    adapter: claude-code", "    prompt: say hi"]
+  return ["  agent:", "    harness: claude-code", "    prompt: say hi"]
 }
 
 function setup(routineId: string, target: string[]) {
