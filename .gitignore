@@ -13,6 +13,9 @@ dist
 # the published tarball ships them via the `files` array; never committed.
 packages/cli/docs/
 
+# Generated on demand by `pnpm status` (scripts/gen-status.mjs); never committed.
+STATUS.md
+
 # Generated source — regenerated from canonical fixtures by prebuild hooks
 packages/corpus-presets/src/marketing/files.ts
 packages/corpus-presets/src/research/files.ts

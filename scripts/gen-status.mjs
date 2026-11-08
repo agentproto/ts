@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * gen-status.mjs — generates STATUS.md, a tier classification table of every
- * pnpm workspace package.
+ * gen-status.mjs: classifies every pnpm workspace package into a tier and
+ * writes STATUS.md, a table of the result. STATUS.md is git-ignored: it is
+ * generated on demand (`pnpm status`), never committed. computeStatus() is
+ * also the classifier behind scripts/gen-spec-packages-doc.mjs.
  *
  * Tiers (exactly one per package, applied in this order):
  *   archived       — dead packages with zero workspace dependents, from the
@@ -25,7 +27,6 @@
  *                    doctype packages (e.g. workspace -> work) qualify too.
  *
  * Flags:
- *   --check   verify STATUS.md is up to date (exit 1 on drift)
  *   --count   print the number of workspace package.json files
  *   --stats   print tier counts
  */
@@ -44,16 +45,16 @@ const GLOBS = [
   "examples/*",
 ];
 
-// Dead packages with no workspace dependents -> archived. Each has been
-// verified by scanning all workspace package.json dependency fields.
+// Packages with no workspace dependents in this repo -> archived. Verified
+// by scanning all workspace package.json dependency fields. Dependents in
+// sibling repos count too: adapter-mastra (agentik-studio mcp-aip and
+// research-analyst), egress (agentik-studio core and guilde) and
+// role-catalog (guilde api) are used elsewhere, so they are not listed.
 const ARCHIVED = new Set([
   "@agentproto/driver-sdk", // packages/driver/sdk
   "@agentproto/workflow-ai-sdk", // packages/workflow-ai-sdk
-  "@agentproto/egress", // packages/egress
   "@agentproto/catalog", // packages/catalog
-  "@agentproto/role-catalog", // packages/role-catalog
   "@agentproto/adapter-ai-sdk", // adapters/ai-sdk
-  "@agentproto/adapter-mastra", // adapters/mastra
 ]);
 
 // Core runtime family: named regardless of doctype-only dependency closure.
@@ -242,31 +243,6 @@ function main() {
 
   if (process.argv.includes("--count")) {
     console.log(entries.length);
-    return;
-  }
-  if (process.argv.includes("--check")) {
-    let current = "";
-    try {
-      current = readFileSync(outfile, "utf8");
-    } catch {
-      console.error(`${outfile} is missing`);
-      process.exit(1);
-    }
-    if (current !== markdown) {
-      console.error(`${outfile} is out of date — run: node scripts/gen-status.mjs`);
-      const currentLines = current.split("\n");
-      const expectedLines = markdown.split("\n");
-      for (let i = 0; i < Math.max(currentLines.length, expectedLines.length); i++) {
-        if (currentLines[i] !== expectedLines[i]) {
-          console.error(`first differing line ${i + 1}:`);
-          console.error(`  STATUS.md:   ${JSON.stringify(currentLines[i])}`);
-          console.error(`  generated:   ${JSON.stringify(expectedLines[i])}`);
-          break;
-        }
-      }
-      process.exit(1);
-    }
-    console.log(`${outfile} is up to date (${entries.length} packages)`);
     return;
   }
   if (process.argv.includes("--stats")) {
