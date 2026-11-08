@@ -95,6 +95,9 @@ export interface RegisterDaemonHealthToolsOptions {
    *  `dir-missing` record re-pointed at the main worktree's copy. Surfaced as
    *  `appRegistryRepairs`, apart from `appRegistryIssues`: informational, so
    *  a healed registry does not read as degraded. */
+  /** Jobs the cron scheduler holds paused with a reason (auto-pause, expiry,
+   *  orphaned owner). Surfaced as `cron`, so a dead autonomy loop is visible. */
+  pausedCronJobs?: () => readonly { id: string; label?: string; pausedReason: string }[]
   appRegistryRepairs?: () => readonly { kind: string; appId: string; from: string; to: string; at: string }[]
 }
 
@@ -123,6 +126,7 @@ export function registerDaemonHealthTools(
       "as a thrown/failed tool call at the transport level, not as a false field.",
     {},
     async () => {
+      const pausedJobs = opts.pausedCronJobs?.() ?? []
       return text({
         alive: true,
         status: "ok",
@@ -145,6 +149,7 @@ export function registerDaemonHealthTools(
         appRegistryIssues: opts.appRegistryIssues?.() ?? [],
         appRegistryRepairs: opts.appRegistryRepairs?.() ?? [],
         modelCooldowns: opts.modelCooldowns?.() ?? [],
+        cron: { paused: pausedJobs.length, pausedJobs },
         ...(opts.sandboxSessions ? { sandboxSessions: opts.sandboxSessions() } : {}),
       })
     },
