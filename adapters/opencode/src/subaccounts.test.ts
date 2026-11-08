@@ -406,7 +406,7 @@ describe("opencode console sub-account provider", () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const auth = (init?.headers as Record<string, string>)?.authorization
       if (auth === `Bearer ${TOKEN}`) return jsonResponse([{ id: "org_a", name: "Ws01" }])
-      if (auth === "Bearer st_OTHER_2") return jsonResponse([{ id: "org_a", name: "dup" }, { id: "org_b", name: "Hodl" }])
+      if (auth === "Bearer st_OTHER_2") return jsonResponse([{ id: "org_a", name: "dup" }, { id: "org_b", name: "Ws02" }])
       return jsonResponse({ error: "boom" }, 500)
     })
     const listing = await createOpencodeSubaccountProvider({
@@ -417,7 +417,7 @@ describe("opencode console sub-account provider", () => {
     expect(listing.account).toEqual({ id: "acc_1", label: "user1@example.test" })
     expect(listing.subaccounts).toEqual([
       { kind: "org", id: "org_a", name: "Ws01" },
-      { kind: "org", id: "org_b", name: "Hodl" },
+      { kind: "org", id: "org_b", name: "Ws02" },
     ])
   })
 
@@ -499,7 +499,7 @@ describe("opencode console sub-account provider", () => {
       const f = track(await makeDb({ accounts: 2, activeId: "acc_2" }))
       const fetchMock = consoleFetch()
       expect((await run("org_a", "opencode-ws01", f, fetchMock)).credential).toBe(TOKEN)
-      expect((await run("org_b", "opencode-hodl", f, fetchMock)).credential).toBe("st_OTHER_2")
+      expect((await run("org_b", "opencode-ws-b", f, fetchMock)).credential).toBe("st_OTHER_2")
     })
 
     it("owner expired, other login (active) still valid: names the owner by email and expiry, not a bare 403", async () => {
@@ -556,7 +556,7 @@ describe("opencode console sub-account provider", () => {
       const fetchMock = consoleFetch()
       await run("org_a", "opencode-ws01", f, fetchMock)
       await run("org_a", "opencode-ws01", f, fetchMock)
-      await run("org_b", "opencode-hodl", f, fetchMock)
+      await run("org_b", "opencode-ws-b", f, fetchMock)
       const orgsCalls = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/api/orgs"))
       expect(orgsCalls.length).toBe(2)
     })
