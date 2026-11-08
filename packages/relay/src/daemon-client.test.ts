@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { checkSessionAlive, resolveDaemonToken } from "./daemon-client.js"
+import { checkSessionAlive, createPublicTunnel, resolveDaemonToken } from "./daemon-client.js"
 
 function fakeFetch(
   handler: (url: string, init?: RequestInit) => { status: number; body?: unknown },
@@ -120,5 +120,21 @@ describe("resolveDaemonToken", () => {
     const fetchImpl = fakeFetch(() => ({ status: 200, body: { workspace: join(homeDir, "nope") } }))
     const token = await resolveDaemonToken("http://127.0.0.1:18790", { homeDir, fetchImpl })
     expect(token).toBeUndefined()
+  })
+})
+
+describe("createPublicTunnel", () => {
+  it("sends the daemon token and a JSON content-type on POST /tunnels", async () => {
+    let seen: RequestInit | undefined
+    const fetchImpl = fakeFetch((_url, init) => {
+      seen = init
+      return { status: 201, body: { publicUrl: "https://t.example" } }
+    })
+    const url = await createPublicTunnel("http://daemon.local", 8790, { fetchImpl, token: "tok" })
+    expect(url).toBe("https://t.example")
+    const headers = seen?.headers as Record<string, string>
+    expect(headers.authorization).toBe("Bearer tok")
+    expect(headers["content-type"]).toBe("application/json")
+    expect(JSON.parse(String(seen?.body))).toMatchObject({ targetPort: 8790 })
   })
 })

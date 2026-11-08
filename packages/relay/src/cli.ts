@@ -12,6 +12,7 @@
  */
 
 import { loadConfigFromEnv } from "./config.js"
+import { createPublicTunnel } from "./daemon-client.js"
 import { createRelayServer } from "./server.js"
 
 interface CliArgs {
@@ -60,28 +61,6 @@ function printHelp(): void {
       "See the package README for the full list.",
     ].join("\n"),
   )
-}
-
-interface TunnelDescriptorLike {
-  publicUrl?: unknown
-  status?: unknown
-}
-
-async function createPublicTunnel(daemonUrl: string, port: number): Promise<string> {
-  const res = await fetch(`${daemonUrl}/tunnels`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ targetPort: port, label: "agentproto-relay" }),
-  })
-  if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(`failed to create tunnel: HTTP ${res.status} ${text}`)
-  }
-  const desc = (await res.json()) as TunnelDescriptorLike
-  if (typeof desc.publicUrl !== "string" || !desc.publicUrl) {
-    throw new Error(`daemon did not return a publicUrl: ${JSON.stringify(desc)}`)
-  }
-  return desc.publicUrl
 }
 
 async function main(): Promise<void> {

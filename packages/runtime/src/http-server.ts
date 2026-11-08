@@ -2105,6 +2105,41 @@ export async function startHttpServer(
     return false
   }
 
+  /**
+   * Gate for a non-GET request to a route family outside `/sessions/*`
+   * (`/remote/*`, `/tunnels*`): the same checks the mutating `/sessions/*`
+   * routes get. A foreign browser Origin is refused unless it carries the
+   * bearer, then the per-boot token (or an allowlisted Origin) is required,
+   * and a POST / PUT / PATCH must be JSON so a cross-origin `text/plain`
+   * "simple" request, which needs no preflight, cannot reach the handler.
+   * Returns true when it already wrote a refusal.
+   */
+  function refuseUnlessAuthorizedWrite(
+    req: IncomingMessage,
+    res: ServerResponse,
+    label: string,
+  ): boolean {
+    if ((req.method ?? "GET") === "GET") return false
+    if (guardBrowserOrigin(req, res)) return true
+    const gate = checkSessionsToken(req)
+    if (gate !== "ok") {
+      rejectUnauthorizedSession(req, res, gate)
+      return true
+    }
+    const method = req.method
+    if ((method === "POST" || method === "PUT" || method === "PATCH") && !isJsonContentType(req)) {
+      res.writeHead(415, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "unsupported_media_type",
+          message: `Writes to ${label} must send \`content-type: application/json\`.`,
+        }),
+      )
+      return true
+    }
+    return false
+  }
+
   // stderr is a launchd-redirected regular file, so every console.error is
   // a SYNCHRONOUS disk write on the event loop. An ungated line per failed
   // probe (clients retry precisely when they're already failing) is both a
@@ -5460,6 +5495,9 @@ export async function startHttpServer(
         // Tunnel routes — only registered when the gateway was built with
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
+          // Creating / deleting / revoking tunnels and storing provider
+          // credentials are mutating: same gate as mutating /sessions/*.
+          if (refuseUnlessAuthorizedWrite(req, res, "/tunnels")) return
           const handled = await handleTunnels(req, res, path, opts.tunnels)
           if (handled) return
         }
@@ -5550,6 +5588,9 @@ export async function startHttpServer(
         // enable/disable/status`. Only registered when the gateway was
         // built with a RemoteController.
         if (opts.remote && path.startsWith("/remote")) {
+          // enable / disable publish or tear down the public tunnel: same
+          // gate as mutating /sessions/*. /remote/status (GET) stays open.
+          if (refuseUnlessAuthorizedWrite(req, res, "/remote")) return
           const handled = await handleRemoteControl(req, res, path, opts.remote)
           if (handled) return
         }
@@ -14414,6 +14455,15 @@ function parseOperatorKillReason(body: unknown): "operator-completed" | "operato
   const raw =
     body && typeof body === "object" ? (body as Record<string, unknown>).reason : undefined
   return raw === "completed" ? "operator-completed" : "operator-stopped"
+}
+
+/** True when the request's content-type is `application/json` or a `+json`
+ *  type (parameters such as `; charset=utf-8` ignored). */
+function isJsonContentType(req: IncomingMessage): boolean {
+  const raw = req.headers["content-type"]
+  if (typeof raw !== "string") return false
+  const type = (raw.split(";")[0] ?? "").trim().toLowerCase()
+  return type === "application/json" || type.endsWith("+json")
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
