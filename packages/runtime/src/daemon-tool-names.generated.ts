@@ -234,6 +234,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "self_inspect",
   "sentinel_list",
   "sentinel_poll_now",
+  "sentinel_routes",
   "sentinel_unwatch",
   "sentinel_watch",
   "session_adopt",
