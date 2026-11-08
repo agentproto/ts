@@ -560,5 +560,7 @@ export {
   readOpencodeConsoleAccount,
   listOpencodeConsoleOrgs,
   resolveOpencodeConsoleOrg,
+  OpencodeAccountExpiredError,
+  OpencodeOrgOwnerNotFoundError,
 } from "./subaccounts.js"
 export type { AgentCliHandle, AgentCliRuntime }
