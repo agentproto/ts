@@ -592,10 +592,33 @@ export interface AppRequirements {
   readonly apps: readonly string[]
 }
 
+/** How much an exposed tool can change the world; drives MCP annotations and
+ *  which callers may see it. */
+export type AppExposedToolAccess = "read" | "write" | "approve"
+
+/** One `exposes.tools` entry: a tool the app offers to MCP clients. */
+export interface AppExposedTool {
+  /** Id of a bundled TOOL.md, or `imported:<alias>/<tool>` (read only, needs `mcpName`). */
+  readonly id: string
+  readonly access: AppExposedToolAccess
+  /** Written for a model, at most 300 characters. */
+  readonly description: string
+  /** JSON Schema for the input. Default: the TOOL.md `inputs`. */
+  readonly inputSchema?: Readonly<Record<string, unknown>>
+  /** Replaces the derived name part (the prefix stays imposed). */
+  readonly mcpName?: string
+  /** `access: approve` only: the argument carrying the approval nonce. */
+  readonly approvalArg?: string
+}
+
 /** A2A-visible surfaces. Ids must exist in the app's agents / workflows. */
 export interface AppExposes {
   readonly agents: readonly string[]
   readonly workflows: readonly string[]
+  /** MCP name prefix (`^[a-z][a-z0-9]{1,15}$`); required when `tools` is non-empty. */
+  readonly prefix?: string
+  /** Tools offered to MCP clients. Absent = the app exposes nothing new. */
+  readonly tools?: readonly AppExposedTool[]
 }
 
 /** What the app accepts from other agents over A2A. */

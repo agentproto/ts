@@ -59,7 +59,15 @@ import {
   type EncodedRepresentation,
   type RepresentationCache,
 } from "@agentproto/runtime/app-ui-delivery"
-import { peekAppUi } from "@agentproto/app"
+import {
+  loadAppBundledTools,
+  parseExposedTools,
+  peekAppUi,
+  resolveExposedTools,
+  validateExposedToolsAgainstBundle,
+  type ResolvedExposedTool,
+} from "@agentproto/app"
+import { DAEMON_TOOL_NAMES } from "@agentproto/runtime/daemon-tool-names"
 import { ensureAppUiBuilt } from "@agentproto/runtime/app-ui-build"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { pathExists } from "./commands/skill-install/shared.js"
@@ -577,6 +585,41 @@ export async function readDeclaredUITools(appDir: string): Promise<string[] | un
   } catch {
     return undefined
   }
+}
+
+/**
+ * The app's `exposes.tools`, validated by the same rules `defineApp` applies
+ * (plus the daemon-name checks only the CLI/daemon can make) and resolved to
+ * MCP name + real input schema. `undefined` when the app declares none (the
+ * caller falls back to `ui.tools`); throws with the first violated rule when
+ * the block is invalid, so a bad APP.md never half-registers.
+ */
+export async function readDeclaredExposedTools(appDir: string): Promise<ResolvedExposedTool[] | undefined> {
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+  if (!(await pathExists(appMdPath))) return undefined
+  let data: Record<string, unknown>
+  try {
+    data = matter(await readFile(appMdPath, "utf8")).data as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+  const exposes = data.exposes
+  if (!exposes || typeof exposes !== "object") return undefined
+  const rawTools = (exposes as Record<string, unknown>).tools
+  if (!Array.isArray(rawTools) || rawTools.length === 0) return undefined
+
+  const fail = (msg: string) => new Error(`${appMdPath}: ${msg}`)
+  const parsed = parseExposedTools(rawTools, (exposes as Record<string, unknown>).prefix, fail, {
+    daemonToolNames: DAEMON_TOOL_NAMES,
+  })
+  const ui = data.ui
+  const uiTools =
+    ui && typeof ui === "object" && Array.isArray((ui as Record<string, unknown>).tools)
+      ? ((ui as Record<string, unknown>).tools as unknown[]).filter((t): t is string => typeof t === "string")
+      : undefined
+  const { tools: bundled } = await loadAppBundledTools(appDir)
+  validateExposedToolsAgainstBundle(parsed, { tools: bundled, uiTools }, fail)
+  return resolveExposedTools(parsed, bundled)
 }
 
 /**

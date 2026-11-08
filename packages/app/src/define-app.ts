@@ -42,6 +42,7 @@ import type {
 import { refKey } from "./refs.js"
 import { emitApp } from "./emit.js"
 import { normalizeManifestFields } from "./manifest-fields.js"
+import { validateExposedToolsAgainstBundle } from "./exposed-tools.js"
 
 export class AppDefinitionError extends Error {
   constructor(message: string) {
@@ -126,7 +127,16 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const exposes = Object.freeze({
     agents: Object.freeze([...fields.exposes.agents]),
     workflows: Object.freeze([...fields.exposes.workflows]),
+    ...(fields.exposes.prefix !== undefined ? { prefix: fields.exposes.prefix } : {}),
+    ...(fields.exposes.tools !== undefined
+      ? { tools: Object.freeze(fields.exposes.tools.map(t => Object.freeze({ ...t }))) }
+      : {}),
   })
+  validateExposedToolsAgainstBundle(
+    exposes,
+    { tools, uiTools: def.ui?.tools },
+    msg => new AppDefinitionError(msg),
+  )
   const accepts = Object.freeze({ ...fields.accepts })
   const uiExtensions =
     def.ui === undefined || def.ui.extensions === undefined

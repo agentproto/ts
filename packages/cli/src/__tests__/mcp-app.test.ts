@@ -11,10 +11,18 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
-const { findInstalledAppDirMock, readDeclaredUIToolsMock, loadConfigMock, toolMock, connectMock, mcpServerCtor } =
-  vi.hoisted(() => ({
+const {
+  findInstalledAppDirMock,
+  readDeclaredUIToolsMock,
+  readDeclaredExposedToolsMock,
+  loadConfigMock,
+  toolMock,
+  connectMock,
+  mcpServerCtor,
+} = vi.hoisted(() => ({
     findInstalledAppDirMock: vi.fn(),
     readDeclaredUIToolsMock: vi.fn(),
+    readDeclaredExposedToolsMock: vi.fn(),
     loadConfigMock: vi.fn(),
     toolMock: vi.fn(),
     connectMock: vi.fn(async (..._args: unknown[]) => {}),
@@ -24,6 +32,7 @@ const { findInstalledAppDirMock, readDeclaredUIToolsMock, loadConfigMock, toolMo
 vi.mock("../app-serve.js", () => ({
   findInstalledAppDir: findInstalledAppDirMock,
   readDeclaredUITools: readDeclaredUIToolsMock,
+  readDeclaredExposedTools: readDeclaredExposedToolsMock,
 }))
 
 vi.mock("@agentproto/runtime/config", () => ({
@@ -57,6 +66,7 @@ async function flushMicrotasks(): Promise<void> {
 beforeEach(() => {
   findInstalledAppDirMock.mockReset()
   readDeclaredUIToolsMock.mockReset()
+  readDeclaredExposedToolsMock.mockReset().mockResolvedValue(undefined)
   loadConfigMock.mockReset().mockResolvedValue({})
   toolMock.mockReset()
   connectMock.mockReset().mockResolvedValue(undefined)
@@ -144,6 +154,121 @@ describe("runMcpApp — tool registration", () => {
     expect(toolMock).not.toHaveBeenCalled()
     expect(connectMock).toHaveBeenCalledTimes(1)
 
+    errSpy.mockRestore()
+  })
+})
+
+const exposedTool = (
+  id: string,
+  name: string,
+  access: "read" | "write" | "approve",
+  inputs?: Record<string, unknown>,
+) => ({ entry: { id, access, description: `Does ${id}.` }, name, inputs })
+
+const bureauExposed = () => [
+  exposedTool("bureau.status", "bureau_status", "read", {
+    type: "object",
+    properties: { verbose: { type: "boolean" } },
+  }),
+  exposedTool("imported:bureau/browser_list_instances", "bureau_list_instances", "read"),
+  exposedTool("bureau.navigate", "bureau_navigate", "write", {
+    type: "object",
+    required: ["url"],
+    properties: { url: { type: "string" } },
+  }),
+]
+
+async function serve(args: string[]): Promise<void> {
+  findInstalledAppDirMock.mockReturnValue("/apps/bureau")
+  loadConfigMock.mockResolvedValue({ daemon: { port: 18790 } })
+  void runMcpApp(args)
+  await flushMicrotasks()
+  await flushMicrotasks()
+}
+
+describe("runMcpApp — exposes.tools", () => {
+  it("registers only the read tools by default, under their computed MCP names", async () => {
+    readDeclaredExposedToolsMock.mockResolvedValue(bureauExposed())
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    await serve(["bureau"])
+
+    expect(toolMock.mock.calls.map(c => c[0])).toEqual(["bureau_status", "bureau_list_instances"])
+    expect(toolMock.mock.calls.every(c => /^[a-zA-Z0-9_-]+$/.test(String(c[0])))).toBe(true)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("1 hidden by --access read"))
+    errSpy.mockRestore()
+  })
+
+  it("registers write tools only on --access read,write, annotated destructive", async () => {
+    readDeclaredExposedToolsMock.mockResolvedValue(bureauExposed())
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    await serve(["bureau", "--access", "read,write"])
+
+    expect(toolMock.mock.calls.map(c => c[0])).toEqual(["bureau_status", "bureau_list_instances", "bureau_navigate"])
+    const byName = new Map(toolMock.mock.calls.map(c => [c[0], c]))
+    expect(byName.get("bureau_status")?.[3]).toEqual({ readOnlyHint: true })
+    expect(byName.get("bureau_navigate")?.[3]).toEqual({ destructiveHint: true })
+    errSpy.mockRestore()
+  })
+
+  it("exposes the tool's real input schema, not the generic { args } passthrough", async () => {
+    readDeclaredExposedToolsMock.mockResolvedValue(bureauExposed())
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    await serve(["bureau", "--access=read,write"])
+
+    const shapeOf = (name: string) => toolMock.mock.calls.find(c => c[0] === name)?.[2] as Record<string, unknown>
+    expect(Object.keys(shapeOf("bureau_navigate"))).toEqual(["url"])
+    expect(Object.keys(shapeOf("bureau_status"))).toEqual(["verbose"])
+    expect(Object.keys(shapeOf("bureau_list_instances"))).toEqual(["args"])
+    errSpy.mockRestore()
+  })
+
+  it("forwards the ORIGINAL tool id to the daemon, not the computed name", async () => {
+    readDeclaredExposedToolsMock.mockResolvedValue(bureauExposed())
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    await serve(["bureau"])
+
+    const handler = toolMock.mock.calls.find(c => c[0] === "bureau_list_instances")?.[4] as (
+      input: Record<string, unknown>,
+    ) => Promise<unknown>
+    await handler({})
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:18790/apps/bureau/tool-call",
+      expect.objectContaining({
+        body: JSON.stringify({ tool: "imported:bureau/browser_list_instances", args: {} }),
+      }),
+    )
+    errSpy.mockRestore()
+  })
+
+  it("rejects an unknown --access class with exit 2", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    expect(await runMcpApp(["bureau", "--access", "admin"])).toBe(2)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("--access takes"))
+    errSpy.mockRestore()
+  })
+
+  it("exits 1 when exposes.tools is invalid", async () => {
+    findInstalledAppDirMock.mockReturnValue("/apps/bureau")
+    readDeclaredExposedToolsMock.mockRejectedValue(new Error("APP.md: bad"))
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    expect(await runMcpApp(["bureau"])).toBe(1)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("invalid `exposes.tools`"))
+    errSpy.mockRestore()
+  })
+
+  it("keeps the legacy ui.tools behaviour, with a stderr warning, when exposes.tools is absent", async () => {
+    readDeclaredUIToolsMock.mockResolvedValue(["app_run", "bureau.status"])
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    await serve(["bureau"])
+
+    expect(toolMock.mock.calls.map(c => c[0])).toEqual(["app_run", "bureau.status"])
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("declares no `exposes.tools`"))
     errSpy.mockRestore()
   })
 })
