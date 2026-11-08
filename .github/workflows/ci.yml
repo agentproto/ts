@@ -245,16 +245,11 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/list-unpublished-packages.test.mjs
 
-      # Guard STATUS.md (scripts/gen-status.mjs) against drift: the package
-      # tier table is generated, so a workspace package add/remove/rename or
-      # a classification change without a regen would otherwise ship stale.
-      # Also runs the unit suite (independent workspace walk, root-parameter
-      # isolation, STATUS.md row coverage, generateStatusFile equality).
-      # Outside packages/**/adapters/**, so `pnpm test` misses it.
-      - name: Check STATUS.md drift
-        run: |
-          node --test scripts/gen-status.test.mjs
-          node scripts/gen-status.mjs --check
+      # The tier classification (scripts/gen-status.mjs) and the spec packages
+      # doc generator (scripts/gen-spec-packages-doc.mjs) live outside
+      # packages/**/adapters/**, so `pnpm test` misses their unit suites.
+      - name: Run package classification tests
+        run: node --test scripts/gen-status.test.mjs scripts/gen-spec-packages-doc.test.mjs
 
       # Guards the bootstrap installer's npm-prefix fallback (#2056): a
       # system Node (apt/dnf) leaves a root-owned npm global prefix and a

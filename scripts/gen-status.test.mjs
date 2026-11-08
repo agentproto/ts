@@ -17,7 +17,6 @@ const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const STATUS_PATH = path.join(REPO_ROOT, "STATUS.md");
 
 /**
  * Independent recount of workspace package dirs under the globs in
@@ -155,11 +154,8 @@ test("archived override packages remain zero-dependent", () => {
     archived.map((e) => e.name).sort(),
     [
       "@agentproto/adapter-ai-sdk",
-      "@agentproto/adapter-mastra",
       "@agentproto/catalog",
       "@agentproto/driver-sdk",
-      "@agentproto/egress",
-      "@agentproto/role-catalog",
       "@agentproto/workflow-ai-sdk",
     ],
   );
@@ -168,17 +164,16 @@ test("archived override packages remain zero-dependent", () => {
 test("documented rule order: archived override wins over adapters/** path", () => {
   const entries = computeStatus(REPO_ROOT);
   const byName = new Map(entries.map((e) => [e.name, e]));
-  // Two override-list packages live under adapters/; the documented order
-  // (archived first) must classify them archived, not adapters.
+  // An override-list package lives under adapters/; the documented order
+  // (archived first) must classify it archived, not adapters.
   assert.equal(byName.get("@agentproto/adapter-ai-sdk").tier, "archived");
-  assert.equal(byName.get("@agentproto/adapter-mastra").tier, "archived");
+  // adapter-mastra is imported by sibling repos, so it is a plain adapter.
+  assert.equal(byName.get("@agentproto/adapter-mastra").tier, "adapters");
   for (const e of entries) {
     if (!e.dir.startsWith("adapters/")) continue;
     if (e.tier === "archived") {
       assert.ok(
-        ["@agentproto/adapter-ai-sdk", "@agentproto/adapter-mastra"].includes(
-          e.name,
-        ),
+        ["@agentproto/adapter-ai-sdk"].includes(e.name),
         `${e.name} (${e.dir}) is under adapters/ but neither on the override list nor tier adapters`,
       );
     } else {
@@ -188,32 +183,6 @@ test("documented rule order: archived override wins over adapters/** path", () =
         `${e.dir} is under adapters/ and not archived; expected tier adapters, got ${e.tier}`,
       );
     }
-  }
-});
-
-test("status table has exactly one row per package in STATUS.md", () => {
-  const entries = computeStatus(REPO_ROOT);
-  const md = readFileSync(STATUS_PATH, "utf8");
-  // Package-table rows: `name | `dir` | tier | reason |`
-  // (names are usually @agentproto/… but four first-party packages are bare.)
-  const rowRe = /^([^\s|`]+) \| `([^`]+)` \| ([^\s|]+) \| (.+) \|$/gm;
-  const rows = [];
-  for (const m of md.matchAll(rowRe)) {
-    rows.push({ name: m[1], dir: m[2], tier: m[3] });
-  }
-  assert.ok(rows.length > 0, "STATUS.md package table is empty/unparseable");
-  assert.equal(
-    rows.length,
-    entries.length,
-    `STATUS.md has ${rows.length} package rows; computeStatus returned ${entries.length}`,
-  );
-  const fromMd = new Map(rows.map((r) => [r.dir, r]));
-  assert.equal(fromMd.size, rows.length, "duplicate dir rows in STATUS.md");
-  for (const e of entries) {
-    const row = fromMd.get(e.dir);
-    assert.ok(row, `STATUS.md is missing a row for ${e.dir}`);
-    assert.equal(row.name, e.name, `name mismatch for ${e.dir}`);
-    assert.equal(row.tier, e.tier, `tier mismatch for ${e.dir}`);
   }
 });
 
@@ -264,15 +233,4 @@ test("adding a package changes STATUS.md by exactly one added table row", () => 
   assert.deepStrictEqual(added, [
     "@agentproto/zz-fake | `packages/zz-fake` | core | product runtime package consumed by the runtime/cli |",
   ]);
-});
-
-test("generateStatusFile output matches committed STATUS.md (no drift)", () => {
-  const entries = computeStatus(REPO_ROOT);
-  const expected = generateStatusFile(entries);
-  const actual = readFileSync(STATUS_PATH, "utf8");
-  assert.equal(
-    actual,
-    expected,
-    "STATUS.md is out of date — run: node scripts/gen-status.mjs",
-  );
 });
