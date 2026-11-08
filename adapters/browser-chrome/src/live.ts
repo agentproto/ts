@@ -650,6 +650,7 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
   private screencastFormat: "jpeg" | "png" = "jpeg"
   private screencastIndex = 0
   private readonly screencastBuffer: ChromeLiveScreencastFrame[] = []
+  private screencastBufferBytes = 0
   private screencastSessionId?: string
   private screencastUnsubscribe?: Unsubscribe
 
@@ -658,23 +659,31 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     const ev = event.params as {
       data?: string
       sessionId?: string
-      timestamp?: number
-      metadata?: { deviceWidth?: number; deviceHeight?: number; pageScaleFactor?: number }
+      metadata?: {
+        deviceWidth?: number
+        deviceHeight?: number
+        pageScaleFactor?: number
+        /** Capture time, epoch seconds (Network.TimeSinceEpoch). */
+        timestamp?: number
+        monotonicTimestamp?: number
+      }
     }
     if (!ev.data) return
+    this.screencastBufferBytes += this.screencastFrameBytes(ev.data)
     this.screencastBuffer.push({
       data: ev.data,
       format: this.screencastFormat,
-      // CDP's `timestamp` is epoch seconds at capture; prefer it so the mp4's
-      // pacing reflects capture time, not host-scheduling jitter.
-      timestampMs: typeof ev.timestamp === "number" ? Math.round(ev.timestamp * 1000) : Date.now(),
+      // CDP's `metadata.timestamp` is epoch seconds at capture; prefer it so
+      // the mp4's pacing reflects capture time, not host-scheduling jitter.
+      timestampMs:
+        typeof ev.metadata?.timestamp === "number" ? Math.round(ev.metadata.timestamp * 1000) : Date.now(),
       index: this.screencastIndex++,
       ...(ev.metadata?.deviceWidth !== undefined ? { width: ev.metadata.deviceWidth } : {}),
       ...(ev.metadata?.deviceHeight !== undefined ? { height: ev.metadata.deviceHeight } : {}),
     })
-    if (this.screencastBuffer.length > MAX_SCREENCAST_FRAMES) this.screencastBuffer.shift()
-    while (this.bufferedScreencastBytes() > MAX_SCREENCAST_BUFFER_BYTES && this.screencastBuffer.length > 2) {
-      this.screencastBuffer.shift()
+    if (this.screencastBuffer.length > MAX_SCREENCAST_FRAMES) this.dropOldestScreencastFrame()
+    while (this.screencastBufferBytes > MAX_SCREENCAST_BUFFER_BYTES && this.screencastBuffer.length > 2) {
+      this.dropOldestScreencastFrame()
     }
     // Chrome throttles screencast delivery until each frame is acked: the ack
     // echoes the FRAME's own id (params.sessionId — not the flat session's).
@@ -685,10 +694,13 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     }
   }
 
-  private bufferedScreencastBytes(): number {
-    let bytes = 0
-    for (const frame of this.screencastBuffer) bytes += (frame.data.length * 3) / 4
-    return bytes
+  private screencastFrameBytes(data: string): number {
+    return (data.length * 3) / 4
+  }
+
+  private dropOldestScreencastFrame(): void {
+    const dropped = this.screencastBuffer.shift()
+    if (dropped) this.screencastBufferBytes -= this.screencastFrameBytes(dropped.data)
   }
 
   /**
@@ -725,6 +737,7 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     if (this.screencastActive) return
     this.screencastIndex = 0
     this.screencastBuffer.length = 0
+    this.screencastBufferBytes = 0
     this.screencastFormat = opts?.format ?? "jpeg"
     const params = {
       format: this.screencastFormat,
@@ -804,6 +817,7 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
       this.screencastSessionId = undefined
     }
     this.screencastBuffer.length = 0
+    this.screencastBufferBytes = 0
     this.screencastIndex = 0
   }
 }

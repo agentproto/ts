@@ -127,9 +127,14 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
               // Real Chrome puts a frame identifier in params.sessionId; the
               // ack echoes it back (this is NOT the flat session's id).
               sessionId: frame.sessionId ?? "frame-1",
-              ...(frame.timestamp !== undefined ? { timestamp: frame.timestamp } : {}),
-              ...(frame.deviceWidth !== undefined || frame.deviceHeight !== undefined
-                ? { metadata: { deviceWidth: frame.deviceWidth ?? 0, deviceHeight: frame.deviceHeight ?? 0 } }
+              ...(frame.deviceWidth !== undefined || frame.deviceHeight !== undefined || frame.timestamp !== undefined
+                ? {
+                    metadata: {
+                      deviceWidth: frame.deviceWidth ?? 0,
+                      deviceHeight: frame.deviceHeight ?? 0,
+                      ...(frame.timestamp !== undefined ? { timestamp: frame.timestamp } : {}),
+                    },
+                  }
                 : {}),
             },
           })
