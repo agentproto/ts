@@ -508,8 +508,10 @@ export interface ChromeLiveScreencastFrame {
   height?: number
 }
 
-/** Buffer for frames — generous but bounded: what a recording session turns into mp4. */
+/** Buffer for frames: bounded twice over, by frame count and by approximate bytes. */
 const MAX_SCREENCAST_FRAMES = 2000
+/** 2000 JPEGs alone could reach hundreds of MB, so the buffered bytes are capped as well. */
+const MAX_SCREENCAST_BUFFER_BYTES = 64 * 1024 * 1024
 
 export const chromeLiveDriverCapabilities: BrowserDriverCapabilities = {
   ...chromeDriverCapabilities,
@@ -656,18 +658,24 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     const ev = event.params as {
       data?: string
       sessionId?: string
+      timestamp?: number
       metadata?: { deviceWidth?: number; deviceHeight?: number; pageScaleFactor?: number }
     }
     if (!ev.data) return
     this.screencastBuffer.push({
       data: ev.data,
       format: this.screencastFormat,
-      timestampMs: Date.now(),
+      // CDP's `timestamp` is epoch seconds at capture; prefer it so the mp4's
+      // pacing reflects capture time, not host-scheduling jitter.
+      timestampMs: typeof ev.timestamp === "number" ? Math.round(ev.timestamp * 1000) : Date.now(),
       index: this.screencastIndex++,
       ...(ev.metadata?.deviceWidth !== undefined ? { width: ev.metadata.deviceWidth } : {}),
       ...(ev.metadata?.deviceHeight !== undefined ? { height: ev.metadata.deviceHeight } : {}),
     })
     if (this.screencastBuffer.length > MAX_SCREENCAST_FRAMES) this.screencastBuffer.shift()
+    while (this.bufferedScreencastBytes() > MAX_SCREENCAST_BUFFER_BYTES && this.screencastBuffer.length > 2) {
+      this.screencastBuffer.shift()
+    }
     // Chrome throttles screencast delivery until each frame is acked: the ack
     // echoes the FRAME's own id (params.sessionId — not the flat session's).
     if (ev.sessionId) {
@@ -675,6 +683,12 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
         .send<void>("Page.screencastFrameAck", { sessionId: ev.sessionId }, this.screencastSessionId)
         .catch(() => {})
     }
+  }
+
+  private bufferedScreencastBytes(): number {
+    let bytes = 0
+    for (const frame of this.screencastBuffer) bytes += (frame.data.length * 3) / 4
+    return bytes
   }
 
   /**
