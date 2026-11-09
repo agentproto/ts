@@ -8,8 +8,9 @@
  *     the token's own session (`GET /sessions/:id`, `/events`,
  *     `/events/stream`, `/capabilities`, `/screencast`, `/screencast.jpg`,
  *     `/screencast.mjpg`, that one sessionId, only when the token carries
- *     a `sessionId` claim; `/screencast.jpg` of that id is the latest Bureau
- *     recording frame of a tab the session owns, fetched as that session),
+ *     a `sessionId` claim; `/screencast.jpg` of that id is a Bureau screenshot
+ *     of the session's own newest open tab, fetched as that session, no
+ *     recording),
  *     plus the three screencast spellings (and only those) of the browser
  *     session named by a `browserSessionId` claim (kept for chrome-live ids,
  *     a retired path), plus the two approval routes (`GET /approvals/:id`,

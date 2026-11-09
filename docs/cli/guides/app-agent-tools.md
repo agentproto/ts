@@ -128,15 +128,16 @@ What a link-SESSION token can reach, and nothing more:
   token>` (an `<img>` cannot send headers). Any other `/sessions/*` route
   (kill, PTY, prompt, the plain `/stream` tail, another session's reads or
   screencast) and `/mcp` stay behind the tunnel bearer.
-- **The screencast of the session's own recorded tab**: `GET
-  /sessions/<sessionId>/screencast.jpg` answers the latest Bureau recording
-  frame of a tab the session owns (the session calls `browser_screencast_start`
-  on a tab it opened). The daemon asks Bureau as that session, so Bureau's own
-  tab ownership decides what is visible: a link only ever sees frames of its
-  own session's tabs, read-only, one JPEG per request. No tab, no frame yet,
-  or Bureau unreachable all answer the same 404 `no_screencast_frame`. Only
-  `.jpg` is served this way; `.mjpg` and the extensionless viewer stay 404 for
-  such an id.
+- **The screencast of the session's own open Bureau tab**: `GET
+  /sessions/<sessionId>/screencast.jpg` answers a JPEG screenshot of the
+  session's newest open Bureau tab (no recording, the session does nothing). The
+  daemon asks Bureau as that session, so Bureau's own tab ownership decides what
+  is visible: a link only ever sees the viewport of its own session's tabs,
+  read-only, one JPEG per request. Frames are cached per session for 800 ms and
+  at most 2 captures run at once daemon-wide, so a link reads at most about one
+  fresh frame per 800 ms. No open tab, or Bureau unreachable, answers the same
+  404 `no_screencast_frame`. Only `.jpg` is served this way; `.mjpg` and the
+  extensionless viewer stay 404 for such an id.
 - **The screencast of a chrome-live browser session** (retired), for a token
   with a `browserSessionId` claim (pass it through `claims`): the claim unlocks
   `GET /sessions/<browserSessionId>/screencast`, `.jpg` and `.mjpg` and nothing
