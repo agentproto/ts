@@ -18,6 +18,7 @@ import { CANONICAL_POSTURES, postureEnforcement, type PostureEnforcement } from 
 import type { CanonicalPosture } from "./session-config.js"
 import { deriveInterception, type DerivedInterception } from "./action-hooks/interception.js"
 import { conversationTerminalSlugFor } from "./conversation-store.js"
+import { redactOrchestratorScopeRef } from "./orchestrator-scope-ref.js"
 import {
   daemonMountStatus,
   isDaemonMountFor,
@@ -184,7 +185,7 @@ export function buildSessionCapabilities(
     mcpServers: (desc.mcpServers ?? []).map(s => ({
       name: s.name,
       transport: s.transport,
-      ...(s.ref ? { ref: s.ref } : {}),
+      ...(s.ref ? { ref: redactOrchestratorScopeRef(s.ref) } : {}),
       ...(isDaemonMountFor(desc.id, s)
         ? daemonMountFields(mcpObservation, desc.turnsCompleted)
         : { status: "declared" as const }),

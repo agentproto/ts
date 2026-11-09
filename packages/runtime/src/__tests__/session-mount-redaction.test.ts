@@ -72,6 +72,15 @@ function expectRedacted(text: string, id: string, rows?: Array<Record<string, un
   expect(servers[1]?.headers).toEqual({ Authorization: "[redacted]" })
 }
 
+function expectCapabilitiesRedacted(text: string): void {
+  expect(text).not.toContain(ENV_CANARY)
+  expect(text).not.toContain(HEADER_CANARY)
+  expect(text).not.toContain(SCOPE_CANARY)
+  const caps = JSON.parse(text) as { mcpServers: Array<{ name: string; ref?: string }> }
+  expect(caps.mcpServers.map(s => s.name)).toEqual(["local", "remote", "orchestrator"])
+  expect(caps.mcpServers[2]?.ref).not.toContain(SCOPE_CANARY)
+}
+
 function expectStoredIntact(registry: ReturnType<typeof createSessionsRegistry>, id: string): void {
   const stored = registry.get(id)?.mcpServers
   expect(stored?.[0]?.env).toEqual({ LOCAL_TOKEN: ENV_CANARY })
@@ -104,6 +113,10 @@ describe("session descriptor mount redaction", () => {
         const page = JSON.parse(text) as { sessions: Array<Record<string, unknown>> }
         expectRedacted(text, desc.id, page.sessions)
       }
+      const capabilitiesText = firstText(
+        await client.callTool({ name: "session_capabilities", arguments: { sessionId: desc.id } }),
+      )
+      expectCapabilitiesRedacted(capabilitiesText)
       expectStoredIntact(registry, desc.id)
     } finally {
       await client.close()
@@ -162,6 +175,8 @@ describe("session descriptor mount redaction", () => {
       expectRedacted(listText, desc.id, (JSON.parse(listText) as { sessions: Array<Record<string, unknown>> }).sessions)
       const detailText = await (await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}`)).text()
       expectRedacted(detailText, desc.id)
+      const capabilitiesText = await (await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}/capabilities`)).text()
+      expectCapabilitiesRedacted(capabilitiesText)
       expectStoredIntact(registry, desc.id)
     } finally {
       await http.stop()
