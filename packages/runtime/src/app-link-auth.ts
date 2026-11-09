@@ -27,6 +27,7 @@ import { createHash } from "node:crypto"
 import {
   verifyAppLinkToken,
   mintAppLinkSessionToken,
+  publicLinkClaims,
   type VerifiedAppLinkToken,
 } from "./app-link-token.js"
 import { validateTelegramInitData } from "./telegram-init-data.js"
@@ -77,7 +78,17 @@ export interface AuthorizeAppLinkInput {
 }
 
 export type AuthorizeAppLinkResult =
-  | { ok: true; sessionToken: string; exp: number; appId: string; sessionId: string; telegramUserId: string }
+  | {
+      ok: true
+      sessionToken: string
+      exp: number
+      appId: string
+      /** Absent for a link that is about something other than a session. */
+      sessionId?: string
+      telegramUserId: string
+      /** The link's non-reserved claims (never the daemon-owned ones). */
+      claims: Record<string, string>
+    }
   | { ok: false; status: 400 | 401 | 403; error: string }
 
 function sessionTtlMsFromClaim(claims: VerifiedAppLinkToken["claims"]): number {
@@ -90,9 +101,10 @@ function sessionTtlMsFromClaim(claims: VerifiedAppLinkToken["claims"]): number {
 
 /**
  * Exchange a Telegram-gated `"link"` token + the opener's `initData` for a
- * `"session"` token scoped to exactly the link's `(appId, sessionId,
- * telegramUserId)`. Fail-closed at every step; every outcome (success AND
- * failure) is audited via `log`. The link token is REUSABLE until its own
+ * `"session"` token scoped to exactly the link's `(appId, claims,
+ * telegramUserId)` (`sessionId` is one claim among others, and optional).
+ * Fail-closed at every step; every outcome (success AND failure) is audited
+ * via `log`. The link token is REUSABLE until its own
  * `exp`: a Telegram button sits in a chat for days, and a second tap, a
  * webview reload or the UI's silent re-auth must all work. Single use would
  * add nothing: every exchange needs fresh `initData` (max age
@@ -111,7 +123,7 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
   const { payload } = verified
   const claimTelegramUserId = payload.claims.telegramUserId
   const sessionId = payload.claims.sessionId
-  if (!payload.pendingTelegramAuth || !claimTelegramUserId || !sessionId) {
+  if (!payload.pendingTelegramAuth || !claimTelegramUserId) {
     log({ ok: false, route: "link-auth", appId: payload.appId, reason: "link token is not Telegram-gated", ...(input.ip ? { ip: input.ip } : {}) })
     return { ok: false, status: 400, error: "this link token does not require Telegram authorization" }
   }
@@ -122,7 +134,7 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
     maxAgeSeconds: DEFAULT_INIT_DATA_MAX_AGE_SECONDS,
   })
   if (!validated.ok) {
-    log({ ok: false, route: "link-auth", appId: payload.appId, sessionId, reason: `initData: ${validated.error}`, ...(input.ip ? { ip: input.ip } : {}) })
+    log({ ok: false, route: "link-auth", appId: payload.appId, ...(sessionId ? { sessionId } : {}), reason: `initData: ${validated.error}`, ...(input.ip ? { ip: input.ip } : {}) })
     return { ok: false, status: 401, error: `telegram authorization failed: ${validated.error}` }
   }
 
@@ -131,7 +143,7 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
       ok: false,
       route: "link-auth",
       appId: payload.appId,
-      sessionId,
+      ...(sessionId ? { sessionId } : {}),
       telegramUserId: String(validated.user.id),
       reason: `user mismatch: link token requires telegramUserId=${claimTelegramUserId}`,
       ...(input.ip ? { ip: input.ip } : {}),
@@ -139,10 +151,11 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
     return { ok: false, status: 403, error: "this Telegram account is not authorized for this link" }
   }
 
+  const linkClaims = publicLinkClaims(payload.claims)
   const { token: sessionToken, exp } = mintAppLinkSessionToken({
     appId: payload.appId,
     claims: {
-      sessionId,
+      ...linkClaims,
       telegramUserId: claimTelegramUserId,
       ...(input.ip ? { authIp: input.ip } : {}),
       ...(input.userAgent ? { authUaHash: createHash("sha256").update(input.userAgent).digest("hex").slice(0, 16) } : {}),
@@ -150,6 +163,14 @@ export async function authorizeAppLink(input: AuthorizeAppLinkInput): Promise<Au
     ttlMs: sessionTtlMsFromClaim(payload.claims),
     ...(input.keyPath ? { keyPath: input.keyPath } : {}),
   })
-  log({ ok: true, route: "link-auth", appId: payload.appId, sessionId, telegramUserId: claimTelegramUserId, ...(input.ip ? { ip: input.ip } : {}) })
-  return { ok: true, sessionToken, exp, appId: payload.appId, sessionId, telegramUserId: claimTelegramUserId }
+  log({ ok: true, route: "link-auth", appId: payload.appId, ...(sessionId ? { sessionId } : {}), telegramUserId: claimTelegramUserId, ...(input.ip ? { ip: input.ip } : {}) })
+  return {
+    ok: true,
+    sessionToken,
+    exp,
+    appId: payload.appId,
+    ...(sessionId ? { sessionId } : {}),
+    telegramUserId: claimTelegramUserId,
+    claims: linkClaims,
+  }
 }

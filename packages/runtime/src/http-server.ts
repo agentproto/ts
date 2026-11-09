@@ -182,7 +182,7 @@ import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
-import { appLinkToolCallAuth, appLinkTunnelBypass, isSameOriginRequest, logAppLinkAccess } from "./app-link-gate.js"
+import { appLinkSessionReadAuth, appLinkToolCallAuth, appLinkTunnelBypass, isSameOriginRequest, logAppLinkAccess } from "./app-link-gate.js"
 import { authorizeAppLink } from "./app-link-auth.js"
 import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 import { handleA2aTaskRequest, type A2aTaskHttpConfig } from "./a2a-task-http.js"
@@ -1859,8 +1859,9 @@ export async function startHttpServer(
    * `appLinkTunnelBypass`): a valid Telegram-identity-bound link-SESSION
    * token (minted by `app_link_mint`, exchanged via `POST
    * /apps/:appId/link-auth`) is accepted ONLY for that token's own `POST
-   * /apps/:appId/tool-call` and its own session's four read routes
-   * (`GET /sessions/:id`, `/events`, `/events/stream`, `/capabilities`).
+   * /apps/:appId/tool-call` and its own session's read routes
+   * (`GET /sessions/:id`, `/events`, `/events/stream`, `/capabilities`,
+   * `/screencast`, `/screencast.jpg`, `/screencast.mjpg`).
    * Unlike `?et=`, this one IS meant to cross the tunnel boundary (it's the
    * whole point of a link sent over Telegram) but it carries no more than
    * that single session's read access plus whatever the app's own
@@ -3777,7 +3778,14 @@ export async function startHttpServer(
           // are gated like a mutating route (bearer / ?token= / allowlisted
           // Origin / embed token): CORS answers `*` to an untrusted origin, so
           // without this any web page could fetch a frame from loopback.
-          if (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path)) {
+          // A link-session token reads the screencast of its OWN session only
+          // (`?token=` for an <img>, which cannot send headers); the tunnel
+          // gate already admitted it, this keeps the bearer check from
+          // refusing it a second time.
+          const linkOwnScreencast =
+            isScreencastSessionsRoute(path) &&
+            appLinkSessionReadAuth(req, path, req.method ?? "GET", opts.appLinkKeyPath) !== undefined
+          if (!linkOwnScreencast && (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path))) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
               rejectUnauthorizedSession(req, res, gate)
@@ -5951,9 +5959,7 @@ export async function startHttpServer(
                   allowTools: parseToolListQuery(req.url ?? "", "allowTools"),
                 },
               },
-              linkAuth
-                ? { sessionId: linkAuth.sessionId, ...(linkAuth.telegramUserId ? { telegramUserId: linkAuth.telegramUserId } : {}) }
-                : undefined,
+              linkAuth ? linkAuth.claims : undefined,
             )
             return
           }
@@ -14325,7 +14331,9 @@ async function handleAppUiToolCall(
  *  route's own auth IS the link token + the Telegram Mini App `initData`
  *  it carries, verified inside `authorizeAppLink` against the daemon's
  *  stored bot token — never the daemon bearer. Replies 200 with
- *  `{ ok: true, token, exp, appId, sessionId }` on success; 400/401/403
+ *  `{ ok: true, token, exp, appId, sessionId?, claims }` on success (`claims`
+ *  is the link's non-reserved claims; `sessionId` only when the link has
+ *  one); 400/401/403
  *  with `{ ok: false, error }` otherwise. 501 when no `telegramCreds` store
  *  was wired (mirrors `appToolCallDeps`'s "not enabled" posture). */
 async function handleAppLinkAuth(
@@ -14369,7 +14377,14 @@ async function handleAppLinkAuth(
     json(401, { ok: false, error: `this link token is scoped to app "${result.appId}", not "${appId}".` })
     return
   }
-  json(200, { ok: true, token: result.sessionToken, exp: result.exp, appId: result.appId, sessionId: result.sessionId })
+  json(200, {
+    ok: true,
+    token: result.sessionToken,
+    exp: result.exp,
+    appId: result.appId,
+    ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+    claims: result.claims,
+  })
 }
 
 async function handleApps(
