@@ -571,6 +571,15 @@ export interface ApprovalsConfig {
    * false. Turning it on also adds `telegram` to new approvals' `channels`.
    */
   telegramApprovalCards?: boolean
+  /**
+   * Telegram user ids (digits only) allowed to read and decide ONE pending
+   * approval through an approval link: a link-session token whose
+   * `approvalId` claim equals the route's id, on `GET /approvals/:id` and
+   * `POST /approvals/:id/decision/telegram` (`app-link-gate.ts`,
+   * `approvals/http.ts`). Default empty = approval links are off. Lockout
+   * key (`writable: false`): an agent must not widen who can approve.
+   */
+  humanTelegramIds?: string[]
 }
 
 /**

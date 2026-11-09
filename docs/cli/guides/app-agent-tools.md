@@ -143,6 +143,22 @@ What a link-SESSION token can reach, and nothing more:
   else, but only a chrome-live descriptor answers there and the daemon no
   longer registers one. A token may carry both `sessionId` and
   `browserSessionId`; each keeps its own rule.
+- **One daemon approval**, for a token with an `approvalId` claim (pass it
+  through `claims`): `GET /approvals/<approvalId>` reads that approval (the
+  same record the route returns to the operator, no card ticket) and
+  `POST /approvals/<approvalId>/decision/telegram` with
+  `{"decision":"approve"|"deny"}` decides it through the `telegram` channel.
+  Both need the token's verified `telegramUserId` to be listed in the
+  owner-only `approvals.humanTelegramIds` (digits only, `writable: false`, so
+  an agent cannot add itself; empty by default, which refuses every link).
+  A decide also needs the approval to be `pending` with `telegram` among its
+  channels. Every refusal is the same `403 {"error":"approval_link_forbidden"}`
+  (which condition failed is only in the daemon's `approval-link:` audit
+  line), the decision record and the `approval:decided` event carry the
+  decider's `telegramUserId`, and the bot bridge's
+  `approvals.telegramBotSecret` keeps working unchanged. The list, create,
+  wait, consume and `web_click` routes, another approval id and any other
+  method stay behind the tunnel bearer.
 - **Tool calls** through its own app's `POST /apps/:appId/tool-call`, limited
   to that app's `ui.toolScope`. A link is not read-only: if the app scopes a
   write tool (e.g. `agent_prompt` or `agent_interrupt` with

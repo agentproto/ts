@@ -495,6 +495,9 @@ const provenanceConfigSchema: z.ZodType<ProvenanceConfig> = z
   .object({ wrapGh: z.boolean().optional() })
   .passthrough()
 
+/** A numeric Telegram user id, digits only (`approvals.humanTelegramIds`). */
+const telegramUserIdString = z.string().regex(/^\d+$/, "a Telegram user id is digits only")
+
 const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
   .object({
     webOrigins: z.array(z.string()).optional(),
@@ -504,6 +507,7 @@ const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
     permissionTelegramAlias: z.string().optional(),
     permissionTelegramTools: z.array(z.string()).optional(),
     telegramApprovalCards: z.boolean().optional(),
+    humanTelegramIds: z.array(telegramUserIdString).optional(),
   })
   .passthrough()
 
@@ -1060,6 +1064,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Telegram approval cards",
     help: "Send each pending approval (for example a Bureau recipe write) to the Telegram chat as an Approve / Refuse card, and let a tap from an allowed user decide it through the telegram channel. Reuses approvals.permissionTelegramChatId, approvals.permissionTelegramUserIds and approvals.permissionTelegramAlias, and does nothing until those are set. Default false.",
     default: false,
+  },
+  {
+    path: "approvals.humanTelegramIds",
+    schema: z.array(telegramUserIdString),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Approval link Telegram user ids",
+    help: "Telegram user ids allowed to read and decide a pending approval through an approval link: a link-session token whose approvalId claim names that one approval, on GET /approvals/:id and POST /approvals/:id/decision/telegram. The id is the one Telegram initData verified when the link was opened. Digits only. Empty (default) turns approval links off: both routes refuse every link token. Owner-only: an agent session cannot widen who may approve.",
+    default: [],
   },
   {
     path: "daemon.strictOrigins",

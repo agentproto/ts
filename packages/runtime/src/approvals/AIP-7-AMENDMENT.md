@@ -32,3 +32,16 @@ The `web_click` channel (the fallback card in a composer dock, decided through
 `POST /approvals/:id/decision`) is enabled only when the operator sets
 `approvals.webOrigins` in the daemon config. The `ui_card` channel always
 works and needs no origin configuration.
+
+## Approval links
+
+A Telegram-opened app page can read and decide ONE approval with an AIP-53
+link-session token whose `approvalId` claim names it (see
+`docs/cli/guides/app-agent-tools.md`). The token reaches exactly
+`GET /approvals/:id` and `POST /approvals/:id/decision/telegram` for that id,
+and decides through the `telegram` channel in place of the bot secret. It is
+honoured only when the token's verified `telegramUserId` is listed in
+`approvals.humanTelegramIds`, an owner-only config key (`writable: false`,
+digits only, applied on restart). The list is empty by default, which keeps
+approval links off. The decision record (`decision.telegramUserId`) and the
+`approval:decided` event name the Telegram user who decided.

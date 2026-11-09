@@ -430,6 +430,20 @@ describe("config_set", () => {
     await client.close()
   })
 
+  it("rejects approvals.humanTelegramIds (owner-only allow-list)", async () => {
+    await writeCfg({ approvals: { humanTelegramIds: ["4242"] } })
+    const client = await setupClient(makeDeps({}))
+    const res = await client.callTool({
+      name: "config_set",
+      arguments: { key: "approvals.humanTelegramIds", value: ["4242", "999"] },
+    })
+    expect((res as { isError?: boolean }).isError).toBe(true)
+    const text = (res as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? ""
+    expect(text).toContain("is not writable")
+    expect((await loadConfig(configPath)).approvals?.humanTelegramIds).toEqual(["4242"])
+    await client.close()
+  })
+
   it("rejects an unknown key", async () => {
     await writeCfg({})
     const client = await setupClient(makeDeps({}))
