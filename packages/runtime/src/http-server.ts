@@ -68,6 +68,7 @@ import {
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
+import { createSessionScreencastReader, serveSessionScreencast } from "./session-screencast.js"
 import { classifyAttestation, createAttestationLogGate } from "./claude-session-attest-log.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -2096,6 +2097,12 @@ export async function startHttpServer(
     )
   }
 
+  // Bureau-backed `.jpg` for a session id that is not a chrome-live browser
+  // descriptor (one cache per server, see session-screencast.ts).
+  const sessionScreencast = createSessionScreencastReader({
+    callImportedTool: opts.appToolCallDeps?.callImportedTool,
+  })
+
   /**
    * Returns true when this `path` + `method` is a mutating /sessions/*
    * route that should require the per-boot token. Kept narrow: GETs
@@ -3789,6 +3796,15 @@ export async function startHttpServer(
           }
           if (isIdentityGatedSessionRoute(req.method ?? "GET", path) && (await enforceCallerIdentity(req, res, path))) {
             return
+          }
+          const bureauScreencast =
+            req.method === "GET" ? /^\/sessions\/([^/]+)\/screencast\.jpg$/.exec(path) : null
+          if (bureauScreencast) {
+            const wanted = opts.sessions.get(bureauScreencast[1] as string)
+            if (!wanted || wanted.kind !== "browser" || wanted.browserAdapterId !== "chrome-live") {
+              await serveSessionScreencast(res, sessionScreencast, bureauScreencast[1] as string)
+              return
+            }
           }
           const handled = await handleSessions(
             req,
@@ -8456,8 +8472,10 @@ async function handleSessions(
   // chrome-live live screencast surfaces — same frames the MCP
   // browser_screencast_* tools read (through the module-scope liveInstances
   // map, so they survive mcpServerFactory's per-request runs). Chrome Live's
-  // agent tab inside the user's Chrome only — never the desktop, and not the
-  // separate Bureau (:8830) browser service.
+  // agent tab inside the user's Chrome only, never the desktop. The chrome-live
+  // path is retired: for any other id, `.jpg` is answered before this handler
+  // from the Bureau recording of a tab the session owns (session-screencast.ts),
+  // and `.mjpg` and the viewer stay 404 here.
   const screencastMatch =
     /^\/sessions\/([^/]+)\/screencast(?:\.(jpg|mjpg))?$/.exec(path)
   if (screencastMatch && req.method === "GET") {
