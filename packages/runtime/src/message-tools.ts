@@ -114,7 +114,7 @@ export interface AnonymousMessageApprovalDetail {
   urgency: MessageUrgency
 }
 
-type ToolResult = {
+export type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
 }
@@ -142,6 +142,56 @@ const noFromField = z
   .unknown()
   .optional()
   .describe("Not settable — leave it out: the daemon attests the sender from your session identity.")
+
+/** A session an address can still reach: not retired, and either running or
+ *  an external row whose inbox is open (the same test the session-follow
+ *  delivery gate uses). */
+const isLiveRecipient = (d: SessionDescriptor): boolean =>
+  !isRetired(d) && (d.status === "running" || d.status === "starting" || isExternalInboxOpen(d))
+
+/** `label:<label>` resolves to the ONE live session whose immutable,
+ *  operator-assigned `operatorLabel` equals `<label>` exactly (the notion
+ *  `allowPromptFrom: "label:..."` and `session_labels` use; the mutable
+ *  `label` a session or its spawner can set never matches). It only picks the
+ *  target: the caller then runs its usual permission check on the resolved
+ *  session, so a label never widens who can be reached. Any other `to` passes
+ *  through unchanged. Shared by `message_send` and the drive tools
+ *  (`agent_prompt` / `agent_interrupt` / `agent_kill`); `mayReach` decides
+ *  which candidates an `ambiguous_label` error may name. */
+export function resolveLiveLabelAddress(input: {
+  registry: SessionsRegistry
+  tool: string
+  to: string
+  mayReach: (d: SessionDescriptor) => boolean
+  /** What the caller may not do to the hidden candidates, for the error text. */
+  verb?: "message" | "drive"
+}): { id: string } | ToolResult {
+  const { registry, tool, to, mayReach, verb = "message" } = input
+  if (!to.startsWith("label:")) return { id: to }
+  const label = to.slice("label:".length)
+  if (label.trim() === "") {
+    return fail("invalid_label", `${tool}: \`label:\` needs a label after the colon.`)
+  }
+  const live = registry.list().filter(d => d.operatorLabel === label && isLiveRecipient(d))
+  if (live.length === 0) {
+    return fail(
+      "no_live_session_for_label",
+      `${tool}: no live session carries the label "${label}". A killed or retired session never matches.`,
+    )
+  }
+  if (live.length > 1) {
+    const reachable = live.filter(mayReach)
+    const hidden = live.length - reachable.length
+    const ids = reachable.map(d => d.id).join(", ")
+    return fail(
+      "ambiguous_label",
+      `${tool}: ${live.length} live sessions carry the label "${label}"; none was picked. ` +
+        `Address one by session id${ids ? `: ${ids}` : ""}` +
+        `${hidden > 0 ? ` (${hidden} more you may not ${verb})` : ""}.`,
+    )
+  }
+  return { id: live[0]!.id }
+}
 
 /** Compact wire view of a message for tool results. */
 function view(m: SessionMessage): Record<string, unknown> {
@@ -228,55 +278,22 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     )
   }
 
-  /** A session a message can still be delivered to: not retired, and either
-   *  running or an external row whose inbox is open (the same test the
-   *  session-follow delivery gate uses). */
-  const isLiveRecipient = (d: SessionDescriptor): boolean =>
-    !isRetired(d) && (d.status === "running" || d.status === "starting" || isExternalInboxOpen(d))
-
-  /** `to: "label:<label>"` resolves to the ONE live session whose immutable,
-   *  operator-assigned `operatorLabel` equals `<label>` exactly (the notion
-   *  `allowPromptFrom: "label:..."` and `session_labels` use; the mutable
-   *  `label` a session or its spawner can set never matches). It only picks
-   *  the recipient: `send` then runs the usual permission check on the
-   *  resolved session, so a label never widens who can be reached. Any other
-   *  `to` passes through unchanged. */
   const resolveLabelAddress = (
     tool: string,
     to: string,
     self: SessionDescriptor | undefined,
   ): { id: string } | ToolResult => {
-    if (!to.startsWith("label:")) return { id: to }
-    const label = to.slice("label:".length)
-    if (label.trim() === "") {
-      return fail("invalid_label", `${tool}: \`label:\` needs a label after the colon.`)
-    }
-    const live = registry.list().filter(d => d.operatorLabel === label && isLiveRecipient(d))
-    if (live.length === 0) {
-      return fail(
-        "no_live_session_for_label",
-        `${tool}: no live session carries the label "${label}". A killed or retired session never matches.`,
-      )
-    }
-    if (live.length > 1) {
-      // List only sessions the caller may message, so the error cannot be
-      // used to enumerate sessions it has no relation to.
-      const principal = self
-        ? ({ kind: "session", session: self } as const)
-        : ({ kind: "operator", via: "anonymous-local" } as const)
-      const reachable = live.filter(
-        d => decide(principal, "session.message", { kind: "session", session: d } as const, basePolicy).allow,
-      )
-      const hidden = live.length - reachable.length
-      const ids = reachable.map(d => d.id).join(", ")
-      return fail(
-        "ambiguous_label",
-        `${tool}: ${live.length} live sessions carry the label "${label}"; none was picked. ` +
-          `Address one by session id${ids ? `: ${ids}` : ""}` +
-          `${hidden > 0 ? ` (${hidden} more you may not message)` : ""}.`,
-      )
-    }
-    return { id: live[0]!.id }
+    // List only sessions the caller may message, so the ambiguity error
+    // cannot be used to enumerate sessions it has no relation to.
+    const principal = self
+      ? ({ kind: "session", session: self } as const)
+      : ({ kind: "operator", via: "anonymous-local" } as const)
+    return resolveLiveLabelAddress({
+      registry,
+      tool,
+      to,
+      mayReach: d => decide(principal, "session.message", { kind: "session", session: d } as const, basePolicy).allow,
+    })
   }
 
   /** An identity-less client asks to send under `accept`/`ask`: only

@@ -1342,6 +1342,14 @@ Which action guards which tool:
 | `session:prompt` | `agent_prompt` |
 | `session:control` | `agent_interrupt`, `agent_kill`, `session_restart`, `session_continue_fresh` |
 
+`agent_prompt`, `agent_interrupt` and `agent_kill` also take `sessionId` (or
+`id`) as `"label:<operatorLabel>"`: it resolves to the one LIVE session whose
+immutable `operatorLabel` equals the label (the resolver `message_send` uses; a
+killed or retired twin never matches). No live match is
+`no_live_session_for_label`, several is `ambiguous_label` (the error lists only
+the ids the caller may drive, and picks none). The check below then runs on the
+resolved session, so a label never bypasses the owner gate or a grant.
+
 For the drive tools the legacy rules stay in `session-owner.ts` and are
 checked FIRST, byte for byte as before: the human operator, the session
 itself, the session that spawned it, an ancestor in the spawn tree, and an
@@ -1476,6 +1484,7 @@ route:
 ```text
 CLI:  agentproto sessions prompt <id-or-name> --prompt "..." --interrupt
 MCP:  agent_prompt { sessionId, prompt, interrupt: true }
+MCP:  agent_prompt { sessionId: "label:<operatorLabel>", prompt }   # by label
 HTTP: POST /sessions/:id/prompt?wait=false  { "prompt": "...", "interrupt": true }
 ```
 
