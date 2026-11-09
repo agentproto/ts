@@ -153,9 +153,14 @@ a capability by adding a tool in `tools.mjs` and referencing it (or a `@group`)
 from a flow.
 
 ## Secrets / vars (configure these)
-- `secrets.OPENCODE_API_KEY`, `secrets.OPENCODE_API_KEY_WS02`,
-  `secrets.OPENCODE_API_KEY_WS03`: Zen keys for the free review and auto-fix
-  lanes. Any one of them funds the default free route; no Go key is required.
+- `secrets.OPENCODE_API_KEY_HODL`, `secrets.OPENCODE_API_KEY_WS03`,
+  `secrets.OPENCODE_API_KEY`: Zen keys for the review and auto-fix lanes. Each
+  lane takes the first key set: primary lanes read HODL, then WS03, then the
+  base key; fallback lanes start from WS03, so the two lanes do not share a
+  key. `OPENCODE_API_KEY_WS02` is no longer read. To change keys, update these
+  secrets; no code change.
+- `secrets.OPENCODE_GO_API_KEY_HODL` (optional): Go workspace key, read before
+  `OPENCODE_GO_API_KEY` when a lane's model is `opencode-go/*`.
 - `secrets.OPENCODE_GO_API_KEY`: Go subscription key used by the other agent
   workflows (release notes, docs check, manual review). Not read by pr-review
   or pr-fix. The `opencode-developerws003` (ws03) profile is not used by CI.
