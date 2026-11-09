@@ -80,7 +80,8 @@ grant.
 
 The concrete motivating case is a session-chat link sent over Telegram: the
 daemon's `app_link_mint` tool (privileged — never itself placed in
-`ui.tools`) mints a token bound to one `(appId, sessionId, telegramUserId)`;
+`ui.tools`) mints a token bound to one `(appId, claims, telegramUserId)`
+(`sessionId` is the usual claim);
 opening it requires the holder's Telegram account to pass `POST
 /apps/:appId/link-auth` before anything scoped actually works. The link
 token is reusable until its own expiry (a second tap on the button, a
@@ -95,13 +96,38 @@ and any other cross-origin `Origin` is still refused. See
 above for why it's a UI-call concern only — it never touches an AGENT.md's
 own `tools:`.
 
+### What `app_link_mint` takes
+
+- `appId`, `telegramUserId`: as above. `ttlMs`, `sessionTtlMs` and `botAlias`
+  keep their defaults and caps.
+- `sessionId` (optional): becomes the `sessionId` claim, which unlocks the
+  session read routes below and `permissions_respond`'s ownership check.
+- `claims` (optional): a map of string to string for a link about something
+  other than a session (`{ approvalId: "a1" }`, a dossier id, ...). The app
+  pins them with `"$link.<name>"` in its `ui.toolScope`. Names match
+  `^[A-Za-z][A-Za-z0-9_]{0,31}$`, values are 1 to 200 characters, 8 claims at
+  most. `telegramUserId`, `botAlias`, `sessionTtlMs`, `exp`, `kind`, `appId`
+  (and the audit stamps `authIp`, `authUaHash`) are reserved and refused, and
+  `sessionId` must come through its own argument, not through `claims`.
+
+At least one of `sessionId` or a non-empty `claims` is required. A link with
+no `sessionId` claim reads no session over HTTP; it only calls the tools the
+app's `toolScope` names, pinned on the claims it does carry.
+
+`POST /apps/:appId/link-auth` answers `{ ok, token, exp, appId, sessionId?,
+claims }`: `claims` is the link's non-reserved claims (so a UI can read its
+`approvalId`), never the daemon-owned ones.
+
 What a link-SESSION token can reach, and nothing more:
 
-- **Reads over HTTP**, for its own session only: `GET /sessions/:id`,
-  `/sessions/:id/events`, `/sessions/:id/events/stream` and
-  `/sessions/:id/capabilities`. Any other `/sessions/*` route (kill, PTY,
-  prompt, the plain `/stream` tail, another session's reads) and `/mcp`
-  stay behind the tunnel bearer.
+- **Reads over HTTP**, for its own session only (a token with a `sessionId`
+  claim): `GET /sessions/:id`, `/sessions/:id/events`,
+  `/sessions/:id/events/stream`, `/sessions/:id/capabilities` and the live
+  browser frames `/sessions/:id/screencast`, `/sessions/:id/screencast.jpg`,
+  `/sessions/:id/screencast.mjpg`. The token may ride as `?token=<session
+  token>` (an `<img>` cannot send headers). Any other `/sessions/*` route
+  (kill, PTY, prompt, the plain `/stream` tail, another session's reads or
+  screencast) and `/mcp` stay behind the tunnel bearer.
 - **Tool calls** through its own app's `POST /apps/:appId/tool-call`, limited
   to that app's `ui.toolScope`. A link is not read-only: if the app scopes a
   write tool (e.g. `agent_prompt` or `agent_interrupt` with

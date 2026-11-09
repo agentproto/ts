@@ -79,7 +79,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, APP_DATA_ROOT_SUBDIR, defaultRemoteAppDataDir, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
-import { mintAppLinkToken } from "./app-link-token.js"
+import { mintAppLinkToken, validateGenericLinkClaims } from "./app-link-token.js"
 import { DAEMON_TOOL_NAMES } from "./daemon-tool-names.generated.js"
 import {
   appVersionProblem,
@@ -3749,17 +3749,33 @@ export function registerAppTools(
       "`initData`, which the daemon verifies against the stored bot token (telegram_bot_token_set) and " +
       "the exact telegramUserId claimed here — only a matching account exchanges it for a short-lived " +
       "session token that can actually call tools (scoped by the app's `ui.toolScope`) or read that one " +
-      "session. Never put \"app_link_mint\" in an app's `ui.tools` — it is refused there and unreachable " +
+      "session. The link is about a session (`sessionId`), about anything else the app scopes on " +
+      "(`claims`, e.g. `{ approvalId }`), or both: at least one of the two is required. Never put \"app_link_mint\" in an app's `ui.tools` — it is refused there and unreachable " +
       "from any UI's own tool-call surface regardless.",
     {
       appId: z.string().describe("Installed app id — must declare a non-empty `ui.toolScope`."),
-      sessionId: z.string().min(1).describe("The session this link is scoped to."),
+      sessionId: z.string().min(1).optional().describe("The session this link is scoped to. Optional when `claims` is given."),
+      claims: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe(
+          "Extra claims the app's `ui.toolScope` can pin as `$link.<name>` (e.g. `{ approvalId: \"a1\" }`). " +
+            "Names: letters, digits, underscores, starting with a letter, 32 characters at most; values 1 to 200 " +
+            "characters; 8 claims at most. Reserved names (telegramUserId, botAlias, sessionTtlMs, exp, kind, appId) " +
+            "and `sessionId` are refused here.",
+        ),
       telegramUserId: z.string().min(1).describe("The Telegram numeric user id (as a string) allowed to open this link."),
       ttlMs: z.number().int().positive().optional().describe("How long the link stays openable before Telegram auth. Default 1 hour."),
       sessionTtlMs: z.number().int().positive().optional().describe("How long the resulting session token lasts once authorized. Default 30 minutes."),
       botAlias: z.string().optional().describe('Telegram bot alias to verify against at link-auth time; default "default".'),
     },
-    async ({ appId, sessionId, telegramUserId, ttlMs, sessionTtlMs, botAlias }) => {
+    async ({ appId, sessionId, claims, telegramUserId, ttlMs, sessionTtlMs, botAlias }) => {
+      const extraClaims = claims ?? {}
+      if (sessionId === undefined && Object.keys(extraClaims).length === 0) {
+        return errorResult("app_link_mint: give a `sessionId`, a non-empty `claims` map, or both.")
+      }
+      const claimsError = validateGenericLinkClaims(extraClaims)
+      if (claimsError) return errorResult(`app_link_mint: ${claimsError}`)
       const installed = appRegistry.getApp(appId)
       if (!installed || !installed.ui) {
         return errorResult(`app_link_mint: app "${appId}" is not installed or has no UI.`)
@@ -3772,7 +3788,8 @@ export function registerAppTools(
       const { token, exp } = mintAppLinkToken({
         appId,
         claims: {
-          sessionId,
+          ...extraClaims,
+          ...(sessionId !== undefined ? { sessionId } : {}),
           telegramUserId,
           sessionTtlMs: String(sessionTtlMs ?? DEFAULT_APP_LINK_SESSION_TTL_MS),
           ...(botAlias ? { botAlias } : {}),
@@ -3780,7 +3797,14 @@ export function registerAppTools(
         ttlMs: ttlMs ?? DEFAULT_APP_LINK_TTL_MS,
         pendingTelegramAuth: true,
       })
-      return textResult({ linkToken: token, exp, appId, sessionId, telegramUserId })
+      return textResult({
+        linkToken: token,
+        exp,
+        appId,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(Object.keys(extraClaims).length > 0 ? { claims: extraClaims } : {}),
+        telegramUserId,
+      })
     },
   )
 

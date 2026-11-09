@@ -19,6 +19,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createMcpServer } from "@agentproto/mcp-server"
+import { forgetLiveBrowserInstance, setLiveBrowserInstance } from "../browser-tools.js"
 
 import { startHttpServer, type RuntimeHttpServerOptions } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
@@ -111,8 +112,12 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
       unvalidatedAgentTools: [],
       ui: {
         path: join(dir, "ui.html"),
-        tools: ["conversation_read", "permissions_respond"],
-        toolScope: { conversation_read: { sessionId: "$link.sessionId" }, permissions_respond: {} },
+        tools: ["conversation_read", "permissions_respond", "approval_probe"],
+        toolScope: {
+          conversation_read: { sessionId: "$link.sessionId" },
+          permissions_respond: {},
+          approval_probe: { approvalId: "$link.approvalId" },
+        },
       },
     })
 
@@ -292,6 +297,151 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
         body: JSON.stringify({ tool: "conversation_read", args: {} }),
       })
       expect(toolCall.status).toBe(401)
+    })
+  })
+
+  describe("generic claims and the screencast routes", () => {
+    const FRAME = Buffer.from("fake-jpeg-frame")
+    const SESSIONS_TOKEN = "sessions-boot-token"
+
+    async function exchangeClaimsLink(base: string, claims: Record<string, string>) {
+      const { token: linkToken } = mintAppLinkToken({
+        appId: APP_ID,
+        claims: { ...claims, telegramUserId: "42" },
+        ttlMs: 60_000,
+        pendingTelegramAuth: true,
+        keyPath,
+      })
+      const res = await fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/link-auth`, {
+        method: "POST",
+        headers: { ...FORWARDED, "content-type": "application/json" },
+        body: JSON.stringify({ linkToken, initData: signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN) }),
+      })
+      return { res, body: (await res.json()) as { ok: boolean; token: string; sessionId?: string; claims: Record<string, string> } }
+    }
+
+    function registerChromeLive(registry: ReturnType<typeof createSessionsRegistry>, port = 9222): string {
+      const desc = registry.registerBrowser({
+        adapterId: "chrome-live",
+        port,
+        baseUrl: `http://127.0.0.1:${port}`,
+        wasAlreadyRunning: true,
+        stop: async () => {},
+      })
+      setLiveBrowserInstance(desc.id, {
+        screencastFrame: async () => ({ data: FRAME.toString("base64"), format: "jpeg", index: 0 }),
+      } as unknown as Parameters<typeof setLiveBrowserInstance>[1])
+      return desc.id
+    }
+
+    async function statusOf(url: string, headers: Record<string, string> = {}): Promise<number> {
+      const res = await fetch(url, { headers: { ...FORWARDED, ...headers } })
+      await res.body?.cancel()
+      return res.status
+    }
+
+    it("a claims-only link exchanges to a token carrying the claims, usable on a claim-pinned tool and not on any session read", async () => {
+      await withServer(async (base, registry) => {
+        const someSession = spawnSession(registry)
+        const { res, body } = await exchangeClaimsLink(base, { approvalId: "a1" })
+        expect(res.status).toBe(200)
+        expect(body.ok).toBe(true)
+        expect(body.claims).toEqual({ approvalId: "a1" })
+        expect(body.sessionId).toBeUndefined()
+
+        const call = async (args: Record<string, unknown>) => {
+          const r = await fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/tool-call`, {
+            method: "POST",
+            headers: { ...FORWARDED, authorization: `Bearer ${body.token}`, "content-type": "application/json" },
+            body: JSON.stringify({ tool: "approval_probe", args }),
+          })
+          expect(r.status).toBe(200)
+          return (await r.json()) as { isError?: boolean; content: { text: string }[] }
+        }
+        const pinned = await call({})
+        expect(pinned.isError).toBeUndefined()
+        expect(JSON.parse(pinned.content[0]!.text)).toEqual({ ok: true, args: { approvalId: "a1" } })
+        expect((await call({ approvalId: "a2" })).isError).toBe(true)
+
+        const headers = { ...FORWARDED, authorization: `Bearer ${body.token}` }
+        expect((await fetch(`${base}/sessions/${someSession.id}`, { headers })).status).toBe(401)
+        expect((await fetch(`${base}/sessions/${someSession.id}/events`, { headers })).status).toBe(401)
+        expect((await fetch(`${base}/sessions/${someSession.id}/capabilities`, { headers })).status).toBe(401)
+        expect((await fetch(`${base}/sessions/undefined`, { headers })).status).toBe(401)
+        expect(await statusOf(`${base}/sessions/${someSession.id}/screencast.jpg`, headers)).toBe(401)
+      })
+    })
+
+    it("a claims-only token has no sessionId claim, so permissions_respond is refused", async () => {
+      await withServer(async (base, registry) => {
+        const mine = spawnSession(registry)
+        registry.listPendingPermissions = (() => [{ id: "perm_1", sessionId: mine.id }]) as unknown as typeof registry.listPendingPermissions
+        const { body } = await exchangeClaimsLink(base, { approvalId: "a1" })
+        const r = await fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/tool-call`, {
+          method: "POST",
+          headers: { ...FORWARDED, authorization: `Bearer ${body.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ tool: "permissions_respond", args: { id: "perm_1", decision: "approve" } }),
+        })
+        expect(((await r.json()) as { isError?: boolean }).isError).toBe(true)
+      })
+    })
+
+    it("a session link still answers with its sessionId, and claims lists the non-reserved claims only", async () => {
+      await withServer(async (base, registry) => {
+        const target = spawnSession(registry)
+        const { body } = await exchangeClaimsLink(base, { sessionId: target.id, approvalId: "a1", botAlias: "default", sessionTtlMs: "60000" })
+        expect(body.sessionId).toBe(target.id)
+        expect(body.claims).toEqual({ sessionId: target.id, approvalId: "a1" })
+      })
+    })
+
+    it("the token's OWN screencast answers on all three spellings, with a bearer header and with ?token=", async () => {
+      await withServer(
+        async (base, registry) => {
+          const mine = registerChromeLive(registry)
+          try {
+            const token = mintSessionToken(APP_ID, mine)
+            const bearer = { authorization: `Bearer ${token}` }
+            for (const suffix of ["screencast", "screencast.jpg", "screencast.mjpg"]) {
+              expect(await statusOf(`${base}/sessions/${mine}/${suffix}`, bearer)).toBe(200)
+              expect(await statusOf(`${base}/sessions/${mine}/${suffix}?token=${token}`)).toBe(200)
+            }
+            const frame = await fetch(`${base}/sessions/${mine}/screencast.jpg?token=${token}`, { headers: FORWARDED })
+            expect(Buffer.from(await frame.arrayBuffer()).equals(FRAME)).toBe(true)
+            const viewer = await fetch(`${base}/sessions/${mine}/screencast?token=${token}`, { headers: FORWARDED })
+            expect(await viewer.text()).toContain(`/sessions/${mine}/screencast.mjpg?token=${token}`)
+          } finally {
+            forgetLiveBrowserInstance(mine)
+          }
+        },
+        { token: SESSIONS_TOKEN },
+      )
+    })
+
+    it("ANOTHER session's screencast stays refused, as does a claims-less or non-GET request", async () => {
+      await withServer(
+        async (base, registry) => {
+          const mine = registerChromeLive(registry, 9222)
+          const other = registerChromeLive(registry, 9223)
+          try {
+            const token = mintSessionToken(APP_ID, mine)
+            const bearer = { authorization: `Bearer ${token}` }
+            for (const suffix of ["screencast", "screencast.jpg", "screencast.mjpg"]) {
+              expect(await statusOf(`${base}/sessions/${other}/${suffix}`, bearer)).toBe(401)
+              expect(await statusOf(`${base}/sessions/${other}/${suffix}?token=${token}`)).toBe(401)
+              expect(await statusOf(`${base}/sessions/${mine}/${suffix}`)).toBe(401)
+            }
+            const post = await fetch(`${base}/sessions/${mine}/screencast.jpg`, { method: "POST", headers: { ...FORWARDED, ...bearer } })
+            expect(post.status).toBe(401)
+            expect(await statusOf(`${base}/sessions/${mine}/screencast.png`, bearer)).toBe(401)
+            expect(await statusOf(`${base}/sessions/${mine}/screencast/extra`, bearer)).toBe(401)
+          } finally {
+            forgetLiveBrowserInstance(mine)
+            forgetLiveBrowserInstance(other)
+          }
+        },
+        { token: SESSIONS_TOKEN },
+      )
     })
   })
 

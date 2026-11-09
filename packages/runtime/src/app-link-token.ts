@@ -145,6 +145,50 @@ function decode(token: string, key: Buffer, wantKind: "link" | "session"): Verif
   }
 }
 
+/** Claim names the daemon owns on a link token: a caller of `app_link_mint`
+ *  can never set them through the generic `claims` map. `authIp` and
+ *  `authUaHash` are the audit claims `authorizeAppLink` stamps on the
+ *  session token. */
+export const RESERVED_LINK_CLAIM_NAMES: readonly string[] = Object.freeze([
+  "telegramUserId",
+  "botAlias",
+  "sessionTtlMs",
+  "exp",
+  "kind",
+  "appId",
+  "authIp",
+  "authUaHash",
+])
+
+const LINK_CLAIM_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,31}$/
+const MAX_LINK_CLAIMS = 8
+const MAX_LINK_CLAIM_VALUE_LENGTH = 200
+
+/** Validate the generic `claims` map of `app_link_mint`. Returns an error
+ *  message, or `undefined` when the map is acceptable. */
+export function validateGenericLinkClaims(claims: Record<string, string>): string | undefined {
+  const names = Object.keys(claims)
+  if (names.length > MAX_LINK_CLAIMS) return `at most ${MAX_LINK_CLAIMS} claims are allowed (got ${names.length}).`
+  for (const name of names) {
+    if (!LINK_CLAIM_NAME_RE.test(name)) {
+      return `claim name "${name}" is invalid (letters, digits and underscores, starting with a letter, 32 characters at most).`
+    }
+    if (RESERVED_LINK_CLAIM_NAMES.includes(name)) return `claim name "${name}" is reserved.`
+    if (name === "sessionId") return 'claim "sessionId" must be given through the `sessionId` argument, not inside `claims`.'
+    const value = claims[name]!
+    if (value.length < 1 || value.length > MAX_LINK_CLAIM_VALUE_LENGTH) {
+      return `claim "${name}" must be 1 to ${MAX_LINK_CLAIM_VALUE_LENGTH} characters.`
+    }
+  }
+  return undefined
+}
+
+/** The claims of a link that are safe to hand back to the opener and to
+ *  scope tools on: everything except the daemon-owned names. */
+export function publicLinkClaims(claims: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(claims).filter(([name]) => !RESERVED_LINK_CLAIM_NAMES.includes(name)))
+}
+
 export interface MintAppLinkTokenInput {
   appId: string
   claims: Record<string, string>
