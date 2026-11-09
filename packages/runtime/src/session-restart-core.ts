@@ -50,7 +50,7 @@
 import type { MemoryStore } from "@agentproto/memory"
 import { resolveContextContinuityPolicy, type ContextContinuityPolicy } from "./context-continuity.js"
 import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
-import { stageSpawningCaller } from "./spawning-caller-context.js"
+import { carryAgentIdentityMeta, stageSpawningCaller } from "./spawning-caller-context.js"
 import { memoryStoreAt as defaultMemoryStoreAt } from "./memory-stores.js"
 import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
 import {
@@ -2923,15 +2923,4 @@ export async function resolveSandboxSecretFromBroker(slug: string): Promise<stri
     )
     return null
   }
-}
-
-/** The `meta` keys of the AIP-42 manifest identity a spawn resolved
- *  (session-spawn.ts). `agentDelegatesTo` rides `carryMemoryMeta`. */
-const AGENT_IDENTITY_META_KEYS = ["agentId", "agentManifestPath", "agentRoleHash", "agentToolsHash"] as const
-
-/** The prior row's manifest identity, carried to its restart verbatim. */
-export function carryAgentIdentityMeta(meta: Readonly<Record<string, string>> | undefined): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const key of AGENT_IDENTITY_META_KEYS) if (meta?.[key] !== undefined) out[key] = meta[key]
-  return out
 }

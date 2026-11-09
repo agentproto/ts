@@ -36,3 +36,15 @@ export function stageSpawningCaller(sessionId: string, ctx: SpawningCallerContex
 export function spawningCallerContext(sessionId: string): SpawningCallerContext | undefined {
   return staged.get(sessionId)
 }
+
+/** The `meta` keys of the AIP-42 manifest identity a spawn resolved
+ *  (session-spawn.ts). `agentDelegatesTo` rides `carryMemoryMeta`. */
+const AGENT_IDENTITY_META_KEYS = ["agentId", "agentManifestPath", "agentRoleHash", "agentToolsHash"] as const
+
+/** A prior row's manifest identity, carried verbatim to its restart or its
+ *  fresh continuation. */
+export function carryAgentIdentityMeta(meta: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const key of AGENT_IDENTITY_META_KEYS) if (meta?.[key] !== undefined) out[key] = meta[key]
+  return out
+}
