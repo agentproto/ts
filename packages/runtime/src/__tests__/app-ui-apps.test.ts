@@ -289,6 +289,61 @@ describe("makeInstalledAppUiApps", () => {
     expect(readFileMock).toHaveBeenCalledTimes(2)
   })
 
+  it("injects the public base once per (file, base) and shares that html across server builds", async () => {
+    // The bug this guards: every McpServer build (one per /mcp connection)
+    // ran injectPublicBaseUrl on the cached html, so each server held its
+    // own full copy of every installed panel. On a live daemon that was
+    // ~110 MB of duplicated html (the 0.93 MB Bureau page 44 times).
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "<html><head></head><body>Panel</body></html>", "utf8")
+    appRegistry.upsertApp({
+      appId: "@test/ui-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath, tools: [] },
+    })
+    const injectBase = vi.fn((html: string, base: string) => `${html}<!--${base}-->`)
+    const cache = createUiHtmlCache({ injectBase })
+    const base = "https://fp.agentproto.cloud/d/fp"
+
+    const builds = await Promise.all(
+      [1, 2, 3].map(() => makeInstalledAppUiApps(appRegistry, cache, new Set(), base)),
+    )
+    for (const apps of builds) expect(apps[0]!.html).toContain(`<!--${base}-->`)
+    expect(injectBase).toHaveBeenCalledTimes(1)
+
+    await makeInstalledAppUiApps(appRegistry, cache, new Set(), "https://abc.trycloudflare.com")
+    expect(injectBase).toHaveBeenCalledTimes(2)
+    await makeInstalledAppUiApps(appRegistry, cache, new Set())
+    expect(injectBase).toHaveBeenCalledTimes(2)
+
+    // An in-place rebuild drops the per-base variants with the old bytes.
+    await writeFile(uiPath, "<html><head></head><body>Panel v2 rebuilt</body></html>", "utf8")
+    const rebuilt = await makeInstalledAppUiApps(appRegistry, cache, new Set(), base)
+    expect(rebuilt[0]!.html).toContain("Panel v2 rebuilt")
+    expect(injectBase).toHaveBeenCalledTimes(3)
+  })
+
+  it("keeps a bounded number of per-base variants per file", async () => {
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "<html><head></head><body>Panel</body></html>", "utf8")
+    const injectBase = vi.fn((html: string, base: string) => `${html}<!--${base}-->`)
+    const cache = createUiHtmlCache({ injectBase, maxBaseVariants: 2 })
+    const version = "2026-01-01T00:00:00.000Z"
+
+    await cache.get(uiPath, version, "https://a.example")
+    await cache.get(uiPath, version, "https://b.example")
+    await cache.get(uiPath, version, "https://a.example") // hit, refreshes a
+    expect(injectBase).toHaveBeenCalledTimes(2)
+    await cache.get(uiPath, version, "https://c.example") // evicts b, the least recently used
+    await cache.get(uiPath, version, "https://a.example")
+    expect(injectBase).toHaveBeenCalledTimes(3)
+    expect(await cache.get(uiPath, version, "https://b.example")).toContain("<!--https://b.example-->")
+    expect(injectBase).toHaveBeenCalledTimes(4)
+  })
+
   it("accepts an optional view up to 200 chars, rejects longer, and echoes it from execute", async () => {
     const uiPath = join(dir, "index.html")
     await writeFile(uiPath, "<html><body>Panel</body></html>", "utf8")
