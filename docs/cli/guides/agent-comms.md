@@ -20,6 +20,14 @@ messages to each other, and what it takes to wake an idle Claude Code session.
   shared `claude-desktop` identity); a call that already carries an identity
   attaches under it automatically. The parent is declared, not proven: same
   trust as `replyTo`.
+- Driving a child from Claude Desktop: a child spawned with `parent: "cc:<id>"`
+  through the `claude-desktop` identity is owned by that `cc:` row, which a
+  Desktop call cannot present (it arrives as `claude-desktop`). So the daemon
+  records `allowPromptFrom: ["claude-desktop"]` on such a child by default, and
+  `agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart` and
+  `session_continue_fresh` work from the Desktop chat. Pass your own
+  `allowPromptFrom` to replace it, or `allowPromptFrom: []` to keep the child
+  owner-only. Verified identities and identity-less callers get no such grant.
 - Any session to any session: `message_send to: "<sess_xxxx | cc:<id>>"`.
 - Urgency:
 
