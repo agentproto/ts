@@ -703,6 +703,15 @@ export class FakeController {
         ? { exitCode: 0, stdout: `agentproto ${this.bakedCliVersion} (d7c36672)\n`, stderr: "" }
         : { exitCode: 127, stdout: "", stderr: "agentproto: command not found" }
     }
+    if (script.includes("# agentproto-baked-packages")) {
+      return this.bakedPackagesFail
+        ? { exitCode: 4, stdout: "", stderr: "" }
+        : {
+            exitCode: 0,
+            stdout: Object.entries(this.bakedPackages).map(([name, version]) => `${name}\t${version}\n`).join(""),
+            stderr: "",
+          }
+    }
     if (script.includes("npm i -g")) return { exitCode: 0, stdout: "", stderr: "" }
     // plain scripts (setupCommands, callers) echo their script hash — tests
     // shouldn't depend on real output
@@ -712,6 +721,10 @@ export class FakeController {
   /** Models an image with the agentproto CLI already installed. */
   cliBaked = false
   bakedCliVersion = "1.26.0"
+  /** npm packages baked next to the CLI (name -> version), as the in-box probe reports them. */
+  bakedPackages: Record<string, string> = {}
+  /** Make the in-box package probe fail (tree not found). */
+  bakedPackagesFail = false
   daemonDown = false
   /** The --allow-origin recorded by the last serve command (the marker file). */
   daemonOrigin: string | undefined = undefined
