@@ -7,7 +7,12 @@
 
 import { describe, expect, it, vi } from "vitest"
 
-import { createSubsessionMinter, type SubsessionTarget } from "../subsession-minter.js"
+import { createSessionEventBus } from "../session-event-bus.js"
+import {
+  createSubsessionMinter,
+  wireSubsessionLifecycle,
+  type SubsessionTarget,
+} from "../subsession-minter.js"
 
 interface MintCall {
   url: string
@@ -203,5 +208,192 @@ describe("createSubsessionMinter", () => {
     deleteStatus = 204
     await minter.revokeSession("sess_other")
     expect(deletes).toEqual([500, 204])
+  })
+
+  describe("reinstateSession (a session resumed in place)", () => {
+    const expiry = () => new Date(Date.now() + 3600_000).toISOString()
+
+    it("a revoked session is refused, a reinstated one mints a fresh token", async () => {
+      const { fetchImpl, calls } = makeFetch(() => Date.now())
+      const minter = createSubsessionMinter({ resolve: async () => TARGET_A, fetch: fetchImpl })
+
+      const first = await minter.tokenFor("bureau", "sess_1")
+      await minter.revokeSession("sess_1")
+      await expect(minter.tokenFor("bureau", "sess_1")).rejects.toThrow(/session ended/)
+
+      minter.reinstateSession("sess_1")
+      const second = await minter.tokenFor("bureau", "sess_1")
+      expect(second).not.toBe(first)
+      expect(await minter.tokenFor("bureau", "sess_1")).toBe(second)
+      expect(calls.map(c => c.method)).toEqual(["POST", "DELETE", "POST"])
+
+      // Idempotent, and harmless for a session that was never revoked.
+      minter.reinstateSession("sess_1")
+      minter.reinstateSession("sess_never_seen")
+      expect(await minter.tokenFor("bureau", "sess_1")).toBe(second)
+    })
+
+    it("reinstating one session leaves another revoked session refused", async () => {
+      const { fetchImpl } = makeFetch(() => Date.now())
+      const minter = createSubsessionMinter({ resolve: async () => TARGET_A, fetch: fetchImpl })
+      await minter.revokeSession("sess_1")
+      await minter.revokeSession("sess_2")
+      minter.reinstateSession("sess_1")
+      await expect(minter.tokenFor("bureau", "sess_2")).rejects.toThrow(/session ended/)
+      await expect(minter.tokenFor("bureau", "sess_1")).resolves.toEqual(expect.any(String))
+    })
+
+    it("a mint in flight across a revoke and a reinstate is dropped and minted again", async () => {
+      let release!: () => void
+      const gate = new Promise<void>(r => (release = r))
+      const log: string[] = []
+      let posts = 0
+      const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+        const method = (init?.method ?? "GET").toUpperCase()
+        log.push(method)
+        if (method === "DELETE") return new Response(null, { status: 204 })
+        posts += 1
+        const n = posts
+        if (n === 1) await gate
+        return new Response(JSON.stringify({ token: `token-${n}`, expiresAt: expiry() }), { status: 200 })
+      })
+      const minter = createSubsessionMinter({ resolve: async () => TARGET_A, fetch: fetchImpl as unknown as typeof fetch })
+
+      const pending = minter.tokenFor("bureau", "sess_1")
+      await new Promise(r => setTimeout(r, 0))
+      await minter.revokeSession("sess_1")
+      minter.reinstateSession("sess_1")
+      release()
+
+      // The first token may have been deleted server-side after it was minted,
+      // so it is never cached: the caller gets the second one.
+      expect(await pending).toBe("token-2")
+      expect(await minter.tokenFor("bureau", "sess_1")).toBe("token-2")
+      expect(log).toEqual(["POST", "POST"])
+    })
+
+    it("a DELETE still on the wire when the session is reinstated finishes before the new POST", async () => {
+      let releaseDelete!: () => void
+      const deleteGate = new Promise<void>(r => (releaseDelete = r))
+      const log: string[] = []
+      let posts = 0
+      const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+        const method = (init?.method ?? "GET").toUpperCase()
+        if (method === "DELETE") {
+          log.push("DELETE:start")
+          await deleteGate
+          log.push("DELETE:end")
+          return new Response(null, { status: 204 })
+        }
+        posts += 1
+        log.push(`POST:${posts}`)
+        return new Response(JSON.stringify({ token: `token-${posts}`, expiresAt: expiry() }), { status: 200 })
+      })
+      const minter = createSubsessionMinter({ resolve: async () => TARGET_A, fetch: fetchImpl as unknown as typeof fetch })
+
+      await minter.tokenFor("bureau", "sess_1")
+      const revoking = minter.revokeSession("sess_1")
+      minter.reinstateSession("sess_1")
+      const next = minter.tokenFor("bureau", "sess_1")
+      await new Promise(r => setTimeout(r, 10))
+      expect(log).toEqual(["POST:1", "DELETE:start"])
+
+      releaseDelete()
+      await revoking
+      expect(await next).toBe("token-2")
+      expect(log).toEqual(["POST:1", "DELETE:start", "DELETE:end", "POST:2"])
+    })
+
+    it("a revoke the server never confirmed is settled before the new mint, never after it", async () => {
+      let deleteStatus = 500
+      const log: string[] = []
+      let posts = 0
+      const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+        const method = (init?.method ?? "GET").toUpperCase()
+        if (method === "DELETE") {
+          log.push(`DELETE:${deleteStatus}`)
+          return new Response(null, { status: deleteStatus })
+        }
+        posts += 1
+        log.push(`POST:${posts}`)
+        return new Response(JSON.stringify({ token: `token-${posts}`, expiresAt: expiry() }), { status: 200 })
+      })
+      const minter = createSubsessionMinter({ resolve: async () => TARGET_A, fetch: fetchImpl as unknown as typeof fetch })
+
+      await minter.tokenFor("bureau", "sess_1")
+      await expect(minter.revokeSession("sess_1")).rejects.toThrow(/will retry/)
+      minter.reinstateSession("sess_1")
+
+      // The server still honours the old token: no new token is minted while
+      // the DELETE cannot be confirmed (it would delete the NEW token later).
+      await expect(minter.tokenFor("bureau", "sess_1")).rejects.toThrow(/still pending/)
+      expect(log).toEqual(["POST:1", "DELETE:500", "DELETE:500"])
+
+      deleteStatus = 204
+      expect(await minter.tokenFor("bureau", "sess_1")).toBe("token-2")
+      expect(log).toEqual(["POST:1", "DELETE:500", "DELETE:500", "DELETE:204", "POST:2"])
+
+      // Nothing is left owed: a later revoke of ANOTHER session sends no stale DELETE for this one.
+      await minter.revokeSession("sess_other")
+      expect(log.filter(l => l.startsWith("DELETE"))).toHaveLength(3)
+      expect(log[log.length - 1]).toBe("POST:2")
+    })
+  })
+})
+
+describe("wireSubsessionLifecycle", () => {
+  const exited = (sessionId: string) =>
+    ({ type: "session:exited", sessionId, status: "killed", exitCode: null, ts: "t" }) as never
+  const resumed = (sessionId: string) =>
+    ({ type: "session:resumed", sessionId, interrupted: false, resumedFrom: "daemon-restart", ts: "t" }) as never
+
+  function setup(rows: Record<string, Record<string, unknown>>) {
+    const sessionEvents = createSessionEventBus()
+    const subsessions = {
+      revokeSession: vi.fn(async (_id: string) => {}),
+      reinstateSession: vi.fn((_id: string) => {}),
+    }
+    wireSubsessionLifecycle({ sessionEvents, registry: { get: id => rows[id] }, subsessions })
+    return { sessionEvents, subsessions }
+  }
+
+  it("revokes on exit and reinstates a live, non-retired session on resume", () => {
+    const { sessionEvents, subsessions } = setup({ sess_1: { endedReason: "idle-reaped" } })
+    sessionEvents.emit(exited("sess_1"))
+    expect(subsessions.revokeSession).toHaveBeenCalledWith("sess_1")
+    sessionEvents.emit(resumed("sess_1"))
+    expect(subsessions.reinstateSession).toHaveBeenCalledWith("sess_1")
+  })
+
+  it("never reinstates a retired or unknown session", () => {
+    const { sessionEvents, subsessions } = setup({
+      archived: { archived: true },
+      superseded: { continuedTo: "sess_next" },
+      stamped: { retiredAt: "2026-01-01T00:00:00Z" },
+      stopped: { endedReason: "operator-stopped" },
+    })
+    for (const id of ["archived", "superseded", "stamped", "stopped", "ghost"]) {
+      sessionEvents.emit(resumed(id))
+    }
+    expect(subsessions.reinstateSession).not.toHaveBeenCalled()
+  })
+
+  it("a failing revoke never throws into the exit path", async () => {
+    const sessionEvents = createSessionEventBus()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    wireSubsessionLifecycle({
+      sessionEvents,
+      registry: { get: () => undefined },
+      subsessions: {
+        revokeSession: async () => {
+          throw new Error("server down")
+        },
+        reinstateSession: () => {},
+      },
+    })
+    expect(() => sessionEvents.emit(exited("sess_1"))).not.toThrow()
+    await new Promise(r => setTimeout(r, 0))
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

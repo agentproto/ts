@@ -15,6 +15,10 @@
  * no `Authorization` value, is ever part of an error message or a log line.
  */
 
+import type { SessionEventBus } from "./session-event-bus.js"
+import { isRetired } from "./session-retirement.js"
+import type { SessionDescriptor } from "./sessions.js"
+
 export interface SubsessionTarget {
   /** Origin of the import (no path); `/pair/subsessions` is appended. */
   baseUrl: string
@@ -44,7 +48,22 @@ export interface SubsessionMinter {
   applies(alias: string): Promise<boolean>
   tokenFor(alias: string, sessionId: string): Promise<string>
   revokeSession(sessionId: string): Promise<void>
+  /**
+   * Lets a session that exited but was resumed in place (same id) mint again.
+   * Synchronous and idempotent; the next `tokenFor` mints a fresh token, after
+   * any server-side DELETE still owed for the id has been settled.
+   */
+  reinstateSession(sessionId: string): void
 }
+
+interface PendingDelete {
+  alias: string
+  sessionId: string
+  target: SubsessionTarget
+}
+
+/** A mint that straddled a revoke and a reinstate: its token is dropped, the caller mints again. */
+class StaleMint extends Error {}
 
 interface CachedToken {
   alias: string
@@ -66,11 +85,64 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
   const now = o.now ?? Date.now
   const ttlSeconds = o.ttlSeconds ?? DEFAULT_TTL_SECONDS
   const cache = new Map<string, CachedToken>()
-  const inFlight = new Map<string, Promise<string>>()
+  const inFlight = new Map<string, { promise: Promise<string>; epoch: number }>()
   /** Sessions already revoked: a mint that lands after the revoke is deleted, never cached. */
   const revoked = new Set<string>()
+  /** Bumped by every revoke, so a mint can tell that a revoke happened while it was in flight. */
+  const epochs = new Map<string, number>()
   /** Revocations the server did not confirm, retried on the next revokeSession call. */
-  const pendingDeletes = new Map<string, { alias: string; sessionId: string; target: SubsessionTarget }>()
+  const pendingDeletes = new Map<string, PendingDelete>()
+  /**
+   * DELETEs on the wire, per session id. The server deletes by session id, so a
+   * DELETE landing after a fresh POST would kill the new token: a mint waits
+   * for these (and for `pendingDeletes`) before it posts.
+   */
+  const deleting = new Map<string, Set<Promise<boolean>>>()
+
+  const epochOf = (sessionId: string): number => epochs.get(sessionId) ?? 0
+
+  function deleteTracked(key: string, item: PendingDelete): Promise<boolean> {
+    let run!: Promise<boolean>
+    run = (async (): Promise<boolean> => {
+      let ok = false
+      try {
+        ok = await deleteOnServer(item.alias, item.sessionId, item.target)
+        // Kept for the next call: a token the server still honours is never forgotten.
+        if (!ok) pendingDeletes.set(key, item)
+        return ok
+      } finally {
+        const set = deleting.get(item.sessionId)
+        set?.delete(run)
+        if (set && set.size === 0) deleting.delete(item.sessionId)
+      }
+    })()
+    const set = deleting.get(item.sessionId) ?? new Set<Promise<boolean>>()
+    set.add(run)
+    deleting.set(item.sessionId, set)
+    return run
+  }
+
+  async function settleDeletes(alias: string, sessionId: string): Promise<void> {
+    for (;;) {
+      const live = deleting.get(sessionId)
+      if (live && live.size > 0) {
+        await Promise.all([...live])
+        continue
+      }
+      const owed = [...pendingDeletes].filter(([, item]) => item.sessionId === sessionId)
+      if (owed.length === 0) return
+      let failed = false
+      for (const [key, item] of owed) {
+        pendingDeletes.delete(key)
+        if (!(await deleteTracked(key, item))) failed = true
+      }
+      if (failed) {
+        throw new Error(
+          `sub-session mint for "${alias}" failed: revoking the previous token of this session is still pending (will retry)`,
+        )
+      }
+    }
+  }
 
   async function deleteOnServer(alias: string, sessionId: string, target: SubsessionTarget): Promise<boolean> {
     try {
@@ -86,6 +158,8 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
   }
 
   async function mint(alias: string, sessionId: string, target: SubsessionTarget): Promise<string> {
+    const epoch = epochOf(sessionId)
+    await settleDeletes(alias, sessionId)
     let res: Response
     try {
       res = await fetchImpl(`${trimBase(target.baseUrl)}/pair/subsessions`, {
@@ -117,11 +191,12 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
     if (revoked.has(sessionId)) {
       // The session ended while this mint was in flight: do not keep the
       // token, revoke it on the server too.
-      if (!(await deleteOnServer(alias, sessionId, target))) {
-        pendingDeletes.set(keyOf(target.key ?? alias, sessionId), { alias, sessionId, target })
-      }
+      await deleteTracked(keyOf(target.key ?? alias, sessionId), { alias, sessionId, target })
       throw new Error(`sub-session mint for "${alias}" failed: the session ended`)
     }
+    // Revoked and reinstated while this POST was out: a DELETE may have been
+    // processed after it, so the token cannot be trusted. Drop it, mint again.
+    if (epochOf(sessionId) !== epoch) throw new StaleMint()
     cache.set(keyOf(target.key ?? alias, sessionId), { alias, sessionId, token, expiresAtMs, target })
     try {
       o.onMinted?.(sessionId, target)
@@ -131,48 +206,66 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
     return token
   }
 
+  async function resolveToken(alias: string, sessionId: string): Promise<string> {
+    if (revoked.has(sessionId)) {
+      throw new Error(`sub-session mint for "${alias}" failed: the session ended`)
+    }
+    // Fast path for a connection that always names the import the same way.
+    const localKey = keyOf(alias, sessionId)
+    const localCached = cache.get(localKey)
+    if (localCached && localCached.expiresAtMs - now() > CACHE_MARGIN_MS) return localCached.token
+    const target = await o.resolve(alias)
+    if (!target) throw new Error(`sub-session mint for "${alias}" failed: not an AIP-59 import`)
+    // Alias and import id are two spellings of the SAME import: resolve both
+    // to one canonical key so a session gets ONE token whichever path calls.
+    const key = keyOf(target.key ?? alias, sessionId)
+    const cached = cache.get(key)
+    if (cached && cached.expiresAtMs - now() > CACHE_MARGIN_MS) {
+      cache.set(localKey, cached)
+      return cached.token
+    }
+    const running = inFlight.get(key)
+    if (running && running.epoch === epochOf(sessionId)) return running.promise
+    const entry = { promise: mint(alias, sessionId, target), epoch: epochOf(sessionId) }
+    inFlight.set(key, entry)
+    try {
+      return await entry.promise
+    } finally {
+      if (inFlight.get(key) === entry) inFlight.delete(key)
+    }
+  }
+
   return {
     async applies(alias) {
       return (await o.resolve(alias)) !== undefined
     },
 
     async tokenFor(alias, sessionId) {
-      if (revoked.has(sessionId)) {
-        throw new Error(`sub-session mint for "${alias}" failed: the session ended`)
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await resolveToken(alias, sessionId)
+        } catch (err) {
+          if (!(err instanceof StaleMint)) throw err
+          if (attempt >= 2) {
+            throw new Error(`sub-session mint for "${alias}" failed: the session was revoked while minting`)
+          }
+        }
       }
-      // Fast path for a connection that always names the import the same way.
-      const localKey = keyOf(alias, sessionId)
-      const localCached = cache.get(localKey)
-      if (localCached && localCached.expiresAtMs - now() > CACHE_MARGIN_MS) return localCached.token
-      const target = await o.resolve(alias)
-      if (!target) throw new Error(`sub-session mint for "${alias}" failed: not an AIP-59 import`)
-      // Alias and import id are two spellings of the SAME import: resolve both
-      // to one canonical key so a session gets ONE token whichever path calls.
-      const key = keyOf(target.key ?? alias, sessionId)
-      const cached = cache.get(key)
-      if (cached && cached.expiresAtMs - now() > CACHE_MARGIN_MS) {
-        cache.set(localKey, cached)
-        return cached.token
-      }
-      const running = inFlight.get(key)
-      if (running) return running
-      const promise = mint(alias, sessionId, target)
-      inFlight.set(key, promise)
-      try {
-        return await promise
-      } finally {
-        inFlight.delete(key)
-      }
+    },
+
+    reinstateSession(sessionId) {
+      revoked.delete(sessionId)
     },
 
     async revokeSession(sessionId) {
       revoked.add(sessionId)
+      epochs.set(sessionId, epochOf(sessionId) + 1)
       // Alias and import id both cache the same token under two keys. A
       // revoke must still send exactly ONE DELETE per (server, session), so
       // dedupe by the server target rather than by cache key.
-      const toDelete = new Map<string, { alias: string; sessionId: string; target: SubsessionTarget }>()
+      const toDelete = new Map<string, PendingDelete>()
       const queuedTargets = new Set<string>()
-      const queue = (key: string, item: { alias: string; sessionId: string; target: SubsessionTarget }): void => {
+      const queue = (key: string, item: PendingDelete): void => {
         const targetKey = `${trimBase(item.target.baseUrl)}\u0000${item.sessionId}`
         if (queuedTargets.has(targetKey)) return
         queuedTargets.add(targetKey)
@@ -185,16 +278,39 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
         queue(key, { alias: entry.alias, sessionId, target: entry.target })
         cache.delete(key)
       }
-      const failures: string[] = []
-      for (const [key, item] of toDelete) {
-        if (await deleteOnServer(item.alias, item.sessionId, item.target)) continue
-        // Kept for the next call: a token the server still honours is never forgotten.
-        pendingDeletes.set(key, item)
-        failures.push(`${item.alias}/${item.sessionId}`)
-      }
+      // All DELETEs are registered before the first await, so a mint for a
+      // reinstated session sees every one of them.
+      const results = await Promise.all(
+        [...toDelete].map(async ([key, item]) => ({ item, ok: await deleteTracked(key, item) })),
+      )
+      const failures = results.filter(r => !r.ok).map(r => `${r.item.alias}/${r.item.sessionId}`)
       if (failures.length > 0) {
         throw new Error(`sub-session revoke failed for: ${failures.join(", ")} (will retry)`)
       }
     },
   }
+}
+
+/**
+ * Ties the minter to the session lifecycle: tokens are revoked when a session
+ * exits, and a session that is revived in place (same id, `session:resumed`) is
+ * reinstated so it can mint again. A retired or unknown id is never reinstated.
+ */
+export function wireSubsessionLifecycle(o: {
+  sessionEvents: Pick<SessionEventBus, "on">
+  registry: { get(id: string): Pick<SessionDescriptor, "archived" | "endedReason" | "continuedTo" | "retiredAt"> | undefined }
+  subsessions: Pick<SubsessionMinter, "revokeSession" | "reinstateSession">
+}): void {
+  // A revocation failure never throws into the exit path.
+  o.sessionEvents.on("session:exited", ev => {
+    void o.subsessions.revokeSession(ev.sessionId).catch(err => {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[subsessions] revoke for ${ev.sessionId} failed: ${message}`)
+    })
+  })
+  o.sessionEvents.on("session:resumed", ev => {
+    const desc = o.registry.get(ev.sessionId)
+    if (!desc || isRetired(desc)) return
+    o.subsessions.reinstateSession(ev.sessionId)
+  })
 }

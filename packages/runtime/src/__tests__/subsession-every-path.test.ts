@@ -26,6 +26,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 
 import { createGateway, type GatewayHandle } from "../index.js"
+import type { AgentSessionLike } from "../sessions.js"
 import {
   IMPORTED_MCPS_PATH,
   saveImportedMcps,
@@ -208,7 +209,10 @@ describe("AIP-59 sub-session token on every gateway path", () => {
     }
   })
 
-  async function boot(withSubsession: boolean): Promise<{
+  async function boot(
+    withSubsession: boolean,
+    gatewayOpts: Pick<Parameters<typeof createGateway>[0], "resolveAgentAdapter"> = {},
+  ): Promise<{
     gateway: GatewayHandle
     bureau: FakeBureau
     workspace: string
@@ -230,6 +234,7 @@ describe("AIP-59 sub-session token on every gateway path", () => {
       port: await freePort(),
       boot: false,
       persist: false,
+      ...gatewayOpts,
     })
     cleanups.push(() => gateway.stop())
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -376,5 +381,63 @@ describe("AIP-59 sub-session token on every gateway path", () => {
     // right after the first one would miss the bug this test guards.
     await new Promise(resolve => setTimeout(resolve, 150))
     expect(bureau.deletes).toEqual([session.id])
+  })
+
+  it("a session reaped and resumed in place mints a token again; a retired one stays refused", async () => {
+    let acp = 0
+    const fakeAgent = (): AgentSessionLike => ({
+      sessionId: `acp-fixture-${acp++}`,
+      // eslint-disable-next-line require-yield
+      async *send() {
+        return
+      },
+      async cancel() {},
+      async close() {},
+    })
+    const { gateway, bureau, workspace } = await boot(true, {
+      resolveAgentAdapter: async slug =>
+        slug === "fake-cli"
+          ? { commandPreview: "fake-cli (test double)", startSession: async () => fakeAgent() }
+          : null,
+    })
+    const spawn = (id: string) =>
+      gateway.sessions.spawnAgent({
+        id,
+        workspaceSlug: "default",
+        cwd: workspace,
+        agentSession: fakeAgent(),
+        adapterSlug: "fake-cli",
+      })
+    const first = spawn("sess_aip59_resumable").id
+
+    await callBundle(gateway, first)
+    expect(bureau.mints).toHaveLength(1)
+
+    // The idle reaper frees the adapter process: the exit revokes the token.
+    expect(gateway.sessions.reapIdle(first)).toBe(true)
+    await waitFor(() => bureau.deletes.length > 0)
+    const refused = (await callBundle(gateway, first)) as { isError?: boolean; content?: Array<{ text: string }> }
+    expect(refused.isError).toBe(true)
+    expect(refused.content?.[0]?.text).toContain("the session ended")
+    const callsBefore = bureau.calls.length
+
+    // A later prompt revives the SAME id in place (`session:resumed`).
+    expect(await gateway.sessions.triggerResume(first)).toBe(true)
+    const result = (await callBundle(gateway, first)) as { isError?: boolean }
+    expect(result.isError).toBeFalsy()
+    expect(bureau.mints.map(m => m.sessionId)).toEqual([first, first])
+    expect(bureau.calls).toHaveLength(callsBefore + 1)
+    expect(bureau.calls[callsBefore]?.subsession).toBe(`tok-${first}`)
+    expect(bureau.deletes).toEqual([first])
+
+    // A killed (retired) session is never revived, so it never mints again.
+    const second = spawn("sess_aip59_retired").id
+    await callBundle(gateway, second)
+    gateway.sessions.kill(second)
+    await waitFor(() => bureau.deletes.length > 1)
+    await gateway.sessions.triggerResume(second)
+    expect(gateway.sessions.get(second)?.status).not.toBe("running")
+    const stillRefused = (await callBundle(gateway, second)) as { isError?: boolean }
+    expect(stillRefused.isError).toBe(true)
   })
 })
