@@ -99,6 +99,7 @@ import { homedir } from "node:os"
 import { dirname, join, basename } from "node:path"
 import {
   daemonHandshakeOverSink,
+  E2eError,
   encodeData,
   type ErrorFrame,
   type FrameSink,
@@ -940,17 +941,28 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
           }
           // A park timeout, a rejected offer, or a tampered hello. Fail closed
           // and re-dial after a short backoff (park timeouts are common + benign).
-          // Gate the log like a dial failure (bursts during a flap must not
-          // bury daemon.log) but still NAME the step: the error message from
-          // `daemonHandshakeOverSink` distinguishes a transport close
-          // mid-handshake (`transport closed during handshake: <reason>`) from
-          // a hello timeout — exactly what the next channel flap needs to
-          // self-explain on this end.
-          const line = handshakeFailureGate.onFailure(
-            spec.key,
-            `[pairing] handshake for ${spec.key} failed: ${errMsg(err)}`,
-          )
-          if (line) log(line)
+          //
+          // An idle park (no hello arrived before handshakeTimeoutMs) is the
+          // normal state of a standing loop whose peer is not around: an
+          // offline client, or, for a tombstone, the expected case of a revoked
+          // client that never comes back. It is not logged. The gate below
+          // could not absorb it: its window (60 s) is shorter than one park
+          // cycle (110 s park + 30 s backoff), so every cycle of every loop
+          // logged a line (6 tombstones x 2 slots made ~37k lines in 5 days).
+          //
+          // Every other failure is logged, gated like a dial failure (bursts
+          // during a flap must not bury daemon.log) but still NAMING the step:
+          // the error message from `daemonHandshakeOverSink` distinguishes a
+          // transport close mid-handshake (`transport closed during handshake:
+          // <reason>`) from a rejected or malformed hello, exactly what the
+          // next channel flap needs to self-explain on this end.
+          if (!isIdleParkTimeout(err)) {
+            const line = handshakeFailureGate.onFailure(
+              spec.key,
+              `[pairing] handshake for ${spec.key} failed: ${errMsg(err)}`,
+            )
+            if (line) log(line)
+          }
           await sleep(backoff, signal)
           backoff = Math.min(backoff * 2, reconnectMaxMs)
           continue
@@ -1597,6 +1609,13 @@ function isPairingRecord(v: unknown): v is PairingRecord {
     typeof r["pairRoot"] === "string" &&
     typeof r["rendezvousUrl"] === "string"
   )
+}
+
+/** The daemon-side handshake waited out its whole timeout without a single
+ *  frame: nobody was on the other end of the park. `awaitHandshakeFrame`
+ *  (`@agentproto/acp/tunnel`) is the only source of this exact error. */
+function isIdleParkTimeout(err: unknown): boolean {
+  return err instanceof E2eError && err.code === "decode" && err.message === "handshake timed out"
 }
 
 function isRevokedRecord(v: unknown): v is RevokedPairingRecord {
