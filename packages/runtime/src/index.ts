@@ -221,6 +221,7 @@ import { makePublicUrlResolver, setSentinelPublicUrlSource } from "@agentproto/s
 import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "@agentproto/sentinel"
 import { AGENTPUSH_SLUG } from "@agentproto/sentinel"
+import { sentinelRoutesConfigFrom, type SentinelRoutingDeps } from "@agentproto/sentinel"
 import {
   registerSentinelCoalesceRule,
   registerSentinelClassifier,
@@ -2793,6 +2794,20 @@ export async function createGateway(
       ? (u as MessageUrgency)
       : "next-turn"
   }
+  // Shadow signal routing (`config.sentinel.routes`, read per selection):
+  // decides, logs and stamps `route` on created sentinels, never changes the
+  // provider used. Shared by `sentinel_watch`, `POST /sentinels` and
+  // `sentinel_routes` / `GET /sentinels/routes`.
+  const sentinelRouting: SentinelRoutingDeps = {
+    config: async () => {
+      const cfg = await loadConfig().catch((): { sentinel?: { routes?: unknown; routing?: { mode?: unknown } } } => ({}))
+      return sentinelRoutesConfigFrom(cfg.sentinel)
+    },
+    fromSession: id => {
+      const label = sessionsRef?.get(id)?.operatorLabel
+      return label ? { sessionLabel: label } : undefined
+    },
+  }
   const sentinelAutoLinker = createSentinelAutoLinker({
     store: sentinelStore,
     resolveProvider: resolveSentinelProviderResolved,
@@ -4989,6 +5004,7 @@ export async function createGateway(
       deliveryStatus: id => sentinelRuntime.webhookOutbox.deliveryStatus(id),
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
+      routing: sentinelRouting,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // session_follow / session_unfollow / session_follows — `follower`
@@ -5271,6 +5287,7 @@ export async function createGateway(
       runtime: sentinelRuntime,
       tombstones: sentinelRuntime.cancelTombstones,
       deliveryStatus: id => sentinelRuntime.webhookOutbox.deliveryStatus(id),
+      routing: sentinelRouting,
     },
     follows: {
       store: sessionFollowStore,

@@ -11,6 +11,10 @@ agentproto sentinel watch <subject> [--types <t1,t2,...>] [--session <id>]
 agentproto sentinel list   [--json]
 agentproto sentinel rm     <id> [--json]       (alias: delete, unwatch)
 agentproto sentinel status <id> [--json]
+agentproto sentinel routes [list] [--json]
+agentproto sentinel routes explain <subject> [--types <t1,t2,...>]
+                                   [--site watch|autolink|http|mcp-events]
+                                   [--provider <slug>] [--json]
 ```
 
 Manage sentinels - persisted watches that deliver a matching GitHub event
@@ -99,6 +103,33 @@ Prints a detailed descriptor for one sentinel via `GET /sentinels/:id`.
 |------|---------|-------------|
 | `--json` | `false` | Emit the full descriptor as JSON. |
 
+## `routes`
+
+Read-only view of signal routing: which provider carries which subject, and
+why. Backed by `GET /sentinels/routes` and `GET /sentinels/routes/explain`
+(the MCP twin is the `sentinel_routes` tool). See
+[Signal routing (shadow)](#signal-routing-shadow).
+
+`routes` (or `routes list`) prints the effective rule table, config rules
+first, then the visible `builtin:` defaults, followed by each provider's
+readiness and any validator warnings.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Emit the full listing (`mode`, `configuredMode`, `applied`, `routes`, `providers`, `warnings`) as JSON. |
+
+`routes explain <subject>` prints the winning rule, the provider the router
+picks (or `none` when it refuses), every provider it walked with the rejection
+reason, and `in use`: the provider the daemon actually uses today for that
+subject.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--types <t1,t2,...>` | none | Event types the watch would ask for, matched against a rule's `match.types`. |
+| `--site <s>` | `watch` | Selection site: `watch` \| `autolink` \| `http` \| `mcp-events`. |
+| `--provider <slug>` | none | Explain an explicit provider choice instead. |
+| `--json` | `false` | Emit the explanation as JSON. |
+
 ## Providers
 
 | Slug | Transport | Notes |
@@ -113,6 +144,55 @@ Prints a detailed descriptor for one sentinel via `GET /sentinels/:id`.
 the provider is ready, else `local-gh`. For a `session:<id>` subject it
 always picks `session`. Check readiness with the `list_sentinel_adapters`
 MCP tool.
+
+## Signal routing (shadow)
+
+`config.sentinel.routes` (global `~/.agentproto/config.json` only) is a rule
+table that says which provider should carry which subject:
+
+```json
+{
+  "sentinel": {
+    "routing": { "mode": "shadow" },
+    "routes": [
+      { "id": "gh-default", "match": { "subject": "github:*" }, "via": ["local-gh"], "fallback": "refuse", "do": "deliver" },
+      { "id": "telegram", "match": { "subject": "telegram:*" }, "via": ["agentpush"], "fallback": "refuse", "do": "deliver" }
+    ]
+  }
+}
+```
+
+A rule has an `id`, a `match` (`subject`: exact, `<prefix>*`, `<scheme>:*` or
+`*`; optional `types` globs; optional `from.site` and `from.sessionLabel`),
+ordered `via` providers, `fallback` (`next-ready`, the default for `deliver`,
+or `refuse`), `do` (`deliver` \| `forward` \| `drop`; spawning or invoking an
+action stays with AIP-71 reactions), an optional `target` and an optional
+`mode`.
+
+Precedence: an explicit `provider` on the call always wins (and an explicitly
+named provider that is not ready refuses, it never falls back). Otherwise the
+most specific matching rule wins (exact subject, then longest prefix, then
+exact types, then type globs, then the number of `from` qualifiers), ties go
+to the earlier rule. When no config rule matches, the builtin table applies:
+`builtin:session` (`session:*` via `session`), `builtin:github` (`github:*`
+via `local-gh`) and `builtin:default` (`*` via `agentpush`, `refuse`). A
+provider is eligible when it is installed, declares the subject's scheme and
+is ready; a `next-ready` rule that skips its first provider records
+`fallbackFrom` and a warning.
+
+**Shadow only in this release.** The router decides, logs and explains; it
+never changes the provider a sentinel is created on. `sentinel_watch` and
+`POST /sentinels` still use the legacy selection described under
+[Providers](#providers), stamp the router's decision on the sentinel as
+`route` (`rule`, `reason`, `routed`, `legacy`, `applied: false`), and append
+one line per decision to `~/.agentproto/sentinel-routing.jsonl` (no payload,
+no credentials). `mode: "enforce"` (per rule or `sentinel.routing.mode`) is
+accepted so a table can be written ahead of time, but is not applied yet. The
+PR auto-linker and `events/subscribe` do not route yet.
+
+All four keys (`sentinel.autoWatchPrs`, `sentinel.autoWatchUrgency`,
+`sentinel.routes`, `sentinel.routing.mode`) are registered config keys, so
+`config_get` / `config_set` read and validate them.
 
 ## Auto-watch on PR open
 
@@ -134,10 +214,11 @@ over `{ subject, types }` clauses), an `until` (`subject_terminal`, `at`,
 target). Events are deduplicated per sentinel on the last 1000 event ids.
 
 The same operations are exposed to agents as the MCP tools `sentinel_watch`,
-`sentinel_list`, `sentinel_unwatch`, `sentinel_poll_now`,
-`list_sentinel_adapters` and `setup_sentinel_provider`, and over REST as
-`POST /sentinels`, `GET /sentinels`, `GET /sentinels/:id` and
-`DELETE /sentinels/:id`.
+`sentinel_list`, `sentinel_unwatch`, `sentinel_poll_now`, `sentinel_routes`
+(read-only), `list_sentinel_adapters` and `setup_sentinel_provider`, and over
+REST as `POST /sentinels`, `GET /sentinels`, `GET /sentinels/:id`,
+`DELETE /sentinels/:id`, `GET /sentinels/routes` and
+`GET /sentinels/routes/explain`.
 
 The signed-delivery `webhook` target (Standard Webhooks signature, secret
 rotation, callback verification, SSRF rules, retry schedule, persisted outbox)
@@ -165,6 +246,10 @@ agentproto sentinel watch session:sess_child456 --session sess_supervisor789
 agentproto sentinel list
 agentproto sentinel status sen_01ABC...
 agentproto sentinel rm sen_01ABC...
+
+# Which provider would carry this subject, and why (read-only)
+agentproto sentinel routes
+agentproto sentinel routes explain github:agentproto/ts#1501
 ```
 
 ## See also

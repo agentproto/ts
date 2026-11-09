@@ -16,6 +16,7 @@
 import { z } from "zod"
 import type { Grant } from "@agentproto/policy"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
+import { sentinelRoutesSchema, sentinelRoutingModeSchema } from "@agentproto/sentinel"
 import { adapterDeprecation } from "./harness-alias.js"
 // The browser entry: the same pure URL helpers, without pulling node:crypto in.
 import { resolvePairPageUrl, DEFAULT_PAIR_PAGE } from "@agentproto/secrets/pairing/browser"
@@ -32,6 +33,7 @@ import type {
   ProfileConfig,
   DeliveryConfig,
   ProvenanceConfig,
+  SentinelConfig,
   ApprovalsConfig,
   SessionsConfig,
   SpawnConfig,
@@ -542,6 +544,20 @@ const deliveryConfigSchema: z.ZodType<DeliveryConfig> = z
   })
   .passthrough()
 
+const sentinelConfigSchema: z.ZodType<SentinelConfig> = z
+  .object({
+    autoWatchPrs: z.boolean().optional(),
+    autoWatchUrgency: z.enum(["fyi", "next-turn", "steer", "interrupt"]).optional(),
+    routes: sentinelRoutesSchema.optional(),
+    routing: z
+      .object({
+        mode: sentinelRoutingModeSchema.optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+
 const pairingConfigSchema: z.ZodType<PairingConfig> = z
   .object({
     rendezvous: z.string().optional(),
@@ -630,6 +646,7 @@ export const agentprotoConfigSchema = z
     agentsMd: agentsMdConfigSchema.optional(),
     memory: memoryConfigSchema.optional(),
     delivery: deliveryConfigSchema.optional(),
+    sentinel: sentinelConfigSchema.optional(),
     models: z.record(z.string(), modelRoleValueSchema).optional(),
     modelRolePreset: z.enum(MODEL_ROLE_PRESET_NAMES).optional(),
     titler: titlerConfigSchema.optional(),
@@ -691,6 +708,7 @@ type ConfigTopLevelKey =
   | "approvals"
   | "agentsMd"
   | "memory"
+  | "sentinel"
   | "models"
   | "modelRolePreset"
   | "titler"
@@ -1263,6 +1281,51 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
       "Absent or empty applies nothing, so delivery is unchanged by default. " +
       "An exact type beats a glob; the longest matching prefix wins.",
     default: {},
+  },
+  {
+    path: "sentinel.autoWatchPrs",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel auto-watch PRs",
+    help:
+      "Create a sentinel automatically when a session opens a PR. Unset: true only when local-gh " +
+      "(gh auth status) or agentpush (API key) is usable. Per-spawn opt-out: agent_start sentinel: false.",
+  },
+  {
+    path: "sentinel.autoWatchUrgency",
+    schema: z.enum(["fyi", "next-turn", "steer", "interrupt"]),
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel auto-watch urgency",
+    help: "Urgency the auto-created PR sentinel delivers at. Read per PR.",
+    default: "next-turn",
+  },
+  {
+    path: "sentinel.routes",
+    schema: sentinelRoutesSchema,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel routes",
+    help:
+      "Signal-routing rules: {id, match: {subject, types?, from?: {site?, sessionLabel?}}, via: [provider...], " +
+      "fallback?: next-ready|refuse, do?: deliver|forward|drop, target?, mode?}. Most specific match wins, then list order; " +
+      "builtin defaults apply when nothing matches. Shadow only: decisions are logged and stamped as route on the " +
+      "sentinel, the provider used does not change. Inspect with sentinel_routes or agentproto sentinel routes.",
+    default: [],
+  },
+  {
+    path: "sentinel.routing.mode",
+    schema: sentinelRoutingModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel routing mode",
+    help: "shadow: the router decides and logs, never applies. enforce is accepted but not applied in this release.",
+    default: "shadow",
   },
   {
     path: "follow.triage.enabled",

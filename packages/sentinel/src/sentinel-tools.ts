@@ -1,6 +1,7 @@
 /**
  * MCP surface for the sentinel primitive (AIP-60 §6): `sentinel_watch`,
- * `sentinel_list`, `sentinel_unwatch`, `sentinel_poll_now`.
+ * `sentinel_list`, `sentinel_unwatch`, `sentinel_poll_now`, and the read-only
+ * `sentinel_routes` (shadow signal routing, `sentinel-routes.ts`).
  *
  * `sentinel_watch`'s `sessionId` defaults to the calling session — same
  * "trusted `?callerSessionId=`" pattern `message-tools.ts` uses — so a
@@ -30,6 +31,15 @@ import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
 import { parseSessionSubject, SESSION_SLUG } from "./sentinel-providers/session.js"
 import type { SentinelPublicUrl } from "./sentinel-public-url.js"
+import {
+  explainSentinelRoute,
+  listSentinelRoutes,
+  SENTINEL_ROUTE_SITES,
+  shadowSentinelRoute,
+  type SentinelRouteSite,
+  type SentinelRouteStamp,
+  type SentinelRoutingDeps,
+} from "./sentinel-routes.js"
 import {
   deliveryPreferenceFor,
   singleMatch,
@@ -77,6 +87,12 @@ export interface SentinelWatchDeps {
   /** Public-URL source for provider auto-select. Defaults to the
    *  daemon-wired resolver (`sentinel-public-url.ts`). */
   publicUrl?: () => SentinelPublicUrl | undefined
+  /** Shadow signal routing (`sentinel-routes.ts`): when wired, the router's
+   *  decision is logged and stamped as `route` on the sentinel. It never
+   *  changes the provider used. */
+  routing?: SentinelRoutingDeps
+  /** Selection site recorded in the routing decision. Default `watch`. */
+  site?: SentinelRouteSite
 }
 
 export type SentinelWatchResult =
@@ -159,6 +175,22 @@ export async function createSentinelWatch(
     return { ok: false, error: "unknown_provider", message: `provider "${providerSlug}" is not available` }
   }
 
+  // Shadow only: decide, log, stamp. `providerSlug` above stays the one used.
+  const route = deps.routing
+    ? await shadowSentinelRoute(
+        deps.routing,
+        deps.resolveProvider,
+        {
+          subject,
+          site: deps.site ?? "watch",
+          sessionId,
+          ...(types ? { types } : {}),
+          ...(input.provider ? { provider: input.provider } : {}),
+        },
+        providerSlug,
+      )
+    : undefined
+
   const spec: SentinelSpec = {
     match: singleMatch(subject, types),
     until,
@@ -188,6 +220,7 @@ export async function createSentinelWatch(
       provider: providerSlug,
       handle,
       ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+      ...(route ? { route } : {}),
     })
     return { ok: true, sentinel }
   } catch (err) {
@@ -257,6 +290,9 @@ export interface SentinelView {
   expiresAt?: string
   /** Webhook-target sentinels only, once the outbox holds a row for it. */
   deliveryStatus?: SentinelDeliveryStatus
+  /** The signal router's shadow decision (`applied: false`): which rule
+   *  matched and which provider it would pick, next to `provider`. */
+  route?: SentinelRouteStamp
 }
 
 function targetView(target: SentinelTarget): SentinelTargetView {
@@ -281,6 +317,7 @@ export function sentinelView(s: Sentinel): SentinelView {
     ...(s.lastEventTs !== undefined ? { lastEventTs: s.lastEventTs } : {}),
     ...(s.lastError ? { lastError: s.lastError } : {}),
     ...(s.expiresAt ? { expiresAt: s.expiresAt } : {}),
+    ...(s.route ? { route: s.route } : {}),
   }
 }
 
@@ -313,6 +350,12 @@ export interface RegisterSentinelToolsOptions {
   activeIntervalMs?: number
   /** Per-sentinel webhook delivery health (the runtime's outbox). */
   deliveryStatus?: (sentinelId: string) => SentinelDeliveryStatus | undefined
+  /** Shadow signal routing: stamps `sentinel_watch` decisions and backs
+   *  `sentinel_routes`. Absent: no stamp, and `sentinel_routes` shows the
+   *  builtin table only. */
+  routing?: SentinelRoutingDeps
+  /** Public-URL source, for replaying the legacy choice in `explain`. */
+  publicUrl?: () => SentinelPublicUrl | undefined
 }
 
 type ToolResult = {
@@ -375,7 +418,14 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
     },
     async (input: SentinelWatchInput) => {
       const result = await createSentinelWatch(
-        { store, resolveProvider, isSessionAlive, ...(callerSessionId ? { defaultSessionId: callerSessionId } : {}), ...(activeIntervalMs !== undefined ? { activeIntervalMs } : {}) },
+        {
+          store,
+          resolveProvider,
+          isSessionAlive,
+          ...(callerSessionId ? { defaultSessionId: callerSessionId } : {}),
+          ...(activeIntervalMs !== undefined ? { activeIntervalMs } : {}),
+          ...(opts.routing ? { routing: opts.routing } : {}),
+        },
         input,
       )
       return result.ok
@@ -390,6 +440,54 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
       "clauses, target, and event counters (webhook targets also report `deliveryStatus`). Credentials are never returned.",
     {},
     async () => ok({ sentinels: store.list().map(s => sentinelViewWithDelivery(s, opts.deliveryStatus?.(s.id))) }),
+  )
+
+  server.tool(
+    "sentinel_routes",
+    "Read-only view of sentinel signal routing: which provider carries which " +
+      "subject, and why. With no argument it lists the effective rule table " +
+      "(config `sentinel.routes` first, then the visible `builtin:` defaults) " +
+      "with each provider's readiness and validator warnings. With " +
+      "`explain: {subject, types?, site?, provider?}` it returns the winning " +
+      "rule, the providers walked with each rejection reason, and `legacy`, " +
+      "the provider the daemon actually uses today. SHADOW ONLY: the router " +
+      "decides, logs and explains, it never changes the provider a sentinel " +
+      "is created on (`applied: false`).",
+    {
+      explain: z
+        .object({
+          subject: z.string().min(1).describe("Subject to route, e.g. \"github:owner/repo#42\" or \"session:sess_abc\"."),
+          types: z.array(z.string()).optional().describe("Event types (globs) the watch would ask for."),
+          site: z.enum(SENTINEL_ROUTE_SITES).optional().describe("Selection site. Default \"watch\"."),
+          provider: z.string().optional().describe("Explicit provider, to see how an explicit choice resolves."),
+        })
+        .optional()
+        .describe("Explain the decision for one subject instead of listing the table."),
+    },
+    async ({ explain }: { explain?: { subject: string; types?: string[]; site?: SentinelRouteSite; provider?: string } }) => {
+      const config = opts.routing ? await opts.routing.config() : { routes: [] }
+      if (!explain) {
+        return ok(
+          await listSentinelRoutes({
+            resolveProvider,
+            routes: config.routes,
+            ...(config.warnings ? { parseWarnings: config.warnings } : {}),
+            ...(config.mode ? { configuredMode: config.mode } : {}),
+          }) as unknown as Record<string, unknown>,
+        )
+      }
+      return ok({
+        explain: await explainSentinelRoute(
+          {
+            subject: explain.subject,
+            site: explain.site ?? "watch",
+            ...(explain.types ? { types: explain.types } : {}),
+            ...(explain.provider ? { provider: explain.provider } : {}),
+          },
+          { resolveProvider, routes: config.routes, ...(opts.publicUrl ? { publicUrl: opts.publicUrl } : {}) },
+        ),
+      })
+    },
   )
 
   server.tool(

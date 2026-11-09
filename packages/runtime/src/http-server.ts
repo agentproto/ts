@@ -122,6 +122,15 @@ import {
 } from "@agentproto/sentinel"
 import { GITHUB_DEFAULT_PR_TYPES } from "@agentproto/sentinel"
 import { autoSelectProviderSlug } from "@agentproto/sentinel"
+import {
+  explainSentinelRoute,
+  listSentinelRoutes,
+  SENTINEL_ROUTE_SITES,
+  shadowSentinelRoute,
+  type SentinelPublicUrl,
+  type SentinelRouteSite,
+  type SentinelRoutingDeps,
+} from "@agentproto/sentinel"
 import { parsePrUrl } from "./review-pr.js"
 import { decodeWhsecSecret, encodeWhsecSecret } from "./webhook-egress/signing.js"
 import { handleSentinelInbound, type SentinelInboundDeps } from "@agentproto/sentinel"
@@ -155,6 +164,11 @@ export interface SentinelHttpDeps {
   /** Enables `POST /inbound/sentinel-<hookKey>` (push providers). Without it
    *  that path falls through to the ordinary inbound-endpoint lookup. */
   runtime?: SentinelInboundDeps["runtime"]
+  /** Shadow signal routing: stamps `POST /sentinels` decisions and backs
+   *  `GET /sentinels/routes[/explain]`. Never changes the provider used. */
+  routing?: SentinelRoutingDeps
+  /** Public-URL source, for replaying the legacy choice in `explain`. */
+  publicUrl?: () => SentinelPublicUrl | undefined
 }
 import type { CancelTombstoneStore } from "@agentproto/sentinel"
 import type { SentinelDeliveryStatus } from "@agentproto/sentinel"
@@ -11055,6 +11069,9 @@ async function handleTunnels(
  *
  *   GET    /sentinels        → { sentinels: SentinelView[] }
  *   POST   /sentinels        → SentinelView (creates a new sentinel)
+ *   GET    /sentinels/routes → SentinelRoutesListing (read-only, shadow)
+ *   GET    /sentinels/routes/explain?subject=&types=&site=&provider=
+ *                            → SentinelRouteExplanation
  *   GET    /sentinels/:id    → SentinelView
  *   DELETE /sentinels/:id    → { ok, id }
  */
@@ -11110,6 +11127,7 @@ async function handleSentinels(
         resolveProvider: deps.resolveProvider,
         isSessionAlive: deps.isSessionAlive,
         ...(deps.activeIntervalMs !== undefined ? { activeIntervalMs: deps.activeIntervalMs } : {}),
+        ...(deps.routing ? { routing: deps.routing, site: "http" as const } : {}),
       },
       input,
     )
@@ -11118,6 +11136,50 @@ async function handleSentinels(
       return true
     }
     json(201, sentinelView(result.sentinel))
+    return true
+  }
+
+  // Read-only routing surfaces (`agentproto sentinel routes`). Matched before
+  // `/sentinels/:id` so "routes" is never read as a sentinel id.
+  if ((path === "/sentinels/routes" || path === "/sentinels/routes/explain") && req.method === "GET") {
+    const config = deps.routing ? await deps.routing.config() : { routes: [] }
+    if (path === "/sentinels/routes") {
+      json(
+        200,
+        await listSentinelRoutes({
+          resolveProvider: deps.resolveProvider,
+          routes: config.routes,
+          ...(config.warnings ? { parseWarnings: config.warnings } : {}),
+          ...(config.mode ? { configuredMode: config.mode } : {}),
+        }),
+      )
+      return true
+    }
+    const q = new URL(req.url ?? "/", "http://localhost").searchParams
+    const subject = q.get("subject")
+    if (!subject) {
+      json(400, { error: "missing_subject", message: "provide ?subject=" })
+      return true
+    }
+    const site = q.get("site") ?? "watch"
+    if (!(SENTINEL_ROUTE_SITES as readonly string[]).includes(site)) {
+      json(400, { error: "invalid_site", message: `site must be one of ${SENTINEL_ROUTE_SITES.join(", ")}` })
+      return true
+    }
+    const types = q.get("types")?.split(",").map(t => t.trim()).filter(Boolean)
+    const provider = q.get("provider")
+    json(
+      200,
+      await explainSentinelRoute(
+        {
+          subject,
+          site: site as SentinelRouteSite,
+          ...(types && types.length > 0 ? { types } : {}),
+          ...(provider ? { provider } : {}),
+        },
+        { resolveProvider: deps.resolveProvider, routes: config.routes, ...(deps.publicUrl ? { publicUrl: deps.publicUrl } : {}) },
+      ),
+    )
     return true
   }
 
@@ -11282,6 +11344,22 @@ async function handleWebhookTargetSentinel(
     return
   }
 
+  // Shadow only: decide, log, stamp. `providerSlug` above stays the one used.
+  const route = deps.routing
+    ? await shadowSentinelRoute(
+        deps.routing,
+        deps.resolveProvider,
+        {
+          subject,
+          site: "http",
+          targetKind: "webhook",
+          ...(types ? { types } : {}),
+          ...(typeof b.provider === "string" && b.provider.length > 0 ? { provider: b.provider } : {}),
+        },
+        providerSlug,
+      )
+    : undefined
+
   const spec: SentinelSpec = {
     match: singleMatch(subject, types),
     until,
@@ -11313,6 +11391,7 @@ async function handleWebhookTargetSentinel(
       provider: providerSlug,
       handle,
       ...(typeof b.expiresAt === "string" ? { expiresAt: b.expiresAt } : {}),
+      ...(route ? { route } : {}),
     })
     json(201, sentinelView(sentinel))
   } catch (err) {

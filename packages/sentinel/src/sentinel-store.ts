@@ -27,6 +27,7 @@ import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
 import { sentinelPlatform } from "./platform.js"
 import type { SentinelHandle, SentinelSpec, SentinelTarget } from "./sentinel-providers/types.js"
+import type { SentinelRouteStamp } from "./sentinel-routes.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -69,6 +70,10 @@ export interface Sentinel {
    *  {@link DEFAULT_SENTINEL_TTL_MS}); webhook targets have no owning session,
    *  so they only expire when one is given explicitly. */
   expiresAt?: string
+  /** What the signal router decided for this sentinel (shadow: recorded next
+   *  to the provider actually used, never applied). Absent on sentinels
+   *  created before routing existed or by a call site that does not route. */
+  route?: SentinelRouteStamp
 }
 
 export interface SentinelCreateInput {
@@ -81,6 +86,7 @@ export interface SentinelCreateInput {
   status?: SentinelStatus
   /** ISO expiry. Defaulted for session-target sentinels. */
   expiresAt?: string
+  route?: SentinelRouteStamp
 }
 
 export type SentinelUpdatePatch = Partial<
@@ -470,6 +476,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
           : spec.target.kind === "session"
             ? { expiresAt: new Date(createdTs + DEFAULT_SENTINEL_TTL_MS).toISOString() }
             : {}),
+        ...(input.route ? { route: input.route } : {}),
       }
       sentinels.set(id, sentinel)
       schedulePersist()

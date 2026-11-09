@@ -169,6 +169,42 @@ export type { GithubNormalizeInput, GithubNormalizeResult } from "./sentinel-git
 export { autoSelectProviderSlug } from "./sentinel-provider-select.js"
 export type { AutoSelectDeps } from "./sentinel-provider-select.js"
 
+export {
+  appendSentinelRouteLog,
+  BUILTIN_SENTINEL_ROUTES,
+  explainSentinelRoute,
+  legacySentinelProvider,
+  listSentinelRoutes,
+  matchSentinelRoute,
+  parseSentinelRoutes,
+  resolveSentinelRoute,
+  SENTINEL_ROUTE_SITES,
+  SENTINEL_ROUTING_LOG_PATH,
+  sentinelRouteSchema,
+  sentinelRoutesConfigFrom,
+  sentinelRoutesSchema,
+  sentinelRoutingModeSchema,
+  shadowSentinelRoute,
+  validateSentinelRoutes,
+} from "./sentinel-routes.js"
+export type {
+  SentinelRoute,
+  SentinelRouteDecision,
+  SentinelRouteExplanation,
+  SentinelRouteFrom,
+  SentinelRouteLogLine,
+  SentinelRouteRequest,
+  SentinelRouteRow,
+  SentinelRouteSite,
+  SentinelRouteStamp,
+  SentinelRouteWalkStep,
+  SentinelRoutesConfig,
+  SentinelRoutesListing,
+  SentinelRoutingDeps,
+  SentinelRoutingMode,
+  SentinelProviderRouteInfo,
+} from "./sentinel-routes.js"
+
 export { handleSentinelInbound } from "./sentinel-inbound.js"
 export type { SentinelInboundDeps, SentinelInboundResult } from "./sentinel-inbound.js"
 

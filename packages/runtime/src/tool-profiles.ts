@@ -217,6 +217,7 @@ export const ADMIN_PROFILE_TOOLS: readonly string[] = [
   "sandbox_gc",
   "sentinel_list",
   "sentinel_poll_now",
+  "sentinel_routes",
   "sentinel_unwatch",
   "sentinel_watch",
   "session_gc",

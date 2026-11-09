@@ -120,6 +120,34 @@ describe("config_get", () => {
     await client.close()
   })
 
+  it("returns rows for the sentinel section (autoWatchPrs, autoWatchUrgency, routes, routing.mode)", async () => {
+    const routes = [{ id: "gh-default", match: { subject: "github:*" }, via: ["local-gh"], fallback: "refuse", do: "deliver" }]
+    await writeCfg({ sentinel: { autoWatchPrs: false, routes } } as AgentprotoConfig)
+    const client = await setupClient(makeDeps({}))
+    const res = parse(
+      await client.callTool({
+        name: "config_get",
+        arguments: { keys: ["sentinel.autoWatchPrs", "sentinel.autoWatchUrgency", "sentinel.routes", "sentinel.routing.mode"] },
+      }),
+    )
+    expect(findKey(res, "sentinel.autoWatchPrs")).toMatchObject({ value: false, effective: false })
+    expect(findKey(res, "sentinel.autoWatchUrgency")).toMatchObject({ source: "default", effective: "next-turn" })
+    expect(findKey(res, "sentinel.routes")).toMatchObject({ value: routes })
+    expect(findKey(res, "sentinel.routing.mode")).toMatchObject({ source: "default", effective: "shadow" })
+    await client.close()
+  })
+
+  it("config_set refuses a sentinel route with an unknown action", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const raw = await client.callTool({
+      name: "config_set",
+      arguments: { key: "sentinel.routes", value: [{ id: "x", match: { subject: "github:*" }, via: ["local-gh"], do: "spawn" }] },
+    })
+    expect((raw as { isError?: boolean }).isError).toBe(true)
+    await client.close()
+  })
+
   it("never returns a secret's raw value — only set/fingerprint/last4", async () => {
     const secret = "s".repeat(40)
     await writeCfg({ daemon: { authToken: secret } })

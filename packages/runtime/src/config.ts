@@ -34,6 +34,7 @@ import { adapterDeprecation } from "./harness-alias.js"
 import type { ModelRolesConfig } from "./model-roles.js"
 import type { FollowTriageInput } from "./follow-triage.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
+import type { SentinelRoute, SentinelRoutingMode } from "@agentproto/sentinel"
 import { validateConfig } from "./config-schema.js"
 
 export const CONFIG_VERSION = 1 as const
@@ -595,6 +596,15 @@ export interface SentinelConfig {
    *  `steer` | `interrupt`). Default `"next-turn"`. Read per PR, so a
    *  `config_set` applies to the next one without a restart. */
   autoWatchUrgency?: "fyi" | "next-turn" | "steer" | "interrupt"
+  /** Signal-routing rule table (`@agentproto/sentinel`'s `sentinel-routes.ts`):
+   *  which provider should carry which subject. Shadow only for now: the
+   *  router decides, logs to `~/.agentproto/sentinel-routing.jsonl` and
+   *  stamps `route` on the sentinel, it never changes the provider used. */
+  routes?: SentinelRoute[]
+  routing?: {
+    /** `shadow` (default). `enforce` is accepted but not applied yet. */
+    mode?: SentinelRoutingMode
+  }
 }
 
 /**
