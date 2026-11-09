@@ -1,9 +1,13 @@
 /**
  * `GET /sessions/:id/screencast.jpg` for an id that is not a chrome-live
  * browser descriptor: a Bureau `browser_screenshot` (JPEG) of the newest open
- * tab owned by session `:id`. No recording is started or needed, so any
- * session that owns an open tab can be watched with no cooperation from the
- * agent.
+ * tab owned by session `:id`. Called as a raw imported tool, that result is a
+ * JSON object `{ base64, format, width, height }` (not an MCP `image` block),
+ * handed over as `structuredContent`, as a `text` block holding the JSON, or
+ * both; `parseImage` reads all of those plus the `image` block. The bytes
+ * field is `base64` (the driver layer calls it `data`; both are read). No
+ * recording is started or needed, so any session that owns an open tab can be
+ * watched with no cooperation from the agent.
  *
  * Every Bureau call is made AS the path id (the imported-tool call takes a
  * caller session id, forwarded in `x-agentproto-caller-session`), so Bureau's
@@ -51,7 +55,7 @@ interface OwnedTab {
   openedAt: number
 }
 
-export type SessionScreencastMissReason = "not_wired" | "no_tab" | "bureau_error"
+export type SessionScreencastMissReason = "not_wired" | "no_tab" | "bureau_error" | "bad_result"
 
 export type SessionScreencastOutcome =
   | { ok: true; bytes: Buffer; mimeType: string }
@@ -126,16 +130,47 @@ function parseTabs(result: unknown): OwnedTab[] | null {
   return out.sort((a, b) => b.openedAt - a.openedAt).slice(0, MAX_TABS)
 }
 
+const SCREENSHOT_FORMATS = new Set(["jpeg", "png", "webp"])
+
+// Live evidence: a raw imported `browser_screenshot` result observed 2026-11-09 has the keys
+// base64, format, width, height; `data` is the in-process driver spelling and is accepted too.
+function decodeScreenshotObject(value: unknown): { bytes: Buffer; mimeType: string } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const raw = value as { base64?: unknown; data?: unknown; format?: unknown }
+  const base64 = typeof raw.base64 === "string" && raw.base64 !== "" ? raw.base64 : raw.data
+  const format = raw.format
+  if (typeof base64 !== "string" || base64 === "") return null
+  if (typeof format !== "string" || !SCREENSHOT_FORMATS.has(format)) return null
+  const bytes = Buffer.from(base64, "base64")
+  return bytes.length > 0 ? { bytes, mimeType: `image/${format}` } : null
+}
+
 function parseImage(result: unknown): { bytes: Buffer; mimeType: string } | null {
-  const block = contentBlocks(result).find(
-    b => b.type === "image" && typeof b.data === "string" && b.data !== "",
-  )
-  if (!block) return null
-  const mime = typeof block.mimeType === "string" ? block.mimeType : ""
-  return {
-    bytes: Buffer.from(block.data as string, "base64"),
-    mimeType: /^image\/[a-z0-9.+-]+$/i.test(mime) ? mime : "image/jpeg",
+  const blocks = contentBlocks(result)
+  const block = blocks.find(b => b.type === "image" && typeof b.data === "string" && b.data !== "")
+  if (block) {
+    const bytes = Buffer.from(block.data as string, "base64")
+    const mime = typeof block.mimeType === "string" ? block.mimeType : ""
+    if (bytes.length > 0) {
+      return { bytes, mimeType: /^image\/[a-z0-9.+-]+$/i.test(mime) ? mime : "image/jpeg" }
+    }
   }
+  const structured = decodeScreenshotObject(
+    (result as { structuredContent?: unknown } | null)?.structuredContent,
+  )
+  if (structured) return structured
+  for (const b of blocks) {
+    if (b.type !== "text" || typeof b.text !== "string") continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(b.text)
+    } catch {
+      continue
+    }
+    const decoded = decodeScreenshotObject(parsed)
+    if (decoded) return decoded
+  }
+  return null
 }
 
 function setBounded<V>(map: Map<string, V>, key: string, value: V, cap = CACHE_CAP): void {
@@ -222,6 +257,7 @@ export function createSessionScreencastReader(
       const alias = await resolveAlias()
 
       let bureauError = false
+      let badResult = false
       const list = async (): Promise<OwnedTab[]> => {
         try {
           const result = await call(alias, "browser_list_owned_tabs", {}, sessionId)
@@ -251,12 +287,16 @@ export function createSessionScreencastReader(
               },
               sessionId,
             )
-            const image = isToolError(result) ? null : parseImage(result)
-            if (image) return image
+            if (isToolError(result)) {
+              bureauError = true
+            } else {
+              const image = parseImage(result)
+              if (image) return image
+              badResult = true
+            }
           } catch {
-            // fall through to the next tab
+            bureauError = true
           }
-          bureauError = true
           tabCache.delete(sessionId)
         }
         return null
@@ -275,6 +315,7 @@ export function createSessionScreencastReader(
         setBounded(frameCache, sessionId, { at: now(), ...image }, FRAME_CACHE_CAP)
         return { ok: true, ...image }
       }
+      if (badResult) return miss(sessionId, "bad_result")
       if (bureauError) return miss(sessionId, "bureau_error")
       return miss(sessionId, "no_tab")
     } finally {
