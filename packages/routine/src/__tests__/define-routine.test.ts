@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { defineRoutine } from "../define-routine.js"
-import { routineFrontmatterSchema } from "../schema.js"
+import { formatRoutineIssues, routineFrontmatterSchema } from "../schema.js"
+import { parseRoutineManifest } from "../manifest/index.js"
 
 describe("defineRoutine (AIP-41)", () => {
   // The AIP-41 doctype uses 'id' + 'description' instead of the cross-AIP
@@ -33,24 +34,49 @@ describe("routineFrontmatterSchema — target union", () => {
     expect(result.success).toBe(true)
   })
 
-  it("accepts target.agent (new sugar kind)", () => {
+  it("accepts target.agent with the canonical harness key", () => {
+    const result = routineFrontmatterSchema.safeParse({
+      ...base,
+      target: { agent: { harness: "claude-code", prompt: "say hi" } },
+    })
+    expect(result.success).toBe(true)
+    expect(result.data?.target).toEqual({ agent: { harness: "claude-code", prompt: "say hi" } })
+  })
+
+  it("rejects the pre-rename target.agent.adapter, naming harness", () => {
     const result = routineFrontmatterSchema.safeParse({
       ...base,
       target: { agent: { adapter: "claude-code", prompt: "say hi" } },
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
+    expect(formatRoutineIssues(result.error!.issues)).toContain(
+      "target.agent.adapter: `target.agent.adapter` was renamed to `target.agent.harness` (AIP-41); write `harness: <slug>`",
+    )
+  })
+
+  it("rejects adapter even next to harness", () => {
+    const result = routineFrontmatterSchema.safeParse({
+      ...base,
+      target: { agent: { harness: "hermes", adapter: "hermes", prompt: "say hi" } },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects target.agent without harness", () => {
+    const result = routineFrontmatterSchema.safeParse({ ...base, target: { agent: { prompt: "say hi" } } })
+    expect(result.success).toBe(false)
   })
 
   it("passes extra agent_start fields on target.agent through (the runtime validates them)", () => {
     const result = routineFrontmatterSchema.safeParse({
       ...base,
       target: {
-        agent: { adapter: "claude-code", prompt: "say hi", access: { profileRef: "p" }, role: "supervisor" },
+        agent: { harness: "claude-code", prompt: "say hi", access: { profileRef: "p" }, role: "supervisor" },
       },
     })
     expect(result.success).toBe(true)
     expect(result.data?.target).toEqual({
-      agent: { adapter: "claude-code", prompt: "say hi", access: { profileRef: "p" }, role: "supervisor" },
+      agent: { harness: "claude-code", prompt: "say hi", access: { profileRef: "p" }, role: "supervisor" },
     })
   })
 
@@ -81,7 +107,7 @@ describe("routineFrontmatterSchema — target union", () => {
   it("rejects target.agent missing required 'prompt'", () => {
     const result = routineFrontmatterSchema.safeParse({
       ...base,
-      target: { agent: { adapter: "claude-code" } },
+      target: { agent: { harness: "claude-code" } },
     })
     expect(result.success).toBe(false)
   })
@@ -208,5 +234,55 @@ describe("routineFrontmatterSchema — schedule union", () => {
       schedule: { cron: "0 4 * * *" },
     })
     expect(result.success).toBe(false)
+  })
+})
+
+describe("parseRoutineManifest — target.agent harness", () => {
+  const manifest = (agentKey: string) =>
+    [
+      "---",
+      "schema: routine/v1",
+      "id: nightly",
+      "description: test",
+      "schedule:",
+      "  kind: cron",
+      '  cron: "0 4 * * *"',
+      "target:",
+      "  agent:",
+      `    ${agentKey}: claude-code`,
+      "    prompt: say hi",
+      "---",
+      "",
+    ].join("\n")
+
+  it("parses a ROUTINE.md with target.agent.harness", () => {
+    const parsed = parseRoutineManifest(manifest("harness"))
+    expect(parsed.frontmatter.target).toEqual({ agent: { harness: "claude-code", prompt: "say hi" } })
+  })
+
+  it("rejects a ROUTINE.md with the pre-rename adapter, naming harness", () => {
+    expect(() => parseRoutineManifest(manifest("adapter"))).toThrow(
+      /target\.agent\.adapter: `target\.agent\.adapter` was renamed to `target\.agent\.harness` \(AIP-41\)/,
+    )
+  })
+})
+
+describe("defineRoutine — target.agent harness", () => {
+  const base = {
+    schema: "routine/v1" as const,
+    id: "test-routine",
+    description: "test",
+    schedule: { kind: "cron" as const, cron: "0 4 * * *" },
+  }
+
+  it("keeps harness on the handle", () => {
+    const handle = defineRoutine({ ...base, target: { agent: { harness: "hermes", prompt: "hi" } } })
+    expect(handle.target).toEqual({ agent: { harness: "hermes", prompt: "hi" } })
+  })
+
+  it("rejects the pre-rename adapter, naming harness", () => {
+    expect(() =>
+      defineRoutine({ ...base, target: { agent: { adapter: "hermes", prompt: "hi" } } } as never),
+    ).toThrow(/was renamed to `target\.agent\.harness`/)
   })
 })

@@ -13,7 +13,7 @@ describe("@agentproto/adapter-pi — manifest", () => {
   it("exposes a validated AIP-45 proprietary handle", () => {
     expect(pi.id).toBe("pi")
     expect(pi.protocol).toBe("proprietary")
-    expect(pi.adapter).toBe("@agentproto/adapter-pi")
+    expect(pi.harness).toBe("@agentproto/adapter-pi")
     expect(pi.bin).toBe("pi")
     // No throw from defineHarness means the manifest is schema-valid.
     expect(typeof pi.version).toBe("string")

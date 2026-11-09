@@ -34,8 +34,8 @@ import { pathToFileURL } from "node:url"
 import type { AgentCliClient, AgentCliHandle } from "../types.js"
 
 export interface ProprietaryProtocolOptions {
-  /** NPM package name to load — from manifest.adapter. */
-  adapter: string
+  /** NPM package name to load — from manifest.harness. */
+  harness: string
   /** Full manifest handle, forwarded verbatim to the loaded factory. */
   definition: AgentCliHandle
 }
@@ -57,15 +57,15 @@ export async function createProprietaryProtocolArm(
     // WIN11 field test in issue #1637. Rewriting absolute paths to
     // `file://` URLs is behavior-identical on POSIX and fixes win32; a
     // bare package specifier (no absolute path) imports as-is.
-    const target = isAbsolute(options.adapter)
-      ? pathToFileURL(options.adapter).href
-      : options.adapter
+    const target = isAbsolute(options.harness)
+      ? pathToFileURL(options.harness).href
+      : options.harness
     mod = (await import(target)) as Record<string, unknown>
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err)
     throw new Error(
-      `createProprietaryProtocolArm: could not load adapter package '${options.adapter}'. ` +
-        `Install it with: npm i ${options.adapter}\n  cause: ${cause}`,
+      `createProprietaryProtocolArm: could not load harness package '${options.harness}'. ` +
+        `Install it with: npm i ${options.harness}\n  cause: ${cause}`,
     )
   }
 
@@ -73,9 +73,9 @@ export async function createProprietaryProtocolArm(
     "createAgentCliClient" in mod ? mod.createAgentCliClient : mod.default
   if (typeof candidate !== "function") {
     throw new Error(
-      `createProprietaryProtocolArm: adapter package '${options.adapter}' does not export a ` +
+      `createProprietaryProtocolArm: harness package '${options.harness}' does not export a ` +
         `'createAgentCliClient' factory function (or a default export function). A ` +
-        `protocol="proprietary" adapter must export ` +
+        `protocol="proprietary" harness package must export ` +
         `createAgentCliClient(definition: AgentCliHandle): AgentCliClient | Promise<AgentCliClient>.`,
     )
   }

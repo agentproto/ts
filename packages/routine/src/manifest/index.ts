@@ -15,7 +15,7 @@
  */
 
 import matter from "gray-matter"
-import { routineFrontmatterSchema, type RoutineFrontmatter } from "../schema.js"
+import { formatRoutineIssues, routineFrontmatterSchema, type RoutineFrontmatter } from "../schema.js"
 import { defineRoutine } from "../define-routine.js"
 import type { RoutineDefinition, RoutineHandle } from "../types.js"
 
@@ -36,9 +36,7 @@ export function parseRoutineManifest(source: string): RoutineManifest {
   const result = routineFrontmatterSchema.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
-      `parseRoutineManifest: invalid frontmatter — ${result.error.issues
-        .map((i) => `${i.path.join(".")}: ${i.message}`)
-        .join("; ")}`,
+      `parseRoutineManifest: invalid frontmatter — ${formatRoutineIssues(result.error.issues)}`,
     )
   }
   return { frontmatter: result.data, body: parsed.content }

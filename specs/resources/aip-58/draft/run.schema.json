@@ -73,7 +73,7 @@
       "additionalProperties": false,
       "properties": {
         "kind": { "type": "string", "minLength": 1 },
-        "adapter": { "type": "string" },
+        "harness": { "type": "string" },
         "model": { "type": "string" },
         "sessionId": {
           "description": "The AIP-46 session id, when this step is agent-backed.",

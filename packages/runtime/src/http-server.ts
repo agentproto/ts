@@ -5927,7 +5927,7 @@ export async function startHttpServer(
           // `authorizeAppLink` for the whole flow. Same gating as the
           // `/ui` shell above (not `/tool-call`): the opener has nothing
           // but the link yet, so this route can't require the bearer
-          // either; it has its own, narrower, single-use credential
+          // either; it has its own, narrower credential
           // instead (the link token itself, verified inside the handler).
           const linkAuthMatch = path.match(/^\/apps\/(.+)\/link-auth$/)
           if (linkAuthMatch && req.method === "POST") {
@@ -7089,6 +7089,7 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
     code === "sandbox_preflight_invalid" ||
+    code === "sandbox_spec_invalid" ||
     code === "placement_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||

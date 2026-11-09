@@ -28,7 +28,6 @@ import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 import { mintAppLinkToken, mintAppLinkSessionToken, resetAppLinkSigningKeyCacheForTests } from "../app-link-token.js"
-import { resetAppLinkAuthStateForTests } from "../app-link-auth.js"
 import type { TelegramBotCredsStore } from "../telegram-bot-creds.js"
 import { FAKE_BOT_TOKEN, signInitData, buildInitDataFields } from "./helpers/telegram-init-data-fixture.js"
 
@@ -95,7 +94,6 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
   afterEach(async () => {
     if (dir) await rm(dir, { recursive: true, force: true })
     resetAppLinkSigningKeyCacheForTests()
-    resetAppLinkAuthStateForTests()
   })
 
   async function withServer(
@@ -325,6 +323,34 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
           body: JSON.stringify({ tool: "conversation_read", args: {} }),
         })
         expect(toolCall.status).toBe(200)
+      })
+    })
+
+    it("the same link token exchanged TWICE (a second tap on the button, a reload) yields two working session tokens", async () => {
+      await withServer(async (base, registry) => {
+        const target = spawnSession(registry)
+        const { token: linkToken } = mintAppLinkToken({
+          appId: APP_ID,
+          claims: { sessionId: target.id, telegramUserId: "42" },
+          ttlMs: 60_000,
+          pendingTelegramAuth: true,
+          keyPath,
+        })
+        const exchange = () =>
+          fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/link-auth`, {
+            method: "POST",
+            headers: { ...FORWARDED, "content-type": "application/json" },
+            body: JSON.stringify({ linkToken, initData: signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN) }),
+          })
+        expect((await exchange()).status).toBe(200)
+        const second = await exchange()
+        expect(second.status).toBe(200)
+        const body = (await second.json()) as { ok: boolean; token: string }
+        expect(body.ok).toBe(true)
+        const read = await fetch(`${base}/sessions/${target.id}`, {
+          headers: { ...FORWARDED, authorization: `Bearer ${body.token}` },
+        })
+        expect(read.status).toBe(200)
       })
     })
 

@@ -19,7 +19,7 @@ sandbox:
     whatever the manifest's permissions and the host's resolved tools grant,
     with the host process's OS permissions.
 protocol: proprietary
-adapter: "@agentproto/adapter-mastra-controller"
+harness: "@agentproto/adapter-mastra-controller"
 capabilities:
   streaming: true
   tool_calls: true

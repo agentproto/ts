@@ -52,13 +52,13 @@ const minimalDefinition: AgentCliHandle = {
   version_check: { cmd: "true", parse: "(\\d+)", range: ">=0.0.0", timeout_ms: 1000 },
   sandbox: "./SANDBOX.md",
   protocol: "proprietary",
-  adapter: "fake-adapter-named-export",
+  harness: "fake-adapter-named-export",
 } as AgentCliHandle
 
 describe("createProprietaryProtocolArm", () => {
   it("loads the named createAgentCliClient export and forwards the definition", async () => {
     const arm = await createProprietaryProtocolArm({
-      adapter: "fake-adapter-named-export",
+      harness: "fake-adapter-named-export",
       definition: minimalDefinition,
     })
     expect(arm).toBe(fakeClient)
@@ -67,7 +67,7 @@ describe("createProprietaryProtocolArm", () => {
 
   it("falls back to a default export factory", async () => {
     const arm = await createProprietaryProtocolArm({
-      adapter: "fake-adapter-default-export",
+      harness: "fake-adapter-default-export",
       definition: minimalDefinition,
     })
     expect(arm).toBe(fakeClient)
@@ -75,7 +75,7 @@ describe("createProprietaryProtocolArm", () => {
 
   it("awaits an async factory", async () => {
     const arm = await createProprietaryProtocolArm({
-      adapter: "fake-adapter-async-factory",
+      harness: "fake-adapter-async-factory",
       definition: minimalDefinition,
     })
     expect(arm).toBe(fakeClient)
@@ -84,7 +84,7 @@ describe("createProprietaryProtocolArm", () => {
   it("throws a descriptive error when the package exports no usable factory", async () => {
     await expect(
       createProprietaryProtocolArm({
-        adapter: "fake-adapter-no-factory",
+        harness: "fake-adapter-no-factory",
         definition: minimalDefinition,
       }),
     ).rejects.toThrow(/does not export a 'createAgentCliClient' factory/)
@@ -93,10 +93,10 @@ describe("createProprietaryProtocolArm", () => {
   it("throws a descriptive error when the package cannot be loaded", async () => {
     await expect(
       createProprietaryProtocolArm({
-        adapter: "totally-nonexistent-package-xyz",
+        harness: "totally-nonexistent-package-xyz",
         definition: minimalDefinition,
       }),
-    ).rejects.toThrow(/could not load adapter package 'totally-nonexistent-package-xyz'/)
+    ).rejects.toThrow(/could not load harness package 'totally-nonexistent-package-xyz'/)
   })
 
   it("loads an ABSOLUTE filesystem path through a file:// URL rewire — issue #1637 defect 1 (win32 `Received protocol 'c:'`; the rewire is behavior-identical, and a clean import, on POSIX too)", async () => {
@@ -116,7 +116,7 @@ describe("createProprietaryProtocolArm", () => {
 
       const arm = await createProprietaryProtocolArm({
         // Deliberately a raw absolute path — the exact win32-breaking shape.
-        adapter: file,
+        harness: file,
         definition: minimalDefinition,
       })
       expect(arm).toBe(fakeClient)

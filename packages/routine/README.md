@@ -56,7 +56,7 @@ from source before writing any code:
    tool by name, ANY tool). `target.agent` and `target.workflow` are sugar
    that lower to a tool call:
    - `target.tool = { tool, inputs? }` → dispatched as-is.
-   - `target.agent = { adapter, prompt, model?, cwd?, ...any other
+   - `target.agent = { harness, prompt, model?, cwd?, ...any other
      agent_start field }` → dispatched as `tool:"agent_start"` with those
      fields as `inputs`, validated against agent_start's own input schema
      (`packages/runtime/src/agent-start-schema.ts`; `wait` is dropped). **New target kind —
@@ -147,10 +147,6 @@ registrar's `list()`, and `/routine-defs/*` keeps its own prefix regardless.
 
 ### Specs-repo follow-up (not applied here — separate repo, per brief)
 
-- Document `target.agent` (`{ adapter, prompt, model?, cwd? }`) as a
-  first-class AIP-41 target kind in `resources/aip-41/draft/ROUTINE.schema.json`
-  upstream — this repo's `types.ts`/`schema.ts` are ahead of the generated
-  draft for this one shape.
 - Consider documenting `schedule.kind` values beyond `cron` as MAY-be-partial
   in v1 runtimes, since this bridge only implements `cron` (interval /
   calendar / manual / event are parsed-but-unscheduled here).

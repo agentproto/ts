@@ -74,11 +74,11 @@
     "confinedReadPaths": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "READ-only paths an OS-confined spawn needs to boot (e.g. the CLI's own global config files under $HOME, which the sandbox denies). `~/...` anchors at the operator's home; a leading `$VAR`/`${VAR}` is read from the per-spawn env and dropped when unset. Never grants write access; mutable state belongs in the adapter's state home."
+      "description": "READ-only paths an OS-confined spawn needs to boot (e.g. the CLI's own global config files under $HOME, which the sandbox denies). `~/...` anchors at the operator's home; a leading `$VAR`/`${VAR}` is read from the per-spawn env and dropped when unset. Never grants write access; mutable state belongs in the harness's state home."
     },
     "protocol": {
       "enum": ["acp", "mcp", "proprietary"],
-      "description": "Wire protocol discriminator. acp = AIP-44 ACP server; mcp = MCP-over-stdio; proprietary = adapter package implements AgentCliClient."
+      "description": "Wire protocol discriminator. acp = AIP-44 ACP server; mcp = MCP-over-stdio; proprietary = harness package implements AgentCliClient."
     },
     "acp": {
       "type": "string",
@@ -96,7 +96,7 @@
         "url":       { "type": "string", "format": "uri" }
       }
     },
-    "adapter": {
+    "harness": {
       "type": "string",
       "pattern": "^@?[a-z0-9][a-z0-9\\-./]*$",
       "description": "NPM package name implementing AgentCliClient. REQUIRED when protocol=proprietary."
@@ -158,7 +158,7 @@
     },
     {
       "if":   { "properties": { "protocol": { "const": "proprietary" } }, "required": ["protocol"] },
-      "then": { "required": ["adapter"] }
+      "then": { "required": ["harness"] }
     },
     {
       "if": {
@@ -314,16 +314,16 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["id"],
-                "description": "A model id annotated with who serves/bills it and how this adapter reaches it. A bare string (still legal) leaves provider unstated — the projector MUST NOT guess one.",
+                "description": "A model id annotated with who serves/bills it and how this harness reaches it. A bare string (still legal) leaves provider unstated — the projector MUST NOT guess one.",
                 "properties": {
                   "id": { "type": "string", "description": "Model id, unchanged on the wire — this is annotation, not renaming." },
                   "provider": { "type": "string", "description": "ProviderPreset id (or direct provider, e.g. \"anthropic\") — who serves and bills this model. Omit when unstated." },
-                  "mode": { "type": "string", "description": "This adapter's mode id that routes to `provider` (e.g. \"moonshot\"). Omit when the adapter routes on its own (e.g. a model-id prefix) or needs no mode switch." }
+                  "mode": { "type": "string", "description": "This harness's mode id that routes to `provider` (e.g. \"moonshot\"). Omit when the harness routes on its own (e.g. a model-id prefix) or needs no mode switch." }
                 }
               }
             ]
           },
-          "description": "Model ids the host MAY route to. Each entry is either a bare id (provider unstated, adapter default) or a { id, provider?, mode? } binding declaring who serves it and which adapter mode reaches it."
+          "description": "Model ids the host MAY route to. Each entry is either a bare id (provider unstated, harness default) or a { id, provider?, mode? } binding declaring who serves it and which harness mode reaches it."
         },
         "env": {
           "type": "object",
@@ -558,7 +558,7 @@
         "scrubEnv": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Env vars to scrub when this preset is active. Optional — an adapter that scrubs in code may omit it. Not surfaced to catalog clients."
+          "description": "Env vars to scrub when this preset is active. Optional — a harness that scrubs in code may omit it. Not surfaced to catalog clients."
         },
         "defaultModel": { "type": "string", "description": "Conventional default model id for this provider, if any." },
         "homepage": { "type": "string", "description": "Optional homepage/docs URL for the catalog UI." }
