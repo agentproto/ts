@@ -189,9 +189,16 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
           })],
         }),
       )
-      expect(desc.mcpServers?.[0]).toMatchObject({
+      // Persisted intact on the stored descriptor; the HTTP body redacts
+      // the header values.
+      expect(registry.get(desc.id)?.mcpServers?.[0]).toMatchObject({
         name: "room",
         headers: { Authorization: "Bearer t", "X-Probe": "y" },
+        credentialRef: "/secrets/room-token",
+      })
+      expect(desc.mcpServers?.[0]).toMatchObject({
+        name: "room",
+        headers: { Authorization: "[redacted]", "X-Probe": "[redacted]" },
         credentialRef: "/secrets/room-token",
       })
     } finally {

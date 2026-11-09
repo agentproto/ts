@@ -2708,10 +2708,11 @@ export interface SessionDescriptor {
   /** MCP servers mounted into the agent's session at spawn time
    *  (orchestrator WP1). Persisted so the resume/re-spawn path can
    *  re-mount the same host-chosen toolset instead of resuming a
-   *  capability-stripped agent. The current `AcpMcpServer` shape is
-   *  `{ name, transport, ref? }` — a reference, NOT inline credentials
-   *  — so this carries no secrets today. Should the shape ever grow
-   *  headers/tokens, NEVER log this field's contents. */
+   *  capability-stripped agent. An entry CAN carry secrets (`env`,
+   *  `headers`, an `/mcp/orchestrator` scope-token in `ref`): every
+   *  outward read goes through `publicSessionDescriptor` /
+   *  `redactMcpServers` (session-descriptor-public.ts), and this field's
+   *  contents must NEVER be logged. */
   mcpServers?: AcpMcpServer[]
   /** Resolved skills list at spawn time — explicit ∪ preset ∪ config
    *  defaults (`resolveSpawnDefaults`'s own merge), recorded regardless of

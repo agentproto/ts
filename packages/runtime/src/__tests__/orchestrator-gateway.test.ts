@@ -235,7 +235,12 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
         ],
       }),
     )
-    expect(desc.mcpServers).toEqual(expectedEntry)
+    // The stored descriptor keeps the real header values (restart re-mounts
+    // from it); the tool result only carries them redacted.
+    expect(deps.registry.get(desc.id)?.mcpServers).toEqual(expectedEntry)
+    expect(desc.mcpServers).toEqual([
+      { ...expectedEntry[0], headers: { "x-agentproto-caller-session-id": "[redacted]" } },
+    ])
 
     await client.close()
   })
@@ -302,7 +307,12 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
         ],
       }),
     )
-    expect(desc.mcpServers).toEqual(expectedEntry)
+    // The stored descriptor keeps the real header values (restart re-mounts
+    // from it); the tool result only carries them redacted.
+    expect(deps.registry.get(desc.id)?.mcpServers).toEqual(expectedEntry)
+    expect(desc.mcpServers).toEqual([
+      { ...expectedEntry[0], headers: { "x-agentproto-caller-session-id": "[redacted]" } },
+    ])
 
     await client.close()
   })

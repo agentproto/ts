@@ -251,6 +251,7 @@ import {
 } from "./command-allowlist.js"
 import { archivedInclusiveRegistry, resolveSessionRef, sessionRefSchema } from "./session-ref.js"
 import { adapterDeprecation } from "./harness-alias.js"
+import { publicSessionDescriptor } from "./session-descriptor-public.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -1012,17 +1013,6 @@ export interface SessionListCompactItem {
   // projection so "host: <id>" is list-visible.
   hostSessionId?: SessionDescriptor["hostSessionId"]
   hostFingerprint?: SessionDescriptor["hostFingerprint"]
-}
-
-/** Public MCP descriptor projection. Resume environment is required by the
- * registry to reattach native PTYs, but must never cross the tool boundary.
- * The AGENT.md system-prompt text (`appendSystemPrompt`) is kept for restart
- * re-application only and is not echoed either. */
-const publicSessionDescriptor = (
-  session: SessionDescriptor,
-): Omit<SessionDescriptor, "ptyResumeEnv" | "appendSystemPrompt"> => {
-  const { ptyResumeEnv: _privateResumeEnv, appendSystemPrompt: _privateSystemPrompt, ...publicDescriptor } = session
-  return publicDescriptor
 }
 
 /** The `launchedBy` key of a compact row: present only when some provenance

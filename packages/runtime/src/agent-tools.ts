@@ -107,6 +107,7 @@ import { decide } from "./permissions.js"
 import { createWorkspaceOfCwd } from "./workspace-binding.js"
 import { postParentRelayMessage, relayTokenForSession } from "./parent-relay.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
+import { redactSessionMounts } from "./session-descriptor-public.js"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
  *
@@ -336,7 +337,8 @@ export const compactAgentStartDescriptor = (
  *
  *  - default (`full` absent, `fields` absent), the COMPACT projection.
  *  - `full: true`, the RAW descriptor, byte for byte the pre-projection
- *    answer (the escape hatch; no field is added, dropped or renamed).
+ *    answer (the escape hatch; no field is added, dropped or renamed),
+ *    except that mount secrets in `mcpServers` are redacted.
  *  - `fields: [...]`, an explicit allowlist over the answer; the named
  *    fields are served from the raw descriptor (so a caller can ask for a
  *    single heavy field on purpose), the compact counters stay available,
@@ -348,7 +350,9 @@ export function buildAgentStartResponseBody(
   opts: { full?: boolean; fields?: readonly string[] } = {},
 ): Record<string, unknown> {
   const compact = compactAgentStartDescriptor(descriptor)
-  const raw = { ...descriptor } as Record<string, unknown>
+  // Mount secrets (`mcpServers[].env` / `.headers`) are redacted even on the
+  // raw paths: this body is a tool result, not the stored descriptor.
+  const raw = redactSessionMounts({ ...descriptor }) as Record<string, unknown>
   const body: Record<string, unknown> = opts.fields
     ? { ...raw, ...compact, ...extras }
     : opts.full
@@ -2221,7 +2225,7 @@ export function registerAgentTools(
       if (statsDetail) {
         rows = await withSessionStats(rows, registry.list({ includeArchived: true }), statsDetail)
       }
-      return rows
+      return rows.map(redactSessionMounts)
     },
     transformers: [
       catchErrors(),
