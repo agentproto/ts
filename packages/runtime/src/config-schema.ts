@@ -416,6 +416,7 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     port: z.number().optional(),
     bind: z.string().optional(),
     allowedOrigins: z.array(z.string()).optional(),
+    frameAncestors: z.union([z.array(z.string()), z.string()]).optional(),
     strictOrigins: z.boolean().optional(),
     label: z.string().optional(),
     authToken: z.string().optional(),
@@ -981,6 +982,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Allowed origins",
     help: "Trusted browser origins for mutating /sessions/* routes, in addition to the hardcoded localhost defaults. Lockout: a bad value can lock a browser UI out.",
+  },
+  {
+    path: "daemon.frameAncestors",
+    schema: z.union([strArray, str]),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "App page frame ancestors",
+    help: "Extra origins allowed to embed the app page GET /apps/:appId/ui in an iframe, on top of vscode-webview: and vscode-file: (for example https://web.telegram.org to let a browser-based Telegram client frame it). Only exact https://host[:port] origins and custom schemes are honoured; * and wildcards are refused because the page injects the tool-call bridge. Lockout: a bad value can make an embedded page refuse to load.",
   },
   {
     path: "approvals.webOrigins",

@@ -1964,6 +1964,11 @@ export interface CreateGatewayOptions {
   /** When true, drop the localhost-wildcard defaults — only the
    *  explicit `allowedOrigins` list is honoured. */
   strictOrigins?: boolean
+  /** Extra `frame-ancestors` sources for `GET /apps/:appId/ui`, added to the
+   *  built-in `vscode-webview:` / `vscode-file:` defaults. Passed straight
+   *  through to `startHttpServer`; see `RuntimeHttpServerOptions.frameAncestors`
+   *  (the caller is expected to have validated the entries). */
+  frameAncestors?: readonly string[]
   /**
    * Opt-in deferred/lazy MCP tool loading (harness-parity item 3, see
    * `deferred-tools.ts`). When set, every root-gateway tool outside
@@ -5369,6 +5374,9 @@ export async function createGateway(
       ),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
+    ...(opts.frameAncestors && opts.frameAncestors.length > 0
+      ? { frameAncestors: opts.frameAncestors }
+      : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
