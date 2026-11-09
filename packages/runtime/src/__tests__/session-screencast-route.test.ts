@@ -234,23 +234,47 @@ describe("GET /sessions/:id/screencast.jpg from Bureau", () => {
     })
   }
 
-  it("also reads the driver-layer field name `data` in place of `base64`", async () => {
-    const asData = { data: FRAME.toString("base64"), format: "png", width: 1, height: 1 }
-    for (const result of [{ structuredContent: asData }, { content: [text(asData)] }]) {
+  const OTHER_FRAME = Buffer.from("the-data-spelling-bytes")
+  const dataSpelled: [string, (obj: Record<string, unknown>) => unknown][] = [
+    ["structuredContent", obj => ({ structuredContent: obj })],
+    ["a JSON text block", obj => ({ content: [text(obj)] })],
+  ]
+  for (const [shapeName, wrap] of dataSpelled) {
+    const serves = async (obj: Record<string, unknown>, expected: Buffer, mime: string) => {
       await withServer(
         call =>
           call.tool === "browser_list_owned_tabs"
             ? tabList([{ targetId: "tab_1", openedAt: "2026-11-09T10:00:00Z" }])
-            : result,
+            : wrap(obj),
         async ({ base }) => {
           const res = await get(base)
           expect(res.status).toBe(200)
-          expect(res.headers.get("content-type")).toBe("image/png")
-          expect(Buffer.from(await res.arrayBuffer()).equals(FRAME)).toBe(true)
+          expect(res.headers.get("content-type")).toBe(mime)
+          expect(Buffer.from(await res.arrayBuffer()).equals(expected)).toBe(true)
         },
       )
     }
-  })
+
+    it(`serves a data-spelled payload in ${shapeName}`, async () => {
+      await serves({ data: FRAME.toString("base64"), format: "png", width: 1, height: 1 }, FRAME, "image/png")
+    })
+
+    it(`prefers base64 over data when both are present in ${shapeName}`, async () => {
+      await serves(
+        { base64: FRAME.toString("base64"), data: OTHER_FRAME.toString("base64"), format: "jpeg" },
+        FRAME,
+        "image/jpeg",
+      )
+    })
+
+    it(`falls back to data when base64 is empty in ${shapeName}`, async () => {
+      await serves(
+        { base64: "", data: OTHER_FRAME.toString("base64"), format: "webp" },
+        OTHER_FRAME,
+        "image/webp",
+      )
+    })
+  }
 
   it("takes the content type from the image block", async () => {
     await withServer(
@@ -567,6 +591,8 @@ describe("session screencast reader limits", () => {
     ["an empty base64", { content: [text({ ...shotJson(FRAME), base64: "" })] }],
     ["a base64 that decodes to nothing", { structuredContent: { ...shotJson(FRAME), base64: "!!!" } }],
     ["an unknown format", { content: [text(shotJson(FRAME, "gif"))] }],
+    ["a data-spelled payload with an unknown format", { structuredContent: { data: "QUJD", format: "gif" } }],
+    ["a data-spelled payload with an empty data", { structuredContent: { data: "", format: "jpeg" } }],
     ["a missing format", { structuredContent: { base64: FRAME.toString("base64") } }],
     ["a text block that is not JSON", { content: [{ type: "text", text: "not json at all" }] }],
     ["a JSON array", { content: [{ type: "text", text: JSON.stringify([shotJson(FRAME)]) }] }],

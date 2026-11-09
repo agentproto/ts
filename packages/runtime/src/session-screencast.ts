@@ -5,9 +5,9 @@
  * JSON object `{ base64, format, width, height }` (not an MCP `image` block),
  * handed over as `structuredContent`, as a `text` block holding the JSON, or
  * both; `parseImage` reads all of those plus the `image` block. The bytes
- * field is `base64` (the driver layer calls it `data`; both are read). No recording is started or needed, so any
- * session that owns an open tab can be watched with no cooperation from the
- * agent.
+ * field is `base64` (the driver layer calls it `data`; both are read). No
+ * recording is started or needed, so any session that owns an open tab can be
+ * watched with no cooperation from the agent.
  *
  * Every Bureau call is made AS the path id (the imported-tool call takes a
  * caller session id, forwarded in `x-agentproto-caller-session`), so Bureau's
@@ -132,6 +132,8 @@ function parseTabs(result: unknown): OwnedTab[] | null {
 
 const SCREENSHOT_FORMATS = new Set(["jpeg", "png", "webp"])
 
+// Live evidence: a raw imported `browser_screenshot` result observed 2026-11-09 has the keys
+// base64, format, width, height; `data` is the in-process driver spelling and is accepted too.
 function decodeScreenshotObject(value: unknown): { bytes: Buffer; mimeType: string } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   const raw = value as { base64?: unknown; data?: unknown; format?: unknown }
