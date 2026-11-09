@@ -100,6 +100,8 @@ import type { Grant } from "@agentproto/policy"
 import {
   defaultUrgencyForKind,
   registerMessageTools,
+  resolveLiveLabelAddress,
+  type ToolResult,
   type RegisterMessageToolsOptions,
 } from "./message-tools.js"
 import { registerPermissionsTools } from "./permissions-tools.js"
@@ -381,6 +383,15 @@ const sessionIdField = z
   .describe(
     "Session id (as returned by agent_start). Accepts either `sessionId` or " +
       "its alias `id` — pass whichever you have.",
+  )
+const driveSessionIdField = z
+  .string()
+  .optional()
+  .describe(
+    "Session id (as returned by agent_start), or `label:<operatorLabel>` for the one live " +
+      "session carrying that operator label (no live match is no_live_session_for_label, " +
+      "several is ambiguous_label; the owner gate still runs on the resolved session). " +
+      "Accepts either `sessionId` or its alias `id`: pass whichever you have.",
   )
 const sessionIdAliasField = z
   .string()
@@ -681,6 +692,32 @@ export function registerAgentTools(
       tool,
     })
     return gate.ok ? undefined : gate.message
+  }
+
+  // `sessionId` / `id` of a drive tool: a plain session id, or
+  // `label:<operatorLabel>` (the one live session carrying that immutable
+  // operator label). Only picks the target; the owner gate then runs on the
+  // resolved session, so a label never widens who can drive it.
+  const resolveDriveTarget = (
+    tool: string,
+    input: { sessionId?: string; id?: string },
+  ): string | ToolResult => {
+    const arg = resolveSessionIdArg(input)
+    if (!arg) return missingSessionIdError(tool)
+    const target = resolveLiveLabelAddress({
+      registry,
+      tool,
+      to: arg,
+      verb: "drive",
+      mayReach: d => checkDrive({
+        registry,
+        ...(messagingGrants !== undefined ? { grants: messagingGrants } : {}),
+        callerSessionId: effectiveCaller(),
+        target: d,
+        tool,
+      }).ok,
+    })
+    return "id" in target ? target.id : target
   }
 
   // ── agent_start ────────────────────────────────────────
@@ -1107,7 +1144,7 @@ export function registerAgentTools(
       "the turn ends; `interrupt: true` cancels the in-flight turn and " +
       "redirects the SAME session onto this prompt, keeping its context.",
     {
-      sessionId: sessionIdField,
+      sessionId: driveSessionIdField,
       id: sessionIdAliasField,
       prompt: opaqueSchema(promptInputSchema).describe(
         `The next user turn — plain text, or a content block / block array for a multimodal turn. Details: tool_help {name:"agent_prompt", topic:"prompt"}`
@@ -1149,8 +1186,8 @@ export function registerAgentTools(
         ),
     },
     async input => {
-      const sessionId = resolveSessionIdArg(input)
-      if (!sessionId) return missingSessionIdError("agent_prompt")
+      const sessionId = resolveDriveTarget("agent_prompt", input)
+      if (typeof sessionId !== "string") return sessionId
       // Session-owner gate: only the session's owner (the caller that
       // spawned it, per its `parentSessionId`), the session itself, the
       // operator, or a caller named in its `allowPromptFrom` list may drive
@@ -1714,7 +1751,7 @@ export function registerAgentTools(
       "`reason: \"stopped\"` (or omitted) on an already-ended session stays a " +
       "no-op.",
     {
-      sessionId: sessionIdField,
+      sessionId: driveSessionIdField,
       id: sessionIdAliasField,
       reason: z
         .enum(["completed", "stopped"])
@@ -1733,8 +1770,8 @@ export function registerAgentTools(
         ),
     },
     async input => {
-      const sessionId = resolveSessionIdArg(input)
-      if (!sessionId) return missingSessionIdError("agent_kill")
+      const sessionId = resolveDriveTarget("agent_kill", input)
+      if (typeof sessionId !== "string") return sessionId
       // NOTE: no session-owner gate here — a scoped orchestrator's refusal
       // shape (the structured `orchestrator_session_out_of_scope` error at
       // the subtree check below) and its subtree authority are pre-existing
@@ -1834,12 +1871,12 @@ export function registerAgentTools(
       "stop: they stay queued and run after the next turn that ends on its " +
       "own. No-op (`wasBusy: false`) on an already-idle or terminal session.",
     {
-      sessionId: sessionIdField,
+      sessionId: driveSessionIdField,
       id: sessionIdAliasField,
     },
     async input => {
-      const sessionId = resolveSessionIdArg(input)
-      if (!sessionId) return missingSessionIdError("agent_interrupt")
+      const sessionId = resolveDriveTarget("agent_interrupt", input)
+      if (typeof sessionId !== "string") return sessionId
       const interruptOwnerError = ownerGateText(registry.get(sessionId), "agent_interrupt")
       if (interruptOwnerError) return ownerGateError("agent_interrupt", interruptOwnerError)
       try {

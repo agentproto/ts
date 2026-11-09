@@ -36,6 +36,12 @@ messages to each other, and what it takes to wake an idle Claude Code session.
   matches: no live match is `no_live_session_for_label`, several is
   `ambiguous_label`. The usual permission rules apply to the session it
   resolves to; a label never widens who you can reach.
+- Driving by label: `agent_prompt`, `agent_interrupt` and `agent_kill` accept
+  `sessionId` (or `id`) as `"label:<label>"` too, with the same resolution
+  (one live session whose `operatorLabel` matches; `no_live_session_for_label`,
+  `ambiguous_label`). The owner gate and `session:prompt` / `session:control`
+  grants are checked on the resolved session, so a label is a way to name the
+  target, never a way to gain the right to drive it.
 - From Claude Desktop, say who you are: the shared `claude-desktop` identity
   has no session id, so pass `declaredSender: "cc:<your session id>"` to
   `message_send`. The recipient sees `[declared sender: cc:<id>, unverified]`
