@@ -146,7 +146,7 @@ const noFromField = z
 /** A session an address can still reach: not retired, and either running or
  *  an external row whose inbox is open (the same test the session-follow
  *  delivery gate uses). */
-const isLiveRecipient = (d: SessionDescriptor): boolean =>
+export const isLiveRecipient = (d: SessionDescriptor): boolean =>
   !isRetired(d) && (d.status === "running" || d.status === "starting" || isExternalInboxOpen(d))
 
 /** `label:<label>` resolves to the ONE live session whose immutable,

@@ -46,6 +46,7 @@ import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
 import {
+  checkOperatorLabelStamp,
   checkPromptPolicyEditor,
   effectiveCallerSessionId,
   ownerGateError,
@@ -100,6 +101,7 @@ import type { Grant } from "@agentproto/policy"
 import {
   defaultUrgencyForKind,
   registerMessageTools,
+  isLiveRecipient,
   resolveLiveLabelAddress,
   type ToolResult,
   type RegisterMessageToolsOptions,
@@ -1978,18 +1980,20 @@ export function registerAgentTools(
   // ── agent_set_operator_label ─────────────────────────────
   server.tool(
     "agent_set_operator_label",
-    "Stamp this session's operator-assigned `operatorLabel` — the identity a " +
-      "`label:<label>` / `label:<prefix>*` entry in another session's " +
-      "`allowPromptFrom` matches against. Normally the daemon stamps this " +
-      "ONLY on a fresh root spawn (no caller session, not a resume) and " +
-      "every later `session_restart` / `session_continue_fresh` of that " +
-      "lineage carries it forward automatically. This tool exists for the " +
-      "one case that carry-forward cannot fix: a lineage that has lived by " +
-      "resume/continue-fresh since before it ever got a label, so there was " +
-      "never a prior label to carry forward. Reserved to the human operator " +
-      "— unlike `allowPromptFrom`, a session may not stamp its own (or any) " +
-      "`operatorLabel`: that would let a compromised session grant itself " +
-      "any `label:` grant it likes. Pass an empty string to clear it.",
+    "Stamp a session's operator-assigned `operatorLabel`: the name " +
+      "`message_send to:\"label:<label>\"` and `agent_prompt` / `agent_interrupt` / " +
+      "`agent_kill` `id:\"label:<label>\"` resolve to the one live session carrying it. " +
+      "The human operator may stamp any session. A session may stamp one on a " +
+      "session it OWNS (a child it spawned, or a descendant of it), so a " +
+      "supervisor can give its children a stable name; the shared `claude-desktop` " +
+      "identity may do so for a child it spawned with `parent: \"cc:<id>\"`. " +
+      "A session may NOT stamp its own label, nor one on a session it does not " +
+      "own. A label already carried by another LIVE session is refused for a " +
+      "session caller. The label on a session with a parent is an address only: " +
+      "`allowPromptFrom` `label:` entries, `operatorDelegates` and label-keyed " +
+      "grants match root sessions only. Also lets the operator label a lineage " +
+      "that has lived by resume/continue-fresh since before it got one. " +
+      "Pass an empty string to clear it. Details: `tool_help {name:\"agent_set_operator_label\"}`.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
@@ -1998,12 +2002,6 @@ export function registerAgentTools(
         .describe("The operator-assigned label to stamp, or \"\" to clear it."),
     },
     async input => {
-      if (effectiveCaller() !== undefined) {
-        return ownerGateError(
-          "agent_set_operator_label",
-          "agent_set_operator_label: reserved to the human operator — a session may not stamp its own (or another session's) operatorLabel. This call came from a session.",
-        )
-      }
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_set_operator_label")
       const target = registry.get(sessionId)
@@ -2015,8 +2013,35 @@ export function registerAgentTools(
           isError: true,
         }
       }
+      const operatorLabel = input.operatorLabel.trim() || undefined
+      const caller = effectiveCaller()
+      if (caller !== undefined) {
+        const stamp = checkOperatorLabelStamp({
+          callerSessionId: caller,
+          target,
+          parentOf: id => registry.get(id)?.parentSessionId,
+        })
+        if (!stamp.ok) return ownerGateError("agent_set_operator_label", stamp.message)
+        if (operatorLabel !== undefined) {
+          const holder = registry
+            .list()
+            .find(d => d.id !== target.id && d.operatorLabel === operatorLabel && isLiveRecipient(d))
+          if (holder) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `agent_set_operator_label: the label "${operatorLabel}" is already carried by the live session ` +
+                    `"${holder.id}". Pick another label, or wait for that session to end.`,
+                },
+              ],
+              isError: true,
+            }
+          }
+        }
+      }
       try {
-        const operatorLabel = input.operatorLabel.trim() || undefined
         const desc = registry.setOperatorLabel(sessionId, operatorLabel)
         return {
           content: [

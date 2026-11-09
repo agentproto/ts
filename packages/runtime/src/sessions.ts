@@ -2283,11 +2283,12 @@ export interface SessionDescriptor {
    *  (i.e. the human operator or an operator-side client spawned it), and
    *  carried across restart / continue-fresh. The human operator may also
    *  stamp it directly on a live session via `agent_set_operator_label`
-   *  (`registry.setOperatorLabel`). Unlike `label`, no *session* can change
-   *  it (`session_rename` only touches `label`), so a `label:` entry in
-   *  another session's `allowPromptFrom` can safely key on it — see
-   *  `checkSessionOwnerGate`. Absent for every session spawned by another
-   *  session. */
+   *  (`registry.setOperatorLabel`), and a session may stamp one on a session
+   *  it owns (`checkOperatorLabelStamp`), never on itself. Unlike `label`,
+   *  `session_rename` never touches it, and a label on a session with a
+   *  parent only addresses it (`label:<x>`): a `label:` grant in
+   *  `allowPromptFrom` / `operatorDelegates` / a policy principal matches
+   *  root sessions only, see `checkSessionOwnerGate`. */
   operatorLabel?: string
   /** The AIP-9 operator this session runs for, as a canonical AIP-54 ref
    *  (`operator:<slug>[@<owner>/<workspace>]`) - AIP-46 §Operator binding.
@@ -5512,8 +5513,8 @@ export interface SessionsRegistry {
   /** Stamp (or clear) the operator-assigned `operatorLabel` (see
    *  `SessionDescriptor.operatorLabel`). Called by the `agent_start` handler
    *  for operator spawns, by the restart / continue-fresh carry-forward, and
-   *  by the operator-only `agent_set_operator_label` MCP tool
-   *  (`agent-tools.ts`). No session-scoped caller may invoke it. */
+   *  by the `agent_set_operator_label` MCP tool (`agent-tools.ts`), which
+   *  gates session callers with `checkOperatorLabelStamp`. */
   setOperatorLabel(id: string, operatorLabel: string | undefined): SessionDescriptor
   /** Stamp (or clear, with `operator` undefined) the AIP-46 `operator` and its
    *  `operatorDigest`. Daemon-internal: the restart / continue-fresh
