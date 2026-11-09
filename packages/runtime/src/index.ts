@@ -297,7 +297,7 @@ import { createImportedCallGuard } from "./imported-call-gate.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { IMPORTED_MCPS_PATH, loadImportedMcps } from "./mcp-imports.js"
 import { resolveImportConnection } from "./mcp-import-resolve.js"
-import { createSubsessionMinter } from "./subsession-minter.js"
+import { createSubsessionMinter, wireSubsessionLifecycle } from "./subsession-minter.js"
 import { createPermissionTelegramBridge } from "./permission-telegram-bridge.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { createReviewRunner } from "./review-runner.js"
@@ -3889,14 +3889,9 @@ export async function createGateway(
       sessions.setBrowserRecordings(sessionId, { url })
     },
   })
-  // Revoke this session's tokens when it ends; a revocation failure never
-  // throws into the exit path.
-  sessionEvents.on("session:exited", ev => {
-    void subsessions.revokeSession(ev.sessionId).catch(err => {
-      const message = err instanceof Error ? err.message : String(err)
-      console.warn(`[subsessions] revoke for ${ev.sessionId} failed: ${message}`)
-    })
-  })
+  // Revoke this session's tokens when it ends, reinstate it when it is revived
+  // in place (`session:resumed`).
+  wireSubsessionLifecycle({ sessionEvents, registry: sessions, subsessions })
   // Per-call human approval for imported tools named by a `hold` rule in
   // `.agentproto/hooks.json` (e.g. agentpush `send_message`). No rule, no change.
   mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace, subsessions }))
