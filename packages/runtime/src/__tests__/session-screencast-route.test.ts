@@ -75,6 +75,20 @@ function frameResult(bytes: Buffer, mimeType = "image/jpeg") {
   return { content: [{ type: "image", data: bytes.toString("base64"), mimeType }] }
 }
 
+/** The real `browser_screenshot` payload of a raw imported-tool call: no `image` block. */
+const shotJson = (bytes: Buffer, format = "jpeg") => ({
+  base64: bytes.toString("base64"),
+  format,
+  width: 1280,
+  height: 720,
+})
+const shotAsText = (bytes: Buffer, format?: string) => ({ content: [text(shotJson(bytes, format))] })
+const shotAsStructured = (bytes: Buffer, format?: string) => ({ structuredContent: shotJson(bytes, format) })
+const shotAsBoth = (bytes: Buffer, format?: string) => ({
+  content: [text(shotJson(bytes, format))],
+  structuredContent: shotJson(bytes, format),
+})
+
 function noImageResult() {
   return { content: [text({ note: "no image" })] }
 }
@@ -191,6 +205,34 @@ describe("GET /sessions/:id/screencast.jpg from Bureau", () => {
       expect(toolsOf(calls)).not.toContain("browser_record_frame")
     })
   })
+
+  const realShapes: [string, (bytes: Buffer, format?: string) => unknown][] = [
+    ["a text block holding the JSON", shotAsText],
+    ["structuredContent only", shotAsStructured],
+    ["both a text block and structuredContent", shotAsBoth],
+  ]
+  for (const [name, shape] of realShapes) {
+    it(`serves the real browser_screenshot result given as ${name}`, async () => {
+      for (const [format, mime] of [
+        ["jpeg", "image/jpeg"],
+        ["png", "image/png"],
+        ["webp", "image/webp"],
+      ] as const) {
+        await withServer(
+          call =>
+            call.tool === "browser_list_owned_tabs"
+              ? tabList([{ targetId: "tab_1", openedAt: "2026-11-09T10:00:00Z" }])
+              : shape(FRAME, format),
+          async ({ base }) => {
+            const res = await get(base)
+            expect(res.status).toBe(200)
+            expect(res.headers.get("content-type")).toBe(mime)
+            expect(Buffer.from(await res.arrayBuffer()).equals(FRAME)).toBe(true)
+          },
+        )
+      }
+    })
+  }
 
   it("takes the content type from the image block", async () => {
     await withServer(
@@ -344,6 +386,10 @@ describe("GET /sessions/:id/screencast.jpg from Bureau", () => {
         call.tool === "browser_list_owned_tabs"
           ? tabList([{ targetId: "tab_1", openedAt: "2026-11-09T10:00:00Z" }])
           : noImageResult(),
+      call =>
+        call.tool === "browser_list_owned_tabs"
+          ? tabList([{ targetId: "tab_1", openedAt: "2026-11-09T10:00:00Z" }])
+          : { content: [text({ ...shotJson(FRAME), base64: "" })] },
       () => {
         throw new Error("bureau down")
       },
@@ -498,6 +544,65 @@ describe("GET /sessions/:id/screencast.jpg from Bureau", () => {
 
 describe("session screencast reader limits", () => {
   const tabsFor = () => tabList([{ targetId: "tab_1", openedAt: "2026-11-09T10:00:00Z" }])
+
+  const badResults: [string, unknown][] = [
+    ["an empty base64", { content: [text({ ...shotJson(FRAME), base64: "" })] }],
+    ["a base64 that decodes to nothing", { structuredContent: { ...shotJson(FRAME), base64: "!!!" } }],
+    ["an unknown format", { content: [text(shotJson(FRAME, "gif"))] }],
+    ["a missing format", { structuredContent: { base64: FRAME.toString("base64") } }],
+    ["a text block that is not JSON", { content: [{ type: "text", text: "not json at all" }] }],
+    ["a JSON array", { content: [{ type: "text", text: JSON.stringify([shotJson(FRAME)]) }] }],
+    ["no content at all", {}],
+    ["null", null],
+  ]
+  for (const [name, result] of badResults) {
+    it(`logs bad_result, not bureau_error, and misses for ${name}`, async () => {
+      const lines: string[] = []
+      const reader = createSessionScreencastReader({
+        log: line => lines.push(line),
+        callImportedTool: async (_alias, tool) => (tool === "browser_list_owned_tabs" ? tabsFor() : result),
+      })
+      expect(await reader.read("sess_1")).toEqual({ ok: false, reason: "bad_result" })
+      expect(lines).toEqual(['[screencast] session "sess_1": no frame (bad_result)'])
+      expect(lines.join("\n")).not.toContain(FRAME.toString("base64"))
+    })
+  }
+
+  it("keeps bureau_error for a thrown call and a tool error result", async () => {
+    for (const answer of [
+      () => {
+        throw new Error("bureau down")
+      },
+      () => targetGone(),
+    ]) {
+      const lines: string[] = []
+      const reader = createSessionScreencastReader({
+        log: line => lines.push(line),
+        callImportedTool: async (_alias, tool) => (tool === "browser_list_owned_tabs" ? tabsFor() : answer()),
+      })
+      expect(await reader.read("sess_1")).toEqual({ ok: false, reason: "bureau_error" })
+      expect(lines).toEqual(['[screencast] session "sess_1": no frame (bureau_error)'])
+    }
+  })
+
+  it("logs one bad_result line per 30 s per session and never the base64", async () => {
+    let t = 1_000_000
+    const lines: string[] = []
+    const reader = createSessionScreencastReader({
+      now: () => t,
+      log: line => lines.push(line),
+      callImportedTool: async (_alias, tool) =>
+        tool === "browser_list_owned_tabs" ? tabsFor() : { content: [text({ ...shotJson(FRAME), format: "bmp" })] },
+    })
+    await reader.read("sess_1")
+    t += 1_000
+    await reader.read("sess_1")
+    expect(lines).toEqual(['[screencast] session "sess_1": no frame (bad_result)'])
+    t += 30_000
+    await reader.read("sess_1")
+    expect(lines).toHaveLength(2)
+    expect(lines.join("\n")).not.toContain(FRAME.toString("base64"))
+  })
 
   it("answers a miss for a capture that waits longer than the queue limit, without calling Bureau for it", async () => {
     const release: (() => void)[] = []
