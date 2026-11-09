@@ -443,6 +443,58 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
         { token: SESSIONS_TOKEN },
       )
     })
+
+    it("a claims-only link with browserSessionId reads that browser session's screencast on all three spellings, through the sessions-token gate too", async () => {
+      await withServer(
+        async (base, registry) => {
+          const browser = registerChromeLive(registry, 9222)
+          const otherBrowser = registerChromeLive(registry, 9223)
+          const agent = spawnSession(registry)
+          try {
+            const { body } = await exchangeClaimsLink(base, { browserSessionId: browser })
+            expect(body.claims).toEqual({ browserSessionId: browser })
+            const bearer = { authorization: `Bearer ${body.token}` }
+            for (const suffix of ["screencast", "screencast.jpg", "screencast.mjpg"]) {
+              expect(await statusOf(`${base}/sessions/${browser}/${suffix}`, bearer)).toBe(200)
+              expect(await statusOf(`${base}/sessions/${browser}/${suffix}?token=${body.token}`)).toBe(200)
+              expect(await statusOf(`${base}/sessions/${otherBrowser}/${suffix}`, bearer)).toBe(401)
+              expect(await statusOf(`${base}/sessions/${otherBrowser}/${suffix}?token=${body.token}`)).toBe(401)
+            }
+            const frame = await fetch(`${base}/sessions/${browser}/screencast.jpg?token=${body.token}`, { headers: FORWARDED })
+            expect(Buffer.from(await frame.arrayBuffer()).equals(FRAME)).toBe(true)
+            expect(await statusOf(`${base}/sessions/${browser}`, bearer)).toBe(401)
+            expect(await statusOf(`${base}/sessions/${browser}/events`, bearer)).toBe(401)
+            expect(await statusOf(`${base}/sessions/${agent.id}/events`, bearer)).toBe(401)
+            const post = await fetch(`${base}/sessions/${browser}/screencast.jpg`, { method: "POST", headers: { ...FORWARDED, ...bearer } })
+            expect(post.status).toBe(401)
+          } finally {
+            forgetLiveBrowserInstance(browser)
+            forgetLiveBrowserInstance(otherBrowser)
+          }
+        },
+        { token: SESSIONS_TOKEN },
+      )
+    })
+
+    it("a token with both sessionId and browserSessionId keeps its session reads and gains the browser screencast", async () => {
+      await withServer(
+        async (base, registry) => {
+          const browser = registerChromeLive(registry)
+          const agent = spawnSession(registry)
+          try {
+            const { body } = await exchangeClaimsLink(base, { sessionId: agent.id, browserSessionId: browser })
+            const bearer = { authorization: `Bearer ${body.token}` }
+            expect(await statusOf(`${base}/sessions/${agent.id}`, bearer)).toBe(200)
+            expect(await statusOf(`${base}/sessions/${agent.id}/capabilities`, bearer)).toBe(200)
+            expect(await statusOf(`${base}/sessions/${browser}/screencast.jpg`, bearer)).toBe(200)
+            expect(await statusOf(`${base}/sessions/${browser}/capabilities`, bearer)).toBe(401)
+          } finally {
+            forgetLiveBrowserInstance(browser)
+          }
+        },
+        { token: SESSIONS_TOKEN },
+      )
+    })
   })
 
   describe("POST /apps/:appId/link-auth", () => {

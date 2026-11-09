@@ -8,7 +8,10 @@
  *     the token's own session (`GET /sessions/:id`, `/events`,
  *     `/events/stream`, `/capabilities`, `/screencast`, `/screencast.jpg`,
  *     `/screencast.mjpg`, that one sessionId, only when the token carries
- *     a `sessionId` claim);
+ *     a `sessionId` claim), plus the three screencast spellings (and only
+ *     those) of the browser session named by a `browserSessionId` claim:
+ *     the chrome-live instance the browser tools address, which is a
+ *     different id from the agent session the link is about;
  *   - the same tool-call route's `guardBrowserOrigin`/`authorize` pair,
  *     which run AFTER `tunnelBearerAllowed` on that one route.
  *
@@ -79,6 +82,10 @@ export function appLinkToolCallAuth(
  *  writes go only through the app's tool-call route and `ui.toolScope`. */
 const SESSION_READ_RE = /^\/sessions\/([^/]+)(?:\/events\/stream|\/events|\/capabilities|\/screencast(?:\.jpg|\.mjpg)?)?$/
 
+/** The three screencast spellings, the only `/sessions/:id` reads a
+ *  `browserSessionId` claim unlocks. */
+const SCREENCAST_PATH_RE = /^\/sessions\/[^/]+\/screencast(?:\.jpg|\.mjpg)?$/
+
 export function appLinkSessionReadAuth(
   req: IncomingMessage,
   path: string,
@@ -90,7 +97,10 @@ export function appLinkSessionReadAuth(
   const rawSessionId = match?.[1]
   if (!rawSessionId) return undefined
   const auth = resolveSessionAuth(req, keyPath)
-  return auth?.sessionId !== undefined && auth.sessionId === rawSessionId ? auth : undefined
+  if (!auth) return undefined
+  if (auth.sessionId !== undefined && auth.sessionId === rawSessionId) return auth
+  if (SCREENCAST_PATH_RE.test(path) && auth.claims.browserSessionId === rawSessionId) return auth
+  return undefined
 }
 
 /** One structured audit line per scoped request that actually reached a

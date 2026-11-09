@@ -3778,14 +3778,16 @@ export async function startHttpServer(
           // are gated like a mutating route (bearer / ?token= / allowlisted
           // Origin / embed token): CORS answers `*` to an untrusted origin, so
           // without this any web page could fetch a frame from loopback.
-          // A link-session token reads the screencast of its OWN session only
-          // (`?token=` for an <img>, which cannot send headers); the tunnel
-          // gate already admitted it, this keeps the bearer check from
-          // refusing it a second time.
-          const linkOwnScreencast =
+          // A link-session token reads the screencast of its OWN session or of
+          // the browser session named by its `browserSessionId` claim, and
+          // nothing else (`?token=` for an <img>, which cannot send headers);
+          // The tunnel gate already admitted it through the same
+          // `appLinkSessionReadAuth` predicate; this keeps the bearer check
+          // from refusing it a second time.
+          const linkScreencast =
             isScreencastSessionsRoute(path) &&
             appLinkSessionReadAuth(req, path, req.method ?? "GET", opts.appLinkKeyPath) !== undefined
-          if (!linkOwnScreencast && (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path))) {
+          if (!linkScreencast && (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path))) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
               rejectUnauthorizedSession(req, res, gate)
