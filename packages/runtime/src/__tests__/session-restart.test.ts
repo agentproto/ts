@@ -25,6 +25,7 @@ import { claudeCodeProjectDir } from "../conversation-store.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { resolveContextContinuityPolicy } from "../context-continuity.js"
+import { spawningCallerContext, type SpawningCallerContext } from "../spawning-caller-context.js"
 import type {
   AgentSessionLike,
   AgentSessionResumer,
@@ -82,6 +83,9 @@ function makeResolver(opts: {
    *  test in this file) ⇒ `resolveResumeAuth` short-circuits to `{}`,
    *  same as an adapter with no billing-auth at all (hermes). */
   authDescriptor?: AdapterAuthDescriptor
+  /** Called inside every `startSession`, before it resolves: what an ACP
+   *  adapter that lists the gateway's tools during `session/new` sees. */
+  onStart?: (sessOpts: { configDir?: string }) => void
 } = {}): {
   resolver: AgentAdapterResolver
   calls: Array<{
@@ -106,6 +110,7 @@ function makeResolver(opts: {
   let rejected = false
   const resolver: AgentAdapterResolver = async slug => ({
     async startSession(sessOpts) {
+      opts.onStart?.(sessOpts)
       calls.push({
         adapter: slug,
         cwd: sessOpts.cwd,
@@ -485,6 +490,43 @@ describe("session_restart", () => {
     const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
     expect(result.isError).toBeFalsy()
     expect(registry.get(toolJson(result).id as string)).toMatchObject({ exposedToolOptIn: ["jobkit_leads_upsert"] })
+    await close()
+    registry.shutdown()
+  })
+
+  it("carries the AGENT.md identity meta forward, and serves it to the gateway while the restarted driver starts", async () => {
+    const identity = {
+      agentId: "emploi",
+      agentManifestPath: "/apps/pyg/.agents/emploi/AGENT.md",
+      agentRoleHash: "efe6c93790b32ebd",
+      agentToolsHash: "e3b0c44298fc1c14",
+      agentDelegatesTo: "scout",
+    }
+    let duringStart: { registered: boolean; ctx: SpawningCallerContext | undefined } | undefined
+    const harness = await buildHarness({
+      onStart: sessOpts => {
+        const id = /sess_[0-9a-z]+/.exec(sessOpts.configDir ?? "")?.[0]
+        if (id) duringStart = { registered: harness.registry.get(id) !== undefined, ctx: spawningCallerContext(id) }
+      },
+    })
+    const { client, registry, close } = harness
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      exposedToolOptIn: ["bureau_click"],
+      meta: { ...identity, role: "supervisor" },
+    } as never)
+    registry.kill(prev.id)
+    const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
+    expect(result.isError).toBeFalsy()
+    const nextId = toolJson(result).id as string
+    expect(registry.get(nextId)?.meta).toMatchObject(identity)
+    expect(duringStart?.registered).toBe(false)
+    expect(duringStart?.ctx?.meta).toMatchObject(identity)
+    expect(duringStart?.ctx?.exposedToolOptIn).toEqual(["bureau_click"])
+    expect(spawningCallerContext(nextId)).toBeUndefined()
     await close()
     registry.shutdown()
   })

@@ -50,6 +50,7 @@
 import type { MemoryStore } from "@agentproto/memory"
 import { resolveContextContinuityPolicy, type ContextContinuityPolicy } from "./context-continuity.js"
 import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
+import { stageSpawningCaller } from "./spawning-caller-context.js"
 import { memoryStoreAt as defaultMemoryStoreAt } from "./memory-stores.js"
 import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
 import {
@@ -1568,6 +1569,10 @@ async function restartAgentSessionOnce(
       // read, and the native-dir inject path + capture flag, so a restarted
       // lineage keeps its commit gate, its projection and its turn-end capture.
       ...carryMemoryMeta(prev.meta),
+      // The AIP-42 manifest identity the spawn resolved: the gateway reads it
+      // for the requires.apps grants and create_tool, `session_role_refresh`
+      // for its baseline.
+      ...carryAgentIdentityMeta(prev.meta),
     }
     const restartAppendsSystemPrompt =
       !!prev.appendSystemPrompt &&
@@ -1604,6 +1609,13 @@ async function restartAgentSessionOnce(
       sessionId: restartedSessionId,
     })
     const restartPreCompactCommand = preCompactCommandFor(restartDefaults, { adapter: adapterSlug })
+    // The adapter lists the gateway's tools while it starts, before the
+    // descriptor below exists (spawning-caller-context.ts).
+    const unstageSpawningCaller = stageSpawningCaller(restartedSessionId, {
+      meta: restartMeta,
+      ...(prev.exposedToolOptIn ? { exposedToolOptIn: prev.exposedToolOptIn } : {}),
+      ...(prev.toolDenyGrants ? { toolDenyGrants: prev.toolDenyGrants } : {}),
+    })
     const agentSession = await resolved.startSession({
       cwd,
       ...boundaryStart,
@@ -1652,6 +1664,7 @@ async function restartAgentSessionOnce(
       // The adapter never started (a rejected resume id is retried with a
       // NEW id): drop the credential minted for this attempt's id.
       revokeSessionTokens(restartedSessionId)
+      unstageSpawningCaller()
       throw err
     })
     // Same "which path was used" logic the RESULT computes below (see the
@@ -1787,6 +1800,8 @@ async function restartAgentSessionOnce(
       resumedFrom: prev.id,
       resumeVia,
     })
+    // The registry now serves this caller's context itself.
+    unstageSpawningCaller()
     if (modelMismatch) registry.emitHarnessWarning(desc.id, [modelApplyWarning(modelMismatch)], prev.label)
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
@@ -2908,4 +2923,15 @@ export async function resolveSandboxSecretFromBroker(slug: string): Promise<stri
     )
     return null
   }
+}
+
+/** The `meta` keys of the AIP-42 manifest identity a spawn resolved
+ *  (session-spawn.ts). `agentDelegatesTo` rides `carryMemoryMeta`. */
+const AGENT_IDENTITY_META_KEYS = ["agentId", "agentManifestPath", "agentRoleHash", "agentToolsHash"] as const
+
+/** The prior row's manifest identity, carried to its restart verbatim. */
+export function carryAgentIdentityMeta(meta: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const key of AGENT_IDENTITY_META_KEYS) if (meta?.[key] !== undefined) out[key] = meta[key]
+  return out
 }
