@@ -128,13 +128,20 @@ What a link-SESSION token can reach, and nothing more:
   token>` (an `<img>` cannot send headers). Any other `/sessions/*` route
   (kill, PTY, prompt, the plain `/stream` tail, another session's reads or
   screencast) and `/mcp` stay behind the tunnel bearer.
-- **The screencast of a browser session**, for a token with a
-  `browserSessionId` claim (pass it through `claims`): the live frames are
-  served by the chrome-live browser session the browser tools address, which
-  is a different id from the agent session the link is about. The claim
-  unlocks `GET /sessions/<browserSessionId>/screencast`, `.jpg` and `.mjpg`
-  and nothing else: not that session's other reads, not another browser
-  session, not any other method. A token may carry both `sessionId` and
+- **The screencast of the session's own recorded tab**: `GET
+  /sessions/<sessionId>/screencast.jpg` answers the latest Bureau recording
+  frame of a tab the session owns (the session calls `browser_screencast_start`
+  on a tab it opened). The daemon asks Bureau as that session, so Bureau's own
+  tab ownership decides what is visible: a link only ever sees frames of its
+  own session's tabs, read-only, one JPEG per request. No tab, no frame yet,
+  or Bureau unreachable all answer the same 404 `no_screencast_frame`. Only
+  `.jpg` is served this way; `.mjpg` and the extensionless viewer stay 404 for
+  such an id.
+- **The screencast of a chrome-live browser session** (retired), for a token
+  with a `browserSessionId` claim (pass it through `claims`): the claim unlocks
+  `GET /sessions/<browserSessionId>/screencast`, `.jpg` and `.mjpg` and nothing
+  else, but only a chrome-live descriptor answers there and the daemon no
+  longer registers one. A token may carry both `sessionId` and
   `browserSessionId`; each keeps its own rule.
 - **One daemon approval**, for a token with an `approvalId` claim (pass it
   through `claims`): `GET /approvals/<approvalId>` reads that approval (the
