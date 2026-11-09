@@ -88,3 +88,7 @@ claude --permission-mode bypassPermissions "Reply READY, then wait."
 Then send `message_send to: "cc:<its session id>" urgency: "next-turn"` and
 watch it answer. The session id is in `~/.claude/sessions/<pid>.json` (never
 print the `.key` files).
+
+## See also
+
+- [signals-and-wake](./signals-and-wake.md): get woken by session lifecycle and PR signals without polling, and how signal routing picks a provider
