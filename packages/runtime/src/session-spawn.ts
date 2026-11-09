@@ -1861,6 +1861,16 @@ export interface SpawnAgentSessionInput {
    *  Resolved by `resolveAgentRef` (agent-ref.ts) into `agentId`/`agentPath`/
    *  `role`, which keep working as aliases. */
   agent?: string
+  /** A manifest identity already frozen on a prior session (continue-fresh):
+   *  its `meta` identity keys (`carryAgentIdentityMeta`), AGENT.md opt-in and
+   *  deny grants, recorded and staged as-is instead of re-reading the
+   *  manifest. Ignored when `agentId`/`agentPath` resolves a manifest. Daemon-
+   *  internal: never filled from a request body. */
+  carriedAgentIdentity?: {
+    meta: Readonly<Record<string, string>>
+    exposedToolOptIn?: readonly string[]
+    toolDenyGrants?: readonly Grant[]
+  }
   /** AIP-46 operator binding: `operator:<slug>[@<owner>/<workspace>]` or
    *  `ws://operators/<slug>`. Validated for form here (the daemon has no
    *  operator resolver) and recorded on the descriptor in its compact form.
@@ -3472,6 +3482,17 @@ async function spawnAgentSessionOnce(
         `agent_start: manifest delegates_to entry ${callerAgentDelegates.entry} cannot be resolved to an agent identity yet (only agent ids and role names are); the delegation gate treats this agent as declaring no delegatesTo.`,
       )
     }
+  } else if (input.carriedAgentIdentity) {
+    // The identity a prior session's spawn froze, NOT a re-read of its
+    // AGENT.md (AIP-46 "No self-widening"). Recorded and staged exactly like
+    // a resolved manifest so the gateway sees it while the driver starts.
+    const carried = input.carriedAgentIdentity
+    callerAgentId = carried.meta.agentId
+    callerAgentManifestPath = carried.meta.agentManifestPath
+    callerAgentRoleHash = carried.meta.agentRoleHash
+    callerAgentToolsHash = carried.meta.agentToolsHash
+    if (carried.exposedToolOptIn) callerExposedToolOptIn = [...carried.exposedToolOptIn]
+    if (carried.toolDenyGrants) callerToolDenyGrants = [...carried.toolDenyGrants]
   }
   // The AGENT level of the clerk hook, resolved once and recorded on the
   // descriptor (`clerkHook`) - the daemon's clerk-turn-end controller

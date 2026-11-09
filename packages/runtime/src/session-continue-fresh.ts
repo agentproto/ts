@@ -40,6 +40,7 @@ import {
   type SessionsRegistry,
 } from "./sessions.js"
 import { handoverLineage } from "./lineage-handover.js"
+import { carryAgentIdentityMeta } from "./spawning-caller-context.js"
 import { SESSION_TOKEN_HEADER } from "./session-credentials.js"
 
 export interface ContinueAgentSessionFreshResult {
@@ -402,6 +403,11 @@ async function continueAgentSessionFreshOnce(
     opts.spawn?.agentId !== undefined ||
     opts.spawn?.agentPath !== undefined
   const carriedBinding = bindingOverridden ? undefined : pickAgentBindingMeta(prev.meta)
+  // The manifest identity the gateway reads (`agentId`, `agentManifestPath`,
+  // role/tools hashes) plus the frozen opt-in and deny grants: handed to the
+  // spawn so it records them AND stages them before the driver lists the
+  // gateway's tools, same as `session_restart` (spawning-caller-context.ts).
+  const carriedIdentity = bindingOverridden ? undefined : carryAgentIdentityMeta(prev.meta)
 
   const spawnInput: SpawnAgentSessionInput = {
     adapter,
@@ -447,6 +453,15 @@ async function continueAgentSessionFreshOnce(
     // warning is emitted only by the MCP/HTTP handlers, so none is produced
     // here. Placed before `opts.spawn` so an explicit request still wins.
     ...(carriedBinding?.role !== undefined ? { role: carriedBinding.role } : {}),
+    ...(carriedIdentity && Object.keys(carriedIdentity).length > 0
+      ? {
+          carriedAgentIdentity: {
+            meta: carriedIdentity,
+            ...(prev.exposedToolOptIn ? { exposedToolOptIn: prev.exposedToolOptIn } : {}),
+            ...(prev.toolDenyGrants ? { toolDenyGrants: prev.toolDenyGrants } : {}),
+          },
+        }
+      : {}),
     ...opts.spawn,
   }
 
