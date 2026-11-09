@@ -32,10 +32,18 @@ daemon's proof that this identity spawned it.
 
 ## uniqueness
 
-A session caller is refused when ANOTHER live session already carries the
-label; the error names the holder. Pick another label, or wait for that session
-to end. The human operator is not subject to this check (it can deliberately
-share a label, in which case `label:<x>` answers `ambiguous_label`).
+A session caller is refused when ANY other non-archived session already
+carries the label, live or not: `exited`, `killed`, `error` and retired rows
+count. The error names the holder and its status. A dead holder keeps its name
+because it is expected back: a brain labelled `pygmalion-brain-persistent` that
+is down between two restarts takes the label again on rebirth, and a child
+that grabbed it meanwhile would receive the brain's `label:` messages and then
+turn the address into `ambiguous_label`. Archive the dead session
+(`session_archive`) to free its name. A predecessor of the target itself (its
+restart / continue-fresh chain ends at the target) is the same lineage, not a
+holder, and re-stamping a session with the label it already has is a no-op.
+The human operator is not subject to this check (it can deliberately share a
+label, in which case `label:<x>` answers `ambiguous_label`).
 
 ## a label is an address, never a grant
 

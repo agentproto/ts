@@ -626,7 +626,7 @@ describe("session-owner gate over MCP", () => {
     const asRoot = await connectAs(registry, root.id)
     const clash = await callTool(asRoot, "agent_set_operator_label", { sessionId: a.id, operatorLabel: "taken" })
     expect(clash.isError).toBe(true)
-    expect(clash.content?.[0]?.text).toContain(`already carried by the live session "${other.id}"`)
+    expect(clash.content?.[0]?.text).toContain(`already carried by session "${other.id}" (status: running)`)
     expect(registry.get(a.id)?.operatorLabel).toBeUndefined()
 
     // A free label works; re-stamping the same session with its own label is not a clash.
@@ -638,10 +638,46 @@ describe("session-owner gate over MCP", () => {
     const sibling = await callTool(asRoot, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "free" })
     expect(sibling.isError).toBe(true)
 
-    // Once the holder is gone, the label is free again.
+    // A DEAD holder keeps its name (the brain between two restarts): still refused,
+    // and the error names the holder's status.
     registry.kill(other.id)
+    const dead = await callTool(asRoot, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "taken" })
+    expect(dead.isError).toBe(true)
+    expect(dead.content?.[0]?.text).toContain(`session "${other.id}" (status: killed)`)
+    expect(registry.get(b.id)?.operatorLabel).toBeUndefined()
+
+    // The human operator is exempt from the check.
+    const byOperator = await callTool(operator, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "taken" })
+    expect(byOperator.isError).toBeUndefined()
+    await callTool(operator, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "" })
+
+    // Archiving the dead holder frees the name.
+    registry.archiveSession(other.id)
     const reuse = await callTool(asRoot, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "taken" })
     expect(reuse.isError).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("`agent_set_operator_label`: a killed holder still blocks the label; a predecessor of the target does not", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnRoot(registry)
+    const brain = spawnRoot(registry)
+    const kid = spawnRoot(registry, root.id)
+    const operator = await connectAs(registry)
+    await callTool(operator, "agent_set_operator_label", { sessionId: brain.id, operatorLabel: "brain" })
+    registry.kill(brain.id)
+    const asRoot = await connectAs(registry, root.id)
+    const refused = await callTool(asRoot, "agent_set_operator_label", { sessionId: kid.id, operatorLabel: "brain" })
+    expect(refused.isError).toBe(true)
+
+    // A predecessor row whose continuation chain ends at the target is the same lineage.
+    const old = spawnRoot(registry, root.id)
+    const successor = spawnRoot(registry, root.id)
+    await callTool(operator, "agent_set_operator_label", { sessionId: old.id, operatorLabel: "lineage" })
+    registry.kill(old.id)
+    ;(registry.get(old.id) as { continuedTo?: string }).continuedTo = successor.id
+    const same = await callTool(asRoot, "agent_set_operator_label", { sessionId: successor.id, operatorLabel: "lineage" })
+    expect(same.isError).toBeUndefined()
     registry.shutdown()
   })
 

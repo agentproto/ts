@@ -51,8 +51,9 @@ messages to each other, and what it takes to wake an idle Claude Code session.
   ownership). From the shared `claude-desktop` identity you may label a child
   spawned with `parent: "cc:<id>"` that still carries the default
   `claude-desktop` grant. You may not label yourself, nor a session you do not
-  own, and a label already carried by another LIVE session is refused (the
-  error names the holder). The human operator may label any session. A label
+  own, and a label already carried by another non-archived session, live or dead, is
+  refused (the error names the holder and its status; archive the dead session
+  to free its name). The human operator may label any session. A label
   on a session that has a parent is an address only: `allowPromptFrom:
   "label:..."`, `defaults.tasks.operatorDelegates` and `session-label://`
   grant principals match root sessions only, so labelling a child never

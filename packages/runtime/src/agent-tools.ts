@@ -53,6 +53,7 @@ import {
   promptCallerLabel,
 } from "./session-owner.js"
 import { checkDrive } from "./drive-gate.js"
+import { isRetired } from "./session-retirement.js"
 import {
   checkSuccessorDeclaration,
   handoverLineage,
@@ -101,7 +102,6 @@ import type { Grant } from "@agentproto/policy"
 import {
   defaultUrgencyForKind,
   registerMessageTools,
-  isLiveRecipient,
   resolveLiveLabelAddress,
   type ToolResult,
   type RegisterMessageToolsOptions,
@@ -1988,8 +1988,8 @@ export function registerAgentTools(
       "supervisor can give its children a stable name; the shared `claude-desktop` " +
       "identity may do so for a child it spawned with `parent: \"cc:<id>\"`. " +
       "A session may NOT stamp its own label, nor one on a session it does not " +
-      "own. A label already carried by another LIVE session is refused for a " +
-      "session caller. The label on a session with a parent is an address only: " +
+      "own. A label carried by any other non-archived session, live or dead, is " +
+      "refused for a session caller. The label on a session with a parent is an address only: " +
       "`allowPromptFrom` `label:` entries, `operatorDelegates` and label-keyed " +
       "grants match root sessions only. Also lets the operator label a lineage " +
       "that has lived by resume/continue-fresh since before it got one. " +
@@ -2023,17 +2023,35 @@ export function registerAgentTools(
         })
         if (!stamp.ok) return ownerGateError("agent_set_operator_label", stamp.message)
         if (operatorLabel !== undefined) {
+          // Any non-archived holder counts, dead or retired: a brain that is
+          // down between two restarts still owns its name and takes it back on
+          // rebirth. A predecessor of the target (its restart/continue-fresh
+          // chain ends at the target) is the same lineage, not a rival.
+          const continuesInto = (d: SessionDescriptor, id: string): boolean => {
+            for (let i = 0, cur: SessionDescriptor | undefined = d; i < 256 && cur?.continuedTo; i++) {
+              if (cur.continuedTo === id) return true
+              cur = registry.get(cur.continuedTo)
+            }
+            return false
+          }
           const holder = registry
             .list()
-            .find(d => d.id !== target.id && d.operatorLabel === operatorLabel && isLiveRecipient(d))
+            .find(
+              d =>
+                d.id !== target.id &&
+                d.operatorLabel === operatorLabel &&
+                !continuesInto(d, target.id),
+            )
           if (holder) {
+            const state = isRetired(holder) ? `${holder.status}, retired` : holder.status
             return {
               content: [
                 {
                   type: "text",
                   text:
-                    `agent_set_operator_label: the label "${operatorLabel}" is already carried by the live session ` +
-                    `"${holder.id}". Pick another label, or wait for that session to end.`,
+                    `agent_set_operator_label: the label "${operatorLabel}" is already carried by session ` +
+                    `"${holder.id}" (status: ${state}). A dead or retired session keeps its label until it ` +
+                    `is archived, so a session that comes back keeps its name. Pick another label.`,
                 },
               ],
               isError: true,
