@@ -704,18 +704,26 @@ export function registerAgentTools(
   ): string | ToolResult => {
     const arg = resolveSessionIdArg(input)
     if (!arg) return missingSessionIdError(tool)
+    let subtree: Set<string> | undefined
     const target = resolveLiveLabelAddress({
       registry,
       tool,
       to: arg,
       verb: "drive",
-      mayReach: d => checkDrive({
-        registry,
-        ...(messagingGrants !== undefined ? { grants: messagingGrants } : {}),
-        callerSessionId: effectiveCaller(),
-        target: d,
-        tool,
-      }).ok,
+      mayReach: d => {
+        // agent_kill from a scoped orchestrator is also bounded by its subtree.
+        if (tool === "agent_kill" && callerScope) {
+          subtree ??= collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+          if (!subtree.has(d.id)) return false
+        }
+        return checkDrive({
+          registry,
+          ...(messagingGrants !== undefined ? { grants: messagingGrants } : {}),
+          callerSessionId: effectiveCaller(),
+          target: d,
+          tool,
+        }).ok
+      },
     })
     return "id" in target ? target.id : target
   }

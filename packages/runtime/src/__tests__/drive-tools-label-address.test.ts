@@ -13,6 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerAgentTools } from "../agent-tools.js"
+import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 
 function idleSession(): AgentSessionLike {
@@ -26,9 +27,17 @@ function idleSession(): AgentSessionLike {
   }
 }
 
-async function connect(registry: ReturnType<typeof createSessionsRegistry>, callerSessionId?: string) {
+async function connect(
+  registry: ReturnType<typeof createSessionsRegistry>,
+  callerSessionId?: string,
+  callerScope?: OrchestratorScope,
+) {
   const server = new McpServer({ name: "label-drive", version: "0.0.0" })
-  registerAgentTools(server, { registry, ...(callerSessionId ? { callerSessionId } : {}) })
+  registerAgentTools(server, {
+    registry,
+    ...(callerSessionId ? { callerSessionId } : {}),
+    ...(callerScope ? { callerScope } : {}),
+  })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "label-drive-client", version: "0.0.0" })
@@ -180,6 +189,31 @@ describe("drive tools addressed by label", () => {
     expect(empty.body).toMatchObject({ ok: false, error: "invalid_label" })
     const plain = await call("agent_prompt", { sessionId: s.id, prompt: "go" })
     expect(plain.isError).toBe(false)
+    registry.shutdown()
+  })
+
+  it("a scoped orchestrator's agent_kill ambiguity error names only ids inside its subtree", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const orchestrator = spawn(registry)
+    const inside = spawn(registry, "brain", orchestrator.id)
+    const outside = spawn(registry, "brain")
+    registry.setPromptPolicy(outside.id, ["any"])
+    const callerScope: OrchestratorScope = {
+      token: "tok",
+      tools: new Set(["agent_kill"]),
+      ownerSessionId: orchestrator.id,
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+    const call = await connect(registry, undefined, callerScope)
+
+    const r = await call("agent_kill", { sessionId: "label:brain" })
+    expect(r.body?.error).toBe("ambiguous_label")
+    expect(r.body?.message).toContain(inside.id)
+    expect(r.body?.message).not.toContain(outside.id)
+    expect(r.body?.message).toContain("1 more you may not drive")
     registry.shutdown()
   })
 })
