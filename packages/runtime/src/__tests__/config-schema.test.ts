@@ -209,6 +209,19 @@ describe("secret and lockout classification", () => {
     }
   })
 
+  it("registers approvals.humanTelegramIds as a restart-applied, non-writable list of numeric Telegram ids", () => {
+    expect(findConfigKey("approvals.humanTelegramIds")).toMatchObject({ apply: "restart", writable: false })
+    expect(findConfigKey("approvals.humanTelegramIds")?.secret).toBeUndefined()
+    expect(validateConfigKeyType("approvals.humanTelegramIds", ["4242", "123456789"]).ok).toBe(true)
+    expect(validateConfigKeyType("approvals.humanTelegramIds", []).ok).toBe(true)
+    for (const bad of [["@jeremy"], ["12a"], [" 12"], ["-12"], [""], [12], "4242"]) {
+      expect(validateConfigKeyType("approvals.humanTelegramIds", bad).ok, JSON.stringify(bad)).toBe(false)
+    }
+    expect(validateConfigKeyValue("approvals.humanTelegramIds", ["4242"]).ok).toBe(false)
+    expect(validateConfig({ approvals: { humanTelegramIds: ["4242"] } }).ok).toBe(true)
+    expect(validateConfig({ approvals: { humanTelegramIds: ["nope"] } }).ok).toBe(false)
+  })
+
   it("accepts daemon.frameAncestors as a list or one string and refuses other types", () => {
     expect(validateConfigKeyType("daemon.frameAncestors", ["https://web.telegram.org"]).ok).toBe(true)
     expect(validateConfigKeyType("daemon.frameAncestors", "https://web.telegram.org").ok).toBe(true)

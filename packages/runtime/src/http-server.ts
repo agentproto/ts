@@ -182,7 +182,14 @@ import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
-import { appLinkSessionReadAuth, appLinkToolCallAuth, appLinkTunnelBypass, isSameOriginRequest, logAppLinkAccess } from "./app-link-gate.js"
+import {
+  appLinkApprovalRequest,
+  appLinkSessionReadAuth,
+  appLinkToolCallAuth,
+  appLinkTunnelBypass,
+  isSameOriginRequest,
+  logAppLinkAccess,
+} from "./app-link-gate.js"
 import { authorizeAppLink } from "./app-link-auth.js"
 import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 import { handleA2aTaskRequest, type A2aTaskHttpConfig } from "./a2a-task-http.js"
@@ -1512,6 +1519,11 @@ export interface RuntimeHttpServerOptions {
    *  (`approvals.telegramBotSecret` in config). Absent ⇒ the channel is
    *  off — the route always 403s. Only read when `approvals` is wired. */
   approvalsTelegramBotSecret?: string
+  /** Telegram user ids allowed to read and decide one approval through an
+   *  approval link (`approvals.humanTelegramIds` in config, digits only).
+   *  Empty/absent ⇒ approval links are off: `GET /approvals/:id` and
+   *  `POST /approvals/:id/decision/telegram` refuse every link token. */
+  approvalsHumanTelegramIds?: readonly string[]
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -1854,7 +1866,10 @@ export async function startHttpServer(
    * /apps/:appId/link-auth`) is accepted ONLY for that token's own `POST
    * /apps/:appId/tool-call` and its own session's read routes
    * (`GET /sessions/:id`, `/events`, `/events/stream`, `/capabilities`,
-   * `/screencast`, `/screencast.jpg`, `/screencast.mjpg`).
+   * `/screencast`, `/screencast.jpg`, `/screencast.mjpg`), and for
+   * `GET /approvals/:id` + `POST /approvals/:id/decision/telegram`, where
+   * the approvals handler enforces the `approvalId` claim and the
+   * `approvals.humanTelegramIds` allow-list itself.
    * Unlike `?et=`, this one IS meant to cross the tunnel boundary (it's the
    * whole point of a link sent over Telegram) but it carries no more than
    * that single session's read access plus whatever the app's own
@@ -5694,20 +5709,29 @@ export async function startHttpServer(
         // gates would reject an origin that's correctly listed in one but
         // not the other; telegram has no Origin at all (a webhook callback
         // isn't a browser) and is gated solely by `approvalsTelegramBotSecret`.
+        // An approval link (a link-session token on `GET /approvals/:id` or
+        // `POST /approvals/:id/decision/telegram`, `app-link-gate.ts`) is
+        // served in link mode by the handler, never as the operator; like
+        // `link-auth`, the page the link opened may call it same-origin.
         if (
           opts.approvals &&
           (path === "/approvals" || path.startsWith("/approvals/"))
         ) {
+          const approvalLink = appLinkApprovalRequest(req, path, req.method ?? "GET", opts.appLinkKeyPath)
           const isDecisionRoute =
             /^\/approvals\/[^/]+\/decision$/.test(path) ||
             /^\/approvals\/[^/]+\/decision\/telegram$/.test(path)
-          if (!isDecisionRoute && guardBrowserOrigin(req, res)) return
+          if (approvalLink) {
+            if (!isSameOriginRequest(req) && guardBrowserOrigin(req, res)) return
+          } else if (!isDecisionRoute && guardBrowserOrigin(req, res)) return
           const handled = await handleApprovals(req, res, path, opts.approvals, {
             ...(opts.token !== undefined ? { token: opts.token } : {}),
             webOrigins: opts.approvalsWebOrigins ?? [],
             ...(opts.approvalsTelegramBotSecret !== undefined
               ? { telegramBotSecret: opts.approvalsTelegramBotSecret }
               : {}),
+            ...(approvalLink ? { link: approvalLink } : {}),
+            humanTelegramIds: opts.approvalsHumanTelegramIds ?? [],
           })
           if (handled) return
         }

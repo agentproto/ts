@@ -5330,6 +5330,11 @@ export async function createGateway(
     ...(daemonConfig.approvals?.telegramBotSecret
       ? { approvalsTelegramBotSecret: daemonConfig.approvals.telegramBotSecret }
       : {}),
+    // Digits only, even if a hand edit slipped past the config validation
+    // (an invalid config only warns at load).
+    approvalsHumanTelegramIds: (daemonConfig.approvals?.humanTelegramIds ?? []).filter(
+      id => typeof id === "string" && /^\d+$/.test(id),
+    ),
     ...(workflowRunner ? { workflowRunner } : {}),
     appRegistry,
     performAppInstall: performInstall,

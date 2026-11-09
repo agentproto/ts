@@ -1329,6 +1329,9 @@ export interface ApprovalDecidedEvent {
   approvalId: string
   decision: "approved" | "denied"
   channel: "web_click" | "ui_card" | "telegram"
+  /** The decider's verified Telegram user id, for a decision made through
+   *  an approval link. */
+  telegramUserId?: string
   taskId?: string
   ts: string
 }

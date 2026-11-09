@@ -15,7 +15,8 @@
  * is reachable only from the HTTP route `POST /approvals/:id/decision`,
  * `decideTelegram` only from `POST /approvals/:id/decision/telegram` (gated
  * by a bot-bridge shared secret instead of an Origin — a webhook callback
- * has no browser Origin to check), `mintCardTicket`/`decideByCard` only
+ * has no browser Origin to check; or by an approval link bound to that one
+ * id and an allow-listed Telegram user), `mintCardTicket`/`decideByCard` only
  * from the app-only `approval_card_list` / `approval_card_decide` tools. The MCP
  * tools facing an agent (`approvals/tools.ts`) expose only `request` /
  * `get` / `wait` / `consume`.
@@ -119,6 +120,9 @@ export interface ApprovalListFilter {
 export interface ApprovalDecideEvidence {
   ipAddress: string
   userAgent: string
+  /** The decider's verified Telegram user id (approval link only). Stored
+   *  on the decision record and carried by `approval:decided`. */
+  telegramUserId?: string
 }
 
 export interface ApprovalsEngine {
@@ -201,6 +205,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
         type,
         decision: decision.decision,
         channel: decision.channel,
+        ...(decision.telegramUserId ? { telegramUserId: decision.telegramUserId } : {}),
         ...base,
       })
     } else {
@@ -292,7 +297,12 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
    *  NO await in this function — see the module doc. Returns the mutated
    *  record (decision.signaturePath still absent for an approve; the
    *  async caller patches it in after `signArtifact` resolves). */
-  const decideCore = (id: string, decision: ApprovalDecision, channel: ApprovalChannel): ApprovalRecord => {
+  const decideCore = (
+    id: string,
+    decision: ApprovalDecision,
+    channel: ApprovalChannel,
+    telegramUserId?: string,
+  ): ApprovalRecord => {
     const existing = liveGet(id)
     if (!existing) throw new ApprovalError("approval_not_found", `no approval ${id}`)
     if (existing.status !== "pending") throw new ApprovalNotPendingError(existing.status)
@@ -306,6 +316,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
         decision: decision === "approve" ? "approved" : "denied",
         channel,
         decidedAt: new Date().toISOString(),
+        ...(telegramUserId ? { telegramUserId } : {}),
       },
     }
     approvals.set(id, record)
@@ -372,13 +383,15 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
    *  anything checked here. `evidence` is the (truthful) ip/UA of the
    *  webhook request that carried the human's tap, same convention as
    *  `decideWeb`'s evidence being the browser request's. The in-process
-   *  Telegram bridge calls this directly after checking chat and user id. */
+   *  Telegram bridge calls this directly after checking chat and user id.
+   *  An approval link (`approvals/http.ts`) reaches it too, after its own
+   *  checks, and passes the decider's `telegramUserId`. */
   const decideTelegram = async (
     id: string,
     decision: ApprovalDecision,
     evidence: ApprovalDecideEvidence,
   ): Promise<ApprovalRecord> => {
-    const record = decideCore(id, decision, "telegram")
+    const record = decideCore(id, decision, "telegram", evidence.telegramUserId)
     return finishDecide(record, evidence, randomBytes(16).toString("hex"))
   }
 

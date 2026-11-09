@@ -14,6 +14,15 @@
  * verify, so the bridge service holding `approvals.telegramBotSecret` IS
  * the credential, the same way `web_click`'s Origin+token pair is.
  *
+ * An approval link (a link-session token whose `approvalId` claim names one
+ * approval, `app-link-gate.ts`) reaches exactly two of these routes,
+ * `GET /approvals/:id` and `POST /approvals/:id/decision/telegram`, for that
+ * one id, and only for a verified Telegram user listed in the owner-only
+ * `approvals.humanTelegramIds`. It replaces the bot secret on the decide
+ * route for that request; the secret keeps working for the bot bridge.
+ * Every refusal is the same 403 `approval_link_forbidden`, so a caller never
+ * learns which condition failed (an allow-listed id included).
+ *
  * Mirrors `handleTasks`/`handlePermissions`'s shape in `http-server.ts`.
  * An HTTP caller has no MCP session identity, so every request/consume
  * made through this surface is `{operator: true}` — same convention as
@@ -22,6 +31,11 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http"
 
+import {
+  appLinkApprovalRefusal,
+  logAppLinkApprovalAccess,
+  type AppLinkApprovalRequest,
+} from "../app-link-gate.js"
 import { ApprovalError, ApprovalNotPendingError, parseApprovalStatus, type ApprovalRequester } from "./types.js"
 import type { ApprovalsEngine } from "./engine.js"
 
@@ -35,6 +49,13 @@ export interface ApprovalsHttpAuth {
   /** `approvals.telegramBotSecret` — shared secret gating the `telegram`
    *  decision route. Absent ⇒ the channel is off; the route always 403s. */
   telegramBotSecret?: string
+  /** The approval link this request carries (`appLinkApprovalRequest`,
+   *  resolved once per request by the caller). Present ⇒ the request is
+   *  served in link mode and NEVER as the operator, whatever its claims. */
+  link?: AppLinkApprovalRequest
+  /** `approvals.humanTelegramIds`: Telegram user ids allowed to use an
+   *  approval link. Empty/absent ⇒ every link is refused. */
+  humanTelegramIds?: readonly string[]
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -72,6 +93,59 @@ function errorStatus(code: ApprovalError["code"]): number {
   }
 }
 
+/** Link mode: read or decide exactly the claimed approval, nothing else.
+ *  Authorization (claim, Telegram identity, allow-list) is checked before
+ *  the body is read or the approval is looked up. */
+async function handleApprovalLink(
+  req: IncomingMessage,
+  res: ServerResponse,
+  engine: ApprovalsEngine,
+  link: AppLinkApprovalRequest,
+  humanTelegramIds: readonly string[],
+): Promise<void> {
+  const ip = req.socket.remoteAddress ?? undefined
+  const deny = (reason: string): void => {
+    logAppLinkApprovalAccess({ request: link, allowed: false, reason, ...(ip ? { ip } : {}) })
+    json(res, 403, { error: "approval_link_forbidden" })
+  }
+  const refusal = appLinkApprovalRefusal(link, humanTelegramIds)
+  if (refusal) return deny(refusal)
+  const telegramUserId = link.auth.telegramUserId!
+
+  if (link.action === "read") {
+    const record = engine.get(link.approvalId)
+    if (!record) return deny("not_found")
+    logAppLinkApprovalAccess({ request: link, allowed: true, ...(ip ? { ip } : {}) })
+    json(res, 200, record)
+    return
+  }
+
+  const body = await readJsonBody(req)
+  const decision = isJsonRecord(body) ? body.decision : undefined
+  if (decision !== "approve" && decision !== "deny") {
+    logAppLinkApprovalAccess({ request: link, allowed: false, reason: "invalid_decision", ...(ip ? { ip } : {}) })
+    json(res, 400, { error: "invalid_decision", message: 'body.decision must be "approve" or "deny"' })
+    return
+  }
+  const current = engine.get(link.approvalId)
+  if (!current) return deny("not_found")
+  if (current.status !== "pending") return deny("not_pending")
+  if (!current.channels.includes("telegram")) return deny("channel_disabled")
+  const userAgentHeader = req.headers["user-agent"]
+  try {
+    const record = await engine.decideTelegram(link.approvalId, decision, {
+      ipAddress: ip ?? "unknown",
+      userAgent: typeof userAgentHeader === "string" ? userAgentHeader : "unknown",
+      telegramUserId,
+    })
+    logAppLinkApprovalAccess({ request: link, allowed: true, ...(ip ? { ip } : {}) })
+    json(res, 200, record)
+  } catch {
+    // A decide that lost a race with another channel, or any engine refusal.
+    deny("decide_failed")
+  }
+}
+
 export async function handleApprovals(
   req: IncomingMessage,
   res: ServerResponse,
@@ -80,6 +154,11 @@ export async function handleApprovals(
   auth: ApprovalsHttpAuth,
 ): Promise<boolean> {
   const requester: ApprovalRequester = { operator: true }
+
+  if (auth.link) {
+    await handleApprovalLink(req, res, engine, auth.link, auth.humanTelegramIds ?? [])
+    return true
+  }
 
   if (path === "/approvals" && req.method === "GET") {
     const reqUrl = req.url ?? ""

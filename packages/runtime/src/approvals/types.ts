@@ -41,6 +41,11 @@ export interface ApprovalDecisionRecord {
   /** Workspace-relative path to the AIP-7 signature.json — present only
    *  on an approve (a deny writes an audit event, never a signature). */
   signaturePath?: string
+  /** The verified Telegram user id of the human who decided, when the
+   *  decision came through an approval link (`POST
+   *  /approvals/:id/decision/telegram` under a link-session token). Absent
+   *  for every other decision, including the bot bridge's. */
+  telegramUserId?: string
 }
 
 export interface ApprovalRecord {
