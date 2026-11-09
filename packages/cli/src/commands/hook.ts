@@ -104,7 +104,7 @@ function isMustWake(urgency: string | undefined): boolean {
 interface InboxItem {
   id: string
   ts?: string
-  from?: { relation?: string; sessionId?: string; unverified?: boolean }
+  from?: { relation?: string; sessionId?: string; unverified?: boolean; declaredSender?: string }
   kind?: string
   urgency?: string
   correlationId?: string
@@ -134,7 +134,11 @@ export function buildInboxHookOutput(
   if (picked.length === 0) return undefined
   const lines = picked.map((m, i) => {
     const from = m.from?.sessionId ? `${m.from.relation ?? "?"}:${m.from.sessionId}` : (m.from?.relation ?? "?")
-    const fromTag = m.from?.unverified ? `${from} (unverified)` : from
+    const fromTag = m.from?.unverified
+      ? m.from.declaredSender && /^cc:[A-Za-z0-9._-]{1,128}$/.test(m.from.declaredSender)
+        ? `${from} (unverified, declared sender ${m.from.declaredSender})`
+        : `${from} (unverified)`
+      : from
     const text = neutralise(m.text ?? "")
     const clipped = text.length > MAX_ITEM_TEXT ? `${text.slice(0, MAX_ITEM_TEXT)}…[truncated]` : text
     return `[${i + 1}] id=${m.id} from=${fromTag} kind=${m.kind ?? "notice"}${m.ts ? ` at=${m.ts}` : ""}\n${clipped}`
