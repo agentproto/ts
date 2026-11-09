@@ -234,6 +234,24 @@ describe("GET /sessions/:id/screencast.jpg from Bureau", () => {
     })
   }
 
+  it("also reads the driver-layer field name `data` in place of `base64`", async () => {
+    const asData = { data: FRAME.toString("base64"), format: "png", width: 1, height: 1 }
+    for (const result of [{ structuredContent: asData }, { content: [text(asData)] }]) {
+      await withServer(
+        call =>
+          call.tool === "browser_list_owned_tabs"
+            ? tabList([{ targetId: "tab_1", openedAt: "2026-11-09T10:00:00Z" }])
+            : result,
+        async ({ base }) => {
+          const res = await get(base)
+          expect(res.status).toBe(200)
+          expect(res.headers.get("content-type")).toBe("image/png")
+          expect(Buffer.from(await res.arrayBuffer()).equals(FRAME)).toBe(true)
+        },
+      )
+    }
+  })
+
   it("takes the content type from the image block", async () => {
     await withServer(
       call =>

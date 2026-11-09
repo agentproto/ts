@@ -4,7 +4,8 @@
  * tab owned by session `:id`. Called as a raw imported tool, that result is a
  * JSON object `{ base64, format, width, height }` (not an MCP `image` block),
  * handed over as `structuredContent`, as a `text` block holding the JSON, or
- * both; `parseImage` reads all of those plus the `image` block. No recording is started or needed, so any
+ * both; `parseImage` reads all of those plus the `image` block. The bytes
+ * field is `base64` (the driver layer calls it `data`; both are read). No recording is started or needed, so any
  * session that owns an open tab can be watched with no cooperation from the
  * agent.
  *
@@ -133,7 +134,9 @@ const SCREENSHOT_FORMATS = new Set(["jpeg", "png", "webp"])
 
 function decodeScreenshotObject(value: unknown): { bytes: Buffer; mimeType: string } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
-  const { base64, format } = value as { base64?: unknown; format?: unknown }
+  const raw = value as { base64?: unknown; data?: unknown; format?: unknown }
+  const base64 = typeof raw.base64 === "string" && raw.base64 !== "" ? raw.base64 : raw.data
+  const format = raw.format
   if (typeof base64 !== "string" || base64 === "") return null
   if (typeof format !== "string" || !SCREENSHOT_FORMATS.has(format)) return null
   const bytes = Buffer.from(base64, "base64")
