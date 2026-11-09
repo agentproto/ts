@@ -973,9 +973,23 @@ export function registerAgentTools(
             )
           }
         }
-        if (input.allowPromptFrom?.length) {
+        // The shared `claude-desktop` identity declares `parent: "cc:<id>"`, so
+        // the child's recorded owner is a `cc:` row that no Desktop MCP call can
+        // present (calls arrive as `claude-desktop`). Unless the caller said
+        // otherwise, grant `claude-desktop` so its own supervisor can drive the
+        // child. An explicit list, including `[]` (opt-out), is never touched.
+        const defaultDesktopDriveGrant =
+          sharedDesktopCaller &&
+          declaredParent !== undefined &&
+          input.allowPromptFrom === undefined &&
+          !result.deduped &&
+          result.descriptor.parentSessionId === declaredParent
+        const effectiveAllowPromptFrom = defaultDesktopDriveGrant
+          ? [SHARED_CLAUDE_DESKTOP_ID]
+          : input.allowPromptFrom
+        if (effectiveAllowPromptFrom?.length) {
           try {
-            registry.setPromptPolicy(result.descriptor.id, input.allowPromptFrom)
+            registry.setPromptPolicy(result.descriptor.id, effectiveAllowPromptFrom)
           } catch (err) {
             attachWarnings.push(
               `allowPromptFrom apply failed: ${err instanceof Error ? err.message : String(err)}`,

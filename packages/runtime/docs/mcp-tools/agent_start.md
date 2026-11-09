@@ -831,6 +831,18 @@ in/out, or an empty
 array to reset): only the session itself, its owner, and the operator may.
 `any` never widens what a caller's own role allows the daemon to do.
 
+Default for a Claude Desktop supervisor: when the spawn comes from the shared
+`claude-desktop` identity, declares `parent: "cc:<id>"` and leaves
+`allowPromptFrom` unset, the daemon records `["claude-desktop"]` for the child.
+The declared `cc:<id>` is the child's recorded owner, but a Desktop MCP call
+always arrives as `claude-desktop`, so without this the supervisor could not
+`agent_kill` or `agent_prompt` its own children. Any Desktop chat on that shared
+identity can then drive the child (trusted single-operator setup). An explicit
+`allowPromptFrom` is never touched; pass `[]` to opt out. The grant is not
+added for verified identities, an identity-less caller, or a Desktop spawn
+without a declared parent, and it does not let `claude-desktop` edit the list
+with `agent_set_prompt_policy`.
+
 A `label:` entry only matches a caller that already has an `operatorLabel`.
 That label is normally stamped at the fresh root spawn named above and then
 carried forward automatically on every later `session_restart` /
