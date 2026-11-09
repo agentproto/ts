@@ -128,6 +128,14 @@ What a link-SESSION token can reach, and nothing more:
   token>` (an `<img>` cannot send headers). Any other `/sessions/*` route
   (kill, PTY, prompt, the plain `/stream` tail, another session's reads or
   screencast) and `/mcp` stay behind the tunnel bearer.
+- **The screencast of a browser session**, for a token with a
+  `browserSessionId` claim (pass it through `claims`): the live frames are
+  served by the chrome-live browser session the browser tools address, which
+  is a different id from the agent session the link is about. The claim
+  unlocks `GET /sessions/<browserSessionId>/screencast`, `.jpg` and `.mjpg`
+  and nothing else: not that session's other reads, not another browser
+  session, not any other method. A token may carry both `sessionId` and
+  `browserSessionId`; each keeps its own rule.
 - **Tool calls** through its own app's `POST /apps/:appId/tool-call`, limited
   to that app's `ui.toolScope`. A link is not read-only: if the app scopes a
   write tool (e.g. `agent_prompt` or `agent_interrupt` with
