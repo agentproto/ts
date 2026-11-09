@@ -21,6 +21,7 @@
     "workflows",
     "sentinels",
     "daemon-memory",
-    "agent-comms"
+    "agent-comms",
+    "signals-and-wake"
   ]
 }
