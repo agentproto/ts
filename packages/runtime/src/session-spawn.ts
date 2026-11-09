@@ -453,6 +453,7 @@ import {
   type NativeMemoryProjection,
 } from "./memory-digest.js"
 import { sessionMemoryScope } from "./caller-scope.js"
+import { stageSpawningCaller } from "./spawning-caller-context.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -5718,6 +5719,9 @@ async function spawnAgentSessionOnce(
   // like the spawn never arrived. Cleared once `registry.spawnAgent` adopts
   // the placeholder, and cleaned up on any earlier failure.
   let sandboxPendingId: string | undefined
+  // Clears the context a local spawn stages for the gateway while its
+  // driver starts; a no-op for the other placements.
+  let unstageSpawningCaller = (): void => {}
   try {
     // Independent of cwd/the worktree — safe to resolve before either the
     // async or the synchronous provisioning branch below needs it.
@@ -6574,6 +6578,14 @@ async function spawnAgentSessionOnce(
       // otherwise.
       //
       commandSandbox = await localCommandSandbox(cwd)
+      // The adapter lists the gateway's tools while it starts, before the
+      // descriptor below exists: stage what the gateway reads for this
+      // caller until it is registered (spawning-caller-context.ts).
+      unstageSpawningCaller = stageSpawningCaller(mintedSessionId, {
+        meta: spawnDescriptorMeta(),
+        ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
+        ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+      })
       const localStart = await startLocalAgentSession(
         await localStartOptions(cwd, () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
@@ -6791,6 +6803,8 @@ async function spawnAgentSessionOnce(
     // The placeholder (if any) is now the live row: `spawnAgent` adopted it in
     // place, so the error path must not try to remove it as an orphan.
     sandboxPendingId = undefined
+    // The registry now serves this caller's context itself.
+    unstageSpawningCaller()
     // Stamp the title from the caller's ask BEFORE anything else can name
     // this session from the composed prompt instead: `spawnAgent` above,
     // when `initialPrompt` was passed, already ran the first turn's
@@ -6944,6 +6958,7 @@ async function spawnAgentSessionOnce(
       ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
     })
   } catch (err) {
+    unstageSpawningCaller()
     // A sandbox boot that threw before `spawnAgent` adopted the placeholder
     // must not leave a `starting` row behind: this is the same shape as the
     // pre-placeholder failure path (no row at all).
