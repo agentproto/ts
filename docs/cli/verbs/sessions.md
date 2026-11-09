@@ -1424,7 +1424,7 @@ Known limits, deliberately left for later PRs:
 | Tool | Inputs | Use |
 |---|---|---|
 | `message_parent` | `{message, kind?, urgency?, interrupt?, replyTo?}` | Report up to the session that spawned you. |
-| `message_send` | `{to: "parent" \| sessionId, text, kind?, urgency?, replyTo?, correlationId?, data?}` | Message a tree neighbour. |
+| `message_send` | `{to: "parent" \| sessionId \| "label:<label>", text, kind?, urgency?, replyTo?, correlationId?, data?, declaredSender?}` | Message a tree neighbour. `to: "label:<label>"` resolves to the one LIVE session whose immutable `operatorLabel` equals `<label>` (the notion `allowPromptFrom: "label:..."` uses; the mutable `label` never matches), so a sender survives a restart that changes the session id. No live match is `no_live_session_for_label`, several is `ambiguous_label` (ids you may message are listed, none is picked). The permission check runs on the resolved session, so a label never widens who can be reached. `declaredSender: "cc:<session_id>"` is accepted only from the shared unverified `claude-desktop` identity and refused (`declared_sender_refused`) for any call that carries a session identity; the recipient sees `[declared sender: cc:<id>, unverified]`, a `reply to:` line and `declared-sender` on the tag. Declared, not proven: urgency stays capped (never `interrupt`) and permissions use the real caller. |
 | `message_reply` | `{replyTo, text, kind?, urgency?}` | Answer a message you received — routed to its sender, same thread. |
 | `inbox_list` | `{from?, kind?, correlationId?, limit?}` | Read your un-consumed messages. |
 | `inbox_ack` | `{ids \| "all"}` | Acknowledge (remove) them. |

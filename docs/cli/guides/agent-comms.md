@@ -29,6 +29,19 @@ messages to each other, and what it takes to wake an idle Claude Code session.
   `allowPromptFrom` to replace it, or `allowPromptFrom: []` to keep the child
   owner-only. Verified identities and identity-less callers get no such grant.
 - Any session to any session: `message_send to: "<sess_xxxx | cc:<id>>"`.
+- By label: `message_send to: "label:<label>"` reaches the one live session
+  carrying that operator-assigned label (`operatorLabel`, the one
+  `allowPromptFrom: "label:..."` matches), so a brain whose session id changes
+  at every daemon restart stays addressable. A killed or retired session never
+  matches: no live match is `no_live_session_for_label`, several is
+  `ambiguous_label`. The usual permission rules apply to the session it
+  resolves to; a label never widens who you can reach.
+- From Claude Desktop, say who you are: the shared `claude-desktop` identity
+  has no session id, so pass `declaredSender: "cc:<your session id>"` to
+  `message_send`. The recipient sees `[declared sender: cc:<id>, unverified]`
+  and can reply to that address. It is declared, not proven (same trust as
+  `replyTo`): urgency stays capped below `interrupt`, permissions still use the
+  real caller, and a call that carries a session identity is refused.
 - Urgency:
 
 | Urgency | Effect |

@@ -74,6 +74,11 @@ export interface SessionMessageFrom {
    *  shared `claude-desktop` Chat-tab identity). Any local process can
    *  claim it, so the recipient must treat the sender as unverified. */
   unverified?: boolean
+  /** A `cc:<session_id>` the shared `claude-desktop` sender DECLARED as its
+   *  real session (`message_send.declaredSender`). Never proven and never used
+   *  for authorization or trust: the sender stays `unverified`, and this only
+   *  tells the recipient where a reply could be addressed. */
+  declaredSender?: string
 }
 
 export interface SessionMessage {
@@ -441,6 +446,12 @@ export function unverifiedSenderPrefix(label: string | undefined): string {
   return `[unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
 }
 
+/** The text prefix a message from the shared `claude-desktop` identity carries
+ *  when it declared its real `cc:<session_id>`: declared, never verified. */
+export function declaredSenderPrefix(address: string): string {
+  return `[declared sender: ${DECLARED_CC_ADDRESS.test(address) ? address : "unknown"}, unverified] `
+}
+
 /** The text prefix a reply carries when the message it answers came from an
  *  unverified sender. The replier keeps its own (possibly verified) identity
  *  in the envelope, so the label names the original sender instead. */
@@ -481,6 +492,7 @@ export function renderSessionMessage(msg: SessionMessage): string {
   if (msg.from.sessionId) attrs.push(`session="${attr(msg.from.sessionId)}"`)
   if (msg.from.anonymous) attrs.push(`anonymous="true"`)
   if (msg.from.unverified) attrs.push(`unverified="true"`)
+  if (msg.from.declaredSender) attrs.push(`declared-sender="${attr(msg.from.declaredSender)}"`)
   const label = sanitizeLabel(msg.from.label)
   if (label) attrs.push(`label="${label}"`)
   attrs.push(`kind="${msg.kind}"`)
@@ -511,7 +523,11 @@ export function renderInboxDigest(msgs: readonly SessionMessage[]): string {
       const label = sanitizeLabel(m.from.label)
       const relation = normalizeMessageRelation(m.from.relation) ?? m.from.relation
       const sender = m.from.sessionId ? `${relation} ${m.from.sessionId}${label ? ` (${label})` : ""}` : relation
-      const unverified = m.from.unverified ? " (unverified)" : ""
+      const unverified = m.from.unverified
+        ? m.from.declaredSender
+          ? ` (unverified, declared sender ${m.from.declaredSender})`
+          : " (unverified)"
+        : ""
       return `${m.id} from ${sender}${unverified} [${m.kind}]`
     })
     .join("; ")

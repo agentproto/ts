@@ -30,9 +30,13 @@ import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import { ANONYMOUS_SEND_RULE, REPLY_RULE, decide, type PermissionContext } from "./permissions.js"
+import { isExternalInboxOpen, isRetired } from "./session-retirement.js"
 import { warnPeerUnverified } from "./workspace-binding.js"
 import {
+  DECLARED_CC_ADDRESS,
+  SHARED_CLAUDE_DESKTOP_ID,
   createSessionMessage,
+  declaredSenderPrefix,
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
@@ -224,12 +228,63 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     )
   }
 
+  /** A session a message can still be delivered to: not retired, and either
+   *  running or an external row whose inbox is open (the same test the
+   *  session-follow delivery gate uses). */
+  const isLiveRecipient = (d: SessionDescriptor): boolean =>
+    !isRetired(d) && (d.status === "running" || d.status === "starting" || isExternalInboxOpen(d))
+
+  /** `to: "label:<label>"` resolves to the ONE live session whose immutable,
+   *  operator-assigned `operatorLabel` equals `<label>` exactly (the notion
+   *  `allowPromptFrom: "label:..."` and `session_labels` use; the mutable
+   *  `label` a session or its spawner can set never matches). It only picks
+   *  the recipient: `send` then runs the usual permission check on the
+   *  resolved session, so a label never widens who can be reached. Any other
+   *  `to` passes through unchanged. */
+  const resolveLabelAddress = (
+    tool: string,
+    to: string,
+    self: SessionDescriptor | undefined,
+  ): { id: string } | ToolResult => {
+    if (!to.startsWith("label:")) return { id: to }
+    const label = to.slice("label:".length)
+    if (label.trim() === "") {
+      return fail("invalid_label", `${tool}: \`label:\` needs a label after the colon.`)
+    }
+    const live = registry.list().filter(d => d.operatorLabel === label && isLiveRecipient(d))
+    if (live.length === 0) {
+      return fail(
+        "no_live_session_for_label",
+        `${tool}: no live session carries the label "${label}". A killed or retired session never matches.`,
+      )
+    }
+    if (live.length > 1) {
+      // List only sessions the caller may message, so the error cannot be
+      // used to enumerate sessions it has no relation to.
+      const principal = self
+        ? ({ kind: "session", session: self } as const)
+        : ({ kind: "operator", via: "anonymous-local" } as const)
+      const reachable = live.filter(
+        d => decide(principal, "session.message", { kind: "session", session: d } as const, basePolicy).allow,
+      )
+      const hidden = live.length - reachable.length
+      const ids = reachable.map(d => d.id).join(", ")
+      return fail(
+        "ambiguous_label",
+        `${tool}: ${live.length} live sessions carry the label "${label}"; none was picked. ` +
+          `Address one by session id${ids ? `: ${ids}` : ""}` +
+          `${hidden > 0 ? ` (${hidden} more you may not message)` : ""}.`,
+      )
+    }
+    return { id: live[0]!.id }
+  }
+
   /** An identity-less client asks to send under `accept`/`ask`: only
    *  `message_send` may act, and always as the anonymous `claude-code`
    *  sender — never as a session. */
   const anonymousSend = async (
     tool: string,
-    toId: string,
+    to: string,
     input: {
       text: string
       kind?: MessageKind
@@ -248,6 +303,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           "is \"block\"; set it to \"accept\" (or \"ask\") to allow an anonymous send.",
       )
     }
+    const target = resolveLabelAddress(tool, to, undefined)
+    if (isResult(target)) return target
+    const toId = target.id
     const kind = input.kind ?? "report"
     const urgency = input.urgency ?? defaultUrgencyForKind(kind)
     if (noCallerIdentity === "ask") {
@@ -345,6 +403,8 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       correlationId?: string
       data?: Record<string, unknown>
       from?: unknown
+      /** Validated `cc:<id>` from the shared `claude-desktop` caller. */
+      declaredSender?: string
     },
     anonymous = false,
   ): Promise<ToolResult> => {
@@ -417,22 +477,31 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       anonymousSendMode === "label" && (self
         ? decision.rule === ANONYMOUS_SEND_RULE || replyToUnverified
         : anonymous)
+    // The shared `claude-desktop` caller named its real Claude Code session.
+    // Declared, never proven: it changes the header text and reply address
+    // only; the permission checks above ran on the real caller identity, and
+    // it can never interrupt.
+    const declared = self ? input.declaredSender : undefined
+    const labelPrefix = labelled
+      ? replyToUnverified
+        ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId)
+        : unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code")
+      : ""
+    const textPrefix = declared
+      ? declaredSenderPrefix(declared) + (replyToUnverified ? labelPrefix : "")
+      : labelPrefix
     let msg: SessionMessage
     try {
       msg = createSessionMessage({
         to: recipient.id,
         from: self
-          ? messageFrom(self, relation)
+          ? { ...messageFrom(self, relation), ...(declared ? { declaredSender: declared } : {}) }
           : { relation: "human", label: "claude-code", anonymous: true },
-        text: labelled
-          ? (replyToUnverified
-              ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId)
-              : unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code")) + input.text
-          : input.text,
+        text: textPrefix + input.text,
         kind,
         urgency,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
-        ...(input.replyAddress ? { replyAddress: input.replyAddress } : {}),
+        ...(input.replyAddress || declared ? { replyAddress: input.replyAddress ?? declared } : {}),
         ...(input.correlationId ? { correlationId: input.correlationId } : {}),
         ...(input.data !== undefined ? { data: input.data } : {}),
       })
@@ -449,7 +518,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           source: provenance,
           origin: provenance,
           decision,
-          ...(interrupt.allow && !labelled && !answersReceived ? { allowInterrupt: true } : {}),
+          ...(interrupt.allow && !labelled && !answersReceived && !declared ? { allowInterrupt: true } : {}),
         },
         opts.deliveryApply,
         parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
@@ -466,6 +535,12 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         urgencyApplied: r.urgencyApplied,
         ...(r.wake ? { wake: r.wake } : {}),
         ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
+        ...(declared
+          ? {
+              declaredSender: declared,
+              declaredNote: `delivered with a declared, unverified sender (${declared}); it is a claim, not proof, and the urgency is never interrupt`,
+            }
+          : {}),
         ...(labelled
           ? {
               ...(replyToUnverified ? { replyToUnverified: true } : { unverified: true }),
@@ -517,18 +592,57 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       "of your parent or one of your direct children - or, while the operator leaves " +
       "`defaults.messaging.allowSameWorkspace` on (the default), to any session of " +
       "your own workspace, or to any session whose workspace sits in the same " +
-      "`defaults.messaging.peerGroups` group as yours. The daemon attests the sender " +
+      "`defaults.messaging.peerGroups` group as yours. `to: \"label:<label>\"` " +
+      "addresses the single LIVE session carrying that operator-assigned label " +
+      "(it survives a restart that changes the session id); the same permission " +
+      "rules then apply to the session it resolves to. The daemon attests the sender " +
       "(you) in the header the recipient sees; you never set it. Not a delegation " +
       "tool: it reaches only neighbours and grants no control. If the recipient is " +
       "blocked in `inbox_wait` it gets the message as that call's result; otherwise " +
       "it lands in its inbox and — unless `fyi` — arrives as its own turn.",
     {
-      to: z.string().min(1).describe('"parent", or the recipient session id.'),
+      to: z
+        .string()
+        .min(1)
+        .describe(
+          '"parent", the recipient session id, or "label:<label>" (the one live session with that operator label).',
+        ),
       ...payloadShape,
       replyTo: z.string().optional().describe("Id of the message this answers."),
       correlationId: z.string().optional().describe("Thread id (defaults to the first message's id)."),
+      declaredSender: z
+        .string()
+        .optional()
+        .describe(
+          "Only from the shared unverified `claude-desktop` identity (Claude Desktop MCP entries): your own " +
+            "Claude Code address `cc:<session_id>`, so the recipient can reply to the real session. Declared, " +
+            "not proven (same trust as `replyTo`): the message stays unverified, capped at steer, and permissions " +
+            "still use the real caller. Refused for any call that carries a session identity.",
+        ),
     },
     async input => {
+      const { declaredSender: rawDeclared, ...sendInput } = input
+      // A declared sender is for the one shared, unverified identity only (the
+      // same boundary as `agent_start.parent`): any call that carries a real
+      // identity, or none, is refused rather than allowed to relabel itself.
+      if (rawDeclared !== undefined) {
+        if (callerScope !== undefined || rawCallerId !== SHARED_CLAUDE_DESKTOP_ID) {
+          return fail(
+            "declared_sender_refused",
+            "message_send: `declaredSender` is only for the shared unverified `claude-desktop` identity; " +
+              "this call " +
+              (rawCallerId ? "is attributed to a session and" : "has no caller identity and") +
+              " the daemon attests the sender itself. Omit `declaredSender`.",
+          )
+        }
+        if (!DECLARED_CC_ADDRESS.test(rawDeclared)) {
+          return fail(
+            "invalid_declared_sender",
+            "message_send: from the shared `claude-desktop` identity, `declaredSender` must be your own " +
+              "declared Claude Code address `cc:<session_id>`.",
+          )
+        }
+      }
       const routed = input.replyTo !== undefined ? classifyReplyTo(input.replyTo, "message_send") : {}
       if (isResult(routed)) return routed
       const self = resolveCaller("message_send")
@@ -539,7 +653,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         if (input.to === "parent") {
           return fail("no_parent", "message_send: this caller has no parent session.")
         }
-        return anonymousSend("message_send", input.to, { ...input, ...routed })
+        return anonymousSend("message_send", input.to, { ...sendInput, ...routed })
       }
       let toId = input.to
       if (toId === "parent") {
@@ -547,8 +661,16 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
           return fail("no_parent", "message_send: this session has no recorded parent.")
         }
         toId = self.parentSessionId
+      } else {
+        const target = resolveLabelAddress("message_send", toId, self)
+        if (isResult(target)) return target
+        toId = target.id
       }
-      return send("message_send", self, toId, { ...input, ...routed })
+      return send("message_send", self, toId, {
+        ...sendInput,
+        ...routed,
+        ...(rawDeclared !== undefined ? { declaredSender: rawDeclared } : {}),
+      })
     },
   )
 
