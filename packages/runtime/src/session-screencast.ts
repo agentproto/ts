@@ -1,27 +1,42 @@
 /**
  * `GET /sessions/:id/screencast.jpg` for an id that is not a chrome-live
- * browser descriptor: the latest Bureau recording frame of a tab owned by
- * session `:id`.
+ * browser descriptor: a Bureau `browser_screenshot` (JPEG) of the newest open
+ * tab owned by session `:id`. No recording is started or needed, so any
+ * session that owns an open tab can be watched with no cooperation from the
+ * agent.
  *
  * Every Bureau call is made AS the path id (the imported-tool call takes a
  * caller session id, forwarded in `x-agentproto-caller-session`), so Bureau's
- * own tab ownership decides what is visible: a caller only ever gets frames of
- * tabs opened for that session. The route is read-only; nothing here writes
- * to a tab. The HTTP gate (bearer, or a link token whose `sessionId` /
- * `browserSessionId` claim equals the path id) decides who may ask.
+ * own tab ownership decides what is visible: a caller only ever gets the
+ * viewport of a tab opened for that session. The route is read-only; nothing
+ * here clicks, types or reaches another tab. The HTTP gate (bearer, or a link
+ * token whose `sessionId` / `browserSessionId` claim equals the path id)
+ * decides who may ask.
+ *
+ * Each frame is a real CDP capture of the user's browser, so it is rate
+ * limited: a per-session frame cache (a frame under FRAME_FRESH_MS old is
+ * served as is), one shared in-flight capture per session, and at most
+ * MAX_CONCURRENT_CAPTURES captures in flight for the whole reader. The frame
+ * cache is keyed by session id only, in memory, capped and expiring.
  */
 
 import type { ServerResponse } from "node:http"
 import { loadConfig } from "./config.js"
 import { resolveBrowserProxyImport } from "./browser-proxy.js"
 
-export const SESSION_SCREENCAST_NO_FRAME_MESSAGE =
-  "No frame yet: the session must call browser_screencast_start on a tab it owns."
+export const SESSION_SCREENCAST_NO_FRAME_MESSAGE = "No open browser tab for this session."
 
 const MAX_TABS = 5
 const TAB_CACHE_TTL_MS = 5_000
 const CACHE_CAP = 200
 const LOG_REPEAT_MS = 30_000
+const FRAME_FRESH_MS = 800
+const FRAME_CACHE_CAP = 50
+const FRAME_CACHE_TTL_MS = 60_000
+const MAX_CONCURRENT_CAPTURES = 2
+const QUEUE_WAIT_MS = 3_000
+const SCREENSHOT_FORMAT = "jpeg"
+const SCREENSHOT_QUALITY = 55
 
 type CallImportedTool = (
   alias: string,
@@ -36,7 +51,7 @@ interface OwnedTab {
   openedAt: number
 }
 
-export type SessionScreencastMissReason = "not_wired" | "no_tab" | "no_frame" | "bureau_error"
+export type SessionScreencastMissReason = "not_wired" | "no_tab" | "bureau_error"
 
 export type SessionScreencastOutcome =
   | { ok: true; bytes: Buffer; mimeType: string }
@@ -52,6 +67,8 @@ export interface SessionScreencastReaderOptions {
   resolveAlias?: () => Promise<string>
   now?: () => number
   log?: (line: string) => void
+  /** How long a capture may wait for one of the concurrency slots. Default 3 s. */
+  queueWaitMs?: number
 }
 
 async function defaultResolveAlias(): Promise<string> {
@@ -121,14 +138,20 @@ function parseImage(result: unknown): { bytes: Buffer; mimeType: string } | null
   }
 }
 
-function setBounded<V>(map: Map<string, V>, key: string, value: V): void {
+function setBounded<V>(map: Map<string, V>, key: string, value: V, cap = CACHE_CAP): void {
   map.delete(key)
   map.set(key, value)
-  while (map.size > CACHE_CAP) {
+  while (map.size > cap) {
     const oldest = map.keys().next().value
     if (oldest === undefined) break
     map.delete(oldest)
   }
+}
+
+interface CachedFrame {
+  at: number
+  bytes: Buffer
+  mimeType: string
 }
 
 export function createSessionScreencastReader(
@@ -137,8 +160,38 @@ export function createSessionScreencastReader(
   const now = opts.now ?? Date.now
   const log = opts.log ?? ((line: string) => console.warn(line))
   const resolveAlias = opts.resolveAlias ?? defaultResolveAlias
+  const queueWaitMs = opts.queueWaitMs ?? QUEUE_WAIT_MS
   const tabCache = new Map<string, { at: number; tabs: OwnedTab[] }>()
+  const frameCache = new Map<string, CachedFrame>()
+  const inFlight = new Map<string, Promise<SessionScreencastOutcome>>()
   const lastLogged = new Map<string, { reason: SessionScreencastMissReason; at: number }>()
+
+  let active = 0
+  const waiters: (() => void)[] = []
+  const acquire = (): Promise<boolean> => {
+    if (active < MAX_CONCURRENT_CAPTURES) {
+      active += 1
+      return Promise.resolve(true)
+    }
+    return new Promise<boolean>(resolve => {
+      const grant = (): void => {
+        clearTimeout(timer)
+        resolve(true)
+      }
+      const timer = setTimeout(() => {
+        const at = waiters.indexOf(grant)
+        if (at >= 0) waiters.splice(at, 1)
+        resolve(false)
+      }, queueWaitMs)
+      timer.unref?.()
+      waiters.push(grant)
+    })
+  }
+  const release = (): void => {
+    const next = waiters.shift()
+    if (next) next()
+    else active -= 1
+  }
 
   const logMiss = (sessionId: string, reason: SessionScreencastMissReason): void => {
     const prev = lastLogged.get(sessionId)
@@ -153,10 +206,19 @@ export function createSessionScreencastReader(
     return { ok: false, reason }
   }
 
-  return {
-    async read(sessionId) {
-      const call = opts.callImportedTool
-      if (!call) return miss(sessionId, "not_wired")
+  const expireFrames = (): void => {
+    const at = now()
+    for (const [key, frame] of frameCache) {
+      if (at - frame.at >= FRAME_CACHE_TTL_MS) frameCache.delete(key)
+    }
+  }
+
+  const capture = async (
+    sessionId: string,
+    call: CallImportedTool,
+  ): Promise<SessionScreencastOutcome> => {
+    if (!(await acquire())) return miss(sessionId, "bureau_error")
+    try {
       const alias = await resolveAlias()
 
       let bureauError = false
@@ -180,19 +242,22 @@ export function createSessionScreencastReader(
           try {
             const result = await call(
               alias,
-              "browser_record_frame",
-              { tabId: tab.targetId, ...(tab.instance ? { instance: tab.instance } : {}) },
+              "browser_screenshot",
+              {
+                tabId: tab.targetId,
+                ...(tab.instance ? { instance: tab.instance } : {}),
+                format: SCREENSHOT_FORMAT,
+                quality: SCREENSHOT_QUALITY,
+              },
               sessionId,
             )
-            if (isToolError(result)) {
-              bureauError = true
-              continue
-            }
-            const image = parseImage(result)
+            const image = isToolError(result) ? null : parseImage(result)
             if (image) return image
           } catch {
-            bureauError = true
+            // fall through to the next tab
           }
+          bureauError = true
+          tabCache.delete(sessionId)
         }
         return null
       }
@@ -205,9 +270,37 @@ export function createSessionScreencastReader(
         tabs = await list()
         image = tabs.length > 0 ? await firstFrame(tabs) : null
       }
-      if (image) return { ok: true, ...image }
+      if (image) {
+        expireFrames()
+        setBounded(frameCache, sessionId, { at: now(), ...image }, FRAME_CACHE_CAP)
+        return { ok: true, ...image }
+      }
       if (bureauError) return miss(sessionId, "bureau_error")
-      return miss(sessionId, tabs.length === 0 ? "no_tab" : "no_frame")
+      return miss(sessionId, "no_tab")
+    } finally {
+      release()
+    }
+  }
+
+  return {
+    async read(sessionId) {
+      const call = opts.callImportedTool
+      if (!call) return miss(sessionId, "not_wired")
+
+      const frame = frameCache.get(sessionId)
+      if (frame && now() - frame.at < FRAME_FRESH_MS) {
+        return { ok: true, bytes: frame.bytes, mimeType: frame.mimeType }
+      }
+      const pending = inFlight.get(sessionId)
+      if (pending) return pending
+
+      const started = capture(sessionId, call).catch(() => miss(sessionId, "bureau_error"))
+      inFlight.set(sessionId, started)
+      try {
+        return await started
+      } finally {
+        if (inFlight.get(sessionId) === started) inFlight.delete(sessionId)
+      }
     },
   }
 }
@@ -220,7 +313,11 @@ export async function serveSessionScreencast(
 ): Promise<void> {
   const outcome = await reader.read(sessionId)
   if (outcome.ok) {
-    res.writeHead(200, { "content-type": outcome.mimeType, "cache-control": "no-store" })
+    res.writeHead(200, {
+      "content-type": outcome.mimeType,
+      "cache-control": "no-store",
+      "content-length": outcome.bytes.length,
+    })
     res.end(outcome.bytes)
     return
   }
