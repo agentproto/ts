@@ -66,6 +66,7 @@ import {
 } from "./branch.js"
 import { installDaemonLogTimestamps } from "./_log-timestamps.js"
 import { reconcileReactionsAtBoot } from "./serve-boot-reactions.js"
+import { resolveServeFrameAncestors } from "./serve-frame-ancestors.js"
 import { systemPromptCapsFor } from "./system-prompt-caps.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
@@ -177,6 +178,9 @@ interface ServeOpts {
   /** When true, drop the localhost-wildcard default. Only `allowedOrigins`
    *  is honoured. Useful for hardened / shared-host setups. */
   strictOrigins?: boolean
+  /** Validated extra `frame-ancestors` sources for the app page (config
+   *  `daemon.frameAncestors`), added to the built-in VS Code schemes. */
+  frameAncestors?: readonly string[]
   /** Bearer token gating the gateway at boot. When set, the daemon
    *  starts already gated (mode "bearer") instead of the default
    *  open (mode "none") — no `remote_enable` call needed, and the
@@ -388,6 +392,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const merged = [...new Set([...cfgOrigins, ...cliOrigins])]
   const allowedOrigins = merged.length > 0 ? merged : undefined
 
+  const frameAncestors = resolveServeFrameAncestors(
+    cfgDaemon.frameAncestors,
+    line => process.stderr.write(line),
+  )
+
   // Auth token: --auth-token > config.json daemon.authToken. Unset ⇒
   // no `authToken` in ServeOpts ⇒ gateway boots with auth mode "none",
   // identical to today's behaviour. This is independent of `remote_enable`
@@ -405,6 +414,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     label,
     ...(allowedOrigins ? { allowedOrigins } : {}),
     ...(cfgDaemon.strictOrigins === true ? { strictOrigins: true } : {}),
+    ...(frameAncestors ? { frameAncestors } : {}),
     ...(authToken ? { authToken } : {}),
     ...(cfgTunnel.e2e === true ? { e2e: true } : {}),
   }
@@ -1045,6 +1055,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           ? { allowedOrigins: opts.allowedOrigins }
           : {}),
         ...(opts.strictOrigins ? { strictOrigins: true } : {}),
+        ...(opts.frameAncestors ? { frameAncestors: opts.frameAncestors } : {}),
         ...(opts.authToken
           ? { auth: { mode: "bearer" as const, token: opts.authToken } }
           : {}),

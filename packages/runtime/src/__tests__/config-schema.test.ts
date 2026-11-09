@@ -196,6 +196,7 @@ describe("secret and lockout classification", () => {
       "daemon.port",
       "daemon.bind",
       "daemon.allowedOrigins",
+      "daemon.frameAncestors",
       "daemon.strictOrigins",
       "sessions.eventsDir",
       "profiles",
@@ -206,6 +207,13 @@ describe("secret and lockout classification", () => {
       expect(entry?.writable, `${path} should be locked out`).toBe(false)
       expect(entry?.secret, `${path} should not be marked secret`).toBeUndefined()
     }
+  })
+
+  it("accepts daemon.frameAncestors as a list or one string and refuses other types", () => {
+    expect(validateConfigKeyType("daemon.frameAncestors", ["https://web.telegram.org"]).ok).toBe(true)
+    expect(validateConfigKeyType("daemon.frameAncestors", "https://web.telegram.org").ok).toBe(true)
+    expect(validateConfigKeyType("daemon.frameAncestors", 42).ok).toBe(false)
+    expect(validateConfigKeyType("daemon.frameAncestors", [1]).ok).toBe(false)
   })
 
   it("marks acpAgents.*.env and terminalPresets.*.env secret (for redaction) AND not writable", () => {

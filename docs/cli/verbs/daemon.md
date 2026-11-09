@@ -90,6 +90,9 @@ Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
 agentproto config set daemon.workspace /Users/me/code
 agentproto config set daemon.port 18791
 agentproto config set daemon.allowedOrigins https://guilde.work
+# Optional: let a browser-based Telegram client frame the app page
+# (see serve.md, "Framing the app page").
+agentproto config set daemon.frameAncestors https://web.telegram.org,https://webk.telegram.org,https://webz.telegram.org
 agentproto config set tunnel.host wss://guilde.work/api/v1/agentproto/tunnel
 agentproto config set tunnel.autoconnect true
 # Optional: end-to-end encrypt the tunnel (needs tunnel.token; the host

@@ -123,6 +123,7 @@ Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../d
     "port": 18791,
     "bind": "127.0.0.1",
     "allowedOrigins": ["https://guilde.work"], // extends localhost defaults
+    "frameAncestors": ["https://web.telegram.org"], // may frame the app page (never "*")
     "strictOrigins": false,                    // when true, drops localhost defaults
     "authToken": "<random-hex>",               // stable bearer for /mcp, /events, …
     "label": "jeremy@mbp",

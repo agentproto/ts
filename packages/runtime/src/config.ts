@@ -49,6 +49,15 @@ export interface DaemonConfig {
   /** Trusted browser origins for mutating /sessions/* routes (in
    *  addition to the hardcoded localhost defaults). */
   allowedOrigins?: string[]
+  /** Extra origins (or custom URI schemes) allowed to EMBED the standalone
+   *  app page `GET /apps/:appId/ui` in an iframe, added to the built-in
+   *  `vscode-webview:` / `vscode-file:`. For example a browser-based
+   *  Telegram client. A different axis from `allowedOrigins` (who may call
+   *  the daemon). Only exact `https://host[:port]` origins and custom
+   *  schemes are honoured; `*`, wildcards and bare `http:`/`https:` are
+   *  dropped with a warning at boot. A bare string is read as a
+   *  comma-separated list. */
+  frameAncestors?: string[] | string
   /** When true, the daemon does NOT auto-trust localhost-on-any-port.
    *  Only origins explicitly listed in `allowedOrigins` are allowed.
    *  Pair with a curated list (e.g. `["http://localhost:3000"]`) for

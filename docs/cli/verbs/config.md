@@ -102,6 +102,7 @@ Creates the file if missing before launching the editor.
 | `daemon.bind` | `string` | Default `127.0.0.1`. |
 | `daemon.workspace` | `string` | Absolute path; passed as `serve --workspace` when set. |
 | `daemon.allowedOrigins` | `string[]` | Trusted browser origins for mutating routes (in addition to localhost defaults). |
+| `daemon.frameAncestors` | `string[]` | Extra origins allowed to embed the app page in an iframe (for example a browser-based Telegram client). See [`serve`](./serve.md#framing-the-app-page). |
 | `daemon.strictOrigins` | `boolean` | When true, drop the localhost-default. Only `allowedOrigins` are honoured. |
 | `daemon.label` | `string` | Server label sent in tunnel hello frames. |
 | `daemon.reviewSessionRetentionDays` | `number` | Days after which a terminal review-lane session dir (`~/.agentproto/sessions/<id>/`) is deleted by the retention sweep. Default `7`; `0` disables. See [`sessions gc --retention`](./sessions.md#gc). |
