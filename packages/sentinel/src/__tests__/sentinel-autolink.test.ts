@@ -101,6 +101,73 @@ describe("sentinel auto-link", () => {
     expect(store.list()).toHaveLength(1)
   })
 
+  it("two concurrent opens of the same PR for the same session create one sentinel", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
+    const slowProvider: SentinelProviderHandle = {
+      ...provider,
+      slug: provider.slug,
+      create: async (...args) => {
+        await new Promise(resolve => setTimeout(resolve, 10))
+        return provider.create(...args)
+      },
+    }
+    const linker = createSentinelAutoLinker({
+      store,
+      resolveProvider: resolverFor(slowProvider),
+      autoWatchPrs: async () => true,
+    })
+
+    await Promise.all([
+      linker.linkNow("sess_1", OPENED, {}),
+      linker.linkNow("sess_1", { ...OPENED, adapter: "gh" }, {}),
+    ])
+
+    expect(store.list()).toHaveLength(1)
+  })
+
+  it("concurrent opens recorded on a retired row and its successor resolve to one sentinel", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
+    const linker = createSentinelAutoLinker({
+      store,
+      resolveProvider: resolverFor(provider),
+      autoWatchPrs: async () => true,
+      resolveTargetSession: id => (id === "sess_old" ? "sess_new" : id),
+    })
+
+    await Promise.all([linker.linkNow("sess_old", OPENED, {}), linker.linkNow("sess_new", OPENED, {})])
+
+    expect(store.list()).toHaveLength(1)
+    expect(store.list()[0]!.spec.target).toMatchObject({ sessionId: "sess_new" })
+  })
+
+  it("a failed create releases the in-flight claim so a later open can retry", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
+    let fail = true
+    const flaky: SentinelProviderHandle = {
+      ...provider,
+      slug: provider.slug,
+      create: async (...args) => {
+        if (fail) throw new Error("boom")
+        return provider.create(...args)
+      },
+    }
+    const linker = createSentinelAutoLinker({
+      store,
+      resolveProvider: resolverFor(flaky),
+      autoWatchPrs: async () => true,
+      log: () => {},
+    })
+
+    await linker.linkNow("sess_1", OPENED, {})
+    expect(store.list()).toHaveLength(0)
+    fail = false
+    await linker.linkNow("sess_1", OPENED, {})
+    expect(store.list()).toHaveLength(1)
+  })
+
   it("a per-spawn opt-out (sentinelAutoWatch: false) creates no sentinel", async () => {
     const store = createSentinelStore({ persist: false })
     const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
