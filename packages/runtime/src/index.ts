@@ -195,6 +195,7 @@ import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { resolveNoCallerIdentity } from "./mcp-config.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
 import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
+import { spawningCallerContext } from "./spawning-caller-context.js"
 import type { AnonymousMessageApprovalDetail } from "./message-tools.js"
 import { resolveTaskDefaults } from "./task-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
@@ -4304,7 +4305,13 @@ export async function createGateway(
     // registered through `tool()`/`registerTool()` is covered, including the
     // two passes right here. No caller, or a caller with no grants: the raw
     // server, unchanged.
-    const callerDenyGrants = callerSessionId ? sessions.get(callerSessionId)?.toolDenyGrants : undefined
+    // A caller whose driver is still starting has no descriptor yet, but its
+    // spawn staged the same fields (spawning-caller-context.ts): its adapter
+    // lists these tools once, during that start.
+    const callerContext = callerSessionId
+      ? (sessions.get(callerSessionId) ?? spawningCallerContext(callerSessionId))
+      : undefined
+    const callerDenyGrants = callerContext?.toolDenyGrants
     const gatedServer = callerSessionId && callerDenyGrants?.length
       ? withToolDenyGate(rawServer, callerDenyGrants, callerSessionId)
       : rawServer
@@ -4317,9 +4324,8 @@ export async function createGateway(
     // descriptor `meta` at spawn — see `session-spawn.ts`), NEVER from a
     // caller-supplied tool argument. A caller with no resolvable manifest
     // fails closed.
-    const createToolCallerSession = callerSessionId ? sessions.get(callerSessionId) : undefined
-    const callerAgentId = createToolCallerSession?.meta?.agentId
-    const callerAgentManifestPath = createToolCallerSession?.meta?.agentManifestPath
+    const callerAgentId = callerContext?.meta?.agentId
+    const callerAgentManifestPath = callerContext?.meta?.agentManifestPath
     registerCreateToolTools(gatedServer, {
       workspace,
       ...(callerSessionId ? { sessionId: callerSessionId } : {}),
@@ -4940,7 +4946,6 @@ export async function createGateway(
     // grants (gatedServer) all apply; the caller's AGENT.md opt-in decides
     // whether a write/approve tool is offered, and so do the requires.apps
     // grants of the app whose own agent the caller is. Read fresh per request.
-    const exposedCallerDesc = callerSessionId ? sessions.get(callerSessionId) : undefined
     await registerExposedAppTools(server, {
       appRegistry,
       mode: await resolveExposedToolsMode(),
@@ -4948,8 +4953,8 @@ export async function createGateway(
         ? {
             caller: {
               sessionId: callerSessionId,
-              optIn: exposedCallerDesc?.exposedToolOptIn,
-              grants: exposedToolGrantsFor(appRegistry, exposedCallerDesc?.meta),
+              optIn: callerContext?.exposedToolOptIn,
+              grants: exposedToolGrantsFor(appRegistry, callerContext?.meta),
             },
           }
         : {}),
