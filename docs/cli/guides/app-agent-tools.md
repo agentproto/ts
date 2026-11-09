@@ -85,7 +85,11 @@ opening it requires the holder's Telegram account to pass `POST
 /apps/:appId/link-auth` before anything scoped actually works. The link
 token is reusable until its own expiry (a second tap on the button, a
 reload, a silent re-auth all work); each exchange needs fresh Telegram
-`initData` signed for that same user, so the token alone is useless. See
+`initData` signed for that same user, so the token alone is useless.
+`link-auth` also accepts a same-origin browser POST (an `Origin` equal to the
+origin the request was reached at, such as a tunnel hostname): it is gated by
+the link token plus `initData`, not by the `daemon.allowedOrigins` allowlist,
+and any other cross-origin `Origin` is still refused. See
 `packages/runtime/src/app-link-token.ts`, `app-link-auth.ts` and
 `app-link-gate.ts` for the full mechanism, and `AGENTS.md`/this file's note
 above for why it's a UI-call concern only — it never touches an AGENT.md's

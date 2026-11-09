@@ -27,6 +27,7 @@
 
 import type { IncomingMessage } from "node:http"
 import { verifyAppLinkSessionToken, extractAppLinkBearer } from "./app-link-token.js"
+import { resolvePublicBase } from "./public-origins.js"
 
 export interface AppLinkSessionAuth {
   appId: string
@@ -114,4 +115,24 @@ export function appLinkTunnelBypass(req: IncomingMessage, path: string, method: 
     return true
   }
   return false
+}
+
+/** True when the request carries an `Origin` that is the origin it was
+ *  reached at (`resolvePublicBase`: scheme + host + port, host
+ *  case-insensitive). `POST /apps/:appId/link-auth` uses it to skip the
+ *  `daemon.allowedOrigins` refusal for the page the link opened: that route
+ *  is gated by the link token plus Telegram `initData`, not by the origin,
+ *  and a tunnel hostname is not known ahead of time. Absent or cross-origin
+ *  returns false (the caller keeps the normal guard). */
+export function isSameOriginRequest(req: IncomingMessage): boolean {
+  const origin = req.headers.origin
+  if (typeof origin !== "string" || origin.length === 0) return false
+  let parsed: URL
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false
+  return parsed.origin === new URL(resolvePublicBase(req.headers).origin).origin
 }

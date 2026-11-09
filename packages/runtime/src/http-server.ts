@@ -182,7 +182,7 @@ import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
-import { appLinkToolCallAuth, appLinkTunnelBypass, logAppLinkAccess } from "./app-link-gate.js"
+import { appLinkToolCallAuth, appLinkTunnelBypass, isSameOriginRequest, logAppLinkAccess } from "./app-link-gate.js"
 import { authorizeAppLink } from "./app-link-auth.js"
 import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 import { handleA2aTaskRequest, type A2aTaskHttpConfig } from "./a2a-task-http.js"
@@ -5964,9 +5964,11 @@ export async function startHttpServer(
           // but the link yet, so this route can't require the bearer
           // either; it has its own, narrower credential
           // instead (the link token itself, verified inside the handler).
+          // A same-origin browser POST (the page the link opened) skips the
+          // allowlist refusal; any other cross-origin Origin still gets it.
           const linkAuthMatch = path.match(/^\/apps\/(.+)\/link-auth$/)
           if (linkAuthMatch && req.method === "POST") {
-            if (guardBrowserOrigin(req, res)) return
+            if (!isSameOriginRequest(req) && guardBrowserOrigin(req, res)) return
             await handleAppLinkAuth(req, res, decodeURIComponent(linkAuthMatch[1]!), opts.telegramCreds, opts.appLinkKeyPath)
             return
           }
