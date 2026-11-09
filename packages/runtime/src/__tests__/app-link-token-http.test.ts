@@ -98,6 +98,7 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
 
   async function withServer(
     fn: (base: string, registry: ReturnType<typeof createSessionsRegistry>) => Promise<void>,
+    extraOpts: Partial<RuntimeHttpServerOptions> = {},
   ): Promise<void> {
     dir = await mkdtemp(join(tmpdir(), "agentproto-link-token-http-"))
     keyPath = join(dir, "app_link_hmac")
@@ -134,6 +135,7 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
       appToolCallDeps: { dispatchTool: async (_tool, args) => ({ ok: true, args }) },
       telegramCreds: fakeTelegramCreds(FAKE_BOT_TOKEN),
       appLinkKeyPath: keyPath,
+      ...extraOpts,
     }
     const http = await startHttpServer(opts)
     try {
@@ -391,6 +393,102 @@ describe("AIP-53 link-token scoping — HTTP surface", () => {
           body: JSON.stringify({ linkToken, initData }),
         })
         expect(res.status).toBe(401)
+      })
+    })
+
+    describe("browser Origin", () => {
+      const TUNNEL_HOST = "abc-def.trycloudflare.com"
+      const TUNNEL_HEADERS = {
+        ...FORWARDED,
+        "x-forwarded-host": TUNNEL_HOST,
+        "x-forwarded-proto": "https",
+        "content-type": "application/json",
+      }
+
+      async function exchange(
+        base: string,
+        registry: ReturnType<typeof createSessionsRegistry>,
+        headers: Record<string, string>,
+      ): Promise<Response> {
+        const target = spawnSession(registry)
+        const { token: linkToken } = mintAppLinkToken({
+          appId: APP_ID,
+          claims: { sessionId: target.id, telegramUserId: "42" },
+          ttlMs: 60_000,
+          pendingTelegramAuth: true,
+          keyPath,
+        })
+        const initData = signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN)
+        return fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/link-auth`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ linkToken, initData }),
+        })
+      }
+
+      it("accepts a same-origin browser POST (Origin equals the origin the request was reached at) and mints a usable session token", async () => {
+        await withServer(async (base, registry) => {
+          const res = await exchange(base, registry, { ...TUNNEL_HEADERS, origin: `https://${TUNNEL_HOST}` })
+          expect(res.status).toBe(200)
+          const body = (await res.json()) as { ok: boolean; token: string }
+          expect(body.ok).toBe(true)
+          const toolCall = await fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/tool-call`, {
+            method: "POST",
+            headers: { ...FORWARDED, authorization: `Bearer ${body.token}`, "content-type": "application/json" },
+            body: JSON.stringify({ tool: "conversation_read", args: {} }),
+          })
+          expect(toolCall.status).toBe(200)
+        })
+      })
+
+      it("compares the host case-insensitively and ignores a default port", async () => {
+        await withServer(async (base, registry) => {
+          const res = await exchange(base, registry, {
+            ...TUNNEL_HEADERS,
+            origin: `https://${TUNNEL_HOST.toUpperCase()}:443`,
+          })
+          expect(res.status).toBe(200)
+        })
+      })
+
+      it("still refuses a different cross-origin Origin with forbidden_origin", async () => {
+        await withServer(async (base, registry) => {
+          const res = await exchange(base, registry, { ...TUNNEL_HEADERS, origin: "https://evil.example" })
+          expect(res.status).toBe(403)
+          expect(((await res.json()) as { error: string }).error).toBe("forbidden_origin")
+        })
+      })
+
+      it("still refuses an Origin that matches the host but not the scheme", async () => {
+        await withServer(async (base, registry) => {
+          const res = await exchange(base, registry, { ...TUNNEL_HEADERS, origin: `http://${TUNNEL_HOST}` })
+          expect(res.status).toBe(403)
+          expect(((await res.json()) as { error: string }).error).toBe("forbidden_origin")
+        })
+      })
+
+      it("is unchanged without an Origin header", async () => {
+        await withServer(async (base, registry) => {
+          const res = await exchange(base, registry, TUNNEL_HEADERS)
+          expect(res.status).toBe(200)
+        })
+      })
+
+      it("does not extend the exemption to other guarded routes: a same-origin POST to /a2a/apps/:id still gets forbidden_origin", async () => {
+        // strictOrigins drops the localhost defaults, so the loopback origin
+        // this request is reached at is same-origin but not allowlisted.
+        await withServer(
+          async base => {
+            const res = await fetch(`${base}/a2a/apps/${encodeURIComponent(APP_ID)}`, {
+              method: "POST",
+              headers: { origin: base, "content-type": "application/json" },
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tasks/get", params: {} }),
+            })
+            expect(res.status).toBe(403)
+            expect(((await res.json()) as { error: string }).error).toBe("forbidden_origin")
+          },
+          { strictOrigins: true, allowedOrigins: [] },
+        )
       })
     })
   })
