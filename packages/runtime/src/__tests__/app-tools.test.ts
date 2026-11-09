@@ -2948,7 +2948,8 @@ describe("app_tool_call", () => {
       }),
     )
     expect(res).toEqual({ alias: "github", tool: "list_repos", args: { q: "x" } })
-    expect(callImportedTool).toHaveBeenCalledWith("github", "list_repos", { q: "x" })
+    // No `caller` in these deps: no caller session reaches the import.
+    expect(callImportedTool).toHaveBeenCalledWith("github", "list_repos", { q: "x" }, undefined)
   })
 
   it("rejects a tool that is not in the app's ui.tools allowlist", async () => {

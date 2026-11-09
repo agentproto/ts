@@ -61,6 +61,7 @@ import {
   isProviderBoxSession,
   canResume,
   carrySessionPin,
+  APP_AGENT_META_KEY,
   SessionRetiredError,
   type AgentSessionLike,
   type SessionDescriptor,
@@ -1561,6 +1562,8 @@ async function restartAgentSessionOnce(
     const restartMeta: Record<string, string> = {
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
+      // Still the same app's agent: its requires.apps tool grants keep applying.
+      ...(prev.meta?.[APP_AGENT_META_KEY] ? { [APP_AGENT_META_KEY]: prev.meta[APP_AGENT_META_KEY] } : {}),
       // AIP-72 binding: the spawn role and store root the memory tools
       // read, and the native-dir inject path + capture flag, so a restarted
       // lineage keeps its commit gate, its projection and its turn-end capture.

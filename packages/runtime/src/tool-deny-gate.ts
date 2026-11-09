@@ -17,6 +17,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { Grant } from "@agentproto/policy"
 
 import { decide, type Decision } from "./permissions.js"
+import { toolListsAdmit, type ToolLists } from "./tool-subset.js"
 
 export interface ToolDenyRefusal {
   /** The qualified `<server>/<name>` that was refused. */
@@ -48,6 +49,24 @@ export function toolDenyRefusal(
     rule: decision.rule,
     reason: decision.reason,
   }
+}
+
+/**
+ * Why the `/mcp` gateway would refuse `name` for this caller, or undefined when
+ * it admits it: the caller's deny grants ({@link toolDenyRefusal}, what
+ * `withToolDenyGate` applies), then the mount's `?denyTools=` / `?allowTools=`
+ * ({@link toolListsAdmit}, what `withToolExclusion` / `withToolSubset` apply).
+ * For a surface that dispatches a gateway tool without registering it on a
+ * wrapped server, so it refuses exactly what `/mcp` would.
+ */
+export function gatewayToolRefusal(
+  name: string,
+  gate: ToolLists & { readonly denyGrants?: readonly Grant[] | undefined; readonly callerSessionId?: string | undefined },
+): string | undefined {
+  const denied = toolDenyRefusal(gate.denyGrants, name, gate.callerSessionId)
+  if (denied) return `is denied for this session: ${denied.reason}`
+  if (!toolListsAdmit(name, gate)) return `is not available on this mount (denyTools/allowTools filter).`
+  return undefined
 }
 
 /** The typed MCP error a refused built-in call returns. */

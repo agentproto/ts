@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
-import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, CALLER_SESSION_ID_HEADER, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, APP_AGENT_META_KEY, CALLER_SESSION_ID_HEADER, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import {
   CLOUD_SESSION_META_FILE_ENV,
   CloudSpawnError,
@@ -5939,6 +5939,8 @@ async function spawnAgentSessionOnce(
       ...(input.anonymousCaller ? { anonymous: "claude-code" } : {}),
       ...workflowOwnerMeta(input.workflowOwner),
       ...(appBoundary ? boundaryMeta(appBoundary) : {}),
+      // The app whose own agent this is (`app_run`): its requires.apps tool grants apply.
+      ...(input.appId ? { [APP_AGENT_META_KEY]: input.appId } : {}),
       ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
       // The caller's OWN AIP-42 manifest identity (see the capture
       // above). Trusted because the daemon resolved it at spawn; the

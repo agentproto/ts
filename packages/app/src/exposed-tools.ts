@@ -7,7 +7,9 @@
  *   - `parseExposedTools` is structural (shape, prefix, names, collisions) and
  *     runs from `normalizeManifestFields` for both `defineApp` and
  *     `loadAppHandle`. The daemon-tool-name checks (reserved prefix, daemon
- *     ids) only run when the caller passes `daemonToolNames`.
+ *     ids) only run when the caller passes `daemonToolNames`. Its per-entry
+ *     form, `checkExposedTools`, keeps the valid entries and lists the refused
+ *     ones; the daemon gateway uses it so one bad entry never hides the rest.
  *   - `validateExposedToolsAgainstBundle` checks the entries against the app's
  *     own bundled TOOL.md contracts; `defineApp` runs it.
  *
@@ -119,12 +121,40 @@ export function parseExposedResources(raw: unknown, fail: Fail): string[] {
   return [...seen]
 }
 
+/** An `exposes.tools` entry {@link checkExposedTools} refused, with why. */
+export interface RefusedExposedTool {
+  readonly index: number
+  /** The entry's id, or `exposes.tools[<index>]` when it has none. */
+  readonly id: string
+  /** The full refusal message, naming the entry. */
+  readonly reason: string
+}
+
 function parseTools(
   rawTools: unknown,
   rawPrefix: unknown,
   fail: Fail,
   reserved: ExposedToolReservedNames,
 ): { prefix?: string; tools: AppExposedTool[] } {
+  const checked = checkExposedTools(rawTools, rawPrefix, fail, reserved)
+  const first = checked.refused[0]
+  if (first !== undefined) throw fail(first.reason)
+  return { ...(checked.prefix !== undefined ? { prefix: checked.prefix } : {}), tools: checked.tools }
+}
+
+/**
+ * Per-entry validation of `exposes.tools`: every valid entry is kept and every
+ * invalid one is returned in `refused`, so one bad entry never hides its
+ * siblings. A duplicate id or a clashing MCP name refuses the later entry.
+ * Only list-level faults (prefix, not an array) throw through `fail`.
+ * `parseExposedTools` is the strict form: it throws on the first refusal.
+ */
+export function checkExposedTools(
+  rawTools: unknown,
+  rawPrefix: unknown,
+  fail: Fail,
+  reserved: ExposedToolReservedNames = {},
+): { prefix?: string; tools: AppExposedTool[]; refused: RefusedExposedTool[] } {
   const daemonNames = new Set(reserved.daemonToolNames ?? [])
 
   let prefix: string | undefined
@@ -140,74 +170,78 @@ function parseTools(
     prefix = rawPrefix
   }
 
-  if (rawTools === undefined) return { ...(prefix !== undefined ? { prefix } : {}), tools: [] }
+  if (rawTools === undefined) return { ...(prefix !== undefined ? { prefix } : {}), tools: [], refused: [] }
   if (!Array.isArray(rawTools)) throw fail("'exposes.tools' must be an array of { id, access, description, ... }.")
   if (rawTools.length > 0 && prefix === undefined) {
     throw fail("'exposes.prefix' is required when 'exposes.tools' is non-empty.")
   }
 
   const tools: AppExposedTool[] = []
+  const refused: RefusedExposedTool[] = []
   const ids = new Set<string>()
   const names = new Map<string, string>()
   rawTools.forEach((raw, i) => {
     const at = `exposes.tools[${i}]`
-    if (!isRecord(raw)) throw fail(`'${at}' must be an object.`)
+    const entryId = isRecord(raw) && typeof raw.id === "string" && raw.id !== "" ? raw.id : at
+    const refuse = (reason: string): void => {
+      refused.push({ index: i, id: entryId, reason })
+    }
+    if (!isRecord(raw)) return refuse(`'${at}' must be an object.`)
     for (const key of Object.keys(raw)) {
       if (!ENTRY_KEYS.has(key)) {
-        throw fail(`'${at}' has unknown key '${key}'. Allowed: ${[...ENTRY_KEYS].join(", ")}.`)
+        return refuse(`'${at}' has unknown key '${key}'. Allowed: ${[...ENTRY_KEYS].join(", ")}.`)
       }
     }
     const { id, access, description, inputSchema, mcpName, approvalArg } = raw
-    if (typeof id !== "string" || id === "") throw fail(`'${at}.id' must be a non-empty string.`)
+    if (typeof id !== "string" || id === "") return refuse(`'${at}.id' must be a non-empty string.`)
     if (!EXPOSED_TOOL_ACCESS.includes(access as AppExposedToolAccess)) {
-      throw fail(`'${at}' ('${id}'): 'access' must be one of ${EXPOSED_TOOL_ACCESS.join(" | ")}.`)
+      return refuse(`'${at}' ('${id}'): 'access' must be one of ${EXPOSED_TOOL_ACCESS.join(" | ")}.`)
     }
     if (typeof description !== "string" || description.trim() === "") {
-      throw fail(`'${at}' ('${id}'): 'description' is required (written for a model).`)
+      return refuse(`'${at}' ('${id}'): 'description' is required (written for a model).`)
     }
     if (description.length > EXPOSED_TOOL_DESCRIPTION_MAX) {
-      throw fail(`'${at}' ('${id}'): 'description' is ${description.length} chars, max ${EXPOSED_TOOL_DESCRIPTION_MAX}.`)
+      return refuse(`'${at}' ('${id}'): 'description' is ${description.length} chars, max ${EXPOSED_TOOL_DESCRIPTION_MAX}.`)
     }
     if (inputSchema !== undefined && !isRecord(inputSchema)) {
-      throw fail(`'${at}' ('${id}'): 'inputSchema' must be a JSON Schema object.`)
+      return refuse(`'${at}' ('${id}'): 'inputSchema' must be a JSON Schema object.`)
     }
     if (mcpName !== undefined && (typeof mcpName !== "string" || !MCP_NAME_RE.test(mcpName))) {
-      throw fail(`'${at}' ('${id}'): 'mcpName' must match ${MCP_NAME_RE} (no ':', '/', '.').`)
+      return refuse(`'${at}' ('${id}'): 'mcpName' must match ${MCP_NAME_RE} (no ':', '/', '.').`)
     }
     if (approvalArg !== undefined) {
-      if (access !== "approve") throw fail(`'${at}' ('${id}'): 'approvalArg' only applies to access: approve.`)
+      if (access !== "approve") return refuse(`'${at}' ('${id}'): 'approvalArg' only applies to access: approve.`)
       if (typeof approvalArg !== "string" || approvalArg === "") {
-        throw fail(`'${at}' ('${id}'): 'approvalArg' must be a non-empty string.`)
+        return refuse(`'${at}' ('${id}'): 'approvalArg' must be a non-empty string.`)
       }
     }
     if (/^approval/.test(id) || (typeof mcpName === "string" && /^approval/.test(mcpName))) {
-      throw fail(
+      return refuse(
         `'${at}' ('${id}'): an id or mcpName starting with 'approval' is refused: deciding an approval never goes through this registry.`,
       )
     }
     if (daemonNames.has(id)) {
-      throw fail(`'${at}': '${id}' is a daemon tool; it stays reserved to the UI through 'ui.tools'.`)
+      return refuse(`'${at}': '${id}' is a daemon tool; it stays reserved to the UI through 'ui.tools'.`)
     }
-    if (id.startsWith("imported:")) {
-      if (mcpName === undefined) throw fail(`'${at}' ('${id}'): an imported id needs an explicit 'mcpName'.`)
-      if (access !== "read") throw fail(`'${at}' ('${id}'): an imported id can only be exposed as access: read.`)
+    if (id.startsWith("imported:") && mcpName === undefined) {
+      return refuse(`'${at}' ('${id}'): an imported id needs an explicit 'mcpName'.`)
     }
-    if (ids.has(id)) throw fail(`'${at}': duplicate id '${id}'.`)
-    ids.add(id)
+    if (ids.has(id)) return refuse(`'${at}': duplicate id '${id}'.`)
 
     let name: string
     try {
       name = exposedToolName(prefix!, { id, mcpName: mcpName as string | undefined })
     } catch (err) {
-      throw fail(`'${at}': ${err instanceof Error ? err.message : String(err)}`)
+      return refuse(`'${at}': ${err instanceof Error ? err.message : String(err)}`)
     }
     if (name.length > EXPOSED_TOOL_NAME_MAX) {
-      throw fail(`'${at}' ('${id}'): MCP name '${name}' is ${name.length} chars, max ${EXPOSED_TOOL_NAME_MAX}.`)
+      return refuse(`'${at}' ('${id}'): MCP name '${name}' is ${name.length} chars, max ${EXPOSED_TOOL_NAME_MAX}.`)
     }
     const clash = names.get(name)
     if (clash !== undefined) {
-      throw fail(`'${at}': '${id}' and '${clash}' compute the same MCP name '${name}'; set 'mcpName' on one.`)
+      return refuse(`'${at}': '${id}' and '${clash}' compute the same MCP name '${name}'; set 'mcpName' on one.`)
     }
+    ids.add(id)
     names.set(name, id)
 
     tools.push({
@@ -219,7 +253,7 @@ function parseTools(
       ...(approvalArg !== undefined ? { approvalArg } : {}),
     })
   })
-  return { prefix: prefix!, tools }
+  return { ...(prefix !== undefined ? { prefix } : {}), tools, refused }
 }
 
 /**

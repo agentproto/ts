@@ -146,6 +146,7 @@ import {
   WORKSPACE_SLUG_ENV,
   PARENT_SESSION_ID_ENV,
   APP_ID_ENV,
+  APP_AGENT_META_KEY,
   type SessionsRegistry,
 } from "../sessions.js"
 import { cdContractLine } from "../agents-md.js"
@@ -252,6 +253,21 @@ describe("spawnAgentSession", () => {
 
     await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
     expect(startSession.mock.calls[1]?.[0]?.env?.[APP_ID_ENV]).toBeUndefined()
+  })
+
+  it("stamps meta.appAgent from an app_run `appId` only, and a child of that session does not inherit it", async () => {
+    const { deps } = baseDeps()
+    const app = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", appId: "@acme/job-kit" })
+    if (!app.ok) throw new Error("expected spawn")
+    expect(app.descriptor.meta?.[APP_AGENT_META_KEY]).toBe("@acme/job-kit")
+
+    const child = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", parentSessionId: app.descriptor.id })
+    if (!child.ok) throw new Error("expected spawn")
+    expect(child.descriptor.meta?.[APP_AGENT_META_KEY]).toBeUndefined()
+
+    const plain = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    if (!plain.ok) throw new Error("expected spawn")
+    expect(plain.descriptor.meta?.[APP_AGENT_META_KEY]).toBeUndefined()
   })
 
   it("expands a user preset at the shared spawn boundary and records every axis", async () => {

@@ -254,15 +254,13 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
 
 /** Legacy flat array while only bare app ids are declared; object form once
  *  any host requirement (browser/fs/gpu/secrets) OR any per-dependency detail
- *  (a version range / workflow allowlist) is set. Defaults are omitted.
+ *  (a version range / workflow or tool allowlist) is set. Defaults are omitted.
  *  `apps` entries carrying no extra fields emit as bare ids (byte-stable with
  *  pre-object-form APP.md files). */
 function requiresFrontmatter(app: EmitInput): Record<string, unknown> {
   const r = app.requirements
   const apps = appsFrontmatter(app)
-  const hasAppDetail = (app.appRequirements ?? []).some(
-    e => e.version !== undefined || (e.workflows !== undefined && e.workflows.length > 0),
-  )
+  const hasAppDetail = (app.appRequirements ?? []).some(hasRequirementDetail)
   if (r && (r.browser || r.fs || r.gpu || r.secrets.length > 0)) {
     return {
       requires: { browser: r.browser, fs: r.fs, gpu: r.gpu, secrets: r.secrets, apps },
@@ -278,9 +276,12 @@ function appsFrontmatter(app: EmitInput): unknown[] {
   const entries = app.appRequirements ?? app.requires ?? []
   return entries.map(e => {
     if (typeof e === "string") return e
-    if (e.version === undefined && (e.workflows === undefined || e.workflows.length === 0)) return e.id
-    return e
+    return hasRequirementDetail(e) ? e : e.id
   })
+}
+
+function hasRequirementDetail(e: AppRequirement): boolean {
+  return e.version !== undefined || (e.workflows?.length ?? 0) > 0 || (e.tools?.length ?? 0) > 0
 }
 
 function toManifest(handle: object, body: string): string {

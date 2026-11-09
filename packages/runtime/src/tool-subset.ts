@@ -28,6 +28,24 @@ function isAllowedBySubset(subset: ReadonlySet<string>, name: string): boolean {
   return false
 }
 
+/** The per-request `?denyTools=` / `?allowTools=` lists of a `/mcp` mount. */
+export interface ToolLists {
+  readonly denyTools?: ReadonlySet<string> | undefined
+  readonly allowTools?: ReadonlySet<string> | undefined
+}
+
+/**
+ * Whether `name` survives the deny and allow lists: never when denied (deny
+ * wins), otherwise when no allowlist is set or the allowlist names it (a `*`
+ * entry is a prefix). The one rule behind `withToolExclusion` and
+ * `withToolSubset`, also applied by surfaces that dispatch a tool without
+ * registering it (the REST `app_tool_call` twin).
+ */
+export function toolListsAdmit(name: string, lists: ToolLists): boolean {
+  if (lists.denyTools?.has(name)) return false
+  return !lists.allowTools || isAllowedBySubset(lists.allowTools, name)
+}
+
 export function withToolSubset(
   server: McpServer,
   subset: ReadonlySet<string>,
@@ -41,7 +59,7 @@ export function withToolSubset(
       // registration slip the allowlist entirely. Mirrors deferred-tools.ts.
       if (prop === "tool" || prop === "registerTool") {
         return (name: string, ...rest: unknown[]): unknown => {
-          if (!isAllowedBySubset(subset, name)) return undefined
+          if (!toolListsAdmit(name, { allowTools: subset })) return undefined
           return (
             target[prop] as unknown as (n: string, ...r: unknown[]) => unknown
           )(name, ...rest)
@@ -80,7 +98,7 @@ export function withToolExclusion(
       // an executor child.
       if (prop === "tool" || prop === "registerTool") {
         return (name: string, ...rest: unknown[]): unknown => {
-          if (excluded.has(name)) return undefined
+          if (!toolListsAdmit(name, { denyTools: excluded })) return undefined
           return (
             target[prop] as unknown as (n: string, ...r: unknown[]) => unknown
           )(name, ...rest)

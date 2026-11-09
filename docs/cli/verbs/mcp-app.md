@@ -95,9 +95,18 @@ gateway builds its tool list per request). Per-agent policy:
 - No id, `mcpName` or computed name starting with `approval` is ever exposed.
 - A second `app_install` that claims a prefix already held by another appId is
   refused (`exposed-prefix-taken`); reinstalling the same appId is fine.
+- An app can also grant them: `requires.apps[].tools` lists provider MCP names
+  (`bureau_navigate`), and a session the daemon runs from one of that app's own
+  AGENT.md files sees them at the provider's access class, as if its AGENT.md
+  had opted in. Missing or unmet providers are reported as `unmetRequires` by
+  `app_install` and `app_list`.
+- An `imported:` entry may be `read`, `write` or `approve`; the caller's session
+  reaches the imported server.
 - Kill-switch `defaults.apps.exposedTools`: `read` (default), `off` (nothing),
   `all` (every declared tool for every caller). The `/apps/:appId/tool-call`
-  route honors it too, so `mcp-app --access read,write` needs `all`.
+  route honors it too, and a `write` or `approve` tool there also needs a
+  caller session (`mcp-app` forwards `$AGENTPROTO_SESSION_ID`) with an opt-in,
+  a grant or mode `all`.
 - In deferred-tools mode these tools are lazy like every non-core tool: they
   appear through `tool_search`.
 

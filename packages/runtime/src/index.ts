@@ -194,7 +194,7 @@ import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { resolveNoCallerIdentity } from "./mcp-config.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
-import { resolveExposedToolsMode } from "./exposed-tools-policy.js"
+import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import type { AnonymousMessageApprovalDetail } from "./message-tools.js"
 import { resolveTaskDefaults } from "./task-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
@@ -4933,12 +4933,22 @@ export async function createGateway(
     // Installed apps' `exposes.tools` as `<prefix>_<name>`. Registered through
     // the wrapped `server`, so ?denyTools / ?allowTools / the caller's deny
     // grants (gatedServer) all apply; the caller's AGENT.md opt-in decides
-    // whether a write/approve tool is offered. Read fresh per request.
+    // whether a write/approve tool is offered, and so do the requires.apps
+    // grants of the app whose own agent the caller is. Read fresh per request.
+    const exposedCallerDesc = callerSessionId ? sessions.get(callerSessionId) : undefined
     await registerExposedAppTools(server, {
       appRegistry,
       mode: await resolveExposedToolsMode(),
-      optIn: callerSessionId ? sessions.get(callerSessionId)?.exposedToolOptIn : undefined,
-      callImportedTool: (alias, tool, args) => callImportedAppTool(alias, tool, args, callerSessionId),
+      ...(callerSessionId
+        ? {
+            caller: {
+              sessionId: callerSessionId,
+              optIn: exposedCallerDesc?.exposedToolOptIn,
+              grants: exposedToolGrantsFor(appRegistry, exposedCallerDesc?.meta),
+            },
+          }
+        : {}),
+      callImportedTool: callImportedAppTool,
       // Cached by the import registry: a re-list only on first connect or an expired TTL.
       listImportedTools: async alias => {
         const out = await mcpProxy.listTools(alias)

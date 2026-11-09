@@ -24,7 +24,7 @@ import "./sentinel-platform.js"
 
 import { buildLabeledStatsReport } from "./process-stats.js"
 import { loadConfig } from "./config.js"
-import { resolveExposedToolsMode } from "./exposed-tools-policy.js"
+import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
@@ -5916,6 +5916,12 @@ export async function startHttpServer(
               if (guardBrowserOrigin(req, res)) return
               if (!authorize(req, res)) return
             }
+            // The calling session (same trust rules as the /mcp gateway): it
+            // reaches an imported tool, its AGENT.md opt-in and app grants
+            // decide whether a write/approve exposed tool may run, and its
+            // deny grants refuse one like the gateway does.
+            const toolCallerId = linkAuth ? undefined : resolveCallerSessionId(req)
+            const toolCallerDesc = toolCallerId ? opts.sessions?.get(toolCallerId) : undefined
             await handleAppUiToolCall(
               req,
               res,
@@ -5929,6 +5935,21 @@ export async function startHttpServer(
                   ? { findPendingPermission: (id: string) => opts.sessions?.listPendingPermissions().find(p => p.id === id) }
                   : {}),
                 ...opts.appToolCallDeps,
+                ...(toolCallerId
+                  ? {
+                      caller: {
+                        sessionId: toolCallerId,
+                        optIn: toolCallerDesc?.exposedToolOptIn,
+                        grants: exposedToolGrantsFor(opts.appRegistry, toolCallerDesc?.meta),
+                        denyGrants: toolCallerDesc?.toolDenyGrants,
+                      },
+                    }
+                  : {}),
+                // Same `?denyTools=` / `?allowTools=` wire contract as `/mcp`.
+                toolLists: {
+                  denyTools: parseToolListQuery(req.url ?? "", "denyTools"),
+                  allowTools: parseToolListQuery(req.url ?? "", "allowTools"),
+                },
               },
               linkAuth
                 ? { sessionId: linkAuth.sessionId, ...(linkAuth.telegramUserId ? { telegramUserId: linkAuth.telegramUserId } : {}) }

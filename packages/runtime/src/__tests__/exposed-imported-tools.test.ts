@@ -17,6 +17,7 @@ import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
 import { createAppRegistry, type AppRegistry, type InstalledApp } from "../app-registry.js"
 import { registerExposedAppTools, type RegisterExposedAppToolsOptions } from "../app-exposed-tools.js"
 import { performExposedToolCall } from "../app-tools.js"
+import { exposedToolGrantKey } from "../exposed-tools-policy.js"
 
 const SCREENSHOT_URI = "ui://bureau/screenshot"
 const RECORDING_URI = "ui://bureau/recording"
@@ -64,8 +65,9 @@ afterEach(async () => {
 })
 
 function fakeImport() {
-  const callImportedTool = vi.fn(async (_alias: string, _tool: string, _args: Record<string, unknown>) =>
-    structuredClone(IMPORTED_RESULT),
+  const callImportedTool = vi.fn(
+    async (_alias: string, _tool: string, _args: Record<string, unknown>, _callerSessionId?: string) =>
+      structuredClone(IMPORTED_RESULT),
   )
   const listImportedTools = vi.fn(async (alias: string) =>
     alias === "bureau"
@@ -145,11 +147,12 @@ describe("an imported exposed tool on the /mcp gateway", () => {
       },
       fake,
     )
-    expect(fake.callImportedTool).toHaveBeenCalledWith("bureau", "browser_screenshot", { instance: "main" })
+    // No caller session given: none reaches the import.
+    expect(fake.callImportedTool).toHaveBeenCalledWith("bureau", "browser_screenshot", { instance: "main" }, undefined)
 
     const client = await connect(fake)
     await client.callTool({ name: "bureau_screenshot", arguments: { instance: "b", path: "/tmp/out.png" } })
-    expect(fake.callImportedTool).toHaveBeenLastCalledWith("bureau", "browser_screenshot", { instance: "b" })
+    expect(fake.callImportedTool).toHaveBeenLastCalledWith("bureau", "browser_screenshot", { instance: "b" }, undefined)
   })
 
   it("relays nothing when defaults.apps.exposedTools is off", async () => {
@@ -158,5 +161,64 @@ describe("an imported exposed tool on the /mcp gateway", () => {
     await expect(client.readResource({ uri: SCREENSHOT_URI })).rejects.toThrow()
     expect(fake.readImportedResource).not.toHaveBeenCalled()
     expect(fake.listImportedTools).not.toHaveBeenCalled()
+  })
+})
+
+describe("an imported exposed tool at access: write", () => {
+  beforeEach(() => {
+    const app = registry.getApp("@t/bureau")!
+    registry.upsertApp({
+      ...app,
+      exposes: {
+        ...app.exposes!,
+        tools: [
+          ...(app.exposes!.tools ?? []),
+          {
+            id: "imported:bureau/browser_navigate",
+            access: "write",
+            description: "Open a URL in a browser tab the caller owns.",
+            mcpName: "navigate",
+            inputSchema: { type: "object", properties: { url: { type: "string" }, tabId: { type: "string" } } },
+          },
+        ],
+      },
+    } as unknown as InstalledApp)
+  })
+
+  // A server with no tool at all answers tools/list with "method not found": nothing listed.
+  const names = async (opts: Partial<RegisterExposedAppToolsOptions>) =>
+    (await connect({ ...fakeImport(), ...opts }))
+      .listTools()
+      .then(r => r.tools.map(t => t.name), () => [] as string[])
+
+  it("is hidden in mode read, visible in mode all, to an opted-in caller and to a caller its app grants", async () => {
+    expect(await names({})).not.toContain("bureau_navigate")
+    expect(await names({ caller: { sessionId: "s1", optIn: ["bureau_screenshot"] } })).not.toContain("bureau_navigate")
+    expect(await names({ mode: "all" })).toContain("bureau_navigate")
+    expect(await names({ caller: { sessionId: "s1", optIn: ["bureau_navigate"] } })).toContain("bureau_navigate")
+    expect(
+      await names({ caller: { sessionId: "s1", grants: new Set([exposedToolGrantKey("@t/bureau", "bureau_navigate")]) } }),
+    ).toContain("bureau_navigate")
+    // A grant names the provider app too: the same name under another app grants nothing.
+    expect(
+      await names({ caller: { sessionId: "s1", grants: new Set([exposedToolGrantKey("@t/other", "bureau_navigate")]) } }),
+    ).not.toContain("bureau_navigate")
+    expect(await names({ mode: "off", caller: { sessionId: "s1", optIn: ["bureau_navigate"] } })).not.toContain(
+      "bureau_navigate",
+    )
+  })
+
+  it("forwards only the declared inputSchema args, plus the caller session, to the import", async () => {
+    const fake = fakeImport()
+    const client = await connect({ ...fake, caller: { sessionId: "sess-42", optIn: ["bureau_navigate"] } })
+    const tool = (await client.listTools()).tools.find(t => t.name === "bureau_navigate")
+    expect(tool?.annotations).toEqual({ destructiveHint: true })
+    await client.callTool({ name: "bureau_navigate", arguments: { url: "https://example.com", tabId: "t1", path: "/x" } })
+    expect(fake.callImportedTool).toHaveBeenLastCalledWith(
+      "bureau",
+      "browser_navigate",
+      { url: "https://example.com", tabId: "t1" },
+      "sess-42",
+    )
   })
 })

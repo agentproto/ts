@@ -20,9 +20,9 @@ import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performExposedToolCall, type AppToolCallDeps } from "./app-tools.js"
 import {
-  exposedAccessAllowed,
-  exposedOptInMatches,
+  exposedToolVisible,
   planExposedTools,
+  type ExposedToolCaller,
   type ExposedToolsMode,
 } from "./exposed-tools-policy.js"
 
@@ -53,8 +53,10 @@ export interface ImportedToolMeta {
 export interface RegisterExposedAppToolsOptions {
   readonly appRegistry: AppRegistry
   readonly mode: ExposedToolsMode
-  /** The caller session's `exposedToolOptIn`. Empty/absent for a host call. */
-  readonly optIn?: readonly string[] | undefined
+  /** The caller session, its AGENT.md `exposedToolOptIn` and its app's
+   *  `requires.apps` grants. Absent for a host call. The session id also
+   *  reaches an imported tool (e.g. Bureau's tab ownership). */
+  readonly caller?: ExposedToolCaller | undefined
   readonly callImportedTool?: AppToolCallDeps["callImportedTool"]
   /** An import's tool list, from the registry's cache when it holds one;
    *  undefined when the import is unknown or unreachable. */
@@ -104,8 +106,7 @@ export async function registerExposedAppTools(
   const registered: string[] = []
   for (const planned of tools) {
     const { entry, name, appId } = planned
-    const visible = exposedAccessAllowed(opts.mode, entry.access) || exposedOptInMatches(opts.optIn, name)
-    if (!visible) continue
+    if (!exposedToolVisible(opts.mode, planned, opts.caller)) continue
     const shape = shapeFromInputs(planned.inputs)
     const meta = await importedUiMeta(entry.id)
     try {
@@ -125,7 +126,10 @@ export async function registerExposedAppTools(
               id: entry.id,
               args: shape ? input : ((input.args as Record<string, unknown> | undefined) ?? {}),
             },
-            { ...(opts.callImportedTool ? { callImportedTool: opts.callImportedTool } : {}) },
+            {
+              ...(opts.callImportedTool ? { callImportedTool: opts.callImportedTool } : {}),
+              ...(opts.caller ? { caller: opts.caller } : {}),
+            },
           ),
       )
       registered.push(name)
