@@ -68,7 +68,11 @@ import {
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
-import { createSessionScreencastReader, serveSessionScreencast } from "./session-screencast.js"
+import {
+  createSessionScreencastReader,
+  serveSessionScreencast,
+  type SessionScreencastReader,
+} from "./session-screencast.js"
 import { classifyAttestation, createAttestationLogGate } from "./claude-session-attest-log.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -1599,6 +1603,11 @@ export interface RuntimeHttpServerOptions {
    *  index.ts hands `registerAppTools`; omitted ⇒ tool-call dispatch reports
    *  "not enabled", the UI route still serves. */
   appToolCallDeps?: AppToolCallDeps
+  /** The daemon's single screencast reader, shared with the
+   *  `session_screencast_frame` tool so both draw on one frame cache and one
+   *  capture cap. Omitted → the server builds its own from
+   *  `appToolCallDeps.callImportedTool`. */
+  sessionScreencast?: SessionScreencastReader
   /** Optional — backs `POST /apps/:appId/link-auth` (AIP-53 link-token
    *  scoping, app-link-auth.ts): the Telegram bot credential store a
    *  link's `initData` is verified against. Omitted ⇒ the route reports
@@ -2114,9 +2123,11 @@ export async function startHttpServer(
 
   // Bureau-backed `.jpg` for a session id that is not a chrome-live browser
   // descriptor (one cache per server, see session-screencast.ts).
-  const sessionScreencast = createSessionScreencastReader({
-    callImportedTool: opts.appToolCallDeps?.callImportedTool,
-  })
+  const sessionScreencast =
+    opts.sessionScreencast ??
+    createSessionScreencastReader({
+      callImportedTool: opts.appToolCallDeps?.callImportedTool,
+    })
 
   /**
    * Returns true when this `path` + `method` is a mutating /sessions/*

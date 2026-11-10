@@ -231,6 +231,7 @@ coding-CLI orchestration:
 | `file_read` / `file_write` / `file_list` | Workspace filesystem |
 | `browser_navigate` / `browser_extract_text` / `browser_scroll` / … | Browser page tools, forwarded to the Bureau MCP |
 | `session_usage` | Per-session cost + token usage, live |
+| `session_screencast_frame` | One session's own open browser tab as an image (read-only; a caller session may only ask for its own id) |
 | `list_sandbox_providers` | List configured sandbox providers (e.g. e2b) |
 | `setup_sandbox_provider` | Configure a sandbox provider's credentials |
 | `sandbox_exec` | Run one command in a sandbox box (ephemeral, or an existing `sandboxId`) and get back exit code + stdout/stderr |

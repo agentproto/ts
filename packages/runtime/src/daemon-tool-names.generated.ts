@@ -273,6 +273,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "session_restart",
   "session_role_refresh",
   "session_role_watch",
+  "session_screencast_frame",
   "session_search",
   "session_set_keepalive",
   "session_set_pinned",

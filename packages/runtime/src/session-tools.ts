@@ -36,6 +36,7 @@ import {
   stripAnsi,
 } from "./agent-tools.js"
 import { effectiveCallerSessionId } from "./session-owner.js"
+import { SESSION_SCREENCAST_NO_FRAME_MESSAGE, type SessionScreencastReader } from "./session-screencast.js"
 import { checkDrive } from "./drive-gate.js"
 import { registerLineageTools } from "./lineage-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
@@ -735,6 +736,10 @@ export interface RegisterSessionToolsOptions {
    *  this `/mcp` request, used as the implicit auto-parent for attach-by-
    *  default. See `RegisterAgentToolsOptions.callerSessionId`. */
   callerSessionId?: string
+  /** The daemon's single screencast reader (the one behind `GET
+   *  /sessions/:id/screencast.jpg`), backing `session_screencast_frame`.
+   *  Omitted → the tool answers its normal miss message. */
+  sessionScreencast?: SessionScreencastReader
   /** Forwarded to `registerAgentTools`: the session a valid session token on
    *  this `/mcp` request was minted for. See
    *  `RegisterAgentToolsOptions.credentialSessionId`. */
@@ -2182,6 +2187,68 @@ export function registerSessionTools(
         content: [
           { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }) },
         ],
+      }
+    },
+  )
+
+  // ── session_screencast_frame ────────────────────────────────────
+  // Read-only, risk level 0, idempotent: never starts a recording. The reader
+  // is the daemon's single instance (shared with the HTTP route) so the frame
+  // cache and the 2-capture cap are not split. Not in any agent-scoped
+  // profile; a caller session (`callerSessionId`, or a scoped orchestrator's
+  // owner) may only read its own tab.
+  server.registerTool(
+    "session_screencast_frame",
+    {
+      description:
+        "Return the current frame of one session's own open browser tab as a single " +
+        "MCP image (JPEG), the same frame `GET /sessions/:id/screencast.jpg` serves. " +
+        "Read-only: it never starts a recording. When the session has no open tab " +
+        "(or the browser cannot be reached) the result is an error with one fixed " +
+        "message that does not say which. Frames are cached ~800 ms, so poll no " +
+        "faster than about every 1.5 s. An agent session may only ask for its own " +
+        "`sessionId`.",
+      inputSchema: {
+        sessionId: z.string().min(1).describe("The session whose browser tab to capture."),
+      },
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ sessionId }) => {
+      const miss = {
+        content: [{ type: "text" as const, text: SESSION_SCREENCAST_NO_FRAME_MESSAGE }],
+        isError: true,
+      }
+      const caller = effectiveCallerSessionId(callerScope, callerSessionId)
+      if (caller !== undefined && caller !== sessionId) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "session_screencast_frame: a session can only read its own browser tab.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const outcome = await opts.sessionScreencast?.read(sessionId)
+        if (!outcome?.ok) return miss
+        return {
+          content: [
+            {
+              type: "image" as const,
+              data: outcome.bytes.toString("base64"),
+              mimeType: outcome.mimeType,
+            },
+          ],
+        }
+      } catch {
+        return miss
       }
     },
   )

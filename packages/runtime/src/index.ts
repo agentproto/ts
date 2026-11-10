@@ -321,6 +321,7 @@ export {
   type ToolProfileName,
 } from "./tool-profiles.js"
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
+import { createSessionScreencastReader } from "./session-screencast.js"
 import { withToolDenyGate } from "./tool-deny-gate.js"
 import { boundaryFromMeta, boundaryRestartOptions } from "./app-boundary.js"
 import { createAppReadGrantResolver } from "./app-read-grants.js"
@@ -3937,6 +3938,12 @@ export async function createGateway(
     return out.result
   }
 
+  // THE screencast reader of this daemon: the HTTP route
+  // (`/sessions/:id/screencast.jpg`) and the `session_screencast_frame` tool
+  // both read through it, so the 800 ms frame cache and the 2-capture cap are
+  // shared rather than doubled.
+  const sessionScreencast = createSessionScreencastReader({ callImportedTool: callImportedAppTool })
+
   // Transmitter binding store — single shared instance mapping an
   // agentpush (alias, source, contactRef) triple to the agentproto
   // session its replies should route into. Shared by the inbound
@@ -4542,6 +4549,7 @@ export async function createGateway(
       mcpObservations,
       workspace,
       mcpProxy,
+      sessionScreencast,
       // `session_restart` re-arms the cron jobs that targeted the restarted
       // session (the restart continues the conversation under a NEW id).
       cronScheduler,
@@ -5338,6 +5346,7 @@ export async function createGateway(
     // /apps/:appId/tool-call twin must run the exact chain the MCP
     // app_tool_call verb runs.
     appToolCallDeps: { dispatchTool, callImportedTool: callImportedAppTool },
+    sessionScreencast,
     // AIP-53 link-token scoping: backs `POST /apps/:appId/link-auth`
     // (app-link-auth.ts) — the same store `telegram_bot_token_set`/
     // `registerTelegramBotTools` above read/write.
