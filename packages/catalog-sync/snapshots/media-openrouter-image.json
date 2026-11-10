@@ -775,15 +775,15 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1303,
-            "win_rate": 61.3,
+            "elo": 1302,
+            "win_rate": 61.1,
             "rank": 2
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1227,
-            "win_rate": 52.2,
+            "elo": 1225,
+            "win_rate": 51.9,
             "rank": 4
           },
           {
@@ -848,22 +848,22 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1307,
-            "win_rate": 61.3,
+            "elo": 1308,
+            "win_rate": 61.4,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "image",
             "elo": 1290,
-            "win_rate": 60.4,
+            "win_rate": 60.3,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1240,
-            "win_rate": 57.6,
+            "elo": 1238,
+            "win_rate": 57.2,
             "rank": 2
           },
           {
@@ -1980,8 +1980,8 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1352,
-            "win_rate": 70.4,
+            "elo": 1349,
+            "win_rate": 69.6,
             "rank": 1
           },
           {
@@ -1994,8 +1994,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1293,
-            "win_rate": 64.7,
+            "elo": 1290,
+            "win_rate": 63.5,
             "rank": 1
           }
         ]
@@ -2134,15 +2134,15 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1214,
-            "win_rate": 54.3,
+            "elo": 1215,
+            "win_rate": 54.4,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1207,
-            "win_rate": 53.4,
+            "elo": 1205,
+            "win_rate": 53.2,
             "rank": 5
           },
           {
@@ -3033,8 +3033,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1035,
-            "win_rate": 38.8,
+            "elo": 1034,
+            "win_rate": 38.7,
             "rank": 8
           }
         ]
@@ -3205,7 +3205,7 @@
             "arena": "models",
             "category": "image",
             "elo": 1182,
-            "win_rate": 54.9,
+            "win_rate": 54.8,
             "rank": 7
           },
           {
@@ -3278,8 +3278,8 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1178,
-            "win_rate": 49.1,
+            "elo": 1177,
+            "win_rate": 49,
             "rank": 8
           },
           {
@@ -3293,7 +3293,7 @@
             "arena": "models",
             "category": "imageediting",
             "elo": 1114,
-            "win_rate": 46.8,
+            "win_rate": 46.7,
             "rank": 6
           }
         ]
@@ -3788,7 +3788,7 @@
       },
       "top_provider": {
         "context_length": null,
-        "max_completion_tokens": 65536,
+        "max_completion_tokens": 64000,
         "is_moderated": false
       },
       "per_request_limits": null,
@@ -3862,7 +3862,7 @@
       },
       "top_provider": {
         "context_length": null,
-        "max_completion_tokens": 65536,
+        "max_completion_tokens": 64000,
         "is_moderated": false
       },
       "per_request_limits": null,

@@ -81,16 +81,16 @@ export const FIRST_PARTY_CATALOG_ENTRIES: readonly AppCatalogEntry[] = [
   {
     "appId": "@agentproto/app-store",
     "name": "App Store",
-    "description": "Browse, install and update agentproto apps. Projects the daemon's catalog and installed app registry into one storefront (featured shelf, category filters, detail pages, install drawer, update badges) and dispatches the existing app_catalog / app_list / app_updates / app_install / app_resync / app_uninstall / app_status / app_run / app_ui_app verbs. Installs keep the existing preview-then-confirm step (source URL, pinned digest or commit, and whether a build command runs) before any write.",
+    "description": "Browse, install and update agentproto apps. Projects the daemon's catalog and installed app registry into one storefront (featured shelf, category filters, detail pages, install drawer, update badges) and dispatches the existing app_catalog / app_list / app_updates / app_install / app_resync / app_uninstall / app_ui_app verbs and its own app_store.scaffold tool. Installs keep the existing preview-then-confirm step (source URL, pinned digest or commit, and whether a build command runs) before any write.",
     "source": {
       "kind": "agentapp",
-      "url": "https://github.com/agentproto/apps/releases/download/app-store%400.3.1/app-store-0.3.1.agentapp",
-      "sha256": "c28cc9e2980758a98966b6a42a1f28effcc12f93669c1cd42050239df068518a",
-      "version": "0.3.1",
-      "size": 46051
+      "url": "https://github.com/agentproto/apps/releases/download/app-store%400.3.2/app-store-0.3.2.agentapp",
+      "sha256": "da6946b8a967f10ff1270acd47f64c00dcdd64b593eac8bb16f9b15d8a02d5b6",
+      "version": "0.3.2",
+      "size": 44825
     },
-    "icon": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentproto/app-store/0.3.1/icon.svg",
-    "version": "0.3.1",
+    "icon": "https://raw.githubusercontent.com/agentproto/apps/main/media/@agentproto/app-store/0.3.2/icon.svg",
+    "version": "0.3.2",
     "tier": "bundle",
     "publisher": "agentproto",
     "publisherUrl": "https://agentproto.sh",

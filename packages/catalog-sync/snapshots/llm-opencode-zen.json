@@ -89,6 +89,21 @@
           "cache_write": 12.5
         }
       },
+      "claude-fable-5-2": {
+        "id": "claude-fable-5-2",
+        "name": "Claude Fable 5.2",
+        "family": "claude-fable",
+        "release_date": "2026-11-09",
+        "provider": {
+          "npm": "@ai-sdk/anthropic"
+        },
+        "cost": {
+          "input": 8,
+          "output": 40,
+          "cache_read": 0.2,
+          "cache_write": 10
+        }
+      },
       "claude-haiku-4-5": {
         "id": "claude-haiku-4-5",
         "name": "Claude Haiku 4.5",
@@ -297,7 +312,7 @@
         "cost": {
           "input": 2,
           "output": 10,
-          "cache_read": 0.2,
+          "cache_read": 0.1,
           "cache_write": 2.5
         }
       },
@@ -305,6 +320,10 @@
         "id": "crouton-alpha-free",
         "name": "Crouton Alpha Free",
         "release_date": "2026-11-03",
+        "status": "deprecated",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
         "cost": {
           "input": 0,
           "output": 0,
@@ -491,9 +510,9 @@
           "npm": "@ai-sdk/google"
         },
         "cost": {
-          "input": 1.5,
-          "output": 7.5,
-          "cache_read": 0.15
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075
         }
       },
       "gemini-3.7-flash": {
@@ -505,9 +524,9 @@
           "npm": "@ai-sdk/google"
         },
         "cost": {
-          "input": 1.5,
-          "output": 7.5,
-          "cache_read": 0.15
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075
         }
       },
       "gemini-3.8-flash": {
@@ -519,9 +538,9 @@
           "npm": "@ai-sdk/google"
         },
         "cost": {
-          "input": 1.5,
-          "output": 7.5,
-          "cache_read": 0.15
+          "input": 0.75,
+          "output": 3.75,
+          "cache_read": 0.075
         }
       },
       "gemini-4-argon": {
@@ -1088,6 +1107,28 @@
           "cache_read": 0
         }
       },
+      "iceman-free": {
+        "id": "iceman-free",
+        "name": "Iceman Free",
+        "release_date": "2026-11-06",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
+      "inkling-2-small-free": {
+        "id": "inkling-2-small-free",
+        "name": "Inkling 2 Small Free",
+        "family": "ling",
+        "release_date": "2026-11-05",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0,
+          "cache_write": 0
+        }
+      },
       "kimi-k2": {
         "id": "kimi-k2",
         "name": "Kimi K2",
@@ -1262,6 +1303,17 @@
           "cache_read": 0
         }
       },
+      "longcat-2.5-free": {
+        "id": "longcat-2.5-free",
+        "name": "LongCat 2.5 Free",
+        "family": "longcat",
+        "release_date": "2026-11-02",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "longcat-2.5-preview-free": {
         "id": "longcat-2.5-preview-free",
         "name": "LongCat 2.5 Preview Free",
@@ -1428,7 +1480,6 @@
         "name": "MiniMax M3.1 Flash Free",
         "family": "minimax",
         "release_date": "2026-10-19",
-        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
@@ -1447,6 +1498,21 @@
           "input": 0.68,
           "output": 2.09,
           "cache_read": 0.07
+        }
+      },
+      "muse-ember-1.0": {
+        "id": "muse-ember-1.0",
+        "name": "Muse Ember 1.0",
+        "family": "muse",
+        "release_date": "2026-11-09",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.004,
+          "cache_write": 0
         }
       },
       "muse-spark-1.2": {
@@ -1582,6 +1648,7 @@
         "id": "pulse-alpha-free",
         "name": "Pulse Alpha Free",
         "release_date": "2026-11-02",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
