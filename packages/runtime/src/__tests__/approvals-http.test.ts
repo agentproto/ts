@@ -95,6 +95,25 @@ describe("Approvals HTTP: request / list / get / consume", () => {
     })
   })
 
+  it("POST /approvals keeps a wake target and drops a malformed one", async () => {
+    await withServer([], async (base, engine) => {
+      const post = async (wake: unknown): Promise<string> => {
+        const res = await fetch(`${base}/approvals`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "send", title: "Send", preview: {}, payload: { x: 1 }, wake }),
+        })
+        return ((await res.json()) as { id: string }).id
+      }
+      expect(engine.get(await post({ sessionId: "sess_a", agent: " emploi " }))?.wake).toEqual({
+        sessionId: "sess_a",
+        agent: "emploi",
+      })
+      expect(engine.get(await post({ sessionId: 7 }))?.wake).toBeUndefined()
+      expect(engine.get(await post("sess_a"))?.wake).toBeUndefined()
+    })
+  })
+
   it("GET /approvals/:id 404s on an unknown id", async () => {
     await withServer([], async base => {
       const res = await fetch(`${base}/approvals/apr_ghost`)

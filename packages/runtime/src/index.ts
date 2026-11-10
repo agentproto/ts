@@ -336,6 +336,7 @@ import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
 import { registerApprovalTools } from "./approvals/tools.js"
 import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
+import { wireApprovalWake } from "./approvals/wake.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
 import { createSessionTurnObserver } from "./cron-turn-observer.js"
@@ -3805,6 +3806,7 @@ export async function createGateway(
   // crashed child's live parent, without ever interrupting a busy one. See
   // supervisor-notify.ts's header doc for the full contract.
   wireSupervisorNotify({ registry: sessions, sessionEvents })
+  wireApprovalWake({ registry: sessions, sessionEvents, getApproval: id => approvalsEngine.get(id) })
   // `mcp:degraded`: a session that ended a turn without its harness ever
   // loading (or while it failed to load) the daemon's own `/mcp` tools.
   wireMcpDegradedWarnings({

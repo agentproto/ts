@@ -76,6 +76,10 @@ export function registerApprovalTools(server: McpServer, opts: RegisterApprovalT
       taskId: z.string().optional().describe("Optional link to a task (informational in this lane)."),
       appId: z.string().optional().describe("Optional owning app id."),
       expiresAt: z.iso.datetime().optional().describe("Optional ISO timestamp after which a pending request auto-expires."),
+      wake: z
+        .boolean()
+        .optional()
+        .describe("When true, the daemon re-prompts YOUR session as soon as a human decides, instead of you polling."),
     },
     async input => {
       if (!engine) return notAvailable
@@ -89,6 +93,7 @@ export function registerApprovalTools(server: McpServer, opts: RegisterApprovalT
             ...(input.taskId !== undefined ? { taskId: input.taskId } : {}),
             ...(input.appId !== undefined ? { appId: input.appId } : {}),
             ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+            ...(input.wake && callerSessionId ? { wake: { sessionId: callerSessionId } } : {}),
           },
           requester(),
         )
