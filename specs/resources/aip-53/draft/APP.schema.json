@@ -555,6 +555,56 @@
     }
   },
   "$defs": {
+    "appRequirement": {
+      "description": "One `requires.apps` entry: a bare provider app id (a dependency only) or an object. Rules JSON Schema cannot express (every `workflows` id in the provider's `exposes.workflows` when called, every `tools` name computed by one of the provider's `exposes.tools` entries) are enforced by the host against the installed provider.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The provider app id, as it appears in the provider's APP.md `id`."
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^(?:[\\^~]\\d+(?:\\.\\d+(?:\\.\\d+)?)?|\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?)$",
+              "description": "Range the provider's installed version must satisfy: an exact version (`1.2.3`), a caret (`^1`, `^1.2`, `^1.2.3`) or a tilde (`~1`, `~1.2`, `~1.2.3`). Omitted means any version."
+            },
+            "workflows": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "uniqueItems": true,
+              "description": "Provider workflows this app may call with `app_call`: ids from the provider's `exposes.workflows`. Omitted or empty means no call is allowed."
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9]{1,15}_[a-zA-Z0-9-](?:[a-zA-Z0-9_-]*[a-zA-Z0-9-])?$"
+              },
+              "uniqueItems": true,
+              "description": "Provider tools granted to this app's own agents: the MCP names the provider's `exposes.tools` entries compute (`<prefix>_<name>`, for example `bureau_navigate`). Each is granted at the access class the provider declares, as if every AGENT.md of this app had opted in to it by name. Omitted or empty means nothing is granted."
+            }
+          }
+        }
+      ]
+    },
     "exposedTool": {
       "type": "object",
       "required": [
