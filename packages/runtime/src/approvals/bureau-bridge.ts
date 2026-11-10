@@ -447,6 +447,10 @@ export function createBureauApprovalBridge(opts: BureauApprovalBridgeOptions): B
               kind: BUREAU_APPROVAL_KIND,
               title: `${details.recipe} · ${details.tool}`,
               preview: {
+                summary: `Write recipe ${details.recipe} v${details.version} through ${details.tool}`,
+                ...(details.preview.length > 0
+                  ? { sections: [{ title: "What will change", text: details.preview }] }
+                  : {}),
                 recipe: details.recipe,
                 version: details.version,
                 tool: details.tool,

@@ -349,6 +349,8 @@ describe("Bureau approval bridge", () => {
     expect(record?.requestedBy).toEqual({ sessionId: h.sessionId })
     expect(record?.expiresAt).toBe(EXPIRES_AT)
     expect(record?.preview).toEqual({
+      summary: "Write recipe linkedin v1.0.1 through linkedin_react",
+      sections: [{ title: "What will change", text: "React to a post" }],
       recipe: "linkedin",
       version: "1.0.1",
       tool: "linkedin_react",
@@ -356,6 +358,16 @@ describe("Bureau approval bridge", () => {
       inputSha256: INPUT_SHA,
     })
     expect(requestId).toMatch(/^req_/)
+  })
+
+  it("keeps the payload and its hash as they were: the readable preview is not part of them", async () => {
+    const h = await setup()
+    const { approvalId, requestId } = await requestBureauApproval(h)
+    expect(h.gateway.approvals.getPayload(approvalId)).toEqual({
+      importAlias: IMPORT_ALIAS,
+      requestId,
+      inputSha256: INPUT_SHA,
+    })
   })
 
   it("approve decides through the engine and relays approved to W2 without a sub-session header", async () => {
@@ -648,6 +660,19 @@ describe("Bureau approval bridge robustness", () => {
 
   const decide = (engine: ReturnType<typeof createApprovalsEngine>, id: string, d: "approve" | "deny" = "approve") =>
     engine.decideWeb(id, d, { ipAddress: "127.0.0.1", userAgent: "vitest" })
+
+  it("adds the summary but no section when Bureau sends an empty preview string", async () => {
+    const home = tmpHome()
+    const { engine, bus } = newEngine(home)
+    const bridge = createBureauApprovalBridge({ engine, sessionEvents: bus, resolveImport, log: () => {} })
+    cleanups.push(() => bridge.dispose())
+    const { approvalId } = await requestApproval(bridge, "req_empty", { preview: "" })
+    const preview = engine.get(approvalId)?.preview as Record<string, unknown>
+    expect(preview.summary).toBe("Write recipe linkedin v1.0.1 through linkedin_react")
+    expect(preview).not.toHaveProperty("sections")
+    expect(preview.preview).toBe("")
+    expect(preview.inputSha256).toBe(INPUT_SHA)
+  })
 
   it("keeps an undelivered decision in an outbox and retries until Bureau answers 2xx", async () => {
     const home = tmpHome()

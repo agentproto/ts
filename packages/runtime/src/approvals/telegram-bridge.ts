@@ -31,6 +31,19 @@ const CALLBACK_PREFIX = "apr:"
 // "... (truncated)" suffix and the outcome line appended when the card closes.
 const MAX_BODY_CHARS = 3800
 const MAX_FIELD_CHARS = 3000
+const TRUNCATED = "... (truncated)"
+// Caps for the `{ summary, sections, links }` preview convention, the same
+// ones the session-chat approval page applies.
+const MAX_SUMMARY_CHARS = 600
+const MAX_TITLE_CHARS = 80
+const MAX_SECTIONS = 20
+const MAX_LABEL_CHARS = 120
+const MAX_LINKS = 20
+const MAX_URL_CHARS = 2048
+const MAX_EXTRA_CHARS = 300
+// A shorter value is never dropped as a duplicate: "5" occurs inside "Send 15
+// invoices", and a field missing from an approval card is worse than a repeat.
+const MIN_DEDUPE_CHARS = 20
 
 export interface ApprovalTelegramBridgeOptions {
   events: Pick<SessionEventBus, "onAny">
@@ -71,7 +84,7 @@ interface CallbackQuery {
 }
 
 function clip(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max)}... (truncated)` : value
+  return value.length > max ? `${value.slice(0, max)}${TRUNCATED}` : value
 }
 
 function renderValue(value: unknown): string {
@@ -83,7 +96,127 @@ function renderValue(value: unknown): string {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+interface ConventionSection {
+  title: string
+  text: string
+}
+
+interface ConventionPreview {
+  summary: string | undefined
+  sections: ConventionSection[]
+  links: Array<{ label: string; url: string }>
+  /** Top-level keys the convention did not consume, rendered as `key: value`. */
+  rest: Array<[string, unknown]>
+}
+
+/** The `{ summary?, sections?, links? }` convention the approval page renders,
+ *  or undefined when the preview carries none of its three keys. */
+function readConvention(preview: unknown): ConventionPreview | undefined {
+  if (!isRecord(preview)) return undefined
+  const summary = typeof preview.summary === "string" ? preview.summary : undefined
+  const sectionsRaw = Array.isArray(preview.sections) ? preview.sections : undefined
+  const linksRaw = Array.isArray(preview.links) ? preview.links : undefined
+  if (summary === undefined && !sectionsRaw && !linksRaw) return undefined
+
+  const sections: ConventionSection[] = []
+  for (const item of sectionsRaw ?? []) {
+    if (sections.length >= MAX_SECTIONS) break
+    if (!isRecord(item) || typeof item.title !== "string" || typeof item.text !== "string") continue
+    sections.push({ title: clip(item.title, MAX_TITLE_CHARS), text: item.text })
+  }
+
+  const links: Array<{ label: string; url: string }> = []
+  for (const item of linksRaw ?? []) {
+    if (links.length >= MAX_LINKS) break
+    if (!isRecord(item) || typeof item.url !== "string" || item.url.length > MAX_URL_CHARS) continue
+    let https = false
+    try {
+      https = new URL(item.url).protocol === "https:"
+    } catch {
+      https = false
+    }
+    if (!https) continue
+    const label = typeof item.label === "string" && item.label.length > 0 ? item.label : item.url
+    links.push({ label: clip(label, MAX_LABEL_CHARS), url: item.url })
+  }
+
+  const rest = Object.entries(preview).filter(([key]) => {
+    if (key === "summary") return summary === undefined
+    if (key === "sections") return !sectionsRaw
+    if (key === "links") return !linksRaw
+    return true
+  })
+  return { summary, sections, links, rest }
+}
+
+/** Water-filling split of `budget` over the texts: a short text keeps its
+ *  full length, the long ones share what is left equally. */
+function splitBudget(lengths: readonly number[], budget: number): number[] {
+  const order = lengths.map((length, index) => ({ length, index })).sort((a, b) => a.length - b.length)
+  const alloc: number[] = lengths.map(() => 0)
+  let left = Math.max(0, budget)
+  order.forEach(({ length, index }, i) => {
+    const share = Math.floor(left / (order.length - i))
+    alloc[index] = Math.min(length, share)
+    left -= alloc[index]!
+  })
+  return alloc
+}
+
+/** Cut `text` so that, marker included, it is at most `max` characters. */
+function clipToFit(text: string, max: number): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, Math.max(0, max - TRUNCATED.length))}${TRUNCATED}`
+}
+
+function describeConvention(record: ApprovalRecord, conv: ConventionPreview, tail: string): string {
+  const budget = MAX_BODY_CHARS - tail.length - 1
+  const summary = conv.summary ? clip(conv.summary, MAX_SUMMARY_CHARS) : undefined
+  const seen = [conv.summary ?? "", ...conv.sections.map(s => s.text)]
+  const extras: string[] = []
+  for (const [key, value] of conv.rest) {
+    if (value === undefined || value === null) continue
+    if (typeof value === "string" && value.length >= MIN_DEDUPE_CHARS && seen.some(text => text.includes(value))) continue
+    extras.push(`${key}: ${clip(renderValue(value), MAX_EXTRA_CHARS)}`)
+  }
+
+  const assemble = (texts: readonly string[]): string => {
+    const blocks: string[] = [`Approval needed: ${record.title}\nKind: ${record.kind}`]
+    if (summary) blocks.push(summary)
+    conv.sections.forEach((section, i) => {
+      blocks.push(texts[i] ? `${section.title}\n${texts[i]}` : section.title)
+    })
+    if (conv.links.length > 0) blocks.push(conv.links.map(l => `${l.label}: ${l.url}`).join("\n"))
+    if (extras.length > 0) blocks.push(extras.join("\n"))
+    return blocks.join("\n\n")
+  }
+
+  const withheld = conv.sections.map(() => "")
+  const nonEmpty = conv.sections.filter(s => s.text.length > 0).length
+  const room = budget - assemble(withheld).length - nonEmpty
+  const alloc = splitBudget(
+    conv.sections.map(s => s.text.length),
+    room,
+  )
+  const texts = conv.sections.map((s, i) => clipToFit(s.text, alloc[i]!))
+  // Only the head is ever cut: a pathological pile of links or extra keys must
+  // not push Session and Expires out of the card.
+  return `${clipToFit(assemble(texts), budget)}\n${tail}`
+}
+
 function describeApproval(record: ApprovalRecord): string {
+  const by = record.requestedBy
+  const footer = ["", "sessionId" in by ? `Session: ${by.sessionId}` : "Requested by the operator"]
+  if (record.expiresAt) footer.push(`Expires: ${record.expiresAt}`)
+  const tail = footer.join("\n")
+
+  const conv = readConvention(record.preview)
+  if (conv) return describeConvention(record, conv, tail)
+
   const lines = [`Approval needed: ${record.title}`, `Kind: ${record.kind}`]
   const preview = record.preview
   if (preview && typeof preview === "object" && !Array.isArray(preview)) {
@@ -94,10 +227,6 @@ function describeApproval(record: ApprovalRecord): string {
   } else if (preview !== undefined && preview !== null) {
     lines.push("", clip(renderValue(preview), MAX_FIELD_CHARS))
   }
-  const by = record.requestedBy
-  const footer = ["", "sessionId" in by ? `Session: ${by.sessionId}` : "Requested by the operator"]
-  if (record.expiresAt) footer.push(`Expires: ${record.expiresAt}`)
-  const tail = footer.join("\n")
   // Only the head is cut when the card is too long: Session and Expires stay visible.
   return `${clip(lines.join("\n"), MAX_BODY_CHARS - tail.length - 1)}\n${tail}`
 }

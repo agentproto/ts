@@ -363,6 +363,179 @@ describe("createApprovalTelegramBridge", () => {
     bridge.stop()
   })
 
+  describe("card text", () => {
+    const FOOTER_SESSION = "Session: sess_abc"
+
+    async function cardFor(preview: unknown): Promise<string> {
+      const bridge = makeBridge()
+      bridge.start()
+      request(preview)
+      await until(() => tg.calls.length > 0)
+      bridge.stop()
+      return String(tg.calls[0]!.body.text)
+    }
+
+    it("renders a summary, sections and links as plain text, not as a JSON blob", async () => {
+      const letter = `Dear team, ${"I would love to join. ".repeat(450)}`
+      const text = await cardFor({
+        summary: "Application to Acme for the staff engineer role",
+        sections: [
+          { title: "Cover letter", text: letter },
+          { title: "What will be sent", text: "CV and cover letter to jobs@acme.test" },
+        ],
+        links: [{ label: "Offer", url: "https://acme.test/jobs/42" }],
+      })
+      expect(text).toContain("Application to Acme for the staff engineer role")
+      expect(text).toContain("Cover letter\nDear team,")
+      expect(text).toContain("What will be sent\nCV and cover letter to jobs@acme.test")
+      expect(text).toContain("Offer: https://acme.test/jobs/42")
+      expect(text).toContain("... (truncated)")
+      expect(text).not.toContain('{"title"')
+      expect(text).not.toContain("sections:")
+      expect(text.length).toBeLessThanOrEqual(3800)
+      expect(text).toContain(FOOTER_SESSION)
+      expect(text).toContain("Expires:")
+      expect(text.startsWith("Approval needed: linkedin · linkedin_react\nKind: bureau.recipe-write\n\nApplication to Acme")).toBe(true)
+    })
+
+    it("does not let a long section push a short later one out of the card", async () => {
+      const text = await cardFor({
+        sections: [
+          { title: "First", text: "a".repeat(9000) },
+          { title: "Second", text: "b".repeat(9000) },
+          { title: "Third", text: "short third" },
+        ],
+      })
+      expect(text).toContain("Third\nshort third")
+      expect(text.match(/a+/g)!.some(run => run.length > 1000)).toBe(true)
+      expect(text.match(/b+/g)!.some(run => run.length > 1000)).toBe(true)
+      expect(text.length).toBeLessThanOrEqual(3800)
+      expect(text).toContain(FOOTER_SESSION)
+    })
+
+    it("clips the summary to 600 characters and the extra keys to 300", async () => {
+      const text = await cardFor({ summary: "s".repeat(1000), note: "n".repeat(1000) })
+      expect(text).toContain(`${"s".repeat(600)}... (truncated)`)
+      expect(text).not.toContain("s".repeat(601))
+      expect(text).toContain(`note: ${"n".repeat(300)}... (truncated)`)
+      expect(text).not.toContain("n".repeat(301))
+    })
+
+    it("only prints a link whose url is https", async () => {
+      const text = await cardFor({
+        summary: "links",
+        links: [
+          { label: "Script", url: "javascript:alert(1)" },
+          { label: "Plain", url: "http://acme.test/x" },
+          { label: "Not a url", url: "nope" },
+          { label: "Safe", url: "https://acme.test/safe" },
+        ],
+      })
+      expect(text).toContain("Safe: https://acme.test/safe")
+      expect(text).not.toContain("javascript:")
+      expect(text).not.toContain("http://acme.test")
+      expect(text).not.toContain("Not a url")
+    })
+
+    it("caps sections and links at 20 and skips entries that are not well formed", async () => {
+      const sections = [
+        ...Array.from({ length: 25 }, (_, i) => ({ title: `Sec${i}`, text: `text${i}` })),
+      ]
+      sections.splice(1, 0, { title: "NoText" } as never, { text: "NoTitle" } as never, "junk" as never)
+      const links = Array.from({ length: 25 }, (_, i) => ({ label: `L${i}`, url: `https://acme.test/${i}` }))
+      const text = await cardFor({ sections, links })
+      expect(text).toContain("Sec19\ntext19")
+      expect(text).not.toContain("Sec20")
+      expect(text).not.toContain("NoText")
+      expect(text).not.toContain("NoTitle")
+      expect(text).not.toContain("junk")
+      expect(text).toContain("L19: https://acme.test/19")
+      expect(text).not.toContain("L20:")
+      expect(text.length).toBeLessThanOrEqual(3800)
+      expect(text).toContain(FOOTER_SESSION)
+    })
+
+    it("keeps the footer when the links alone overflow the card", async () => {
+      const links = Array.from({ length: 20 }, (_, i) => ({
+        label: "x".repeat(120),
+        url: `https://acme.test/${i}/${"p".repeat(2000)}`,
+      }))
+      const text = await cardFor({ summary: "many links", links })
+      expect(text.length).toBeLessThanOrEqual(3800)
+      expect(text).toContain(FOOTER_SESSION)
+      expect(text).toContain("Expires:")
+    })
+
+    it("does not repeat a long string value that is already inside the summary or a section", async () => {
+      const text = await cardFor({
+        summary: "Write recipe linkedin v1.0.1",
+        sections: [{ title: "What will change", text: "React to the LinkedIn post 42 of Acme" }],
+        recipe: "linkedin",
+        preview: "React to the LinkedIn post 42 of Acme",
+        version: "1.0.1",
+        tool: "linkedin_react",
+      })
+      expect(text.match(/React to the LinkedIn post 42 of Acme/g)).toHaveLength(1)
+      expect(text).not.toContain("preview:")
+      expect(text).toContain("recipe: linkedin")
+      expect(text).toContain("version: 1.0.1")
+      expect(text).toContain("tool: linkedin_react")
+    })
+
+    it("still renders a short value that happens to occur inside the summary", async () => {
+      const text = await cardFor({
+        summary: "Send 15 invoices and submit them",
+        amount: "5",
+        action: "submit",
+      })
+      expect(text).toContain("amount: 5")
+      expect(text).toContain("action: submit")
+    })
+
+    it("still dedupes a value of 20 characters or more contained in a section", async () => {
+      const long = "Reply to the thread about the Q3 budget"
+      const text = await cardFor({
+        sections: [{ title: "What will change", text: `${long} with the draft below` }],
+        preview: long,
+        tool: "mail_reply",
+      })
+      expect(text.match(new RegExp(long, "g"))).toHaveLength(1)
+      expect(text).not.toContain("preview:")
+      expect(text).toContain("tool: mail_reply")
+    })
+
+    it("renders a preview without the convention keys exactly as before", async () => {
+      const text = await cardFor({
+        recipe: "linkedin",
+        version: "1.0.1",
+        tool: "linkedin_react",
+        preview: "React to post 42",
+        counts: { likes: 3 },
+        skipped: null,
+      })
+      const expires = engine.list({ status: "pending" })[0]!.expiresAt
+      expect(text).toBe(
+        [
+          "Approval needed: linkedin · linkedin_react",
+          "Kind: bureau.recipe-write",
+          "recipe: linkedin",
+          "version: 1.0.1",
+          "tool: linkedin_react",
+          "preview: React to post 42",
+          'counts: {"likes":3}',
+          "",
+          FOOTER_SESSION,
+          `Expires: ${expires}`,
+        ].join("\n"),
+      )
+    })
+
+    it("treats a non-string summary as an ordinary key when no other convention key is present", async () => {
+      const text = await cardFor({ summary: { a: 1 }, tool: "t" })
+      expect(text).toContain('summary: {"a":1}')
+    })
+  })
+
   it("is wired to the daemon log in index.ts with the [approval-telegram-bridge] prefix", () => {
     const source = readFileSync(fileURLToPath(new URL("../index.ts", import.meta.url)), "utf8")
     const start = source.indexOf("createApprovalTelegramBridge({")
