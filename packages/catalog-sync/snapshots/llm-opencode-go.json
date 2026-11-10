@@ -46,6 +46,20 @@
           "cache_write": 0.125
         }
       },
+      "crouton-alpha-free": {
+        "id": "crouton-alpha-free",
+        "name": "Crouton Alpha Free",
+        "release_date": "2026-11-03",
+        "status": "deprecated",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "deepseek-v4-pro": {
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
@@ -261,6 +275,17 @@
           "input": 0.3,
           "output": 1.2,
           "cache_read": 0.006
+        }
+      },
+      "longcat-2.5-free": {
+        "id": "longcat-2.5-free",
+        "name": "LongCat 2.5 Free",
+        "family": "longcat",
+        "release_date": "2026-11-02",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
         }
       },
       "longcat-2.5-preview-free": {

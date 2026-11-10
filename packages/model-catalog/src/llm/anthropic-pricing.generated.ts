@@ -1,8 +1,9 @@
-// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-anthropic.mjs (data: live api.anthropic.com/v1/models + platform.claude.com pricing page, OpenRouter fallback per row, synced 2026-11-05T15:08:27.054Z)
+// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-anthropic.mjs (data: live api.anthropic.com/v1/models + platform.claude.com pricing page, OpenRouter fallback per row, synced 2026-11-10T14:10:27.367Z)
 
 export const ANTHROPIC_GENERATED_PRICING = {
   "claude-fable-5": { inputPer1M: 10, outputPer1M: 50, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "anthropic", vendor: "anthropic", provider: "anthropic" },
   "claude-fable-5-1": { inputPer1M: 10, outputPer1M: 50, cacheReadMultiplier: 0.025, cacheWriteMultiplier: 1.25, priceSource: "anthropic", vendor: "anthropic", provider: "anthropic" },
+  "claude-fable-5-2": { inputPer1M: 8, outputPer1M: 40, cacheReadMultiplier: 0.025, cacheWriteMultiplier: 1.25, priceSource: "anthropic", vendor: "anthropic", provider: "anthropic" },
   "claude-haiku-4-5": { inputPer1M: 1, outputPer1M: 5, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "anthropic", vendor: "anthropic", provider: "anthropic" },
   "claude-haiku-4-5-20251001": { inputPer1M: 1, outputPer1M: 5, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "anthropic", vendor: "anthropic", provider: "anthropic" },
   "claude-haiku-5-5": { inputPer1M: 0.1, outputPer1M: 0.5, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, tiers: [{ aboveInputTokens: 100000, inputPer1M: 0.5, outputPer1M: 2.5, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25 }], priceSource: "anthropic", vendor: "anthropic", provider: "anthropic" },

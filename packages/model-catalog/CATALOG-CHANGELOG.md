@@ -538,3 +538,30 @@ for that.
 
 ### video:replicate
 - Removed: replicate:xai/grok-imagine-video
+
+## 2026-11-10
+
+### llm:openrouter
+- Added: anthropic/claude-fable-5.2, anthropic/claude-fable-5.2:batch, deepseek/deepseek-v4-flash-0731:batch, deepseek/deepseek-v4.1-flash-1017:batch, google/gemini-omni-1.1-flash, google/gemini-omni-1.2-flash, liquid/lfm-3-1.7b, meta/muse-ember, meta/muse-glimmer-30b:batch, minimax/minimax-m3:batch, morph/morph-v3-fast:batch, morph/morph-v3-large:batch, nex-agi/nex-n2.6, qwen/qwen3.8-27b:batch, qwen/qwen3.8-max-0902:batch, thinkingmachines/inkling-small:batch, z-ai/glm-5.2:batch
+- Removed: inception/mercury-2, inception/mercury-2.5, inception/mercury-3, minimax/minimax-m1
+
+### llm:requesty
+- Added: anthropic/claude-fable-5.2
+- Removed: doubleword/deepseek-v4-flash-0424, doubleword/deepseek-v4-flash-0424:flex, doubleword/deepseek-v4-pro-0424, doubleword/deepseek-v4-pro-0424:flex, fireworks/deepseek-v4-flash-0731, fireworks/deepseek-v4-flash-vision-exp, fireworks/deepseek-v4-pro-0813, fireworks/glm-5.1, fireworks/glm-5.2, fireworks/gpt-oss-20b, fireworks/kimi-k2.6, fireworks/kimi-k2.7-code, fireworks/muse-glimmer-30b, fireworks/qwen3.7-plus, inceptron/minimax-m2.5, lyceum/deepseek-v4-flash-0731, lyceum/deepseek-v4-pro, lyceum/deepseek-v4.1-flash, lyceum/glm-5.3, lyceum/glm-5.3-flash, lyceum/kimi-k3, nebius/meta-llama/Llama-3.3-70B-Instruct, nebius/minimaxi/minimax-m2.5, nebius/moonshotai/kimi-k2.6, nebius/nousresearch/hermes-4-70b, nebius/nvidia/nemotron-3-nano-omni, nebius/qwen/qwen3-32b, nebius/qwen/qwen3-next-80b-a3b-thinking, nebius/qwen/qwen3.5-397b-a17b, novita/deepseek/deepseek-r1, novita/deepseek/deepseek-r1-distill-llama-70b, novita/deepseek/deepseek-v3-0324, novita/deepseek/deepseek-v3-turbo, novita/deepseek/deepseek-v3.2, novita/inclusionai/ling-2.6-1t, novita/inclusionai/ling-2.6-flash, novita/inclusionai/ring-2.6-1t, novita/kwaipilot/kat-coder-pro, novita/mistralai/mistral-nemo, novita/qwen/qwen-2.5-72b-instruct, novita/qwen/qwen3-235b-a22b-fp8, novita/sao10k/l3-8b-lunaris, novita/sao10k/l31-70b-euryale-v2.2, openai/o1, openai/o1:high, openai/o1:low, openai/o1:medium, openai/o3-mini, openai/o3-mini:high, openai/o3-mini:low, openai/o3-mini:medium, openai/o4-mini, openai/o4-mini:flex, openai/o4-mini:high, openai/o4-mini:low, openai/o4-mini:medium, vertex/claude-opus-4, vertex/claude-opus-4-1, vertex/claude-opus-4-1@us-east5, vertex/claude-opus-4@us-east5, vertex/kimi-k2
+
+### llm:opencode-go
+- Added: opencode-go/longcat-2.5-free
+
+### llm:opencode-zen
+- Added: opencode/claude-fable-5-2, opencode/iceman-free, opencode/inkling-2-small-free, opencode/longcat-2.5-free, opencode/minimax-m3.1-flash-free, opencode/muse-ember-1.0
+- Removed: opencode/crouton-alpha-free, opencode/pulse-alpha-free
+
+### llm:huggingface
+- Added: CohereLabs/c4ai-command-r7b-arabic-02-2025, Qwen/Qwen2.5-72B-Instruct
+- Removed: google/gemma-3-12b-it
+
+### llm:context-windows
+- Added: claude-fable-5-2
+
+### llm:anthropic
+- Added: claude-fable-5-2
