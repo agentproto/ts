@@ -134,6 +134,16 @@ describe("explicit session:p prompt and session:control grants admit a drive cal
     ).toBe(false)
   })
 
+  it("(c2) a session-label:// principal never admits a labelled session that has a parent", () => {
+    const g = grant("session:control", "target", { principal: "session-label://brain" })
+    const labelled = (id: string) => (id === "brain-session" || id === "kid-session" ? "brain" : undefined)
+    const parents = (id: string) => (id === "kid-session" ? "root" : undefined)
+    const run = (node: MessageTreeNode) =>
+      decide(as(node), "session.drive", res("agent_kill"), ctx([g], { operatorLabelOf: labelled, parentOf: parents })).allow
+    expect(run({ id: "brain-session" })).toBe(true)
+    expect(run({ id: "kid-session" })).toBe(false)
+  })
+
   it("(d) a label: or workspace: scope on the target admits; another label or slug does not", () => {
     const workspaceOfCwd = (cwd: string) => (cwd === "/ws/studio" ? "agentik-studio" : undefined)
     expect(

@@ -42,6 +42,22 @@ messages to each other, and what it takes to wake an idle Claude Code session.
   `ambiguous_label`). The owner gate and `session:prompt` / `session:control`
   grants are checked on the resolved session, so a label is a way to name the
   target, never a way to gain the right to drive it.
+- Naming your children: a supervisor can give a stable name to the sessions it
+  launches with `agent_set_operator_label {sessionId, operatorLabel}`, so
+  `message_send to: "label:<x>"` and `agent_prompt` / `agent_interrupt` /
+  `agent_kill` with `id: "label:<x>"` reach them without tracking session ids.
+  You may label a session you OWN: one you spawned, or a descendant of it (the
+  same ownership as the drive gate, but a `allowPromptFrom` grant is not
+  ownership). From the shared `claude-desktop` identity you may label a child
+  spawned with `parent: "cc:<id>"` that still carries the default
+  `claude-desktop` grant. You may not label yourself, nor a session you do not
+  own, and a label already carried by another non-archived session, live or dead, is
+  refused (the error names the holder and its status; archive the dead session
+  to free its name). The human operator may label any session. A label
+  on a session that has a parent is an address only: `allowPromptFrom:
+  "label:..."`, `defaults.tasks.operatorDelegates` and `session-label://`
+  grant principals match root sessions only, so labelling a child never
+  grants it anything.
 - From Claude Desktop, say who you are: the shared `claude-desktop` identity
   has no session id, so pass `declaredSender: "cc:<your session id>"` to
   `message_send`. The recipient sees `[declared sender: cc:<id>, unverified]`

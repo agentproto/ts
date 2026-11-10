@@ -21,6 +21,7 @@
  * independent proof of the calling process.
  */
 
+import { DECLARED_CC_ADDRESS, SHARED_CLAUDE_DESKTOP_ID } from "./session-message.js"
 import type { SessionDescriptor } from "./sessions.js"
 
 /** The caller of a drive-tool call: an operator (no caller session), or a
@@ -49,14 +50,20 @@ export function promptCallerLabel(callerSessionId: string | undefined): PromptCa
  * name this session? Exact session ids match directly; `label:` entries match
  * ONLY the caller's immutable operator-assigned `operatorLabel` — an exact
  * `label:<label>` or a `label:<prefix>*` wildcard — and `label:` / `label:*`
- * (empty prefix) match nothing. The mutable `label` never matches.
+ * (empty prefix) match nothing. The mutable `label` never matches. When
+ * `parentOf` is given, a `label:` entry matches ONLY a root session (no
+ * parent): a session spawned by another session can carry an `operatorLabel`
+ * stamped by its owner (`checkOperatorLabelStamp`), and that label is an
+ * address, never a grant.
  */
 export function matchesSessionGrant(
   entries: readonly string[],
   sessionId: string,
   operatorLabelOf: (id: string) => string | undefined,
+  parentOf?: (id: string) => string | undefined,
 ): boolean {
   if (entries.includes(sessionId)) return true
+  if (parentOf?.(sessionId)) return false
   const callerLabel = operatorLabelOf(sessionId)
   if (!callerLabel) return false
   for (const entry of entries) {
@@ -96,8 +103,10 @@ export type OwnerGateResult =
  *     explicitly granted secondary caller. A `label:` entry matches ONLY a
  *     caller's operator-assigned `operatorLabel` (normally stamped by the
  *     daemon when the operator spawned a root session; the human operator
- *     may re-stamp it via `agent_set_operator_label`, but no *session* can
- *     change it) and only when that caller has no parent. The mutable
+ *     may re-stamp it via `agent_set_operator_label`, and a session may
+ *     stamp one on a child it owns, never on itself) and only when that
+ *     caller has no parent, so a label an owner put on a child is an
+ *     address and never a grant. The mutable
  *     `label` (settable by the session itself via `session_rename`, or by
  *     any spawner) never matches, and `label:` / `label:*` (empty prefix)
  *     match nothing.
@@ -134,8 +143,8 @@ export function checkSessionOwnerGate(input: {
   }
   const allow = target.allowPromptFrom ?? []
   if (allow.includes("any") || allow.includes(callerSessionId)) return { ok: true }
-  if (operatorLabelOf && !parentOf?.(callerSessionId)) {
-    if (matchesSessionGrant(allow, callerSessionId, operatorLabelOf)) return { ok: true }
+  if (operatorLabelOf && matchesSessionGrant(allow, callerSessionId, operatorLabelOf, parentOf)) {
+    return { ok: true }
   }
   const owner =
     target.parentSessionId ??
@@ -183,4 +192,64 @@ export function checkPromptPolicyEditor(input: {
     ok: false,
     message: `session "${target.id}"'s prompt policy may only be changed by the session that spawned it, by the session itself, or by the human operator — this call came from session "${callerSessionId}".`,
   }
+}
+
+/**
+ * May `callerSessionId` stamp (or clear) `target`'s `operatorLabel`?
+ *
+ *  1. Human operator (no caller session): yes, unchanged.
+ *  2. The session itself: no. A session naming itself would let it pick the
+ *     identity other sessions address it by.
+ *  3. A session that OWNS the target: yes. Same ownership as the drive gate
+ *     (`checkSessionOwnerGate`) minus its `allowPromptFrom` grants: the
+ *     target's spawner, or an ancestor in its `parentSessionId` chain. Being
+ *     allowed to prompt a session is not owning it.
+ *  4. The shared `claude-desktop` identity, for a target whose declared
+ *     parent is a `cc:<id>` address and whose recorded `allowPromptFrom`
+ *     names `claude-desktop` (the grant the daemon writes when that same
+ *     identity spawned it with `parent: "cc:<id>"`): its recorded owner is a
+ *     `cc:` row a Desktop call cannot present, so this is the one way the
+ *     supervisor that spawned it can own it.
+ *  5. Everyone else: no.
+ *
+ * Pure (no fs). Whether the label is already taken by another live session
+ * is the caller's check: it needs the registry.
+ */
+export function checkOperatorLabelStamp(input: {
+  /** Effective calling session id, or undefined for the human operator. */
+  callerSessionId: string | undefined
+  target: Pick<SessionDescriptor, "id" | "parentSessionId" | "allowPromptFrom">
+  parentOf?: (id: string) => string | undefined
+}): OwnerGateResult {
+  const { callerSessionId, target, parentOf } = input
+  if (callerSessionId === undefined) return { ok: true }
+  const refuse = (why: string): OwnerGateResult => ({
+    ok: false,
+    message:
+      `agent_set_operator_label: ${why} A session may stamp the operatorLabel of a session it ` +
+      `owns (one it spawned, or a descendant of it); the human operator may stamp any. ` +
+      `This call came from session "${callerSessionId}" about session "${target.id}".`,
+  })
+  if (callerSessionId === target.id) {
+    return refuse("a session may not stamp its own operatorLabel.")
+  }
+  const owned = checkSessionOwnerGate({
+    callerSessionId,
+    target: {
+      id: target.id,
+      ...(target.parentSessionId ? { parentSessionId: target.parentSessionId } : {}),
+    },
+    tool: "agent_set_operator_label",
+    ...(parentOf ? { parentOf } : {}),
+  })
+  if (owned.ok) return { ok: true }
+  if (
+    callerSessionId === SHARED_CLAUDE_DESKTOP_ID &&
+    target.parentSessionId !== undefined &&
+    DECLARED_CC_ADDRESS.test(target.parentSessionId) &&
+    (target.allowPromptFrom ?? []).includes(SHARED_CLAUDE_DESKTOP_ID)
+  ) {
+    return { ok: true }
+  }
+  return refuse(`session "${target.id}" is not owned by the caller.`)
 }

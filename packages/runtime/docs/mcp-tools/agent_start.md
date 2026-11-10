@@ -820,7 +820,8 @@ of the form `label:<exact label>` or `label:<prefix>*` grant a ROOT caller
 session (no parent) whose operator-assigned label matches — normally the label
 stamped when the human operator spawned it with `agent_start` (the operator
 may re-stamp it later with `agent_set_operator_label`); renaming a session
-never changes it. By
+never changes it. A label an owner stamps on a child never matches (see
+`agent_set_operator_label`). By
 default the session may only be driven by its OWNER — the caller that
 spawned it — one of its ancestors in the spawn tree (a grandparent or
 orchestrator root keeps its existing subtree authority), and the human

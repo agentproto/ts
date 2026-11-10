@@ -491,6 +491,8 @@ const GRANT_DERIVED_RELATIONS: ReadonlySet<MessageRelation> = new Set<MessageRel
 function policyPrincipals(principal: Principal, policy: PermissionPolicy, ctx: PermissionContext): readonly string[] {
   if (policy.principals) return policy.principals(principal)
   if (principal.kind !== "session") return []
+  // Roots only: a label an owner stamped on a child is an address, not an identity.
+  if (ctx.parentOf?.(principal.session.id)) return []
   const label = ctx.operatorLabelOf?.(principal.session.id)?.trim()
   return label ? [`session-label://${label}`] : []
 }

@@ -2116,7 +2116,12 @@ export function registerOrchestrationTools(
     ...(callerSessionId
       ? {
           isOperatorDelegate: (sessionId: string) =>
-            matchesSessionGrant(operatorDelegates, sessionId, id => registry.get(id)?.operatorLabel),
+            matchesSessionGrant(
+              operatorDelegates,
+              sessionId,
+              id => registry.get(id)?.operatorLabel,
+              id => registry.get(id)?.parentSessionId,
+            ),
         }
       : {}),
   })
