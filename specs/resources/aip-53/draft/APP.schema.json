@@ -85,13 +85,14 @@
       "description": "Optional home workspace id (AIP-34). When set, a sibling WORKSPACE.md exists at the app dir root."
     },
     "requires": {
-      "description": "What the app needs from its host. Either a flat array of APP ids this app depends on (legacy form), or an object { browser?, fs?, gpu?, secrets?, apps? }. Each `apps` entry is a bare id (dependency only) or an object { id, version?, workflows? }: `version` is a semver range (exact \"1.2.3\", caret \"^1\"/\"^1.2\"/\"^1.2.3\", or tilde \"~1\"/\"~1.2\"/\"~1.2.3\") the provider's installed version must satisfy; `workflows` lists which of the provider's `exposes.workflows` this consumer may call via the app_call tool — omitted/empty means the dependency carries no call permission.",
-      "anyOf": [
+      "description": "What the app needs (see the AIP-53 section `Requirements`). Either a list of app ids (each a dependency only: no version range, no workflow, nothing granted), or an object naming host capabilities and, under `apps`, the apps it depends on with what it uses from each.",
+      "oneOf": [
         {
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "\\S"
           },
           "uniqueItems": true
         },
@@ -101,62 +102,34 @@
           "properties": {
             "browser": {
               "type": "boolean",
+              "default": false,
               "description": "Needs the user's real browser."
             },
             "fs": {
               "type": "boolean",
-              "description": "Needs the user's local filesystem beyond app data."
+              "default": false,
+              "description": "Needs the user's local filesystem beyond the app data dir."
             },
             "gpu": {
               "type": "boolean",
+              "default": false,
               "description": "Needs a GPU."
             },
             "secrets": {
               "type": "array",
               "items": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "pattern": "\\S"
               },
-              "description": "Env/secret names the app needs."
+              "description": "Env or secret names the app needs."
             },
             "apps": {
               "type": "array",
-              "description": "Other app ids this app depends on — bare ids or { id, version?, workflows? } objects.",
               "items": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "object",
-                    "required": [
-                      "id"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "The depended-on app id."
-                      },
-                      "version": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Optional semver range the provider's installed version must satisfy: exact (\"1.2.3\"), caret (\"^1\", \"^1.2\", \"^1.2.3\"), or tilde (\"~1\", \"~1.2\", \"~1.2.3\")."
-                      },
-                      "workflows": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "description": "Provider workflows (ids from its exposes.workflows) this consumer may call via app_call. Omitted/empty = dependency only, no call permission."
-                      }
-                    }
-                  }
-                ]
-              }
+                "$ref": "#/$defs/appRequirement"
+              },
+              "description": "Apps this app depends on. Two entries naming the same `id` are refused (loader rule)."
             }
           }
         }
@@ -533,12 +506,14 @@
     "exposes": {
       "type": "object",
       "additionalProperties": false,
+      "description": "What the app offers to callers outside it: A2A-visible agents and workflows, and the tools and `ui://` views it publishes to MCP clients (see the AIP-53 section `Exposed tools and resources`). Closed object. Rules JSON Schema cannot express (ids naming the app's own agents/workflows, a TOOL.md behind every non-imported tool id, no two entries computing the same MCP name, a computed name of at most 64 characters) are enforced by the loader.",
       "properties": {
         "agents": {
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "\\S"
           },
           "description": "Agent ids this app exposes. Every id must name one of the app's own agents."
         },
@@ -546,12 +521,85 @@
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "\\S"
           },
-          "description": "Workflow ids this app exposes — the callable surface other apps' requires.apps[].workflows entries may name (consumed via the app_call tool). Every id must name one of the app's own workflows."
+          "description": "Workflow ids this app exposes: the callable surface other apps' `requires.apps[].workflows` entries may name (consumed via `app_call`). Every id must name one of the app's own workflows."
+        },
+        "prefix": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]{1,15}$",
+          "description": "MCP name prefix of every exposed tool: the computed name is `<prefix>_<name>`. Lowercase letters and digits only, no `_`, 2 to 16 characters. Required when `tools` is non-empty. A host additionally refuses a prefix that is the first `_` segment of one of its own tool names."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exposedTool"
+          },
+          "description": "Tools offered to MCP clients, each with an explicit access class. `id` values are unique within the array (loader rule)."
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^ui://[^\\s]+$"
+          },
+          "uniqueItems": true,
+          "description": "Per-app allowlist of `ui://` view URIs a host may relay to the app's imported MCP servers on `resources/read`. Needs at least one `imported:` entry in `tools` to relay from. An empty array is accepted and means no allowlist."
         }
       },
-      "description": "A2A-visible agents/workflows. Ids must exist in the app's agents / workflows."
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "tools"
+            ],
+            "properties": {
+              "tools": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "prefix"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "resources"
+            ],
+            "properties": {
+              "resources": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "tools"
+            ],
+            "properties": {
+              "tools": {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "id"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^imported:"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {
