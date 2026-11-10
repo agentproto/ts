@@ -466,20 +466,42 @@ describe("createApprovalTelegramBridge", () => {
       expect(text).toContain("Expires:")
     })
 
-    it("does not repeat a string value that is already inside the summary or a section", async () => {
+    it("does not repeat a long string value that is already inside the summary or a section", async () => {
       const text = await cardFor({
         summary: "Write recipe linkedin v1.0.1",
-        sections: [{ title: "What will change", text: "React to post 42" }],
+        sections: [{ title: "What will change", text: "React to the LinkedIn post 42 of Acme" }],
         recipe: "linkedin",
-        preview: "React to post 42",
+        preview: "React to the LinkedIn post 42 of Acme",
         version: "1.0.1",
         tool: "linkedin_react",
       })
-      expect(text.match(/React to post 42/g)).toHaveLength(1)
+      expect(text.match(/React to the LinkedIn post 42 of Acme/g)).toHaveLength(1)
       expect(text).not.toContain("preview:")
-      expect(text).not.toContain("recipe:")
-      expect(text).not.toContain("version:")
+      expect(text).toContain("recipe: linkedin")
+      expect(text).toContain("version: 1.0.1")
       expect(text).toContain("tool: linkedin_react")
+    })
+
+    it("still renders a short value that happens to occur inside the summary", async () => {
+      const text = await cardFor({
+        summary: "Send 15 invoices and submit them",
+        amount: "5",
+        action: "submit",
+      })
+      expect(text).toContain("amount: 5")
+      expect(text).toContain("action: submit")
+    })
+
+    it("still dedupes a value of 20 characters or more contained in a section", async () => {
+      const long = "Reply to the thread about the Q3 budget"
+      const text = await cardFor({
+        sections: [{ title: "What will change", text: `${long} with the draft below` }],
+        preview: long,
+        tool: "mail_reply",
+      })
+      expect(text.match(new RegExp(long, "g"))).toHaveLength(1)
+      expect(text).not.toContain("preview:")
+      expect(text).toContain("tool: mail_reply")
     })
 
     it("renders a preview without the convention keys exactly as before", async () => {

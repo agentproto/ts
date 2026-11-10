@@ -41,6 +41,9 @@ const MAX_LABEL_CHARS = 120
 const MAX_LINKS = 20
 const MAX_URL_CHARS = 2048
 const MAX_EXTRA_CHARS = 300
+// A shorter value is never dropped as a duplicate: "5" occurs inside "Send 15
+// invoices", and a field missing from an approval card is worse than a repeat.
+const MIN_DEDUPE_CHARS = 20
 
 export interface ApprovalTelegramBridgeOptions {
   events: Pick<SessionEventBus, "onAny">
@@ -177,7 +180,7 @@ function describeConvention(record: ApprovalRecord, conv: ConventionPreview, tai
   const extras: string[] = []
   for (const [key, value] of conv.rest) {
     if (value === undefined || value === null) continue
-    if (typeof value === "string" && value.length > 0 && seen.some(text => text.includes(value))) continue
+    if (typeof value === "string" && value.length >= MIN_DEDUPE_CHARS && seen.some(text => text.includes(value))) continue
     extras.push(`${key}: ${clip(renderValue(value), MAX_EXTRA_CHARS)}`)
   }
 
