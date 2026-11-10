@@ -400,6 +400,7 @@ export const FULL_ONLY_TOOLS: readonly string[] = [
   "session_restart",
   "session_role_refresh",
   "session_role_watch",
+  "session_screencast_frame",
   "session_search",
   "session_set_keepalive",
   "session_set_pinned",

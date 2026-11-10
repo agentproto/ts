@@ -66,6 +66,7 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 | `agent_start` / `agent_prompt` / `agent_output` / `agent_kill` / `agent_interrupt` | Long-lived ACP agent lifecycle |
 | `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Raw PTY sessions |
 | `session_list` / `session_tree` / `session_usage` / `session_restart` / `session_migrate` / `session_rename` | Session management (`session_migrate` resumes a sandbox session on a new box) |
+| `session_screencast_frame` | Read-only: the current frame of a session's own open Bureau browser tab as one MCP `image` (same reader as `GET /sessions/:id/screencast.jpg`); one fixed miss message; a caller session may only ask for its own id |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` / `app_apply` / `app_unapply` / `app_list_applied` | App-kit apps |
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane, anchored at the app's `dataDir` (default `<dir>/data`; `app_install {dataDir}`) |
 | `app_state_append` / `app_state_get` / `app_state_list` | App-scoped **state ledger** (`<stateDir>/events.jsonl`, under `~/.agentproto/app-state/`) — append-only, zod-validated event envelope, fold to a stage snapshot; see below |
