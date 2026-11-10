@@ -64,6 +64,7 @@ import {
   type ApprovalRecord,
   type ApprovalRequester,
   type ApprovalStatus,
+  type ApprovalWakeTarget,
   type CardTicketErrorCode,
   type CardTicketRecord,
   type RelayOutboxEntry,
@@ -81,6 +82,8 @@ export interface ApprovalRequestInput {
    *  channel this daemon has enabled" (see {@link ApprovalsEngineOptions.webOrigins}). */
   channels?: readonly ApprovalChannel[]
   expiresAt?: string
+  /** Re-prompt this session or agent label when a human decides. */
+  wake?: ApprovalWakeTarget
 }
 
 export interface ApprovalsEngineOptions {
@@ -250,6 +253,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
       payloadHash,
       status: "pending",
       requestedBy: requester,
+      ...(input.wake ? { wake: input.wake } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.appId ? { appId: input.appId } : {}),
       channels: requestedChannels,

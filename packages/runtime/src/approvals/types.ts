@@ -34,6 +34,14 @@ export type ApprovalDecision = "approve" | "deny"
 /** Who asked. A spawned session, or the operator (root `/mcp`, HTTP twins). */
 export type ApprovalRequester = { sessionId: string } | { operator: true }
 
+/** Who to re-prompt when the approval is decided: the session that opened
+ *  it, or an agent label (resolved at decision time, like a cron's `agent`
+ *  target, so a relaunched agent still hears the answer). */
+export interface ApprovalWakeTarget {
+  sessionId?: string
+  agent?: string
+}
+
 export interface ApprovalDecisionRecord {
   decision: "approved" | "denied"
   channel: ApprovalChannel
@@ -60,6 +68,8 @@ export interface ApprovalRecord {
   payloadHash: string
   status: ApprovalStatus
   requestedBy: ApprovalRequester
+  /** Opt-in: re-prompt this session or agent when a human decides. */
+  wake?: ApprovalWakeTarget
   taskId?: string
   appId?: string
   /** Human channels allowed to decide this approval. */

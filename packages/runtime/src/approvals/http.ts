@@ -36,7 +36,7 @@ import {
   logAppLinkApprovalAccess,
   type AppLinkApprovalRequest,
 } from "../app-link-gate.js"
-import { ApprovalError, ApprovalNotPendingError, parseApprovalStatus, type ApprovalRequester } from "./types.js"
+import { ApprovalError, ApprovalNotPendingError, parseApprovalStatus, type ApprovalRequester, type ApprovalWakeTarget } from "./types.js"
 import type { ApprovalsEngine } from "./engine.js"
 
 export interface ApprovalsHttpAuth {
@@ -146,6 +146,14 @@ async function handleApprovalLink(
   }
 }
 
+function parseWake(value: unknown): ApprovalWakeTarget | undefined {
+  if (!isJsonRecord(value)) return undefined
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : ""
+  const agent = typeof value.agent === "string" ? value.agent.trim() : ""
+  if (!sessionId && !agent) return undefined
+  return { ...(sessionId ? { sessionId } : {}), ...(agent ? { agent } : {}) }
+}
+
 export async function handleApprovals(
   req: IncomingMessage,
   res: ServerResponse,
@@ -179,6 +187,7 @@ export async function handleApprovals(
       json(res, 400, { error: "invalid_body", message: "body must include kind, title, preview, payload" })
       return true
     }
+    const wake = parseWake(body.wake)
     try {
       const record = engine.request(
         {
@@ -189,6 +198,7 @@ export async function handleApprovals(
           ...(typeof body.taskId === "string" ? { taskId: body.taskId } : {}),
           ...(typeof body.appId === "string" ? { appId: body.appId } : {}),
           ...(typeof body.expiresAt === "string" ? { expiresAt: body.expiresAt } : {}),
+          ...(wake ? { wake } : {}),
         },
         requester,
       )

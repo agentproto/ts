@@ -20,6 +20,7 @@ export {
   type ApprovalRequester,
   type ApprovalRecord,
   type ApprovalDecisionRecord,
+  type ApprovalWakeTarget,
   type ApprovalErrorCode,
   type CardTicketErrorCode,
   type CardTicketRecord,
@@ -28,6 +29,7 @@ export {
   type TelegramCardEntry,
 } from "./types.js"
 export { handleApprovals, type ApprovalsHttpAuth } from "./http.js"
+export { wireApprovalWake, type ApprovalWakeRegistry } from "./wake.js"
 export {
   createBureauApprovalBridge,
   BUREAU_APPROVAL_KIND,
