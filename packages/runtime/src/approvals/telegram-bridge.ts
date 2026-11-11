@@ -16,34 +16,35 @@
  * a tap on a card sent before a daemon restart still decides, and a card whose
  * approval was decided while the daemon was down is closed once at `start()`.
  *
+ * The card is Telegram HTML (`telegram-card-text.ts`): a summary, with every
+ * cut announced and pointed at the approval page. The files listed in
+ * `preview.attachments` are sent first as real documents or photos
+ * (`telegram-attachments.ts`), then the card, which lists what was attached and
+ * what was not and why.
+ *
  * Nothing here logs the bot token, a chat id or a user id.
  */
 
 import { randomBytes } from "node:crypto"
+import { readFile } from "node:fs/promises"
+import { basename } from "node:path"
 
 import type { SessionEventBus } from "../session-event-bus.js"
 import type { TelegramBotCredsStore } from "../telegram-bot-creds.js"
 import type { ApprovalsEngine } from "./engine.js"
+import {
+  humanSize,
+  readAttachmentNames,
+  resolveAttachments,
+  shortName,
+  type AttachmentFile,
+} from "./telegram-attachments.js"
+import { describeApproval, htmlToPlain, type AttachmentLine } from "./telegram-card-text.js"
 import type { ApprovalRecord } from "./types.js"
 
 const CALLBACK_PREFIX = "apr:"
-// Telegram rejects text over 4096 characters. The body leaves room for the
-// "... (truncated)" suffix and the outcome line appended when the card closes.
-const MAX_BODY_CHARS = 3800
-const MAX_FIELD_CHARS = 3000
-const TRUNCATED = "... (truncated)"
-// Caps for the `{ summary, sections, links }` preview convention, the same
-// ones the session-chat approval page applies.
-const MAX_SUMMARY_CHARS = 600
-const MAX_TITLE_CHARS = 80
-const MAX_SECTIONS = 20
-const MAX_LABEL_CHARS = 120
-const MAX_LINKS = 20
-const MAX_URL_CHARS = 2048
-const MAX_EXTRA_CHARS = 300
-// A shorter value is never dropped as a duplicate: "5" occurs inside "Send 15
-// invoices", and a field missing from an approval card is worse than a repeat.
-const MIN_DEDUPE_CHARS = 20
+/** Telegram caps a media caption at 1024 characters. */
+const MAX_CAPTION_CHARS = 1024
 
 export interface ApprovalTelegramBridgeOptions {
   events: Pick<SessionEventBus, "onAny">
@@ -58,6 +59,10 @@ export interface ApprovalTelegramBridgeOptions {
   chatId: string
   /** Telegram user ids allowed to answer. Required and non-empty. */
   allowedUserIds: readonly string[]
+  /** The folder `preview.attachments` names are relative to, for one approval.
+   *  Absent, or returning undefined, means no file is sent and the card says
+   *  so for each name. */
+  attachmentDir?: (record: ApprovalRecord) => string | undefined | Promise<string | undefined>
   fetchImpl?: typeof fetch
   onError?: (err: unknown) => void
 }
@@ -74,6 +79,7 @@ interface Tracked {
   approvalId: string
   messageId: number
   text: string
+  parseMode?: "HTML"
 }
 
 interface CallbackQuery {
@@ -81,154 +87,6 @@ interface CallbackQuery {
   from?: { id?: number | string }
   message?: { message_id?: number; chat?: { id?: number | string } }
   data?: string
-}
-
-function clip(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max)}${TRUNCATED}` : value
-}
-
-function renderValue(value: unknown): string {
-  if (typeof value === "string") return value
-  try {
-    return JSON.stringify(value) ?? String(value)
-  } catch {
-    return String(value)
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-}
-
-interface ConventionSection {
-  title: string
-  text: string
-}
-
-interface ConventionPreview {
-  summary: string | undefined
-  sections: ConventionSection[]
-  links: Array<{ label: string; url: string }>
-  /** Top-level keys the convention did not consume, rendered as `key: value`. */
-  rest: Array<[string, unknown]>
-}
-
-/** The `{ summary?, sections?, links? }` convention the approval page renders,
- *  or undefined when the preview carries none of its three keys. */
-function readConvention(preview: unknown): ConventionPreview | undefined {
-  if (!isRecord(preview)) return undefined
-  const summary = typeof preview.summary === "string" ? preview.summary : undefined
-  const sectionsRaw = Array.isArray(preview.sections) ? preview.sections : undefined
-  const linksRaw = Array.isArray(preview.links) ? preview.links : undefined
-  if (summary === undefined && !sectionsRaw && !linksRaw) return undefined
-
-  const sections: ConventionSection[] = []
-  for (const item of sectionsRaw ?? []) {
-    if (sections.length >= MAX_SECTIONS) break
-    if (!isRecord(item) || typeof item.title !== "string" || typeof item.text !== "string") continue
-    sections.push({ title: clip(item.title, MAX_TITLE_CHARS), text: item.text })
-  }
-
-  const links: Array<{ label: string; url: string }> = []
-  for (const item of linksRaw ?? []) {
-    if (links.length >= MAX_LINKS) break
-    if (!isRecord(item) || typeof item.url !== "string" || item.url.length > MAX_URL_CHARS) continue
-    let https = false
-    try {
-      https = new URL(item.url).protocol === "https:"
-    } catch {
-      https = false
-    }
-    if (!https) continue
-    const label = typeof item.label === "string" && item.label.length > 0 ? item.label : item.url
-    links.push({ label: clip(label, MAX_LABEL_CHARS), url: item.url })
-  }
-
-  const rest = Object.entries(preview).filter(([key]) => {
-    if (key === "summary") return summary === undefined
-    if (key === "sections") return !sectionsRaw
-    if (key === "links") return !linksRaw
-    return true
-  })
-  return { summary, sections, links, rest }
-}
-
-/** Water-filling split of `budget` over the texts: a short text keeps its
- *  full length, the long ones share what is left equally. */
-function splitBudget(lengths: readonly number[], budget: number): number[] {
-  const order = lengths.map((length, index) => ({ length, index })).sort((a, b) => a.length - b.length)
-  const alloc: number[] = lengths.map(() => 0)
-  let left = Math.max(0, budget)
-  order.forEach(({ length, index }, i) => {
-    const share = Math.floor(left / (order.length - i))
-    alloc[index] = Math.min(length, share)
-    left -= alloc[index]!
-  })
-  return alloc
-}
-
-/** Cut `text` so that, marker included, it is at most `max` characters. */
-function clipToFit(text: string, max: number): string {
-  if (text.length <= max) return text
-  return `${text.slice(0, Math.max(0, max - TRUNCATED.length))}${TRUNCATED}`
-}
-
-function describeConvention(record: ApprovalRecord, conv: ConventionPreview, tail: string): string {
-  const budget = MAX_BODY_CHARS - tail.length - 1
-  const summary = conv.summary ? clip(conv.summary, MAX_SUMMARY_CHARS) : undefined
-  const seen = [conv.summary ?? "", ...conv.sections.map(s => s.text)]
-  const extras: string[] = []
-  for (const [key, value] of conv.rest) {
-    if (value === undefined || value === null) continue
-    if (typeof value === "string" && value.length >= MIN_DEDUPE_CHARS && seen.some(text => text.includes(value))) continue
-    extras.push(`${key}: ${clip(renderValue(value), MAX_EXTRA_CHARS)}`)
-  }
-
-  const assemble = (texts: readonly string[]): string => {
-    const blocks: string[] = [`Approval needed: ${record.title}\nKind: ${record.kind}`]
-    if (summary) blocks.push(summary)
-    conv.sections.forEach((section, i) => {
-      blocks.push(texts[i] ? `${section.title}\n${texts[i]}` : section.title)
-    })
-    if (conv.links.length > 0) blocks.push(conv.links.map(l => `${l.label}: ${l.url}`).join("\n"))
-    if (extras.length > 0) blocks.push(extras.join("\n"))
-    return blocks.join("\n\n")
-  }
-
-  const withheld = conv.sections.map(() => "")
-  const nonEmpty = conv.sections.filter(s => s.text.length > 0).length
-  const room = budget - assemble(withheld).length - nonEmpty
-  const alloc = splitBudget(
-    conv.sections.map(s => s.text.length),
-    room,
-  )
-  const texts = conv.sections.map((s, i) => clipToFit(s.text, alloc[i]!))
-  // Only the head is ever cut: a pathological pile of links or extra keys must
-  // not push Session and Expires out of the card.
-  return `${clipToFit(assemble(texts), budget)}\n${tail}`
-}
-
-function describeApproval(record: ApprovalRecord): string {
-  const by = record.requestedBy
-  const footer = ["", "sessionId" in by ? `Session: ${by.sessionId}` : "Requested by the operator"]
-  if (record.expiresAt) footer.push(`Expires: ${record.expiresAt}`)
-  const tail = footer.join("\n")
-
-  const conv = readConvention(record.preview)
-  if (conv) return describeConvention(record, conv, tail)
-
-  const lines = [`Approval needed: ${record.title}`, `Kind: ${record.kind}`]
-  const preview = record.preview
-  if (preview && typeof preview === "object" && !Array.isArray(preview)) {
-    for (const [key, value] of Object.entries(preview as Record<string, unknown>)) {
-      if (value === undefined || value === null) continue
-      lines.push(`${key}: ${clip(renderValue(value), MAX_FIELD_CHARS)}`)
-    }
-  } else if (preview !== undefined && preview !== null) {
-    lines.push("", clip(renderValue(preview), MAX_FIELD_CHARS))
-  }
-  // Only the head is cut when the card is too long: Session and Expires stay visible.
-  return `${clip(lines.join("\n"), MAX_BODY_CHARS - tail.length - 1)}\n${tail}`
 }
 
 export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions): ApprovalTelegramBridge {
@@ -244,14 +102,16 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
   const tokenByApproval = new Map<string, string>()
   let unsubscribe: (() => void) | undefined
 
-  async function call(method: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  /** A `FormData` body is a file upload (multipart), anything else is JSON. */
+  async function call(method: string, body: Record<string, unknown> | FormData): Promise<Record<string, unknown>> {
     const creds = await opts.telegramCreds.read(opts.alias)
     if (!creds) throw new Error(`approval-telegram-bridge: no Telegram bot token for alias "${opts.alias}"`)
-    const res = await doFetch(`https://api.telegram.org/bot${creds.token}/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
+    const res = await doFetch(
+      `https://api.telegram.org/bot${creds.token}/${method}`,
+      body instanceof FormData
+        ? { method: "POST", body }
+        : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    )
     const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean
       description?: string
@@ -286,8 +146,54 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
       chat_id: chatId,
       message_id: t.messageId,
       text: `${t.text}\n\n${status}`,
+      ...(t.parseMode ? { parse_mode: t.parseMode } : {}),
       reply_markup: { inline_keyboard: [] },
     })
+  }
+
+  async function upload(file: AttachmentFile, kind: "photo" | "document", caption: string): Promise<void> {
+    const form = new FormData()
+    form.set("chat_id", chatId)
+    form.set("caption", caption)
+    form.set(kind, new Blob([await readFile(file.path)]), basename(file.path))
+    await call(kind === "photo" ? "sendPhoto" : "sendDocument", form)
+  }
+
+  /** Send the files of `preview.attachments` and return one line per name for
+   *  the card: sent, or not sent and why. Never throws. */
+  async function sendAttachments(record: ApprovalRecord): Promise<AttachmentLine[]> {
+    const listed = readAttachmentNames(record.preview)
+    if (!listed.claimed) return []
+    let dir: string | undefined
+    try {
+      dir = await opts.attachmentDir?.(record)
+    } catch (err) {
+      reportError(err)
+    }
+    const resolved = await resolveAttachments(listed.names, dir)
+    // Seeded in the order of the preview, so the card lists them that way.
+    const outcome = new Map<string, AttachmentLine>()
+    for (const name of listed.names) outcome.set(shortName(name), { name: shortName(name), problem: "not sent" })
+    for (const problem of resolved.problems) outcome.set(problem.name, { name: problem.name, problem: problem.reason })
+    for (const file of resolved.files) {
+      const caption = `${record.title} · ${file.name}`.slice(0, MAX_CAPTION_CHARS)
+      try {
+        try {
+          await upload(file, file.kind, caption)
+        } catch (err) {
+          // Telegram refuses some images as photos (dimensions, format).
+          if (file.kind !== "photo") throw err
+          await upload(file, "document", caption)
+        }
+        outcome.set(file.name, { name: file.name, sent: { size: humanSize(file.size) } })
+      } catch (err) {
+        reportError(err)
+        outcome.set(file.name, { name: file.name, problem: "Telegram did not accept the file" })
+      }
+    }
+    const lines: AttachmentLine[] = [...outcome.values()]
+    for (const problem of listed.problems) lines.push({ name: problem.name, problem: problem.reason })
+    return lines
   }
 
   function outcomeLine(record: ApprovalRecord): string {
@@ -309,23 +215,39 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
     const record = opts.engine.get(approvalId)
     if (!record || record.status !== "pending" || !record.channels.includes("telegram")) return
     const token = randomBytes(6).toString("hex")
-    const text = describeApproval(record)
-    const result = await call("sendMessage", {
-      chat_id: chatId,
-      text,
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "Approve", callback_data: `${CALLBACK_PREFIX}${token}:a` },
-            { text: "Refuse", callback_data: `${CALLBACK_PREFIX}${token}:r` },
-          ],
+    const attachments = await sendAttachments(record)
+    const reply_markup = {
+      inline_keyboard: [
+        [
+          { text: "Approve", callback_data: `${CALLBACK_PREFIX}${token}:a` },
+          { text: "Refuse", callback_data: `${CALLBACK_PREFIX}${token}:r` },
         ],
-      },
-    })
-    const messageId = Number(result.message_id)
-    track(token, { approvalId, messageId, text })
+      ],
+    }
+    let text = describeApproval(record, attachments)
+    let parseMode: "HTML" | undefined = "HTML"
+    let result: Record<string, unknown>
     try {
-      opts.engine.putTelegramCard({ token, approvalId, messageId, text })
+      result = await call("sendMessage", {
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+        reply_markup,
+      })
+    } catch (err) {
+      // A card must never be lost to a markup error: send it as plain text.
+      if (!/parse|entit|tag/i.test(err instanceof Error ? err.message : "")) throw err
+      reportError(err)
+      text = htmlToPlain(text)
+      parseMode = undefined
+      result = await call("sendMessage", { chat_id: chatId, text, reply_markup })
+    }
+    const messageId = Number(result.message_id)
+    const sent = { approvalId, messageId, text, ...(parseMode ? { parseMode } : {}) }
+    track(token, sent)
+    try {
+      opts.engine.putTelegramCard({ token, ...sent })
     } catch (err) {
       reportError(err)
     }
@@ -338,7 +260,12 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
    *  again; anything else gets its message closed once and its file removed. */
   async function restoreCards(): Promise<void> {
     for (const card of opts.engine.listTelegramCards()) {
-      const t: Tracked = { approvalId: card.approvalId, messageId: card.messageId, text: card.text }
+      const t: Tracked = {
+        approvalId: card.approvalId,
+        messageId: card.messageId,
+        text: card.text,
+        ...(card.parseMode === "HTML" ? { parseMode: "HTML" as const } : {}),
+      }
       const record = opts.engine.get(card.approvalId)
       if (record && record.status === "pending") {
         if (!tokenByApproval.has(card.approvalId)) track(card.token, t)

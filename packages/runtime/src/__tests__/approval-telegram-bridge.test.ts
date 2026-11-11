@@ -2,11 +2,13 @@
  * Telegram cards for the approvals engine: a pending approval that lists the
  * `telegram` channel becomes one message with Approve / Refuse buttons; a tap
  * from an allowed user in the configured chat decides it in-process; any other
- * tap is refused; a decision made elsewhere strips the buttons.
+ * tap is refused; a decision made elsewhere strips the buttons. The card is
+ * Telegram HTML, announces every cut, and the files of `preview.attachments`
+ * are uploaded as documents or photos.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -21,15 +23,33 @@ const evidence = { ipAddress: "test", userAgent: "test" }
 
 interface TgCall {
   method: string
+  /** The JSON body, or for an upload the form fields (a file as `{ fileName, size }`). */
   body: Record<string, unknown>
 }
 
-function fakeTelegram(): { fetchImpl: typeof fetch; calls: TgCall[] } {
+/** `refuse` returns a Telegram error description for a call that must fail. */
+function fakeTelegram(refuse?: (call: TgCall) => string | undefined): { fetchImpl: typeof fetch; calls: TgCall[] } {
   const calls: TgCall[] = []
   let nextMessageId = 700
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
     const method = String(url).split("/").pop()!
-    calls.push({ method, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> })
+    let body: Record<string, unknown> = {}
+    if (init?.body instanceof FormData) {
+      for (const [key, value] of init.body.entries()) {
+        body[key] = typeof value === "string" ? value : { fileName: value.name, size: value.size }
+      }
+    } else {
+      body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>
+    }
+    const call = { method, body }
+    calls.push(call)
+    const refusal = refuse?.(call)
+    if (refusal) {
+      return new Response(JSON.stringify({ ok: false, description: refusal }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      })
+    }
     return new Response(JSON.stringify({ ok: true, result: { message_id: nextMessageId++ } }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -39,6 +59,18 @@ function fakeTelegram(): { fetchImpl: typeof fetch; calls: TgCall[] } {
 }
 
 const creds = { read: async () => ({ token: "TOKEN" }), write: async () => {}, exists: async () => true }
+
+/** What the reader sees: the card's HTML with the tags parsed away. */
+function plain(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+}
+
+const CUT = /\[cut here: (\d+) more characters\. Full text on the approval page \("Voir"\)\.\]/
 
 type Keyboard = Array<Array<{ text: string; callback_data: string }>>
 
@@ -204,8 +236,9 @@ describe("createApprovalTelegramBridge", () => {
     bridge.start()
     const record = request({ tool: "linkedin_react", comment: "x".repeat(6000) })
     await until(() => tg.calls.length > 0)
-    const text = String(tg.calls[0]!.body.text)
-    expect(text).toContain("(truncated)")
+    const text = plain(String(tg.calls[0]!.body.text))
+    expect(text).not.toContain("(truncated)")
+    expect(text).toMatch(CUT)
     expect(text.length).toBeLessThanOrEqual(4096)
     expect(text).toContain("Session: sess_abc")
     expect(text).toContain(`Expires: ${record.expiresAt}`)
@@ -213,7 +246,7 @@ describe("createApprovalTelegramBridge", () => {
     const { ticket } = engine.mintCardTicket(record.id)
     await engine.decideByCard(record.id, "deny", ticket, evidence)
     await until(() => tg.calls.some(c => c.method === "editMessageText"))
-    const closed = String(tg.calls.find(c => c.method === "editMessageText")!.body.text)
+    const closed = plain(String(tg.calls.find(c => c.method === "editMessageText")!.body.text))
     expect(closed).toContain("Denied via ui_card")
     expect(closed.length).toBeLessThanOrEqual(4096)
     bridge.stop()
@@ -375,9 +408,9 @@ describe("createApprovalTelegramBridge", () => {
       return String(tg.calls[0]!.body.text)
     }
 
-    it("renders a summary, sections and links as plain text, not as a JSON blob", async () => {
+    it("renders a summary, sections and links as text, not as a JSON blob", async () => {
       const letter = `Dear team, ${"I would love to join. ".repeat(450)}`
-      const text = await cardFor({
+      const html = await cardFor({
         summary: "Application to Acme for the staff engineer role",
         sections: [
           { title: "Cover letter", text: letter },
@@ -385,11 +418,12 @@ describe("createApprovalTelegramBridge", () => {
         ],
         links: [{ label: "Offer", url: "https://acme.test/jobs/42" }],
       })
+      const text = plain(html)
       expect(text).toContain("Application to Acme for the staff engineer role")
       expect(text).toContain("Cover letter\nDear team,")
       expect(text).toContain("What will be sent\nCV and cover letter to jobs@acme.test")
-      expect(text).toContain("Offer: https://acme.test/jobs/42")
-      expect(text).toContain("... (truncated)")
+      expect(html).toContain('<a href="https://acme.test/jobs/42">Offer</a>')
+      expect(text).toMatch(CUT)
       expect(text).not.toContain('{"title"')
       expect(text).not.toContain("sections:")
       expect(text.length).toBeLessThanOrEqual(3800)
@@ -399,13 +433,15 @@ describe("createApprovalTelegramBridge", () => {
     })
 
     it("does not let a long section push a short later one out of the card", async () => {
-      const text = await cardFor({
+      const text = plain(
+        await cardFor({
         sections: [
           { title: "First", text: "a".repeat(9000) },
           { title: "Second", text: "b".repeat(9000) },
           { title: "Third", text: "short third" },
         ],
-      })
+        }),
+      )
       expect(text).toContain("Third\nshort third")
       expect(text.match(/a+/g)!.some(run => run.length > 1000)).toBe(true)
       expect(text.match(/b+/g)!.some(run => run.length > 1000)).toBe(true)
@@ -414,10 +450,10 @@ describe("createApprovalTelegramBridge", () => {
     })
 
     it("clips the summary to 600 characters and the extra keys to 300", async () => {
-      const text = await cardFor({ summary: "s".repeat(1000), note: "n".repeat(1000) })
-      expect(text).toContain(`${"s".repeat(600)}... (truncated)`)
+      const text = plain(await cardFor({ summary: "s".repeat(1000), note: "n".repeat(1000) }))
+      expect(text).toContain(`${"s".repeat(600)}\n[cut here: 400 more characters.`)
       expect(text).not.toContain("s".repeat(601))
-      expect(text).toContain(`note: ${"n".repeat(300)}... (truncated)`)
+      expect(text).toContain(`note: ${"n".repeat(300)} [cut here: 700 more characters.`)
       expect(text).not.toContain("n".repeat(301))
     })
 
@@ -431,7 +467,7 @@ describe("createApprovalTelegramBridge", () => {
           { label: "Safe", url: "https://acme.test/safe" },
         ],
       })
-      expect(text).toContain("Safe: https://acme.test/safe")
+      expect(text).toContain('<a href="https://acme.test/safe">Safe</a>')
       expect(text).not.toContain("javascript:")
       expect(text).not.toContain("http://acme.test")
       expect(text).not.toContain("Not a url")
@@ -443,14 +479,18 @@ describe("createApprovalTelegramBridge", () => {
       ]
       sections.splice(1, 0, { title: "NoText" } as never, { text: "NoTitle" } as never, "junk" as never)
       const links = Array.from({ length: 25 }, (_, i) => ({ label: `L${i}`, url: `https://acme.test/${i}` }))
-      const text = await cardFor({ sections, links })
+      const html = await cardFor({ sections, links })
+      const text = plain(html)
       expect(text).toContain("Sec19\ntext19")
       expect(text).not.toContain("Sec20")
       expect(text).not.toContain("NoText")
       expect(text).not.toContain("NoTitle")
       expect(text).not.toContain("junk")
-      expect(text).toContain("L19: https://acme.test/19")
-      expect(text).not.toContain("L20:")
+      expect(html).toContain('<a href="https://acme.test/19">L19</a>')
+      expect(text).not.toContain("L20")
+      // What is left off the card is counted, not dropped.
+      expect(text).toContain('5 more sections on the approval page ("Voir").')
+      expect(text).toContain('5 more links on the approval page ("Voir").')
       expect(text.length).toBeLessThanOrEqual(3800)
       expect(text).toContain(FOOTER_SESSION)
     })
@@ -460,21 +500,24 @@ describe("createApprovalTelegramBridge", () => {
         label: "x".repeat(120),
         url: `https://acme.test/${i}/${"p".repeat(2000)}`,
       }))
-      const text = await cardFor({ summary: "many links", links })
+      const text = plain(await cardFor({ summary: "many links", links }))
+      expect(text).toContain('20 more links on the approval page ("Voir").')
       expect(text.length).toBeLessThanOrEqual(3800)
       expect(text).toContain(FOOTER_SESSION)
       expect(text).toContain("Expires:")
     })
 
     it("does not repeat a long string value that is already inside the summary or a section", async () => {
-      const text = await cardFor({
-        summary: "Write recipe linkedin v1.0.1",
-        sections: [{ title: "What will change", text: "React to the LinkedIn post 42 of Acme" }],
-        recipe: "linkedin",
-        preview: "React to the LinkedIn post 42 of Acme",
-        version: "1.0.1",
-        tool: "linkedin_react",
-      })
+      const text = plain(
+        await cardFor({
+          summary: "Write recipe linkedin v1.0.1",
+          sections: [{ title: "What will change", text: "React to the LinkedIn post 42 of Acme" }],
+          recipe: "linkedin",
+          preview: "React to the LinkedIn post 42 of Acme",
+          version: "1.0.1",
+          tool: "linkedin_react",
+        }),
+      )
       expect(text.match(/React to the LinkedIn post 42 of Acme/g)).toHaveLength(1)
       expect(text).not.toContain("preview:")
       expect(text).toContain("recipe: linkedin")
@@ -483,29 +526,27 @@ describe("createApprovalTelegramBridge", () => {
     })
 
     it("still renders a short value that happens to occur inside the summary", async () => {
-      const text = await cardFor({
-        summary: "Send 15 invoices and submit them",
-        amount: "5",
-        action: "submit",
-      })
+      const text = plain(await cardFor({ summary: "Send 15 invoices and submit them", amount: "5", action: "submit" }))
       expect(text).toContain("amount: 5")
       expect(text).toContain("action: submit")
     })
 
     it("still dedupes a value of 20 characters or more contained in a section", async () => {
       const long = "Reply to the thread about the Q3 budget"
-      const text = await cardFor({
-        sections: [{ title: "What will change", text: `${long} with the draft below` }],
-        preview: long,
-        tool: "mail_reply",
-      })
+      const text = plain(
+        await cardFor({
+          sections: [{ title: "What will change", text: `${long} with the draft below` }],
+          preview: long,
+          tool: "mail_reply",
+        }),
+      )
       expect(text.match(new RegExp(long, "g"))).toHaveLength(1)
       expect(text).not.toContain("preview:")
       expect(text).toContain("tool: mail_reply")
     })
 
-    it("renders a preview without the convention keys exactly as before", async () => {
-      const text = await cardFor({
+    it("renders a preview without the convention keys as one bold key per line", async () => {
+      const html = await cardFor({
         recipe: "linkedin",
         version: "1.0.1",
         tool: "linkedin_react",
@@ -514,7 +555,21 @@ describe("createApprovalTelegramBridge", () => {
         skipped: null,
       })
       const expires = engine.list({ status: "pending" })[0]!.expiresAt
-      expect(text).toBe(
+      expect(html).toBe(
+        [
+          "<b>Approval needed: linkedin · linkedin_react</b>",
+          "Kind: bureau.recipe-write",
+          "<b>recipe</b>: linkedin",
+          "<b>version</b>: 1.0.1",
+          "<b>tool</b>: linkedin_react",
+          "<b>preview</b>: React to post 42",
+          '<b>counts</b>: {"likes":3}',
+          "",
+          FOOTER_SESSION,
+          `Expires: ${expires}`,
+        ].join("\n"),
+      )
+      expect(plain(html)).toBe(
         [
           "Approval needed: linkedin · linkedin_react",
           "Kind: bureau.recipe-write",
@@ -531,8 +586,244 @@ describe("createApprovalTelegramBridge", () => {
     })
 
     it("treats a non-string summary as an ordinary key when no other convention key is present", async () => {
-      const text = await cardFor({ summary: { a: 1 }, tool: "t" })
+      const text = plain(await cardFor({ summary: { a: 1 }, tool: "t" }))
       expect(text).toContain('summary: {"a":1}')
+    })
+  })
+
+  describe("readable card", () => {
+    it("sends Telegram HTML: the approval's text is escaped and its Markdown is rendered, never shown raw", async () => {
+      const bridge = makeBridge()
+      bridge.start()
+      request({
+        summary: "Send <b>now</b> & wait",
+        sections: [
+          {
+            title: "Cover <letter>",
+            text: "# Letter\n\n**Merci** pour `cv.pdf`, voir [l'offre](https://acme.test/o?a=1&b=2)\n\n| Field | Value |\n|---|---|\n| Name | Jeremy |\n\n```\nraw <code>\n```",
+          },
+        ],
+      })
+      await until(() => tg.calls.length > 0)
+      const send = tg.calls[0]!
+      expect(send.body.parse_mode).toBe("HTML")
+      const html = String(send.body.text)
+      expect(html).toContain("Send &lt;b&gt;now&lt;/b&gt; &amp; wait")
+      expect(html).toContain("<b>Cover &lt;letter&gt;</b>")
+      expect(html).toContain("<b>Letter</b>")
+      expect(html).toContain("<b>Merci</b> pour <code>cv.pdf</code>")
+      expect(html).toContain('<a href="https://acme.test/o?a=1&amp;b=2">l\'offre</a>')
+      expect(html).toContain("Field | Value\nName | Jeremy")
+      expect(html).toContain("<pre>raw &lt;code&gt;</pre>")
+      const text = plain(html)
+      expect(text).not.toMatch(/(^|\n)#|\*\*|`|\|-/)
+      bridge.stop()
+    })
+
+    it("never cuts silently: a cut says how much is left out and points at the approval page", async () => {
+      const bridge = makeBridge()
+      bridge.start()
+      const letter = "Bonjour, je souhaite rejoindre votre equipe. ".repeat(250).trim()
+      request({
+        summary: "Submit the filled form: Backend Engineer at Acme Labs",
+        sections: [
+          { title: "Form fields", text: letter },
+          { title: "What will be sent", text: "cv.pdf" },
+        ],
+      })
+      await until(() => tg.calls.length > 0)
+      const text = plain(String(tg.calls[0]!.body.text))
+      expect(text).not.toContain("(truncated)")
+      const kept = /Form fields\n([\s\S]*?)\n\[cut here: (\d+) more characters\. Full text on the approval page \("Voir"\)\.\]/.exec(text)
+      expect(kept).not.toBeNull()
+      // The card holds a prefix that ends on a word, and the count is exact.
+      expect(letter.startsWith(kept![1]!)).toBe(true)
+      expect(kept![1]!.endsWith("equipe.") || /\w$/.test(kept![1]!)).toBe(true)
+      expect(letter[kept![1]!.length]).toBe(" ")
+      expect(Number(kept![2])).toBe(letter.length - kept![1]!.length)
+      expect(text).toContain("What will be sent\ncv.pdf")
+      expect(text.length).toBeLessThanOrEqual(3800)
+      bridge.stop()
+    })
+
+    it("closes an HTML card as HTML, and a plain card written before the HTML cards as plain text", async () => {
+      const bridge = makeBridge()
+      bridge.start()
+      const record = request({ summary: "a < b" })
+      await until(() => tg.calls.length > 0)
+      await bridge.handleUpdate(tap(buttons(tg.calls[0]!)[0]!.callback_data))
+      await until(() => tg.calls.some(c => c.method === "editMessageText"))
+      const edit = tg.calls.find(c => c.method === "editMessageText")!
+      expect(edit.body.parse_mode).toBe("HTML")
+      expect(String(edit.body.text)).toContain("a &lt; b")
+      expect(engine.get(record.id)!.status).toBe("approved")
+      bridge.stop()
+
+      // A card persisted by an older daemon: no parseMode, raw text.
+      const old = request({ summary: "old" })
+      const { ticket } = engine.mintCardTicket(old.id)
+      await engine.decideByCard(old.id, "deny", ticket, evidence)
+      engine.putTelegramCard({ token: "feedfeedfeed", approvalId: old.id, messageId: 55, text: "a < b" })
+      tg.calls.length = 0
+      const second = makeBridge()
+      second.start()
+      await until(() => tg.calls.some(c => c.method === "editMessageText"))
+      const oldEdit = tg.calls.find(c => c.method === "editMessageText")!
+      expect(oldEdit.body.message_id).toBe(55)
+      expect(oldEdit.body.parse_mode).toBeUndefined()
+      expect(String(oldEdit.body.text)).toContain("a < b")
+      second.stop()
+    })
+
+    it("falls back to plain text when Telegram refuses the HTML, instead of losing the card", async () => {
+      const errors: unknown[] = []
+      tg = fakeTelegram(call => (call.body.parse_mode === "HTML" ? "Bad Request: can't parse entities" : undefined))
+      const bridge = makeBridge({ fetchImpl: tg.fetchImpl, onError: err => errors.push(err) })
+      bridge.start()
+      request({ summary: "a < b", sections: [{ title: "Note", text: "**bold**" }] })
+      await until(() => tg.calls.length >= 2)
+      const second = tg.calls[1]!
+      expect(second.method).toBe("sendMessage")
+      expect(second.body.parse_mode).toBeUndefined()
+      expect(String(second.body.text)).toContain("a < b")
+      expect(String(second.body.text)).toContain("Note\nbold")
+      expect(buttons(second).map(b => b.text)).toEqual(["Approve", "Refuse"])
+      expect(errors).toHaveLength(1)
+      bridge.stop()
+    })
+  })
+
+  describe("attachments", () => {
+    let data: string
+    let dossier: string
+    // A real 1x1 PNG header is not needed: an unreadable PNG is still a photo.
+    const PNG = Buffer.from("not really a png")
+
+    beforeEach(() => {
+      data = mkdtempSync(join(tmpdir(), "approval-tg-data-"))
+      dossier = join(data, "acme", "backend")
+      mkdirSync(dossier, { recursive: true })
+      writeFileSync(join(dossier, "cv.pdf"), "%PDF-1.4 cv")
+      writeFileSync(join(dossier, "submit-page-filled.png"), PNG)
+      writeFileSync(join(data, "secret.txt"), "outside the dossier")
+    })
+    afterEach(() => {
+      rmSync(data, { recursive: true, force: true })
+    })
+
+    const uploads = () => tg.calls.filter(c => c.method === "sendDocument" || c.method === "sendPhoto")
+    const card = () => tg.calls.find(c => c.method === "sendMessage")!
+    const preview = (attachments: unknown) => ({
+      summary: "Submit the filled form: Backend Engineer at Acme",
+      dossier: "acme/backend",
+      attachments,
+    })
+
+    it("uploads preview.attachments as a real document and a real photo, then sends the card that lists them", async () => {
+      const bridge = makeBridge({ attachmentDir: () => dossier })
+      bridge.start()
+      request(preview(["cv.pdf", "submit-page-filled.png"]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+
+      expect(tg.calls.map(c => c.method)).toEqual(["sendDocument", "sendPhoto", "sendMessage"])
+      const [doc, photo] = uploads()
+      expect(doc!.body.chat_id).toBe(CHAT)
+      expect(doc!.body.document).toEqual({ fileName: "cv.pdf", size: 11 })
+      expect(String(doc!.body.caption)).toContain("cv.pdf")
+      expect(photo!.body.photo).toEqual({ fileName: "submit-page-filled.png", size: PNG.length })
+
+      const text = plain(String(card().body.text))
+      expect(text).toContain("Attachments\ncv.pdf (11 B), sent above\nsubmit-page-filled.png (16 B), sent above")
+      expect(text).not.toContain("attachments:")
+      expect(buttons(card()).map(b => b.text)).toEqual(["Approve", "Refuse"])
+      bridge.stop()
+    })
+
+    it("refuses a path that leaves the folder (.., absolute, outgoing symlink) and says so on the card", async () => {
+      symlinkSync(join(data, "secret.txt"), join(dossier, "link-out.txt"))
+      symlinkSync(join(dossier, "cv.pdf"), join(dossier, "link-in.pdf"))
+      const bridge = makeBridge({ attachmentDir: () => dossier })
+      bridge.start()
+      request(preview(["../../secret.txt", join(data, "secret.txt"), "link-out.txt", "sub/../../../secret.txt", "link-in.pdf"]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+
+      // Only the symlink that stays inside the folder is uploaded.
+      expect(uploads().map(c => (c.body.document as { fileName: string }).fileName)).toEqual(["cv.pdf"])
+      const text = plain(String(card().body.text))
+      const refused = "NOT attached, refused, the path leaves the approval folder"
+      expect(text).toContain(`../../secret.txt: ${refused}`)
+      expect(text).toContain(`${join(data, "secret.txt")}: ${refused}`)
+      expect(text).toContain(`link-out.txt: ${refused}`)
+      expect(text).toContain(`sub/../../../secret.txt: ${refused}`)
+      expect(text).toContain("link-in.pdf (11 B), sent above")
+      expect(JSON.stringify(tg.calls)).not.toContain("outside the dossier")
+      bridge.stop()
+    })
+
+    it("reports a missing, empty or oversized file on the card instead of dropping it", async () => {
+      writeFileSync(join(dossier, "empty.pdf"), "")
+      writeFileSync(join(dossier, "huge.zip"), "")
+      truncateSync(join(dossier, "huge.zip"), 51 * 1024 * 1024)
+      mkdirSync(join(dossier, "folder"))
+      const bridge = makeBridge({ attachmentDir: () => dossier })
+      bridge.start()
+      request(preview(["missing.pdf", "huge.zip", "empty.pdf", "folder", "cv.pdf", 42]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+
+      expect(uploads()).toHaveLength(1)
+      const text = plain(String(card().body.text))
+      expect(text).toContain("missing.pdf: NOT attached, file not found")
+      expect(text).toContain("huge.zip: NOT attached, too large (51 MB, Telegram limit 50 MB)")
+      expect(text).toContain("empty.pdf: NOT attached, empty file")
+      expect(text).toContain("folder: NOT attached, not a file")
+      expect(text).toContain("cv.pdf (11 B), sent above")
+      expect(text).toContain("(entry): NOT attached, not a file name")
+      bridge.stop()
+    })
+
+    it("says so on the card when no folder is known or Telegram rejects the upload, and still sends the card", async () => {
+      const noDir = makeBridge()
+      noDir.start()
+      request(preview(["cv.pdf"]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+      expect(uploads()).toHaveLength(0)
+      expect(plain(String(card().body.text))).toContain("cv.pdf: NOT attached, no folder is known for this approval")
+      noDir.stop()
+
+      const errors: unknown[] = []
+      tg = fakeTelegram(call => (call.method === "sendDocument" ? "Bad Request: file must be non-empty" : undefined))
+      const bridge = makeBridge({ fetchImpl: tg.fetchImpl, attachmentDir: () => dossier, onError: e => errors.push(e) })
+      bridge.start()
+      request(preview(["cv.pdf", "submit-page-filled.png"]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+      const text = plain(String(card().body.text))
+      expect(text).toContain("cv.pdf: NOT attached, Telegram did not accept the file")
+      expect(text).toContain("submit-page-filled.png (16 B), sent above")
+      expect(errors).toHaveLength(1)
+      bridge.stop()
+    })
+
+    it("sends an image Telegram refuses as a photo as a document instead", async () => {
+      tg = fakeTelegram(call => (call.method === "sendPhoto" ? "Bad Request: PHOTO_INVALID_DIMENSIONS" : undefined))
+      const bridge = makeBridge({ fetchImpl: tg.fetchImpl, attachmentDir: () => dossier })
+      bridge.start()
+      request(preview(["submit-page-filled.png"]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+      expect(tg.calls.map(c => c.method)).toEqual(["sendPhoto", "sendDocument", "sendMessage"])
+      expect(plain(String(card().body.text))).toContain("submit-page-filled.png (16 B), sent above")
+      bridge.stop()
+    })
+
+    it("leaves a card without file names in attachments unchanged: nothing is uploaded", async () => {
+      const bridge = makeBridge({ attachmentDir: () => dossier })
+      bridge.start()
+      request({ kind: "mail", subject: "Hello", attachments: [{ fileName: "cv.pdf", sizeBytes: 11 }] })
+      await until(() => tg.calls.length > 0)
+      expect(tg.calls.map(c => c.method)).toEqual(["sendMessage"])
+      const text = plain(String(tg.calls[0]!.body.text))
+      expect(text).toContain('attachments: [{"fileName":"cv.pdf","sizeBytes":11}]')
+      expect(text).not.toContain("NOT attached")
+      bridge.stop()
     })
   })
 
