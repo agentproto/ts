@@ -19,8 +19,8 @@
  * The card is Telegram HTML (`telegram-card-text.ts`): a summary, with every
  * cut announced and pointed at the approval page. The files listed in
  * `preview.attachments` are sent first as real documents or photos
- * (`telegram-attachments.ts`), then the card, which lists what was attached and
- * what was not and why.
+ * (`telegram-attachments.ts`) only when `sendAttachments` is on; by default the
+ * card just names the files on one `Files:` line.
  *
  * Nothing here logs the bot token, a chat id or a user id.
  */
@@ -62,6 +62,9 @@ export interface ApprovalTelegramBridgeOptions {
   /** The folder `preview.attachments` names are relative to, for one approval.
    *  Absent, or returning undefined, means no file is sent and the card says
    *  so for each name. */
+  /** `approvals.telegramAttachments`: send the files of `preview.attachments`
+   *  as documents and photos. Default false: the card only names them. */
+  sendAttachments?: boolean
   attachmentDir?: (record: ApprovalRecord) => string | undefined | Promise<string | undefined>
   fetchImpl?: typeof fetch
   onError?: (err: unknown) => void
@@ -215,7 +218,11 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
     const record = opts.engine.get(approvalId)
     if (!record || record.status !== "pending" || !record.channels.includes("telegram")) return
     const token = randomBytes(6).toString("hex")
-    const attachments = await sendAttachments(record)
+    const attachments = opts.sendAttachments === true ? await sendAttachments(record) : []
+    const listed = opts.sendAttachments === true ? undefined : readAttachmentNames(record.preview)
+    const files = listed?.claimed
+      ? { names: listed.names.map(shortName), more: Number(listed.problems.map(p => /^(\d+) more$/.exec(p.name)?.[1]).find(Boolean) ?? 0) }
+      : undefined
     const reply_markup = {
       inline_keyboard: [
         [
@@ -224,7 +231,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
         ],
       ],
     }
-    let text = describeApproval(record, attachments)
+    let text = describeApproval(record, attachments, files)
     let parseMode: "HTML" | undefined = "HTML"
     let result: Record<string, unknown>
     try {
