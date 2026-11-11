@@ -268,7 +268,7 @@ import {
   performInstall,
 } from "./app-tools.js"
 import { createAppServiceStore, type AppServiceStore } from "./app-services.js"
-import { registerAppDataTools } from "./app-data.js"
+import { appDataDir, registerAppDataTools } from "./app-data.js"
 import { APP_STATE_APPEND_TOOL_NAME } from "./app-state.js"
 import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
@@ -332,6 +332,7 @@ import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
+import { approvalAttachmentDir } from "./approvals/telegram-attachments.js"
 import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
 import { registerApprovalTools } from "./approvals/tools.js"
 import { buildApprovalCardsServer } from "./approvals/card-surface.js"
@@ -5244,6 +5245,12 @@ export async function createGateway(
         alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
         chatId: permissionTelegramCfg!.permissionTelegramChatId!,
         allowedUserIds: permissionTelegramCfg!.permissionTelegramUserIds!,
+        // `preview.attachments` is only resolved for an approval opened by an
+        // installed app, inside that app's data root.
+        attachmentDir: record => {
+          const app = record.appId ? appRegistry.getApp(record.appId) : undefined
+          return app ? approvalAttachmentDir(record.preview, appDataDir(app)) : undefined
+        },
         onError: err => {
           console.warn(`[approval-telegram-bridge] ${err instanceof Error ? err.message : String(err)}`)
         },
