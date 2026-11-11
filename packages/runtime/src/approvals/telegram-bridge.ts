@@ -59,12 +59,12 @@ export interface ApprovalTelegramBridgeOptions {
   chatId: string
   /** Telegram user ids allowed to answer. Required and non-empty. */
   allowedUserIds: readonly string[]
-  /** The folder `preview.attachments` names are relative to, for one approval.
-   *  Absent, or returning undefined, means no file is sent and the card says
-   *  so for each name. */
   /** `approvals.telegramAttachments`: send the files of `preview.attachments`
    *  as documents and photos. Default false: the card only names them. */
   sendAttachments?: boolean
+  /** The folder `preview.attachments` names are relative to, for one approval.
+   *  Only used when `sendAttachments` is on. Absent, or returning undefined,
+   *  means no file is sent and the card says so for each name. */
   attachmentDir?: (record: ApprovalRecord) => string | undefined | Promise<string | undefined>
   fetchImpl?: typeof fetch
   onError?: (err: unknown) => void
