@@ -572,6 +572,12 @@ export interface ApprovalsConfig {
    */
   telegramApprovalCards?: boolean
   /**
+   * Send the files named in `preview.attachments` to the Telegram chat as
+   * documents and photos before the approval card. Default false: the card
+   * only names them. Read at boot; lockout key (`writable: false`).
+   */
+  telegramAttachments?: boolean
+  /**
    * Telegram user ids (digits only) allowed to read and decide ONE pending
    * approval through an approval link: a link-session token whose
    * `approvalId` claim equals the route's id, on `GET /approvals/:id` and

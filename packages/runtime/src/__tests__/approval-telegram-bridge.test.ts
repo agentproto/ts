@@ -443,18 +443,18 @@ describe("createApprovalTelegramBridge", () => {
         }),
       )
       expect(text).toContain("Third\nshort third")
-      expect(text.match(/a+/g)!.some(run => run.length > 1000)).toBe(true)
-      expect(text.match(/b+/g)!.some(run => run.length > 1000)).toBe(true)
-      expect(text.length).toBeLessThanOrEqual(3800)
+      expect(text.match(/a+/g)!.some(run => run.length > 200)).toBe(true)
+      expect(text.match(/b+/g)!.some(run => run.length > 200)).toBe(true)
+      expect(text.length).toBeLessThanOrEqual(1800)
       expect(text).toContain(FOOTER_SESSION)
     })
 
-    it("clips the summary to 600 characters and the extra keys to 300", async () => {
+    it("clips the summary to 600 characters and leaves a long extra string off", async () => {
       const text = plain(await cardFor({ summary: "s".repeat(1000), note: "n".repeat(1000) }))
       expect(text).toContain(`${"s".repeat(600)}\n[cut here: 400 more characters.`)
       expect(text).not.toContain("s".repeat(601))
-      expect(text).toContain(`note: ${"n".repeat(300)} [cut here: 700 more characters.`)
-      expect(text).not.toContain("n".repeat(301))
+      expect(text).not.toContain("note:")
+      expect(text).toContain('+1 more details on the approval page ("Voir").')
     })
 
     it("only prints a link whose url is https", async () => {
@@ -481,17 +481,17 @@ describe("createApprovalTelegramBridge", () => {
       const links = Array.from({ length: 25 }, (_, i) => ({ label: `L${i}`, url: `https://acme.test/${i}` }))
       const html = await cardFor({ sections, links })
       const text = plain(html)
-      expect(text).toContain("Sec19\ntext19")
-      expect(text).not.toContain("Sec20")
+      expect(text).toContain("Sec4\ntext4")
+      expect(text).not.toContain("Sec5")
       expect(text).not.toContain("NoText")
       expect(text).not.toContain("NoTitle")
       expect(text).not.toContain("junk")
       expect(html).toContain('<a href="https://acme.test/19">L19</a>')
       expect(text).not.toContain("L20")
       // What is left off the card is counted, not dropped.
-      expect(text).toContain('5 more sections on the approval page ("Voir").')
+      expect(text).toContain('20 more sections on the approval page ("Voir").')
       expect(text).toContain('5 more links on the approval page ("Voir").')
-      expect(text.length).toBeLessThanOrEqual(3800)
+      expect(text.length).toBeLessThanOrEqual(1800)
       expect(text).toContain(FOOTER_SESSION)
     })
 
@@ -638,11 +638,11 @@ describe("createApprovalTelegramBridge", () => {
       expect(kept).not.toBeNull()
       // The card holds a prefix that ends on a word, and the count is exact.
       expect(letter.startsWith(kept![1]!)).toBe(true)
-      expect(kept![1]!.endsWith("equipe.") || /\w$/.test(kept![1]!)).toBe(true)
+      expect(kept![1]!.length).toBeLessThanOrEqual(280)
       expect(letter[kept![1]!.length]).toBe(" ")
       expect(Number(kept![2])).toBe(letter.length - kept![1]!.length)
       expect(text).toContain("What will be sent\ncv.pdf")
-      expect(text.length).toBeLessThanOrEqual(3800)
+      expect(text.length).toBeLessThanOrEqual(1800)
       bridge.stop()
     })
 
@@ -693,6 +693,80 @@ describe("createApprovalTelegramBridge", () => {
     })
   })
 
+  describe("compact card", () => {
+    async function cardFor(preview: unknown): Promise<string> {
+      const bridge = makeBridge()
+      bridge.start()
+      request(preview)
+      await until(() => tg.calls.length > 0)
+      bridge.stop()
+      return String(tg.calls[0]!.body.text)
+    }
+
+    it("keeps a card shaped like a job kit decision under 1800 characters", async () => {
+      const answers = `${"Answer line about the candidate and the role. ".repeat(60)}`.slice(0, 2400)
+      const html = await cardFor({
+        summary: "Decide: acme/backend, round 2",
+        sections: [{ title: "answers.md", text: answers }],
+        dossier: "acme/backend",
+        action: "decide",
+        round: 2,
+        status: "open",
+        decision: "go",
+        comment: "c".repeat(300),
+      })
+      const text = plain(html)
+      expect(text.length).toBeLessThanOrEqual(1800)
+      expect(text).toMatch(CUT)
+      expect(text).toContain("dossier: acme/backend · action: decide · round: 2 · status: open · decision: go")
+      expect(text).not.toContain("ccccc")
+      expect(text).toContain('+1 more details on the approval page ("Voir").')
+    })
+
+    it("keeps numbers and booleans even when long strings are left off", async () => {
+      const text = plain(
+        await cardFor({
+          summary: "Pay the invoice",
+          note: "n".repeat(100),
+          amount: 5,
+          urgent: true,
+          other: "o".repeat(100),
+        }),
+      )
+      expect(text).toContain("amount: 5")
+      expect(text).toContain("urgent: true")
+      expect(text).not.toContain("nnnnn")
+      expect(text).toContain('+2 more details on the approval page ("Voir").')
+    })
+
+    it("shows 5 sections at most, each clipped to 280 characters", async () => {
+      const text = plain(
+        await cardFor({
+          sections: Array.from({ length: 7 }, (_, i) => ({ title: `S${i}`, text: `${"w ".repeat(400)}` })),
+        }),
+      )
+      expect(text).toContain("S4")
+      expect(text).not.toContain("S5")
+      expect(text).toContain('2 more sections on the approval page ("Voir").')
+      expect(text.length).toBeLessThanOrEqual(1800)
+    })
+
+    it("renders a preview without convention keys exactly as before", async () => {
+      const html = await cardFor({ recipe: "linkedin", tool: "react", body: "b".repeat(5000), n: 3 })
+      expect(html.replace(/Expires: .*$/, "Expires: X")).toMatchInlineSnapshot(`
+        "<b>Approval needed: linkedin · linkedin_react</b>
+        Kind: bureau.recipe-write
+        <b>recipe</b>: linkedin
+        <b>tool</b>: react
+        <b>body</b>: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb <i>[cut here: 2000 more characters. Full text on the approval page ("Voir").]</i>
+        <b>n</b>: 3
+
+        Session: sess_abc
+        Expires: X"
+      `)
+    })
+  })
+
   describe("attachments", () => {
     let data: string
     let dossier: string
@@ -720,7 +794,7 @@ describe("createApprovalTelegramBridge", () => {
     })
 
     it("uploads preview.attachments as a real document and a real photo, then sends the card that lists them", async () => {
-      const bridge = makeBridge({ attachmentDir: () => dossier })
+      const bridge = makeBridge({ sendAttachments: true, attachmentDir: () => dossier })
       bridge.start()
       request(preview(["cv.pdf", "submit-page-filled.png"]))
       await until(() => tg.calls.some(c => c.method === "sendMessage"))
@@ -742,7 +816,7 @@ describe("createApprovalTelegramBridge", () => {
     it("refuses a path that leaves the folder (.., absolute, outgoing symlink) and says so on the card", async () => {
       symlinkSync(join(data, "secret.txt"), join(dossier, "link-out.txt"))
       symlinkSync(join(dossier, "cv.pdf"), join(dossier, "link-in.pdf"))
-      const bridge = makeBridge({ attachmentDir: () => dossier })
+      const bridge = makeBridge({ sendAttachments: true, attachmentDir: () => dossier })
       bridge.start()
       request(preview(["../../secret.txt", join(data, "secret.txt"), "link-out.txt", "sub/../../../secret.txt", "link-in.pdf"]))
       await until(() => tg.calls.some(c => c.method === "sendMessage"))
@@ -765,7 +839,7 @@ describe("createApprovalTelegramBridge", () => {
       writeFileSync(join(dossier, "huge.zip"), "")
       truncateSync(join(dossier, "huge.zip"), 51 * 1024 * 1024)
       mkdirSync(join(dossier, "folder"))
-      const bridge = makeBridge({ attachmentDir: () => dossier })
+      const bridge = makeBridge({ sendAttachments: true, attachmentDir: () => dossier })
       bridge.start()
       request(preview(["missing.pdf", "huge.zip", "empty.pdf", "folder", "cv.pdf", 42]))
       await until(() => tg.calls.some(c => c.method === "sendMessage"))
@@ -782,7 +856,7 @@ describe("createApprovalTelegramBridge", () => {
     })
 
     it("says so on the card when no folder is known or Telegram rejects the upload, and still sends the card", async () => {
-      const noDir = makeBridge()
+      const noDir = makeBridge({ sendAttachments: true })
       noDir.start()
       request(preview(["cv.pdf"]))
       await until(() => tg.calls.some(c => c.method === "sendMessage"))
@@ -792,7 +866,7 @@ describe("createApprovalTelegramBridge", () => {
 
       const errors: unknown[] = []
       tg = fakeTelegram(call => (call.method === "sendDocument" ? "Bad Request: file must be non-empty" : undefined))
-      const bridge = makeBridge({ fetchImpl: tg.fetchImpl, attachmentDir: () => dossier, onError: e => errors.push(e) })
+      const bridge = makeBridge({ sendAttachments: true, fetchImpl: tg.fetchImpl, attachmentDir: () => dossier, onError: e => errors.push(e) })
       bridge.start()
       request(preview(["cv.pdf", "submit-page-filled.png"]))
       await until(() => tg.calls.some(c => c.method === "sendMessage"))
@@ -805,7 +879,7 @@ describe("createApprovalTelegramBridge", () => {
 
     it("sends an image Telegram refuses as a photo as a document instead", async () => {
       tg = fakeTelegram(call => (call.method === "sendPhoto" ? "Bad Request: PHOTO_INVALID_DIMENSIONS" : undefined))
-      const bridge = makeBridge({ fetchImpl: tg.fetchImpl, attachmentDir: () => dossier })
+      const bridge = makeBridge({ sendAttachments: true, fetchImpl: tg.fetchImpl, attachmentDir: () => dossier })
       bridge.start()
       request(preview(["submit-page-filled.png"]))
       await until(() => tg.calls.some(c => c.method === "sendMessage"))
@@ -815,7 +889,7 @@ describe("createApprovalTelegramBridge", () => {
     })
 
     it("leaves a card without file names in attachments unchanged: nothing is uploaded", async () => {
-      const bridge = makeBridge({ attachmentDir: () => dossier })
+      const bridge = makeBridge({ sendAttachments: true, attachmentDir: () => dossier })
       bridge.start()
       request({ kind: "mail", subject: "Hello", attachments: [{ fileName: "cv.pdf", sizeBytes: 11 }] })
       await until(() => tg.calls.length > 0)
@@ -823,6 +897,31 @@ describe("createApprovalTelegramBridge", () => {
       const text = plain(String(tg.calls[0]!.body.text))
       expect(text).toContain('attachments: [{"fileName":"cv.pdf","sizeBytes":11}]')
       expect(text).not.toContain("NOT attached")
+      bridge.stop()
+    })
+
+    it("by default sends no file and the card has one Files line, never NOT attached", async () => {
+      const bridge = makeBridge({ attachmentDir: () => dossier })
+      bridge.start()
+      request(preview(["cv.pdf", "submit-page-filled.png", "missing.pdf"]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+      expect(tg.calls.map(c => c.method)).toEqual(["sendMessage"])
+      const text = plain(String(card().body.text))
+      expect(text).toContain("Files: cv.pdf, submit-page-filled.png, missing.pdf (on the approval page)")
+      expect(text).not.toContain("NOT attached")
+      expect(text).not.toContain("sent above")
+      expect(text).not.toContain("attachments:")
+      bridge.stop()
+    })
+
+    it("by default lists at most 10 names then counts the rest", async () => {
+      const bridge = makeBridge({ attachmentDir: () => dossier })
+      bridge.start()
+      request(preview(Array.from({ length: 13 }, (_, i) => `f${i}.pdf`)))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+      const text = plain(String(card().body.text))
+      expect(text).toContain("f9.pdf, +3 more (on the approval page)")
+      expect(text).not.toContain("f10.pdf")
       bridge.stop()
     })
   })

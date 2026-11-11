@@ -5245,6 +5245,7 @@ export async function createGateway(
         alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
         chatId: permissionTelegramCfg!.permissionTelegramChatId!,
         allowedUserIds: permissionTelegramCfg!.permissionTelegramUserIds!,
+        sendAttachments: permissionTelegramCfg?.telegramAttachments === true,
         // `preview.attachments` is only resolved for an approval opened by an
         // installed app, inside that app's data root.
         attachmentDir: record => {

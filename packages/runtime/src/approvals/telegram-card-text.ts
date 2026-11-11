@@ -34,6 +34,13 @@ const MAX_EXTRAS = 20
 // A shorter value is never dropped as a duplicate: "5" occurs inside "Send 15
 // invoices", and a field missing from an approval card is worse than a repeat.
 const MIN_DEDUPE_CHARS = 20
+// Compact card (a preview that carries the convention): a notification, the
+// full text lives on the approval page.
+export const MAX_COMPACT_CHARS = 1800
+const COMPACT_SECTION_CHARS = 280
+const COMPACT_MAX_SECTIONS = 5
+const COMPACT_EXTRA_VALUE_CHARS = 40
+const COMPACT_MAX_EXTRAS = 6
 /** Room kept for one cut notice when sharing the card between texts. */
 const NOTICE_RESERVE = 90
 
@@ -285,6 +292,20 @@ function linkHtml(link: { label: string; url: string }): string {
   return `<a href="${href}">${escapeHtml(link.label)}</a>`
 }
 
+/** The names of files that are on the approval page but were not sent. */
+export interface FileNames {
+  names: readonly string[]
+  /** Names past the cap. */
+  more?: number
+}
+
+function filesBlock(files: FileNames): string | undefined {
+  if (files.names.length === 0) return undefined
+  const names = files.names.map(n => escapeHtml(clipLabel(n, MAX_LABEL_CHARS)))
+  if (files.more && files.more > 0) names.push(`+${files.more} more`)
+  return `Files: ${names.join(", ")} (on the approval page)`
+}
+
 function attachmentsBlock(attachments: readonly AttachmentLine[]): string | undefined {
   if (attachments.length === 0) return undefined
   const lines = attachments.map(a =>
@@ -309,30 +330,39 @@ function conventionHtml(
 ): string {
   const summary = conv.summary ? cutHtml(cutText(conv.summary, MAX_SUMMARY_CHARS)) : undefined
   const seen = [conv.summary ?? "", ...conv.sections.map(s => s.text)]
-  const extras: string[] = []
+  const extraParts: string[] = []
   let moreExtras = 0
   for (const [key, value] of conv.rest) {
     if (value === undefined || value === null) continue
     if (typeof value === "string" && value.length >= MIN_DEDUPE_CHARS && seen.some(text => text.includes(value))) continue
-    if (extras.length >= MAX_EXTRAS) {
+    const rendered = renderValue(value)
+    if (
+      extraParts.length >= COMPACT_MAX_EXTRAS ||
+      (typeof value === "string" && value.length > COMPACT_EXTRA_VALUE_CHARS)
+    ) {
       moreExtras++
       continue
     }
-    extras.push(
-      `<b>${escapeHtml(clipLabel(key, MAX_LABEL_CHARS))}</b>: ${cutHtml(cutText(renderValue(value), MAX_EXTRA_CHARS), true)}`,
+    extraParts.push(
+      `<b>${escapeHtml(clipLabel(key, MAX_LABEL_CHARS))}</b>: ${escapeHtml(clipLabel(rendered, COMPACT_EXTRA_VALUE_CHARS))}`,
     )
   }
-  if (moreExtras > 0) extras.push(`<i>${moreExtras} more fields on the approval page ("Voir").</i>`)
+  const extras: string[] = []
+  if (extraParts.length > 0) extras.push(extraParts.join(" · "))
+  if (moreExtras > 0) extras.push(`<i>+${moreExtras} more details on the approval page ("Voir").</i>`)
+
+  const shown = conv.sections.slice(0, COMPACT_MAX_SECTIONS)
+  const moreSections = conv.moreSections + (conv.sections.length - shown.length)
 
   const assemble = (bodies: readonly string[]): string => {
     const blocks: string[] = [headHtml(record)]
     if (summary) blocks.push(summary)
-    conv.sections.forEach((section, i) => {
+    shown.forEach((section, i) => {
       const title = `<b>${escapeHtml(section.title)}</b>`
       blocks.push(bodies[i] ? `${title}\n${bodies[i]}` : title)
     })
-    if (conv.moreSections > 0) {
-      blocks.push(`<i>${conv.moreSections} more sections on the approval page ("Voir").</i>`)
+    if (moreSections > 0) {
+      blocks.push(`<i>${moreSections} more sections on the approval page ("Voir").</i>`)
     }
     if (conv.links.length > 0 || conv.moreLinks > 0) {
       const lines = conv.links.map(linkHtml)
@@ -344,12 +374,13 @@ function conventionHtml(
     return `${blocks.join("\n\n")}\n${tail}`
   }
 
-  const nonEmpty = conv.sections.filter(s => s.text.length > 0).length
-  const room = budget - visibleLength(assemble(conv.sections.map(() => ""))) - nonEmpty
+  const nonEmpty = shown.filter(sec => sec.text.length > 0).length
+  const room = budget - visibleLength(assemble(shown.map(() => ""))) - nonEmpty
+  const capped = shown.map(sec => cutText(sec.text, COMPACT_SECTION_CHARS))
   const cuts = fitTexts(
-    conv.sections.map(s => s.text),
+    capped.map(c => c.text),
     room,
-  )
+  ).map((cut, i) => ({ text: cut.text, hidden: cut.hidden + capped[i]!.hidden }))
   return assemble(cuts.map(cut => cutHtml(cut)))
 }
 
@@ -395,12 +426,16 @@ function plainPreviewHtml(
  * block (what was sent, what was not and why); the `attachments` key they come
  * from is then not printed a second time as a field.
  */
-export function describeApproval(record: ApprovalRecord, attachments: readonly AttachmentLine[] = []): string {
+export function describeApproval(
+  record: ApprovalRecord,
+  attachments: readonly AttachmentLine[] = [],
+  files?: FileNames,
+): string {
   const by = record.requestedBy
   const footer = ["", "sessionId" in by ? `Session: ${escapeHtml(by.sessionId)}` : "Requested by the operator"]
   if (record.expiresAt) footer.push(`Expires: ${escapeHtml(record.expiresAt)}`)
   const tail = footer.join("\n")
-  const block = attachmentsBlock(attachments)
+  const block = attachmentsBlock(attachments) ?? (files ? filesBlock(files) : undefined)
 
   let preview = record.preview
   if (block && isRecord(preview)) {
@@ -408,6 +443,7 @@ export function describeApproval(record: ApprovalRecord, attachments: readonly A
     preview = others
   }
   const conv = isRecord(preview) ? readConvention(preview) : undefined
+  const limit = conv ? MAX_COMPACT_CHARS : MAX_BODY_CHARS
   const render = (budget: number): string =>
     conv
       ? conventionHtml(record, conv, block, tail, budget)
@@ -415,20 +451,20 @@ export function describeApproval(record: ApprovalRecord, attachments: readonly A
 
   // The shares are computed on the source text, whose rendering is normally
   // shorter. When it is not, shrink the budget by the overshoot and retry.
-  let budget = MAX_BODY_CHARS
+  let budget = limit
   let html = render(budget)
   for (let i = 0; i < 4; i++) {
-    const over = visibleLength(html) - MAX_BODY_CHARS
+    const over = visibleLength(html) - limit
     if (over <= 0) return html
     budget -= over + NOTICE_RESERVE
     html = render(budget)
   }
-  if (visibleLength(html) <= MAX_BODY_CHARS) return html
+  if (visibleLength(html) <= limit) return html
   // Fixed parts alone overflow (a pathological preview): keep the head of the
   // plain text, say so, and keep Session and Expires.
   const plain = htmlToPlain(html)
   const plainTail = htmlToPlain(tail)
   const head = plain.slice(0, plain.length - plainTail.length)
-  const cut = cutText(head, MAX_BODY_CHARS - plainTail.length - NOTICE_RESERVE - 2)
+  const cut = cutText(head, limit - plainTail.length - NOTICE_RESERVE - 2)
   return `${escapeHtml(cut.text)}\n${notice(cut)}\n${tail}`
 }

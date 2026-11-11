@@ -507,6 +507,7 @@ const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
     permissionTelegramAlias: z.string().optional(),
     permissionTelegramTools: z.array(z.string()).optional(),
     telegramApprovalCards: z.boolean().optional(),
+    telegramAttachments: z.boolean().optional(),
     humanTelegramIds: z.array(telegramUserIdString).optional(),
   })
   .passthrough()
@@ -1063,6 +1064,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Telegram approval cards",
     help: "Send each pending approval (for example a Bureau recipe write) to the Telegram chat as an Approve / Refuse card, and let a tap from an allowed user decide it through the telegram channel. Reuses approvals.permissionTelegramChatId, approvals.permissionTelegramUserIds and approvals.permissionTelegramAlias, and does nothing until those are set. Default false.",
+    default: false,
+  },
+  {
+    path: "approvals.telegramAttachments",
+    schema: bool,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Telegram approval files",
+    help: "Send the files named in an approval's preview.attachments to the Telegram chat as documents and photos, before the card. Default false: the card is a short notification that only names the files, which stay on the approval page.",
     default: false,
   },
   {
