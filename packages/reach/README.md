@@ -15,7 +15,9 @@ Zero runtime dependency.
 - `reachContentFromPreview(preview, title)`: the one parser from an approval `preview` to REACH
   content (summary falling back to the title, https links only, bare file names only, legacy keys
   dropped).
-- `parseReachReceipt(body)`: strict; anything that is not a valid receipt is refused.
+- `parseReachReceipt(body)`: strict on what it reads (a known `status`, `until` on `deferred`, a
+  `reason` on `undelivered` and `failed`); anything that is not a valid receipt is refused. Unknown
+  keys are ignored and dropped from the result, so a receiver may add its own fields.
 - `runReachConformance(handler, { secret })`: for a webhook receiver's own tests. Given
   `(req: Request) => Promise<Response>`, it checks that a signed message gets a valid receipt and
   that the same `dedupeKey` twice gets `deduped` or the same receipt. A bare 200 with no receipt
@@ -27,5 +29,5 @@ The host `POST`s `{ "type": "message", "message": <ReachMessage> }` and later
 `{ "type": "close", "dedupeKey", "outcome" }`, signed the Standard Webhooks way (`webhook-id`,
 `webhook-timestamp`, `webhook-signature: v1,<base64 HMAC-SHA256 of id.timestamp.body>`, keyed by the
 base64 payload of a `whsec_` secret). The receiver answers a 2xx whose JSON body is a receipt body,
-for example `{ "status": "deferred", "until": "2026-11-13T08:00:00Z" }`. Anything else is read as
-`failed`.
+for example `{ "status": "deferred", "until": "2026-11-13T08:00:00Z" }`. Extra fields are
+ignored. Anything that is not a receipt is read as `failed`.

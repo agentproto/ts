@@ -44,6 +44,15 @@ describe("runReachConformance", () => {
     expect(result.ok).toBe(true)
   })
 
+  it("passes a receiver whose receipt carries extra keys", async () => {
+    const result = await runReachConformance(
+      receiver(dup => json({ status: dup ? "deduped" : "delivered", messageId: "m1", traceId: "t1" })),
+      { secret: SECRET },
+    )
+    expect(result.checks.map(c => c.ok)).toEqual([true, true])
+    expect(result.ok).toBe(true)
+  })
+
   it("fails a receiver that answers a bare 200 with no receipt", async () => {
     const result = await runReachConformance(receiver(() => new Response(null, { status: 200 })), { secret: SECRET })
     expect(result.ok).toBe(false)

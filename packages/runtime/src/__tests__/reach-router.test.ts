@@ -219,6 +219,16 @@ describe("REACH router", () => {
     ])
   })
 
+  it("a receipt with extra keys acknowledges, and the extra keys never reach reach.json", async () => {
+    const r = startReach({ answer: () => receipt({ status: "delivered", messageId: "m-1", traceId: "t-1" }) })
+    const record = request()
+    await r.route(record.id)
+    expect(tg.calls).toHaveLength(0)
+    const rs = receipts(record.id)
+    expect(rs).toEqual([expect.objectContaining({ adapterId: "pygmalion", status: "delivered" })])
+    expect(JSON.stringify(rs)).not.toMatch(/messageId|traceId|m-1|t-1/)
+  })
+
   it("a deferred receipt past expiresAt falls to the bridge", async () => {
     const r = startReach({
       answer: call =>

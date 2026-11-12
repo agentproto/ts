@@ -3,13 +3,15 @@
  * well-formed receipt: anything else (an empty body, a bare `{ ok: true }`,
  * an unknown status, a `deferred` without a valid `until`) is refused, so a
  * receiver can never acknowledge by accident.
+ *
+ * Unknown keys are ignored, not refused: a receiver may add its own fields
+ * (a message id, a trace id) without breaking delivery. The returned receipt
+ * carries only the known fields, so nothing unknown is ever kept.
  */
 
 import { REACH_RECEIPT_STATUSES, type ReachReceiptBody } from "./types.js"
 
 export type ParseReachReceiptResult = { ok: true; receipt: ReachReceiptBody } | { ok: false; error: string }
-
-const ALLOWED_KEYS = new Set(["status", "until", "reason", "adapterId", "at"])
 
 function isIsoDate(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "" && Number.isFinite(Date.parse(value))
@@ -30,9 +32,6 @@ export function parseReachReceipt(body: unknown): ParseReachReceiptResult {
     return { ok: false, error: "receipt must be a JSON object" }
   }
   const r = value as Record<string, unknown>
-  for (const key of Object.keys(r)) {
-    if (!ALLOWED_KEYS.has(key)) return { ok: false, error: `unknown key "${key}"` }
-  }
   if (r.adapterId !== undefined && typeof r.adapterId !== "string") return { ok: false, error: "adapterId must be a string" }
   if (r.at !== undefined && !isIsoDate(r.at)) return { ok: false, error: "at must be an ISO timestamp" }
   const status = r.status
