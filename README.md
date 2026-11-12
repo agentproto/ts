@@ -47,9 +47,10 @@ early; see "What's live vs. roadmap" below.
 
 ## Quick start
 
-Tested on a clean HOME and npm prefix (macOS arm64, Node 24, `@agentproto/cli`
-from npm). You need Node.js and, for the example below, the Claude Code agent
-setup described in step 3.
+Install, daemon start and adapter install were tested on a clean HOME and npm
+prefix (macOS arm64, Node 24, `@agentproto/cli` from npm). The first session
+stopped at the missing credential (step 3), so steps 3 to 4 and the gate below
+follow the CLI's own error text and docs, not a full run with a model.
 
 ```bash
 # 1. install the CLI and the adapter for the agent you want to drive
@@ -73,9 +74,20 @@ agentproto sessions start claude-code --cwd . --prompt "refactor the payments mo
 agentproto sessions --watch
 ```
 
-Then gate it: attach a policy to the session's turn-end and hold a commit
-behind a human ack (`--then commit` requires `--commit-path` and
-`--commit-message`; `<id>` is the session id shown by `agentproto sessions`):
+Then gate it. A gate fires when the session's turn ends, so attach it
+before the turn ends, or send another prompt afterwards
+(`agentproto sessions prompt <id> --prompt "..."`); until then the policy
+stays `watching`. Gate commands run under a default-deny allowlist, so first
+allow them in `<workspace>/.agentproto/allowed-commands.json`, where
+`<workspace>` is the directory you started `agentproto serve` in (without it
+the policy goes straight to `blocked` with `not in allowlist`):
+
+```json
+{ "version": 1, "commands": ["pnpm", "git"] }
+```
+
+`--then commit` requires `--commit-path` and `--commit-message`; `<id>` is the
+session id shown by `agentproto sessions`:
 
 ```bash
 agentproto policy attach --session <id> --then commit \
