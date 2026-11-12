@@ -36,7 +36,14 @@ import {
   logAppLinkApprovalAccess,
   type AppLinkApprovalRequest,
 } from "../app-link-gate.js"
-import { ApprovalError, ApprovalNotPendingError, parseApprovalStatus, type ApprovalRequester, type ApprovalWakeTarget } from "./types.js"
+import {
+  ApprovalError,
+  ApprovalNotPendingError,
+  parseApprovalStatus,
+  type ApprovalReachOption,
+  type ApprovalRequester,
+  type ApprovalWakeTarget,
+} from "./types.js"
 import type { ApprovalsEngine } from "./engine.js"
 
 export interface ApprovalsHttpAuth {
@@ -154,6 +161,21 @@ function parseWake(value: unknown): ApprovalWakeTarget | undefined {
   return { ...(sessionId ? { sessionId } : {}), ...(agent ? { agent } : {}) }
 }
 
+/** `reach` on `POST /approvals`: absent, `false`, or `{ urgency }`. This is
+ *  producer code, so `urgency: "now"` is accepted here (and only here). */
+function parseReach(value: unknown): { ok: true; reach?: ApprovalReachOption } | { ok: false } {
+  if (value === undefined) return { ok: true }
+  if (value === false) return { ok: true, reach: false }
+  if (
+    isJsonRecord(value) &&
+    Object.keys(value).every(k => k === "urgency") &&
+    (value.urgency === "now" || value.urgency === "normal" || value.urgency === "digest")
+  ) {
+    return { ok: true, reach: { urgency: value.urgency } }
+  }
+  return { ok: false }
+}
+
 export async function handleApprovals(
   req: IncomingMessage,
   res: ServerResponse,
@@ -188,6 +210,14 @@ export async function handleApprovals(
       return true
     }
     const wake = parseWake(body.wake)
+    const reach = parseReach(body.reach)
+    if (!reach.ok) {
+      json(res, 400, {
+        error: "invalid_reach",
+        message: 'reach must be false or { urgency: "now" | "normal" | "digest" }',
+      })
+      return true
+    }
     try {
       const record = engine.request(
         {
@@ -199,6 +229,7 @@ export async function handleApprovals(
           ...(typeof body.appId === "string" ? { appId: body.appId } : {}),
           ...(typeof body.expiresAt === "string" ? { expiresAt: body.expiresAt } : {}),
           ...(wake ? { wake } : {}),
+          ...(reach.reach !== undefined ? { reach: reach.reach } : {}),
         },
         requester,
       )

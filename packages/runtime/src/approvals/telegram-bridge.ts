@@ -22,6 +22,12 @@
  * (`telegram-attachments.ts`) only when `sendAttachments` is on; by default the
  * card just names the files on one `Files:` line.
  *
+ * With `announceOnRequested: false` (the REACH router is configured), the
+ * bridge no longer posts on `approval:requested` by itself: the router calls
+ * `announce(approvalId)` when the route reaches the `telegram` adapter. Cards
+ * are still closed on decided and expired, and restored at `start()`, exactly
+ * as in the default mode.
+ *
  * Nothing here logs the bot token, a chat id or a user id.
  */
 
@@ -72,11 +78,24 @@ export interface ApprovalTelegramBridgeOptions {
   attachmentDir?: (record: ApprovalRecord) => string | undefined | Promise<string | undefined>
   fetchImpl?: typeof fetch
   onError?: (err: unknown) => void
+  /** Default true: every `approval:requested` is announced by the bridge
+   *  itself. False: only `announce()` posts (the REACH router decides). */
+  announceOnRequested?: boolean
 }
+
+/** Why `announce()` posted nothing. */
+export type ApprovalTelegramAnnounceSkip = "not-found" | "not-pending" | "channel-not-listed" | "already-posted"
+
+export type ApprovalTelegramAnnounceResult =
+  | { posted: true }
+  | { posted: false; reason: ApprovalTelegramAnnounceSkip }
 
 export interface ApprovalTelegramBridge {
   start(): void
   stop(): void
+  /** Post the card for one approval now. Resolves with whether it posted
+   *  and why not; rejects when Telegram refused the card. */
+  announce(approvalId: string): Promise<ApprovalTelegramAnnounceResult>
   /** Feed a raw Telegram update. `handled: true` means it was an approval tap
    *  (decided or refused) and must not be processed any further. */
   handleUpdate(update: unknown): Promise<{ handled: boolean }>
@@ -105,6 +124,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
   const chatId = String(opts.chatId)
   const doFetch = opts.fetchImpl ?? fetch
   const reportError = opts.onError ?? (() => {})
+  const announceOnRequested = opts.announceOnRequested !== false
 
   const byToken = new Map<string, Tracked>()
   const tokenByApproval = new Map<string, string>()
@@ -219,9 +239,11 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
     await closeMessage(t, status)
   }
 
-  async function announce(approvalId: string): Promise<void> {
+  async function announce(approvalId: string): Promise<ApprovalTelegramAnnounceResult> {
     const record = opts.engine.get(approvalId)
-    if (!record || record.status !== "pending" || !record.channels.includes("telegram")) return
+    if (!record) return { posted: false, reason: "not-found" }
+    if (record.status !== "pending") return { posted: false, reason: "not-pending" }
+    if (!record.channels.includes("telegram")) return { posted: false, reason: "channel-not-listed" }
     const token = randomBytes(6).toString("hex")
     const attachments = opts.sendAttachments === true ? await sendAttachments(record) : []
     const listed = opts.sendAttachments === true ? undefined : readAttachmentNames(record.preview)
@@ -266,6 +288,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
     // Decided elsewhere while the send was in flight: its event found nothing to close.
     const now = opts.engine.get(approvalId)
     if (now && now.status !== "pending") await finish(approvalId, outcomeLine(now))
+    return { posted: true }
   }
 
   /** Cards persisted by an earlier run: a still-pending approval is tracked
@@ -309,7 +332,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
       if (unsubscribe) return
       unsubscribe = opts.events.onAny(ev => {
         if (ev.type === "approval:requested") {
-          announce(ev.approvalId).catch(reportError)
+          if (announceOnRequested) announce(ev.approvalId).catch(reportError)
         } else if (ev.type === "approval:decided") {
           finish(ev.approvalId, `${ev.decision === "approved" ? "Approved" : "Denied"} via ${ev.channel}.`).catch(
             reportError,
@@ -319,6 +342,12 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
         }
       })
       restoreCards().catch(reportError)
+    },
+
+    async announce(approvalId) {
+      // A card already open for it (sent earlier, or restored at start).
+      if (tokenByApproval.has(approvalId)) return { posted: false, reason: "already-posted" }
+      return announce(approvalId)
     },
 
     stop() {

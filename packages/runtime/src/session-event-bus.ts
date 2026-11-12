@@ -74,6 +74,7 @@ export type SessionEventType =
   | "approval:decided"
   | "approval:consumed"
   | "approval:expired"
+  | "reach:undelivered"
 
 /**
  * Fixed severity vocabulary for a judge-gate finding (WP-D). Deliberately
@@ -1355,6 +1356,23 @@ export interface ApprovalExpiredEvent {
   ts: string
 }
 
+/**
+ * Emitted by the REACH router (`reach/router.ts`) when no adapter of the
+ * owner's route acknowledged an `ask` (neither `delivered`, `deferred` nor
+ * `deduped`): on the `approval:requested` pass (`trigger: "route"`) or when
+ * the watchdog's floor failed too (`trigger: "watchdog"`). The REACH floor
+ * rule: an ask is never dropped silently. `attempts` carries each adapter's
+ * status and reason, never a URL or a secret.
+ */
+export interface ReachUndeliveredEvent {
+  type: "reach:undelivered"
+  approvalId: string
+  dedupeKey: string
+  trigger: "route" | "watchdog"
+  attempts: Array<{ adapterId: string; status: string; reason?: string }>
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -1414,6 +1432,7 @@ export type SessionEvent =
   | ApprovalDecidedEvent
   | ApprovalConsumedEvent
   | ApprovalExpiredEvent
+  | ReachUndeliveredEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

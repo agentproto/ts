@@ -34,6 +34,7 @@ import { adapterDeprecation } from "./harness-alias.js"
 import type { ModelRolesConfig } from "./model-roles.js"
 import type { FollowTriageInput } from "./follow-triage.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
+import type { ReachRouteEntry } from "@agentproto/reach"
 import type { SentinelRoute, SentinelRoutingMode } from "@agentproto/sentinel"
 import { validateConfig } from "./config-schema.js"
 
@@ -589,6 +590,17 @@ export interface ApprovalsConfig {
 }
 
 /**
+ * REACH (`reach/`): how the daemon reaches its human. `routes.<principal>` is
+ * the ordered list of adapter instances for that principal; only `owner` is
+ * read today. Absent or empty: no router, the Telegram approval bridge
+ * announces on its own exactly as before. Read at boot; lockout key, and each
+ * webhook `secret` is redacted on read.
+ */
+export interface ReachConfig {
+  routes?: Record<string, ReachRouteEntry[]>
+}
+
+/**
  * MCP gateway policy (top-level `mcp`). Distinct from `defaults.mcp`, which
  * configures the MCP servers a SPAWN mounts.
  */
@@ -886,6 +898,8 @@ export interface AgentprotoConfig {
   provenance?: ProvenanceConfig
   /** Approvals policy — the `web_click` origin allowlist. See {@link ApprovalsConfig}. */
   approvals?: ApprovalsConfig
+  /** How the daemon reaches its human. See {@link ReachConfig}. */
+  reach?: ReachConfig
   /** MCP gateway policy. See {@link McpConfig}. */
   mcp?: McpConfig
   /** Sentinel auto-link policy. See {@link SentinelConfig}. */

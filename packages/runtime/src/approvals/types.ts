@@ -42,6 +42,13 @@ export interface ApprovalWakeTarget {
   agent?: string
 }
 
+/** `reach` on a request: `false` keeps the REACH router silent for this
+ *  approval, an object sets the message urgency. `now` is accepted from
+ *  producer code (`POST /approvals`) only, never from the model-callable
+ *  `approval_request` tool. Stored on the record; ignored when the daemon
+ *  has no `reach.routes`. */
+export type ApprovalReachOption = false | { urgency: "now" | "normal" | "digest" }
+
 export interface ApprovalDecisionRecord {
   decision: "approved" | "denied"
   channel: ApprovalChannel
@@ -76,6 +83,8 @@ export interface ApprovalRecord {
   channels: readonly ApprovalChannel[]
   requestedAt: string
   expiresAt?: string
+  /** As requested; absent when the request did not say. */
+  reach?: ApprovalReachOption
   decision?: ApprovalDecisionRecord
   consumedAt?: string
 }
@@ -167,4 +176,19 @@ export interface TelegramCardEntry {
 export interface RelayedMarker {
   approvalId: string
   relayedAt: string
+}
+
+/** One REACH attempt for an approval, kept append-only in `<id>/reach.json`.
+ *  A receipt plus the key it was for and what triggered it (`route` for the
+ *  `approval:requested` pass, `watchdog` for the floor). No URL, secret, chat
+ *  id or user id is ever stored. */
+export interface ReachReceiptEntry {
+  dedupeKey: string
+  adapterId: string
+  kind: string
+  status: "delivered" | "deferred" | "deduped" | "undelivered" | "failed"
+  until?: string
+  reason?: string
+  at: string
+  trigger: "route" | "watchdog"
 }

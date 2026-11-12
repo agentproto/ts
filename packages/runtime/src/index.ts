@@ -334,6 +334,7 @@ import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
 import { approvalAttachmentDir } from "./approvals/telegram-attachments.js"
 import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
+import { createReachRoute, createReachRouter } from "./reach/index.js"
 import { registerApprovalTools } from "./approvals/tools.js"
 import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
@@ -5243,6 +5244,18 @@ export async function createGateway(
   const approvalsHumanTelegramIds = (daemonConfig.approvals?.humanTelegramIds ?? []).filter(
     id => typeof id === "string" && /^\d+$/.test(id),
   )
+  // REACH (reach/router.ts): with a usable `reach.routes.owner`, the router
+  // decides who announces each approval and the bridge only posts when the
+  // route reaches its `telegram` entry. Without one, nothing changes: no
+  // router, the bridge announces on its own, no reach.json is written.
+  const reachOwnerEntries: readonly unknown[] = Array.isArray(daemonConfig.reach?.routes?.owner)
+    ? daemonConfig.reach!.routes!.owner!
+    : []
+  const reachRouteCheck = createReachRoute(reachOwnerEntries)
+  for (const skip of reachRouteCheck.skipped) {
+    console.warn(`reach: route entry ${skip.id ?? `#${skip.index}`} skipped (${skip.reason})`)
+  }
+  const reachOn = reachRouteCheck.adapters.length > 0
   const approvalTelegram = telegramApprovalCardsOn
     ? createApprovalTelegramBridge({
         events: sessionEvents,
@@ -5263,9 +5276,24 @@ export async function createGateway(
         onError: err => {
           console.warn(`[approval-telegram-bridge] ${err instanceof Error ? err.message : String(err)}`)
         },
+        ...(reachOn ? { announceOnRequested: false } : {}),
       })
     : undefined
   approvalTelegram?.start()
+  const reachRouter = reachOn
+    ? createReachRouter({
+        events: sessionEvents,
+        engine: approvalsEngine,
+        route: createReachRoute(reachOwnerEntries, {
+          ...(approvalTelegram ? { telegramBridge: approvalTelegram } : {}),
+          telegramAlias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+          onError: err => {
+            console.warn(`[approval-telegram-bridge] ${err instanceof Error ? err.message : String(err)}`)
+          },
+        }).adapters,
+      })
+    : undefined
+  reachRouter?.start()
 
   // E99: one `[heap]` line every few minutes (AGENTPROTO_HEAP_LOG_INTERVAL_MS,
   // 0 = off) with heapUsed/rss, the floor after the last major GC, live
@@ -5987,6 +6015,7 @@ export async function createGateway(
       inboundWatcher?.shutdown()
       permissionTelegram?.stop()
       approvalTelegram?.stop()
+      reachRouter?.stop()
       // Stop the sentinel poll loop and flush its store before sessions shut
       // down — same ordering reason as inboundWatcher above (delivery reads
       // `sessions`).

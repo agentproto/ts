@@ -44,6 +44,7 @@ import {
 import {
   CONFIG_KEYS,
   findConfigKey,
+  redactSecretFields,
   validateConfig,
   validateConfigKeyType,
   type ConfigKeyEntry,
@@ -470,7 +471,9 @@ function redactSecretsDeep(pathSegments: readonly string[], value: unknown): unk
 }
 
 function redactValueAtPath(path: string, value: unknown): unknown {
-  return redactSecretsDeep(path.split("."), value)
+  const fields = findConfigKey(path)?.secretFields
+  const deep = redactSecretsDeep(path.split("."), value)
+  return fields ? redactSecretFields(deep, fields) : deep
 }
 
 /** Just enough of zod v4's internal `_def` shape to derive a value-type hint

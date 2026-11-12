@@ -995,6 +995,76 @@ describe("createApprovalTelegramBridge", () => {
     })
   })
 
+  it("with no reach config (default options) announces by itself and writes no reach.json", async () => {
+    const bridge = makeBridge()
+    bridge.start()
+    const record = request()
+    await until(() => tg.calls.length > 0)
+    expect(tg.calls.map(c => c.method)).toEqual(["sendMessage"])
+    expect(existsSync(join(home, record.id, "reach.json"))).toBe(false)
+    expect(record).not.toHaveProperty("reach")
+    bridge.stop()
+  })
+
+  describe("announceOnRequested: false (the REACH router decides)", () => {
+    it("posts nothing on approval:requested, and announce() posts exactly once", async () => {
+      const bridge = makeBridge({ announceOnRequested: false })
+      bridge.start()
+      const record = request()
+      await new Promise(r => setTimeout(r, 20))
+      expect(tg.calls).toHaveLength(0)
+
+      expect(await bridge.announce(record.id)).toEqual({ posted: true })
+      expect(tg.calls.map(c => c.method)).toEqual(["sendMessage"])
+      expect(await bridge.announce(record.id)).toEqual({ posted: false, reason: "already-posted" })
+      expect(tg.calls).toHaveLength(1)
+      bridge.stop()
+    })
+
+    it("says why it posted nothing: unknown, no telegram channel, not pending", async () => {
+      const bridge = makeBridge({ announceOnRequested: false })
+      bridge.start()
+      expect(await bridge.announce("apr_ghost")).toEqual({ posted: false, reason: "not-found" })
+      const noTelegram = engine.request(
+        { kind: "send", title: "Send", preview: {}, payload: { x: 1 }, channels: ["ui_card"] },
+        { operator: true },
+      )
+      expect(await bridge.announce(noTelegram.id)).toEqual({ posted: false, reason: "channel-not-listed" })
+      const decided = request()
+      await engine.decideTelegram(decided.id, "deny", evidence)
+      expect(await bridge.announce(decided.id)).toEqual({ posted: false, reason: "not-pending" })
+      expect(tg.calls).toHaveLength(0)
+      bridge.stop()
+    })
+
+    it("still closes its card when the approval is decided elsewhere", async () => {
+      const bridge = makeBridge({ announceOnRequested: false })
+      bridge.start()
+      const record = request()
+      await bridge.announce(record.id)
+      await engine.decideTelegram(record.id, "approve", evidence)
+      await until(() => tg.calls.some(c => c.method === "editMessageText"))
+      const edit = tg.calls.find(c => c.method === "editMessageText")!
+      expect(String(edit.body.text)).toContain("Approved via telegram.")
+      bridge.stop()
+    })
+
+    it("still restores a card at start, and announce() then counts it as already posted", async () => {
+      const first = makeBridge()
+      first.start()
+      const record = request()
+      await until(() => tg.calls.length > 0)
+      first.stop()
+
+      const second = makeBridge({ announceOnRequested: false })
+      second.start()
+      await new Promise(r => setTimeout(r, 20))
+      expect(await second.announce(record.id)).toEqual({ posted: false, reason: "already-posted" })
+      expect(tg.calls.filter(c => c.method === "sendMessage")).toHaveLength(1)
+      second.stop()
+    })
+  })
+
   it("requires at least one allowed user id", () => {
     expect(() => makeBridge({ allowedUserIds: [] })).toThrow(/allowedUserIds/)
   })
