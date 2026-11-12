@@ -935,6 +935,66 @@ describe("createApprovalTelegramBridge", () => {
     expect(call).toContain("[approval-telegram-bridge]")
   })
 
+  describe("tap identity and owner gate", () => {
+    const OTHER = "2002"
+    const setup = async (over: Partial<Parameters<typeof createApprovalTelegramBridge>[0]> = {}) => {
+      const bridge = makeBridge({ allowedUserIds: [JEREMY, OTHER], ...over })
+      bridge.start()
+      const record = request()
+      await until(() => tg.calls.length > 0)
+      const [a, r] = buttons(tg.calls[0]!)
+      return { bridge, record, a: a!.callback_data, r: r!.callback_data }
+    }
+
+    it("records the tapper's Telegram user id on the decision", async () => {
+      const { bridge, record, a } = await setup()
+      await bridge.handleUpdate(tap(a, { userId: OTHER }))
+      const decided = engine.get(record.id)!
+      expect(decided.status).toBe("approved")
+      expect(decided.decision?.telegramUserId).toBe(OTHER)
+      bridge.stop()
+    })
+
+    it("refuses a tap from an allowed user who is not an owner, for Approve and Refuse", async () => {
+      const { bridge, record, a, r } = await setup({ ownerUserIds: [JEREMY] })
+      for (const data of [a, r]) {
+        expect(await bridge.handleUpdate(tap(data, { userId: OTHER }))).toEqual({ handled: true })
+      }
+      expect(engine.get(record.id)!.status).toBe("pending")
+      const answers = tg.calls.filter(c => c.method === "answerCallbackQuery")
+      expect(answers).toHaveLength(2)
+      for (const c of answers) expect(c.body.text).toBe("Not authorised.")
+      expect(tg.calls.some(c => c.method === "editMessageText")).toBe(false)
+      bridge.stop()
+    })
+
+    it("decides and records the id when the tapper is in both lists", async () => {
+      const { bridge, record, r } = await setup({ ownerUserIds: [JEREMY] })
+      await bridge.handleUpdate(tap(r, { userId: JEREMY }))
+      const decided = engine.get(record.id)!
+      expect(decided.status).toBe("denied")
+      expect(decided.decision?.telegramUserId).toBe(JEREMY)
+      bridge.stop()
+    })
+
+    it.each([[undefined], [[]]])("an absent or empty owner list changes nothing (%j)", async owners => {
+      const { bridge, record, a } = await setup({ ownerUserIds: owners as readonly string[] | undefined })
+      await bridge.handleUpdate(tap(a, { userId: OTHER }))
+      expect(engine.get(record.id)!.status).toBe("approved")
+      bridge.stop()
+    })
+
+    it("is wired in index.ts from the same approvals.humanTelegramIds as the page route", () => {
+      const source = readFileSync(fileURLToPath(new URL("../index.ts", import.meta.url)), "utf8")
+      const start = source.indexOf("createApprovalTelegramBridge({")
+      const call = source.slice(start, source.indexOf("approvalTelegram?.start()", start))
+      expect(call).toMatch(/ownerUserIds:/)
+      expect(call).toContain("ownerUserIds: approvalsHumanTelegramIds")
+      // The page route receives that very variable, not a second reading of the config.
+      expect(source).toMatch(/^\s+approvalsHumanTelegramIds,$/m)
+    })
+  })
+
   it("requires at least one allowed user id", () => {
     expect(() => makeBridge({ allowedUserIds: [] })).toThrow(/allowedUserIds/)
   })

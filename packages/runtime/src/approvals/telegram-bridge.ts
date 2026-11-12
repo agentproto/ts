@@ -59,6 +59,10 @@ export interface ApprovalTelegramBridgeOptions {
   chatId: string
   /** Telegram user ids allowed to answer. Required and non-empty. */
   allowedUserIds: readonly string[]
+  /** `approvals.humanTelegramIds`, the owner list. When non-empty, a tap
+   *  must come from a user in it as well as in `allowedUserIds`. Absent or
+   *  empty: only `allowedUserIds` gates. */
+  ownerUserIds?: readonly string[]
   /** `approvals.telegramAttachments`: send the files of `preview.attachments`
    *  as documents and photos. Default false: the card only names them. */
   sendAttachments?: boolean
@@ -97,6 +101,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
     throw new Error("approval-telegram-bridge: allowedUserIds must list at least one Telegram user id")
   }
   const allowed = new Set(opts.allowedUserIds.map(String))
+  const owners = new Set((opts.ownerUserIds ?? []).map(String))
   const chatId = String(opts.chatId)
   const doFetch = opts.fetchImpl ?? fetch
   const reportError = opts.onError ?? (() => {})
@@ -329,7 +334,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
 
       const fromId = cq.from?.id !== undefined ? String(cq.from.id) : ""
       const fromChat = cq.message?.chat?.id !== undefined ? String(cq.message.chat.id) : ""
-      if (!allowed.has(fromId) || fromChat !== chatId) {
+      if (!allowed.has(fromId) || (owners.size > 0 && !owners.has(fromId)) || fromChat !== chatId) {
         await answer(cq.id, "Not authorised.")
         return { handled: true }
       }
@@ -348,6 +353,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
         await opts.engine.decideTelegram(t.approvalId, approve ? "approve" : "deny", {
           ipAddress: "telegram",
           userAgent: "agentproto-approval-telegram-bridge",
+          telegramUserId: fromId,
         })
         decided = true
       } catch (err) {
