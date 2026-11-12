@@ -59,7 +59,7 @@ import { dirname, join } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import { AGENT_ID_PATTERN, loadAgent } from "@agentproto/agent"
-import { loadBundledTool, stripOwner } from "@agentproto/app"
+import { loadBundledTool, stripOwner, type LoadedBundledTool } from "@agentproto/app"
 import { createTool, type ToolContext, type ToolDefinition } from "@agentproto/tool"
 import { runTool } from "@agentproto/driver"
 import type { ApprovalsEngine } from "./approvals/engine.js"
@@ -717,7 +717,7 @@ export async function callCreatedTool(input: CallCreatedToolInput): Promise<Crea
   // fails here without spending the human's approval. The hash covers the
   // exact bytes the handles were parsed from, so what was approved is what
   // runs.
-  let bundle: Awaited<ReturnType<typeof loadBundledTool>>
+  let bundle: LoadedBundledTool
   try {
     bundle = await loadBundledTool(input.workspace, input.id)
   } catch (err) {
