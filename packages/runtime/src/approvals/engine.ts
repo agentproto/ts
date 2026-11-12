@@ -52,6 +52,8 @@ import {
   writeRelayOutbox,
   writeRelayedMarker,
   writeTelegramCard,
+  appendReachReceipt,
+  readReachReceipts,
 } from "./store.js"
 import {
   APPROVAL_CHANNELS,
@@ -61,12 +63,14 @@ import {
   CardTicketError,
   type ApprovalChannel,
   type ApprovalDecision,
+  type ApprovalReachOption,
   type ApprovalRecord,
   type ApprovalRequester,
   type ApprovalStatus,
   type ApprovalWakeTarget,
   type CardTicketErrorCode,
   type CardTicketRecord,
+  type ReachReceiptEntry,
   type RelayOutboxEntry,
   type TelegramCardEntry,
 } from "./types.js"
@@ -84,6 +88,8 @@ export interface ApprovalRequestInput {
   expiresAt?: string
   /** Re-prompt this session or agent label when a human decides. */
   wake?: ApprovalWakeTarget
+  /** REACH opt-out or urgency, stored on the record as given. */
+  reach?: ApprovalReachOption
 }
 
 export interface ApprovalsEngineOptions {
@@ -156,6 +162,10 @@ export interface ApprovalsEngine {
   removeTelegramCard(id: string): void
   /** Every persisted open Telegram card, read from disk. */
   listTelegramCards(): TelegramCardEntry[]
+  /** Every REACH attempt for this approval (`<id>/reach.json`), oldest first. */
+  listReachReceipts(id: string): ReachReceiptEntry[]
+  /** Append one REACH attempt next to the approval record. */
+  appendReachReceipt(id: string, entry: ReachReceiptEntry): void
   /** Resolves once the approval leaves `pending` (approved/denied/expired),
    *  or after `timeoutMs` with whatever the current record is (still
    *  pending, most likely). Resolves immediately if already decided. */
@@ -259,6 +269,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
       channels: requestedChannels,
       requestedAt: now,
       ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+      ...(input.reach !== undefined ? { reach: input.reach } : {}),
     }
     writePayload(homeDir, id, canonicalJson)
     writeApprovalRecord(homeDir, record)
@@ -485,6 +496,8 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
     putTelegramCard: card => writeTelegramCard(homeDir, card),
     removeTelegramCard: id => removeTelegramCard(homeDir, id),
     listTelegramCards: () => loadAllTelegramCards(homeDir),
+    listReachReceipts: id => readReachReceipts(homeDir, id),
+    appendReachReceipt: (id, entry) => appendReachReceipt(homeDir, id, entry),
     wait,
     decideWeb,
     decideTelegram,

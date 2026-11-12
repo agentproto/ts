@@ -222,6 +222,30 @@ describe("secret and lockout classification", () => {
     expect(validateConfig({ approvals: { humanTelegramIds: ["nope"] } }).ok).toBe(false)
   })
 
+  it("registers reach.routes.* as a restart-applied, non-writable route whose webhook secret is redacted", () => {
+    const entry = findConfigKey("reach.routes.owner")
+    expect(entry).toMatchObject({ path: "reach.routes.*", apply: "restart", writable: false, secretFields: ["secret"] })
+    const secret = "whsec_" + Buffer.alloc(32, 1).toString("base64")
+    const ok = [
+      { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret, timeoutMs: 5000 },
+      { id: "floor", kind: "telegram", alias: "default" },
+    ]
+    expect(entry!.schema.safeParse(ok).success).toBe(true)
+    expect(agentprotoConfigSchema.safeParse({ reach: { routes: { owner: ok } } }).success).toBe(true)
+    for (const bad of [
+      [{ id: "x", kind: "webhook", url: "ftp://p.invalid", secret }],
+      [{ id: "x", kind: "webhook", url: "https://p.invalid", secret: "plain" }],
+      [{ id: "x", kind: "pigeon" }],
+      [{ kind: "telegram" }],
+    ]) {
+      expect(entry!.schema.safeParse(bad).success).toBe(false)
+    }
+    expect(redactConfigValue("reach.routes.owner", ok)).toEqual([
+      { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret: { set: true }, timeoutMs: 5000 },
+      { id: "floor", kind: "telegram", alias: "default" },
+    ])
+  })
+
   it("accepts daemon.frameAncestors as a list or one string and refuses other types", () => {
     expect(validateConfigKeyType("daemon.frameAncestors", ["https://web.telegram.org"]).ok).toBe(true)
     expect(validateConfigKeyType("daemon.frameAncestors", "https://web.telegram.org").ok).toBe(true)

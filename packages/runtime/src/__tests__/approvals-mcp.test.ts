@@ -276,3 +276,32 @@ describe("Approvals MCP: the ticket never appears in a model-visible result", ()
     }
   })
 })
+
+describe("Approvals MCP: reach on approval_request", () => {
+  const base = { kind: "send", title: "Send", preview: {}, payload: { x: 1 } }
+
+  it("refuses urgency now: a model-callable parameter never sets it", async () => {
+    client = await connectClient("sess_model")
+    const result = (await client.callTool({ name: "approval_request", arguments: { ...base, reach: { urgency: "now" } } })) as {
+      isError?: boolean
+      content?: Array<{ text?: string }>
+    }
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toMatch(/Invalid input at reach/)
+    expect(engine.list()).toHaveLength(0)
+  })
+
+  it("stores reach: false and urgency normal or digest", async () => {
+    client = await connectClient("sess_model")
+    for (const reach of [false, { urgency: "normal" }, { urgency: "digest" }]) {
+      const created = parse(await client.callTool({ name: "approval_request", arguments: { ...base, reach } }))
+      expect(engine.get(String(created.id))?.reach).toEqual(reach)
+    }
+  })
+
+  it("leaves reach off the record when the request does not say", async () => {
+    client = await connectClient()
+    const created = parse(await client.callTool({ name: "approval_request", arguments: base }))
+    expect(engine.get(String(created.id))).not.toHaveProperty("reach")
+  })
+})

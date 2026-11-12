@@ -80,6 +80,13 @@ export function registerApprovalTools(server: McpServer, opts: RegisterApprovalT
         .boolean()
         .optional()
         .describe("When true, the daemon re-prompts YOUR session as soon as a human decides, instead of you polling."),
+      reach: z
+        .union([z.literal(false), z.object({ urgency: z.enum(["normal", "digest"]) }).strict()])
+        .optional()
+        .describe(
+          'How the owner is told about it: false = the daemon does not announce it; { urgency: "digest" } = it may be ' +
+            'grouped with others. Default: announced normally.',
+        ),
     },
     async input => {
       if (!engine) return notAvailable
@@ -94,6 +101,7 @@ export function registerApprovalTools(server: McpServer, opts: RegisterApprovalT
             ...(input.appId !== undefined ? { appId: input.appId } : {}),
             ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
             ...(input.wake && callerSessionId ? { wake: { sessionId: callerSessionId } } : {}),
+            ...(input.reach !== undefined ? { reach: input.reach } : {}),
           },
           requester(),
         )

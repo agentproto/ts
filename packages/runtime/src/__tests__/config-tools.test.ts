@@ -179,6 +179,29 @@ describe("config_get", () => {
     await client.close()
   })
 
+  it("never echoes a reach.routes webhook secret, keeps the rest of the route readable", async () => {
+    const secret = "whsec_" + Buffer.alloc(32, 5).toString("base64")
+    const route = [
+      { id: "pygmalion", kind: "webhook" as const, url: "http://127.0.0.1:3000/api/reach", secret, timeoutMs: 4000 },
+      { id: "floor", kind: "telegram" as const },
+    ]
+    await writeCfg({ reach: { routes: { owner: route } } })
+    const client = await setupClient(makeDeps({ reach: { routes: { owner: route } } }))
+    for (const keys of [["reach.routes.owner"], ["reach.routes.*"], undefined]) {
+      const raw = await client.callTool({ name: "config_get", arguments: keys ? { keys } : {} })
+      expect(JSON.stringify(raw)).not.toContain(secret)
+      expect(JSON.stringify(raw)).not.toContain(secret.slice("whsec_".length, 20))
+      const row = findKey(parse(raw), "reach.routes.owner")
+      expect(row.value).toEqual([
+        { id: "pygmalion", kind: "webhook", url: "http://127.0.0.1:3000/api/reach", secret: { set: true }, timeoutMs: 4000 },
+        { id: "floor", kind: "telegram" },
+      ])
+      expect(row.effective).toEqual(row.value)
+      expect(row.writable).toBe(false)
+    }
+    await client.close()
+  })
+
   it("pendingRestart is true when a restart-class key changed since boot", async () => {
     await writeCfg({ daemon: { label: "new-label" } })
     const client = await setupClient(makeDeps({ daemon: { label: "boot-label" } }))

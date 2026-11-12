@@ -35,6 +35,7 @@ import type {
   ProvenanceConfig,
   SentinelConfig,
   ApprovalsConfig,
+  ReachConfig,
   SessionsConfig,
   SpawnConfig,
   TerminalPreset,
@@ -512,6 +513,25 @@ const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
   })
   .passthrough()
 
+/** One adapter instance of a `reach.routes.<principal>` route, by kind. */
+const reachRouteEntrySchema = z.discriminatedUnion("kind", [
+  z.object({ id: z.string().min(1), kind: z.literal("telegram"), alias: z.string().min(1).optional() }).passthrough(),
+  z
+    .object({
+      id: z.string().min(1),
+      kind: z.literal("webhook"),
+      url: z.url({ protocol: /^https?$/ }),
+      secret: z.string().regex(/^whsec_/, "a webhook secret starts with whsec_"),
+      timeoutMs: z.number().int().positive().optional(),
+    })
+    .passthrough(),
+])
+const reachRouteSchema = z.array(reachRouteEntrySchema)
+
+const reachConfigSchema: z.ZodType<ReachConfig> = z
+  .object({ routes: z.record(z.string(), reachRouteSchema).optional() })
+  .passthrough()
+
 const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
   .object({
     attentionDelaySec: z.number().optional(),
@@ -649,6 +669,7 @@ export const agentprotoConfigSchema = z
     sessions: sessionsConfigSchema.optional(),
     provenance: provenanceConfigSchema.optional(),
     approvals: approvalsConfigSchema.optional(),
+    reach: reachConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
     memory: memoryConfigSchema.optional(),
     delivery: deliveryConfigSchema.optional(),
@@ -765,6 +786,11 @@ export interface ConfigKeyEntry {
   /** The value is credential material — never echoed back in full, only
    *  `{ set }` (see `redactConfigValue`). */
   secret?: true
+  /** Field names inside the value (at any depth, arrays included) that hold
+   *  credential material: each is redacted to `{ set }` on read while the
+   *  rest of the value is shown. For a key whose value is a structure with a
+   *  secret inside, like `reach.routes.*` and its webhook `secret`. */
+  secretFields?: readonly string[]
   /** False for a key that a future config_set must refuse (secret
    *  credential fields and daemon-lockout fields) — hand-edit only. */
   writable: boolean
@@ -1085,6 +1111,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Approval link Telegram user ids",
     help: "Telegram user ids allowed to read and decide a pending approval through an approval link: a link-session token whose approvalId claim names that one approval, on GET /approvals/:id and POST /approvals/:id/decision/telegram. The id is the one Telegram initData verified when the link was opened. Digits only. Empty (default) turns approval links off: both routes refuse every link token. Owner-only: an agent session cannot widen who may approve.",
     default: [],
+  },
+  {
+    path: "reach.routes.*",
+    schema: reachRouteSchema,
+    apply: "restart",
+    secretFields: ["secret"],
+    writable: false,
+    section: "daemon",
+    label: "REACH route",
+    help: 'How the daemon reaches a principal (only "owner" is read today) for each pending approval: an ordered list of adapters, tried in turn until one acknowledges (delivered, deferred or deduped). Each entry is { id, kind: "telegram", alias? } (the daemon\'s own approval card, needs approvals.telegramApprovalCards) or { id, kind: "webhook", url, secret, timeoutMs? } (a signed POST of the message, Standard Webhooks with a whsec_ secret, answered by a receipt within timeoutMs, default 5000). Every attempt is kept in the approval\'s reach.json; a pending approval with no acknowledgement after 60 s is logged "reach: MISSING" and sent through the last telegram entry. The webhook secret is never shown by config_get. Unset (default): no router, the Telegram card bridge announces every approval itself, as before.',
   },
   {
     path: "daemon.strictOrigins",
@@ -2645,6 +2681,7 @@ export function validateConfigKeyValue(path: string, value: unknown): ConfigKeyV
  */
 export function redactConfigValue(path: string, value: unknown): unknown {
   const entry = findConfigKey(path)
+  if (entry?.secretFields && !entry.secret) return redactSecretFields(value, entry.secretFields)
   if (!entry?.secret) return value
   if (value === undefined) return { set: false }
   if (typeof value === "string") return { set: value.length > 0 }
@@ -2657,4 +2694,17 @@ export function redactConfigValue(path: string, value: unknown): unknown {
     )
   }
   return { set: true }
+}
+
+/** Redact every field named in `fields` to `{ set }`, at any depth, arrays
+ *  included. Everything else is returned unchanged. */
+export function redactSecretFields(value: unknown, fields: readonly string[]): unknown {
+  if (Array.isArray(value)) return value.map(v => redactSecretFields(v, fields))
+  if (value === null || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, v]) => [
+      key,
+      fields.includes(key) ? { set: typeof v === "string" && v.length > 0 } : redactSecretFields(v, fields),
+    ]),
+  )
 }

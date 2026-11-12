@@ -267,6 +267,7 @@
     "@agentproto/providers-store": "workspace:*",
     "@agentproto/processor": "workspace:*",
     "@agentproto/quota": "workspace:*",
+    "@agentproto/reach": "workspace:*",
     "@agentproto/review": "workspace:*",
     "@agentproto/routine": "workspace:*",
     "@agentproto/run": "workspace:*",

@@ -1,0 +1,65 @@
+/**
+ * The `telegram` adapter kind: the daemon's own approval bridge
+ * (`approvals/telegram-bridge.ts`), wrapped where it is. It is the floor: no
+ * dependency outside the runtime, it talks only to `api.telegram.org`.
+ *
+ * It answers for an approval `ask` only (`ask.ref` is the approval id). The
+ * card text, the buttons and the close on decided or expired stay the
+ * bridge's own; this adapter has no `close`.
+ */
+
+import type { ReachAdapter, ReachCapabilities, ReachReceipt, ReachReceiptBody } from "@agentproto/reach"
+
+import type { ApprovalTelegramBridge } from "../approvals/telegram-bridge.js"
+
+export const TELEGRAM_REACH_CAPABILITIES: ReachCapabilities = {
+  maxChars: 4096,
+  actions: 2,
+  files: true,
+  link: false,
+  defers: false,
+  retracts: true,
+  identity: true,
+}
+
+export interface TelegramReachAdapterOptions {
+  id: string
+  /** The route entry's alias. Absent: the bridge's own. */
+  alias?: string
+  /** Absent when the daemon has no Telegram approval cards configured. */
+  bridge?: Pick<ApprovalTelegramBridge, "announce">
+  /** The alias the bridge was built with. */
+  bridgeAlias?: string
+  onError?: (err: unknown) => void
+  now?: () => Date
+}
+
+export function createTelegramReachAdapter(opts: TelegramReachAdapterOptions): ReachAdapter {
+  const now = opts.now ?? (() => new Date())
+  const receipt = (body: ReachReceiptBody): ReachReceipt =>
+    ({ ...body, adapterId: opts.id, at: now().toISOString() }) as ReachReceipt
+  return {
+    id: opts.id,
+    kind: "telegram",
+    capabilities: TELEGRAM_REACH_CAPABILITIES,
+    async send(message) {
+      if (!opts.bridge) return receipt({ status: "undelivered", reason: "telegram-not-configured" })
+      if (opts.alias !== undefined && opts.alias !== (opts.bridgeAlias ?? "default")) {
+        return receipt({ status: "undelivered", reason: "alias-not-configured" })
+      }
+      const ref = message.intent === "ask" ? message.ask?.ref : undefined
+      if (!ref) return receipt({ status: "undelivered", reason: "not-an-approval" })
+      try {
+        const result = await opts.bridge.announce(ref)
+        if (result.posted) return receipt({ status: "delivered" })
+        if (result.reason === "already-posted") return receipt({ status: "deduped" })
+        return receipt({ status: "undelivered", reason: result.reason })
+      } catch (err) {
+        // The bridge's error goes to the daemon log through onError; the
+        // receipt keeps a fixed reason so no Telegram text lands in reach.json.
+        opts.onError?.(err)
+        return receipt({ status: "failed", reason: "telegram-send-failed" })
+      }
+    },
+  }
+}

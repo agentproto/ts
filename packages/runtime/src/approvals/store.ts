@@ -25,6 +25,7 @@ import type {
   ApprovalRecord,
   CardTicketRecord,
   RelayOutboxEntry,
+  ReachReceiptEntry,
   RelayedMarker,
   TelegramCardEntry,
 } from "./types.js"
@@ -71,6 +72,10 @@ function relayOutboxPath(homeDir: string, id: string): string {
 
 function telegramCardPath(homeDir: string, id: string): string {
   return join(approvalDir(homeDir, id), "telegram-card.json")
+}
+
+function reachPath(homeDir: string, id: string): string {
+  return join(approvalDir(homeDir, id), "reach.json")
 }
 
 function relayedPath(homeDir: string, id: string): string {
@@ -229,4 +234,25 @@ export function writeRelayedMarker(homeDir: string, marker: RelayedMarker): void
 
 export function hasRelayedMarker(homeDir: string, id: string): boolean {
   return existsSync(relayedPath(homeDir, id))
+}
+
+/** Every REACH attempt for one approval, oldest first (`<id>/reach.json`).
+ *  A missing or malformed file reads as no attempt. */
+export function readReachReceipts(homeDir: string, id: string): ReachReceiptEntry[] {
+  const file = readJsonIfExists<{ receipts?: unknown }>(reachPath(homeDir, id))
+  if (!file || !Array.isArray(file.receipts)) return []
+  return file.receipts.filter(
+    (r): r is ReachReceiptEntry =>
+      r !== null &&
+      typeof r === "object" &&
+      typeof (r as ReachReceiptEntry).dedupeKey === "string" &&
+      typeof (r as ReachReceiptEntry).adapterId === "string" &&
+      typeof (r as ReachReceiptEntry).status === "string",
+  )
+}
+
+/** Append one attempt. The file only ever grows: earlier entries are kept
+ *  as they were read. */
+export function appendReachReceipt(homeDir: string, id: string, entry: ReachReceiptEntry): void {
+  writeJsonAtomic(reachPath(homeDir, id), { receipts: [...readReachReceipts(homeDir, id), entry] })
 }

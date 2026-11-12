@@ -21,6 +21,8 @@ export {
   type ApprovalRecord,
   type ApprovalDecisionRecord,
   type ApprovalWakeTarget,
+  type ApprovalReachOption,
+  type ReachReceiptEntry,
   type ApprovalErrorCode,
   type CardTicketErrorCode,
   type CardTicketRecord,
@@ -42,6 +44,8 @@ export {
   createApprovalTelegramBridge,
   type ApprovalTelegramBridge,
   type ApprovalTelegramBridgeOptions,
+  type ApprovalTelegramAnnounceResult,
+  type ApprovalTelegramAnnounceSkip,
 } from "./telegram-bridge.js"
 export { registerApprovalTools, type RegisterApprovalToolsOptions } from "./tools.js"
 export { registerApprovalCardDecideTool } from "./card-tool.js"
