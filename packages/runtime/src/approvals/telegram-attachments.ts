@@ -14,6 +14,8 @@
 import { open, readdir, realpath, stat } from "node:fs/promises"
 import { isAbsolute, join, sep, win32 } from "node:path"
 
+import { attachmentNameOf } from "@agentproto/reach"
+
 /** Bot API limits for an upload: 10 MB as a photo, 50 MB as a document. */
 export const MAX_PHOTO_BYTES = 10 * 1024 * 1024
 export const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
@@ -56,8 +58,8 @@ export function shortName(value: string): string {
 
 /**
  * The file names of `preview.attachments`. `claimed` is false when the preview
- * has no list of names there (absent, or a list of objects such as a mail
- * preview's `[{ fileName, sizeBytes }]`): the key is then left to the card's
+ * has no list of names there (absent, a list of objects with no name, or a
+ * mail preview's `[{ fileName, sizeBytes }]`): the key is then left to the card's
  * ordinary rendering and nothing is sent.
  */
 export function readAttachmentNames(preview: unknown): {
@@ -66,21 +68,24 @@ export function readAttachmentNames(preview: unknown): {
   problems: AttachmentProblem[]
 } {
   const raw = isRecord(preview) ? preview.attachments : undefined
-  if (!Array.isArray(raw) || !raw.some(item => typeof item === "string")) {
+  // A mail preview's `[{ fileName, sizeBytes }]` is rendered by the card as is.
+  const isMail = isRecord(preview) && preview.kind === "mail"
+  if (isMail || !Array.isArray(raw) || !raw.some(item => attachmentNameOf(item) !== undefined)) {
     return { claimed: false, names: [], problems: [] }
   }
   const names: string[] = []
   const problems: AttachmentProblem[] = []
   let extra = 0
   for (const item of raw) {
-    if (typeof item !== "string" || item.trim() === "") {
+    const name = attachmentNameOf(item)
+    if (name === undefined || name.trim() === "") {
       problems.push({ name: "(entry)", reason: "not a file name" })
-    } else if (names.includes(item)) {
+    } else if (names.includes(name)) {
       continue
     } else if (names.length >= MAX_ATTACHMENTS) {
       extra++
     } else {
-      names.push(item)
+      names.push(name)
     }
   }
   if (extra > 0) {

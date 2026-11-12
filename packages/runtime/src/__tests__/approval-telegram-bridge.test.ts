@@ -914,6 +914,31 @@ describe("createApprovalTelegramBridge", () => {
       bridge.stop()
     })
 
+    it("reads the job kit shape ({ filename, mimeType }): a Files line, no upload by default", async () => {
+      const bridge = makeBridge({ attachmentDir: () => dossier })
+      bridge.start()
+      request(
+        preview([
+          { filename: "cv.pdf", mimeType: "application/pdf" },
+          { filename: "submit-page.png", mimeType: "image/png" },
+        ]),
+      )
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+      expect(tg.calls.filter(c => c.method === "sendDocument")).toHaveLength(0)
+      expect(tg.calls.map(c => c.method)).toEqual(["sendMessage"])
+      expect(plain(String(card().body.text))).toContain("Files: cv.pdf, submit-page.png")
+      bridge.stop()
+    })
+
+    it("drops { filename: '../x' } from the upload and leaves { mimeType } alone unclaimed", async () => {
+      const bridge = makeBridge({ sendAttachments: true, attachmentDir: () => dossier })
+      bridge.start()
+      request(preview([{ filename: "../x" }, { mimeType: "a/b" }]))
+      await until(() => tg.calls.some(c => c.method === "sendMessage"))
+      expect(uploads()).toHaveLength(0)
+      bridge.stop()
+    })
+
     it("by default lists at most 10 names then counts the rest", async () => {
       const bridge = makeBridge({ attachmentDir: () => dossier })
       bridge.start()

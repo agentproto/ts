@@ -1,5 +1,5 @@
 export * from "./types.js"
-export { reachContentFromPreview, isBareFileName } from "./preview.js"
+export { reachContentFromPreview, isBareFileName, attachmentNameOf } from "./preview.js"
 export { parseReachReceipt, type ParseReachReceiptResult } from "./receipt.js"
 export {
   runReachConformance,

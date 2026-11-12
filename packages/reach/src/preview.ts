@@ -6,7 +6,7 @@
  *   record title the host passes in.
  * - `sections` keeps the entries with a string `title` and `text`.
  * - `links` keeps the entries with a string `label` and an `https:` url.
- * - `attachments` keeps bare file names (a string, or `{ name }`): a name with
+ * - `attachments` keeps bare file names (a string, or an object with `name`, `filename` or `fileName`): a name with
  *   a path separator, `.` or `..` is dropped.
  * - Every other key (the legacy preview shapes) is dropped: it stays on the
  *   record for the approval page.
@@ -30,6 +30,22 @@ function isHttps(url: string): boolean {
 export function isBareFileName(name: string): boolean {
   const trimmed = name.trim()
   return trimmed !== "" && trimmed !== "." && trimmed !== ".." && !/[/\\]/.test(trimmed) && !trimmed.includes("\0")
+}
+
+/**
+ * The one rule for an attachment item's name: a string is its own name; an
+ * object's name is the first non-empty string among `name`, `filename`,
+ * `fileName`. Anything else has no name. The bare-file-name rule is applied by
+ * the caller (see `isBareFileName`).
+ */
+export function attachmentNameOf(item: unknown): string | undefined {
+  if (typeof item === "string") return item
+  if (!isRecord(item)) return undefined
+  for (const key of ["name", "filename", "fileName"]) {
+    const value = item[key]
+    if (typeof value === "string" && value !== "") return value
+  }
+  return undefined
 }
 
 export function reachContentFromPreview(preview: unknown, fallbackSummary: string): ReachContent {
@@ -57,7 +73,7 @@ export function reachContentFromPreview(preview: unknown, fallbackSummary: strin
   const attachments: ReachAttachment[] = []
   if (Array.isArray(p.attachments)) {
     for (const item of p.attachments) {
-      const name = typeof item === "string" ? item : isRecord(item) && typeof item.name === "string" ? item.name : undefined
+      const name = attachmentNameOf(item)
       if (name !== undefined && isBareFileName(name) && !attachments.some(a => a.name === name)) {
         attachments.push({ name })
       }
