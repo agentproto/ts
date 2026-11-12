@@ -1,5 +1,5 @@
 /**
- * `agentproto agent create <slug> [dir] [--force] [--model <id>] [--description <text>]`
+ * `agentproto agent create <slug> [dir] [--force] [--model <id>] [--description <text>] [--grant <action>]...`
  * `agentproto agent list [dir]`
  *
  * CREATE renders a valid AIP-42 `agent/v1` AGENT.md at
@@ -7,7 +7,9 @@
  * `loadAgent` / `self_inspect` read first — through the shared
  * `renderAgentManifest` (`@agentproto/app`), so a created manifest is
  * byte-identical to one `app emit` writes. It refuses to overwrite an
- * existing manifest unless `--force`.
+ * existing manifest unless `--force`. `--grant <action>` (repeatable) writes
+ * `actions.granted`; nothing is granted by default, because a grant such as
+ * `create_tool` lets the agent add code the daemon runs.
  *
  * LIST is a plain read-side scan of `<dir>/.agents/`: every subdirectory
  * holding an AGENT.md is an agent, printed as `id -> path` (plus
@@ -32,6 +34,7 @@ const USAGE = `agentproto agent — create and list AIP-42 agent manifests
 
 Usage:
   agentproto agent create <slug> [dir] [--force] [--model <id>] [--description <text>]
+                          [--grant <action>]...
   agentproto agent list [dir]
 
 create:
@@ -39,7 +42,11 @@ create:
   (<dir> defaults to the current directory). Refuses to overwrite an
   existing manifest unless --force. --model (default ${DEFAULT_MODEL}) and
   --description (default "Agent <slug>.") fill the frontmatter's model /
-  description fields.
+  description fields. --grant <action> (repeatable) writes the action to
+  actions.granted, e.g. --grant create_tool lets the agent author tools with
+  the daemon's create_tool verb. Nothing is granted by default: a grant is an
+  elevation (create_tool lets the agent add code the daemon runs, each run
+  still needing a human approval).
 
 list:
   Print every agent discovered under <dir>/.agents/<id>/AGENT.md as
@@ -60,7 +67,7 @@ export async function runAgent(args: readonly string[]): Promise<number> {
   return 1
 }
 
-/** `agentproto agent create <slug> [dir] [--force] [--model] [--description]`. */
+/** `agentproto agent create <slug> [dir] [--force] [--model] [--description] [--grant]...`. */
 export async function runAgentCreate(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -70,6 +77,7 @@ export async function runAgentCreate(args: readonly string[]): Promise<number> {
       force: { type: "boolean" },
       model: { type: "string" },
       description: { type: "string" },
+      grant: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
   })
@@ -93,6 +101,16 @@ export async function runAgentCreate(args: readonly string[]): Promise<number> {
       ? values.description.trim()
       : `Agent ${slug}.`
 
+  const grants: string[] = []
+  for (const raw of Array.isArray(values.grant) ? values.grant : []) {
+    const grant = typeof raw === "string" ? raw.trim() : ""
+    if (grant === "") {
+      process.stderr.write(`agentproto agent create: --grant needs an action name (e.g. --grant create_tool).\n`)
+      return 1
+    }
+    if (!grants.includes(grant)) grants.push(grant)
+  }
+
   let rendered: { path: string; contents: string }
   try {
     rendered = renderAgentManifest(
@@ -102,6 +120,7 @@ export async function runAgentCreate(args: readonly string[]): Promise<number> {
         description,
         model,
         tools: [],
+        ...(grants.length > 0 ? { actions: { granted: grants } } : {}),
         skills: [],
         workflows: [],
         routines: [],

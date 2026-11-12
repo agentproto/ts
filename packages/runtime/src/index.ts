@@ -4321,7 +4321,12 @@ export async function createGateway(
     const gatedServer = callerSessionId && callerDenyGrants?.length
       ? withToolDenyGate(rawServer, callerDenyGrants, callerSessionId)
       : rawServer
-    registerCreateAgentTool(gatedServer, { workspace })
+    registerCreateAgentTool(gatedServer, {
+      workspace,
+      ...(callerSessionId ? { sessionId: callerSessionId } : {}),
+      ...(callerContext?.meta?.agentId ? { agentId: callerContext.meta.agentId } : {}),
+      ...(callerContext?.meta?.agentManifestPath ? { manifestPath: callerContext.meta.agentManifestPath } : {}),
+    })
     // AIP-14/AIP-30 tool authoring (`create_tool` / `delete_tool`). A NEW
     // primitive, gated by the AUTHENTICATED CALLER'S own AIP-42
     // `actions.granted` (default DENY) and bounded by a minimum lifetime + a
@@ -4334,6 +4339,7 @@ export async function createGateway(
     const callerAgentManifestPath = callerContext?.meta?.agentManifestPath
     registerCreateToolTools(gatedServer, {
       workspace,
+      approvals: approvalsEngine,
       ...(callerSessionId ? { sessionId: callerSessionId } : {}),
       ...(callerAgentId ? { agentId: callerAgentId } : {}),
       ...(callerAgentManifestPath ? { manifestPath: callerAgentManifestPath } : {}),

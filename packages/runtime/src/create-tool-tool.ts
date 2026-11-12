@@ -15,9 +15,21 @@
  * The manifest is parsed by `@agentproto/agent` (gray-matter, real YAML), so
  * both the inline-array `[ "create_tool" ]` and a block list parse natively.
  *
- * Scoping — honest: the loader is app/workspace-scoped, so a created tool is
- * immediately callable by any session of that app/workspace. Per-owner private
- * tools are a documented NON-GOAL (they need a loader seam change).
+ * Calling a created tool: `created_tool_call` (registered here, next to
+ * `create_tool`) runs a tool this verb authored in the daemon workspace. It is
+ * a fixed verb, so it is already in the tool list a session got when it
+ * connected: the session that created the tool can call it right away, with
+ * no respawn (the created tool does not appear as its own MCP tool). EVERY
+ * call needs a human-approved, single-use approval (`approval_request` kind
+ * `created_tool_call`, payload `{ tool, args }`) requested by the calling
+ * session, whatever `approval` class the TOOL.md declares: the class is
+ * written by the agent that created the tool, so it cannot relax the gate.
+ * Only tools that carry the authoring marker run here; a hand-written or
+ * app-bundled TOOL.md never does. Any session on the gateway may ask, the same
+ * reach every gateway verb has; the human decision is the gate.
+ *
+ * Per-owner private tools are a documented NON-GOAL (they need a loader seam
+ * change).
  *
  * Churn/lifetime guards (PLAN §3.3):
  *  - `minLifetimeMs` (default 1h): a created TOOL.md can be neither overwritten
@@ -46,8 +58,11 @@ import { dirname, join } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import { AGENT_ID_PATTERN, loadAgent } from "@agentproto/agent"
-import { stripOwner } from "@agentproto/app"
+import { loadAppBundledTools, stripOwner } from "@agentproto/app"
 import { createTool, type ToolContext, type ToolDefinition } from "@agentproto/tool"
+import { runTool } from "@agentproto/driver"
+import type { ApprovalsEngine } from "./approvals/engine.js"
+import type { ApprovalRequester } from "./approvals/types.js"
 
 /** AIP-14 id regex — the same one `parseToolManifest` enforces. */
 export const TOOL_ID_PATTERN = /^[a-z][a-z0-9._-]{1,63}$/
@@ -625,6 +640,101 @@ export async function deleteToolManifest(input: DeleteToolInput): Promise<{ id: 
   )
 }
 
+/** The gateway verb that runs a created tool. */
+export const CREATED_TOOL_CALL_VERB = "created_tool_call"
+
+/** The approval `kind` a `created_tool_call` consumes. */
+export const CREATED_TOOL_APPROVAL_KIND = "created_tool_call"
+
+/** The exact approval request a caller has to make before the call can run. */
+export interface CreatedToolApprovalRequest {
+  readonly kind: typeof CREATED_TOOL_APPROVAL_KIND
+  readonly title: string
+  readonly preview: { readonly tool: string; readonly args: Record<string, unknown> }
+  readonly payload: { readonly tool: string; readonly args: Record<string, unknown> }
+}
+
+/** Thrown when a call carries no approval: names the request to make. */
+export class CreatedToolApprovalRequired extends Error {
+  constructor(readonly request: CreatedToolApprovalRequest) {
+    super(
+      `${CREATED_TOOL_CALL_VERB}: tool '${request.payload.tool}' needs a human approval for this call. ` +
+        `Call approval_request with this request, wait for the decision, then retry with its approvalId.`,
+    )
+    this.name = "CreatedToolApprovalRequired"
+  }
+}
+
+export interface CallCreatedToolInput {
+  readonly workspace: string
+  readonly id: string
+  readonly args: Record<string, unknown>
+  readonly approvalId?: string
+  /** The trusted caller, as the approvals engine names requesters. */
+  readonly requester: ApprovalRequester
+  readonly approvals?: ApprovalsEngine
+}
+
+export interface CreatedToolCallResult {
+  readonly id: string
+  readonly output: unknown
+}
+
+/**
+ * Run a tool `create_tool` authored, once a human approved this exact call.
+ * Order matters: the tool must exist and carry the authoring marker, then the
+ * approval is CONSUMED (approved, same requester, same payload, never used
+ * before), and only then the driver runs. A consumed approval is spent even
+ * when the driver then fails: one approval, one attempt.
+ */
+export async function callCreatedTool(input: CallCreatedToolInput): Promise<CreatedToolCallResult> {
+  const verb = CREATED_TOOL_CALL_VERB
+  if (!TOOL_ID_PATTERN.test(input.id)) {
+    throw new Error(`${verb}: invalid id '${input.id}', it must match ${TOOL_ID_PATTERN}.`)
+  }
+  const marker = await readAuthoringMarker(authoringMarkerPath(input.workspace, input.id))
+  if (!marker || !existsSync(toolPath(input.workspace, input.id))) {
+    throw new Error(
+      `${verb}: '${input.id}' is not a tool create_tool authored in this workspace ` +
+        `(no ${AUTHORING_MARKER_FILE} marker). Only created tools run through ${verb}.`,
+    )
+  }
+
+  const payload = { tool: input.id, args: input.args }
+  if (input.approvalId === undefined || input.approvalId.trim() === "") {
+    throw new CreatedToolApprovalRequired({
+      kind: CREATED_TOOL_APPROVAL_KIND,
+      title: `Run created tool ${input.id}`,
+      preview: payload,
+      payload,
+    })
+  }
+  if (!input.approvals) {
+    throw new Error(`${verb}: no approvals engine on this surface, refusing (default DENY).`)
+  }
+  const record = input.approvals.get(input.approvalId)
+  if (!record) throw new Error(`${verb}: no approval ${input.approvalId}.`)
+  if (record.kind !== CREATED_TOOL_APPROVAL_KIND) {
+    throw new Error(
+      `${verb}: approval ${input.approvalId} is of kind '${record.kind}', not '${CREATED_TOOL_APPROVAL_KIND}'.`,
+    )
+  }
+  // Throws on not approved / other requester / payload drift / already consumed.
+  input.approvals.consume(input.approvalId, input.requester, payload)
+
+  const { tools, drivers } = await loadAppBundledTools(input.workspace)
+  const tool = tools.find(t => t.id === input.id)
+  if (!tool) throw new Error(`${verb}: '${input.id}' has no loadable TOOL.md.`)
+  const output = await runTool({
+    tool,
+    // Only the driver create_tool wrote for this id, never another driver
+    // in the workspace that happens to implement the same contract.
+    candidates: drivers.filter(d => d.id === input.id),
+    input: input.args,
+  })
+  return { id: input.id, output }
+}
+
 function ok(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] }
 }
@@ -640,6 +750,9 @@ function fail(err: unknown) {
 
 export interface RegisterCreateToolOptions extends CallerIdentity {
   readonly workspace: string
+  /** The daemon's approvals engine. Without it `created_tool_call` refuses
+   *  every call (fail closed). */
+  readonly approvals?: ApprovalsEngine
 }
 
 /** Register `create_tool` + `delete_tool`. The workspace AND the authenticated
@@ -668,7 +781,10 @@ export function registerCreateToolTools(server: McpServer, opts: RegisterCreateT
         .object({
           kind: z.enum(["cli", "http"]),
           bin: z.string().optional().describe("kind:cli binary (e.g. \"node\")."),
-          argv: z.array(z.string()).optional().describe("kind:cli argv (script + templated args)."),
+          argv: z
+            .array(z.string())
+            .optional()
+            .describe("kind:cli argv (script + args). `${input.<name>}` is replaced by that input. stdout must be JSON."),
           baseUrl: z.string().optional().describe("kind:http base URL."),
           method: z.string().optional().describe("kind:http default method."),
           path: z.string().optional().describe("kind:http path."),
@@ -698,6 +814,49 @@ export function registerCreateToolTools(server: McpServer, opts: RegisterCreateT
         })
         return ok(created)
       } catch (err) {
+        return fail(err)
+      }
+    },
+  )
+
+  server.tool(
+    CREATED_TOOL_CALL_VERB,
+    "Run a tool that `create_tool` authored in this workspace, by id. Every call needs a " +
+      "human-approved approval: first call `approval_request` with kind \"created_tool_call\" and " +
+      "payload `{ tool: <id>, args: <args> }`, wait for the human (`approval_wait`), then call this " +
+      "with the same `id`, the byte-identical `args` and the `approvalId`. One approval runs the " +
+      "tool once. Without an approval the call is refused with the exact request to make.",
+    {
+      id: z.string().describe("Id of a tool create_tool authored."),
+      args: z.record(z.string(), z.unknown()).optional().describe("Tool inputs. Default: empty object."),
+      approvalId: z
+        .string()
+        .optional()
+        .describe("An approved `created_tool_call` approval this session requested for exactly this id + args."),
+    },
+    async input => {
+      try {
+        const result = await callCreatedTool({
+          workspace: opts.workspace,
+          id: input.id,
+          args: input.args ?? {},
+          ...(input.approvalId !== undefined ? { approvalId: input.approvalId } : {}),
+          requester: opts.sessionId ? { sessionId: opts.sessionId } : { operator: true },
+          ...(opts.approvals ? { approvals: opts.approvals } : {}),
+        })
+        return ok(result)
+      } catch (err) {
+        if (err instanceof CreatedToolApprovalRequired) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ error: "approval_required", message: err.message, request: err.request }),
+              },
+            ],
+          }
+        }
         return fail(err)
       }
     },
