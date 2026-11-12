@@ -44,7 +44,7 @@ export { emitApp, renderAgentManifest } from "./emit.js"
 export type { AgentManifestLayout, RenderAgentManifestTarget, RenderedAgentManifest } from "./emit.js"
 export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFromMarkdownText } from "./load-app.js"
 export type { AppUiPeek } from "./load-app.js"
-export { loadAppBundledTools } from "./load-app-tools.js"
+export { loadAppBundledTools, loadBundledTool, type LoadedBundledTool } from "./load-app-tools.js"
 export {
   checkExposedTools,
   exposedToolName,

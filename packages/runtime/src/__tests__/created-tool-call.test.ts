@@ -188,6 +188,38 @@ describe("create_tool then call it in the same session", () => {
     expect(res.text).toMatch(/does not match the approved payload/)
   })
 
+  it("ignores an unrelated malformed TOOL.md and keeps the approval when its own bundle is broken", async () => {
+    await writeAgent("builder", ["create_tool"])
+    const client = await connect("sess_builder")
+    await call(client, "create_tool", { id: "proof.echo", description: "Echo.", driver: echoDriver })
+    // A broken, unrelated bundle elsewhere in the workspace.
+    await mkdir(join(workspace, ".agentproto", "tools", "junk"), { recursive: true })
+    await writeFile(join(workspace, ".agentproto", "tools", "junk", "TOOL.md"), "not a manifest", "utf8")
+
+    const args = { text: "bonjour" }
+    const approvalId = await approve("sess_builder", await requestedPayload(client, "proof.echo", args))
+    const ran = await call(client, "created_tool_call", { id: "proof.echo", args, approvalId })
+    expect(ran.isError).toBe(false)
+
+    // Its own bundle broken: refused before the approval is consumed.
+    const second = await approve("sess_builder", await requestedPayload(client, "proof.echo", args))
+    await writeFile(join(workspace, ".agentproto", "drivers", "proof.echo", "DRIVER.md"), "broken", "utf8")
+    const broken = await call(client, "created_tool_call", { id: "proof.echo", args, approvalId: second })
+    expect(broken.isError).toBe(true)
+    expect(engine.get(second)?.status).toBe("approved")
+  })
+
+  it("refuses a bundle whose TOOL.md declares another id than its folder", async () => {
+    await writeAgent("builder", ["create_tool"])
+    const client = await connect("sess_builder")
+    await call(client, "create_tool", { id: "proof.echo", description: "Echo.", driver: echoDriver })
+    const toolFile = join(workspace, ".agentproto", "tools", "proof.echo", "TOOL.md")
+    await writeFile(toolFile, (await readFile(toolFile, "utf8")).replace("id: proof.echo", "id: other.tool"), "utf8")
+    const res = await call(client, "created_tool_call", { id: "proof.echo", args: { text: "x" } })
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/declares id 'other.tool'/)
+  })
+
   it("only runs tools create_tool authored, never a hand-written TOOL.md", async () => {
     await writeAgent("builder", ["create_tool"])
     const client = await connect("sess_builder")

@@ -59,7 +59,7 @@ import { dirname, join } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import { AGENT_ID_PATTERN, loadAgent } from "@agentproto/agent"
-import { loadAppBundledTools, stripOwner } from "@agentproto/app"
+import { loadBundledTool, stripOwner } from "@agentproto/app"
 import { createTool, type ToolContext, type ToolDefinition } from "@agentproto/tool"
 import { runTool } from "@agentproto/driver"
 import type { ApprovalsEngine } from "./approvals/engine.js"
@@ -693,10 +693,11 @@ export interface CreatedToolCallResult {
 
 /**
  * Run a tool `create_tool` authored, once a human approved this exact call.
- * Order matters: the tool must exist and carry the authoring marker, then the
- * approval is CONSUMED (approved, same requester, same payload, never used
- * before), and only then the driver runs. A consumed approval is spent even
- * when the driver then fails: one approval, one attempt.
+ * Order matters: the tool must carry the authoring marker, its bundle (and
+ * only it) must load, then the approval is CONSUMED (approved, same
+ * requester, same payload, never used before), and only then the driver
+ * runs. A consumed approval is spent even when the driver then fails: one
+ * approval, one attempt.
  */
 export async function callCreatedTool(input: CallCreatedToolInput): Promise<CreatedToolCallResult> {
   const verb = CREATED_TOOL_CALL_VERB
@@ -711,20 +712,31 @@ export async function callCreatedTool(input: CallCreatedToolInput): Promise<Crea
     )
   }
 
-  const toolBytes = await readFile(toolPath(input.workspace, input.id), "utf8")
-  const driverBytes = existsSync(driverPath(input.workspace, input.id))
-    ? await readFile(driverPath(input.workspace, input.id), "utf8")
-    : ""
+  // Load ONLY this bundle, before any approval is touched: a malformed file
+  // elsewhere in the workspace cannot break the call, and a broken bundle
+  // fails here without spending the human's approval. The hash covers the
+  // exact bytes the handles were parsed from, so what was approved is what
+  // runs.
+  let bundle: Awaited<ReturnType<typeof loadBundledTool>>
+  try {
+    bundle = await loadBundledTool(input.workspace, input.id)
+  } catch (err) {
+    throw new Error(`${verb}: ${err instanceof Error ? err.message : String(err)}`)
+  }
   const payload: CreatedToolApprovalPayload = {
     tool: input.id,
     args: input.args,
-    toolSha256: createHash("sha256").update(toolBytes).update("\0").update(driverBytes).digest("hex"),
+    toolSha256: createHash("sha256")
+      .update(bundle.toolSource)
+      .update("\0")
+      .update(bundle.driverSource)
+      .digest("hex"),
   }
   if (input.approvalId === undefined || input.approvalId.trim() === "") {
     throw new CreatedToolApprovalRequired({
       kind: CREATED_TOOL_APPROVAL_KIND,
       title: `Run created tool ${input.id}`,
-      preview: { ...payload, driver: driverSummary(driverBytes) },
+      preview: { ...payload, driver: driverSummary(bundle.driverSource) },
       payload,
     })
   }
@@ -742,14 +754,11 @@ export async function callCreatedTool(input: CallCreatedToolInput): Promise<Crea
   // the tool's files changed since the approval) / already consumed.
   input.approvals.consume(input.approvalId, input.requester, payload)
 
-  const { tools, drivers } = await loadAppBundledTools(input.workspace)
-  const tool = tools.find(t => t.id === input.id)
-  if (!tool) throw new Error(`${verb}: '${input.id}' has no loadable TOOL.md.`)
   const output = await runTool({
-    tool,
-    // Only the driver create_tool wrote for this id, never another driver
-    // in the workspace that happens to implement the same contract.
-    candidates: drivers.filter(d => d.id === input.id),
+    tool: bundle.tool,
+    // Only the driver filed under this id, never another driver in the
+    // workspace that happens to implement the same contract.
+    candidates: [bundle.driver],
     input: input.args,
   })
   return { id: input.id, output }
