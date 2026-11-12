@@ -91,7 +91,13 @@ describe("approval attachments", () => {
     expect(read.claimed).toBe(true)
     expect(read.names).toEqual(names.slice(0, 10))
     expect(read.problems).toEqual([{ name: "3 more", reason: "over the limit of 10 attachments per card" }])
-    expect(readAttachmentNames({ attachments: [{ fileName: "a" }] }).claimed).toBe(false)
+    expect(readAttachmentNames({ attachments: [{ sizeBytes: 3 }] }).claimed).toBe(false)
+    expect(readAttachmentNames({ attachments: [{ filename: "a.pdf", mimeType: "application/pdf" }] }).names).toEqual(["a.pdf"])
+    // A mail preview's { fileName, sizeBytes } stays with the card's own rendering.
+    expect(readAttachmentNames({ kind: "mail", attachments: [{ fileName: "a", sizeBytes: 3 }] }).claimed).toBe(false)
+    // String entries of a mail preview behave as before: claimed, objects left out.
+    const mixed = readAttachmentNames({ kind: "mail", attachments: ["cv.pdf", { fileName: "a", sizeBytes: 3 }] })
+    expect(mixed).toEqual({ claimed: true, names: ["cv.pdf"], problems: [] })
     expect(readAttachmentNames("text").claimed).toBe(false)
   })
 })
