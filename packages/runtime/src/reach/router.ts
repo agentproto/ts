@@ -6,7 +6,9 @@
  * the adapters of the owner's route, in order, until one acknowledges
  * (`delivered`, `deferred` or `deduped`). A `deferred` whose `until` is later
  * than the message's `expiresAt` counts as `undelivered(deferred-past-expiry)`
- * and the route goes on. Every attempt is appended to `<id>/reach.json`.
+ * and the route goes on, and so does a `deferred` whose `until` is already
+ * past (`undelivered(deferred-past-due)`): neither can stand for a real
+ * hold. Every attempt is appended to `<id>/reach.json`.
  * When no adapter acknowledges, it emits `reach:undelivered` on the session
  * bus and logs `reach: undelivered <approvalId>`.
  *
@@ -91,12 +93,15 @@ export function createReachRouter(opts: ReachRouterOptions): ReachRouter {
     } catch {
       receipt = { status: "failed", reason: "adapter-threw", adapterId: adapter.id, at: new Date().toISOString() }
     }
-    if (
-      receipt.status === "deferred" &&
-      message.expiresAt !== undefined &&
-      Date.parse(receipt.until) > Date.parse(message.expiresAt)
-    ) {
-      receipt = { status: "undelivered", reason: "deferred-past-expiry", adapterId: receipt.adapterId, at: receipt.at }
+    if (receipt.status === "deferred") {
+      const until = Date.parse(receipt.until)
+      const reason =
+        until <= Date.now()
+          ? "deferred-past-due"
+          : message.expiresAt !== undefined && until > Date.parse(message.expiresAt)
+            ? "deferred-past-expiry"
+            : undefined
+      if (reason) receipt = { status: "undelivered", reason, adapterId: receipt.adapterId, at: receipt.at }
     }
     const entry: ReachReceiptEntry = {
       dedupeKey: message.dedupeKey,

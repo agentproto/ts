@@ -244,6 +244,18 @@ describe("REACH router", () => {
     ])
   })
 
+  it("a deferred receipt whose until is already past falls to the bridge", async () => {
+    const r = startReach({ answer: () => receipt({ status: "deferred", until: new Date(Date.now() - 1000).toISOString() }) })
+    const record = request()
+    await r.route(record.id)
+
+    expect(tg.calls.filter(c => c.method === "sendMessage")).toHaveLength(1)
+    expect(receipts(record.id).map(e => [e.adapterId, e.status, e.reason])).toEqual([
+      ["pygmalion", "undelivered", "deferred-past-due"],
+      ["floor", "delivered", undefined],
+    ])
+  })
+
   it("a deferred receipt before expiresAt acknowledges: no card", async () => {
     const until = new Date(Date.now() + 60_000).toISOString()
     const r = startReach({ answer: () => receipt({ status: "deferred", until }) })
@@ -421,9 +433,19 @@ describe("REACH router", () => {
 describe("no reach config: today's behaviour", () => {
   it("index.ts starts no router and leaves the bridge announcing unless reach.routes.owner has a usable entry", () => {
     const source = readFileSync(fileURLToPath(new URL("../index.ts", import.meta.url)), "utf8")
-    expect(source).toContain("const reachOn = reachRouteCheck.adapters.length > 0")
+    expect(source).toContain("const reachOn = reachPlan.on")
     expect(source).toContain("...(reachOn ? { announceOnRequested: false } : {}),")
     expect(source).toMatch(/const reachRouter = reachOn\s+\? createReachRouter\(/)
+  })
+
+  it("index.ts builds the route once and logs its errors with a reach: prefix", () => {
+    const source = readFileSync(fileURLToPath(new URL("../index.ts", import.meta.url)), "utf8")
+    expect(source.match(/planReachRoute\(/g)).toHaveLength(1)
+    expect(source).not.toMatch(/createReachRoute\(/)
+    const block = source.slice(source.indexOf("const reachPlan = planReachRoute("), source.indexOf("const reachOn = reachPlan.on"))
+    expect(block).toContain("console.warn(`reach: ${")
+    expect(block).not.toContain("[approval-telegram-bridge]")
+    expect(block).toContain("telegramAvailable: telegramApprovalCardsOn")
   })
 })
 

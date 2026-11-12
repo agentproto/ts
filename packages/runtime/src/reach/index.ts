@@ -1,5 +1,5 @@
 export { createReachRouter, REACH_MISSING_AFTER_MS, REACH_WATCHDOG_INTERVAL_MS, type ReachRouter, type ReachRouterOptions } from "./router.js"
-export { createReachRoute, REACH_ADAPTER_KINDS, type ReachRouteDeps, type ReachRouteSkip } from "./registry.js"
+export { createReachRoute, planReachRoute, REACH_ADAPTER_KINDS, type ReachRoute, type ReachRouteDeps, type ReachRouteSkip } from "./registry.js"
 export { createTelegramReachAdapter, TELEGRAM_REACH_CAPABILITIES, type TelegramReachAdapterOptions } from "./telegram-adapter.js"
 export {
   createWebhookReachAdapter,

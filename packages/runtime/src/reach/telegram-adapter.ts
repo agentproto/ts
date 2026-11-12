@@ -26,8 +26,10 @@ export interface TelegramReachAdapterOptions {
   id: string
   /** The route entry's alias. Absent: the bridge's own. */
   alias?: string
-  /** Absent when the daemon has no Telegram approval cards configured. */
-  bridge?: Pick<ApprovalTelegramBridge, "announce">
+  /** Absent (or resolving to undefined) when the daemon has no Telegram
+   *  approval cards configured. A function is read at send time, so the route
+   *  can be built before the bridge. */
+  bridge?: Pick<ApprovalTelegramBridge, "announce"> | (() => Pick<ApprovalTelegramBridge, "announce"> | undefined)
   /** The alias the bridge was built with. */
   bridgeAlias?: string
   onError?: (err: unknown) => void
@@ -43,14 +45,15 @@ export function createTelegramReachAdapter(opts: TelegramReachAdapterOptions): R
     kind: "telegram",
     capabilities: TELEGRAM_REACH_CAPABILITIES,
     async send(message) {
-      if (!opts.bridge) return receipt({ status: "undelivered", reason: "telegram-not-configured" })
+      const bridge = typeof opts.bridge === "function" ? opts.bridge() : opts.bridge
+      if (!bridge) return receipt({ status: "undelivered", reason: "telegram-not-configured" })
       if (opts.alias !== undefined && opts.alias !== (opts.bridgeAlias ?? "default")) {
         return receipt({ status: "undelivered", reason: "alias-not-configured" })
       }
       const ref = message.intent === "ask" ? message.ask?.ref : undefined
       if (!ref) return receipt({ status: "undelivered", reason: "not-an-approval" })
       try {
-        const result = await opts.bridge.announce(ref)
+        const result = await bridge.announce(ref)
         if (result.posted) return receipt({ status: "delivered" })
         if (result.reason === "already-posted") return receipt({ status: "deduped" })
         return receipt({ status: "undelivered", reason: result.reason })
