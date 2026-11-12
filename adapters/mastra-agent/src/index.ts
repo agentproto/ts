@@ -36,6 +36,14 @@ export const mastraAgent: AgentCliHandle = defineHarness({
   ...(process.platform === "darwin"
     ? { confinedReadPaths: collectMastraConfinedReadPaths(fileURLToPath(new URL("..", import.meta.url))) }
     : {}),
+  // The conversation-memory SQLite db lives under `~/.agentproto/mastra-agent`.
+  // An OS-confined spawn (workflow step, app boundary) denies writes under
+  // `$HOME`, so libsql fails with SQLITE_CANTOPEN (14) at startup. A confined
+  // spawn gets a per-session-lineage state dir instead (see `resolveMemoryDbPath`).
+  stateHome: {
+    env: "AGENTPROTO_MASTRA_STATE_HOME",
+    defaultDir: ".agentproto/mastra-agent",
+  },
   install: [
     {
       method: "npm",

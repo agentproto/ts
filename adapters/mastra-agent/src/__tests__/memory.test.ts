@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { mastraAgent } from "../index.js"
 import { buildSqliteMemory, resolveMemoryDbPath } from "../memory.js"
 
 describe("resolveMemoryDbPath", () => {
@@ -6,6 +10,20 @@ describe("resolveMemoryDbPath", () => {
     expect(
       resolveMemoryDbPath({ AGENTPROTO_MASTRA_MEMORY_DB: "/tmp/custom.db" }),
     ).toBe("/tmp/custom.db")
+  })
+  it("uses AGENTPROTO_MASTRA_STATE_HOME (confined spawn) instead of $HOME", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mastra-state-"))
+    try {
+      expect(resolveMemoryDbPath({ AGENTPROTO_MASTRA_STATE_HOME: dir })).toBe(join(dir, "memory.db"))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  it("declares a stateHome so a confined spawn is not sent to $HOME", () => {
+    expect(mastraAgent.stateHome).toEqual({
+      env: "AGENTPROTO_MASTRA_STATE_HOME",
+      defaultDir: ".agentproto/mastra-agent",
+    })
   })
   it("falls back to ~/.agentproto/mastra-agent/memory.db", () => {
     const p = resolveMemoryDbPath({})

@@ -9,7 +9,7 @@
 
 import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { LibSQLStore } from "@mastra/libsql"
 import { Memory } from "@mastra/memory"
 import type { MemoryConfig } from "@agentproto/agent"
@@ -19,13 +19,19 @@ import type { MemoryConfig } from "@agentproto/agent"
 export type MastraMemoryLike = Memory
 
 /** Resolve the SQLite file path, creating the parent dir. `AGENTPROTO_MASTRA_MEMORY_DB`
- *  wins; otherwise `~/.agentproto/mastra-agent/memory.db`. */
+ *  wins; then `AGENTPROTO_MASTRA_STATE_HOME` (set by the harness for an
+ *  OS-confined spawn, which cannot write under `$HOME`); otherwise
+ *  `~/.agentproto/mastra-agent/memory.db`. */
 export function resolveMemoryDbPath(
   env: Record<string, string | undefined> = process.env,
 ): string {
   const override = env.AGENTPROTO_MASTRA_MEMORY_DB
   if (override) return override
-  const dir = join(homedir(), ".agentproto", "mastra-agent")
+  const stateHome = env.AGENTPROTO_MASTRA_STATE_HOME
+  const dir =
+    stateHome && isAbsolute(stateHome)
+      ? stateHome
+      : join(homedir(), ".agentproto", "mastra-agent")
   mkdirSync(dir, { recursive: true })
   return join(dir, "memory.db")
 }
