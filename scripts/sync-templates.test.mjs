@@ -121,7 +121,7 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     assert.match(first["packages/runtime/src/sandbox-providers/registry.ts"], new RegExp(`baked @agentproto/cli ${esc(CLI)}`))
 
     // package.json description rewritten in place
-    assert.match(first["packages/sandbox-e2b/package.json"], new RegExp(`"description": ".*baked @agentproto/cli ${esc(CLI)}.*"`))
+    assert.match(first["packages/sandbox-e2b/package.json"], new RegExp(`"description": ".*with @agentproto/cli baked in.*"`))
 
     // toml records the pins per-package (no space-separated adapter list)
     const toml = first["templates/workstation/e2b.template.toml"]
