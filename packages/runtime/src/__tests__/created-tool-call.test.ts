@@ -6,7 +6,7 @@
  * single-use approval bound to the exact tool id and arguments.
  */
 
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -77,6 +77,12 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
   }
 }
 
+/** The payload the verb itself asks to be approved for this id + args. */
+async function requestedPayload(client: Client, id: string, args: Record<string, unknown>): Promise<unknown> {
+  const res = await call(client, "created_tool_call", { id, args })
+  return JSON.parse(res.text).request.payload
+}
+
 async function approve(sessionId: string, payload: unknown): Promise<string> {
   const record = engine.request(
     { kind: "created_tool_call", title: "Run proof.echo", preview: payload, payload },
@@ -109,9 +115,14 @@ describe("create_tool then call it in the same session", () => {
     const unapproved = await call(client, "created_tool_call", { id: "proof.echo", args })
     expect(unapproved.isError).toBe(true)
     expect(unapproved.text).toMatch(/approval_required/)
-    expect(JSON.parse(unapproved.text).request.payload).toEqual({ tool: "proof.echo", args })
+    const request = JSON.parse(unapproved.text).request
+    expect(request.kind).toBe("created_tool_call")
+    expect(request.payload).toMatchObject({ tool: "proof.echo", args })
+    expect(request.payload.toolSha256).toMatch(/^[0-9a-f]{64}$/)
+    // The human sees what will run, not only the agent's words.
+    expect(request.preview.driver).toMatchObject({ kind: "cli", bin: process.execPath })
 
-    const approvalId = await approve("sess_builder", { tool: "proof.echo", args })
+    const approvalId = await approve("sess_builder", request.payload)
     const ran = await call(client, "created_tool_call", { id: "proof.echo", args, approvalId })
     expect(ran.isError).toBe(false)
     expect(JSON.parse(ran.text)).toEqual({ id: "proof.echo", output: { echo: "bonjour" } })
@@ -127,7 +138,7 @@ describe("create_tool then call it in the same session", () => {
     const client = await connect("sess_builder")
     await call(client, "create_tool", { id: "proof.echo", description: "Echo.", driver: echoDriver })
 
-    const approvalId = await approve("sess_builder", { tool: "proof.echo", args: { text: "bonjour" } })
+    const approvalId = await approve("sess_builder", await requestedPayload(client, "proof.echo", { text: "bonjour" }))
     const res = await call(client, "created_tool_call", {
       id: "proof.echo",
       args: { text: "rm -rf" },
@@ -143,7 +154,7 @@ describe("create_tool then call it in the same session", () => {
     await call(client, "create_tool", { id: "proof.echo", description: "Echo.", driver: echoDriver })
 
     const args = { text: "bonjour" }
-    const approvalId = await approve("sess_other", { tool: "proof.echo", args })
+    const approvalId = await approve("sess_other", await requestedPayload(client, "proof.echo", args))
     const res = await call(client, "created_tool_call", { id: "proof.echo", args, approvalId })
     expect(res.isError).toBe(true)
     expect(res.text).toMatch(/not requested by this caller/)
@@ -155,12 +166,26 @@ describe("create_tool then call it in the same session", () => {
     await call(client, "create_tool", { id: "proof.echo", description: "Echo.", driver: echoDriver })
 
     const args = { text: "bonjour" }
-    const payload = { tool: "proof.echo", args }
+    const payload = await requestedPayload(client, "proof.echo", args)
     const record = engine.request({ kind: "send_email", title: "t", preview: payload, payload }, { sessionId: "sess_builder" })
     await engine.decideWeb(record.id, "approve", { ipAddress: "127.0.0.1", userAgent: "test" })
     const res = await call(client, "created_tool_call", { id: "proof.echo", args, approvalId: record.id })
     expect(res.isError).toBe(true)
     expect(res.text).toMatch(/kind/)
+  })
+
+  it("voids an approval when the tool's driver changed after the human said yes", async () => {
+    await writeAgent("builder", ["create_tool"])
+    const client = await connect("sess_builder")
+    await call(client, "create_tool", { id: "proof.echo", description: "Echo.", driver: echoDriver })
+
+    const args = { text: "bonjour" }
+    const approvalId = await approve("sess_builder", await requestedPayload(client, "proof.echo", args))
+    const driverFile = join(workspace, ".agentproto", "drivers", "proof.echo", "DRIVER.md")
+    await writeFile(driverFile, (await readFile(driverFile, "utf8")).replace("echo:", "pwned:"), "utf8")
+    const res = await call(client, "created_tool_call", { id: "proof.echo", args, approvalId })
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/does not match the approved payload/)
   })
 
   it("only runs tools create_tool authored, never a hand-written TOOL.md", async () => {

@@ -21,8 +21,8 @@
  * connected: the session that created the tool can call it right away, with
  * no respawn (the created tool does not appear as its own MCP tool). EVERY
  * call needs a human-approved, single-use approval (`approval_request` kind
- * `created_tool_call`, payload `{ tool, args }`) requested by the calling
- * session, whatever `approval` class the TOOL.md declares: the class is
+ * `created_tool_call`, payload `{ tool, args, toolSha256 }`, the exact request
+ * returned by a call made without one) requested by the calling session, whatever `approval` class the TOOL.md declares: the class is
  * written by the agent that created the tool, so it cannot relax the gate.
  * Only tools that carry the authoring marker run here; a hand-written or
  * app-bundled TOOL.md never does. Any session on the gateway may ask, the same
@@ -52,6 +52,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
@@ -646,12 +647,22 @@ export const CREATED_TOOL_CALL_VERB = "created_tool_call"
 /** The approval `kind` a `created_tool_call` consumes. */
 export const CREATED_TOOL_APPROVAL_KIND = "created_tool_call"
 
+/** What a `created_tool_call` approval pins: the tool, the exact arguments,
+ *  and a hash of the TOOL.md + DRIVER.md bytes, so an approval cannot run a
+ *  tool whose code changed after the human said yes. */
+export interface CreatedToolApprovalPayload {
+  readonly tool: string
+  readonly args: Record<string, unknown>
+  readonly toolSha256: string
+}
+
 /** The exact approval request a caller has to make before the call can run. */
 export interface CreatedToolApprovalRequest {
   readonly kind: typeof CREATED_TOOL_APPROVAL_KIND
   readonly title: string
-  readonly preview: { readonly tool: string; readonly args: Record<string, unknown> }
-  readonly payload: { readonly tool: string; readonly args: Record<string, unknown> }
+  /** What the human should see: the payload plus the driver's command. */
+  readonly preview: CreatedToolApprovalPayload & { readonly driver: Record<string, unknown> }
+  readonly payload: CreatedToolApprovalPayload
 }
 
 /** Thrown when a call carries no approval: names the request to make. */
@@ -700,12 +711,20 @@ export async function callCreatedTool(input: CallCreatedToolInput): Promise<Crea
     )
   }
 
-  const payload = { tool: input.id, args: input.args }
+  const toolBytes = await readFile(toolPath(input.workspace, input.id), "utf8")
+  const driverBytes = existsSync(driverPath(input.workspace, input.id))
+    ? await readFile(driverPath(input.workspace, input.id), "utf8")
+    : ""
+  const payload: CreatedToolApprovalPayload = {
+    tool: input.id,
+    args: input.args,
+    toolSha256: createHash("sha256").update(toolBytes).update("\0").update(driverBytes).digest("hex"),
+  }
   if (input.approvalId === undefined || input.approvalId.trim() === "") {
     throw new CreatedToolApprovalRequired({
       kind: CREATED_TOOL_APPROVAL_KIND,
       title: `Run created tool ${input.id}`,
-      preview: payload,
+      preview: { ...payload, driver: driverSummary(driverBytes) },
       payload,
     })
   }
@@ -719,7 +738,8 @@ export async function callCreatedTool(input: CallCreatedToolInput): Promise<Crea
       `${verb}: approval ${input.approvalId} is of kind '${record.kind}', not '${CREATED_TOOL_APPROVAL_KIND}'.`,
     )
   }
-  // Throws on not approved / other requester / payload drift / already consumed.
+  // Throws on not approved / other requester / payload drift (other args, or
+  // the tool's files changed since the approval) / already consumed.
   input.approvals.consume(input.approvalId, input.requester, payload)
 
   const { tools, drivers } = await loadAppBundledTools(input.workspace)
@@ -733,6 +753,26 @@ export async function callCreatedTool(input: CallCreatedToolInput): Promise<Crea
     input: input.args,
   })
   return { id: input.id, output }
+}
+
+/** The DRIVER.md fields a human needs to judge the call: what runs. */
+function driverSummary(driverBytes: string): Record<string, unknown> {
+  if (driverBytes === "") return {}
+  try {
+    const fm = matter(driverBytes).data as {
+      kind?: unknown
+      metadata?: { cli?: { bin?: unknown }; http?: unknown }
+      implements?: Array<{ metadata?: { cli?: { argv?: unknown } } }>
+    }
+    return {
+      kind: fm.kind,
+      ...(fm.metadata?.cli?.bin !== undefined ? { bin: fm.metadata.cli.bin } : {}),
+      ...(fm.implements?.[0]?.metadata?.cli?.argv !== undefined ? { argv: fm.implements[0].metadata.cli.argv } : {}),
+      ...(fm.metadata?.http !== undefined ? { http: fm.metadata.http } : {}),
+    }
+  } catch {
+    return {}
+  }
 }
 
 function ok(value: unknown) {
@@ -822,10 +862,11 @@ export function registerCreateToolTools(server: McpServer, opts: RegisterCreateT
   server.tool(
     CREATED_TOOL_CALL_VERB,
     "Run a tool that `create_tool` authored in this workspace, by id. Every call needs a " +
-      "human-approved approval: first call `approval_request` with kind \"created_tool_call\" and " +
-      "payload `{ tool: <id>, args: <args> }`, wait for the human (`approval_wait`), then call this " +
-      "with the same `id`, the byte-identical `args` and the `approvalId`. One approval runs the " +
-      "tool once. Without an approval the call is refused with the exact request to make.",
+      "human-approved approval. Call it once without `approvalId`: it is refused with the exact " +
+      "`approval_request` to make (kind \"created_tool_call\", payload `{ tool, args, toolSha256 }`). " +
+      "Make that request, wait for the human (`approval_wait`), then call this again with the same " +
+      "`id`, the same `args` and the `approvalId`. One approval runs the tool once; it is void if " +
+      "the tool's files change.",
     {
       id: z.string().describe("Id of a tool create_tool authored."),
       args: z.record(z.string(), z.unknown()).optional().describe("Tool inputs. Default: empty object."),

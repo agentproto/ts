@@ -45,13 +45,16 @@ daemon workspace. A session runs it with the daemon verb `created_tool_call`,
 which is in every session's tool list from the start, so the session that
 created the tool can call it in the same turn, with no restart:
 
-1. `approval_request` with `kind: "created_tool_call"` and
-   `payload: { tool: "<id>", args: { ... } }`;
-2. a human approves it (approval card, web or Telegram), `approval_wait`;
-3. `created_tool_call` with `id`, the same `args` and `approvalId`.
+1. `created_tool_call` with `id` and `args`, no approval: it is refused with
+   the exact request to make, `kind: "created_tool_call"` and
+   `payload: { tool, args, toolSha256 }` (a hash of the TOOL.md and
+   DRIVER.md), plus a preview showing the command the driver runs;
+2. `approval_request` with that request; a human approves it (approval card,
+   web or Telegram); `approval_wait`;
+3. `created_tool_call` again with `id`, the same `args` and `approvalId`.
 
-One approval runs the tool once, for those exact arguments, for the session
-that asked. A call without an approval is refused with the request to make.
+One approval runs the tool once, for those exact arguments and those exact
+tool files, for the session that asked. A call without an approval is refused with the request to make.
 The `approval` class the TOOL.md declares does not lift this: it was written
 by the agent that created the tool. Only tools `create_tool` authored (they
 carry an `.authoring.json` marker) run this way.
