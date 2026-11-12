@@ -67,10 +67,12 @@ export function readAttachmentNames(preview: unknown): {
   names: string[]
   problems: AttachmentProblem[]
 } {
-  const raw = isRecord(preview) ? preview.attachments : undefined
-  // A mail preview's `[{ fileName, sizeBytes }]` is rendered by the card as is.
+  const all = isRecord(preview) ? preview.attachments : undefined
+  // A mail preview's object entries (`{ fileName, sizeBytes }`) are rendered by
+  // the card as is: only its string entries are file names.
   const isMail = isRecord(preview) && preview.kind === "mail"
-  if (isMail || !Array.isArray(raw) || !raw.some(item => attachmentNameOf(item) !== undefined)) {
+  const raw = isMail && Array.isArray(all) ? all.filter(item => typeof item === "string") : all
+  if (!Array.isArray(raw) || !raw.some(item => attachmentNameOf(item) !== undefined)) {
     return { claimed: false, names: [], problems: [] }
   }
   const names: string[] = []

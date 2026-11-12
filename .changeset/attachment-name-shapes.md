@@ -1,5 +1,5 @@
 ---
-"@agentproto/reach": patch
+"@agentproto/reach": minor
 "@agentproto/runtime": patch
 ---
 

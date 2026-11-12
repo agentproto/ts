@@ -95,6 +95,9 @@ describe("approval attachments", () => {
     expect(readAttachmentNames({ attachments: [{ filename: "a.pdf", mimeType: "application/pdf" }] }).names).toEqual(["a.pdf"])
     // A mail preview's { fileName, sizeBytes } stays with the card's own rendering.
     expect(readAttachmentNames({ kind: "mail", attachments: [{ fileName: "a", sizeBytes: 3 }] }).claimed).toBe(false)
+    // String entries of a mail preview behave as before: claimed, objects left out.
+    const mixed = readAttachmentNames({ kind: "mail", attachments: ["cv.pdf", { fileName: "a", sizeBytes: 3 }] })
+    expect(mixed).toEqual({ claimed: true, names: ["cv.pdf"], problems: [] })
     expect(readAttachmentNames("text").claimed).toBe(false)
   })
 })

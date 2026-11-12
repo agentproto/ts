@@ -34,16 +34,17 @@ export function isBareFileName(name: string): boolean {
 
 /**
  * The one rule for an attachment item's name: a string is its own name; an
- * object's name is the first non-empty string among `name`, `filename`,
- * `fileName`. Anything else has no name. The bare-file-name rule is applied by
- * the caller (see `isBareFileName`).
+ * object's name is the first usable string among `name`, `filename`,
+ * `fileName` (a non-empty bare file name: an unusable earlier key does not
+ * shadow a later one). Anything else has no name. A string item is returned as is: the
+ * caller applies its own rule to it.
  */
 export function attachmentNameOf(item: unknown): string | undefined {
   if (typeof item === "string") return item
   if (!isRecord(item)) return undefined
   for (const key of ["name", "filename", "fileName"]) {
     const value = item[key]
-    if (typeof value === "string" && value !== "") return value
+    if (typeof value === "string" && isBareFileName(value)) return value
   }
   return undefined
 }
