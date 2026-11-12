@@ -5237,6 +5237,12 @@ export async function createGateway(
         })
       : undefined
   permissionTelegram?.start()
+  // Digits only, even if a hand edit slipped past the config validation
+  // (an invalid config only warns at load). One source for the approval page
+  // route and the Telegram card bridge.
+  const approvalsHumanTelegramIds = (daemonConfig.approvals?.humanTelegramIds ?? []).filter(
+    id => typeof id === "string" && /^\d+$/.test(id),
+  )
   const approvalTelegram = telegramApprovalCardsOn
     ? createApprovalTelegramBridge({
         events: sessionEvents,
@@ -5245,6 +5251,8 @@ export async function createGateway(
         alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
         chatId: permissionTelegramCfg!.permissionTelegramChatId!,
         allowedUserIds: permissionTelegramCfg!.permissionTelegramUserIds!,
+        // Same list, same digits-only filter as the approval page route below.
+        ownerUserIds: approvalsHumanTelegramIds,
         sendAttachments: permissionTelegramCfg?.telegramAttachments === true,
         // `preview.attachments` is only resolved for an approval opened by an
         // installed app, inside that app's data root.
@@ -5345,9 +5353,7 @@ export async function createGateway(
       : {}),
     // Digits only, even if a hand edit slipped past the config validation
     // (an invalid config only warns at load).
-    approvalsHumanTelegramIds: (daemonConfig.approvals?.humanTelegramIds ?? []).filter(
-      id => typeof id === "string" && /^\d+$/.test(id),
-    ),
+    approvalsHumanTelegramIds,
     ...(workflowRunner ? { workflowRunner } : {}),
     appRegistry,
     performAppInstall: performInstall,
