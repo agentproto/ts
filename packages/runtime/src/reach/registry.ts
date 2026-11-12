@@ -15,7 +15,11 @@ import { createWebhookReachAdapter } from "./webhook-adapter.js"
 export const REACH_ADAPTER_KINDS = ["telegram", "webhook"] as const
 
 export interface ReachRouteDeps {
-  telegramBridge?: Pick<ApprovalTelegramBridge, "announce">
+  /** The bridge, or a function returning it at send time. */
+  telegramBridge?: Pick<ApprovalTelegramBridge, "announce"> | (() => Pick<ApprovalTelegramBridge, "announce"> | undefined)
+  /** Whether a bridge exists to serve `telegram` entries. Default: whether
+   *  `telegramBridge` is given. */
+  telegramAvailable?: boolean
   telegramAlias?: string
   fetchImpl?: typeof fetch
   onError?: (err: unknown) => void
@@ -41,12 +45,22 @@ function isHttpUrl(value: unknown): boolean {
   }
 }
 
-export function createReachRoute(
-  entries: readonly unknown[],
-  deps: ReachRouteDeps = {},
-): { adapters: ReachAdapter[]; skipped: ReachRouteSkip[] } {
+export interface ReachRoute {
+  /** Every usable entry, in route order. */
+  adapters: ReachAdapter[]
+  /** Entries refused outright (malformed, unknown kind, duplicate id). */
+  skipped: ReachRouteSkip[]
+  /** Adapters in the route that can never acknowledge on this daemon (a
+   *  `telegram` entry with no bridge, or another alias). */
+  unservable: ReachRouteSkip[]
+}
+
+export function createReachRoute(entries: readonly unknown[], deps: ReachRouteDeps = {}): ReachRoute {
   const adapters: ReachAdapter[] = []
   const skipped: ReachRouteSkip[] = []
+  const unservable: ReachRouteSkip[] = []
+  const telegramAvailable = deps.telegramAvailable ?? deps.telegramBridge !== undefined
+  const bridgeAlias = deps.telegramAlias ?? "default"
   entries.forEach((entry, index) => {
     if (!isRecord(entry) || typeof entry.id !== "string" || entry.id.trim() === "") {
       skipped.push({ index, reason: "missing-id" })
@@ -71,6 +85,10 @@ export function createReachRoute(
           ...(deps.onError ? { onError: deps.onError } : {}),
         }),
       )
+      if (!telegramAvailable) unservable.push({ index, id, reason: "telegram-not-configured" })
+      else if (typeof entry.alias === "string" && entry.alias !== bridgeAlias) {
+        unservable.push({ index, id, reason: "alias-not-configured" })
+      }
       return
     }
     if (entry.kind === "webhook") {
@@ -100,5 +118,29 @@ export function createReachRoute(
     }
     skipped.push({ index, id, reason: "unknown-kind" })
   })
-  return { adapters, skipped }
+  return { adapters, skipped, unservable }
+}
+
+/**
+ * The route the daemon runs for one principal, built once. `on` is true only
+ * when at least one adapter can acknowledge (a webhook, or a telegram entry
+ * the bridge serves): a route that can never deliver starts no router, and
+ * the bridge keeps announcing by itself. `warnings` are the `reach:` lines to
+ * log at boot; none names a URL or a secret.
+ */
+export function planReachRoute(
+  entries: readonly unknown[],
+  deps: ReachRouteDeps = {},
+  principal = "owner",
+): ReachRoute & { on: boolean; warnings: string[] } {
+  const route = createReachRoute(entries, deps)
+  const warnings = route.skipped.map(s => `reach: route entry ${s.id ?? `#${s.index}`} skipped (${s.reason})`)
+  const on = route.adapters.length > route.unservable.length
+  if (!on && entries.length > 0) {
+    const why = route.unservable.map(u => `${u.id}: ${u.reason}`).join(", ") || "no usable entry"
+    warnings.push(
+      `reach: routes.${principal} has no adapter that can deliver (${why}); router not started, approvals are announced as without reach`,
+    )
+  }
+  return { ...route, on, warnings }
 }
