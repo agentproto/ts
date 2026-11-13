@@ -152,6 +152,8 @@ export const APPS_PROFILE_TOOLS: readonly string[] = [
  * and local LLM endpoints.
  */
 export const ADMIN_PROFILE_TOOLS: readonly string[] = [
+  "account_slots_list",
+  "account_slots_swap",
   "adapter_install",
   "harness_install",
   "auth_profile_create",

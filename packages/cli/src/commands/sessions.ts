@@ -320,11 +320,13 @@ Usage:
                                takes stdin; Ctrl-C exits without touching the
                                session)
   agentproto sessions switch-profile --from <profileRef> --to <profileRef>
-                              [--json] [--dry-run]
-                              (move EVERY session that bills against the
+                              [--json] [--dry-run] [--include-dead]
+                              (move every ALIVE session that bills against the
                                --from auth profile onto the --to one, in one
-                               command. Each session is restarted through the
-                               daemon's restart-with-override route, so the
+                               command; --include-dead also restarts the dead
+                               ones (the old behaviour). Each session is
+                               restarted through the daemon's
+                               restart-with-override route, so the
                                conversation is resumed under a new id, the
                                session's posture is kept, and the cron jobs
                                that targeted the old id are re-armed.
@@ -5804,16 +5806,25 @@ export interface ProfileSwitchTarget {
  * to). A session with no billing axis (a PTY/command session) can never
  * carry a profile, so it is reported as skipped rather than restarted (the
  * daemon would refuse it anyway).
+ *
+ * Only ALIVE sessions (running / starting) move by default: restarting a dead
+ * session revives it, which a wallet switch must never do behind the
+ * operator's back (a 2026-11-12 dry-run would have relaunched ~70 dead
+ * sessions). `includeDead: true` (`--include-dead`) restores the old
+ * every-status behaviour.
  */
 export function planProfileSwitch(
   sessions: readonly SessionDescriptor[],
   from: string,
+  opts: { includeDead?: boolean } = {},
 ): { targets: ProfileSwitchTarget[]; skipped: ProfileSwitchTarget[] } {
   const targets: ProfileSwitchTarget[] = []
   const skipped: ProfileSwitchTarget[] = []
   for (const session of sessions) {
     const profileRef = session.accessProfile?.profileRef
     if (!profileRef || profileRef !== from) continue
+    const alive = session.status === "running" || session.status === "starting"
+    if (!alive && opts.includeDead !== true) continue
     const label = session.name || session.label || session.id
     if (session.kind !== "agent-cli") {
       skipped.push({ id: session.id, label, reason: "not an agent session (no billing axis)" })
@@ -5846,6 +5857,7 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
       to: { type: "string" },
       json: { type: "boolean" },
       "dry-run": { type: "boolean" },
+      "include-dead": { type: "boolean" },
       "no-color": { type: "boolean" },
     },
   })
@@ -5882,14 +5894,16 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
     return 1
   }
 
-  const { targets, skipped } = planProfileSwitch(sessions, from)
+  const includeDead = values["include-dead"] === true
+  const { targets, skipped } = planProfileSwitch(sessions, from, { includeDead })
 
   if (targets.length === 0) {
     if (values.json) {
       process.stdout.write(JSON.stringify({ from, to, moved: [], skipped }, null, 2) + "\n")
     } else {
       process.stdout.write(
-        `agentproto sessions switch-profile: no session bills against "${from}": nothing to move.\n`,
+        `agentproto sessions switch-profile: no ${includeDead ? "" : "alive "}session bills against "${from}": nothing to move.` +
+          (includeDead ? "\n" : " (dead sessions are left alone; --include-dead moves them too)\n"),
       )
       for (const row of skipped) {
         process.stdout.write(`  skipped ${row.id} (${row.label}): ${row.reason}\n`)

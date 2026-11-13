@@ -21,6 +21,7 @@
  * checkpoint moved from/to.
  */
 
+import { carriedAccessSlot, slotRef } from "./account-slots.js"
 import { boundaryFromMeta } from "./app-boundary.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import type { ContextCheckpoint } from "./context-checkpoint.js"
@@ -382,7 +383,11 @@ async function continueAgentSessionFreshOnce(
   const adapter = opts.harness ?? opts.adapter ?? prev.harness ?? prev.adapterSlug ?? "claude-code"
   const harness = adapter
   const model = opts.model ?? prev.model
-  const access = opts.access ?? formatAccessForSpawn(prev)
+  // A session that asked for an account slot keeps asking for it while the
+  // slot still points at the profile it bills (so the successor records the
+  // same `accessSlot`); otherwise the real profile is carried, unchanged.
+  const keptSlot = opts.access ? undefined : await carriedAccessSlot(prev)
+  const access = opts.access ?? (keptSlot ? { profileRef: slotRef(keptSlot) } : formatAccessForSpawn(prev))
   // `prev.route` was resolved for the OLD adapter's gateway. Carrying it
   // forward unconditionally into a DIFFERENT adapter is doubly wrong: it may
   // not even be reachable from there, and an explicit `route.gateway` also

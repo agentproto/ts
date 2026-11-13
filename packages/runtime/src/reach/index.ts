@@ -21,6 +21,7 @@ export { sendThroughRoute, sendToAdapter } from "./router.js"
 export {
   createReachTeller,
   REACH_TELL_DAILY_LIMIT,
+  resolveReachTellDir,
   tellStoredKey,
   type ReachTeller,
   type ReachTellerOptions,

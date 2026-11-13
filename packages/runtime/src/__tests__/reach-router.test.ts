@@ -342,6 +342,45 @@ describe("REACH router", () => {
     expect(tg.calls.filter(c => c.method === "sendMessage")).toHaveLength(1)
   })
 
+  it("watchdog: a persisted undelivered(channel-not-listed) watchdog receipt is already reported after a restart", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] })
+    const record = request({ channels: ["ui_card"] })
+    engine.appendReachReceipt(record.id, {
+      dedupeKey: `approval:${record.id}`,
+      adapterId: "floor",
+      kind: "telegram",
+      status: "undelivered",
+      reason: "channel-not-listed",
+      at: new Date().toISOString(),
+      trigger: "watchdog",
+    })
+    startReach()
+    vi.advanceTimersByTime(91_000)
+    await new Promise(r => setTimeout(r, 20))
+    expect(logs).toEqual([])
+    expect(tg.calls).toHaveLength(0)
+    expect(hook.calls).toHaveLength(0)
+  })
+
+  it("watchdog: a persisted failed watchdog receipt is retried once", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] })
+    const record = request()
+    engine.appendReachReceipt(record.id, {
+      dedupeKey: `approval:${record.id}`,
+      adapterId: "floor",
+      kind: "telegram",
+      status: "failed",
+      reason: "http-500",
+      at: new Date().toISOString(),
+      trigger: "watchdog",
+    })
+    startReach()
+    vi.advanceTimersByTime(91_000)
+    await until(() => tg.calls.some(c => c.method === "sendMessage"))
+    expect(logs).toEqual([`reach: MISSING ${record.id}`])
+    expect(tg.calls.filter(c => c.method === "sendMessage")).toHaveLength(1)
+  })
+
   it("watchdog with no telegram entry in the route: MISSING, then reach:undelivered", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] })
     const record = request()

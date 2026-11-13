@@ -12,6 +12,7 @@
  * Designed parallel to tunnel-tools.ts — same error-shape, same style.
  */
 
+import { isSlotRef } from "./account-slots.js"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { listAuthProfiles, type AuthProfile } from "@agentproto/auth"
@@ -274,6 +275,19 @@ export function registerLlmEndpointTools(
             "llm_endpoint_set_upstream_link",
             new Error(
               `Unknown upstream "${provider}". Known: ${CANONICAL_UPSTREAMS.join(", ")}.`,
+            ),
+          )
+        }
+        // An upstream link is read by the proxy PROCESS at its own start, from
+        // an env var, outside the daemon's slot resolution: a `slot:` ref would
+        // be frozen there and silently miss a later swap. Refused explicitly.
+        if (profileId !== null && isSlotRef(profileId)) {
+          return errText(
+            "llm_endpoint_set_upstream_link",
+            new Error(
+              `"${profileId}" is an account slot: upstream links take a real auth-profile id ` +
+                "(see auth_profile_list), because the proxy reads the link once at its own start and " +
+                "would not follow a later slot swap.",
             ),
           )
         }

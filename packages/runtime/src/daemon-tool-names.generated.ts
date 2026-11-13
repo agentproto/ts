@@ -3,6 +3,8 @@
 
 // The full name list; see `DAEMON_TOOL_NAMES` below for the mechanism.
 const DAEMON_TOOL_NAME_LIST = [
+  "account_slots_list",
+  "account_slots_swap",
   "activities_list",
   "adapter_install",
   "adapter_list",
