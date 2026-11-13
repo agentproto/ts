@@ -1,5 +1,6 @@
 import {
   CHROME_LIVE_DEFAULT_PORT,
+  CHROME_LIVE_PROVIDER_ID,
   chromeLive,
   createChromeLiveProvider,
   type ChromeLiveLaunchOptions,
@@ -7,6 +8,7 @@ import {
   type ChromeLiveProviderConfig,
 } from "@agentproto/adapter-browser-chrome"
 import { toAdapterHandle } from "../providers/to-adapter-handle.js"
+import { loadPersistedEnv } from "../lib/resolve-launch.js"
 import type { BrowserAdapterHandle, BrowserAdapterInstance, BrowserAdapterStartOptions } from "../types.js"
 
 /**
@@ -56,7 +58,31 @@ async function ensureChromeLive(provider: ChromeLiveProvider, opts: BrowserAdapt
   if (opts.location === "cloud") {
     throw new Error("[chrome-live] chrome-live attaches to a Chrome on this machine; it has no cloud location")
   }
-  const launchOpts = chromeLiveLaunchOptionsFrom(opts)
+  // Persisted config from `agentproto browser install chrome-live` (the same
+  // ledger the process-provider adapters read via resolveLaunch) is merged as
+  // lowest-priority env so an empty `chrome-live-ws-url` (or a custom port)
+  // resolves here; explicit `opts.env` always wins. Without this, the install
+  // ledger was dead config for chrome-live and a blank ws-url never reached
+  // the provider's port fallback.
+  const persisted = await loadPersistedEnv(CHROME_LIVE_PROVIDER_ID)
+  // A ledger value that merely restates the step's own DEFAULT was accepted,
+  // not typed, so it must stay fallback-only: treating it as a pinned
+  // endpoint would flip a bare `browser start chrome-live` from
+  // dedicated-first to attach-first (e.g. a persisted `CHROME_LIVE_PORT=9222`).
+  // Older ledgers written before the CLI stopped persisting accepted defaults
+  // still carry them, hence the filter here as well as at write time.
+  const declaredDefaults = new Map<string, string>()
+  for (const step of provider.config) {
+    const envName = step.persist?.env
+    if (envName !== undefined && step.default !== undefined) declaredDefaults.set(envName, step.default)
+  }
+  const persistedEnv = Object.fromEntries(
+    Object.entries(persisted).filter(([name, value]) => declaredDefaults.get(name) !== value)
+  )
+  const launchOpts = chromeLiveLaunchOptionsFrom({
+    ...opts,
+    env: { ...persistedEnv, ...opts.env },
+  })
   const instance = await provider.launch(launchOpts, opts.log ? { log: opts.log } : {})
   const cdp = instance.endpoints.cdp
   if (!cdp) throw new Error("[chrome-live] the provider returned no CDP endpoint")

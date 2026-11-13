@@ -136,6 +136,18 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     expect(f.connections).toBe(1)
   })
 
+  it("keeps the browser websocket alive with a heartbeat ping over the SAME connection", async () => {
+    const f = await fake()
+    const instance = await provider(f, { heartbeatIntervalMs: 20 }).launch({}, {})
+    expect(f.connections).toBe(1)
+    const before = methods(f).filter((m) => m === "Browser.getVersion").length
+    await new Promise((r) => setTimeout(r, 120))
+    const after = methods(f).filter((m) => m === "Browser.getVersion").length
+    expect(after).toBeGreaterThan(before)
+    expect(f.connections).toBe(1)
+    await instance.stop()
+  })
+
   it("captures only an active provider-owned target over its memoized connection", async () => {
     const f = await fake()
     const instance = await provider(f).launch({}, {})

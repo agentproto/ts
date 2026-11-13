@@ -213,7 +213,12 @@ async function runPromptStep(
   }
 
   let persistedTo: string | undefined
-  if (step.persist) {
+  // Do not persist an accepted DEFAULT: it is not an explicit choice, and a
+  // persisted default is indistinguishable from a typed answer at read time
+  // (e.g. chrome-live's 9222 port would otherwise pin an endpoint and flip
+  // `browser start chrome-live` from dedicated-first to attach-first).
+  const acceptedDefault = step.default !== undefined && value === step.default
+  if (step.persist && !acceptedDefault) {
     persistedTo = await applyPersist(step.persist, value, ledger)
   }
 

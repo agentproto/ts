@@ -2,13 +2,22 @@ import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
-import { BROWSER_REMOTE_DEBUGGING_OFF_CODE, chromeLive } from "@agentproto/adapter-browser-chrome"
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { BROWSER_REMOTE_DEBUGGING_OFF_CODE, CHROME_LIVE_DEFAULT_PORT, chromeLive } from "@agentproto/adapter-browser-chrome"
 import { browserAdapters, getBrowserAdapter } from "../index.js"
 import { chromeLiveLaunchOptionsFrom, chromeLiveProvider, createChromeLiveAdapter } from "../adapters/chrome-live.js"
 
 const servers: Server[] = []
+const tmpHomes: string[] = []
+const AGENTPROTO_HOME_ENV = "AGENTPROTO_HOME"
+const originalHome = process.env[AGENTPROTO_HOME_ENV]
 
 afterEach(async () => {
+  for (const h of tmpHomes.splice(0)) rmSync(h, { recursive: true, force: true })
+  if (originalHome === undefined) delete process.env[AGENTPROTO_HOME_ENV]
+  else process.env[AGENTPROTO_HOME_ENV] = originalHome
   await Promise.all(
     servers.splice(0).map(
       (s) =>
@@ -19,6 +28,19 @@ afterEach(async () => {
     ),
   )
 })
+
+/** A temp AGENTPROTO_HOME with a written chrome-live install ledger. */
+function tempHomeWithLedger(envValues: Record<string, string>): string {
+  const home = mkdtempSync(join(tmpdir(), "chrome-live-ledger-"))
+  tmpHomes.push(home)
+  mkdirSync(join(home, "browser-adapters"), { recursive: true })
+  writeFileSync(
+    join(home, "browser-adapters", "chrome-live.json"),
+    JSON.stringify({ slug: "browser-adapter:chrome-live", updatedAt: new Date().toISOString(), steps: {}, envValues }),
+  )
+  process.env[AGENTPROTO_HOME_ENV] = home
+  return home
+}
 
 /** A Chrome with the remote debugging toggle on: empty HTTP, one id-less browser websocket. */
 async function toggleChrome(): Promise<{ port: number; methods: string[]; connections: () => number }> {
@@ -93,6 +115,53 @@ describe("chrome-live facade", () => {
     await first.stop()
     expect(chrome.methods).not.toContain("Browser.close")
     expect(chrome.methods.every((m) => m === "Browser.getVersion")).toBe(true)
+  })
+
+  it("ensure honors the persisted install ledger: a port + empty ws-url attaches without an explicit port", async () => {
+    const chrome = await toggleChrome()
+    tempHomeWithLedger({ CHROME_LIVE_PORT: String(chrome.port), CHROME_LIVE_WS_URL: "" })
+    const handle = getBrowserAdapter("chrome-live")!
+    const instance = await handle.ensure({ env: {} })
+    expect(instance).toMatchObject({ id: "chrome-live", port: chrome.port, wasAlreadyRunning: false, healthy: true })
+    await instance.stop()
+  })
+
+  it("a ledger port equal to the step's declared default stays fallback-only: a bare ensure still launches a DEDICATED Chrome", async () => {
+    const chrome = await toggleChrome()
+    // An accepted-not-typed default (e.g. a ledger written before the CLI
+    // stopped persisting defaults) must not pin an endpoint and flip
+    // `browser start chrome-live` from dedicated-first to attach-first.
+    tempHomeWithLedger({ CHROME_LIVE_PORT: String(CHROME_LIVE_DEFAULT_PORT), CHROME_LIVE_WS_URL: "" })
+    const dataDir = mkdtempSync(join(tmpdir(), "chrome-live-dedicated-"))
+    tmpHomes.push(dataDir)
+    const spawn = vi.fn(() => {
+      const listeners: (() => void)[] = []
+      return {
+        pid: 4242,
+        kill: () => {
+          for (const listener of listeners.splice(0)) listener()
+          return true
+        },
+        once: (_event: "exit", listener: () => void) => {
+          listeners.push(listener)
+        },
+      }
+    })
+    const handle = createChromeLiveAdapter({
+      launchDeps: {
+        dataDir,
+        findChrome: () => "/fake/chrome",
+        findFreePort: async () => chrome.port,
+        fetchJsonVersion: async () => ({ webSocketDebuggerUrl: `ws://127.0.0.1:${chrome.port}/devtools/browser` }),
+        spawn,
+      },
+    })
+    const instance = await handle.ensure({ env: {} })
+    // The dedicated launcher ran (once) and the instance owns that pid — it
+    // did NOT attach to the user's Chrome.
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(instance.pid).toBe(4242)
+    await instance.stop()
   })
 
   it("ensure reports a closed port as browser:remote-debugging-off and refuses location=cloud", async () => {
