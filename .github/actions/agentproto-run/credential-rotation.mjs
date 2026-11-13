@@ -6,7 +6,8 @@
 // "insufficient balance"), the review failed even though the next key was
 // fine. The `credential-ladder` input lists the keys in order; run-with-
 // rotation.mjs runs the driver with the first usable rung and, when a run
-// fails because the key's quota or credit is exhausted, runs it again with the
+// fails because the key's quota or credit is exhausted, the key expired, or
+// the turn came back empty (see `rotationDecision`), runs it again with the
 // next rung. Nothing here reads or prints a key value except to pass it on.
 //
 // Ladder grammar, one rung per line (blank lines and `#` comments ignored):
@@ -25,8 +26,9 @@
 //   · EXPORT_ENV: extra env names that also receive the rung's key (an adapter
 //     that reads a second variable for the same route).
 
-/** Failure classes that move a lane to its next credential. */
-export const ROTATE_CLASSES = ["usage-limit", "credit-exhausted"]
+/** Failure reasons that move a lane to its next credential. A refused key
+ *  (`Invalid credential`, 401) is the one failure that does not. */
+export const ROTATE_CLASSES = ["usage-limit", "credit-exhausted", "key-expired", "empty-turn"]
 
 // A quota cap on the key ("Free usage limit reached", "Go usage limit
 // exceeded", Claude's "hit your weekly limit", OpenAI's "exceeded your current
@@ -41,8 +43,43 @@ const USAGE_LIMIT_RE =
 const CREDIT_EXHAUSTED_RE =
   /\binsufficient[ _-]?(?:credits?|balance|funds)\b|\bcredit balance (?:is )?too low\b|\bout of credits?\b|\bcredits? (?:exhausted|depleted)\b|\bbalance (?:is )?(?:exhausted|depleted|insufficient)\b|\bpayment required\b|\b(?:HTTP|status|code)[ :=]*402\b/i
 
-/** Classify one failed run from its error texts. Returns the first rotation
- *  class found, or undefined (the failure is not about the key's quota). */
+// The key is dead for good ("This API key has expired. Create a new API key in
+// OpenCode Console"): the next key may still work.
+const KEY_EXPIRED_RE = /\b(?:api )?key (?:has )?expired\b|\bexpired (?:api )?key\b/i
+
+// The provider refused the key itself. A wrong secret is a configuration error
+// the owner must see, so the lane stops on it instead of hiding it.
+const KEY_REFUSED_RE =
+  /\binvalid[ _-]?(?:credentials?|api[ _-]?key|x-api-key|token)\b|\bunauthori[sz]ed\b|\b(?:HTTP|status|code)[ :=]*401\b|^\s*401\b/i
+
+// The workflow host's wording for a turn with no assistant output and no tool
+// call (sessions-registry-agent-host.ts). A capped or dead key often ends that
+// way with no provider error line at all.
+const EMPTY_TURN_RE = /\bproduced an empty turn\b/i
+
+/**
+ * Should a failed run move to the next rung? Checked in this order:
+ *   1. a usage cap or exhausted credit (`classifyCredentialFailure`) rotates;
+ *   2. an expired key rotates (`key-expired`);
+ *   3. a refused key (`Invalid credential`, 401) does NOT rotate;
+ *   4. an empty turn rotates (`empty-turn`): the run error says so, or the
+ *      driver saw a session whose last turn was empty;
+ *   5. anything else does not rotate.
+ * The caller still only rotates a run that completed no step and delivered
+ * nothing. Returns `{ rotate, reason }`.
+ */
+export function rotationDecision({ errorTexts, emptyTurn } = {}) {
+  const texts = (errorTexts ?? []).filter(t => typeof t === "string" && t)
+  const quota = classifyCredentialFailure(texts)
+  if (quota) return { rotate: true, reason: quota }
+  if (texts.some(t => KEY_EXPIRED_RE.test(t))) return { rotate: true, reason: "key-expired" }
+  if (texts.some(t => KEY_REFUSED_RE.test(t))) return { rotate: false, reason: "key-refused" }
+  if (emptyTurn === true || texts.some(t => EMPTY_TURN_RE.test(t))) return { rotate: true, reason: "empty-turn" }
+  return { rotate: false, reason: "other" }
+}
+
+/** Classify one failed run from its error texts. Returns the first quota or
+ *  credit class found, or undefined (the failure is not about the key's quota). */
 export function classifyCredentialFailure(texts) {
   let credit = false
   for (const text of texts ?? []) {

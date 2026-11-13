@@ -260,14 +260,71 @@ test("run-with-rotation: a Go lane model (AGENT_REVIEW_MODEL) reaches the workfl
   assert.deepEqual(attempts.map(a => [a.key, a.model, a.fixModel]), [["go-a", GO_FLASH, GO_FLASH]])
 })
 
-test("run-with-rotation: a failure that is not about the key's quota does not rotate", () => {
+// agentproto/ts#2710 run 43462039563: the second Zen key ended in an empty turn
+// with no `[error]` line, and the lane stopped there instead of reaching Go.
+const EMPTY_TURN =
+  "session sess_0b3aa664 produced an empty turn, no assistant output or tool call (commonly an auth failure or an invalid model id)"
+
+test("run-with-rotation: an empty turn moves to the next rung, logged as its own reason", () => {
   const { status, attempts, stdout } = runRotation({
     ladder: ROTATION_LADDER,
-    plan: { "zen-a": { exit: 1, errorTexts: ["Invalid credential"] }, "zen-b": { exit: 0 } },
+    plan: { "zen-a": capped, "zen-b": { exit: 1, errorTexts: [EMPTY_TURN] }, "go-a": { exit: 0 } },
+  })
+  assert.equal(status, 0, stdout)
+  assert.deepEqual(attempts.map(a => [a.key, a.model]), [
+    ["zen-a", ZEN_FREE],
+    ["zen-b", ZEN_FREE],
+    ["go-a", GO_FLASH],
+  ])
+  assert.match(stdout, /ZEN_B answered empty-turn on opencode\/deepseek-v4.1-flash-free; moving to GO_A/)
+})
+
+test("run-with-rotation: an expired key moves to the next rung", () => {
+  // Same run, mimo lane: `[error] This API key has expired. Create a new API key ...`
+  const { status, attempts, stdout } = runRotation({
+    ladder: ROTATION_LADDER,
+    plan: {
+      "zen-a": {
+        exit: 1,
+        errorTexts: [EMPTY_TURN, "This API key has expired. Create a new API key in OpenCode Console"],
+      },
+      "zen-b": { exit: 0 },
+    },
+  })
+  assert.equal(status, 0, stdout)
+  assert.deepEqual(attempts.map(a => a.key), ["zen-a", "zen-b"])
+  assert.match(stdout, /ZEN_A answered key-expired/)
+})
+
+test("run-with-rotation: a refused key is the one failure that does not rotate", () => {
+  for (const refused of ["Invalid credential", "401 Unauthorized", "status: 401"]) {
+    const { status, attempts, stdout } = runRotation({
+      ladder: ROTATION_LADDER,
+      plan: { "zen-a": { exit: 1, errorTexts: [EMPTY_TURN, refused] }, "zen-b": { exit: 0 } },
+    })
+    assert.equal(status, 1, refused)
+    assert.deepEqual(attempts.map(a => a.key), ["zen-a"], refused)
+    assert.match(stdout, /ZEN_A: the key was refused, not rotating/, refused)
+  }
+})
+
+test("run-with-rotation: an empty turn after a completed step does not rotate", () => {
+  const { status, attempts } = runRotation({
+    ladder: ROTATION_LADDER,
+    plan: { "zen-a": { exit: 1, errorTexts: [EMPTY_TURN], stepsDone: 1 }, "zen-b": { exit: 0 } },
   })
   assert.equal(status, 1)
   assert.deepEqual(attempts.map(a => a.key), ["zen-a"])
-  assert.match(stdout, /not a quota or credit exhaustion, not rotating/)
+})
+
+test("run-with-rotation: a failure that names no rotation reason does not rotate", () => {
+  const { status, attempts, stdout } = runRotation({
+    ladder: ROTATION_LADDER,
+    plan: { "zen-a": { exit: 1, errorTexts: ["workflow_status failed: run not found"] }, "zen-b": { exit: 0 } },
+  })
+  assert.equal(status, 1)
+  assert.deepEqual(attempts.map(a => a.key), ["zen-a"])
+  assert.match(stdout, /ZEN_A: the failure names no quota, credit, expiry or empty turn, not rotating/)
 })
 
 test("run-with-rotation: a run that already completed a step or delivered is never re-run", () => {

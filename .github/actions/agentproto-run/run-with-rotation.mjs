@@ -6,9 +6,10 @@
 // credential-rotation.mjs for the grammar) and stops at the first run that
 // succeeds. It moves to the next rung only when the failed run:
 //
-//   · names a quota or credit exhaustion in its error texts (the driver writes
-//     them to DRIVER_RESULT_FILE: run/step errors, each session's last turn
-//     error, and the adapter's `[error]` lines), and
+//   · names a quota or credit exhaustion, an expired key, or an empty turn in
+//     its error texts (the driver writes them to DRIVER_RESULT_FILE: run/step
+//     errors, each session's last turn error, and the adapter's `[error]`
+//     lines), and not a refused key (`Invalid credential`, 401), and
 //   · completed no workflow step and delivered nothing (no review, PR or
 //     comment in its artifact ledger), so a second run can never post a
 //     duplicate.
@@ -25,10 +26,10 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   agentConfigForRung,
-  classifyCredentialFailure,
   exhaustedRecord,
   parseCredentialLadder,
   resolveCredentialRungs,
+  rotationDecision,
   workflowInputForRung,
 } from "./credential-rotation.mjs"
 
@@ -143,11 +144,16 @@ async function main() {
       )
       return code
     }
-    const failureClass = classifyCredentialFailure(result.errorTexts)
-    if (!failureClass) {
-      log(`${rung.keyEnv}: the failure is not a quota or credit exhaustion, not rotating`)
+    const decision = rotationDecision(result)
+    if (!decision.rotate) {
+      log(
+        decision.reason === "key-refused"
+          ? `${rung.keyEnv}: the key was refused, not rotating (fix or remove this secret)`
+          : `${rung.keyEnv}: the failure names no quota, credit, expiry or empty turn, not rotating`,
+      )
       return code
     }
+    const failureClass = decision.reason
     exhausted.push(exhaustedRecord(rung, failureClass))
     try {
       writeFileSync(exhaustedFile, JSON.stringify(exhausted))

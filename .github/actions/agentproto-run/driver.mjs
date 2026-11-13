@@ -26,7 +26,7 @@
  *   ACTION_PATH       dir holding this script's own node_modules
  *                     (where `agentproto` was npm-installed)        default this dir
  *   DRIVER_RESULT_FILE where to write `{ exitCode, status, errorTexts,
- *                     artifacts, stepsDone }` for
+ *                     artifacts, stepsDone, emptyTurn? }` for
  *                     run-with-rotation.mjs (credential rotation)   optional
  */
 
@@ -639,6 +639,7 @@ async function main() {
       for (const field of ["lastTurnErrorMessage", "lastError", "endedReason"]) {
         if (typeof desc[field] === "string" && desc[field]) failureEvidence.errorTexts.push(desc[field])
       }
+      if (desc.lastTurnEmpty === true) failureEvidence.emptyTurn = true
       console.log(
         `driver: session ${sid} descriptor: status=${desc.status} adapter=${desc.adapterSlug ?? "?"} ` +
           `label=${desc.label ?? ""} remote=${desc.remote === true} sandboxId=${desc.sandboxId ?? ""}`,

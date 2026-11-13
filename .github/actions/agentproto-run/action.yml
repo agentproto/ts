@@ -104,9 +104,10 @@ inputs:
       given (which must be free or listed in AGENT_ALLOWED_METERED_MODELS),
       else it is skipped. EXPORT_ENV names also receive the rung's key. The
       first usable rung replaces `api-key` / `provider-key`; a run that fails
-      with a usage-limit or credit-exhausted error, completed no step and
-      delivered nothing is run again on the next rung (run-with-rotation.mjs,
-      credential-rotation.mjs). Unset or empty = one run with `api-key`, as
+      with a usage-limit, credit-exhausted or expired-key error, or an empty
+      turn, completed no step and delivered nothing is run again on the next
+      rung. A refused key (`Invalid credential`, 401) stops the lane
+      (run-with-rotation.mjs, credential-rotation.mjs). Unset or empty = one run with `api-key`, as
       before. Key values are never logged; every KEY_ENV is removed from the
       daemon env except the active one.
     required: false
