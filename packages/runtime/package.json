@@ -294,7 +294,8 @@
   },
   "optionalDependencies": {
     "@agentproto/sandbox-e2b": "workspace:*",
-    "@agentproto/sandbox-computer": "workspace:*"
+    "@agentproto/sandbox-computer": "workspace:*",
+    "@agentproto/reach-chat-sdk": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/rendezvous": "workspace:*",

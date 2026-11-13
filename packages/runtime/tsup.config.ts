@@ -61,6 +61,9 @@ export default createTsupConfig({
     "@agentproto/run",
     "@agentproto/model-catalog/lists",
     "@agentproto/providers-store",
+    // Optional, loaded with import() only when a route has a chat-sdk entry:
+    // never bundled, so the Chat SDK stays out of the runtime's own dist.
+    "@agentproto/reach-chat-sdk",
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/server/mcp.js",
     "@modelcontextprotocol/sdk/server/streamableHttp.js",

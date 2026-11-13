@@ -525,6 +525,21 @@ const reachRouteEntrySchema = z.discriminatedUnion("kind", [
       timeoutMs: z.number().int().positive().optional(),
     })
     .passthrough(),
+  z
+    .object({
+      id: z.string().min(1),
+      kind: z.literal("chat-sdk"),
+      platform: z.literal("whatsapp"),
+      to: z.string().regex(/^\d{6,15}$/, "a WhatsApp id is E.164 digits, no +"),
+      whatsapp: z
+        .object({
+          phoneNumberId: z.string().regex(/^\d+$/, "a Cloud API phone number id is digits only"),
+          accessToken: z.string().min(1),
+        })
+        .passthrough(),
+      timeoutMs: z.number().int().positive().optional(),
+    })
+    .passthrough(),
 ])
 const reachRouteSchema = z.array(reachRouteEntrySchema)
 
@@ -1116,11 +1131,11 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     path: "reach.routes.*",
     schema: reachRouteSchema,
     apply: "restart",
-    secretFields: ["secret"],
+    secretFields: ["secret", "accessToken"],
     writable: false,
     section: "daemon",
     label: "REACH route",
-    help: 'How the daemon reaches a principal (only "owner" is read today) for each pending approval: an ordered list of adapters, tried in turn until one acknowledges (delivered, deferred or deduped). Each entry is { id, kind: "telegram", alias? } (the daemon\'s own approval card, needs approvals.telegramApprovalCards) or { id, kind: "webhook", url, secret, timeoutMs? } (a signed POST of the message, Standard Webhooks with a whsec_ secret, answered by a receipt within timeoutMs, default 5000). Every attempt is kept in the approval\'s reach.json; a pending approval with no acknowledgement after 60 s is logged "reach: MISSING" and sent through the last telegram entry. The webhook secret is never shown by config_get. Unset (default): no router, the Telegram card bridge announces every approval itself, as before.',
+    help: 'How the daemon reaches a principal (only "owner" is read today) for each pending approval: an ordered list of adapters, tried in turn until one acknowledges (delivered, deferred or deduped). Each entry is { id, kind: "telegram", alias? } (the daemon\'s own approval card, needs approvals.telegramApprovalCards) or { id, kind: "webhook", url, secret, timeoutMs? } (a signed POST of the message, Standard Webhooks with a whsec_ secret, answered by a receipt within timeoutMs, default 5000) or { id, kind: "chat-sdk", platform: "whatsapp", to, whatsapp: { phoneNumberId, accessToken }, timeoutMs? } (one WhatsApp Cloud API text to the wa_id in to, tell only: an approval ask answers undelivered and goes on down the route; needs the optional @agentproto/reach-chat-sdk package, else the entry is skipped; timeoutMs default 10000). Every attempt is kept in the approval\'s reach.json; a pending approval with no acknowledgement after 60 s is logged "reach: MISSING" and sent through the last telegram entry. The webhook secret and the chat-sdk accessToken are never shown by config_get. Unset (default): no router, the Telegram card bridge announces every approval itself, as before.',
   },
   {
     path: "daemon.strictOrigins",

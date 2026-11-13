@@ -224,7 +224,7 @@ describe("secret and lockout classification", () => {
 
   it("registers reach.routes.* as a restart-applied, non-writable route whose webhook secret is redacted", () => {
     const entry = findConfigKey("reach.routes.owner")
-    expect(entry).toMatchObject({ path: "reach.routes.*", apply: "restart", writable: false, secretFields: ["secret"] })
+    expect(entry).toMatchObject({ path: "reach.routes.*", apply: "restart", writable: false, secretFields: ["secret", "accessToken"] })
     const secret = "whsec_" + Buffer.alloc(32, 1).toString("base64")
     const ok = [
       { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret, timeoutMs: 5000 },
@@ -243,6 +243,32 @@ describe("secret and lockout classification", () => {
     expect(redactConfigValue("reach.routes.owner", ok)).toEqual([
       { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret: { set: true }, timeoutMs: 5000 },
       { id: "floor", kind: "telegram", alias: "default" },
+    ])
+  })
+
+  it("accepts a chat-sdk whatsapp entry in reach.routes.* and redacts its accessToken", () => {
+    const entry = findConfigKey("reach.routes.owner")!
+    const wa = {
+      id: "wa",
+      kind: "chat-sdk",
+      platform: "whatsapp",
+      to: "33600000000",
+      whatsapp: { phoneNumberId: "100000000000001", accessToken: "FAKE-TOKEN" },
+    }
+    expect(entry.schema.safeParse([wa, { id: "floor", kind: "telegram" }]).success).toBe(true)
+    expect(entry.schema.safeParse([{ ...wa, timeoutMs: 10000 }]).success).toBe(true)
+    for (const bad of [
+      { ...wa, platform: "slack" },
+      { ...wa, to: "+33600000000" },
+      { ...wa, to: undefined },
+      { ...wa, whatsapp: { phoneNumberId: "100000000000001" } },
+      { ...wa, whatsapp: { phoneNumberId: "100000000000001", accessToken: "" } },
+      { ...wa, timeoutMs: 0 },
+    ]) {
+      expect(entry.schema.safeParse([bad]).success).toBe(false)
+    }
+    expect(redactConfigValue("reach.routes.owner", [wa])).toEqual([
+      { ...wa, whatsapp: { phoneNumberId: "100000000000001", accessToken: { set: true } } },
     ])
   })
 

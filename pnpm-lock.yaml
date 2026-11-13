@@ -3744,6 +3744,37 @@ importers:
         specifier: '>=3.2.6 <4'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/reach-chat-sdk:
+    dependencies:
+      '@agentproto/reach':
+        specifier: workspace:*
+        version: link:../reach
+      '@chat-adapter/state-memory':
+        specifier: 4.44.0
+        version: 4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)
+      '@chat-adapter/whatsapp':
+        specifier: 4.44.0
+        version: 4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)
+      chat:
+        specifier: 4.44.0
+        version: 4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+
   packages/ref:
     dependencies:
       zod:
@@ -4233,6 +4264,9 @@ importers:
         specifier: '>=3.2.6 <4'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
     optionalDependencies:
+      '@agentproto/reach-chat-sdk':
+        specifier: workspace:*
+        version: link:../reach-chat-sdk
       '@agentproto/sandbox-computer':
         specifier: workspace:*
         version: link:../sandbox-computer
@@ -5877,6 +5911,22 @@ packages:
 
   '@chat-adapter/catalog@4.42.0':
     resolution: {integrity: sha512-JrsQaiUg3rJIgIcqXteuhgccmbzlwyv9LSBlUokDeX6nFD0I3nrn+msLiI381NYKpu6V/l8GrNWF9Y73JeyMcw==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/catalog@4.44.0':
+    resolution: {integrity: sha512-UtpW5mMgIjYBRDIgxJKh+tfnlFe0GjLsFG5MPPUDA5b/PggSOAt00TFr0xF6UIXXh1SaK3V1u3FiXyM2sdnaJQ==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/shared@4.44.0':
+    resolution: {integrity: sha512-g6MmtkFLVE3Fn19Ly8e+3bZTAw5Kzh/2oP3qKRaVW0IPwVLDa2GRq/Q5fpGS+Xmzn2oqzpaHJrRuQRdWjLboqg==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/state-memory@4.44.0':
+    resolution: {integrity: sha512-Z1grqxdp+jYQffWZQJaJ2e2N9zxuX3GbX67D9Xrl7c3xZCi/9Ltvcb0ufvv0UnmgMnGWYFCC8kGATpwcWtmKvg==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/whatsapp@4.44.0':
+    resolution: {integrity: sha512-gxrZ5z5FQt2efEF4/kPguz+coLP5U23pLiZdEsWmoXC6J1WVoaEBi5I7LSAeZhoGLkDHFUUN2ERpvvSN85bNAQ==}
     engines: {node: '>=20'}
 
   '@clack/core@1.5.1':
@@ -7754,6 +7804,21 @@ packages:
 
   chat@4.42.0:
     resolution: {integrity: sha512-CXZyMG+qU9bX0nk8uO/cmZoI/yLu3kImdjS5BlCNYyE+Xi3umKwT8X8hrNaDA+ZyMzmkQJLYxdnN/HlPNIwl3A==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      ai: ^6.0.182 || ^7.0.0
+      workflow: ^5.0.0-beta.35
+      zod: ^3.0.0 || ^4.0.0
+    peerDependenciesMeta:
+      ai:
+        optional: true
+      workflow:
+        optional: true
+      zod:
+        optional: true
+
+  chat@4.44.0:
+    resolution: {integrity: sha512-DGVc9yV1ifOJFpe8Pz6BAoOBVT7/iI/7kkMuB+ZUrpyQ1iw1ElibxyvYBx7tEo1qPl6w510+Acvt1XSVPSgKjA==}
     engines: {node: '>=20'}
     peerDependencies:
       ai: ^6.0.182 || ^7.0.0
@@ -11390,6 +11455,36 @@ snapshots:
 
   '@chat-adapter/catalog@4.42.0': {}
 
+  '@chat-adapter/catalog@4.44.0': {}
+
+  '@chat-adapter/shared@4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)':
+    dependencies:
+      chat: 4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)
+    transitivePeerDependencies:
+      - ai
+      - supports-color
+      - workflow
+      - zod
+
+  '@chat-adapter/state-memory@4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)':
+    dependencies:
+      chat: 4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)
+    transitivePeerDependencies:
+      - ai
+      - supports-color
+      - workflow
+      - zod
+
+  '@chat-adapter/whatsapp@4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)':
+    dependencies:
+      '@chat-adapter/shared': 4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)
+      chat: 4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7)
+    transitivePeerDependencies:
+      - ai
+      - supports-color
+      - workflow
+      - zod
+
   '@clack/core@1.5.1':
     dependencies:
       fast-wrap-ansi: 0.2.2
@@ -13292,6 +13387,22 @@ snapshots:
   chat@4.42.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7):
     dependencies:
       '@chat-adapter/catalog': 4.42.0
+      '@workflow/serde': 4.1.0-beta.2
+      mdast-util-to-string: 4.0.0
+      remark-gfm: 4.0.1
+      remark-parse: 11.0.0
+      remark-stringify: 11.0.0
+      remend: 1.4.0
+      unified: 11.0.5
+    optionalDependencies:
+      ai: 6.0.309(zod@4.6.7)
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - supports-color
+
+  chat@4.44.0(ai@6.0.309(zod@4.6.7))(zod@4.6.7):
+    dependencies:
+      '@chat-adapter/catalog': 4.44.0
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0
       remark-gfm: 4.0.1
