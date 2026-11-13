@@ -138,6 +138,10 @@ export function withAllowlistToolSearchOff(
   return { ...(options ?? {}), tool_search: "false" }
 }
 
+/** Text the mastra-agent adapter appends when its run parks on an approval
+ *  (`adapters/mastra-agent/src/acp-host.ts`). */
+const SUSPENDED_MARKER = "[mastra-agent] run suspended"
+
 export class SessionsRegistryAgentHost implements AgentSessionHost {
   private readonly sessionsByLabel = new Map<string, string>()
   /** Sessions this host spawned and hasn't released yet (see
@@ -821,6 +825,20 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     policy: NonNullable<AgentStep["policy"]>,
   ): Promise<void> {
     const desc = this.registry.get(sessionId)
+    // A session parked on a permission/plan approval is NOT done: nobody
+    // answers it inside a workflow step. Fail the step (also for the
+    // mastra-agent adapter, whose parked run ends its turn normally and only
+    // leaves this marker in its last message). Previously this returned and
+    // the step, then the run, read as `done` having executed nothing.
+    if (desc?.awaitingPermission === true) {
+      throw new Error(`step failed: session ${sessionId} is parked on a permission request, nobody can approve it in a workflow step`)
+    }
+    if (desc && !desc.awaitingInput && desc.status !== "exited" && desc.status !== "killed") {
+      const last = await this.readFinalMessage(sessionId).catch(() => "")
+      if (last.includes(SUSPENDED_MARKER)) {
+        throw new Error(`step failed: session ${sessionId} suspended waiting for an approval that cannot be given in a workflow step`)
+      }
+    }
     if (!desc?.awaitingInput) return
 
     if (policy.awaiting === "auto-allow") {
