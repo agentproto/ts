@@ -5,7 +5,11 @@ import { join, basename } from "node:path"
 import { spawnSync } from "node:child_process"
 import { realpathSync } from "node:fs"
 import { runWorktree, resolveWorktreesRoot } from "../commands/worktree.js"
-import { readWorktreeMarker } from "@agentproto/worktree"
+import {
+  readWorktreeMarker,
+  resolveWorktreesTurboCacheDir,
+  WORKTREES_TURBO_CACHE_DIR_ENV,
+} from "@agentproto/worktree"
 
 const cleanupPaths: string[] = []
 
@@ -131,5 +135,44 @@ describe("agentproto worktree new", () => {
     const repoRoot = await makeRepo()
     const code = await runWorktree(["new", "--repo", repoRoot])
     expect(code).toBe(2)
+  })
+
+  it("prints the resolved TURBO_CACHE_DIR so a later manual build can reuse it", { timeout: 15_000 }, async () => {
+    const repoRoot = await makeRepo()
+    const root = await mkdtemp(join(tmpdir(), "wt-new-root-"))
+    cleanupPaths.push(root)
+    process.env[WORKTREES_TURBO_CACHE_DIR_ENV] = "/pinned/turbo-cache-for-test"
+    const expected = resolveWorktreesTurboCacheDir()
+
+    const out = captureStdout()
+    let code: number
+    try {
+      code = await runWorktree(["new", "my-feature", "--repo", repoRoot, "--root", root, "--base", "main"])
+    } finally {
+      out.restore()
+      delete process.env[WORKTREES_TURBO_CACHE_DIR_ENV]
+    }
+    expect(code).toBe(0)
+    expect(expected).toBe("/pinned/turbo-cache-for-test")
+    expect(out.chunks.join("")).toContain(expected)
+  })
+
+  it("--json output stays cwd/branch only, no turbo cache field added", { timeout: 15_000 }, async () => {
+    const repoRoot = await makeRepo()
+    const root = await mkdtemp(join(tmpdir(), "wt-new-root-"))
+    cleanupPaths.push(root)
+
+    const out = captureStdout()
+    let code: number
+    try {
+      code = await runWorktree(["new", "my-feature", "--repo", repoRoot, "--root", root, "--base", "main", "--json"])
+    } finally {
+      out.restore()
+    }
+    expect(code).toBe(0)
+    expect(JSON.parse(out.chunks.join(""))).toEqual({
+      cwd: join(root, basename(repoRoot), "my-feature"),
+      branch: "wt/my-feature",
+    })
   })
 })
