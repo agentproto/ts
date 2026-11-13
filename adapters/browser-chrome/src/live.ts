@@ -590,6 +590,28 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     await this.conn.send<void>("Network.setCookies", { cookies: toCdpCookieParams(cookies) }, this.sessionId)
   }
 
+  /**
+   * Same bootstrap as the base driver, plus: never let a click on a file input
+   * open the OS file chooser. Without this, an agent that clicks an "Upload"
+   * button before `uploadFileOwnedTarget` leaves a native macOS dialog open on
+   * the user's screen (nothing closes it: `DOM.setFileInputFiles` attaches the
+   * files without ever touching the dialog). With
+   * `Page.setInterceptFileChooserDialog` Chrome reports the click as a
+   * `Page.fileChooserOpened` event instead of showing the dialog; the upload
+   * itself is unchanged (it targets the input element directly). Best effort:
+   * a Chrome that refuses it keeps the old behaviour. Goes through
+   * `this.conn.send` (our own session), like `setCookies`: the
+   * `isRefusedLiveCommand` guard is for the agent's `cdp_send`.
+   */
+  override async bootstrap(): Promise<void> {
+    await super.bootstrap()
+    try {
+      await this.conn.send<void>("Page.setInterceptFileChooserDialog", { enabled: true }, this.sessionId)
+    } catch {
+      // keep the previous behaviour (native dialog) rather than fail the tab
+    }
+  }
+
   override async send<TResult = unknown, TParams = unknown>(command: CDPCommand<TParams>): Promise<TResult> {
     if (isRefusedLiveCommand(command.method)) {
       throw new ToolError({
