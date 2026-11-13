@@ -1786,4 +1786,43 @@ describe("runShellGate() with a shell line in `command`", () => {
     expect((outcome as { message: string }).message).toMatch(/'bash' not in allowlist/)
     expect(calls).toEqual([])
   })
+
+  it("an object entry does NOT narrow an ordinary command+args gate (basename only)", async () => {
+    const workspace = await ws([])
+    await writeFile(
+      join(workspace, ".agentproto", "allowed-commands.json"),
+      JSON.stringify({
+        version: 1,
+        commands: [
+          { command: "git", args: ["status"] },
+          { command: "bash", args: ["-c", "test -f README.md"] },
+        ],
+      }),
+      "utf8",
+    )
+    const calls: Array<{ command: string; args: string[] }> = []
+    const run = async (gate: { command: string; args: string[] }) => {
+      const outcome = await runShellGate(gate, {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args })
+          return ok
+        },
+      })
+      return outcome
+    }
+    expect(await run({ command: "git", args: ["push", "--force"] })).toMatchObject({
+      kind: "ran",
+      passed: true,
+    })
+    expect(await run({ command: "bash", args: ["-c", "rm -rf /"] })).toMatchObject({
+      kind: "ran",
+      passed: true,
+    })
+    expect(calls).toEqual([
+      { command: "git", args: ["push", "--force"] },
+      { command: "bash", args: ["-c", "rm -rf /"] },
+    ])
+  })
 })
