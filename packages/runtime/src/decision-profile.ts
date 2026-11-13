@@ -34,6 +34,7 @@ import {
   type DaemonReviewerHostDeps,
 } from "./review-reviewer-host.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
+import { AccountSlotError, isSlotRef, resolveProfileRef, type AccountSlots } from "./account-slots.js"
 import type { UserPreset } from "./user-presets.js"
 import type { SpawnAgentSessionInput } from "./session-spawn.js"
 import type { AuthProfile } from "@agentproto/auth"
@@ -234,6 +235,8 @@ export interface PresetLookups extends Pick<DaemonReviewerHostDeps, "getHarnessP
   readonly getDefaultHarnessPreset?: (harness: string) => Promise<{ profileRef: string; defaultModel?: string } | undefined>
   /** The configured `review.small` role (workspace/daemon `models` block). */
   readonly resolveRole?: (role: string) => ResolvedModelRole | undefined
+  /** Account slot map for a `slot:<name>` profileRef. Defaults to config.json. */
+  readonly loadAccountSlots?: () => Promise<AccountSlots>
 }
 
 export type ResolvedTarget =
@@ -328,6 +331,22 @@ export async function resolveAndValidateTarget(
       profileRef = inherited?.profileRef
     } catch {
       return { ok: false, code: "profile_unreadable", reason: `could not read the default harness preset for "${verdict.adapter}"` }
+    }
+  }
+  // An account slot (`slot:<name>`, from the escalation target, the role or
+  // the default harness preset) is resolved to the real profile here, so the
+  // OpenRouter guard and the spawn both see the account that will bill.
+  if (profileRef && isSlotRef(profileRef)) {
+    try {
+      profileRef = (
+        await resolveProfileRef(profileRef, {
+          ...(lookups.getAuthProfile ? { getAuthProfile: lookups.getAuthProfile as (id: string) => Promise<AuthProfile | undefined> } : {}),
+          ...(lookups.loadAccountSlots ? { loadAccountSlots: lookups.loadAccountSlots } : {}),
+        })
+      ).profileRef
+    } catch (err) {
+      if (err instanceof AccountSlotError) return { ok: false, code: "account_slot_unresolved", reason: err.message }
+      throw err
     }
   }
   const guarded: FieldBag = {

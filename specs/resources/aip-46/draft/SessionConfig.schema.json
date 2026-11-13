@@ -82,7 +82,7 @@
             "profileRef": {
               "type": "string",
               "minLength": 1,
-              "description": "AIP-69 auth profile id."
+              "description": "AIP-69 auth profile id, or an account slot `slot:<name>`: a named indirection resolved through the host config map `accountSlots` (slot name, no dot -> real auth profile id) at the moment of use (spawn, restart, turn-retry fallback). An unknown slot, or one naming a missing or disabled profile, is an error at use time, never a silent fallback. The session records the real profile it bills and, separately, the slot it asked for (`accessSlot`)."
             }
           }
         },
@@ -181,7 +181,7 @@
             "profileRef": {
               "type": "string",
               "minLength": 1,
-              "description": "AIP-69 auth profile id."
+              "description": "AIP-69 auth profile id, or an account slot `slot:<name>`: a named indirection resolved through the host config map `accountSlots` (slot name, no dot -> real auth profile id) at the moment of use (spawn, restart, turn-retry fallback). An unknown slot, or one naming a missing or disabled profile, is an error at use time, never a silent fallback. The session records the real profile it bills and, separately, the slot it asked for (`accessSlot`)."
             }
           }
         },

@@ -43,7 +43,7 @@ agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
                                          [--prefer-native-terminal]
                                          [--auto-compact-at-tokens <n>]
 agentproto sessions switch-profile --from <profileRef> --to <profileRef>
-                                           [--dry-run] [--json]
+                                           [--dry-run] [--include-dead] [--json]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
                                            [--force] [--json]
 agentproto sessions pin      <id-or-name> [--json]

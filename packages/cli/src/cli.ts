@@ -34,6 +34,7 @@ import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
 import { runQuota } from "./commands/quota.js"
+import { runAccounts } from "./commands/accounts.js"
 import { runHost } from "./commands/host.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
@@ -125,6 +126,9 @@ Usage:
                                            local spend estimate over a rolling window
   agentproto quota    status --profile <ref> [--refresh] [--json]
                                            live provider quota for a named auth profile
+  agentproto accounts slots [--json]       account slots (accountSlots) + alive sessions on each
+  agentproto accounts swap <family> [--move-alive] [--dry-run]
+                                           swap <family>-primary and <family>-secondary
   agentproto brain    query "<query>" [--workspace <slug>] [--topk <n>] [--json]
                                            fuzzy search over session transcripts
   agentproto browser   install <adapter> [--force] [--dry-run]
@@ -291,6 +295,7 @@ const VERBS = new Set([
   "conversation",
   "usage",
   "quota",
+  "accounts",
   "host",
   "brain",
   "tunnel",
@@ -416,6 +421,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runUsage(rest)
     case "quota":
       return runQuota(rest)
+    case "accounts":
+      return runAccounts(rest)
     case "brain":
       return runBrain(rest)
     case "tunnel":

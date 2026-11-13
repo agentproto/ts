@@ -155,6 +155,13 @@ import {
 } from "./catalog-models.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { loadConfig } from "./config.js"
+import {
+  AccountSlotError,
+  carriedAccessSlot,
+  isSlotRef,
+  resolveProfileRef,
+  type AccountSlots,
+} from "./account-slots.js"
 import type { SessionConfig, RouteSpec } from "./session-config.js"
 import type { SessionConfigChangedEvent, SessionConfigAxis } from "./session-event-bus.js"
 import {
@@ -853,6 +860,9 @@ export interface RestartAgentSessionOptions {
    * pure resume, byte-identical to the pre-step-6 path.
    */
   overrides?: RestartOverrides
+  /** Account slot map source for a `slot:<name>` access override. Defaults to
+   *  config.json's `accountSlots`; tests inject a stub. */
+  loadAccountSlots?: () => Promise<AccountSlots>
   /** Resolve an `access` override's `profileRef` → profile metadata + secret.
    *  Defaults to {@link resolveAccessProfileFromStore}; tests inject a stub.
    *  Only consulted when `overrides.access.profileRef` is set. */
@@ -1280,7 +1290,30 @@ async function restartAgentSessionOnce(
   const effHarness = overrides.harness ?? cloudHarness ?? prev.harness ?? prev.adapterSlug
   const effMode = overrides.mode ?? prev.mode
   // An `access` override is present iff a `profileRef` was explicitly requested.
-  const accessOverrideRef = overrides.access?.profileRef
+  // An account slot (`slot:<name>`) is resolved HERE, against the current
+  // `accountSlots`, so the restart (a turnRetry fallback, `accounts swap
+  // --move-alive`) lands on the profile the slot points at now. An unknown
+  // slot or a missing/disabled target is a 400, never a fallback.
+  let accessOverrideRef = overrides.access?.profileRef
+  // `accessSlot` is recomputed on every restart: the requested slot for a slot
+  // override, none for a literal override, and for a restart that keeps its
+  // access, the prior slot only while it still points at the billed profile.
+  let accessSlot: string | undefined
+  const slotDeps = opts.loadAccountSlots ? { loadAccountSlots: opts.loadAccountSlots } : {}
+  if (accessOverrideRef !== undefined && isSlotRef(accessOverrideRef)) {
+    try {
+      const resolvedRef = await resolveProfileRef(accessOverrideRef, slotDeps)
+      accessOverrideRef = resolvedRef.profileRef
+      accessSlot = resolvedRef.slot
+    } catch (err) {
+      if (err instanceof AccountSlotError) {
+        throw new RestartOverrideError(`restart access override: ${err.message}`)
+      }
+      throw err
+    }
+  } else if (accessOverrideRef === undefined) {
+    accessSlot = await carriedAccessSlot(prev, slotDeps)
+  }
 
   // ── Billing-auth re-resolution ───────────────────────────────────
   // Mirrors session-spawn.ts's resolution exactly (same resolver, same
@@ -1757,6 +1790,7 @@ async function restartAgentSessionOnce(
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
       ...(effContextContinuity ? { contextContinuity: effContextContinuity } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+      ...(accessSlot ? { accessSlot } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
       // Echoed so the NEXT restart (and every reader) still sees them.
@@ -2590,6 +2624,7 @@ async function restartAgentSessionOnce(
       ...(effRoute ? { route: effRoute } : {}),
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+      ...(accessSlot ? { accessSlot } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(prev.origin ? { origin: prev.origin } : {}),
       ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),

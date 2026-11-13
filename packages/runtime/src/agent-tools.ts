@@ -190,6 +190,7 @@ export interface AgentStartCompactDescriptor {
   route?: SessionDescriptor["route"]
   routeSelection?: SessionDescriptor["routeSelection"]
   accessProfile?: SessionDescriptor["accessProfile"]
+  accessSlot?: SessionDescriptor["accessSlot"]
   auth?: SessionDescriptor["auth"]
   capabilities?: SessionDescriptor["capabilities"]
   /** The postures the adapter enforces natively (harness client reads it). */
@@ -291,6 +292,7 @@ export const compactAgentStartDescriptor = (
   ...(desc.route ? { route: desc.route } : {}),
   ...(desc.routeSelection ? { routeSelection: desc.routeSelection } : {}),
   ...(desc.accessProfile ? { accessProfile: desc.accessProfile } : {}),
+  ...(desc.accessSlot ? { accessSlot: desc.accessSlot } : {}),
   ...(desc.auth ? { auth: desc.auth } : {}),
   ...(desc.capabilities ? { capabilities: desc.capabilities } : {}),
   ...(desc.spawnEnforcedPostures ? { spawnEnforcedPostures: desc.spawnEnforcedPostures } : {}),

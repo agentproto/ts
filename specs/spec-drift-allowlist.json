@@ -40,6 +40,16 @@
       "file": "aip-7/draft/GOVERNANCE.schema.json",
       "field": "$defs.approvalChannel",
       "reason": "approvals: telegram joins web_click/ui_card as a declared human decide channel, gated by a shared bot-bridge bearer secret instead of an Origin check; pending upstream spec PR"
+    },
+    {
+      "file": "aip-46/draft/SessionConfig.schema.json",
+      "field": "$defs.ConfigOverlay.properties.access.properties.profileRef",
+      "reason": "account slots: access.profileRef also accepts `slot:<name>`, resolved through the host `accountSlots` map at use time (spawn, restart, turn-retry fallback), the session recording `accessSlot` beside the billed profile; pending upstream spec PR"
+    },
+    {
+      "file": "aip-46/draft/SessionConfig.schema.json",
+      "field": "$defs.SessionConfig.properties.access.properties.profileRef",
+      "reason": "account slots: access.profileRef also accepts `slot:<name>`, resolved through the host `accountSlots` map at use time (spawn, restart, turn-retry fallback), the session recording `accessSlot` beside the billed profile; pending upstream spec PR"
     }
   ]
 }

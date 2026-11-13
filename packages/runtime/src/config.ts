@@ -949,6 +949,10 @@ export interface AgentprotoConfig {
   /** Profile name to use when `--profile` isn't passed. When unset,
    *  the top-level `daemon` / `tunnel` blocks are used directly. */
   activeProfile?: string
+  /** Account slots (AIP-46 access axis): slot name (no dot) -> real auth
+   *  profile id. A `profileRef` of `slot:<name>` resolves through this map at
+   *  the moment of use (`resolveProfileRef`, `account-slots.ts`). */
+  accountSlots?: Record<string, string>
   /** Default `skills` + `options` auto-applied to every `agent_start`
    *  spawn — global and per-adapter. See `resolveSpawnDefaults` in
    *  `spawn-defaults.ts` for the merge precedence with an explicit call.

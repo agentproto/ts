@@ -322,6 +322,12 @@ describe("migrateSandboxSession", () => {
     expect(input).toMatchObject({ sandbox: "daytona", model: "claude-opus-5-5", access: { profileRef: "work" } })
   })
 
+  it("session_migrate accepts a slot access override (handed to the spawn, which resolves it)", async () => {
+    await migrateSandboxSession(deps(), prevRow, { baseDir, access: { profileRef: "slot:claude-primary" } })
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.access).toEqual({ profileRef: "slot:claude-primary" })
+  })
+
   it("restores 'none' for a clean final checkpoint", async () => {
     finalCheckpoint.mockResolvedValue(record({ checkpoint: undefined, uncommittedFiles: 0 }))
     const result = await migrateSandboxSession(deps(), prevRow, { baseDir })

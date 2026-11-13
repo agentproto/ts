@@ -344,6 +344,21 @@ describe("cron_create schema — agent action is agent_start's own shape", () =>
     expect(inputs).toEqual({ ...fields, cwd: "/repo", origin: `cron:${jobId}` })
   })
 
+  it("an agent action with a slot access fires agent_start with the slot unchanged (resolved by the spawn)", async () => {
+    const dispatchTool = vi.fn<DispatchTool>(async () => okResult({ id: "sess_spawned" }))
+    const { scheduler } = makeScheduler({ dispatchTool })
+    const client = await buildClient(scheduler)
+    const created = await call(client, "cron_create", {
+      schedule: "10 22 * * *",
+      recurring: false,
+      action: { ...supervisorAction, access: { profileRef: "slot:claude-primary" } },
+    })
+    const { jobId } = JSON.parse(created.text) as { jobId: string }
+    await call(client, "cron_run", { jobId })
+    const [, inputs] = dispatchTool.mock.calls[0]!
+    expect(inputs).toMatchObject({ access: { profileRef: "slot:claude-primary" } })
+  })
+
   it("any agent_start field round-trips to the agent_start handler with no cron-specific code", async () => {
     // A real `agent_start`-registered server stands in for the daemon's
     // internal one: `dispatchTool` reaches its handler exactly like index.ts

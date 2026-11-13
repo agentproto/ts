@@ -18,6 +18,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { turnRetryInputSchema } from "./turn-retry-policy.js"
 import { getAuthProfile } from "@agentproto/auth"
+import { AccountSlotError, isSlotRef, resolveProfileRef } from "./account-slots.js"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { catchErrors, paginated } from "@agentproto/tool"
 import {
@@ -122,7 +123,20 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
       const presets = await listHarnessPresets(input.harnessSlug)
       return Promise.all(
         presets.map(async preset => {
-          const profile = await getProfile(preset.profileRef)
+          // A slot-backed preset reports the status of the profile its slot
+          // points at now; an unresolvable slot cannot bill either.
+          let profileRef = preset.profileRef
+          if (isSlotRef(profileRef)) {
+            try {
+              profileRef = (await resolveProfileRef(profileRef, { getAuthProfile: getProfile })).profileRef
+            } catch (err) {
+              const disabledOnly = err instanceof AccountSlotError && err.code === "account_slot_profile_disabled"
+              return disabledOnly
+                ? { ...preset, profileDisabled: true }
+                : { ...preset, profileDisabled: true, profileMissing: true as const }
+            }
+          }
+          const profile = await getProfile(profileRef)
           if (!profile) return { ...preset, profileDisabled: true, profileMissing: true as const }
           return { ...preset, profileDisabled: profile.disabled === true }
         }),
@@ -152,7 +166,7 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
       id: z.string().describe("Stable, unique preset id (e.g. hm-cheap)."),
       harnessSlug: z.string().describe("Adapter harness slug this preset binds (e.g. hermes)."),
       name: z.string().describe("Human-readable display name (e.g. Cheap)."),
-      profileRef: z.string().describe("Auth-profile id to bill through (must exist and be enabled)."),
+      profileRef: z.string().describe("Auth-profile id to bill through (must exist and be enabled), or an account slot `slot:<name>` (config.json accountSlots), resolved again at each spawn."),
       defaultModel: z.string().describe("Model id applied at spawn (e.g. z-ai/glm-5.2)."),
       isDefault: z
         .boolean()
