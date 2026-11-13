@@ -12,6 +12,7 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export {
   QUOTA_BASES,
+  QUOTA_READ_FAILURE_CODES,
   quotaCreditsSchema,
   quotaStatusSchema,
   quotaWindowSchema,
@@ -21,6 +22,8 @@ export type {
   QuotaCredits,
   QuotaProfile,
   QuotaReadContext,
+  QuotaReadFailure,
+  QuotaReadFailureCode,
   QuotaReader,
   QuotaStatus,
   QuotaWindow,
@@ -41,6 +44,11 @@ export type {
   AnthropicUnifiedWindow,
   AnthropicUnifiedWindows,
 } from "./readers/anthropic.js"
+export {
+  createAnthropicOAuthQuotaReader,
+  quotaFromAnthropicUnifiedUtilization,
+} from "./readers/anthropic-oauth.js"
+export type { AnthropicOAuthQuotaReaderOptions } from "./readers/anthropic-oauth.js"
 export { quotaFromCodexRateLimits } from "./readers/codex.js"
 export type {
   CodexCredits,
