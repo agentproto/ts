@@ -17,3 +17,15 @@ export {
   type WebhookReachAdapterOptions,
 } from "./webhook-adapter.js"
 export { buildApprovalReachMessage, approvalDedupeKey, APPROVAL_ASK_OPTIONS } from "./message.js"
+export { sendThroughRoute, sendToAdapter } from "./router.js"
+export {
+  createReachTeller,
+  REACH_TELL_DAILY_LIMIT,
+  tellStoredKey,
+  type ReachTeller,
+  type ReachTellerOptions,
+  type ReachTellInput,
+  type ReachTellResult,
+} from "./tell.js"
+export type { TelegramReachBridge } from "./telegram-adapter.js"
+export { registerReachTools, type RegisterReachToolsOptions } from "./tools.js"

@@ -210,6 +210,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "policy_status",
   "pr_open",
   "quota_status",
+  "reach_send",
   "remote_disable",
   "remote_enable",
   "remote_status",
