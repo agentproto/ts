@@ -5246,7 +5246,9 @@ export async function startHttpServer(
         // (VS Code, cloud operator) provisions through these routes rather
         // than writing the files itself. The credential is INPUT-only: the
         // create response returns metadata + a fingerprint, never the secret.
-        // Same auth policy as the peer read routes above (no session gate).
+        // Reads share the policy of the peer read routes above (no session
+        // gate); writes (create / patch / delete) take the per-boot token,
+        // see `refuseUnlessAuthorizedWrite`.
         if (path === "/auth/profiles" && req.method === "GET") {
           try {
             const qs = new URLSearchParams(
@@ -5268,6 +5270,7 @@ export async function startHttpServer(
           return
         }
         if (path === "/auth/profiles" && req.method === "POST") {
+          if (refuseUnlessAuthorizedWrite(req, res, "/auth/profiles")) return
           const body = (await readJsonBody(req)) as {
             id?: unknown
             endpoint?: unknown
@@ -5315,6 +5318,7 @@ export async function startHttpServer(
         }
         const authProfileMatch = path.match(/^\/auth\/profiles\/(.+)$/)
         if (authProfileMatch && req.method === "DELETE") {
+          if (refuseUnlessAuthorizedWrite(req, res, "/auth/profiles")) return
           const id = decodeURIComponent(authProfileMatch[1] ?? "")
           try {
             const result = await deleteAuthProfile(id, defaultProfileProvisionDeps())
@@ -5338,6 +5342,7 @@ export async function startHttpServer(
           return
         }
         if (authProfileMatch && req.method === "PATCH") {
+          if (refuseUnlessAuthorizedWrite(req, res, "/auth/profiles")) return
           const id = decodeURIComponent(authProfileMatch[1] ?? "")
           const body = (await readJsonBody(req)) as {
             label?: unknown
@@ -6088,6 +6093,12 @@ export async function startHttpServer(
           opts.listRegisteredToolIds &&
           (path.startsWith("/apps/") || path.startsWith("/scopes/"))
         ) {
+          // Applying / unapplying installs or removes tools and agents (and
+          // `POST` may install from a `dir`): same gate as the mutating
+          // /sessions/* routes. `GET /scopes/:id/apps` stays open.
+          if (/^\/apps\/[^/]+\/apply$/.test(path) && (req.method === "POST" || req.method === "DELETE")) {
+            if (refuseUnlessAuthorizedWrite(req, res, "/apps/:appId/apply")) return
+          }
           const handled = await handleApps(
             req,
             res,
