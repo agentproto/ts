@@ -93,6 +93,25 @@ inputs:
       set. Default '' ⇒ no provider key injected.
     required: false
     default: ''
+  credential-ladder:
+    description: >
+      Optional ordered list of credentials to rotate through when a key's
+      quota or credit is exhausted, one rung per line:
+      `<KEY_ENV> <ROUTE | MODEL> [<EXPORT_ENV> ...]`. KEY_ENV is an env var
+      the calling step sets from a secret; ROUTE (`opencode`) or MODEL
+      (`opencode-go/deepseek-v4.1-flash`) is the model route that key funds:
+      the rung runs the lane `model` when it is on that route, else the MODEL
+      given (which must be free or listed in AGENT_ALLOWED_METERED_MODELS),
+      else it is skipped. EXPORT_ENV names also receive the rung's key. The
+      first usable rung replaces `api-key` / `provider-key`; a run that fails
+      with a usage-limit, credit-exhausted or expired-key error, or an empty
+      turn, completed no step and delivered nothing is run again on the next
+      rung. A refused key (`Invalid credential`, 401) stops the lane
+      (run-with-rotation.mjs, credential-rotation.mjs). Unset or empty = one run with `api-key`, as
+      before. Key values are never logged; every KEY_ENV is removed from the
+      daemon env except the active one.
+    required: false
+    default: ''
   e2b-api-key:
     description: >
       e2b API key (secrets.E2B_API_KEY). Required when the workflow places an
@@ -248,6 +267,11 @@ outputs:
       run created nothing (or the ledger transport missed). Feeds the stamp
       scripts so they key the provenance footer by id instead of discovery.
     value: ${{ steps.run.outputs.artifacts }}
+  credential:
+    description: >
+      Env NAME (never the value) of the `credential-ladder` rung the last
+      attempt ran on. Empty without a ladder.
+    value: ${{ steps.run.outputs.credential }}
 
 runs:
   using: composite
@@ -339,6 +363,10 @@ runs:
         CLI_SOURCE: ${{ inputs.cli-source }}
         PROVIDER_KEY: ${{ inputs.provider-key }}
         PROVIDER_KEY_ENV: ${{ inputs.provider-key-env }}
+        # Credential rotation (run-with-rotation.mjs): the ladder, and the lane
+        # model a rung runs when its key funds the lane model's route.
+        CREDENTIAL_LADDER: ${{ inputs.credential-ladder }}
+        LANE_MODEL: ${{ inputs.model }}
         # Sandbox support. The daemon (a child of this driver) resolves a
         # sandbox spec's `env.passthrough` slugs against ITS OWN process env
         # (serve.ts's resolveSandboxSecret), and @agentproto/sandbox-e2b reads
@@ -369,4 +397,5 @@ runs:
         # the working key for any host-side claude-sdk spawn.
         ANTHROPIC_AUTH_TOKEN: ${{ inputs.auth-mode == 'subscription' && inputs.oauth-token || '' }}
         ANTHROPIC_API_KEY: ${{ inputs.api-key }}
-      run: node "${{ github.action_path }}/driver.mjs"
+      # One driver run, or one per credential rung (see `credential-ladder`).
+      run: node "${{ github.action_path }}/run-with-rotation.mjs"
