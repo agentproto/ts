@@ -84,6 +84,7 @@ export {
 export { createWorkspaceOfCwd } from "./workspace-binding.js"
 export { loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
+import { registerAccountSlotTools } from "./account-slot-tools.js"
 import { registerUserPresetTools } from "./user-preset-tools.js"
 import { registerModelListTools } from "./model-list-tools.js"
 import { loadModelListSource } from "./model-list-store.js"
@@ -4748,6 +4749,27 @@ export async function createGateway(
     // the MCP twin of the `/user-presets` HTTP routes. `includeRecent` reads
     // the same session registry as every other session-backed tool here.
     registerUserPresetTools(server, { registry: sessions })
+    // Account slots (accountSlots in config.json): account_slots_list /
+    // account_slots_swap. `moveAlive` restarts alive sessions through the same
+    // restart-with-override path as `session_restart`, cron targets re-armed.
+    registerAccountSlotTools(server, {
+      registry: sessions,
+      ...(opts.resolveAgentAdapter
+        ? {
+            restartSession: async (prev, overrides) => {
+              const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter!, prev, {
+                forceAgentResume: true,
+                overrides,
+                resolveSandboxProvider: resolveSandboxProviderResolved,
+                daemonMcpUrl,
+                ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+              })
+              const rearmedCrons = cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+              return { id: restarted.desc.id, ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}) }
+            },
+          }
+        : {}),
+    })
     // User-owned model lists — model_list_save/list/delete/resolve. Same
     // no-host-wiring stance: the store reads/writes model-lists.json.
     registerModelListTools(server)
@@ -6192,3 +6214,21 @@ async function runBoot(
 // parallel edit in that region.
 export { evaluateCostBudget } from "./cost-budget.js"
 export type { CostBudgetDecision } from "./cost-budget.js"
+export {
+  ACCOUNT_SLOT_NAME_RE,
+  AccountSlotError,
+  SLOT_REF_PREFIX,
+  isSlotRef,
+  loadAccountSlots,
+  planAccountSlotSwap,
+  resolveProfileRef,
+  sessionsToMoveOnSwap,
+  slotNameOf,
+  slotRef,
+  type AccountSlotErrorCode,
+  type AccountSlotRow,
+  type AccountSlotSwapPlan,
+  type AccountSlots,
+  type ResolvedProfileRef,
+} from "./account-slots.js"
+export { runAccountSlotSwap, type AccountSlotSwapResult } from "./account-slot-tools.js"

@@ -18,6 +18,7 @@ import type { Grant } from "@agentproto/policy"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
 import { sentinelRoutesSchema, sentinelRoutingModeSchema } from "@agentproto/sentinel"
 import { adapterDeprecation } from "./harness-alias.js"
+import { ACCOUNT_SLOT_NAME_RE, SLOT_REF_PREFIX } from "./account-slot-ref.js"
 // The browser entry: the same pure URL helpers, without pulling node:crypto in.
 import { resolvePairPageUrl, DEFAULT_PAIR_PAGE } from "@agentproto/secrets/pairing/browser"
 import type {
@@ -665,6 +666,19 @@ const appsConfigSchema = z
   })
   .passthrough()
 
+/** `accountSlots` key: a slot name, no dot (config paths are dotted, so a
+ *  dotted name could not be addressed as `accountSlots.<name>`). */
+const accountSlotNameSchema = z
+  .string()
+  .regex(ACCOUNT_SLOT_NAME_RE, 'slot names use letters, digits, "_" and "-" (no dot)')
+/** `accountSlots` value: a real auth-profile id, never another slot. Whether
+ *  the profile exists and is enabled is checked at USE time
+ *  (`resolveProfileRef`), not here. */
+const accountSlotTargetSchema = z
+  .string()
+  .min(1)
+  .refine(v => !v.startsWith(SLOT_REF_PREFIX), "a slot must name a real auth profile id, not another slot")
+
 /**
  * Top-level mirror of `AgentprotoConfig`. `.passthrough()` at every level
  * (including here) means an unknown top-level key round-trips unchanged,
@@ -695,6 +709,7 @@ export const agentprotoConfigSchema = z
     catalog: catalogConfigSchema.optional(),
     profiles: z.record(z.string(), profileConfigSchema).optional(),
     activeProfile: z.string().optional(),
+    accountSlots: z.record(accountSlotNameSchema, accountSlotTargetSchema).optional(),
     defaults: spawnDefaultsConfigSchema.optional(),
     acpAgents: z.record(z.string(), acpAgentConfigEntrySchema).optional(),
     terminalPresets: z.record(z.string(), terminalPresetSchema).optional(),
@@ -757,6 +772,7 @@ type ConfigTopLevelKey =
   | "catalog"
   | "profiles"
   | "activeProfile"
+  | "accountSlots"
   | "defaults"
   | "acpAgents"
   | "terminalPresets"
@@ -1454,6 +1470,31 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Active profile",
     help: "Profile used when --profile isn't passed. Lockout in v1: edit the file by hand.",
+  },
+  {
+    path: "accountSlots",
+    schema: z.record(accountSlotNameSchema, accountSlotTargetSchema),
+    apply: "hot",
+    writable: true,
+    section: "wallets",
+    label: "Account slots",
+    help:
+      "Slot name (no dot) -> real auth-profile id. A profileRef of slot:<name> (agent_start access, presets, " +
+      "turnRetry.fallback, harness presets, ...) resolves through this map at the moment of use; an unknown slot " +
+      "or a missing/disabled profile is an error, never a silent fallback. Swap a family's primary and secondary " +
+      "with `agentproto accounts swap <family>`.",
+    default: {},
+  },
+  {
+    path: "accountSlots.*",
+    schema: accountSlotTargetSchema,
+    apply: "hot",
+    writable: true,
+    section: "wallets",
+    label: "Account slot",
+    help:
+      "The real auth-profile id this slot points at (e.g. accountSlots.claude-primary = anthropic-sub-hodl). " +
+      "Read at each spawn, restart and turnRetry fallback.",
   },
 
   // ── remote (tunnel + pairing) ──

@@ -2623,6 +2623,12 @@ export interface SessionDescriptor {
    *  `auth` fingerprint echo below, which stays as-is — see
    *  {@link SessionAccessProfileEcho}. NEVER the credential. */
   accessProfile?: SessionAccessProfileEcho
+  /** The account slot the session asked for (`slot:<name>` resolved through
+   *  config.json `accountSlots`), beside the real profile in `accessProfile`
+   *  (which billing keeps reading). Recomputed at each restart: kept only
+   *  while the slot still points at the profile the session bills. Absent for
+   *  a session that named a profile literally. */
+  accessSlot?: string
   /**
    * Deterministic billing-auth mode + a non-secret credential fingerprint,
    * recorded at spawn time for adapters that resolved an explicit
@@ -6306,6 +6312,8 @@ export interface SpawnAgentInput {
   /** Named auth-profile echo for the `access` axis (SPEC §3.6). Non-secret —
    *  see {@link SessionAccessProfileEcho}. */
   accessProfile?: SessionAccessProfileEcho
+  /** Account slot the spawn asked for — see {@link SessionDescriptor.accessSlot}. */
+  accessSlot?: string
   /** Prior session id this spawn continues from — set by `restartAgentSession`
    *  (session-restart-core.ts) when this is a restart, recorded verbatim onto
    *  {@link SessionDescriptor.resumedFrom}. Absent for a direct (non-restart)
@@ -12885,6 +12893,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.route ? { route: input.route } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
+        ...(input.accessSlot ? { accessSlot: input.accessSlot } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
@@ -13137,6 +13146,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.route ? { route: input.route } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
+        ...(input.accessSlot ? { accessSlot: input.accessSlot } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),

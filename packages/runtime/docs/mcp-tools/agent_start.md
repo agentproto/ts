@@ -303,6 +303,18 @@ profile.
 Named auth profile to bill at initial spawn; resolved from the local
 keychain.
 
+Every ref (`profileRef`, each `profileRefs` and `delegateProfileRefs` entry)
+may also be an account slot, `slot:<name>`, resolved through config.json
+`accountSlots` (slot name -> real profile id) on the host, before the profile
+gate and before host auth resolution, so a box receives the credential of the
+profile the slot points at now. An unknown slot, or one pointing at a missing
+or disabled profile, refuses the spawn with `account_slot_unresolved`; there
+is no fallback. The descriptor records the real profile in `accessProfile`
+(billing is unchanged) and the slot asked for in `accessSlot`. Slots are also
+accepted by session presets, harness presets, `turnRetry.fallback[].access`
+(resolved when the fallback fires, so a swap made while the session lives is
+followed) and `session_restart`. See [`agentproto accounts`](../../../../docs/cli/verbs/accounts.md).
+
 AIP-46 gates these profiles per spawn. Only the profiles the request names
 (`access.profileRef` and every `access.profileRefs` entry) are evaluated; a
 profile supplied by a preset, an AGENT.md manifest or config is not a

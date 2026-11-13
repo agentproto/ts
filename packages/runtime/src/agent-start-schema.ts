@@ -305,7 +305,8 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe(
-      "Named auth profile to bill at initial spawn; resolved from the local keychain. " +
+      "Named auth profile to bill at initial spawn; resolved from the local keychain. Any ref may be an " +
+        "account slot `slot:<name>` (config.json accountSlots), resolved on the host at spawn. " +
         "`delegateProfileRefs` (sandbox + orchestrator spawns only): extra host profiles the box " +
         "supervisor's own nested spawns may bill, resolved on the HOST per nested spawn (the box " +
         "never holds them); its own profile is always allowed.",
