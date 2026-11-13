@@ -594,7 +594,7 @@ export interface ApprovalsConfig {
  * the ordered list of adapter instances for that principal; only `owner` is
  * read today. Absent or empty: no router, the Telegram approval bridge
  * announces on its own exactly as before. Read at boot; lockout key, and each
- * webhook `secret` is redacted on read.
+ * webhook `secret` and chat-sdk `accessToken` is redacted on read.
  */
 export interface ReachConfig {
   routes?: Record<string, ReachRouteEntry[]>

@@ -334,7 +334,7 @@ import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
 import { approvalAttachmentDir } from "./approvals/telegram-attachments.js"
 import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
-import { createReachRouter, planReachRoute } from "./reach/index.js"
+import { createReachRouter, loadChatSdkReachFactory, planReachRoute, routeNamesChatSdk } from "./reach/index.js"
 import { registerApprovalTools } from "./approvals/tools.js"
 import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
@@ -5265,8 +5265,16 @@ export async function createGateway(
   const reachOwnerEntries: readonly unknown[] = Array.isArray(daemonConfig.reach?.routes?.owner)
     ? daemonConfig.reach!.routes!.owner!
     : []
+  // `chat-sdk` entries need the optional @agentproto/reach-chat-sdk package,
+  // imported only when the route names one; absent, those entries are
+  // skipped `chat-sdk-not-installed`.
+  const reachChatSdkFactory = await loadChatSdkReachFactory(reachOwnerEntries)
+  if (routeNamesChatSdk(reachOwnerEntries) && !reachChatSdkFactory) {
+    console.warn("reach: @agentproto/reach-chat-sdk is not installed; chat-sdk route entries are skipped")
+  }
   const reachPlan = planReachRoute(reachOwnerEntries, {
     telegramBridge: () => approvalTelegram,
+    ...(reachChatSdkFactory ? { chatSdkFactory: reachChatSdkFactory } : {}),
     telegramAvailable: telegramApprovalCardsOn,
     telegramAlias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
     onError: err => {

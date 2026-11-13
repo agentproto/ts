@@ -202,6 +202,41 @@ describe("config_get", () => {
     await client.close()
   })
 
+  it("never echoes a reach.routes chat-sdk accessToken, shows it as { set: true }", async () => {
+    const token = "FAKE-WHATSAPP-ACCESS-TOKEN-0123456789"
+    const route = [
+      {
+        id: "wa",
+        kind: "chat-sdk" as const,
+        platform: "whatsapp" as const,
+        to: "33600000000",
+        whatsapp: { phoneNumberId: "100000000000001", accessToken: token },
+        timeoutMs: 8000,
+      },
+      { id: "floor", kind: "telegram" as const },
+    ]
+    await writeCfg({ reach: { routes: { owner: route } } })
+    const client = await setupClient(makeDeps({ reach: { routes: { owner: route } } }))
+    for (const keys of [["reach.routes.owner"], ["reach.routes.*"], undefined]) {
+      const raw = await client.callTool({ name: "config_get", arguments: keys ? { keys } : {} })
+      expect(JSON.stringify(raw)).not.toContain(token)
+      const row = findKey(parse(raw), "reach.routes.owner")
+      expect(row.value).toEqual([
+        {
+          id: "wa",
+          kind: "chat-sdk",
+          platform: "whatsapp",
+          to: "33600000000",
+          whatsapp: { phoneNumberId: "100000000000001", accessToken: { set: true } },
+          timeoutMs: 8000,
+        },
+        { id: "floor", kind: "telegram" },
+      ])
+      expect(row.effective).toEqual(row.value)
+    }
+    await client.close()
+  })
+
   it("pendingRestart is true when a restart-class key changed since boot", async () => {
     await writeCfg({ daemon: { label: "new-label" } })
     const client = await setupClient(makeDeps({ daemon: { label: "boot-label" } }))

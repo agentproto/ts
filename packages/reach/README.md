@@ -10,7 +10,7 @@ Zero runtime dependency.
 - `ReachAdapter` (`id`, `kind`, `capabilities`, `send`, `close?`) and `ReachCapabilities`
   (`maxChars`, `actions`, `files`, `link`, `defers`, `retracts`, `identity`), declared per instance.
 - `ReachRouteEntry`: one adapter instance of a route, a union discriminated by `kind`
-  (`telegram`, `webhook`).
+  (`telegram`, `webhook`, `chat-sdk`).
 - `ReachAnswer`: the shape of a human's answer to an `ask` (type only for now).
 - `reachContentFromPreview(preview, title)`: the one parser from an approval `preview` to REACH
   content (summary falling back to the title, https links only, bare file names only, legacy keys

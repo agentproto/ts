@@ -167,10 +167,28 @@ export interface ReachWebhookRouteEntry {
   timeoutMs?: number
 }
 
+/** A route entry for a Chat SDK messenger (`@agentproto/reach-chat-sdk`).
+ *  Only `whatsapp` exists today: outbound only, `tell` only. */
+export interface ReachChatSdkRouteEntry {
+  id: string
+  kind: "chat-sdk"
+  platform: "whatsapp"
+  /** The recipient: a WhatsApp id (E.164 digits, no `+`). */
+  to: string
+  whatsapp: {
+    /** The Cloud API phone number id (not the phone number). */
+    phoneNumberId: string
+    /** Never echoed, never logged. */
+    accessToken: string
+  }
+  /** Default 10000. */
+  timeoutMs?: number
+}
+
 /** One adapter instance in a route. A union discriminated by `kind`, so a
  *  later kind adds a member and per-instance options (for example a
  *  `render` override) without touching the others. */
-export type ReachRouteEntry = ReachTelegramRouteEntry | ReachWebhookRouteEntry
+export type ReachRouteEntry = ReachTelegramRouteEntry | ReachWebhookRouteEntry | ReachChatSdkRouteEntry
 
 /** What the `webhook` kind posts. */
 export type ReachWebhookBody =

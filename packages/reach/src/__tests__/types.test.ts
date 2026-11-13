@@ -12,8 +12,18 @@ describe("isAcknowledged", () => {
   })
 
   it("narrows a route entry by kind", () => {
-    const label = (entry: ReachRouteEntry): string => (entry.kind === "webhook" ? entry.url : (entry.alias ?? "default"))
+    const label = (entry: ReachRouteEntry): string =>
+      entry.kind === "webhook" ? entry.url : entry.kind === "chat-sdk" ? entry.platform : (entry.alias ?? "default")
     expect(label({ id: "floor", kind: "telegram" })).toBe("default")
     expect(label({ id: "p", kind: "webhook", url: "https://r.invalid/", secret: "whsec_x" })).toBe("https://r.invalid/")
+    expect(
+      label({
+        id: "wa",
+        kind: "chat-sdk",
+        platform: "whatsapp",
+        to: "33600000000",
+        whatsapp: { phoneNumberId: "1", accessToken: "x" },
+      }),
+    ).toBe("whatsapp")
   })
 })
