@@ -19,7 +19,9 @@
  * The watchdog (every 30 s): a pending approval older than 60 s with no
  * acknowledging receipt is logged `reach: MISSING <approvalId>` and sent
  * through the floor, the last `telegram` adapter of the route, else
- * `reach:undelivered` is emitted. Once per approval per daemon run.
+ * `reach:undelivered` is emitted. Once per approval per daemon run, and not at
+ * all when `reach.json` already holds a watchdog receipt `undelivered` with a
+ * terminal reason (`channel-not-listed`, `not-found`, `not-pending`).
  *
  * On `approval:decided` and `approval:expired` it calls `close` on the
  * adapter that acknowledged, if that adapter has one.
@@ -36,6 +38,7 @@ import { approvalDedupeKey, buildApprovalReachMessage } from "./message.js"
 
 export const REACH_WATCHDOG_INTERVAL_MS = 30_000
 export const REACH_MISSING_AFTER_MS = 60_000
+const TERMINAL_REASONS = new Set(["channel-not-listed", "not-found", "not-pending"])
 
 /**
  * One adapter attempt, with the rules shared by approvals and tells: a throw
@@ -128,6 +131,19 @@ export function createReachRouter(opts: ReachRouterOptions): ReachRouter {
     return [...receipts].reverse().find(r => r.dedupeKey === dedupeKey && isAcknowledged(r))
   }
 
+  /** A persisted watchdog receipt `undelivered` with a terminal reason means an
+   *  earlier run already reported it, and a retry cannot change the answer.
+   *  A `failed` receipt (a send error can heal) is retried once per run. */
+  function reportedByWatchdog(approvalId: string): boolean {
+    try {
+      return opts.engine
+        .listReachReceipts(approvalId)
+        .some(r => r.trigger === "watchdog" && r.status === "undelivered" && r.reason !== undefined && TERMINAL_REASONS.has(r.reason))
+    } catch {
+      return false
+    }
+  }
+
   async function attempt(
     approvalId: string,
     adapter: ReachAdapter,
@@ -204,6 +220,7 @@ export function createReachRouter(opts: ReachRouterOptions): ReachRouter {
       if (record.reach === false || missingReported.has(record.id) || inflight.has(record.id)) continue
       if (nowMs - Date.parse(record.requestedAt) <= missingAfterMs) continue
       if (acknowledged(record.id, approvalDedupeKey(record.id))) continue
+      if (reportedByWatchdog(record.id)) continue
       missingReported.add(record.id)
       log(`reach: MISSING ${record.id}`)
       started.push(

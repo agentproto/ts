@@ -274,6 +274,49 @@ describe("spawnAgentSession — harness default preset fallback", () => {
     expect(startSession).not.toHaveBeenCalled()
   })
 
+  it("a default preset on an account slot bills the profile the slot points at now", async () => {
+    presetState.value = {
+      id: "hm-slot",
+      harnessSlug: "hermes",
+      name: "Slot",
+      profileRef: "slot:or-primary",
+      defaultModel: "z-ai/glm-5.2",
+      isDefault: true,
+    }
+    authProfileState.profiles["openrouter-cheap"] = eligibleProfile()
+    authProfileState.keychain["or/key"] = "sk-or-test"
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const deps = {
+      ...depsWithProvider("openrouter", startSession),
+      loadAccountSlots: async () => ({ "or-primary": "openrouter-cheap" }),
+    }
+
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.accessProfile).toMatchObject({ profileRef: "openrouter-cheap" })
+    expect(result.descriptor.accessSlot).toBe("or-primary")
+  })
+
+  it("a default preset on an unknown slot fails early, naming the preset and the slot", async () => {
+    presetState.value = {
+      id: "hm-slot",
+      harnessSlug: "hermes",
+      name: "Slot",
+      profileRef: "slot:or-primary",
+      defaultModel: "z-ai/glm-5.2",
+      isDefault: true,
+    }
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const deps = { ...depsWithProvider("openrouter", startSession), loadAccountSlots: async () => ({}) }
+
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
+    expect(result).toMatchObject({ ok: false, code: "harness_preset_profile_unavailable" })
+    if (result.ok) throw new Error("expected failure")
+    expect(result.message).toMatch(/"hm-slot".*or-primary.*not defined/)
+    expect(startSession).not.toHaveBeenCalled()
+  })
+
   it("fails early, before spawning, when the default preset's profile no longer exists", async () => {
     presetState.value = {
       id: "hm-cheap",

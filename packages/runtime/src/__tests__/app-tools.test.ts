@@ -1319,6 +1319,28 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     expect(ran.errors).toHaveLength(1)
     expect(ran.errors[0].error).toMatch(/agent_start: no auth profile "no-such-profile" found/)
   })
+
+  it("app_run accepts a slot `access.profileRef`: the spawn resolves it (an unknown slot is refused by name)", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    // Isolated HOME so the slot map read is an empty test config, never the machine's.
+    const prevHome = process.env.HOME
+    process.env.HOME = dir
+    try {
+      const ran = parseToolJson(
+        await client.callTool({
+          name: "app_run",
+          arguments: { appId: "@test/fixture-app", access: { profileRef: "slot:claude-primary" } },
+        }),
+      )
+      expect(ran.errors).toHaveLength(1)
+      expect(ran.errors[0].error).toMatch(/agent_start: account slot "claude-primary" is not defined/)
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+    }
+  })
 })
 
 describe("app_run: the AGENT.md reaches every harness (AIP-42 projection)", () => {

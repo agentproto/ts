@@ -11,6 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { ReachAdapter, ReachMessage, ReachReceipt } from "@agentproto/reach"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resolveReachTellDir } from "../reach/index.js"
 
 import { createApprovalTelegramBridge } from "../approvals/telegram-bridge.js"
 import { createApprovalsEngine } from "../approvals/engine.js"
@@ -113,10 +114,12 @@ describe("reach_send", () => {
     expect(a.sent).toHaveLength(1)
   })
 
-  it("refuses urgency now and sends nothing", async () => {
+  it("the teller still refuses urgency now (defense in depth) and sends nothing", async () => {
     const a = fakeAdapter("a")
-    const { call } = await connect([a.adapter], "s1")
-    expect(await call({ summary: "hi", dedupeKey: "k", urgency: "now" })).toMatchObject({ error: "urgency_now_refused" })
+    const teller = createReachTeller({ route: () => [a.adapter], dir, log: () => {} })
+    expect(await teller.send({ summary: "hi", dedupeKey: "k", urgency: "now", source: { sessionId: "s1" } })).toMatchObject({
+      error: "urgency_now_refused",
+    })
     expect(a.sent).toHaveLength(0)
   })
 
@@ -204,5 +207,84 @@ describe("the floor learns tell", () => {
       status: "undelivered",
       attempts: [{ adapterId: "floor", status: "undelivered", reason: "tell-not-supported" }],
     })
+  })
+})
+
+describe("reach_send hardening", () => {
+  it("caps calls that reached the route, not only acknowledged ones", async () => {
+    const bad = fakeAdapter("a", "failed")
+    const { call } = await connect([bad.adapter], "s1")
+    for (let i = 0; i < REACH_TELL_DAILY_LIMIT; i++) await call({ summary: "hi", dedupeKey: `k${i}` })
+    expect(await call({ summary: "hi", dedupeKey: "over" })).toMatchObject({ error: "reach_rate_limited" })
+    expect(bad.sent).toHaveLength(REACH_TELL_DAILY_LIMIT)
+  })
+
+  it("rewrites tells.jsonl with only in-window lines on first load", async () => {
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
+    const stale = JSON.stringify({ key: "tell:s1:o", sessionId: "s1", adapterId: "a", kind: "webhook", status: "delivered", at: old })
+    writeFileSync(join(dir, "tells.jsonl"), stale + "\n")
+    const a = fakeAdapter("a")
+    const { call } = await connect([a.adapter], "s1")
+    await call({ summary: "hi", dedupeKey: "k" })
+    const lines = tells()
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain("tell:s1:k")
+  })
+
+  it("25 concurrent tells from one session: exactly 20 reach the route", async () => {
+    const a = fakeAdapter("a")
+    const { call } = await connect([a.adapter], "s1")
+    await Promise.all(Array.from({ length: 25 }, (_, i) => call({ summary: "hi", dedupeKey: `k${i}` })))
+    expect(a.sent).toHaveLength(REACH_TELL_DAILY_LIMIT)
+  })
+
+  it("an unknown via is invalid_input and sends nothing", async () => {
+    const a = fakeAdapter("a")
+    const b = fakeAdapter("b")
+    const { call } = await connect([a.adapter, b.adapter], "s1")
+    expect(await call({ summary: "hi", dedupeKey: "k", via: "nope" })).toEqual({
+      error: "invalid_input",
+      message: "via: no route entry nope; known: a, b",
+    })
+    expect(a.sent).toHaveLength(0)
+    expect(b.sent).toHaveLength(0)
+  })
+
+  it("the tool schema offers no now urgency", async () => {
+    const server = new McpServer({ name: "t", version: "0" })
+    registerReachTools(server, {})
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "c", version: "0" })
+    await client.connect(ct)
+    const tool = (await client.listTools()).tools.find(t => t.name === "reach_send")!
+    const urgency = (tool.inputSchema.properties as Record<string, { enum?: string[] }>).urgency!
+    expect(urgency.enum).toEqual(["normal", "digest"])
+  })
+
+  it("a 501 char link url, or rendered text over 4000, is invalid_input", async () => {
+    const a = fakeAdapter("a")
+    const teller = createReachTeller({ route: () => [a.adapter], dir, log: () => {} })
+    const long = "https://x.test/" + "a".repeat(486)
+    expect(long).toHaveLength(501)
+    expect(await teller.send({ summary: "hi", dedupeKey: "k", links: [{ url: long }], source: { sessionId: "s1" } })).toMatchObject({
+      error: "invalid_input",
+    })
+    const label = "l".repeat(1200)
+    const links = [1, 2, 3].map(i => ({ url: `https://x.test/${"a".repeat(480)}${i}`, label }))
+    const res = await teller.send({ summary: "s".repeat(1000), dedupeKey: "k2", links, source: { sessionId: "s1" } })
+    expect(res).toMatchObject({ error: "invalid_input" })
+    expect(a.sent).toHaveLength(0)
+  })
+
+  it("AGENTPROTO_HOME is honoured for the tells directory", () => {
+    const prev = process.env.AGENTPROTO_HOME
+    process.env.AGENTPROTO_HOME = dir
+    try {
+      expect(resolveReachTellDir()).toBe(join(dir, "reach"))
+    } finally {
+      if (prev === undefined) delete process.env.AGENTPROTO_HOME
+      else process.env.AGENTPROTO_HOME = prev
+    }
   })
 })

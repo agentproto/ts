@@ -715,3 +715,59 @@ describe("continueAgentSessionFresh", () => {
     ).rejects.toThrow("no adapter resolver")
   })
 })
+
+describe("continueAgentSessionFresh: account slots", () => {
+  beforeEach(() => {
+    resetContinueFreshMemoForTests()
+    vi.mocked(spawnAgentSession).mockReset()
+    vi.mocked(spawnAgentSession).mockResolvedValue({ ok: true, descriptor: { id: "sess_new" } as SessionDescriptor })
+    fakeRegistry.get = vi.fn()
+    fakeRegistry.setPinned = vi.fn(() => ({ id: "sess_new" }) as SessionDescriptor)
+    wireMarkRetired()
+  })
+
+  it("session_continue_fresh accepts a slot access override (handed to the spawn, which resolves it)", async () => {
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints", access: { profileRef: "slot:claude-secondary" } },
+    )
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.access).toEqual({ profileRef: "slot:claude-secondary" })
+  })
+
+  it("carries a still-valid accessSlot as the slot ref, and the real profile once the slot moved", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { addAuthProfile } = await import("@agentproto/auth")
+    const prevHome = process.env.HOME
+    const home = await mkdtemp(join(tmpdir(), "agp-continue-slot-"))
+    process.env.HOME = home
+    try {
+      await addAuthProfile({ id: "anthropic-main", endpoint: "anthropic", method: "oauth-bearer" })
+      await mkdir(join(home, ".agentproto"), { recursive: true })
+      const writeSlots = (slots: Record<string, string>) =>
+        writeFile(join(home, ".agentproto", "config.json"), JSON.stringify({ accountSlots: slots }))
+      await writeSlots({ "claude-primary": "anthropic-main" })
+      await continueAgentSessionFresh(
+        { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+        { ...makePrev(), accessSlot: "claude-primary" },
+        { baseDir: "/tmp/checkpoints" },
+      )
+      expect(vi.mocked(spawnAgentSession).mock.calls[0]![1].access).toEqual({ profileRef: "slot:claude-primary" })
+
+      await writeSlots({ "claude-primary": "someone-else" })
+      await continueAgentSessionFresh(
+        { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+        { ...makePrev(), accessSlot: "claude-primary" },
+        { baseDir: "/tmp/checkpoints" },
+      )
+      expect(vi.mocked(spawnAgentSession).mock.calls[1]![1].access).toEqual({ profileRef: "anthropic-main" })
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+})

@@ -188,6 +188,14 @@ import {
 } from "./session-preset-resolver.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import {
+  AccountSlotError,
+  accessNamesSlot,
+  isSlotRef,
+  resolveAccessSlots,
+  resolveProfileRef,
+  type AccountSlots,
+} from "./account-slots.js"
+import {
   HEADLESS_BROWSER_PROMPT_HINT,
   resolveBrowserMode,
   resolveHeadlessBrowser as realResolveHeadlessBrowser,
@@ -760,6 +768,7 @@ export interface AccessProfileAuthError {
   code:
     | "access_profile_not_found"
     | "access_profile_ineligible"
+    | "account_slot_unresolved"
     | "unsupported_auth_mode"
     | "unsupported_auth_source"
     | "auth_source_unresolved"
@@ -829,7 +838,24 @@ export async function resolveAccessProfileAuth(input: {
   // profile with no descriptor still reports `access_profile_not_found` — the
   // single-`profileRef` contract, preserved.
   const resolvedCandidates: Array<{ ref: string; profile: Profile }> = []
-  for (const ref of candidates) {
+  for (const candidate of candidates) {
+    // `spawnAgentSession` resolves account slots before it gets here; other
+    // callers (a workflow agent step's `access`) may still hand a
+    // `slot:<name>` ref, resolved through the same single resolver.
+    let ref = candidate
+    if (isSlotRef(candidate)) {
+      try {
+        ref = (await resolveProfileRef(candidate)).profileRef
+      } catch (err) {
+        if (!(err instanceof AccountSlotError)) throw err
+        return {
+          ok: false,
+          code: "account_slot_unresolved",
+          message: err.message,
+          details: { slotCode: err.code, slot: err.slot },
+        }
+      }
+    }
     const profile = await getAuthProfile(ref)
     if (!profile) {
       return {
@@ -1597,8 +1623,23 @@ export function cleanAgentLines(lines: string[]): string[] {
     })
 }
 
+/** The `accessSlot` descriptor field for a spawn: the slot whose resolved
+ *  profile is the one actually billed (`profileRefs` picks the first eligible
+ *  candidate, so the slot is looked up by the billed profile id). */
+function accessSlotOf(
+  echo: { profileRef: string } | undefined,
+  slotByProfile: Map<string, string> | undefined,
+): { accessSlot?: string } {
+  const slot = echo ? slotByProfile?.get(echo.profileRef) : undefined
+  return slot ? { accessSlot: slot } : {}
+}
+
 export interface SpawnAgentSessionDeps {
   registry: SessionsRegistry
+  /** Account slot map source for `slot:<name>` access refs. Defaults to
+   *  config.json's `accountSlots`; tests inject a stub so they never read the
+   *  real file. */
+  loadAccountSlots?: () => Promise<AccountSlots>
   /** Required — callers must check for its absence themselves (the MCP
    *  tool and HTTP route each have their own "not enabled" response
    *  shape for the missing-resolver case). */
@@ -2318,6 +2359,7 @@ export type SpawnAgentSessionResult =
         | "auth_source_unresolved"
         | "access_profile_not_found"
         | "access_profile_ineligible"
+        | "account_slot_unresolved"
         | "harness_preset_profile_unavailable"
         | "inference_endpoint_unresolved"
         | "inference_fit_check_failed"
@@ -2625,7 +2667,8 @@ async function spawnAgentSessionOnce(
   // replaces `input.access` with a layered value (harness preset, session
   // preset, AGENT.md manifest, config). The profile gate evaluates only what
   // the caller asked for, never operator or author configuration.
-  const requestedAccess = input.access
+  let requestedAccess = input.access
+  const slotDeps = deps.loadAccountSlots ? { loadAccountSlots: deps.loadAccountSlots } : {}
   // The MCP servers the REQUEST names, captured before any later layer
   // (preset, manifest, bundle, checkpoint resume) can merge or replace
   // `input.mcpServers` and before the daemon injects its own mounts. The
@@ -2848,14 +2891,33 @@ async function spawnAgentSessionOnce(
       // and the profile — letting the spawn proceed would fail later anyway,
       // deep inside credential resolution, with an opaque eligibility error
       // that never mentions the preset that silently applied.
-      const presetProfile = await getAuthProfile(preset.profileRef)
+      // A preset may name an account slot (`slot:claude-primary`): the slot is
+      // resolved now, against the current `accountSlots`, and an unknown slot
+      // fails the spawn with the same preset-naming message.
+      let presetProfileRef = preset.profileRef
+      if (isSlotRef(preset.profileRef)) {
+        try {
+          presetProfileRef = (await resolveProfileRef(preset.profileRef, slotDeps)).profileRef
+        } catch (err) {
+          if (!(err instanceof AccountSlotError)) throw err
+          return {
+            ok: false,
+            code: "harness_preset_profile_unavailable",
+            message:
+              `harness preset "${preset.id}" (default for ${preset.harnessSlug}) bills through ` +
+              `"${preset.profileRef}": ${err.message}`,
+            details: { slotCode: err.code, slot: err.slot },
+          }
+        }
+      }
+      const presetProfile = await getAuthProfile(presetProfileRef)
       if (!presetProfile || presetProfile.disabled) {
         return {
           ok: false,
           code: "harness_preset_profile_unavailable",
           message:
             `harness preset "${preset.id}" (default for ${preset.harnessSlug}) bills through auth ` +
-            `profile "${preset.profileRef}" which is ${!presetProfile ? "missing" : "disabled"} — ` +
+            `profile "${presetProfileRef}" which is ${!presetProfile ? "missing" : "disabled"} — ` +
             "re-enable it, or point the harness default elsewhere with harness_preset_create / " +
             "harness_preset_set_default.",
         }
@@ -2900,6 +2962,43 @@ async function spawnAgentSessionOnce(
     ...(sessionConfig.options !== undefined
       ? { options: sessionConfig.options as SpawnAgentSessionInput["options"] }
       : {}),
+  }
+  // ACCOUNT SLOTS (AIP-46 access axis): every `slot:<name>` ref in the merged
+  // access (request, preset, harness preset, manifest) becomes the real
+  // profile id HERE, before anything reads it: the profile gate, host auth
+  // resolution for a box (`resolveHostAuth` below, which must hand the box an
+  // already-resolved credential: a box has neither the slot map nor the
+  // keychain) and the credential-relay allowlist. An unknown slot, or one
+  // pointing at a missing or disabled profile, refuses the spawn.
+  const slotRefusal = (err: unknown) =>
+    err instanceof AccountSlotError
+      ? {
+          ok: false as const,
+          code: "account_slot_unresolved" as const,
+          message: `agent_start: ${err.message}`,
+          details: { slotCode: err.code, slot: err.slot },
+        }
+      : undefined
+  let accessSlotByProfile: Map<string, string> | undefined
+  if (accessNamesSlot(input.access)) {
+    try {
+      const resolvedAccess = await resolveAccessSlots(input.access!, slotDeps)
+      input = { ...input, access: resolvedAccess.access }
+      accessSlotByProfile = resolvedAccess.slotByProfile
+    } catch (err) {
+      const refusal = slotRefusal(err)
+      if (refusal) return refusal
+      throw err
+    }
+  }
+  if (accessNamesSlot(requestedAccess)) {
+    try {
+      requestedAccess = (await resolveAccessSlots(requestedAccess!, slotDeps)).access
+    } catch (err) {
+      const refusal = slotRefusal(err)
+      if (refusal) return refusal
+      throw err
+    }
   }
   // A preset `browser` sits BELOW the role default (see `resolveBrowserMode`),
   // so it is kept aside instead of folded into input.
@@ -6037,6 +6136,7 @@ async function spawnAgentSessionOnce(
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+        ...(accessSlotOf(accessProfileEcho, accessSlotByProfile)),
         ...(resumeLabel ? { label: resumeLabel } : {}),
         // CRASH RESUME - the task this session works on: the correlation key
         // a later relaunch names to resume THIS session's checkpoint.
@@ -6731,6 +6831,7 @@ async function spawnAgentSessionOnce(
       ...(descriptorRoute ? { route: descriptorRoute } : {}),
       ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+      ...(accessSlotOf(accessProfileEcho, accessSlotByProfile)),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(initialSystemPrompt ? { initialPromptSystem: initialSystemPrompt } : {}),
       ...(resumeLabel ? { label: resumeLabel } : {}),

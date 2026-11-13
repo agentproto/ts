@@ -91,6 +91,7 @@ import { egressHealthLedger, isEgressHealthErrorClass, type EgressHealthLedger }
 import { getModelListSource } from "./model-list-store.js"
 import { isReadOnlyToolName } from "./read-only-tool-call.js"
 import { checkModelPolicy } from "./model-policy.js"
+import { isSlotRef, resolveProfileRef, slotRef, type ResolvedProfileRef } from "./account-slots.js"
 import {
   TURN_ROTATE_DEFAULTS,
   type TurnRetryClass,
@@ -562,6 +563,10 @@ export function createTurnRetryController(opts: {
     desc: SessionDescriptor,
     target: TurnRetryFallbackEffective,
   ) => Promise<string | undefined>
+  /** Account slot resolution for a `slot:<name>` fallback access, run at
+   *  fallback time (never at spawn) so a swap made while the session lived is
+   *  honoured. Defaults to {@link resolveProfileRef} over config.json. */
+  resolveProfileRef?: (ref: string) => Promise<ResolvedProfileRef>
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   log?: (line: string) => void
@@ -709,19 +714,28 @@ export function createTurnRetryController(opts: {
     return same(rejected.join("; ") || "none listed")
   }
 
-  const configOf = (desc: SessionDescriptor): TurnRetryFallbackEffective => ({
+  /** The session's config. `keepSlot` keeps a slot-started session's access
+   *  as its `slot:<name>` ref (the BASE a fallback overlays, resolved late);
+   *  without it the access is the real profile the session bills now. */
+  const configOf = (desc: SessionDescriptor, keepSlot = false): TurnRetryFallbackEffective => ({
     ...(desc.model !== undefined ? { model: desc.model } : {}),
     ...((desc.harness ?? desc.adapterSlug) !== undefined
       ? { harness: desc.harness ?? desc.adapterSlug }
       : {}),
-    ...(desc.accessProfile?.profileRef !== undefined
-      ? { accessProfileRef: desc.accessProfile.profileRef }
-      : {}),
+    ...(keepSlot && desc.accessSlot !== undefined && desc.accessProfile?.profileRef !== undefined
+      ? { accessProfileRef: slotRef(desc.accessSlot) }
+      : desc.accessProfile?.profileRef !== undefined
+        ? { accessProfileRef: desc.accessProfile.profileRef }
+        : {}),
     ...(desc.route?.gateway !== undefined ? { routeGateway: desc.route.gateway } : {}),
   })
 
+  // `fallbackBase` freezes the starting config, slot refs included: the slot
+  // is resolved when the fallback fires (see `walkFallback`), not here.
   const baseConfigOf = (desc: SessionDescriptor): TurnRetryFallbackEffective =>
-    desc.fallbackBase ? { ...desc.fallbackBase } : configOf(desc)
+    desc.fallbackBase ? { ...desc.fallbackBase } : configOf(desc, true)
+
+  const resolveSlot = opts.resolveProfileRef ?? ((ref: string) => resolveProfileRef(ref))
 
   /** Merge an overlay over the BASE config (never over the previous step). */
   const mergeOverlay = (
@@ -838,7 +852,24 @@ export function createTurnRetryController(opts: {
     const rejected: string[] = []
     for (let step = start; step < chain.length; step++) {
       const overlay = chain[step]!
-      const target = mergeOverlay(base, overlay)
+      // `requested` may carry a `slot:<name>` access (from the overlay or the
+      // frozen base); `target` is the same config with the slot resolved NOW,
+      // against the current `accountSlots`. Eligibility and the "did anything
+      // change" test read `target`; the restart/handoff is handed the slot
+      // ref so the successor records its `accessSlot`.
+      const requested = mergeOverlay(base, overlay)
+      let target = requested
+      if (isSlotRef(requested.accessProfileRef)) {
+        try {
+          target = {
+            ...requested,
+            accessProfileRef: (await resolveSlot(requested.accessProfileRef)).profileRef,
+          }
+        } catch (err) {
+          rejected.push(`fallback[${step}]: ${err instanceof Error ? err.message : String(err)}`)
+          continue
+        }
+      }
       const why = await fallbackRejection(desc, target)
       if (why) {
         rejected.push(`fallback[${step}]: ${why}`)
@@ -867,8 +898,8 @@ export function createTurnRetryController(opts: {
           targetDesc = await opts.handoffSession(desc, {
             harness: target.harness!,
             ...(target.model !== undefined ? { model: target.model } : {}),
-            ...(target.accessProfileRef !== undefined
-              ? { access: { profileRef: target.accessProfileRef } }
+            ...(requested.accessProfileRef !== undefined
+              ? { access: { profileRef: requested.accessProfileRef } }
               : {}),
           })
         } else if (accessChanged) {
@@ -879,7 +910,7 @@ export function createTurnRetryController(opts: {
           transition = "restart"
           targetDesc = await opts.restartSession(desc, {
             ...(modelChanged ? { model: target.model } : {}),
-            access: { profileRef: target.accessProfileRef! },
+            access: { profileRef: requested.accessProfileRef! },
           })
         } else if (registry.setModel) {
           const res = await registry.setModel(id, target.model!)

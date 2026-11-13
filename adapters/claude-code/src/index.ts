@@ -390,6 +390,21 @@ export const claudeCode: AgentCliHandle = defineHarness({
         "'max' and 'ultracode' are session-only. Omit to keep the model's own default.",
     },
     {
+      id: "mcp_timeout",
+      // MCP_TIMEOUT is the claude binary's startup connection timeout for MCP
+      // servers (default 30000 ms). A stdio server launched via tsx can cold
+      // start past that under load, and claude then drops it for the whole
+      // session, so callers can raise it per spawn.
+      type: "integer" as const,
+      min: 1,
+      description:
+        "MCP server startup connection timeout in milliseconds, via MCP_TIMEOUT " +
+        "in the claude process env. Raise it when a stdio MCP server cold starts " +
+        "slowly (claude drops a server that misses it for the whole session). " +
+        "Omit to keep Claude Code's default (30000).",
+      env: { MCP_TIMEOUT: "{value}" },
+    },
+    {
       id: "max_turns",
       type: "integer" as const,
       min: 1,
