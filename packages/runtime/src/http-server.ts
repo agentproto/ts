@@ -1529,6 +1529,11 @@ export interface RuntimeHttpServerOptions {
    *  Empty/absent ⇒ approval links are off: `GET /approvals/:id` and
    *  `POST /approvals/:id/decision/telegram` refuse every link token. */
   approvalsHumanTelegramIds?: readonly string[]
+  /** The folder an approval's files are relative to, for
+   *  `GET /approvals/:id/attachments[/:name]` (same resolver as the Telegram bridge). */
+  approvalsAttachmentDir?: (
+    record: import("./approvals/types.js").ApprovalRecord,
+  ) => string | undefined | Promise<string | undefined>
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -5805,6 +5810,7 @@ export async function startHttpServer(
               : {}),
             ...(approvalLink ? { link: approvalLink } : {}),
             humanTelegramIds: opts.approvalsHumanTelegramIds ?? [],
+            ...(opts.approvalsAttachmentDir ? { attachmentDir: opts.approvalsAttachmentDir } : {}),
           })
           if (handled) return
         }
