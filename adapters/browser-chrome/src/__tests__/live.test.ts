@@ -504,3 +504,34 @@ describe("chrome-live: screencast restart-after-stop", () => {
     await instance.stop()
   })
 })
+
+describe("chrome-live: screencast buffer", () => {
+  it("stamps frames with the CDP capture timestamp and bounds the buffer by bytes", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, { log: () => undefined })
+    const started = await instance.screencastStart({ everyNthFrame: 1 })
+    const cdpSession = `session-${started.targetId}`
+    f.emitScreencastFrame(cdpSession, { data: "AAAA", sessionId: "frame-0", timestamp: 1700000000.5 })
+    // 11 frames of ~6 MB decoded each (~66 MB) exceed the 64 MB byte cap.
+    const big = "A".repeat(8 * 1024 * 1024)
+    for (let i = 1; i <= 11; i++) f.emitScreencastFrame(cdpSession, { data: big, sessionId: `frame-${i}` })
+    await until(() => f.acknowledgments.length >= 12)
+    const stopped = await instance.screencastStop()
+    expect(stopped.total).toBe(12)
+    expect(stopped.frames[0]?.index).toBeGreaterThan(0) // oldest frames were dropped
+    expect(stopped.frames.length).toBeLessThan(12)
+    expect(stopped.frames.length).toBeGreaterThanOrEqual(2)
+    await instance.stop()
+  })
+
+  it("uses the CDP frame timestamp (epoch seconds) as timestampMs", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, { log: () => undefined })
+    const started = await instance.screencastStart({ everyNthFrame: 1 })
+    f.emitScreencastFrame(`session-${started.targetId}`, { data: "AAAA", sessionId: "frame-0", timestamp: 1700000000.5 })
+    await until(() => f.acknowledgments.length >= 1)
+    const stopped = await instance.screencastStop()
+    expect(stopped.frames[0]?.timestampMs).toBe(1700000000500)
+    await instance.stop()
+  })
+})

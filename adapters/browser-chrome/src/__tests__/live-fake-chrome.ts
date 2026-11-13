@@ -60,7 +60,7 @@ export interface FakeChrome {
   /** Emit a Page.screencastFrame event into an open flat session (test hook). */
   emitScreencastFrame(
     cdpSessionId: string,
-    frame: { data: string; sessionId?: string; deviceWidth?: number; deviceHeight?: number },
+    frame: { data: string; sessionId?: string; timestamp?: number; deviceWidth?: number; deviceHeight?: number },
   ): void
   /** Whether Page.startScreencast (without a following stop) was seen for this CDP session. */
   screencastActive(sessionId: string): boolean
@@ -127,8 +127,14 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
               // Real Chrome puts a frame identifier in params.sessionId; the
               // ack echoes it back (this is NOT the flat session's id).
               sessionId: frame.sessionId ?? "frame-1",
-              ...(frame.deviceWidth !== undefined || frame.deviceHeight !== undefined
-                ? { metadata: { deviceWidth: frame.deviceWidth ?? 0, deviceHeight: frame.deviceHeight ?? 0 } }
+              ...(frame.deviceWidth !== undefined || frame.deviceHeight !== undefined || frame.timestamp !== undefined
+                ? {
+                    metadata: {
+                      deviceWidth: frame.deviceWidth ?? 0,
+                      deviceHeight: frame.deviceHeight ?? 0,
+                      ...(frame.timestamp !== undefined ? { timestamp: frame.timestamp } : {}),
+                    },
+                  }
                 : {}),
             },
           })
