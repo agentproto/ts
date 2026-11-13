@@ -13,8 +13,9 @@
  *     recording),
  *     plus the three screencast spellings (and only those) of the browser
  *     session named by a `browserSessionId` claim (kept for chrome-live ids,
- *     a retired path), plus the two approval routes (`GET /approvals/:id`,
- *     `POST /approvals/:id/decision/telegram`, `appLinkApprovalRequest`),
+ *     a retired path), plus the approval routes (`GET /approvals/:id`,
+ *     `POST /approvals/:id/decision/telegram`, and the files pair
+ *     `GET /approvals/:id/attachments[/:name]`, `appLinkApprovalRequest`),
  *     whose handler (`approvals/http.ts`) then enforces the `approvalId`
  *     claim and the owner-only `approvals.humanTelegramIds` list;
  *   - the same tool-call route's `guardBrowserOrigin`/`authorize` pair,
@@ -111,14 +112,18 @@ export function appLinkSessionReadAuth(
   return undefined
 }
 
-/** The two approval routes a link can reach: read one approval, decide it
- *  through the `telegram` channel. Nothing else under `/approvals` (list,
+/** The approval routes a link can reach: read one approval, decide it
+ *  through the `telegram` channel, read its files (the third constant below).
+ *  Nothing else under `/approvals` (list,
  *  create, wait, consume, the `web_click` decide, another method). */
 const APPROVAL_READ_RE = /^\/approvals\/([^/]+)$/
 const APPROVAL_DECIDE_RE = /^\/approvals\/([^/]+)\/decision\/telegram$/
+/** The approval's files: the list and one file (`approvals/http.ts`). `files`
+ *  is a third link action, read only, same refusals as `read`. */
+const APPROVAL_FILES_RE = /^\/approvals\/([^/]+)\/attachments(?:\/[^/]+)?$/
 
 export interface AppLinkApprovalRequest {
-  action: "read" | "decide"
+  action: "read" | "decide" | "files"
   /** The decoded `:id` of the route, which is what the handler acts on. */
   approvalId: string
   auth: AppLinkSessionAuth
@@ -144,8 +149,13 @@ export function appLinkApprovalRequest(
   method: string,
   keyPath?: string,
 ): AppLinkApprovalRequest | undefined {
+  const files = method === "GET" ? APPROVAL_FILES_RE.exec(path) : null
   const match =
-    method === "GET" ? APPROVAL_READ_RE.exec(path) : method === "POST" ? APPROVAL_DECIDE_RE.exec(path) : null
+    method === "GET"
+      ? (APPROVAL_READ_RE.exec(path) ?? files)
+      : method === "POST"
+        ? APPROVAL_DECIDE_RE.exec(path)
+        : null
   if (!match?.[1]) return undefined
   const memo = approvalRequestMemo.get(req)
   if (memo !== undefined) return memo ?? undefined
@@ -158,7 +168,7 @@ export function appLinkApprovalRequest(
   }
   const auth = resolveSessionAuth(req, keyPath)
   const result: AppLinkApprovalRequest | null = auth
-    ? { action: method === "GET" ? "read" : "decide", approvalId, auth }
+    ? { action: files ? "files" : method === "GET" ? "read" : "decide", approvalId, auth }
     : null
   approvalRequestMemo.set(req, result)
   return result ?? undefined

@@ -103,7 +103,7 @@ function isSafeRelative(name: string): boolean {
   return !segments.includes("..") && segments.some(s => s !== "" && s !== ".")
 }
 
-function isInside(realRoot: string, realTarget: string): boolean {
+export function isInside(realRoot: string, realTarget: string): boolean {
   return realTarget.startsWith(realRoot.endsWith(sep) ? realRoot : `${realRoot}${sep}`)
 }
 

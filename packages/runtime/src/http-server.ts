@@ -1529,6 +1529,11 @@ export interface RuntimeHttpServerOptions {
    *  Empty/absent ⇒ approval links are off: `GET /approvals/:id` and
    *  `POST /approvals/:id/decision/telegram` refuse every link token. */
   approvalsHumanTelegramIds?: readonly string[]
+  /** The folder an approval's files are relative to, for
+   *  `GET /approvals/:id/attachments[/:name]` (same resolver as the Telegram bridge). */
+  approvalsAttachmentDir?: (
+    record: import("./approvals/types.js").ApprovalRecord,
+  ) => string | undefined | Promise<string | undefined>
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -5771,7 +5776,8 @@ export async function startHttpServer(
         // Approvals routes — HTTP twins over the approvals engine
         // (approvals/engine.ts): POST /approvals, GET /approvals?status=,
         // GET /approvals/:id, GET /approvals/:id/wait, POST
-        // /approvals/:id/consume, plus two decide routes: web_click
+        // /approvals/:id/consume, GET /approvals/:id/attachments and
+        // GET /approvals/:id/attachments/:name (an approval's files), plus two decide routes: web_click
         // (POST /approvals/:id/decision) and telegram
         // (POST /approvals/:id/decision/telegram). HTTP callers are
         // OPERATOR context, same split as /tasks and /policies. Neither
@@ -5782,8 +5788,8 @@ export async function startHttpServer(
         // gates would reject an origin that's correctly listed in one but
         // not the other; telegram has no Origin at all (a webhook callback
         // isn't a browser) and is gated solely by `approvalsTelegramBotSecret`.
-        // An approval link (a link-session token on `GET /approvals/:id` or
-        // `POST /approvals/:id/decision/telegram`, `app-link-gate.ts`) is
+        // An approval link (a link-session token on `GET /approvals/:id`, its
+        // attachments pair, or `POST /approvals/:id/decision/telegram`, `app-link-gate.ts`) is
         // served in link mode by the handler, never as the operator; like
         // `link-auth`, the page the link opened may call it same-origin.
         if (
@@ -5805,6 +5811,7 @@ export async function startHttpServer(
               : {}),
             ...(approvalLink ? { link: approvalLink } : {}),
             humanTelegramIds: opts.approvalsHumanTelegramIds ?? [],
+            ...(opts.approvalsAttachmentDir ? { attachmentDir: opts.approvalsAttachmentDir } : {}),
           })
           if (handled) return
         }
