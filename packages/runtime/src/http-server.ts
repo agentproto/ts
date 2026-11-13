@@ -5894,30 +5894,9 @@ export async function startHttpServer(
         if (opts.cronScheduler && path.startsWith("/cron")) {
           // Non-GET is a mutating action (create / update / delete / fire a
           // job that can spawn agents or run commands): same gate as the
-          // mutating /sessions/* routes. A foreign browser Origin is refused
-          // unless it carries the bearer, then the per-boot token (or an
-          // allowlisted Origin) is required, and a body-carrying write must
-          // be JSON so a cross-origin `text/plain` "simple" request, which
-          // needs no preflight, cannot reach the handler. GET stays open,
-          // like the other read-only routes.
-          if ((req.method ?? "GET") !== "GET") {
-            if (guardBrowserOrigin(req, res)) return
-            const gate = checkSessionsToken(req)
-            if (gate !== "ok") {
-              rejectUnauthorizedSession(req, res, gate)
-              return
-            }
-            if ((req.method === "POST" || req.method === "PATCH") && !isJsonContentType(req)) {
-              res.writeHead(415, { "content-type": "application/json" })
-              res.end(
-                JSON.stringify({
-                  error: "unsupported_media_type",
-                  message: "Writes to /cron must send `content-type: application/json`.",
-                }),
-              )
-              return
-            }
-          }
+          // mutating /sessions/* routes. GET stays open, like the other
+          // read-only routes.
+          if (refuseUnlessAuthorizedWrite(req, res, "/cron")) return
           const handled = await handleCron(req, res, path, opts.cronScheduler)
           if (handled) return
         }
