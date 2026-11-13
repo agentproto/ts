@@ -54,7 +54,7 @@ import {
   type ApprovalWakeTarget,
 } from "./types.js"
 import type { ApprovalsEngine } from "./engine.js"
-import { readAttachmentNames, resolveAttachments } from "./telegram-attachments.js"
+import { isInside, readAttachmentNames, resolveAttachments } from "./telegram-attachments.js"
 
 export interface ApprovalsHttpAuth {
   /** The daemon's per-boot bearer token. Absent ⇒ the `web_click` decision
@@ -124,6 +124,8 @@ async function listApprovalFiles(
 ): Promise<{ files: ListedFile[]; problems: FileProblem[] }> {
   const { names, problems: nameProblems } = readAttachmentNames(record.preview)
   const files: ListedFile[] = []
+  // An entry that is not a file name stays `missing` on purpose: the contract's
+  // six reason codes are frozen and the page already labels this one.
   const problems: FileProblem[] = nameProblems.map(p => ({
     name: p.name,
     reason: p.reason.startsWith("over the limit") ? "too-many" : "missing",
@@ -144,7 +146,13 @@ async function listApprovalFiles(
     const why = bad[0]?.reason ?? ""
     if (why.startsWith("empty file") || why.startsWith("too large")) {
       // `resolveAttachments` already proved the real path is inside the folder.
+      // Checked again here, against the real folder, before any stat or stream.
+      const root = await realpath(dir).catch(() => undefined)
       const real = await realpath(join(dir, name)).catch(() => undefined)
+      if (root && real && !isInside(root, real)) {
+        problems.push({ name, reason: "outside-folder" })
+        continue
+      }
       const info = real ? await stat(real).catch(() => undefined) : undefined
       if (real && info) {
         if (info.size > MAX_FILE_BYTES) problems.push({ name, reason: "too-large", size: info.size })

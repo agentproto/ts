@@ -13,8 +13,9 @@
  *     recording),
  *     plus the three screencast spellings (and only those) of the browser
  *     session named by a `browserSessionId` claim (kept for chrome-live ids,
- *     a retired path), plus the two approval routes (`GET /approvals/:id`,
- *     `POST /approvals/:id/decision/telegram`, `appLinkApprovalRequest`),
+ *     a retired path), plus the approval routes (`GET /approvals/:id`,
+ *     `POST /approvals/:id/decision/telegram`, and the files pair
+ *     `GET /approvals/:id/attachments[/:name]`, `appLinkApprovalRequest`),
  *     whose handler (`approvals/http.ts`) then enforces the `approvalId`
  *     claim and the owner-only `approvals.humanTelegramIds` list;
  *   - the same tool-call route's `guardBrowserOrigin`/`authorize` pair,
@@ -111,8 +112,9 @@ export function appLinkSessionReadAuth(
   return undefined
 }
 
-/** The two approval routes a link can reach: read one approval, decide it
- *  through the `telegram` channel. Nothing else under `/approvals` (list,
+/** The approval routes a link can reach: read one approval, decide it
+ *  through the `telegram` channel, read its files (the third constant below).
+ *  Nothing else under `/approvals` (list,
  *  create, wait, consume, the `web_click` decide, another method). */
 const APPROVAL_READ_RE = /^\/approvals\/([^/]+)$/
 const APPROVAL_DECIDE_RE = /^\/approvals\/([^/]+)\/decision\/telegram$/

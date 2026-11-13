@@ -196,6 +196,27 @@ describe("approval files: the list", () => {
   })
 })
 
+describe("approval files: the fallback past resolveAttachments' own limits", () => {
+  it("a 60 MB file and an empty file still resolve through the contained fallback", async () => {
+    await withServer(async base => {
+      await writeFile(join(data, "dossier", "huge.bin"), "")
+      await truncate(join(data, "dossier", "huge.bin"), 60 * 1024 * 1024)
+      await writeFile(join(data, "dossier", "empty.txt"), "")
+      const a = open({ dossier: "dossier", attachments: ["huge.bin", "empty.txt"] })
+      const body = (await (await fetch(`${base}/approvals/${a.id}/attachments`, { headers: operator })).json()) as {
+        attachments: Array<{ name: string; size: number }>
+        problems: unknown[]
+      }
+      expect(body.attachments.map(x => [x.name, x.size])).toEqual([["empty.txt", 0]])
+      expect(body.problems).toEqual([{ name: "huge.bin", reason: "too-large", size: 60 * 1024 * 1024 }])
+      expect((await file(base, a.id, "huge.bin")).status).toBe(413)
+      const empty = await file(base, a.id, "empty.txt")
+      expect(empty.status).toBe(200)
+      expect(await empty.text()).toBe("")
+    })
+  })
+})
+
 describe("approval files: one file", () => {
   it("serves the type table with the hardening headers", async () => {
     await withServer(async base => {
