@@ -80,12 +80,13 @@ export function isKnownSessionEndReason(reason: string | undefined): reason is S
 
 // Deliberately narrow: matches Claude Code's own wording for a
 // subscription/usage cap ("You've hit your session limit …" / "…usage
-// limit …") rather than any error mentioning "limit" in passing (a rate
+// limit …" / "…weekly limit …") rather than any error mentioning "limit" in passing (a rate
 // limit on one tool call, a context-window limit, etc.) — those are
 // ordinary turn errors, not "this session is dead until the cap resets".
 // hosted plans (e.g. opencode Go) phrase the same cap as "Go usage limit exceeded"
 // (AI_APICallError on its stderr stream).
-const PROVIDER_LIMIT_ERROR_RE = /\bhit your (?:session|usage) limit\b|\busage limit (?:exceeded|reached)\b/i
+const PROVIDER_LIMIT_ERROR_RE =
+  /\bhit your (?:session|usage|weekly(?: usage)?) limit\b|\b(?:weekly )?usage limit (?:exceeded|reached)\b|\bweekly limit (?:exceeded|reached)\b/i
 
 /**
  * Classify a driver-reported error message as a provider/subscription

@@ -52,6 +52,17 @@ describe("isProviderLimitError", () => {
     expect(isProviderLimitError("Looks like you HIT YOUR USAGE LIMIT for today")).toBe(true)
   })
 
+  it("matches the weekly subscription limit wording", () => {
+    expect(isProviderLimitError("Internal error: You've hit your weekly limit · resets 12pm (Europe/Paris)")).toBe(true)
+    expect(isProviderLimitError("You've hit your weekly usage limit")).toBe(true)
+    expect(isProviderLimitError("Weekly limit reached")).toBe(true)
+    expect(isProviderLimitError("weekly usage limit exceeded")).toBe(true)
+  })
+
+  it("does not match an ordinary 429 rate limit", () => {
+    expect(isProviderLimitError("429 Too Many Requests: rate limit exceeded")).toBe(false)
+  })
+
   it("does not match an ordinary tool/turn error", () => {
     expect(isProviderLimitError("ENOENT: no such file or directory")).toBe(false)
   })
