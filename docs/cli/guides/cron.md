@@ -81,21 +81,40 @@ agentproto cron remove <id>
 
 (`delete` and `rm` are aliases.)
 
-## Routines (AIP-41): shipped, not activated
+## Routines (AIP-41): compiled to cron jobs
 
-`ROUTINE.md` files ([AIP-41](https://agentproto.sh/docs)) exist as a second
-scheduling surface: five ship inside `packages/` (session-steward,
-repo-maintenance, worktree-gc, and friends). None are activated in practice:
-every shipped and workspace routine is `enabled: false`, and there is no
-`agentproto routine` verb (triggering is the `routine_trigger` MCP tool).
-Status: Experimental. Cron is the scheduling primitive to use today.
+`ROUTINE.md` files ([AIP-41](https://agentproto.sh/docs)) are a declarative way
+to write a cron job. At daemon boot, the routine registrar scans
+`<workspace>/.routines/<id>/ROUTINE.md` and, for every routine that is
+`enabled: true` with a cron schedule, registers (or updates) an ordinary cron
+job labelled `routine:<id>`. From there it is a normal job: it shows in
+`cron list`, records runs, and can be paused with `cron_update`. A routine with
+`enabled: false` is not registered. The routines shipped inside `packages/`
+(session-steward, repo-maintenance, worktree-gc, and friends) ship with
+`enabled: false`; a workspace turns one on by providing its own enabled
+`ROUTINE.md`.
+
+There is no `agentproto routine` verb. The `routine_list`, `routine_reconcile`
+and `routine_trigger` MCP tools cover listing, re-scanning and firing one now
+(a trigger bypasses both the schedule and `enabled`).
+
+## Pausing and resuming
+
+There is no CLI verb for it, but the `cron_update` MCP tool pauses and resumes
+any job (routine-backed or not): `active: false` pauses, `active: true`
+resumes. A resume also clears the failure counter and any `pausedReason`.
+
+A job that keeps failing pauses itself. After 2 consecutive non-productive runs
+(`maxConsecutiveFailures` on the job overrides the default) the scheduler sets
+`active` to false, records a `pausedReason`, and emits `cron:unhealthy`. Fix the
+cause, then resume it with `cron_update`.
 
 ## What it doesn't do
 
 - No backfill: fires missed while the daemon was down are lost; the job
   resumes from "now" after a restart.
-- No pause/resume verb: to stop a schedule temporarily, `cron remove` the job
-  and re-add it later; `--once` covers the one-shot case.
+- No pause/resume CLI verb: use the `cron_update` MCP tool (`active`), see
+  [Pausing and resuming](#pausing-and-resuming), or `cron remove` and re-add.
 - No per-run log page: `cron list` shows the last run and its result. For an
   agent-kind job, the turn it spawned is an ordinary session: inspect it with
   [`sessions`](../verbs/sessions.md) like any other.

@@ -167,7 +167,7 @@ The repo is organised into five layers, each a sibling subtree under
 
 `@agentproto/runtime` is the long-running gateway that turns a workspace into
 a live AIP runtime: session management, an MCP server, an HTTP transport, the
-HEARTBEAT autonomy loop, and append-only conversation persistence.
+HEARTBEAT autonomy loop (deprecated: use cron or routines), and append-only conversation persistence.
 
 ```
 packages/runtime/    @agentproto/runtime     Session lifecycle, MCP tools, HTTP API, supervisor / orchestrator
