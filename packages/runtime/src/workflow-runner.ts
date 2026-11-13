@@ -35,7 +35,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from "node:path"
 import { existsSync, cpSync, rmSync } from "node:fs"
-import { buildAgentStep, runWorkflow, validateWorkflowInput, validateAgainstJsonSchema, StepOutcomeError, MissingArtifactError } from "@agentproto/workflow-runtime"
+import { buildAgentStep, runWorkflow, validateWorkflowInput, applyWorkflowInputDefaults, validateAgainstJsonSchema, StepOutcomeError, MissingArtifactError } from "@agentproto/workflow-runtime"
 import type { AgentSandboxRef, ApprovalDecision, ArtifactEntry, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -2765,7 +2765,10 @@ export function createWorkflowRunner(opts: {
       // BEFORE any step runs — never a `compileWorkflow` call, never an
       // `executeRunWorkflow` dispatch, so zero steps execute and zero
       // sessions spawn on a rejected run.
-      const validation = validateWorkflowInput(handle.inputs, args.input)
+      // Declared `default`s fill the keys the caller left out, so the prompts'
+      // `{{input.x}}` resolve instead of staying literal placeholders.
+      const input = applyWorkflowInputDefaults(handle.inputs, args.input)
+      const validation = validateWorkflowInput(handle.inputs, input)
       if (!validation.valid) {
         const runId = `wfrun_${randomUUID()}`
         const now = new Date().toISOString()
@@ -2930,7 +2933,7 @@ export function createWorkflowRunner(opts: {
         sessionEvents,
         cache,
         effectiveCacheKey,
-        args.input,
+        input,
         persist,
         opts.appRegistry,
         eventLog,

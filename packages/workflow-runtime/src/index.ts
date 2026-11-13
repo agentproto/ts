@@ -38,6 +38,7 @@ export { compileWorkflowManifest } from "./load-workflow.js"
 export {
   normalizeWorkflowInputsSchema,
   validateWorkflowInput,
+  applyWorkflowInputDefaults,
   isCompilableJsonSchema,
   validateAgainstJsonSchema,
   type WorkflowInputValidation,
