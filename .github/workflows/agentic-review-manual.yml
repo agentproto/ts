@@ -72,6 +72,7 @@ jobs:
           echo "model=$(printf '%s' "$CONFIG" | jq -r .reviewerModel)" >> "$GITHUB_OUTPUT"
 
       - name: Run the normal PR workflow with MiMo free
+        id: manual-review
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,8 +82,22 @@ jobs:
           # reviewer-agentproto step in ci.yml.
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
           AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Credential ladder, same as the reviewer lanes in ci.yml: a key whose
+          # quota or credit is exhausted moves the run to the next key, then to
+          # Go flash on a Go key (run-with-rotation.mjs).
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: ${{ steps.review.outputs.adapter }}
+          credential-ladder: |
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_DEFAULT opencode
+            OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           auth-mode: ${{ steps.review.outputs.auth-mode }}
           # Credential chosen by the resolved model's route, same rule as ci.yml.
           # NB this dispatch path does NOT run the metered-model guard (it is an

@@ -392,7 +392,7 @@ jobs:
       # `pnpm test`-only gate would miss these files entirely (they live outside
       # packages/**/adapters/**).
       - name: Run pr-review entry tests
-        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/agentproto-workflows/lib/sandbox-agent.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs scripts/lib/tools.test.mjs scripts/workflow-env.test.mjs
+        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/agentproto-workflows/lib/sandbox-agent.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs .github/actions/agentproto-run/credential-rotation.test.mjs scripts/lib/tools.test.mjs scripts/workflow-env.test.mjs
 
       # Guards the CI artifact ledger — the pure record/marker/select helpers
       # the delivery helper, the agentproto-run driver, and both stamp scripts
@@ -1186,6 +1186,10 @@ jobs:
           # Owner-controlled model override (repo VARIABLE): wins over the
           # config's `reviewerModel` and goes through the same free/metered
           # guard below, so it cannot route reviews to an unsanctioned paid id.
+          # It reaches the workflow through the lane's `model` input: the
+          # credential ladder writes the rung model into the reviewConfig the
+          # workflow's `model` selector reads, and only keys funding its route
+          # run it (a Go id skips the Zen keys).
           AGENT_REVIEW_MODEL: ${{ vars.AGENT_REVIEW_MODEL }}
         run: |
           CONFIG="$REVIEW_CONFIG"
@@ -1366,8 +1370,28 @@ jobs:
           # `e2b,computer`): reorders reviewerPlacement.ladder without a PR.
           # reviewerPlacementFor reads it; unset = the config order.
           AGENT_REVIEW_PLACEMENT: ${{ vars.AGENT_REVIEW_PLACEMENT }}
+          # Credential ladder (`credential-ladder` below): every key this lane
+          # may rotate through, each under its own name. run-with-rotation.mjs
+          # removes them all from the daemon env and hands the daemon only the
+          # active rung's key, so a key whose quota or credit is exhausted moves
+          # the review to the next key, then to Go flash on a Go key.
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
+          # Zen keys fund the lane's free model; Go keys run Go flash (a metered
+          # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
+          # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          credential-ladder: |
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_DEFAULT opencode
+            OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           # The key authenticates OpenCode. It is selected by the resolved
           # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a
           # Zen key). The resolver step above fails closed unless the model is
@@ -1804,9 +1828,29 @@ jobs:
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
           AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Credential ladder (`credential-ladder` below): every key this lane
+          # may rotate through, each under its own name. run-with-rotation.mjs
+          # removes them all from the daemon env and hands the daemon only the
+          # active rung's key, so a key whose quota or credit is exhausted moves
+          # the review to the next key, then to Go flash on a Go key.
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: opencode
           auth-mode: api-key
+          # Zen keys fund the lane's free model; Go keys run Go flash (a metered
+          # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
+          # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          credential-ladder: |
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_DEFAULT opencode
+            OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
@@ -2843,9 +2887,19 @@ jobs:
           # session's gh CLI can read the PR and its reviews.
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           GH_TOKEN: ${{ steps.setup.outputs.token }}
+          # Zen-only credential ladder: a key whose quota or credit is
+          # exhausted moves the fixer to the next Zen key. No Go rung: the
+          # fixer never uses a Go subscription key.
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
         with:
           adapter: opencode
           auth-mode: api-key
+          credential-ladder: |
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_DEFAULT opencode
           # Free Zen key. The fixer never uses a Go subscription key.
           api-key: ${{ secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key: ${{ secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}

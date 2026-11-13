@@ -25,11 +25,14 @@
  *   PORT              daemon HTTP port                             default '18790'
  *   ACTION_PATH       dir holding this script's own node_modules
  *                     (where `agentproto` was npm-installed)        default this dir
+ *   DRIVER_RESULT_FILE where to write `{ exitCode, status, errorTexts,
+ *                     artifacts, stepsDone }` for
+ *                     run-with-rotation.mjs (credential rotation)   optional
  */
 
 import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
-import { appendFile, mkdir, readFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -40,6 +43,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 // artifact-ledger helpers are on disk two levels up from `.github/actions/*/`.
 import { parseArtifactMarkers } from "../../../scripts/lib/artifact-ledger.mjs"
 import { detectAdapterCrash } from "./crash-signals.mjs"
+import { errorLinesFromText } from "./credential-rotation.mjs"
 import { describeRunProgress } from "../../../scripts/lib/workflow-progress.mjs"
 import { buildReviewSummary } from "../../../scripts/lib/review-run-summary.mjs"
 
@@ -75,6 +79,13 @@ const port = Number(process.env.PORT ?? "18790")
 const supervise = (process.env.SUPERVISOR ?? "").trim() === "true"
 /** Set once the idle supervisor is spawned; retired on every exit path. */
 let supervisorToRetire
+// What this run's failure said, for run-with-rotation.mjs: the run and step
+// errors, each session's last turn error, and the adapter's `[error]` lines.
+// Read only through DRIVER_RESULT_FILE; never printed as a whole.
+// `stepsDone` and `artifacts` tell it whether the run already did something a
+// second run would repeat (a host review posted with `gh` leaves no artifact
+// marker, but its step is done).
+const failureEvidence = { errorTexts: [], artifacts: 0, stepsDone: 0 }
 
 let workflowInput
 try {
@@ -538,8 +549,11 @@ async function main() {
     for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
       if (typeof step?.sessionId === "string" && step.sessionId) sessionIds.add(step.sessionId)
       if (typeof step?.error === "string" && step.error) stepErrors.push(step.error)
+      if (step?.status === "done") failureEvidence.stepsDone += 1
     }
   }
+  if (typeof run.error === "string" && run.error) failureEvidence.errorTexts.push(run.error)
+  failureEvidence.errorTexts.push(...stepErrors)
   const SESSION_ID_RE = /sess_[A-Za-z0-9-]+/g
   for (const text of [run.error, ...stepErrors]) {
     for (const match of String(text ?? "").matchAll(SESSION_ID_RE)) sessionIds.add(match[0])
@@ -622,6 +636,9 @@ async function main() {
   for (const sid of [...sessionIds].slice(0, 8)) {
     const desc = listedSessions.find((s) => s?.id === sid)
     if (desc) {
+      for (const field of ["lastTurnErrorMessage", "lastError", "endedReason"]) {
+        if (typeof desc[field] === "string" && desc[field]) failureEvidence.errorTexts.push(desc[field])
+      }
       console.log(
         `driver: session ${sid} descriptor: status=${desc.status} adapter=${desc.adapterSlug ?? "?"} ` +
           `label=${desc.label ?? ""} remote=${desc.remote === true} sandboxId=${desc.sandboxId ?? ""}`,
@@ -670,6 +687,7 @@ async function main() {
         text = rawText
       }
       console.log(`driver: ---- agent_output ${sid} ----\n${text}\n---- end agent_output ${sid} ----`)
+      failureEvidence.errorTexts.push(...errorLinesFromText(text))
       if (text.trim().length > 0) sawAgentOutput = true
     } catch (err) {
       console.error(
@@ -700,6 +718,7 @@ async function main() {
       for (const rec of parseArtifactMarkers(harvestText, { sessionId: sid })) {
         if (artifacts.some((a) => JSON.stringify(a) === JSON.stringify(rec))) continue
         artifacts.push(rec)
+        failureEvidence.artifacts = artifacts.length
         console.log(`driver: harvested artifact ${rec.kind} id=${rec.id} from session ${sid}`)
       }
     } catch (err) {
@@ -723,6 +742,7 @@ async function main() {
         // megabytes, and the post-mortem needs the END of the conversation.
         const lines = transcript.split("\n")
         const tail = lines.slice(-200).join("\n")
+        failureEvidence.errorTexts.push(...errorLinesFromText(transcript))
         console.log(
           `driver: ---- agent_export ${sid} (last ${Math.min(lines.length, 200)}/${lines.length} lines) ----\n` +
             `${tail}\n---- end agent_export ${sid} ----`,
@@ -828,6 +848,8 @@ async function main() {
   console.log(`driver: provenance=${JSON.stringify(provenance)}`)
   await writeGithubOutput("artifacts", JSON.stringify(artifacts))
   console.log(`driver: artifacts=${JSON.stringify(artifacts)}`)
+  failureEvidence.status = finalStatus
+  failureEvidence.artifacts = artifacts.length
   return finalStatus === "done" ? 0 : 1
 }
 
@@ -836,6 +858,7 @@ try {
   exitCode = await main()
 } catch (err) {
   console.error(`driver: ${err instanceof Error ? err.message : String(err)}`)
+  failureEvidence.errorTexts.push(err instanceof Error ? err.message : String(err))
   exitCode = 1
 } finally {
   // Safety net: an early throw must not leave the idle supervisor behind.
@@ -855,5 +878,13 @@ try {
   // runner disappears — exiting right away would cut that short. Bounded; a
   // daemon with no join exits in well under a second.
   await waitForDaemonExit(35_000)
+  const resultFile = (process.env.DRIVER_RESULT_FILE ?? "").trim()
+  if (resultFile) {
+    try {
+      await writeFile(resultFile, JSON.stringify({ exitCode, ...failureEvidence }), "utf8")
+    } catch (err) {
+      console.error(`driver: could not write ${resultFile}: ${err.message}`)
+    }
+  }
 }
 process.exit(exitCode)
