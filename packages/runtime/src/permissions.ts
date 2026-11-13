@@ -179,8 +179,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
   },
   "cron.schedule": {
     routed: false,
-    enforcedAt: "/mcp auth only",
-    surfaces: ["cron_create", "cron_delete"],
+    enforcedAt:
+      "tool.invoke on /mcp: tool-deny-gate.ts withToolDenyGate refuses cron_* for a session whose AGENT manifest denies it (deny-only, through the tool.invoke row). The HTTP /cron write routes (POST, PATCH, DELETE, run) are not a tool.invoke: they require the sessions credential (per-boot token or allowlisted Origin, JSON body), which a session does not normally hold, and the job is created as the operator; GET /cron stays open",
+    surfaces: ["cron_create", "cron_update", "cron_delete", "POST /cron", "PATCH /cron/:id", "DELETE /cron/:id"],
   },
   "approval.decide": {
     routed: false,

@@ -207,6 +207,13 @@ describe("action vocabulary", () => {
       "auth.profile.use",
     ])
   })
+  it("cron.schedule is enforced as tool.invoke on /mcp, not left to /mcp auth", () => {
+    const info = PERMISSION_ACTION_INFO["cron.schedule"]
+    expect(info.enforcedAt).toContain("tool-deny-gate.ts")
+    expect(info.enforcedAt).toContain("tool.invoke")
+    expect(info.enforcedAt).not.toContain("/mcp auth only")
+    expect(info.surfaces).toEqual(expect.arrayContaining(["cron_create", "cron_update", "cron_delete"]))
+  })
   it("an unrouted action is never reported as authoritative", () => {
     for (const a of PERMISSION_ACTIONS) {
       if (PERMISSION_ACTION_INFO[a].routed) continue
