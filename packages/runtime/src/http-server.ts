@@ -5897,6 +5897,11 @@ export async function startHttpServer(
         // Cron routes — only registered when the gateway was built with
         // a CronScheduler. /cron, /cron/:id, /cron/:id/run.
         if (opts.cronScheduler && path.startsWith("/cron")) {
+          // Non-GET is a mutating action (create / update / delete / fire a
+          // job that can spawn agents or run commands): same gate as the
+          // mutating /sessions/* routes. GET stays open, like the other
+          // read-only routes.
+          if (refuseUnlessAuthorizedWrite(req, res, "/cron")) return
           const handled = await handleCron(req, res, path, opts.cronScheduler)
           if (handled) return
         }
@@ -13411,9 +13416,10 @@ async function handleCron(
         ...(b.notify !== undefined
           ? { notify: b.notify as import("./cron-scheduler.js").CronNotify }
           : {}),
-        // This route is operator/loopback-gated and carries no session
-        // identity, so the creator is always the operator. `agentproto cron
-        // add`, hooks and desktop create jobs here.
+        // This route is gated by the operator token (or an allowlisted
+        // Origin) and carries no session identity, so the creator is always
+        // the operator. `agentproto cron add` and other operator clients
+        // create jobs here.
         createdBy: { kind: "operator" },
       })
       json(201, job)
