@@ -543,7 +543,7 @@ const TS_DESCRIPTION_BLOCK = `"Runs the agentproto daemon inside an e2b Firecrac
 
 const PACKAGE_DESCRIPTION =
   `@agentproto/sandbox-e2b — e2b \`SandboxProvider\` for @agentproto/sandbox. ` +
-  `Boots the pinned \`${templates.stable.alias}\` e2b template (baked @agentproto/cli ${cli}), ` +
+  `Boots the pinned \`${templates.stable.alias}\` e2b template (with @agentproto/cli baked in), ` +
   `starts the agentproto daemon inside it, and exposes its MCP endpoint as a URL so any ` +
   `AgentSessionHost consumer (worktreeAgentWorkflow, worktree-agent CLI) can run a coding-agent step inside the sandbox.`
 

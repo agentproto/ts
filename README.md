@@ -1,72 +1,116 @@
 # agentproto/ts
 
-**Let your coding agents work without you watching.**
+**Open-source runtime that runs and supervises coding agents, locally or in
+cloud sandboxes.**
 
-agentproto runs Claude Code, Codex, Hermes, opencode, Mastra, and any other
-coding agent in the background, shows them all in one place, and checks each
-one's work — with your tests or a reviewer model — before anything is
-committed. No more babysitting terminal windows.
+agentproto is a local daemon plus a CLI. It starts coding agents such as Claude
+Code, Codex and opencode as background sessions, lists them in one place, and
+lets you attach a check (your tests, or a reviewer agent) that runs when an
+agent finishes a turn. If you like an operating-system analogy, it works like
+an OS layer for agents: session lifecycle, scheduling, permissions and tasks.
+It is not an operating system: no kernel, and no isolation unless you ask for
+a sandbox.
 
-- **Run them all the same way.** Start, message, watch, and stop any agent
-  with the same commands. Fifteen agents under one lifecycle today.
-- **Work checked before it lands.** Attach a check — your tests, or a stronger
-  model reviewing the change — and it runs each time the agent finishes.
-  Commits wait for the check and your OK, even after you close your laptop.
-- **Keep the tools you have.** It drives the agent CLIs you already use —
-  nothing to rewrite. Agents can even run and check other agents.
-- **And a full toolbox around them.** Author tools as files and serve them,
-  import any MCP server and hand it to any agent, open tunnels, drive
+- **Run agents the same way.** Start, message, watch, and stop agent sessions
+  with the same commands. Claude Code, Codex and opencode are the adapters we
+  use and test day to day; the other adapters (Hermes, Gemini, Grok CLI and
+  more) exist at varying maturity.
+- **Checked work, opt-in per session.** Attach a gate (a shell command such as
+  your test suite, or a judge agent) with `agentproto policy attach`. If the
+  gate fails the policy ends `blocked`, or, if you set `--on-fail-nudge` or
+  `--on-fail-max-retries`, the session is re-prompted (2 times by default)
+  before it is `blocked`. With `--then commit`, a green gate stages a commit that
+  waits for your explicit `policy ack --approve` (`requireHumanAck` defaults to
+  on). Nothing is gated unless you attach a policy.
+- **Locally or in cloud sandboxes you connect.** The daemon runs on your
+  machine, and the agent processes it starts run with your own user rights. If
+  the daemon or the machine stops, nothing runs, wakes or is checked. A
+  session can instead run in a sandbox box (`sandbox` option of `agent_start`,
+  providers such as e2b, with your own account). agentproto is not a hosted
+  service.
+- **Keep the tools you have.** It drives the agent CLIs you already use,
+  nothing to rewrite. Agents can also start and supervise other agents.
+- **And a toolbox around them.** Author tools as files and serve them, import
+  MCP servers and hand them to the agents it runs, open tunnels, drive
   browsers, schedule workflows and cron runs.
 
-The daemon is the flagship surface of something bigger: **agentproto is an
-open agentic framework** — the [AIP specs](https://agentproto.sh/docs) define
-every agent component (tools, skills, agents, knowledge, workflows, policies)
-as a plain file with a declared contract, and this repo is the TypeScript
-runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
-Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
-them — and lets agents read, write, and improve their own components.
+The daemon is the most mature surface of something bigger: **agentproto is an
+open set of file formats** (the [AIP specs](https://agentproto.sh/docs)) that
+describe agent components (tools, skills, agents, knowledge, workflows,
+policies) as plain files with a declared contract, and this repo is the
+TypeScript runtime that loads and runs them and projects them into hosts (CLI,
+HTTP, MCP, Mastra, Vercel AI SDK). Most of the specs beyond the daemon are
+early; see "What's live vs. roadmap" below.
 
-> **Status: 1.32.0.** APIs are stabilising; expect minor breaking changes
-> between releases.
+> **Status: 1.x, APIs stabilising.** Expect minor breaking changes between
+> releases.
 
 ## Quick start
 
-Or bootstrap from zero in one line:
+Install, daemon start and adapter install were tested on a clean HOME and npm
+prefix (macOS arm64, Node 24, `@agentproto/cli` from npm). The first session
+stopped at the missing credential (step 3), so steps 3 to 4 and the gate below
+follow the CLI's own error text and docs, not a full run with a model.
 
 ```bash
-# macOS / linux
-curl -fsSL https://raw.githubusercontent.com/agentproto/ts/main/scripts/bootstrap/install.sh | bash
-```
-
-```powershell
-# Windows 10/11 (PowerShell 5.1+)
-irm https://raw.githubusercontent.com/agentproto/ts/main/scripts/bootstrap/install.ps1 | iex
-```
-
-Manual path:
-
-```bash
+# 1. install the CLI and the adapter for the agent you want to drive
 npm i -g @agentproto/cli
-agentproto install claude-code   # auto-installs the adapter package too
-agentproto serve                 # start the daemon (foreground)
+agentproto install claude-code   # installs the adapter package and its ACP bridge
+
+# 2. start the daemon (foreground, http://127.0.0.1:18790 by default)
+agentproto serve
+```
+
+In a second terminal:
+
+```bash
+# 3. give the adapter a credential. A new install has none and the first
+#    session fails with `missing_auth_credential` until you do one of:
+claude setup-token                          # Claude subscription
+agentproto auth provider set anthropic <your-api-key>   # or an API key
+
+# 4. first session
 agentproto sessions start claude-code --cwd . --prompt "refactor the payments module"
 agentproto sessions --watch
 ```
 
-Then gate it: attach a policy to any session's turn-end and stage the commit
-behind a human ack. See [agentproto.sh](https://agentproto.sh) for the full
-pitch, or jump straight to [agentproto.sh/features](https://agentproto.sh/features)
-for the honest split below.
+Then gate it. A gate fires when the session's turn ends, so attach it
+before the turn ends, or send another prompt afterwards
+(`agentproto sessions prompt <id> --prompt "..."`); until then the policy
+stays `watching`. Gate commands run under a default-deny allowlist, so first
+allow them in `<workspace>/.agentproto/allowed-commands.json`, where
+`<workspace>` is the directory you started `agentproto serve` in (without it
+the policy goes straight to `blocked` with `not in allowlist`):
+
+```json
+{ "version": 1, "commands": ["pnpm", "git"] }
+```
+
+`--then commit` requires `--commit-path` and `--commit-message`; `<id>` is the
+session id shown by `agentproto sessions`:
+
+```bash
+agentproto policy attach --session <id> --then commit \
+  --commit-path src --commit-message "refactor payments" \
+  -- pnpm test
+agentproto policy status <policyId>
+agentproto policy ack <policyId> --approve    # or --reject
+```
+
+See [docs/cli/guides/gates.md](./docs/cli/guides/gates.md) for gates in depth
+and [agentproto.sh](https://agentproto.sh) for the pitch. A one-line bootstrap
+script also exists (`scripts/bootstrap/install.sh` on macOS/Linux,
+`install.ps1` on Windows).
 
 ## What's live vs. roadmap
 
 This repo ships two very different things under one name:
 
-- **Tier 1 — live, verified hands-on:** the daemon, the CLI, fifteen agent
-  adapters (Claude Code, Claude SDK, Codex, Gemini, Grok CLI, Hermes, jcode, opencode, Mastra Code +
-  in-process, Mastra Agent, OpenClaw, browser-as-agent, Antigravity, pi), durable policy gates,
-  nested orchestration with role gating, fan-in monitoring, workflows/cron,
-  and an MCP surface (~175 tools) on the daemon itself.
+- **Tier 1, live:** the daemon, the CLI, durable policy gates, nested
+  orchestration with role gating, fan-in monitoring, workflows/cron, and an MCP
+  surface on the daemon itself. Adapters: Claude Code, Codex and opencode are
+  the ones used and tested hands-on; the other adapters in `adapters/` are of
+  varying maturity.
 - **Tier 2 — the wider AIP spec family:** 72 numbered specs live in
   [agentproto/agentproto](https://github.com/agentproto/agentproto). Most
   reference-implementation packages beyond Tier 1 are `0.1.0-alpha`
