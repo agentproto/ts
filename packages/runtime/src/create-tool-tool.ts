@@ -53,10 +53,10 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { createHash } from "node:crypto"
-import { existsSync } from "node:fs"
-import { lstat, mkdir, mkdtemp, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { constants as fsConstants, createReadStream, existsSync } from "node:fs"
+import { mkdir, mkdtemp, realpath, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, posix } from "node:path"
+import { dirname, isAbsolute, join, posix, relative } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import { AGENT_ID_PATTERN, loadAgent } from "@agentproto/agent"
@@ -766,6 +766,8 @@ export interface CreatedToolPreview extends CreatedToolApprovalPayload {
   readonly driver: Record<string, unknown>
   /** Every file the hash covers, with its own sha256. */
   readonly files: ReadonlyArray<{ readonly path: string; readonly sha256: string }>
+  /** sha256 of an absolute `bin` outside the workspace, pinned by the hash. */
+  readonly binSha256?: string
 }
 
 interface CreatedToolSnapshot {
@@ -790,12 +792,25 @@ async function readBundleFiles(dir: string): Promise<Array<{ path: string; bytes
       const childRel = rel === "" ? name : `${rel}/${name}`
       if (childRel === AUTHORING_MARKER_FILE) continue // written by the daemon itself
       const childAbs = join(abs, name)
-      const st = await lstat(childAbs)
-      if (st.isSymbolicLink()) throw new Error(`'${childRel}' in the tool bundle is a symlink, refusing.`)
+      // O_NOFOLLOW + fstat on the opened fd: no gap between "is it a symlink"
+      // and "read it" for a swap to land in.
+      const fh = await open(childAbs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === "ELOOP" || err.code === "EMLINK") {
+          throw new Error(`'${childRel}' in the tool bundle is a symlink, refusing.`)
+        }
+        throw err
+      })
+      let st: Awaited<ReturnType<typeof fh.stat>>
+      let bytes: Buffer | undefined
+      try {
+        st = await fh.stat()
+        if (st.isFile()) bytes = await fh.readFile()
+      } finally {
+        await fh.close()
+      }
       if (st.isDirectory()) {
         await walk(childAbs, childRel)
-      } else if (st.isFile()) {
-        const bytes = await readFile(childAbs)
+      } else if (st.isFile() && bytes) {
         total += bytes.length
         if (out.length + 1 > MAX_BUNDLE_FILES || total > MAX_BUNDLE_BYTES) {
           throw new Error(`the tool bundle exceeds ${MAX_BUNDLE_FILES} files / ${MAX_BUNDLE_BYTES} bytes, refusing.`)
@@ -810,17 +825,23 @@ async function readBundleFiles(dir: string): Promise<Array<{ path: string; bytes
   return out
 }
 
-/** A literal argv/bin token may not point out of the bundle snapshot. The
- *  script a created tool runs must live in `.agentproto/tools/<id>/`, the only
- *  directory the approval hash covers. `${input.x}` tokens are data, pinned by
- *  the approved `args`. */
-function assertArgvInsideBundle(id: string, driverBytes: string): void {
+/** Nothing a created tool executes may live where the agent can rewrite it
+ *  unseen. The script must be in `.agentproto/tools/<id>/`, the only directory
+ *  the approval hash covers: no `cwd`, and every literal `binArgs`/`argv` token
+ *  is bundle-relative (absolute or `..` paths are refused). `bin` is one of:
+ *  a bare command name resolved on PATH (`node`: a system interpreter, never
+ *  resolved against the workspace); a bundle-relative path (staged and hashed
+ *  with the bundle); or an absolute path OUTSIDE the workspace, whose bytes the
+ *  caller hashes into the approval (returned here). An absolute `bin` inside
+ *  the workspace, or any `..` path, is refused. `${input.x}` tokens are data,
+ *  pinned by the approved `args`. Returns the absolute `bin` to hash, if any. */
+async function assertArgvInsideBundle(id: string, driverBytes: string, workspace: string): Promise<string | undefined> {
   const fm = matter(driverBytes).data as {
     kind?: unknown
-    metadata?: { cli?: { binArgs?: unknown; cwd?: unknown } }
+    metadata?: { cli?: { bin?: unknown; binArgs?: unknown; cwd?: unknown } }
     implements?: Array<{ metadata?: { cli?: { argv?: unknown } } }>
   }
-  if (fm.kind !== "cli") return
+  if (fm.kind !== "cli") return undefined
   if (fm.metadata?.cli?.cwd !== undefined) {
     throw new Error(`driver '${id}' sets metadata.cli.cwd; a created tool runs from its own bundle, refusing.`)
   }
@@ -829,20 +850,40 @@ function assertArgvInsideBundle(id: string, driverBytes: string): void {
   for (const impl of fm.implements ?? []) {
     if (Array.isArray(impl.metadata?.cli?.argv)) tokens.push(...impl.metadata.cli.argv)
   }
-  for (const t of tokens) {
-    if (typeof t !== "string" || t.startsWith("${")) continue
-    const outside =
-      t.startsWith("/") ||
-      t.startsWith("\\") ||
-      /^[A-Za-z]:[\\/]/.test(t) ||
-      t.split(/[\\/]/).some(seg => seg === "..")
-    if (outside) {
-      throw new Error(
-        `driver '${id}' argv '${t}' points outside the tool bundle (.agentproto/tools/${id}/), ` +
-          `whose files are the only ones the approval covers. Refusing.`,
-      )
+  const escapes = (t: string): boolean =>
+    t.startsWith("/") || t.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(t) || t.split(/[\\/]/).some(seg => seg === "..")
+  const refuse = (what: string, t: string): never => {
+    throw new Error(
+      `driver '${id}' ${what} '${t}' points outside the tool bundle (.agentproto/tools/${id}/), ` +
+        `whose files are the only ones the approval covers. Refusing.`,
+    )
+  }
+  const isAbs = (t: string): boolean => t.startsWith("/") || t.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(t)
+  const dotdot = (t: string): boolean => t.split(/[\\/]/).some(seg => seg === "..")
+  const bin = fm.metadata?.cli?.bin
+  let hashBin: string | undefined
+  if (typeof bin === "string" && !bin.startsWith("${")) {
+    if (dotdot(bin)) refuse("bin", bin)
+    if (isAbs(bin)) {
+      const real = await realpath(bin).catch(() => {
+        throw new Error(`driver '${id}' bin '${bin}' does not exist.`)
+      })
+      const rel = relative(await realpath(workspace), real)
+      if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) refuse("bin", bin)
+      hashBin = real
     }
   }
+  for (const t of tokens) {
+    if (typeof t !== "string" || t.startsWith("${")) continue
+    if (escapes(t)) refuse("argv", t)
+  }
+  return hashBin
+}
+
+async function hashFile(path: string): Promise<string> {
+  const h = createHash("sha256")
+  for await (const chunk of createReadStream(path)) h.update(chunk as Buffer)
+  return h.digest("hex")
 }
 
 /**
@@ -862,7 +903,8 @@ async function snapshotCreatedTool(
   })
   const toolDir = join(workspace, ".agentproto", "tools", id)
   const files = (await readBundleFiles(toolDir)).filter(f => f.path !== "TOOL.md")
-  assertArgvInsideBundle(id, driverSource)
+  const absBin = await assertArgvInsideBundle(id, driverSource, workspace)
+  const binSha256 = absBin ? await hashFile(absBin) : undefined
 
   const stage = await mkdtemp(join(tmpdir(), "created-tool-"))
   const cleanup = (): Promise<void> => rm(stage, { recursive: true, force: true })
@@ -881,12 +923,13 @@ async function snapshotCreatedTool(
     const hash = createHash("sha256").update(bundle.toolSource).update("\0").update(bundle.driverSource)
     const covered = files.map(f => ({ path: f.path, sha256: sha256(f.bytes) }))
     for (const f of covered) hash.update("\0").update(f.path).update("\0").update(f.sha256)
+    if (absBin && binSha256) hash.update("\0bin\0").update(absBin).update("\0").update(binSha256)
     const payload: CreatedToolApprovalPayload = { tool: id, args, toolSha256: hash.digest("hex") }
     return {
       bundle,
       payload,
       title: `Run created tool ${id}`,
-      preview: { ...payload, driver: driverSummary(bundle.driverSource), files: covered },
+      preview: { ...payload, driver: driverSummary(bundle.driverSource), files: covered, ...(binSha256 ? { binSha256 } : {}) },
       cleanup,
     }
   } catch (err) {

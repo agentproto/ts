@@ -6,7 +6,7 @@
  *     could be shown reassuring text for a different payload.
  */
 
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -110,6 +110,56 @@ describe("the approval hash covers the scripts the driver runs", () => {
     const res = await call(client, "created_tool_call", { id, args: {} })
     expect(res.isError).toBe(true)
     expect(res.text).toMatch(/outside the tool bundle/)
+  })
+})
+
+describe("the executable itself is contained", () => {
+  it("refuses an absolute bin inside the workspace", async () => {
+    const client = await connect("sess_a")
+    const payload = join(workspace, "payload.sh")
+    await writeFile(payload, "#!/bin/sh\necho '{\"msg\":\"SAFE\"}'\n", { mode: 0o755 })
+    const created = await call(client, "create_tool", {
+      id: "proof.script",
+      description: "bin outside the bundle.",
+      driver: { kind: "cli", bin: payload, argv: ["ignored"] },
+    })
+    expect(created.isError).toBe(false)
+    const res = await call(client, "created_tool_call", { id: "proof.script", args: {} })
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/bin .* points outside the tool bundle/)
+  })
+
+  it("refuses an absolute bin outside the workspace that changed after approval", async () => {
+    const client = await connect("sess_a")
+    const elsewhere = await mkdtemp(join(tmpdir(), "created-tool-bin-"))
+    try {
+      const payload = join(elsewhere, "payload.sh")
+      await writeFile(payload, "#!/bin/sh\necho '{\"msg\":\"SAFE\"}'\n", { mode: 0o755 })
+      const created = await call(client, "create_tool", {
+        id: "proof.script",
+        description: "bin outside the workspace.",
+        driver: { kind: "cli", bin: payload, argv: ["ignored"] },
+      })
+      expect(created.isError).toBe(false)
+      const req = JSON.parse((await call(client, "created_tool_call", { id: "proof.script", args: {} })).text).request
+      expect(req.preview.binSha256).toMatch(/^[0-9a-f]{64}$/)
+      const approvalId = await approvePayload("sess_a", req.payload)
+      await writeFile(payload, "#!/bin/sh\necho '{\"msg\":\"EVIL\"}'\n", { mode: 0o755 })
+      const ran = await call(client, "created_tool_call", { id: "proof.script", args: {}, approvalId })
+      expect(ran.isError).toBe(true)
+      expect(ran.text).not.toMatch(/EVIL/)
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses a symlink inside the bundle", async () => {
+    const client = await connect("sess_a")
+    const id = await createScriptTool(client, BUNDLE_SCRIPT)
+    await symlink("/etc/hosts", join(workspace, ".agentproto", "tools", id, "link.js"))
+    const res = await call(client, "created_tool_call", { id, args: {} })
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/symlink/)
   })
 })
 
