@@ -1168,6 +1168,51 @@ describe("CronScheduler — run health", () => {
     }
   })
 
+  it("delivers exactly one notice to the owner session when a job auto-pauses", async () => {
+    const sendMessage = vi.fn(async () => ({}))
+    const registry = { get: vi.fn(), sendPrompt: vi.fn(), spawnAgent: vi.fn(), sendMessage } as unknown as SessionsRegistry
+    const { scheduler } = makeAgentScheduler(staticObserver({ outcome: "errored", error: "boom" }), { registry })
+    try {
+      const job = await scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        label: "wake-test",
+        ownedBy: "sess_owner",
+        action: { kind: "agent", adapter: "mock", prompt: "work" },
+      })
+      await scheduler.run(job.id)
+      expect(sendMessage).not.toHaveBeenCalled()
+      await scheduler.run(job.id)
+      expect(scheduler.get(job.id)?.active).toBe(false)
+      await scheduler.run(job.id) // a manual run of the already-paused job must not re-notify
+      expect(sendMessage).toHaveBeenCalledTimes(1)
+      const [msg] = sendMessage.mock.calls[0] as unknown as [{ to: string; kind: string; urgency: string; text: string; data: Record<string, unknown> }]
+      expect(msg).toMatchObject({ to: "sess_owner", kind: "notice", urgency: "fyi" })
+      expect(msg.text).toContain("wake-test")
+      expect(msg.text).toContain("auto-paused after 2 consecutive non-productive runs")
+      expect(msg.data).toMatchObject({ jobId: job.id, pausedReason: scheduler.get(job.id)?.pausedReason })
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("sends no session notice for an unowned job (still emits cron:unhealthy)", async () => {
+    const sendMessage = vi.fn(async () => ({}))
+    const registry = { get: vi.fn(), sendPrompt: vi.fn(), spawnAgent: vi.fn(), sendMessage } as unknown as SessionsRegistry
+    const { scheduler, sessionEvents } = makeAgentScheduler(staticObserver({ outcome: "errored", error: "boom" }), { registry })
+    const unhealthy: string[] = []
+    sessionEvents.on("cron:unhealthy", ev => unhealthy.push(ev.jobId))
+    try {
+      const job = await scheduler.create({ schedule: "0 0 1 1 *", recurring: true, action: { kind: "agent", adapter: "mock", prompt: "work" } })
+      await scheduler.run(job.id)
+      await scheduler.run(job.id)
+      expect(unhealthy).toEqual([job.id])
+      expect(sendMessage).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
   it("honours a per-job maxConsecutiveFailures", async () => {
     const { scheduler } = makeAgentScheduler(staticObserver({ outcome: "empty", tokensOut: 0 }))
     try {

@@ -4454,6 +4454,11 @@ export async function createGateway(
       appRegistryIssues: () => appRegistry.listIssues(),
       appRegistryRepairs: () => appRegistry.listRepairs(),
       modelCooldowns: () => modelCooldowns.list(),
+      pausedCronJobs: () =>
+        cronScheduler
+          .list()
+          .filter(j => !j.active && j.pausedReason)
+          .map(j => ({ id: j.id, ...(j.label ? { label: j.label } : {}), pausedReason: j.pausedReason! })),
       sandboxSessions: () => sessions.sandboxSessionStats(),
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),

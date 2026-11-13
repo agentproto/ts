@@ -59,6 +59,7 @@ import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { authProfileAsAdapterHint, type AuthProfileLookup } from "./adapter-slug-hint.js"
 import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-schema.js"
 import { isCronCreator, type CronCreator } from "./cron-creator.js"
+import { createSessionMessage } from "./session-message.js"
 
 export type { CronCreator }
 
@@ -1138,6 +1139,34 @@ export function createCronScheduler(opts: {
 
   // ── Fire a job ────────────────────────────────────────────────────
 
+  /**
+   * Tell the job's own session that it was auto-paused, once per pause (the
+   * caller sits inside the `active -> paused` transition). The addressee is
+   * the owner session, else a session creator; a job made by the operator or
+   * the system has no session to tell and is surfaced by `daemon_health`
+   * (`cron.pausedJobs`) and the `cron:unhealthy` webhook instead. `fyi`
+   * urgency: it lands in the inbox without waking anything. Best effort, a
+   * delivery failure never affects the run ledger.
+   */
+  const notifyAutoPause = (job: CronJob, reason: string): void => {
+    const to = job.ownedBy ?? (job.createdBy?.kind === "session" ? job.createdBy.sessionId : undefined)
+    if (!to) return
+    try {
+      const msg = createSessionMessage({
+        to,
+        from: { relation: "system" },
+        kind: "notice",
+        urgency: "fyi",
+        correlationId: `cron-paused:${job.id}`,
+        text: `Cron job ${job.label ?? job.id} was auto-paused and will not fire again until resumed (cron_update active:true): ${reason}`,
+        data: { jobId: job.id, ...(job.label ? { label: job.label } : {}), pausedReason: reason },
+      })
+      void registry.sendMessage(msg, { source: "cron", origin: job.id }).catch(() => {})
+    } catch {
+      /* oversized data / bad message: best effort */
+    }
+  }
+
   /** Metrics suffix for a run summary, e.g. " (120 output tokens, 4210ms)". */
   const metricsSuffix = (obs: CronTurnObservation, includeTokens: boolean): string => {
     const parts: string[] = []
@@ -1225,6 +1254,7 @@ export function createCronScheduler(opts: {
           reason: job.pausedReason,
           ts: endedAt,
         })
+        notifyAutoPause(job, job.pausedReason)
       }
     }
     persistNow()
