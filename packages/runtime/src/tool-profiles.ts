@@ -354,6 +354,7 @@ export const FULL_ONLY_TOOLS: readonly string[] = [
   "permissions_explain",
   "policy_ack",
   "quota_status",
+  "reach_send",
   "review_cancel",
   "review_export",
   "review_ledger",
