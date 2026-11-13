@@ -66,16 +66,22 @@ If you pass a whole shell line as `command` with no `args` (for example
 file path, the daemon runs it as `bash -c <line>`. The allowlist is then
 checked against `bash`, so the gate only runs if `bash` is allowlisted, and the
 refusal names it and the line:
-`gate command 'bash' not in allowlist (shell line: test -f README.md && ...)`.
+`gate command 'bash' not in allowlist (shell line: test -f README.md && test -s out.txt)`.
 Allowlisting `bash` for that is the broad grant warned about above. Prefer
 `command` + `args` (`test` or `[` as shown) or a committed script.
 
 An allowlist entry can also be an object that constrains the arguments, such as
-`{ "command": "git", "args": ["status"] }`. The entry matches only when the
-gate's argv starts with those `args`. The same constraint applies to the
-`bash -c <line>` rewrite, so an entry like
-`{ "command": "bash", "args": ["-c", "test -f README.md"] }` allows that one
-line and nothing else.
+`{ "command": "git", "args": ["status"] }`. That constraint is enforced for
+`command_execute` and for the auto-rewritten `bash -c <line>` form above, where
+the argv must start with the entry's `args`. It is **not** applied to an
+ordinary `command` + `args` gate: those match on the command basename alone,
+exactly like a plain string entry. So an entry
+`{ "command": "git", "args": ["status"] }` still admits a gate
+`{ "command": "git", "args": ["push", "--force"] }`, and
+`{ "command": "bash", "args": ["-c", "test -f README.md"] }` still admits an
+explicit `{ "command": "bash", "args": ["-c", "rm -rf /"] }` gate. An object
+entry does not narrow an ordinary gate; to refuse specific arguments, keep the
+command out of the allowlist or wrap the check in a committed script.
 
 ### Attach the gate
 
