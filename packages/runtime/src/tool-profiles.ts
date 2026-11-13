@@ -311,6 +311,7 @@ export const FULL_ONLY_TOOLS: readonly string[] = [
   "conversation_read",
   "create_agent",
   "create_tool",
+  "created_tool_call",
   "daemon_health",
   "decision_collect_evidence",
   "decision_decide",

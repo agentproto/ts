@@ -106,6 +106,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "conversation_read",
   "create_agent",
   "create_tool",
+  "created_tool_call",
   "cron_create",
   "cron_delete",
   "cron_list",

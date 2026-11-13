@@ -11,7 +11,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import matter from "gray-matter"
-import { loadAppBundledTools } from "../load-app-tools.js"
+import { loadAppBundledTools, loadBundledTool } from "../load-app-tools.js"
 import { AppLoadError } from "../errors.js"
 
 async function writeManifest(path: string, data: Record<string, unknown>, body = ""): Promise<void> {
@@ -349,5 +349,61 @@ describe("loadAppBundledTools", () => {
   it("malformed TOOL.md frontmatter fails naming the file path", async () => {
     await writeManifest(join(dir, ".agentproto", "tools", "greet", "TOOL.md"), { schema: "agentproto/tool/v1" })
     await expect(loadAppBundledTools(dir)).rejects.toThrow(AppLoadError)
+  })
+})
+
+describe("loadBundledTool (one bundle, by folder id)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "load-bundled-tool-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const toolPath = (id: string) => join(dir, ".agentproto", "tools", id, "TOOL.md")
+  const driverPath = (id: string) => join(dir, ".agentproto", "drivers", id, "DRIVER.md")
+
+  it("loads the tool and driver filed under the id, with the exact sources", async () => {
+    await writeManifest(toolPath("greet"), toolManifest())
+    await writeManifest(driverPath("greet"), cliDriverManifest({ id: "greet" }))
+    const loaded = await loadBundledTool(dir, "greet")
+    expect(loaded.tool.id).toBe("greet")
+    expect(loaded.driver.id).toBe("greet")
+    expect(loaded.toolSource).toContain("id: greet")
+    expect(loaded.driverSource).toContain("kind: cli")
+  })
+
+  it("never reads another bundle, even a malformed one", async () => {
+    await writeManifest(toolPath("greet"), toolManifest())
+    await writeManifest(driverPath("greet"), cliDriverManifest({ id: "greet" }))
+    await mkdir(join(dir, ".agentproto", "tools", "junk"), { recursive: true })
+    await writeFile(toolPath("junk"), "not a manifest", "utf8")
+    await expect(loadBundledTool(dir, "greet")).resolves.toMatchObject({ tool: { id: "greet" } })
+  })
+
+  it("refuses a TOOL.md whose frontmatter id is not its folder", async () => {
+    await writeManifest(toolPath("greet"), toolManifest({ id: "other" }))
+    await writeManifest(driverPath("greet"), cliDriverManifest({ id: "greet" }))
+    await expect(loadBundledTool(dir, "greet")).rejects.toThrow(/declares id 'other', not 'greet'/)
+  })
+
+  it("refuses a DRIVER.md whose frontmatter id is not its folder", async () => {
+    await writeManifest(toolPath("greet"), toolManifest())
+    await writeManifest(driverPath("greet"), cliDriverManifest({ id: "greet-cli" }))
+    await expect(loadBundledTool(dir, "greet")).rejects.toThrow(/driver at .* declares id 'greet-cli', not 'greet'/)
+  })
+
+  it("refuses a driver that does not implement the tool", async () => {
+    await writeManifest(toolPath("greet"), toolManifest())
+    const driver = cliDriverManifest({ id: "greet" })
+    driver.implements = [{ ...driver.implements[0]!, tool: "farewell" }]
+    await writeManifest(driverPath("greet"), driver)
+    await expect(loadBundledTool(dir, "greet")).rejects.toThrow(/does not implement tool 'greet'/)
+  })
+
+  it("fails with an AppLoadError when the driver file is missing", async () => {
+    await writeManifest(toolPath("greet"), toolManifest())
+    await expect(loadBundledTool(dir, "greet")).rejects.toBeInstanceOf(AppLoadError)
   })
 })
