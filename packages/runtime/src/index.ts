@@ -4524,6 +4524,7 @@ export async function createGateway(
     // falling back to the operator.
     registerApprovalTools(server, {
       engine: approvalsEngine,
+      workspace,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // Remote-tunnel lifecycle. The controller is a singleton on the

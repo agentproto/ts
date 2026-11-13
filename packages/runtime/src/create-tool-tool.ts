@@ -54,8 +54,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join, posix } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import { AGENT_ID_PATTERN, loadAgent } from "@agentproto/agent"
@@ -648,8 +649,10 @@ export const CREATED_TOOL_CALL_VERB = "created_tool_call"
 export const CREATED_TOOL_APPROVAL_KIND = "created_tool_call"
 
 /** What a `created_tool_call` approval pins: the tool, the exact arguments,
- *  and a hash of the TOOL.md + DRIVER.md bytes, so an approval cannot run a
- *  tool whose code changed after the human said yes. */
+ *  and a hash of the TOOL.md + DRIVER.md bytes AND every other file in the
+ *  tool's bundle directory (`.agentproto/tools/<id>/`, the scripts the driver
+ *  runs), so an approval cannot run a tool whose code changed after the human
+ *  said yes. */
 export interface CreatedToolApprovalPayload {
   readonly tool: string
   readonly args: Record<string, unknown>
@@ -661,7 +664,7 @@ export interface CreatedToolApprovalRequest {
   readonly kind: typeof CREATED_TOOL_APPROVAL_KIND
   readonly title: string
   /** What the human should see: the payload plus the driver's command. */
-  readonly preview: CreatedToolApprovalPayload & { readonly driver: Record<string, unknown> }
+  readonly preview: CreatedToolPreview
   readonly payload: CreatedToolApprovalPayload
 }
 
@@ -712,56 +715,225 @@ export async function callCreatedTool(input: CallCreatedToolInput): Promise<Crea
     )
   }
 
-  // Load ONLY this bundle, before any approval is touched: a malformed file
-  // elsewhere in the workspace cannot break the call, and a broken bundle
-  // fails here without spending the human's approval. The hash covers the
-  // exact bytes the handles were parsed from, so what was approved is what
-  // runs.
-  let bundle: LoadedBundledTool
-  try {
-    bundle = await loadBundledTool(input.workspace, input.id)
-  } catch (err) {
+  // Snapshot ONLY this bundle, before any approval is touched: a malformed
+  // file elsewhere in the workspace cannot break the call, and a broken
+  // bundle fails here without spending the human's approval. The snapshot is
+  // read once into memory, hashed, and written to a private temp root that
+  // the driver then runs from: what was hashed (and approved) is exactly what
+  // executes, and a later edit of the workspace files cannot reach it.
+  const snap = await snapshotCreatedTool(input.workspace, input.id, input.args).catch(err => {
     throw new Error(`${verb}: ${err instanceof Error ? err.message : String(err)}`)
-  }
-  const payload: CreatedToolApprovalPayload = {
-    tool: input.id,
-    args: input.args,
-    toolSha256: createHash("sha256")
-      .update(bundle.toolSource)
-      .update("\0")
-      .update(bundle.driverSource)
-      .digest("hex"),
-  }
-  if (input.approvalId === undefined || input.approvalId.trim() === "") {
-    throw new CreatedToolApprovalRequired({
-      kind: CREATED_TOOL_APPROVAL_KIND,
-      title: `Run created tool ${input.id}`,
-      preview: { ...payload, driver: driverSummary(bundle.driverSource) },
-      payload,
-    })
-  }
-  if (!input.approvals) {
-    throw new Error(`${verb}: no approvals engine on this surface, refusing (default DENY).`)
-  }
-  const record = input.approvals.get(input.approvalId)
-  if (!record) throw new Error(`${verb}: no approval ${input.approvalId}.`)
-  if (record.kind !== CREATED_TOOL_APPROVAL_KIND) {
-    throw new Error(
-      `${verb}: approval ${input.approvalId} is of kind '${record.kind}', not '${CREATED_TOOL_APPROVAL_KIND}'.`,
-    )
-  }
-  // Throws on not approved / other requester / payload drift (other args, or
-  // the tool's files changed since the approval) / already consumed.
-  input.approvals.consume(input.approvalId, input.requester, payload)
-
-  const output = await runTool({
-    tool: bundle.tool,
-    // Only the driver filed under this id, never another driver in the
-    // workspace that happens to implement the same contract.
-    candidates: [bundle.driver],
-    input: input.args,
   })
-  return { id: input.id, output }
+  try {
+    if (input.approvalId === undefined || input.approvalId.trim() === "") {
+      throw new CreatedToolApprovalRequired({
+        kind: CREATED_TOOL_APPROVAL_KIND,
+        title: snap.title,
+        preview: snap.preview,
+        payload: snap.payload,
+      })
+    }
+    if (!input.approvals) {
+      throw new Error(`${verb}: no approvals engine on this surface, refusing (default DENY).`)
+    }
+    const record = input.approvals.get(input.approvalId)
+    if (!record) throw new Error(`${verb}: no approval ${input.approvalId}.`)
+    if (record.kind !== CREATED_TOOL_APPROVAL_KIND) {
+      throw new Error(
+        `${verb}: approval ${input.approvalId} is of kind '${record.kind}', not '${CREATED_TOOL_APPROVAL_KIND}'.`,
+      )
+    }
+    // Throws on not approved / other requester / payload drift (other args, or
+    // the tool's files changed since the approval) / already consumed.
+    input.approvals.consume(input.approvalId, input.requester, snap.payload)
+
+    const output = await runTool({
+      tool: snap.bundle.tool,
+      // Only the driver filed under this id, never another driver in the
+      // workspace that happens to implement the same contract.
+      candidates: [snap.bundle.driver],
+      input: input.args,
+    })
+    return { id: input.id, output }
+  } finally {
+    await snap.cleanup()
+  }
+}
+
+/** What the human is shown for a created-tool approval. Always generated
+ *  daemon-side from the real bundle, never taken from the requesting agent. */
+export interface CreatedToolPreview extends CreatedToolApprovalPayload {
+  readonly driver: Record<string, unknown>
+  /** Every file the hash covers, with its own sha256. */
+  readonly files: ReadonlyArray<{ readonly path: string; readonly sha256: string }>
+}
+
+interface CreatedToolSnapshot {
+  readonly bundle: LoadedBundledTool
+  readonly payload: CreatedToolApprovalPayload
+  readonly title: string
+  readonly preview: CreatedToolPreview
+  readonly cleanup: () => Promise<void>
+}
+
+const MAX_BUNDLE_FILES = 64
+const MAX_BUNDLE_BYTES = 5 * 1024 * 1024
+
+const sha256 = (b: string | Buffer): string => createHash("sha256").update(b).digest("hex")
+
+/** Read every file under `dir` once (no symlinks, bounded), sorted by path. */
+async function readBundleFiles(dir: string): Promise<Array<{ path: string; bytes: Buffer }>> {
+  const out: Array<{ path: string; bytes: Buffer }> = []
+  let total = 0
+  const walk = async (abs: string, rel: string): Promise<void> => {
+    for (const name of (await readdir(abs)).sort()) {
+      const childRel = rel === "" ? name : `${rel}/${name}`
+      if (childRel === AUTHORING_MARKER_FILE) continue // written by the daemon itself
+      const childAbs = join(abs, name)
+      const st = await lstat(childAbs)
+      if (st.isSymbolicLink()) throw new Error(`'${childRel}' in the tool bundle is a symlink, refusing.`)
+      if (st.isDirectory()) {
+        await walk(childAbs, childRel)
+      } else if (st.isFile()) {
+        const bytes = await readFile(childAbs)
+        total += bytes.length
+        if (out.length + 1 > MAX_BUNDLE_FILES || total > MAX_BUNDLE_BYTES) {
+          throw new Error(`the tool bundle exceeds ${MAX_BUNDLE_FILES} files / ${MAX_BUNDLE_BYTES} bytes, refusing.`)
+        }
+        out.push({ path: childRel, bytes })
+      } else {
+        throw new Error(`'${childRel}' in the tool bundle is not a regular file, refusing.`)
+      }
+    }
+  }
+  await walk(dir, "")
+  return out
+}
+
+/** A literal argv/bin token may not point out of the bundle snapshot. The
+ *  script a created tool runs must live in `.agentproto/tools/<id>/`, the only
+ *  directory the approval hash covers. `${input.x}` tokens are data, pinned by
+ *  the approved `args`. */
+function assertArgvInsideBundle(id: string, driverBytes: string): void {
+  const fm = matter(driverBytes).data as {
+    kind?: unknown
+    metadata?: { cli?: { binArgs?: unknown; cwd?: unknown } }
+    implements?: Array<{ metadata?: { cli?: { argv?: unknown } } }>
+  }
+  if (fm.kind !== "cli") return
+  if (fm.metadata?.cli?.cwd !== undefined) {
+    throw new Error(`driver '${id}' sets metadata.cli.cwd; a created tool runs from its own bundle, refusing.`)
+  }
+  const tokens: unknown[] = []
+  if (Array.isArray(fm.metadata?.cli?.binArgs)) tokens.push(...fm.metadata.cli.binArgs)
+  for (const impl of fm.implements ?? []) {
+    if (Array.isArray(impl.metadata?.cli?.argv)) tokens.push(...impl.metadata.cli.argv)
+  }
+  for (const t of tokens) {
+    if (typeof t !== "string" || t.startsWith("${")) continue
+    const outside =
+      t.startsWith("/") ||
+      t.startsWith("\\") ||
+      /^[A-Za-z]:[\\/]/.test(t) ||
+      t.split(/[\\/]/).some(seg => seg === "..")
+    if (outside) {
+      throw new Error(
+        `driver '${id}' argv '${t}' points outside the tool bundle (.agentproto/tools/${id}/), ` +
+          `whose files are the only ones the approval covers. Refusing.`,
+      )
+    }
+  }
+}
+
+/**
+ * Snapshot one created tool: read its whole bundle once, hash it, stage it in
+ * a private temp root, and load the handles from the staged copy.
+ */
+async function snapshotCreatedTool(
+  workspace: string,
+  id: string,
+  args: Record<string, unknown>,
+): Promise<CreatedToolSnapshot> {
+  const toolSource = await readFile(toolPath(workspace, id), "utf8").catch(() => {
+    throw new Error(`tool '${id}': cannot read ${toolPath(workspace, id)}`)
+  })
+  const driverSource = await readFile(driverPath(workspace, id), "utf8").catch(() => {
+    throw new Error(`driver '${id}': cannot read ${driverPath(workspace, id)}`)
+  })
+  const toolDir = join(workspace, ".agentproto", "tools", id)
+  const files = (await readBundleFiles(toolDir)).filter(f => f.path !== "TOOL.md")
+  assertArgvInsideBundle(id, driverSource)
+
+  const stage = await mkdtemp(join(tmpdir(), "created-tool-"))
+  const cleanup = (): Promise<void> => rm(stage, { recursive: true, force: true })
+  try {
+    const stageTool = join(stage, ".agentproto", "tools", id)
+    await mkdir(stageTool, { recursive: true })
+    await mkdir(join(stage, ".agentproto", "drivers", id), { recursive: true })
+    await writeFile(join(stageTool, "TOOL.md"), toolSource, "utf8")
+    await writeFile(join(stage, ".agentproto", "drivers", id, "DRIVER.md"), driverSource, "utf8")
+    for (const f of files) {
+      const dest = join(stageTool, ...f.path.split(posix.sep))
+      await mkdir(dirname(dest), { recursive: true })
+      await writeFile(dest, f.bytes, { mode: 0o700 })
+    }
+    const bundle = await loadBundledTool(stage, id)
+    const hash = createHash("sha256").update(bundle.toolSource).update("\0").update(bundle.driverSource)
+    const covered = files.map(f => ({ path: f.path, sha256: sha256(f.bytes) }))
+    for (const f of covered) hash.update("\0").update(f.path).update("\0").update(f.sha256)
+    const payload: CreatedToolApprovalPayload = { tool: id, args, toolSha256: hash.digest("hex") }
+    return {
+      bundle,
+      payload,
+      title: `Run created tool ${id}`,
+      preview: { ...payload, driver: driverSummary(bundle.driverSource), files: covered },
+      cleanup,
+    }
+  } catch (err) {
+    await cleanup()
+    throw err
+  }
+}
+
+/**
+ * The title + preview a human is shown for a `created_tool_call` approval,
+ * generated from the real bundle and the requested payload. Called by
+ * `approval_request`: a caller-supplied title/preview never replaces it. Throws
+ * when the payload is malformed, names no authored tool, or carries a hash that
+ * is not the bundle's current one (the agent must request exactly what a
+ * `created_tool_call` made without an approval returned).
+ */
+export async function describeCreatedToolApproval(
+  workspace: string,
+  payload: unknown,
+): Promise<{ title: string; preview: CreatedToolPreview }> {
+  const p = payload as Partial<CreatedToolApprovalPayload> | null
+  if (
+    !p ||
+    typeof p !== "object" ||
+    typeof p.tool !== "string" ||
+    !TOOL_ID_PATTERN.test(p.tool) ||
+    typeof p.toolSha256 !== "string" ||
+    typeof p.args !== "object" ||
+    p.args === null ||
+    Array.isArray(p.args)
+  ) {
+    throw new Error(`${CREATED_TOOL_APPROVAL_KIND}: payload must be { tool, args, toolSha256 }.`)
+  }
+  const marker = await readAuthoringMarker(authoringMarkerPath(workspace, p.tool))
+  if (!marker) throw new Error(`${CREATED_TOOL_APPROVAL_KIND}: '${p.tool}' is not a tool create_tool authored.`)
+  const snap = await snapshotCreatedTool(workspace, p.tool, p.args as Record<string, unknown>)
+  try {
+    if (snap.payload.toolSha256 !== p.toolSha256) {
+      throw new Error(
+        `${CREATED_TOOL_APPROVAL_KIND}: toolSha256 does not match the tool's current files. ` +
+          `Request exactly the payload ${CREATED_TOOL_CALL_VERB} returned.`,
+      )
+    }
+    return { title: snap.title, preview: snap.preview }
+  } finally {
+    await snap.cleanup()
+  }
 }
 
 /** The DRIVER.md fields a human needs to judge the call: what runs. */
