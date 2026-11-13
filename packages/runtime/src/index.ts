@@ -337,6 +337,7 @@ import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
 import {
   createReachRouter,
   createReachTeller,
+  resolveReachTellDir,
   createTelegramReachAdapter,
   loadChatSdkReachFactory,
   planReachRoute,
@@ -5344,7 +5345,7 @@ export async function createGateway(
     : []
   reachTeller = createReachTeller({
     route: () => (reachOn ? reachPlan.adapters : reachFloorOnly),
-    dir: join(persist ? join(homedir(), ".agentproto") : mkdtempSync(join(tmpdir(), "agentproto-reach-")), "reach"),
+    dir: persist ? resolveReachTellDir() : join(mkdtempSync(join(tmpdir(), "agentproto-reach-")), "reach"),
   })
 
   // E99: one `[heap]` line every few minutes (AGENTPROTO_HEAP_LOG_INTERVAL_MS,

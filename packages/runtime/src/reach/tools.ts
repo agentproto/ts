@@ -34,11 +34,12 @@ export function registerReachTools(server: McpServer, opts: RegisterReachToolsOp
       dedupeKey: z.string().min(1).max(200).describe("Stable key for this news: a repeat sends nothing."),
       via: z.string().optional().describe("A route entry id to try first; the rest of the route follows."),
       urgency: z
-        .enum(["normal", "digest", "now"])
+        .enum(["normal", "digest"])
         .optional()
-        .describe('Default "normal". "digest" may be grouped. "now" is refused.'),
+        .describe('Default "normal". "digest" may be grouped.'),
     },
     async input => {
+      const label = opts.callerLabel?.()
       const result = opts.teller
         ? await opts.teller.send({
             summary: input.summary,
@@ -48,7 +49,7 @@ export function registerReachTools(server: McpServer, opts: RegisterReachToolsOp
             ...(input.urgency !== undefined ? { urgency: input.urgency } : {}),
             source: {
               ...(opts.callerSessionId ? { sessionId: opts.callerSessionId } : {}),
-              ...(opts.callerLabel?.() ? { label: opts.callerLabel() } : {}),
+              ...(label ? { label } : {}),
             },
           })
         : { error: "reach_not_available" }
