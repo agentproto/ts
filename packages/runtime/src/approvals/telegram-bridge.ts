@@ -45,7 +45,7 @@ import {
   shortName,
   type AttachmentFile,
 } from "./telegram-attachments.js"
-import { describeApproval, htmlToPlain, type AttachmentLine } from "./telegram-card-text.js"
+import { describeApproval, escapeHtml, htmlToPlain, type AttachmentLine } from "./telegram-card-text.js"
 import type { ApprovalRecord } from "./types.js"
 
 const CALLBACK_PREFIX = "apr:"
@@ -96,6 +96,9 @@ export interface ApprovalTelegramBridge {
   /** Post the card for one approval now. Resolves with whether it posted
    *  and why not; rejects when Telegram refused the card. */
   announce(approvalId: string): Promise<ApprovalTelegramAnnounceResult>
+  /** Post one plain-text line to the cards' chat, HTML escaped (a REACH
+   *  `tell`). No buttons, nothing tracked. Rejects when Telegram refused it. */
+  tell(text: string): Promise<{ posted: true }>
   /** Feed a raw Telegram update. `handled: true` means it was an approval tap
    *  (decided or refused) and must not be processed any further. */
   handleUpdate(update: unknown): Promise<{ handled: boolean }>
@@ -149,6 +152,11 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
       throw new Error(`telegram ${method} failed: ${json.description ?? res.status}`)
     }
     return json.result ?? {}
+  }
+
+  async function tell(text: string): Promise<{ posted: true }> {
+    await call("sendMessage", { chat_id: chatId, text: escapeHtml(text), parse_mode: "HTML" })
+    return { posted: true }
   }
 
   function track(token: string, t: Tracked): void {
@@ -328,6 +336,7 @@ export function createApprovalTelegramBridge(opts: ApprovalTelegramBridgeOptions
   }
 
   return {
+    tell,
     start() {
       if (unsubscribe) return
       unsubscribe = opts.events.onAny(ev => {

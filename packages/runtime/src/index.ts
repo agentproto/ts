@@ -22,7 +22,7 @@ import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdtempSync, statSync } from "node:fs"
 import { readFile } from "node:fs/promises"
-import { hostname, tmpdir } from "node:os"
+import { homedir, hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { createMcpServer, registerEventsMethods } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
@@ -334,7 +334,16 @@ import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
 import { approvalAttachmentDir } from "./approvals/telegram-attachments.js"
 import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
-import { createReachRouter, loadChatSdkReachFactory, planReachRoute, routeNamesChatSdk } from "./reach/index.js"
+import {
+  createReachRouter,
+  createReachTeller,
+  createTelegramReachAdapter,
+  loadChatSdkReachFactory,
+  planReachRoute,
+  registerReachTools,
+  routeNamesChatSdk,
+  type ReachTeller,
+} from "./reach/index.js"
 import { registerApprovalTools } from "./approvals/tools.js"
 import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
@@ -3793,6 +3802,7 @@ export async function createGateway(
     permissionTelegramCfg?.telegramApprovalCards === true &&
     !!permissionTelegramCfg.permissionTelegramChatId &&
     (permissionTelegramCfg.permissionTelegramUserIds?.length ?? 0) > 0
+  let reachTeller: ReachTeller | undefined
   const approvalsEngine: ApprovalsEngine = createApprovalsEngine({
     sessionEvents,
     ...(telegramApprovalCardsOn ? { telegramCards: true } : {}),
@@ -4531,6 +4541,15 @@ export async function createGateway(
       engine: approvalsEngine,
       workspace,
       ...(callerSessionId ? { callerSessionId } : {}),
+    })
+    // reach_send: tell the owner something through the REACH route.
+    registerReachTools(server, {
+      teller: reachTeller,
+      ...(callerSessionId ? { callerSessionId } : {}),
+      callerLabel: () => {
+        const s = callerSessionId ? sessionsRef?.get(callerSessionId) : undefined
+        return s?.operatorLabel ?? s?.label
+      },
     })
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
@@ -5311,6 +5330,22 @@ export async function createGateway(
     ? createReachRouter({ events: sessionEvents, engine: approvalsEngine, route: reachPlan.adapters })
     : undefined
   reachRouter?.start()
+  // Tells (reach_send): the owner route when it is on, else the floor alone
+  // when Telegram cards are configured, else nothing (undelivered, no-route).
+  const reachFloorOnly = telegramApprovalCardsOn
+    ? [
+        createTelegramReachAdapter({
+          id: "floor",
+          bridge: () => approvalTelegram,
+          bridgeAlias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+          onError: err => console.warn(`reach: ${err instanceof Error ? err.message : String(err)}`),
+        }),
+      ]
+    : []
+  reachTeller = createReachTeller({
+    route: () => (reachOn ? reachPlan.adapters : reachFloorOnly),
+    dir: join(persist ? join(homedir(), ".agentproto") : mkdtempSync(join(tmpdir(), "agentproto-reach-")), "reach"),
+  })
 
   // E99: one `[heap]` line every few minutes (AGENTPROTO_HEAP_LOG_INTERVAL_MS,
   // 0 = off) with heapUsed/rss, the floor after the last major GC, live

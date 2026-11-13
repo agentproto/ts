@@ -37,6 +37,53 @@ import { approvalDedupeKey, buildApprovalReachMessage } from "./message.js"
 export const REACH_WATCHDOG_INTERVAL_MS = 30_000
 export const REACH_MISSING_AFTER_MS = 60_000
 
+/**
+ * One adapter attempt, with the rules shared by approvals and tells: a throw
+ * is `failed(adapter-threw)`, and a `deferred` already past due, or past the
+ * message's expiry, counts as `undelivered`.
+ */
+export async function sendToAdapter(adapter: ReachAdapter, message: ReachMessage): Promise<ReachReceipt> {
+  let receipt: ReachReceipt
+  try {
+    receipt = await adapter.send(message)
+  } catch {
+    receipt = { status: "failed", reason: "adapter-threw", adapterId: adapter.id, at: new Date().toISOString() }
+  }
+  if (receipt.status === "deferred") {
+    const until = Date.parse(receipt.until)
+    const reason =
+      until <= Date.now()
+        ? "deferred-past-due"
+        : message.expiresAt !== undefined && until > Date.parse(message.expiresAt)
+          ? "deferred-past-expiry"
+          : undefined
+    if (reason) receipt = { status: "undelivered", reason, adapterId: receipt.adapterId, at: receipt.at }
+  }
+  return receipt
+}
+
+/**
+ * Walk a route for a message that has no approval behind it (a tell): `via`
+ * is tried first, then the rest in route order; the first acknowledgement
+ * stops. Every attempt goes to `onReceipt`; nothing is stored here.
+ */
+export async function sendThroughRoute(
+  route: readonly ReachAdapter[],
+  message: ReachMessage,
+  opts: { via?: string; onReceipt?: (receipt: ReachReceipt, adapter: ReachAdapter) => void } = {},
+): Promise<ReachReceipt[]> {
+  const first = opts.via === undefined ? undefined : route.find(a => a.id === opts.via)
+  const ordered = first ? [first, ...route.filter(a => a !== first)] : [...route]
+  const receipts: ReachReceipt[] = []
+  for (const adapter of ordered) {
+    const receipt = await sendToAdapter(adapter, message)
+    receipts.push(receipt)
+    opts.onReceipt?.(receipt, adapter)
+    if (isAcknowledged(receipt)) break
+  }
+  return receipts
+}
+
 export interface ReachRouterOptions {
   events: Pick<SessionEventBus, "onAny" | "emit">
   engine: Pick<ApprovalsEngine, "get" | "list" | "listReachReceipts" | "appendReachReceipt">
@@ -87,22 +134,7 @@ export function createReachRouter(opts: ReachRouterOptions): ReachRouter {
     message: ReachMessage,
     trigger: ReachReceiptEntry["trigger"],
   ): Promise<ReachReceipt> {
-    let receipt: ReachReceipt
-    try {
-      receipt = await adapter.send(message)
-    } catch {
-      receipt = { status: "failed", reason: "adapter-threw", adapterId: adapter.id, at: new Date().toISOString() }
-    }
-    if (receipt.status === "deferred") {
-      const until = Date.parse(receipt.until)
-      const reason =
-        until <= Date.now()
-          ? "deferred-past-due"
-          : message.expiresAt !== undefined && until > Date.parse(message.expiresAt)
-            ? "deferred-past-expiry"
-            : undefined
-      if (reason) receipt = { status: "undelivered", reason, adapterId: receipt.adapterId, at: receipt.at }
-    }
+    const receipt = await sendToAdapter(adapter, message)
     const entry: ReachReceiptEntry = {
       dedupeKey: message.dedupeKey,
       adapterId: adapter.id,

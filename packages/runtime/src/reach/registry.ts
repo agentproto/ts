@@ -13,9 +13,8 @@
 
 import type { ReachAdapter, ReachChatSdkRouteEntry } from "@agentproto/reach"
 
-import type { ApprovalTelegramBridge } from "../approvals/telegram-bridge.js"
 import { decodeWhsecSecret } from "../webhook-egress/signing.js"
-import { createTelegramReachAdapter } from "./telegram-adapter.js"
+import { createTelegramReachAdapter, type TelegramReachBridge } from "./telegram-adapter.js"
 import { createWebhookReachAdapter } from "./webhook-adapter.js"
 
 export const REACH_ADAPTER_KINDS = ["telegram", "webhook", "chat-sdk"] as const
@@ -25,7 +24,7 @@ export type ChatSdkReachAdapterFactory = (entry: ReachChatSdkRouteEntry) => Reac
 
 export interface ReachRouteDeps {
   /** The bridge, or a function returning it at send time. */
-  telegramBridge?: Pick<ApprovalTelegramBridge, "announce"> | (() => Pick<ApprovalTelegramBridge, "announce"> | undefined)
+  telegramBridge?: TelegramReachBridge | (() => TelegramReachBridge | undefined)
   /** Whether a bridge exists to serve `telegram` entries. Default: whether
    *  `telegramBridge` is given. */
   telegramAvailable?: boolean
