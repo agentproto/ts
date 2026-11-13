@@ -89,6 +89,7 @@ jobs:
           OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
           OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
           OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_WS01: ${{ secrets.OPENCODE_GO_API_KEY_WS01 }}
           OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: ${{ steps.review.outputs.adapter }}
@@ -97,6 +98,7 @@ jobs:
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           auth-mode: ${{ steps.review.outputs.auth-mode }}
           # Credential chosen by the resolved model's route, same rule as ci.yml.

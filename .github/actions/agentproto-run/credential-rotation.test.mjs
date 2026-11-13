@@ -340,6 +340,12 @@ test("ci.yml and the manual review rotate Zen keys, then Go flash on a Go key", 
     assert.ok(zen.length >= 2, `${id}: at least two Zen keys`)
     assert.ok(go.length >= 1, `${id}: a Go key`)
     assert.ok(ladder.indexOf(zen.at(-1)) < ladder.indexOf(go[0]), `${id}: Zen keys before the Go keys`)
+    // ws01 hodl, then ws01 agentik, then the legacy key whose org is unknown.
+    assert.deepEqual(
+      go.map(g => g.keyEnv),
+      ["OPENCODE_GO_API_KEY_HODL", "OPENCODE_GO_API_KEY_WS01", "OPENCODE_GO_API_KEY_DEFAULT"],
+      `${id}: Go key order`,
+    )
     for (const g of go) {
       assert.equal(g.model, GO_FLASH, `${id}: Go rungs fall back to Go flash`)
       assert.deepEqual(g.exportAs, ["OPENCODE_GO_API_KEY"], `${id}: the Go provider variable follows the rung`)

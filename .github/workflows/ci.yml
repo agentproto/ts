@@ -1379,18 +1379,22 @@ jobs:
           OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
           OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
           OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_WS01: ${{ secrets.OPENCODE_GO_API_KEY_WS01 }}
           OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # Zen keys fund the lane's free model; Go keys run Go flash (a metered
           # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
           # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
+          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
           # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
           credential-ladder: |
             OPENCODE_API_KEY_HODL opencode
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           # The key authenticates OpenCode. It is selected by the resolved
           # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a
@@ -1837,6 +1841,7 @@ jobs:
           OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
           OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
           OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_WS01: ${{ secrets.OPENCODE_GO_API_KEY_WS01 }}
           OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: opencode
@@ -1844,12 +1849,15 @@ jobs:
           # Zen keys fund the lane's free model; Go keys run Go flash (a metered
           # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
           # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
+          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
           # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
           credential-ladder: |
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_HODL opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
