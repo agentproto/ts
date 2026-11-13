@@ -20,8 +20,8 @@ export interface RegisterReachToolsOptions {
 export function registerReachTools(server: McpServer, opts: RegisterReachToolsOptions): void {
   server.tool(
     "reach_send",
-    "Tell the owner something through the daemon's REACH route (his phone, his chat). A tell only: " +
-      "no question, no answer comes back. Use it sparingly, for what he would want to know now. " +
+    "Tell the owner something through the daemon's REACH route (the owner's phone or chat). A tell only: " +
+      "no question, no answer comes back. Use it sparingly, for what the owner would want to know now. " +
       "`dedupeKey` is required: the same key from your session within 24 h sends nothing and answers " +
       '"deduped". At most 20 tells per session per day. Answers { status, adapterId?, attempts }.',
     {

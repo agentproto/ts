@@ -80,6 +80,14 @@ export function createReachTeller(opts: ReachTellerOptions): ReachTeller {
   let index: TellLine[] | undefined
   const inflight = new Map<string, Promise<ReachTellResult>>()
 
+  /** Drop what is older than the window, so memory stays bounded by 24 h. */
+  function prune(lines: TellLine[]): void {
+    const since = now() - REACH_TELL_WINDOW_MS
+    let keep = 0
+    for (const l of lines) if (Date.parse(l.at) > since) lines[keep++] = l
+    lines.length = keep
+  }
+
   function load(): TellLine[] {
     if (index) return index
     index = []
@@ -97,6 +105,7 @@ export function createReachTeller(opts: ReachTellerOptions): ReachTeller {
     } catch (err) {
       log(`reach: could not read tells: ${err instanceof Error ? err.message : String(err)}`)
     }
+    prune(index)
     return index
   }
 
@@ -110,7 +119,11 @@ export function createReachTeller(opts: ReachTellerOptions): ReachTeller {
       ...(receipt.status === "undelivered" || receipt.status === "failed" ? { reason: receipt.reason } : {}),
       at: receipt.at,
     }
-    if (isAcknowledged(receipt)) load().push(line)
+    if (isAcknowledged(receipt)) {
+      const lines = load()
+      lines.push(line)
+      prune(lines)
+    }
     try {
       mkdirSync(dirname(file), { recursive: true })
       appendFileSync(file, JSON.stringify(line) + "\n")

@@ -3,7 +3,7 @@
  * something through the route. Fake adapters and a fake Telegram fetch only.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -130,6 +130,18 @@ describe("reach_send", () => {
     expect(a.sent).toHaveLength(REACH_TELL_DAILY_LIMIT)
     const other = await connect([a.adapter], "s2")
     expect((await other.call({ summary: "hi", dedupeKey: "k0" })).status).toBe("delivered")
+  })
+
+  it("a line older than 24 h neither dedupes nor counts toward the rate limit", async () => {
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
+    const stale = (key: string) =>
+      JSON.stringify({ key, sessionId: "s1", adapterId: "a", kind: "webhook", status: "delivered", at: old })
+    const lines = [stale("tell:s1:k"), ...Array.from({ length: REACH_TELL_DAILY_LIMIT }, (_, i) => stale(`tell:s1:o${i}`))]
+    writeFileSync(join(dir, "tells.jsonl"), lines.join("\n") + "\n")
+    const a = fakeAdapter("a")
+    const { call } = await connect([a.adapter], "s1")
+    expect((await call({ summary: "hi", dedupeKey: "k" })).status).toBe("delivered")
+    expect(a.sent).toHaveLength(1)
   })
 
   it("rejects non-https links", async () => {
