@@ -102,7 +102,7 @@ async function withServer(fn: (base: string) => Promise<void>, humanIds: readonl
   }
 }
 
-function open(preview: unknown, appId: string | undefined = APP_ID): ApprovalRecord {
+function open(preview: unknown, appId: string | null = APP_ID): ApprovalRecord {
   return engine.request(
     { kind: "send", title: "t", preview, payload: {}, ...(appId ? { appId } : {}) },
     { operator: true },
@@ -144,7 +144,7 @@ describe("approval files: the list", () => {
 
   it("an approval without appId: every name is a no-folder problem, nothing is served", async () => {
     await withServer(async base => {
-      const a = open(preview(), undefined)
+      const a = open(preview(), null)
       const body = (await (await fetch(`${base}/approvals/${a.id}/attachments`, { headers: operator })).json()) as {
         attachments: unknown[]
         problems: Array<{ reason: string }>
