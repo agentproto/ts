@@ -265,11 +265,11 @@ describe("clerk-turn-end controller", () => {
 })
 
 describe("clerk hook configuration - three levels, most specific wins", () => {
-  it("is disabled by default, with a 10-minute debounce and the steward routine", () => {
+  it("is disabled by default, with a 10-minute debounce and nothing to run", () => {
     const resolved = resolveClerkHookConfig({})
     expect(resolved.config.enabled).toBe(false)
     expect(resolved.config.debounceMs).toBe(10 * MIN)
-    expect(resolved.config.run).toEqual({ routine: "steward" })
+    expect(resolved.config.run).toEqual({})
     expect(resolved.sources.enabled).toBe("default")
   })
 
@@ -308,7 +308,7 @@ describe("clerk hook configuration - three levels, most specific wins", () => {
     expect(resolved.sources.run).toBe("agent")
   })
 
-  it("lets a command-only level replace the built-in steward routine", () => {
+  it("lets a command-only level set the command over the empty default", () => {
     const resolved = resolveClerkHookConfig({
       agent: { enabled: true, run: { command: "agentproto", args: ["steward", "act"] } },
     })
@@ -508,14 +508,33 @@ describe("clerk pass runner", () => {
     )
   })
 
-  it("reports a configuration that names neither a routine nor a command", async () => {
+  it("is a clean no-op, with one info line and no error, when nothing is configured to run", async () => {
+    const onNothingToRun = vi.fn()
+    const onError = vi.fn()
+    const triggerRoutine = vi.fn()
+    const spawnCommand = vi.fn()
+    const runner = createClerkPassRunner({ onNothingToRun, onError, triggerRoutine, spawnCommand })
+    // An enabled clerk on the built-in default `run`.
+    const { config } = resolveClerkHookConfig({ agent: { enabled: true } })
+    const result = await runner({ sessionId: "sess_1", session: { id: "sess_1" }, config })
+    expect(result).toEqual({ skipped: "nothing-to-run" })
+    expect(onNothingToRun).toHaveBeenCalledTimes(1)
+    expect(onNothingToRun).toHaveBeenCalledWith({ sessionId: "sess_1" })
+    expect(onError).not.toHaveBeenCalled()
+    expect(triggerRoutine).not.toHaveBeenCalled()
+    expect(spawnCommand).not.toHaveBeenCalled()
+  })
+
+  it("logs one console.info line by default for an enabled clerk with nothing to run", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {})
     const runner = createClerkPassRunner({})
-    await expect(
-      runner({
-        sessionId: "sess_1",
-        session: { id: "sess_1" },
-        config: { ...CLERK_HOOK_DEFAULTS, enabled: true, run: {} },
-      }),
-    ).rejects.toThrow(/neither a routine nor a command/)
+    await runner({
+      sessionId: "sess_1",
+      session: { id: "sess_1" },
+      config: { ...CLERK_HOOK_DEFAULTS, enabled: true },
+    })
+    expect(info).toHaveBeenCalledTimes(1)
+    expect(String(info.mock.calls[0]?.[0])).toMatch(/run names no routine or command/)
+    info.mockRestore()
   })
 })

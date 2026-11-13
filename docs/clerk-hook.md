@@ -48,7 +48,7 @@ states, so an agent that sets `enabled` alone still inherits the workspace's
 | `enabled` | boolean | `false` | Whether the hook fires at all |
 | `on` | `"turn_end"` | `"turn_end"` | The event the hook is bound to |
 | `debounceMs` | number | `600000` (10 min) | Idle debounce before the pass runs |
-| `run.routine` | string | `"steward"` | An AIP-41 routine the pass triggers |
+| `run.routine` | string | - | An AIP-41 routine the pass triggers (e.g. a Steward routine). With neither `run.routine` nor `run.command`, an enabled clerk does a clean no-op and logs one info line |
 | `run.command` | string | - | A shell command the pass runs instead of a routine. Must pass the command allowlist (`.agentproto/allowed-commands.json`), same as `command_execute`; default-deny |
 | `run.args` | string[] | - | argv for `run.command`; `$SESSION_ID` is replaced by the id of the session the pass runs for |
 | `run.cwd` | string | the session's cwd | Working directory for `run.command`, anchored under the session's cwd |
@@ -181,7 +181,7 @@ disposes it on shutdown, cancelling every pending debounce timer.
 
 `run.routine` and `run.command` are mutually exclusive arms. A level that
 names one arm replaces the other arm entirely (so an agent that only names a
-`command` does not keep the built-in `steward` routine); a level naming both
+`command` does not keep an inherited routine); a level naming both
 keeps the routine. `run.cwd` and `run.timeoutMs` are options of the pass and
 are inherited field by field. In the resolved provenance, `sources.run` is
 the level that chose the arm.
