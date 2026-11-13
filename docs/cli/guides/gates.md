@@ -61,10 +61,21 @@ allowlisting `bash`, which (as the warning above says) grants arbitrary code
 execution. Prefer the predicate. For a multi-step check, use the judge gate or
 a committed script run by a deliberately allowlisted interpreter.
 
-If you pass a whole shell line as `command`, the allowlist check takes the
-basename of that entire string, so it fails with a misleading name (for
-example `gate command 'README.md' not in allowlist`) and the line never runs.
-Split the predicate into `command` + `args`, or use a committed script.
+If you pass a whole shell line as `command` with no `args` (for example
+`"test -f README.md && test -s out.txt"`) and that string is not an existing
+file path, the daemon runs it as `bash -c <line>`. The allowlist is then
+checked against `bash`, so the gate only runs if `bash` is allowlisted, and the
+refusal names it and the line:
+`gate command 'bash' not in allowlist (shell line: test -f README.md && ...)`.
+Allowlisting `bash` for that is the broad grant warned about above. Prefer
+`command` + `args` (`test` or `[` as shown) or a committed script.
+
+An allowlist entry can also be an object that constrains the arguments, such as
+`{ "command": "git", "args": ["status"] }`. The entry matches only when the
+gate's argv starts with those `args`. The same constraint applies to the
+`bash -c <line>` rewrite, so an entry like
+`{ "command": "bash", "args": ["-c", "test -f README.md"] }` allows that one
+line and nothing else.
 
 ### Attach the gate
 
