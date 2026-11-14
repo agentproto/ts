@@ -842,6 +842,8 @@ interface LiveEntry {
   state: "open" | "dropped" | "stopped"
   /** Every target this provider created on this endpoint and that is still open. */
   targets: Set<string>
+  /** The helper session kept per opener tab (see `openFromAnchor`). */
+  openers: Map<string, string>
   /** The agent window, when `Browser.getWindowForTarget` answers. */
   windowId?: number
   drivers: Set<ChromeLiveDriver>
@@ -1002,6 +1004,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       conn,
       state: "open",
       targets: new Set(),
+      openers: new Map(),
       drivers: new Set(),
       lock: Promise.resolve(),
       ...(ctx.log ? { log: ctx.log } : {}),
@@ -1051,6 +1054,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
 
   function forget(entry: LiveEntry, targetId: string): void {
     entry.targets.delete(targetId)
+    entry.openers.delete(targetId)
     if (entry.targets.size === 0) delete entry.windowId
   }
 
@@ -1078,16 +1082,27 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
    * a `noopener` tab). `undefined` when the anchor cannot run script or no such tab appears: the caller falls back.
    */
   async function openFromAnchor(entry: LiveEntry, anchor: string): Promise<string | undefined> {
-    let sessionId: string | undefined
     try {
       const known = await pageTargets(entry)
       if (!known.has(anchor)) return undefined
-      ;({ sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId: anchor, flatten: true }))
-      const opened = await entry.conn.send<{ result?: { value?: unknown } }>(
-        "Runtime.evaluate",
-        { expression: 'window.open("about:blank", "_blank", "noopener") !== null', userGesture: true, returnByValue: true },
-        sessionId,
-      )
+      // One helper session per opener, kept: detaching it would make Chrome report a detach for the anchor, and
+      // the connection handler (`Target.detachedFromTarget` -> `forget`) would stop tracking the agent's own tab.
+      let sessionId = entry.openers.get(anchor)
+      if (sessionId === undefined) {
+        ;({ sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId: anchor, flatten: true }))
+        entry.openers.set(anchor, sessionId)
+      }
+      let opened: { result?: { value?: unknown } } | undefined
+      try {
+        opened = await entry.conn.send<{ result?: { value?: unknown } }>(
+          "Runtime.evaluate",
+          { expression: 'window.open("about:blank", "_blank", "noopener") !== null', userGesture: true, returnByValue: true },
+          sessionId,
+        )
+      } catch (err) {
+        entry.openers.delete(anchor)
+        throw err
+      }
       // window.open returned null (blocked, or a page that cannot open one): no tab to wait for.
       if (opened?.result?.value !== true) return undefined
       for (let i = 0; i < 20; i++) {
@@ -1099,8 +1114,6 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       return undefined
     } catch {
       return undefined
-    } finally {
-      if (sessionId) await entry.conn.send("Target.detachFromTarget", { sessionId }).catch(() => {})
     }
   }
 

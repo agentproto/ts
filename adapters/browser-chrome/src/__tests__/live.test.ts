@@ -233,9 +233,23 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     // one createTarget (the agent window itself): the others were opened from a tab of that window
     expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(1)
     expect([...f.targets.values()].filter((t) => t.created && t.windowId === 1)).toEqual([])
-    // the helper session is detached again
-    expect(f.commands.filter((c) => c.method === "Target.detachFromTarget").length).toBeGreaterThanOrEqual(3)
+    // the opener's helper session is kept (a detach would make the adapter forget the opener tab)
+    expect(f.commands.filter((c) => c.method === "Target.detachFromTarget")).toEqual([])
     expect(f.violations).toEqual([])
+    await instance.stop()
+  })
+
+  it("keeps tracking the agent window's tabs while it opens new ones, so a closed tab never sends the next one to a new window", async () => {
+    const f = await fake()
+    f.options.windowOpen = true
+    const instance = await provider(f).launch({}, {})
+    const first = await instance.attach()
+    const agentWindow = f.targets.get(first.target.id)?.windowId
+    const second = await instance.attach()
+    await second.close()
+    const third = await instance.attach()
+    expect(f.targets.get(third.target.id)?.windowId).toBe(agentWindow)
+    expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(1)
     await instance.stop()
   })
 

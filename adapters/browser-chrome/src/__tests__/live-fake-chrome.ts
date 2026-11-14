@@ -229,6 +229,12 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
         case "Target.attachToTarget":
           if (!targetId || !fake.targets.has(targetId)) return fail(msg.id, "No target with given id found")
           return reply(msg.id, undefined, { sessionId: `session-${targetId}` })
+        case "Target.detachFromTarget": {
+          const detached = String(msg.params?.sessionId ?? "")
+          reply(msg.id, undefined, {})
+          // Chrome tells the browser connection about EVERY detach, a helper session's included
+          return emit("Target.detachedFromTarget", { sessionId: detached, targetId: detached.replace(/^session-/, "") })
+        }
         case "Target.closeTarget":
           if (!targetId || !fake.targets.delete(targetId)) return fail(msg.id, "No target with given id found")
           reply(msg.id, undefined, { success: true })
