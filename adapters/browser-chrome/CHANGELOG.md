@@ -1,5 +1,12 @@
 # @agentproto/adapter-browser-chrome
 
+## 0.8.2
+
+### Patch Changes
+
+- bccf307: chrome-live: the browser websocket gets a silent keep-alive ping (`heartbeatIntervalMs`, default 25s) so Chrome's idle reaper does not drop it; `ensure` merges the `agentproto browser install chrome-live` ledger as lowest-priority env, ignoring a ledger value that only restates the step's declared default (an accepted default is also no longer persisted) so a default port never pins an endpoint and flips a bare start to attach-first; the empty `chrome-live-ws-url` step is optional in `browser start`; `browser status` probes the adapter's declared `healthPath` instead of a hardcoded `/health`.
+- b925c41: chrome-live screencast: frames are stamped with Chrome's own capture timestamp (so the mp4 pacing matches capture time), and the frame buffer is also capped at about 64 MB, not only at 2000 frames.
+
 ## 0.8.1
 
 ### Patch Changes

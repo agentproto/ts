@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/reach",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "@agentproto/reach - the REACH contract (reach/v1): one way for a host to reach its human. ReachMessage, ReachReceipt, ReachAdapter and ReachCapabilities types, the approval preview parser, a strict receipt parser and a conformance check for webhook receivers. Zero runtime dependency.",
   "keywords": [
     "agentproto",

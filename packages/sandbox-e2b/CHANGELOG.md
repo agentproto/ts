@@ -1,5 +1,13 @@
 # @agentproto/sandbox-e2b
 
+## 0.11.3
+
+### Patch Changes
+
+- 1b8449f: npm descriptions no longer name harnesses that were never verified (goose, gemini-cli) or pin a baked CLI version (1.31.0); the README now leads with the runtime line and a quickstart tested on a clean machine.
+- Updated dependencies [c6d6c8f]
+  - @agentproto/sandbox@1.0.0
+
 ## 0.11.2
 
 ### Patch Changes

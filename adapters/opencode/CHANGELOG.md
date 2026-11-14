@@ -1,5 +1,22 @@
 # @agentproto/adapter-opencode
 
+## 1.10.0
+
+### Minor Changes
+
+- f69f42b: Re-authentication is a first-class verb, per PARENT account. `agentproto auth reauth <profile|parent> [--check] [--json]` runs the parent's own login (opencode-console fully; claude-code, codex and gemini by delegating to their CLI, or saying what to run when it cannot be automated), then verifies the result, reports side effects such as a moved active account, and says what it could not check. One reauth fixes every sub-account profile under that parent, and switching sub-account never needs a re-login. `@agentproto/auth` adds the `ReauthAdapter` registry (one small module per source), `deriveAuthState`, `profileAuthStatus` and the `AuthReauthRequiredError` / `reauthHintOf` seam. `auth profile list` and `auth status` show `expiresAt` and a derived `state` (ok | expiring | expired | unknown) read from the parent account, plus the parent id for a sub-account profile, never a token. A spawn that fails because the owning parent's session is expired or missing now names the `agentproto auth reauth ...` command in the message and in `details.reauth`, instead of a bare 403.
+
+### Patch Changes
+
+- 2697735: An `opencode-console` profile now always resolves with the token of the stored console login that owns its sub-account (org), never the active login's. When several logins are stored, ownership is proven from each login's `/api/orgs` (cached per login for 5 minutes, re-checked once before failing) before `/api/config` is called, so a valid login is no longer sent to an org it does not own and answered with a bare 403. New typed errors, both still `SubaccountError`: `OpencodeOrgOwnerNotFoundError` (names the profile, the sub-account and the parent account emails tried, and says the owning login is missing) and `OpencodeAccountExpiredError` (names the expired parent account by email and expiry date). Nothing is written to opencode.db and no token appears in any error.
+- Updated dependencies [f69f42b]
+- Updated dependencies [5600477]
+- Updated dependencies [c6d6c8f]
+- Updated dependencies [f001d73]
+  - @agentproto/auth@1.5.0
+  - @agentproto/model-catalog@0.15.2
+  - @agentproto/harness@4.0.0
+
 ## 1.9.7
 
 ### Patch Changes

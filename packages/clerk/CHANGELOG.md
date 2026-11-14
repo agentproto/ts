@@ -1,5 +1,12 @@
 # @agentproto/clerk
 
+## 0.2.1
+
+### Patch Changes
+
+- bc18933: A clerk command's stderr is appended to `~/.agentproto/logs/clerk-<sessionId>.err` instead of being dropped, so a failing pass (exit 1) leaves a cause behind.
+- 89ad4ba: The clerk's default `run` is now empty instead of `routine: "steward"`, a routine that does not exist. A clerk enabled with nothing to run does a clean no-op with one info line instead of a failing pass; an explicitly configured `run` is unchanged.
+
 ## 0.2.0
 
 ### Minor Changes
