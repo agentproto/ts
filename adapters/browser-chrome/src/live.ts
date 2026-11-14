@@ -1054,6 +1054,56 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     if (entry.targets.size === 0) delete entry.windowId
   }
 
+  /**
+   * Makes a page that still exists in Chrome one of this entry's targets, for `attach({ targetId })`.
+   * Throws "no target with given id found" (what the host maps to target-gone) when it does not.
+   */
+  async function adoptTarget(entry: LiveEntry, targetId: string): Promise<string> {
+    if (!(await pageTargets(entry)).has(targetId)) throw new Error(`[chrome-live] no target with given id found (${targetId})`)
+    entry.targets.add(targetId)
+    const windowId = await windowOf(entry, targetId)
+    if (windowId !== undefined) entry.windowId ??= windowId
+    return targetId
+  }
+
+  /** Page targets alive now, by id (their `openerId` tells which tab opened them). */
+  async function pageTargets(entry: LiveEntry): Promise<Map<string, { openerId?: string }>> {
+    const { targetInfos } = await entry.conn.send<{ targetInfos: Array<{ targetId: string; type: string; openerId?: string }> }>("Target.getTargets")
+    return new Map(targetInfos.filter((t) => t.type === "page").map((t) => [t.targetId, { ...(t.openerId ? { openerId: t.openerId } : {}) }]))
+  }
+
+  /**
+   * Opens a blank tab from `anchor` (one of ours) with `window.open(..., "noopener")`, run as a user gesture so
+   * the popup blocker lets it through, and returns its target id (found by `openerId`, which Chrome sets even for
+   * a `noopener` tab). `undefined` when the anchor cannot run script or no such tab appears: the caller falls back.
+   */
+  async function openFromAnchor(entry: LiveEntry, anchor: string): Promise<string | undefined> {
+    let sessionId: string | undefined
+    try {
+      const known = await pageTargets(entry)
+      if (!known.has(anchor)) return undefined
+      ;({ sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId: anchor, flatten: true }))
+      const opened = await entry.conn.send<{ result?: { value?: unknown } }>(
+        "Runtime.evaluate",
+        { expression: 'window.open("about:blank", "_blank", "noopener") !== null', userGesture: true, returnByValue: true },
+        sessionId,
+      )
+      // window.open returned null (blocked, or a page that cannot open one): no tab to wait for.
+      if (opened?.result?.value !== true) return undefined
+      for (let i = 0; i < 20; i++) {
+        for (const [id, info] of await pageTargets(entry)) {
+          if (!known.has(id) && info.openerId === anchor) return id
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      return undefined
+    } catch {
+      return undefined
+    } finally {
+      if (sessionId) await entry.conn.send("Target.detachFromTarget", { sessionId }).catch(() => {})
+    }
+  }
+
   async function createTab(entry: LiveEntry, url: string): Promise<string> {
     if (entry.targets.size === 0) {
       // No agent window yet (or the user closed it): open a dedicated one.
@@ -1063,8 +1113,21 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       if (windowId !== undefined) entry.windowId = windowId
       return targetId
     }
-    // CDP cannot address a window in createTarget: it opens the tab in the last active window.
-    // Activating one of our tabs first makes that the agent window; the windowId check catches a race.
+    // CDP cannot address a window in createTarget: it opens the tab in the last active window, which
+    // another window (the user's, another agent's, one on another Space) can keep. A blank tab opened FROM
+    // one of ours with window.open always lands in the opener's window, whatever has the focus.
+    if (url === "about:blank") {
+      for (const anchor of [...entry.targets]) {
+        const opened = await openFromAnchor(entry, anchor)
+        if (opened === undefined) continue
+        entry.targets.add(opened)
+        const windowId = await windowOf(entry, opened)
+        if (windowId === undefined || entry.windowId === undefined || windowId === entry.windowId) return opened
+        await entry.conn.send("Target.closeTarget", { targetId: opened }).catch(() => {})
+        forget(entry, opened)
+      }
+    }
+    // Fallback: activate one of our tabs first so it becomes the agent window; the windowId check catches a race.
     for (let attempt = 0; attempt < 2; attempt++) {
       const anchor = entry.targets.values().next().value as string
       await entry.conn.send("Target.activateTarget", { targetId: anchor })
@@ -1400,7 +1463,11 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         if (offered && !dedicated) entry.log?.("[chrome-live] ignoring the session payload: cookies are read-only on your own Chrome profile")
         const run = entry.lock.then(async () => {
           const url = attachOpts?.initialUrl ?? "about:blank"
-          const targetId = await createTab(entry, url)
+          // `targetId`: re-attach to a tab of ours that is still open (after the host process restarted, the
+          // connection dropped...) instead of opening a fresh one. Never a tab the caller did not open: the
+          // host checks ownership before it asks.
+          const adopted = attachOpts?.targetId !== undefined
+          const targetId = adopted ? await adoptTarget(entry, attachOpts.targetId as string) : await createTab(entry, url)
           let driver: ChromeLiveDriver | undefined
           try {
             const { sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true })
@@ -1443,7 +1510,14 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
             }
             if (attachOpts?.initialUrl) driver.target.url = attachOpts.initialUrl
           } catch (err) {
-            if (driver) await driver.close()
+            // A tab we only re-attached to is not ours to close on a failed attach.
+            if (adopted) {
+              forget(entry, targetId)
+              if (driver) {
+                entry.drivers.delete(driver)
+                mine.delete(driver)
+              }
+            } else if (driver) await driver.close()
             else {
               await entry.conn.send("Target.closeTarget", { targetId }).catch(() => {})
               forget(entry, targetId)

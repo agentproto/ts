@@ -220,6 +220,53 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     await instance.stop()
   })
 
+  it("opens the next tab from the agent window's own tab, so another window with the focus cannot take it", async () => {
+    const f = await fake()
+    f.options.windowOpen = true
+    f.options.stealFocus = true
+    const instance = await provider(f).launch({}, {})
+    const first = await instance.attach()
+    const agentWindow = f.targets.get(first.target.id)?.windowId
+    const tabs = [first]
+    for (let i = 0; i < 3; i++) tabs.push(await instance.attach())
+    for (const tab of tabs) expect(f.targets.get(tab.target.id)?.windowId).toBe(agentWindow)
+    // one createTarget (the agent window itself): the others were opened from a tab of that window
+    expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(1)
+    expect([...f.targets.values()].filter((t) => t.created && t.windowId === 1)).toEqual([])
+    // the helper session is detached again
+    expect(f.commands.filter((c) => c.method === "Target.detachFromTarget").length).toBeGreaterThanOrEqual(3)
+    expect(f.violations).toEqual([])
+    await instance.stop()
+  })
+
+  it("falls back to createTarget when the anchor tab cannot open a window, and still guards the window", async () => {
+    const f = await fake()
+    f.options.windowOpen = false
+    const instance = await provider(f).launch({}, {})
+    await instance.attach()
+    const second = await instance.attach()
+    expect(f.targets.get(second.target.id)?.windowId).toBe([...f.targets.values()].find((t) => t.created)?.windowId)
+    expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(2)
+    await instance.stop()
+  })
+
+  it("re-attaches to a tab that is still open by its id, without opening another one", async () => {
+    const f = await fake()
+    const instance = await provider(f).launch({}, {})
+    const first = await instance.attach()
+    const before = f.commands.filter((c) => c.method === "Target.createTarget").length
+    const again = await instance.attach({ targetId: first.target.id })
+    expect(again.target.id).toBe(first.target.id)
+    expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(before)
+    // a tab that is gone answers like a missing target
+    await expect(instance.attach({ targetId: "agent-target-999" })).rejects.toThrow(/no target with given id found/)
+    // the user's own tab is never adopted: it is not a page of ours the host can name by accident
+    expect(f.violations).toEqual([])
+    // a failed re-attach never closes the tab
+    expect(f.commands.some((c) => c.method === "Target.closeTarget" && c.params?.targetId === first.target.id)).toBe(false)
+    await instance.stop()
+  })
+
   it("opens a new window only once the user closed the agent window", async () => {
     const f = await fake()
     const instance = await provider(f).launch({}, {})
