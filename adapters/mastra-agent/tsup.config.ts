@@ -17,7 +17,7 @@ export default createTsupConfig({
   // it resolves from the host's node_modules at runtime (same as the apps do).
   external: [
     "@agentproto/agent",
-    "@agentproto/driver-agent-cli",
+    "@agentproto/harness",
     "@agentproto/bridge",
     "@agentclientprotocol/sdk",
     "@ai-sdk/anthropic",

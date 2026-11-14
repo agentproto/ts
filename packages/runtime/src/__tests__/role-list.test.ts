@@ -32,6 +32,7 @@ interface RoleListRow {
   level: number
   delegation: string
   spawnable: string[]
+  delegatesTo?: string[]
 }
 
 function parseRoles(result: unknown): RoleListRow[] {
@@ -145,6 +146,66 @@ describe("role_list", () => {
         cursor = raw.nextCursor
       } while (cursor)
       expect(union.map(r => r.name).sort()).toEqual(["executor", "supervisor"])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("supervisor's row reports its declared delegatesTo", async () => {
+    const h = await harness()
+    try {
+      const roles = parseRoles(await h.client.callTool({ name: "role_list", arguments: {} }))
+      const supervisor = roles.find(r => r.name === "supervisor")!
+      expect(supervisor.delegatesTo).toEqual(["supervisor", "executor"])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("executor's row reports an explicit empty delegatesTo (the key is present)", async () => {
+    const h = await harness()
+    try {
+      const roles = parseRoles(await h.client.callTool({ name: "role_list", arguments: {} }))
+      const executor = roles.find(r => r.name === "executor")!
+      expect("delegatesTo" in executor).toBe(true)
+      expect(executor.delegatesTo).toEqual([])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("omits delegatesTo from a pack role that declares none", async () => {
+    const planner: RoleProfile = {
+      name: "planner",
+      disposition: "You plan work.",
+      toolPolicy: { delegation: "allow" },
+      level: 50,
+    }
+    const h = await harness(async () => ({ planner }))
+    try {
+      const roles = parseRoles(await h.client.callTool({ name: "role_list", arguments: {} }))
+      const row = roles.find(r => r.name === "planner")!
+      expect("delegatesTo" in row).toBe(false)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("reports the delegatesTo a pack role declares, beside its lattice-derived spawnable", async () => {
+    const planner: RoleProfile = {
+      name: "planner",
+      disposition: "You plan work.",
+      toolPolicy: { delegation: "allow" },
+      level: 50,
+      delegatesTo: ["executor"],
+    }
+    const h = await harness(async () => ({ planner }))
+    try {
+      const roles = parseRoles(await h.client.callTool({ name: "role_list", arguments: {} }))
+      const row = roles.find(r => r.name === "planner")!
+      expect(row.delegatesTo).toEqual(["executor"])
+      // `spawnable` stays the lattice view: a level-50 planner reaches the executor and itself, not the supervisor.
+      expect([...row.spawnable].sort()).toEqual(["executor", "planner"])
     } finally {
       await h.close()
     }

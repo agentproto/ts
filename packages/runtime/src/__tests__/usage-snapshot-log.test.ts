@@ -15,7 +15,7 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { readUsageSnapshots } from "../usage-snapshot-log.js"
 import { sessionEventsPath } from "../transcript-writer.js"
 
@@ -119,5 +119,38 @@ describe("readUsageSnapshots", () => {
 
     // Missing file → empty, no throw.
     await expect(readUsageSnapshots("sess_missing", baseDir)).resolves.toEqual([])
+  })
+
+  // E99: a transcript is mostly tool output. Parsing every line of every
+  // transcript made one rollup allocate the whole corpus; only a line that
+  // can be a usage_snapshot is parsed.
+  it("parses only the lines that mention usage_snapshot", async () => {
+    const baseDir = await tmpDir()
+    const filler = Array.from({ length: 200 }, (_, i) => ({ kind: "event", event: { type: "tool_result", output: `x${i}` } }))
+    await writeEvents("sess_mixed", baseDir, [
+      ...filler,
+      { kind: "usage_snapshot", source: "adapter", costUsd: 0.5 },
+      ...filler,
+    ])
+    const parse = vi.spyOn(JSON, "parse")
+    try {
+      const out = await readUsageSnapshots("sess_mixed", baseDir)
+      expect(out).toEqual([{ ts: "2026-07-24T12:00:00.000Z", source: "adapter", costUsd: 0.5 }])
+      expect(parse.mock.calls.length).toBeLessThanOrEqual(1)
+    } finally {
+      parse.mockRestore()
+    }
+  })
+
+  it("reads a line split across stream chunks and a file without a trailing newline", async () => {
+    const baseDir = await tmpDir()
+    const dir = join(baseDir, "sess_big")
+    await mkdir(dir, { recursive: true })
+    const big = JSON.stringify({ seq: 1, ts: "2026-07-24T12:00:00.000Z", kind: "event", output: "y".repeat(200_000) })
+    const snapLine = JSON.stringify({ seq: 2, ts: "2026-07-24T12:00:01.000Z", kind: "usage_snapshot", source: "computed", tokensIn: 3 })
+    await writeFile(sessionEventsPath("sess_big", baseDir), `${big}\n${snapLine}`, "utf8")
+    await expect(readUsageSnapshots("sess_big", baseDir)).resolves.toEqual([
+      { ts: "2026-07-24T12:00:01.000Z", source: "computed", tokensIn: 3 },
+    ])
   })
 })

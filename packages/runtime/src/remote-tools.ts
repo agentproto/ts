@@ -48,14 +48,16 @@ export function registerRemoteTools(
   server.tool(
     "remote_enable",
     "Publish a local port to the internet via Cloudflare. By default exposes " +
-      "this gateway and gates it with a bearer token (returned ONCE in the " +
-      "response — store it; only its hash is persisted). Pass `targetPort` to " +
-      "tunnel a different local service (Supabase, dev server, …); in that mode " +
-      "the daemon does not gate the proxied traffic — the upstream service " +
-      "handles its own auth. Returns the public URL plus a paste-ready " +
-      "`.mcp.json` snippet and a `phoneUrl` — a single link to open on a " +
-      "phone, with the token in a URL fragment (gateway mode, and only when " +
-      "the @agentik/session-chat app is installed). " +
+      "the WHOLE gateway behind one bearer token, for remote MCP clients " +
+      "(the token is returned ONCE; store it, only its hash is persisted). " +
+      "Pass `targetPort` to tunnel a different local service (Supabase, dev " +
+      "server, …); in that mode the daemon does not gate the proxied traffic, " +
+      "the upstream service handles its own auth. Returns the public URL plus " +
+      "a paste-ready `.mcp.json` snippet. " +
+      "Phones do NOT need this: they pair end-to-end with `pair_offer`. Set " +
+      "`phoneLink: true` only for a browser that cannot run the pair page's " +
+      "service worker; that adds a `phoneUrl` whose bearer rides in a URL " +
+      "fragment, and the traffic is plaintext at Cloudflare. " +
       "Re-running while a tunnel is already up errors; call `remote_disable` " +
       "first to rotate.",
     {
@@ -80,9 +82,15 @@ export function registerRemoteTools(
         .describe(
           "Host the tunnel forwards to. Defaults to `127.0.0.1`. Use `localhost` only if the target is explicitly IPv6-bound; cloudflared resolves DNS and IPv6-first lookups can break IPv4-only origins.",
         ),
+      phoneLink: z
+        .boolean()
+        .optional()
+        .describe(
+          "Opt in to a tunnel phone link (`phoneUrl`). Default false: phones pair end-to-end with `pair_offer`. Set true only for a browser without service workers; the link exposes the whole gateway through the tunnel and is plaintext at Cloudflare.",
+        ),
     },
-    async ({ provider, targetPort, targetHost }) => {
-      const result = await controller.enable({ provider, targetPort, targetHost })
+    async ({ provider, targetPort, targetHost, phoneLink }) => {
+      const result = await controller.enable({ provider, targetPort, targetHost, phoneLink })
       return text(result)
     },
   )

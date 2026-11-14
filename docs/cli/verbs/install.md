@@ -32,7 +32,9 @@ agentproto install gemini --dry-run          # print would-be steps
 agentproto install goose --skip-setup        # install binary, skip post-install pipeline
 ```
 
-Resolution: `<slug>` → `@agentproto/adapter-<slug>` from npm. If the
+Resolution: `<slug>` → `@agentproto/harness-<slug>` (the canonical AIP-70
+spelling) first, falling back to `@agentproto/adapter-<slug>` from npm;
+when both exist for one slug, `harness-` wins. If the
 package isn't importable, the CLI bootstraps it by running
 `npm i -g @agentproto/adapter-<slug>` first, then re-resolves. The CLI
 reads the adapter's `AgentCliHandle` and walks its `install[]` block.

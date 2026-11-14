@@ -1,34 +1,50 @@
 /**
- * Provisioned Cloudflare Tunnel provider — `cloudflare-provisioned`.
+ * Provisioned Cloudflare Tunnel provider -- `cloudflare-provisioned`.
  *
  * For daemons that must NOT hold a Cloudflare API token (an end user's
  * machine): a remote provisioning service owns the Cloudflare account and
  * the zone, and the daemon only ever receives the connector token of its
- * own tunnel. The daemon authenticates to that service as the user via OIDC
- * device login (`tunnel_login`), so the service can check who is asking
- * (and whether they are entitled to a tunnel) before creating anything.
+ * own tunnel.
+ *
+ * ## Auth modes
+ *
+ * - **apiKey**: an `sk-` prefixed key from the provisioner's admin API,
+ *   sent as `Authorization: Bearer <apiKey>` on every call.  No OIDC
+ *   fields required; `auth.state()` reports `logged_in` unconditionally.
+ * - **OIDC**: device-code login (`tunnel_login`).  The daemon prompts the
+ *   user to visit a URL and enter a code; the resulting access token is
+ *   refreshed automatically.  Fields: `oidcIssuer`, `oidcClientId`,
+ *   optional `oidcScopes`.
+ *
+ * One or the other must be configured.  When apiKey is present it takes
+ * precedence and OIDC fields are ignored.
  *
  * ## Provisioner contract (v1)
  *
- * All calls carry `Authorization: Bearer <OIDC access token>`.
+ * All calls carry `Authorization: Bearer <token>` (apiKey or OIDC access
+ * token).
  *
  *   PUT    {provisionerUrl}/v1/tunnels/{key}
- *          body  { service: "http://127.0.0.1:<port>" | null, hostnames: string[] }
+ *          body  { service: "http://127.0.0.1:<port>" | null, hostnames: string[], root?: string }
  *          200   { tunnelId, hostnames: string[], token }
- *   DELETE {provisionerUrl}/v1/tunnels/{key}            → 2xx | 404
+ *   DELETE {provisionerUrl}/v1/tunnels/{key}            -> 2xx | 404
  *
  * - `key` is the daemon's stable tunnel identity; the service namespaces it
  *   per user, so two users' keys never collide.
  * - `hostnames` is a request (primary first). Empty = "assign me one". The
  *   service decides what is allowed and returns what it actually routed.
+ * - `root` (optional) picks the domain an assigned hostname lives under
+ *   (e.g. `agentproto.cloud`) on a service that serves several. Omitted =
+ *   the service's choice for this caller. Sent on every PUT of the tunnel.
  * - `service: null` = the tunnel isn't running here; keep the current origin.
  * - PUT is idempotent and replayed on every start, like the managed engine.
- * - Errors: JSON `{ error, message, checkoutUrl? }`. 401 → the daemon
- *   refreshes its token once, then asks for `tunnel_login`; 402 → payment
- *   required, `checkoutUrl` is surfaced to the user; 409 → hostname taken.
+ * - Errors: JSON `{ error, message, checkoutUrl? }`. 401 -> in OIDC mode the
+ *   daemon refreshes its token once, then asks for `tunnel_login`; in apiKey
+ *   mode the key is likely invalid.  402 -> payment required, `checkoutUrl`
+ *   is surfaced to the user; 409 -> hostname taken.
  *
- * Everything after the PUT — supervised `cloudflared`, token in env only,
- * health probes — is the shared {@link CloudflaredRunner}.
+ * Everything after the PUT -- supervised `cloudflared`, token in env only,
+ * health probes -- is the shared {@link CloudflaredRunner}.
  */
 
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -78,17 +94,24 @@ export const PROVISIONED_SETUP_FIELDS = [
     sensitive: false,
   },
   {
+    name: "apiKey",
+    description:
+      "cloudflare-provisioned: API key for the provisioning service. When set, OIDC fields are not required.",
+    required: false,
+    sensitive: true,
+  },
+  {
     name: "oidcIssuer",
     description:
-      "cloudflare-provisioned: OIDC issuer the provisioning service trusts (e.g. https://auth.example.com). Must support the Device Code grant.",
-    required: true,
+      "cloudflare-provisioned: OIDC issuer the provisioning service trusts (e.g. https://auth.example.com). Must support the Device Code grant. Not required when apiKey is set.",
+    required: false,
     sensitive: false,
   },
   {
     name: "oidcClientId",
     description:
-      "cloudflare-provisioned: public (native) OIDC client id used for device login — not a secret.",
-    required: true,
+      "cloudflare-provisioned: public (native) OIDC client id used for device login — not a secret. Not required when apiKey is set.",
+    required: false,
     sensitive: false,
   },
   {
@@ -102,32 +125,44 @@ export const PROVISIONED_SETUP_FIELDS = [
 
 interface ProvisionedConfig {
   provisionerUrl: string
-  oidcIssuer: string
-  oidcClientId: string
+  apiKey?: string
+  oidcIssuer?: string
+  oidcClientId?: string
   oidcScopes?: string
 }
 
 function parseConfig(creds: Record<string, string> | null | undefined): ProvisionedConfig {
-  const need = (k: keyof ProvisionedConfig): string => {
-    const v = creds?.[k]
-    if (!v) {
-      throw new Error(
-        `cloudflare-provisioned is not configured: run setup_tunnel_provider with ${k} ` +
-          "(provisionerUrl, oidcIssuer, oidcClientId)",
-      )
-    }
-    return v
+  const provisionerUrl = creds?.provisionerUrl
+  if (!provisionerUrl) {
+    throw new Error(
+      "cloudflare-provisioned is not configured: run setup_tunnel_provider with provisionerUrl",
+    )
   }
+  const apiKey = creds?.apiKey
+  const oidcIssuer = creds?.oidcIssuer
+  const oidcClientId = creds?.oidcClientId
+
+  if (!apiKey && (!oidcIssuer || !oidcClientId)) {
+    throw new Error(
+      "cloudflare-provisioned: either apiKey or both oidcIssuer + oidcClientId must be set",
+    )
+  }
+
   const cfg: ProvisionedConfig = {
-    provisionerUrl: need("provisionerUrl").replace(/\/$/, ""),
-    oidcIssuer: need("oidcIssuer").replace(/\/$/, ""),
-    oidcClientId: need("oidcClientId"),
+    provisionerUrl: provisionerUrl.replace(/\/$/, ""),
+    ...(apiKey ? { apiKey } : {}),
+    ...(oidcIssuer ? { oidcIssuer: oidcIssuer.replace(/\/$/, "") } : {}),
+    ...(oidcClientId ? { oidcClientId } : {}),
     ...(creds?.oidcScopes ? { oidcScopes: creds.oidcScopes } : {}),
   }
-  for (const k of ["provisionerUrl", "oidcIssuer"] as const) {
+  const urlsToCheck: Array<keyof ProvisionedConfig> = ["provisionerUrl"]
+  if (cfg.oidcIssuer) urlsToCheck.push("oidcIssuer")
+  for (const k of urlsToCheck) {
+    const val = cfg[k]
+    if (typeof val !== "string") continue
     let u: URL
     try {
-      u = new URL(cfg[k])
+      u = new URL(val)
     } catch {
       throw new Error(`cloudflare-provisioned: ${k} must be a URL`)
     }
@@ -219,11 +254,11 @@ export function cloudflareProvisionedTunnelProvider(
   let stopped = false
   let service: string | null = null
 
-  const oidc = (): OidcDeviceClient => {
+  const oidc = (): OidcDeviceClient | null => {
     const cfg = parseConfig(creds)
+    if (cfg.apiKey || !cfg.oidcIssuer || !cfg.oidcClientId) return null
     const sessionPath = defaultSessionPath(deps.home)
     const cacheKey = `${cfg.oidcIssuer}|${cfg.oidcClientId}|${deps.sessionStore ? "injected" : sessionPath}`
-    // Injected stores (tests) are never cached across providers.
     const cached = deps.sessionStore ? undefined : deviceClients.get(cacheKey)
     if (cached) return cached
     const client = new OidcDeviceClient({
@@ -243,7 +278,6 @@ export function cloudflareProvisionedTunnelProvider(
   /** One provisioner call with a single refresh-and-retry on 401. */
   const call = async (method: "PUT" | "DELETE", key: string, body?: unknown) => {
     const cfg = parseConfig(creds)
-    const client = oidc()
     const url = `${cfg.provisionerUrl}/v1/tunnels/${encodeURIComponent(key)}`
     const send = async (token: string) =>
       fetchImpl(url, {
@@ -255,6 +289,10 @@ export function cloudflareProvisionedTunnelProvider(
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       })
+    if (cfg.apiKey) {
+      return send(cfg.apiKey)
+    }
+    const client = oidc()!
     let res = await send(await client.accessToken())
     if (res.status === 401) res = await send(await client.accessToken({ forceRefresh: true }))
     return res
@@ -268,15 +306,20 @@ export function cloudflareProvisionedTunnelProvider(
     }
     const code = body.error ?? `http_${res.status}`
     let msg = `cloudflare-provisioned: ${what} failed (${res.status})${body.message ? `: ${body.message}` : ""}`
-    if (res.status === 401) msg += " — run tunnel_login again"
+    const cfg = parseConfig(creds)
+    if (res.status === 401) msg += cfg.apiKey ? " — check your apiKey" : " — run tunnel_login again"
     if (res.status === 402) {
       msg += body.checkoutUrl ? ` — subscribe at ${body.checkoutUrl}` : " — a subscription is required"
     }
     return new ProvisionerError(res.status, code, msg, body.checkoutUrl)
   }
 
-  const put = async (key: string, hostnames: string[], svc: string | null): Promise<PutResult> => {
-    const res = await call("PUT", key, { service: svc, hostnames })
+  const put = async (tunnel: TunnelIdentity, hostnames: string[], svc: string | null): Promise<PutResult> => {
+    const res = await call("PUT", tunnel.key, {
+      service: svc,
+      hostnames,
+      ...(tunnel.root ? { root: tunnel.root } : {}),
+    })
     if (!res.ok) throw await failure(res, "provision")
     const body = (await res.json()) as Partial<PutResult>
     if (!body.tunnelId || !body.token || !Array.isArray(body.hostnames) || body.hostnames.length === 0) {
@@ -291,7 +334,7 @@ export function cloudflareProvisionedTunnelProvider(
     name: "Cloudflare Provisioned Tunnel",
     version: "builtin",
     description:
-      "Cloudflare tunnel provisioned for you by a remote service after OIDC device login — no Cloudflare token on this machine.",
+      "Cloudflare tunnel provisioned by a remote service (apiKey or OIDC device login) -- no Cloudflare token on this machine.",
     requiresSetup: true,
     capabilities: { ...PROVISIONED_CAPABILITIES },
     setupFields: PROVISIONED_SETUP_FIELDS,
@@ -310,9 +353,20 @@ export function cloudflareProvisionedTunnelProvider(
     },
 
     auth: {
-      begin: async () => oidc().beginLogin(),
-      state: async () => oidc().state(),
-      logout: async () => oidc().logout(),
+      begin: async () => {
+        const client = oidc()
+        if (!client) throw new Error("cloudflare-provisioned: login not needed when using apiKey auth")
+        return client.beginLogin()
+      },
+      state: async () => {
+        const client = oidc()
+        if (!client) return { status: "logged_in" as const, expiresAt: "9999-12-31T23:59:59Z" }
+        return client.state()
+      },
+      logout: async () => {
+        const client = oidc()
+        if (client) await client.logout()
+      },
     },
 
     async start(opts: ProviderStartOptions): Promise<ProviderStartResult> {
@@ -330,12 +384,17 @@ export function cloudflareProvisionedTunnelProvider(
       service = `http://${opts.target.host}:${opts.target.port}`
       let rec: PutResult
       try {
-        rec = await put(tunnel.key, tunnel.hostnames.map(normalizeHost), service)
+        rec = await put(tunnel, tunnel.hostnames.map(normalizeHost), service)
       } catch (err) {
         service = null
         if (err instanceof OidcError) throw new Error(`cloudflare-provisioned: ${err.message}`)
         throw err
       }
+      // A fresh hostname is served by the edge before the zone's record is
+      // visible everywhere. Waiting here keeps the first probe (and the user's
+      // first browser request) from caching an NXDOMAIN for the SOA negative
+      // TTL. A timeout is not an error: the tunnel still starts, degraded.
+      const dnsVisible = await r.awaitPublicDns(rec.hostnames)
       if (stopped) {
         // `stop()` ran during the awaits above and found no runner. Spawning
         // now would leak a cloudflared nobody can stop.
@@ -349,6 +408,7 @@ export function cloudflareProvisionedTunnelProvider(
           hostnames: rec.hostnames,
           workspace: opts.workspace,
           label: managedTunnelName(tunnel.key),
+          ...(dnsVisible ? {} : { dnsPending: true }),
           ...(opts.onLog ? { onLog: opts.onLog } : {}),
           ...(opts.onHealth ? { onHealth: opts.onHealth } : {}),
         })
@@ -373,6 +433,20 @@ export function cloudflareProvisionedTunnelProvider(
     },
 
     async destroy(tunnel: TunnelIdentity): Promise<void> {
+      try {
+        parseConfig(creds)
+      } catch {
+        if (tunnel.tunnelId) {
+          throw new Error(
+            `cloudflare-provisioned: remote tunnel ${tunnel.tunnelId} still exists and cannot be ` +
+              "deleted because the provider is not configured: run setup_tunnel_provider to " +
+              "configure it first",
+          )
+        }
+        // No remote tunnel id was ever stored, so nothing was provisioned
+        // remotely. Forgetting the local record is the complete cleanup.
+        return
+      }
       const res = await call("DELETE", tunnel.key)
       if (!res.ok && res.status !== 404) throw await failure(res, "delete")
     },
@@ -380,14 +454,14 @@ export function cloudflareProvisionedTunnelProvider(
     async addHostname(tunnel: TunnelIdentity, hostname: string): Promise<void> {
       const h = normalizeHost(hostname)
       const next = [h, ...tunnel.hostnames.map(normalizeHost).filter(x => x !== h)]
-      const rec = await put(tunnel.key, next, service)
+      const rec = await put(tunnel, next, service)
       runner?.setHostnames(rec.hostnames)
     },
 
     async removeHostname(tunnel: TunnelIdentity, hostname: string): Promise<void> {
       const h = normalizeHost(hostname)
       const rest = tunnel.hostnames.map(normalizeHost).filter(x => x !== h)
-      const rec = await put(tunnel.key, rest, service)
+      const rec = await put(tunnel, rest, service)
       runner?.setHostnames(rec.hostnames)
     },
 

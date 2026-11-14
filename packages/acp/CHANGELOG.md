@@ -1,5 +1,67 @@
 # @agentproto/acp
 
+## 0.15.0
+
+### Minor Changes
+
+- c710e7e: Pad E2E frame plaintext to size buckets once negotiated in the hello
+
+### Patch Changes
+
+- ae6751d: Surface codex `request_user_input` as an AIP-45 structured question under permission hold. A new `permissionHoldConfig` manifest field lets an agent-cli definition deep-merge inline JSON config into its config env var only for a `permissionHold` session; adapter-codex uses it to enable codex's `default_mode_request_user_input` feature through `CODEX_CONFIG`, keeping `developer_instructions`. The ACP elicitation mapping now reads codex-acp's form shape: the question from `title`, the header from `description`, and the `<id>_note` property (`_meta.codex.role: "user_note"`) as the free-text companion instead of a separate field.
+- aa778c3: Refuse bare submit on fields questions; trim redundant choice text
+
+## 0.14.0
+
+### Minor Changes
+
+- 6effe4d: Structured harness questions (AIP-45 multi-field questions). With permission hold on, the ACP client advertises `elicitation.form` and turns a form `elicitation/create` (claude-code's AskUserQuestion: single choice, multiple choice, "Other" free text, several questions at once) into an `agent-prompt` with `request: "question"` and `question.fields`, parked like a permission. `respondPermission(id, { answers })` sends the answers back as the elicitation content. The runtime exposes the fields on `awaitingQuestion` (`requestId`, `fields`), and `permissions_respond`, `POST /permissions/:id` and the new `agentproto permissions answer` accept `answers`. `@agentclientprotocol/sdk` moves to 1.x in `@agentproto/acp`: 0.21.1 stripped the `_meta` and option descriptions the form relies on.
+
+## 0.13.0
+
+### Minor Changes
+
+- 0e0fd10: Adopt the AIP-45 `mode-changed` stream event and typed `agent-prompt` requests (agentproto/agentproto #121).
+
+  `@agentproto/acp`: `StreamEvent` gains the `mode-changed` variant (`modeId`, `previousModeId`, `cause: "caller" | "agent"`, `reason?`) and the `agent-prompt` event gains `request?` (`tool-permission | question | plan-approval`, absent reads as `tool-permission`) with the `question` and `planApproval` payloads (new `AgentPromptRequestKind`, `AgentPromptQuestion`, `AgentPromptPlanApproval` types). The ACP client turns a `current_mode_update` into `mode-changed`: `cause: "caller"` when it echoes the caller's own `setSessionMode`, `"agent"` otherwise, with `previousModeId` from the tracked mode. A `setSessionMode` the agent does not echo is reported once it is applied; when the agent reports another mode during the call, that report stands. No-op updates are not reported.
+
+  `@agentproto/harness`: `capabilities` accepts `mode_events` and `typed_prompts` (booleans, the `HARNESS.schema.json` fields), and re-exports the new acp types.
+
+  `@agentproto/adapter-mastra-controller`: a controller mode switch is a `mode-changed` event instead of the `thought` notice (`cause: "agent"`, `reason: "plan approved"` after an approved plan), and the host's own `setSessionMode` is reported with `cause: "caller"`. Prompts carry `request`, with a `question` payload (choices, or free text on the `answer` option) or a `planApproval` payload (plan text, `planRef`, target mode, approve and reject option ids). Declares `mode_events` and `typed_prompts`. Deprecated: the `_meta` keys `mastra-controller/request`, `mastra-controller/plan` and `mastra-controller/transitionsTo` (and the `META_REQUEST`, `META_PLAN`, `META_TRANSITIONS_TO` exports) are kept for one release as aliases of the typed fields.
+
+  `@agentproto/runtime`: the pending-permission inbox (`GET /permissions`, `permissions_list`) and the session transcript carry `request`, `question` and `planApproval` unchanged; `mode-changed` is recorded in the transcript, relayed from sandbox sessions, exported, and shown as a `[mode]` output line.
+
+  `@agentproto/cli`: `permissions ls` renders a plan from the typed `planApproval` first, falling back to the `_meta` aliases.
+
+- dd134f4: Retry transient model re-assert on resume and enforce profile allowlists
+- dd134f4: Retry transient model re-assert on resume and enforce profile allow-lists.
+
+  - `@agentproto/acp`: add optional `AcpClientOptions.modelApplyRetry` to bound the re-assert retry after a connect-time model-apply failure, retrying only transient (429/rate-limit) rejections.
+  - `@agentproto/harness`: expose `AgentCliRuntimeSession.modelApplyRejection` so hosts can see a rejected model apply instead of assuming the requested model.
+  - `@agentproto/runtime`: fold per-profile model curation into spawn eligibility (ordered `profileRefs` fall through to the next model-eligible profile), share one canonical identity rule between the catalog read path and the spawn/live `set_model` write paths, and stop the descriptor from claiming a rejected/unknown model.
+
+### Patch Changes
+
+- 03d7c58: Close sockets after failed handshakes, drop stale abort listeners, and fail ready() promptly on a pre-hello tunnel error or close
+- 03d7c58: Close sandboxed transports after failed handshakes, remove stale abort listeners on settle, and make `tunnelClient.ready()` fail promptly on a pre-hello tunnel error or transport close instead of waiting out the hello timeout.
+
+## 0.12.0
+
+### Minor Changes
+
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+
+### Patch Changes
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+
 ## 0.11.3
 
 ### Patch Changes

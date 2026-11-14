@@ -40,9 +40,11 @@ const record = (over: Partial<SandboxDeliveryRecord> = {}): SandboxDeliveryRecor
   ...over,
 })
 
+// Unique id per call: continue-fresh is memoised per source id.
+let prevSeq = 0
 const makePrev = (over: Partial<SessionDescriptor> = {}): SessionDescriptor =>
   ({
-    id: "sess_old",
+    id: `sess_old_${++prevSeq}`,
     kind: "agent-cli",
     remote: true,
     workspaceSlug: "repo",
@@ -203,7 +205,7 @@ describe("migrateSandboxSession", () => {
 
     expect(finalCheckpoint).toHaveBeenCalledOnce()
     expect(finalCheckpoint.mock.calls[0]?.[0]).toMatchObject({ branch: "wt/feat" })
-    expect(recordSandboxCheckpoint).toHaveBeenCalledWith("sess_old", expect.objectContaining({ key: "k1" }), expect.any(String))
+    expect(recordSandboxCheckpoint).toHaveBeenCalledWith(prevRow.id, expect.objectContaining({ key: "k1" }), expect.any(String))
 
     const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
     expect(input).toMatchObject({
@@ -220,13 +222,13 @@ describe("migrateSandboxSession", () => {
     expect(input.prompt).toContain("agentproto-checkpoint/wt/feat")
     expect(input.turnRetry).toBeUndefined()
 
-    expect(kill).toHaveBeenCalledWith("sess_old", "SIGTERM", "restarted")
-    expect(result).toMatchObject({ ok: true, migratedFrom: "sess_old", oldSessionKilled: true })
+    expect(kill).toHaveBeenCalledWith(prevRow.id, "SIGTERM", "restarted")
+    expect(result).toMatchObject({ ok: true, migratedFrom: prevRow.id, oldSessionKilled: true })
     expect(result.restore).toMatchObject({ source: "live", snapshot: { sha: SHA }, branch: "wt/feat" })
     expect(prevRow.continuedTo).toBe("sess_new")
 
     expect(summarizeMigration(result)).toMatchObject({
-      migratedFrom: "sess_old",
+      migratedFrom: prevRow.id,
       migratedTo: "sess_new",
       sandboxId: "box_new",
       branch: "wt/feat",
@@ -244,6 +246,44 @@ describe("migrateSandboxSession", () => {
     const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
     expect(input.turnRetry).toEqual(prevRow.turnRetry)
     expect(input.turnRetry).toMatchObject({ on: ["rate-limit", "upstream-5xx"], action: "migrate", maxMigrations: 3 })
+  })
+
+  it("re-places a ladder-placed session from rung 1 and drops the top-level sandbox and preflight", async () => {
+    const ladder = [
+      { sandbox: "e2b", model: "m1", preflight: ["model-answers"] },
+      { sandbox: "local", model: "m2" },
+    ]
+    prevRow = makePrev({
+      preflight: ["model-answers"],
+      placement: { rung: 1, ladder, attempts: [] },
+    })
+    await migrateSandboxSession(deps(), prevRow, { baseDir })
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.placement).toEqual({ ladder })
+    expect(input.sandbox).toBeUndefined()
+    expect(input.preflight).toBeUndefined()
+  })
+
+  it("forwards the recorded preflight onto a plain sandbox migration", async () => {
+    prevRow = makePrev({ preflight: ["model-answers"] })
+    await migrateSandboxSession(deps(), prevRow, { baseDir })
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.sandbox).toBe("e2b")
+    expect(input.preflight).toEqual(["model-answers"])
+    expect(input.placement).toBeUndefined()
+  })
+
+  it("an explicit target sandbox leaves the ladder", async () => {
+    prevRow = makePrev({
+      placement: { rung: 0, ladder: [{ sandbox: "e2b" }, { sandbox: "local" }], attempts: [] },
+    })
+    await migrateSandboxSession(deps(), prevRow, { baseDir, sandbox: "daytona" })
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.sandbox).toBe("daytona")
+    expect(input.placement).toBeUndefined()
   })
 
   it("falls back to the recorded checkpoint when the old box is dead", async () => {
@@ -280,6 +320,12 @@ describe("migrateSandboxSession", () => {
     })
     const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
     expect(input).toMatchObject({ sandbox: "daytona", model: "claude-opus-5-5", access: { profileRef: "work" } })
+  })
+
+  it("session_migrate accepts a slot access override (handed to the spawn, which resolves it)", async () => {
+    await migrateSandboxSession(deps(), prevRow, { baseDir, access: { profileRef: "slot:claude-primary" } })
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.access).toEqual({ profileRef: "slot:claude-primary" })
   })
 
   it("restores 'none' for a clean final checkpoint", async () => {

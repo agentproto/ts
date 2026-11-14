@@ -138,6 +138,25 @@ describe("stampPrProvenance", () => {
     expect(reg.recorded).toHaveLength(0)
   })
 
+  it("skips a repo listed in skipRepos, matching it case-insensitively, without touching gh", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const run = vi.fn<GhRunner>(async () => ({ exitCode: 0, stdout: "Original body.\n" }))
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+      // The PR url is agentproto/ts; the entry is cased differently on purpose.
+      skipFooterRepos: () => ["AGENTPROTO/TS"],
+    })
+    expect(outcome).toEqual({ stamped: false, reason: "repo opted out of provenance footers" })
+    expect(run).not.toHaveBeenCalled()
+    expect(reg.recorded).toHaveLength(0)
+  })
+
   it("skips a non-create command without touching gh", async () => {
     const reg = fakeRegistry([EXECUTOR])
     const run = vi.fn<GhRunner>(async () => ({ exitCode: 0, stdout: "" }))

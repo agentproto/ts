@@ -47,6 +47,10 @@ export interface SendOutboundInput {
 export interface SendOutboundDeps {
   mcpProxy: McpProxyRegistry
   telegramCreds?: TelegramBotCredsStore
+  /** Calling agent session, when known: threaded to the imported-MCP call
+   *  guard so an approval hold on `send_message`/`upload_media` is attributed
+   *  to that session and its own `hooks.json` applies. Absent = host call. */
+  callerSessionId?: string
 }
 
 export type SendOutboundResult =
@@ -131,13 +135,18 @@ async function sendAgentpush(
       const mimeType = mimeTypeFor(extname(att.path), att.type)
       const type = mapOutboundTypeToAgentpushType(att.type)
 
-      const upload = await deps.mcpProxy.callTool(alias, "upload_media", {
-        channel: input.source,
-        type,
-        data: buffer.toString("base64"),
-        filename,
-        mimeType,
-      })
+      const upload = await deps.mcpProxy.callTool(
+        alias,
+        "upload_media",
+        {
+          channel: input.source,
+          type,
+          data: buffer.toString("base64"),
+          filename,
+          mimeType,
+        },
+        ...(deps.callerSessionId ? [{ callerSessionId: deps.callerSessionId }] : []),
+      )
 
       if (!upload.ok) {
         return { ok: false, error: `upload_media_failed: ${upload.error}` }
@@ -169,10 +178,15 @@ async function sendAgentpush(
   const content: Record<string, unknown> = { text: input.text }
   if (media) content.media = media
 
-  const out = await deps.mcpProxy.callTool(alias, "send_message", {
-    to: { channel: input.source, address: input.contactRef },
-    content,
-  })
+  const out = await deps.mcpProxy.callTool(
+    alias,
+    "send_message",
+    {
+      to: { channel: input.source, address: input.contactRef },
+      content,
+    },
+    ...(deps.callerSessionId ? [{ callerSessionId: deps.callerSessionId }] : []),
+  )
 
   if (!out.ok) {
     return { ok: false, error: out.error }

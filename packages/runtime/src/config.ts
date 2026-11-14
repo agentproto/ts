@@ -30,8 +30,12 @@ import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
+import { adapterDeprecation } from "./harness-alias.js"
 import type { ModelRolesConfig } from "./model-roles.js"
 import type { FollowTriageInput } from "./follow-triage.js"
+import type { DeliveryApplyConfig } from "@agentproto/delivery"
+import type { ReachRouteEntry } from "@agentproto/reach"
+import type { SentinelRoute, SentinelRoutingMode } from "@agentproto/sentinel"
 import { validateConfig } from "./config-schema.js"
 
 export const CONFIG_VERSION = 1 as const
@@ -46,6 +50,15 @@ export interface DaemonConfig {
   /** Trusted browser origins for mutating /sessions/* routes (in
    *  addition to the hardcoded localhost defaults). */
   allowedOrigins?: string[]
+  /** Extra origins (or custom URI schemes) allowed to EMBED the standalone
+   *  app page `GET /apps/:appId/ui` in an iframe, added to the built-in
+   *  `vscode-webview:` / `vscode-file:`. For example a browser-based
+   *  Telegram client. A different axis from `allowedOrigins` (who may call
+   *  the daemon). Only exact `https://host[:port]` origins and custom
+   *  schemes are honoured; `*`, wildcards and bare `http:`/`https:` are
+   *  dropped with a warning at boot. A bare string is read as a
+   *  comma-separated list. */
+  frameAncestors?: string[] | string
   /** When true, the daemon does NOT auto-trust localhost-on-any-port.
    *  Only origins explicitly listed in `allowedOrigins` are allowed.
    *  Pair with a curated list (e.g. `["http://localhost:3000"]`) for
@@ -76,6 +89,18 @@ export interface DaemonConfig {
   resumeSessionsOnBoot?: boolean
   /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
   bootResumePolicy?: "all" | "keepalive"
+  /** Idle cutoff, in minutes, for eagerly resuming a `keepAlive` session at
+   *  boot. A `keepAlive` row is exempt from the idle reaper, so without this
+   *  it would be revived on every daemon restart even after its work finished
+   *  days earlier. Rows idle longer than this (measured from their last
+   *  turn-end) are left dead-but-lazy-resumable: the next prompt, or an
+   *  explicit `session_restart`, revives them on demand. Explicitly pinned
+   *  sessions are always resumed; an `operatorLabel` does not exempt a row
+   *  (it is an identity stamped on every operator spawn). Default 30. Set to 0 to disable the
+   *  cutoff (restore the old resume-everything behavior); only meaningful
+   *  when `resumeSessionsOnBoot` is on. Set via
+   *  `agentproto config set daemon.bootResumeKeepAliveMaxIdleMinutes 30`. */
+  bootResumeKeepAliveMaxIdleMinutes?: number
   /** Boot re-ensure of installed apps' service owners. DEFAULT ON: an
    *  installed app's services are part of the service contract, and they
    *  are deterministic processes (cost/spawn-storm concerns behind
@@ -187,6 +212,15 @@ export interface DaemonConfig {
    *  30 min; non-positive falls back to the default. Set via `agentproto
    *  config set daemon.externalSessionLivenessMs <ms>`. */
   externalSessionLivenessMs?: number
+  /** Opt-in `claude-socket` wake adapter for external Claude Code sessions
+   *  (`cc:<session_id>` rows). When true, a level 2+ message (next-turn /
+   *  steer) also wakes the idle Claude Code process over its per-session
+   *  unix socket, instead of waiting for the next hook poll. Level 1 (fyi)
+   *  always falls back to the inbox. A `bypassPermissions` target is written
+   *  to too, but Claude Code holds the message unless the user's
+   *  `crossSessionInbound` is `accept`; the held message is also parked in the
+   *  inbox (`agentproto doctor --fix`). Default false. Set via `agentproto config set daemon.claudeSocketWake true`. */
+  claudeSocketWake?: boolean
   /** On-disk retention for REVIEW-LANE sessions (`origin: "review"` /
    *  `review:` label): a terminal review session whose last activity is older
    *  than this many days has its `~/.agentproto/sessions/<id>/` dir DELETED
@@ -201,6 +235,16 @@ export interface DaemonConfig {
    *  never deleted either way. Set via `agentproto config set
    *  daemon.sessionRetentionDays <days>`. */
   sessionRetentionDays?: number
+  /** Adapter-config cache retention, in days: once every session of a
+   *  lineage is terminal and quiet this long, the periodic sweep deletes the
+   *  cache paths of its `~/.agentproto/adapter-config/<id>/` dir (pnpm store,
+   *  opencode snapshot/tool-output/log), keeping what a resume reads.
+   *  Default 1; `0` / negative disables. Set via `agentproto config set
+   *  daemon.harnessCacheRetentionDays <days>`. */
+  harnessCacheRetentionDays?: number
+  /** @deprecated Old name of `harnessCacheRetentionDays`, read only when
+   *  that key is unset; removed in the next major of @agentproto/runtime. */
+  adapterCacheRetentionDays?: number
 }
 
 export interface TitlerConfig {
@@ -331,6 +375,14 @@ export interface WorktreesConfig {
    */
   root?: string
   /**
+   * Extra directories `agentproto maintain --all` scans for worktrees, in
+   * addition to `root`. For pools that live outside `root` (a repo's own
+   * `_worktrees/`, sibling `*-wt-*` dirs). Each dir holds worktrees directly
+   * (`<dir>/<slug>`) or in buckets (`<dir>/<repo>/<slug>`); `~/` expands.
+   * The `--worktrees-root` flag adds to this list, it does not replace it.
+   */
+  extraRoots?: string[]
+  /**
    * Policy for `agent_start.worktree` isolation. Resolution order mirrors
    * the module docblock (there is no CLI flag — this is a daemon-side
    * policy read at spawn, not a per-invocation flag):
@@ -368,6 +420,24 @@ export interface WorktreesConfig {
    * host cannot deadlock the queue.
    */
   provisionLoadFactor?: number
+  /**
+   * Boot stall timeout for a provisioning, in ms: when the deps / setup-hook
+   * process prints nothing for this long, its process tree is killed and the
+   * session fails with `error` (phase, last output lines, elapsed). A slow
+   * setup that keeps printing never trips it. `0` disables. Resolution order:
+   * `agent_start.worktree.stallTimeoutMs` > env
+   * `AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS` > this field > the
+   * default `120000`.
+   */
+  provisionStallTimeoutMs?: number
+  /**
+   * Hard cap on one provisioning's heavy segment, in ms (counted from when it
+   * gets its slot, not while queued); same failure path as the stall timeout.
+   * `0` disables. Resolution order: `agent_start.worktree.maxMs` > env
+   * `AGENTPROTO_WORKTREES_PROVISION_MAX_MS` > this field > the default
+   * `1800000` (30 min).
+   */
+  provisionMaxMs?: number
 }
 
 /**
@@ -478,6 +548,71 @@ export interface ApprovalsConfig {
    * callback has none). Default absent — `telegram` is OFF until set.
    */
   telegramBotSecret?: string
+  /**
+   * Telegram tap-to-approve for the pending-permissions inbox
+   * (`permission-telegram-bridge.ts`). The bridge starts only when BOTH
+   * `permissionTelegramChatId` and a non-empty `permissionTelegramUserIds`
+   * are set; default absent = no bridge, no behaviour change. Chat that gets
+   * the approval messages and the only chat taps are accepted from.
+   */
+  permissionTelegramChatId?: string
+  /** Telegram user ids allowed to tap Allow/Reject. */
+  permissionTelegramUserIds?: string[]
+  /** Bot credential alias (`telegram_bot_token_set`) and the signed telegram
+   *  inbound endpoint alias that receives the taps. Default `"default"`. */
+  permissionTelegramAlias?: string
+  /** Tool names mirrored to Telegram. Default `["send_message"]`. */
+  permissionTelegramTools?: string[]
+  /**
+   * Also send each pending approvals-engine record (`approval:requested`,
+   * e.g. a Bureau recipe write) to the same Telegram chat as an
+   * Approve / Refuse card (`approval-telegram-bridge.ts`). Reuses
+   * `permissionTelegramChatId`, `permissionTelegramUserIds` and
+   * `permissionTelegramAlias`; does nothing unless those are set. Default
+   * false. Turning it on also adds `telegram` to new approvals' `channels`.
+   */
+  telegramApprovalCards?: boolean
+  /**
+   * Send the files named in `preview.attachments` to the Telegram chat as
+   * documents and photos before the approval card. Default false: the card
+   * only names them. Read at boot; lockout key (`writable: false`).
+   */
+  telegramAttachments?: boolean
+  /**
+   * Telegram user ids (digits only) allowed to read and decide ONE pending
+   * approval through an approval link: a link-session token whose
+   * `approvalId` claim equals the route's id, on `GET /approvals/:id` and
+   * `POST /approvals/:id/decision/telegram` (`app-link-gate.ts`,
+   * `approvals/http.ts`). Default empty = approval links are off. Lockout
+   * key (`writable: false`): an agent must not widen who can approve.
+   */
+  humanTelegramIds?: string[]
+}
+
+/**
+ * REACH (`reach/`): how the daemon reaches its human. `routes.<principal>` is
+ * the ordered list of adapter instances for that principal; only `owner` is
+ * read today. Absent or empty: no router, the Telegram approval bridge
+ * announces on its own exactly as before. Read at boot; lockout key, and each
+ * webhook `secret` and chat-sdk `accessToken` is redacted on read.
+ */
+export interface ReachConfig {
+  routes?: Record<string, ReachRouteEntry[]>
+}
+
+/**
+ * MCP gateway policy (top-level `mcp`). Distinct from `defaults.mcp`, which
+ * configures the MCP servers a SPAWN mounts.
+ */
+export interface McpConfig {
+  /** How a tool call that reaches the gateway WITHOUT a caller identity
+   *  (Claude Code / Claude Desktop talking to the MCP server directly, no
+   *  `?session=` / bearer caller) is handled. `block` (default) refuses with
+   *  `no_caller_identity`; `accept` allows an identity-less `message_send`
+   *  to go out as the anonymous literal sender `claude-code` (never as any
+   *  session, never an ACL elevation); `ask` parks the send on a human
+   *  approval before delivering it. */
+  noCallerIdentity?: "block" | "ask" | "accept"
 }
 
 /**
@@ -497,6 +632,24 @@ export interface SentinelConfig {
    *  `steer` | `interrupt`). Default `"next-turn"`. Read per PR, so a
    *  `config_set` applies to the next one without a restart. */
   autoWatchUrgency?: "fyi" | "next-turn" | "steer" | "interrupt"
+  /** Signal-routing rule table (`@agentproto/sentinel`'s `sentinel-routes.ts`):
+   *  which provider should carry which subject. Shadow only for now: the
+   *  router decides, logs to `~/.agentproto/sentinel-routing.jsonl` and
+   *  stamps `route` on the sentinel, it never changes the provider used. */
+  routes?: SentinelRoute[]
+  routing?: {
+    /** `shadow` (default). `enforce` is accepted but not applied yet. */
+    mode?: SentinelRoutingMode
+  }
+}
+
+/**
+ * Delivery-kernel application policy (`@agentproto/delivery`). Which event
+ * types a producer hands to the kernel's level mapping; everything not opted
+ * in keeps its original delivery path.
+ */
+export interface DeliveryConfig {
+  apply?: DeliveryApplyConfig
 }
 
 /**
@@ -568,6 +721,20 @@ export interface SessionsConfig {
    * transcripts do NOT move).
    */
   eventsDir?: string
+}
+
+/**
+ * Where the daemon's AIP-72 memory store lives (`memory-stores.ts`). The
+ * `memory_*` MCP tools and the spawn digest read the store at this root
+ * unless an agent's AIP-42 `memory.store` names its own files root.
+ */
+export interface MemoryStoreConfig {
+  /**
+   * Root of the default reference-layout store (`items/<type>/<id>.md`,
+   * `proposals/<id>.md`). Absolute, `~/`, or relative to the home
+   * directory. Read at boot; unset means `~/.agentproto/memory`.
+   */
+  root?: string
 }
 
 /**
@@ -706,6 +873,13 @@ export interface TerminalPreset {
   label?: string
 }
 
+export interface AppsConfig {
+  /** appId -> absolute paths outside the app folder the app may READ
+   *  (never write). Validated by `app-read-grants.ts`; hand-edit only. */
+  readGrants?: Record<string, string[]>
+  [unknown: string]: unknown
+}
+
 export interface AgentprotoConfig {
   version?: number
   daemon?: DaemonConfig
@@ -724,14 +898,22 @@ export interface AgentprotoConfig {
   provenance?: ProvenanceConfig
   /** Approvals policy — the `web_click` origin allowlist. See {@link ApprovalsConfig}. */
   approvals?: ApprovalsConfig
+  /** How the daemon reaches its human. See {@link ReachConfig}. */
+  reach?: ReachConfig
+  /** MCP gateway policy. See {@link McpConfig}. */
+  mcp?: McpConfig
   /** Sentinel auto-link policy. See {@link SentinelConfig}. */
   sentinel?: SentinelConfig
   /** Session-follow policy (triage). See {@link FollowConfig}. */
   follow?: FollowConfig
+  /** Delivery-kernel application policy. See {@link DeliveryConfig}. */
+  delivery?: DeliveryConfig
   /** Review-primitive host policy. See {@link ReviewConfig}. */
   review?: ReviewConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
+  /** The default AIP-72 memory store. See {@link MemoryStoreConfig}. */
+  memory?: MemoryStoreConfig
   /** Model roles: ROLE → model id (or `{ model, route?, profile? }`), the
    *  one place reviewer/judge models are configured. Layer 3 of the
    *  precedence documented in `model-roles.ts` (input > workspace
@@ -767,6 +949,10 @@ export interface AgentprotoConfig {
   /** Profile name to use when `--profile` isn't passed. When unset,
    *  the top-level `daemon` / `tunnel` blocks are used directly. */
   activeProfile?: string
+  /** Account slots (AIP-46 access axis): slot name (no dot) -> real auth
+   *  profile id. A `profileRef` of `slot:<name>` resolves through this map at
+   *  the moment of use (`resolveProfileRef`, `account-slots.ts`). */
+  accountSlots?: Record<string, string>
   /** Default `skills` + `options` auto-applied to every `agent_start`
    *  spawn — global and per-adapter. See `resolveSpawnDefaults` in
    *  `spawn-defaults.ts` for the merge precedence with an explicit call.
@@ -780,6 +966,9 @@ export interface AgentprotoConfig {
   /** User-defined named terminal/TUI presets. Local-only; never
    *  packaged in shared adapter manifests or defaults. */
   terminalPresets?: Record<string, TerminalPreset>
+  /** Operator-side settings for installed apps. Never read from an app
+   *  manifest: an app cannot grant itself anything here. */
+  apps?: AppsConfig
   /** Unknown keys preserved across save round-trips. */
   [unknown: string]: unknown
 }
@@ -836,6 +1025,32 @@ function sanitizeAcpAgents(
  * again, since the hash is the only memory kept, not a boolean per path.
  */
 const warnedInvalidConfigHashes = new Map<string, string>()
+/** Same once-per-(path, content) memory, for the deprecated harness keys. */
+const warnedDeprecatedConfigHashes = new Map<string, string>()
+
+/**
+ * The deprecated `adapter` spellings a config still uses, one dated line
+ * each. Read-only: the daemon never rewrites the file to migrate them; the
+ * old keys keep working as a fallback of the new ones.
+ */
+export function harnessConfigDeprecations(cfg: AgentprotoConfig): string[] {
+  const out: string[] = []
+  if (cfg.defaults?.adapters !== undefined) {
+    out.push(adapterDeprecation("defaults.adapters", "defaults.harnesses") +
+      " (a field set under defaults.harnesses.<slug> wins)")
+  }
+  if (cfg.daemon?.adapterCacheRetentionDays !== undefined) {
+    out.push(adapterDeprecation("daemon.adapterCacheRetentionDays", "daemon.harnessCacheRetentionDays"))
+  }
+  return out
+}
+
+/** `daemon.harnessCacheRetentionDays`, falling back to the deprecated
+ *  `daemon.adapterCacheRetentionDays`. */
+export function harnessCacheRetentionDays(cfg: AgentprotoConfig): number | undefined {
+  const value = cfg.daemon?.harnessCacheRetentionDays ?? cfg.daemon?.adapterCacheRetentionDays
+  return typeof value === "number" ? value : undefined
+}
 
 function hashConfigContent(raw: string): string {
   return createHash("sha256").update(raw, "utf8").digest("hex")
@@ -862,6 +1077,14 @@ export async function loadConfig(path?: string): Promise<AgentprotoConfig> {
       // `acpHandleFromSpec` time, with precise field-level messages.
       if (cfg.acpAgents !== undefined) {
         cfg.acpAgents = sanitizeAcpAgents(cfg.acpAgents, target)
+      }
+      const deprecations = harnessConfigDeprecations(cfg)
+      if (deprecations.length > 0) {
+        const contentHash = hashConfigContent(raw)
+        if (warnedDeprecatedConfigHashes.get(target) !== contentHash) {
+          warnedDeprecatedConfigHashes.set(target, contentHash)
+          for (const line of deprecations) console.warn(`[runtime/config] ${target}: ${line}`)
+        }
       }
       const validation = validateConfig(cfg)
       if (!validation.ok) {

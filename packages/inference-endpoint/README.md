@@ -471,6 +471,8 @@ validation. Declared-tool `tool_use` blocks pass through normally as OpenAI `too
 
 ## Running it
 
+The installed command is `inference-endpoint`.
+
 No bespoke start script — it's a normal workspace package, driven by `pnpm` scripts:
 
 ```bash
@@ -554,7 +556,7 @@ secret, both the edge rule and the app gate.
 
 ### Generating the Cloudflare rule (`print-waf-rule`)
 
-`llm-endpoint print-waf-rule` prints a Cloudflare custom-rule (wirefilter)
+`inference-endpoint print-waf-rule` prints a Cloudflare custom-rule (wirefilter)
 expression that **blocks** any request lacking a valid token, so the secret
 lives in one place and the edge rule is generated, not hand-typed. It reads
 `LLM_ENDPOINT_EDGE_TOKENS` (→ `X-Edge-Auth`) when set, else
@@ -563,7 +565,7 @@ lives in one place and the edge rule is generated, not hand-typed. It reads
 is always allowed.
 
 ```bash
-LLM_ENDPOINT_ACCESS_TOKENS="$SECRET" llm-endpoint print-waf-rule --host llm.example.com
+LLM_ENDPOINT_ACCESS_TOKENS="$SECRET" inference-endpoint print-waf-rule --host llm.example.com
 # → (http.host eq "llm.example.com" and http.request.method ne "OPTIONS"
 #     and not any(http.request.headers["authorization"][*] eq "Bearer $SECRET"))
 ```

@@ -15,6 +15,10 @@
  * emitted schema.ts against the checked-in
  * `packages/<slug>/src/schema.ts`. Exit 1 on any divergence.
  *
+ * The leading doc comment of schema.ts is NOT compared (`schemaCode`): the
+ * scaffolder emits a template header, and a package may rewrite it to
+ * describe its own files. Only the code below it is load-bearing.
+ *
  * `types.ts` is NOT diffed: its own header says the handle/runtime types
  * are hand-tuned on top of the generated base, so a mechanical diff is
  * meaningless there. `schema.ts` is the single validation source of truth
@@ -23,6 +27,15 @@
  *
  * Usage: node scripts/check-spec-drift.mjs
  *   --aip 36 --slug sandbox --doctype SANDBOX  (these defaults)
+ *   [--inline-refs] [--write]
+ *
+ * `--write` rewrites the generated code in `packages/<slug>/src/schema.ts`
+ * instead of only reporting drift, preserving each package's own leading
+ * doc comment.
+ *
+ * A manual run of a package DEFAULT_PACKAGES guards takes that entry's
+ * flags (`--inline-refs` for AIP-72), so it regens exactly as the scripted
+ * run does; `--inline-refs` sets the flag for any other package.
  *
  * With no arguments the CLI checks EVERY entry of DEFAULT_PACKAGES (not
  * just sandbox) — one regen per guarded package, all failures reported,
@@ -33,7 +46,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -49,18 +62,72 @@ export const DEFAULTS = { aip: 36, slug: "sandbox", doctype: "SANDBOX" }
 export const DEFAULT_PACKAGES = [
   DEFAULTS,
   { aip: 20, slug: "work", doctype: "WORK" },
+  // AIP-72's lifetime/provenance/evidence are `$ref`s; without
+  // `--inline-refs` they would generate as `z.any()`.
+  { aip: 72, slug: "memory", doctype: "MEMORY", inlineRefs: true },
+  // AIP-42's `tools` items are `$ref: toolRef` (an AIP-54 ref or the
+  // structured `mcp` server ref); only that def is inlined, so the other
+  // ref'd AGENT fields keep their `z.any()` shape.
+  { aip: 42, slug: "agent", doctype: "AGENT", inlineRef: ["toolRef"] },
 ]
+
+const BOOLEAN_FLAGS = new Set(["inline-refs", "write"])
 
 function parseArgs(argv) {
   const args = {}
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) args[argv[i].slice(2)] = argv[i + 1]
+    if (!argv[i].startsWith("--")) continue
+    const key = argv[i].slice(2)
+    if (BOOLEAN_FLAGS.has(key)) args[key] = true
+    else args[key] = argv[++i]
   }
   return args
 }
 
+/** The packages a CLI run checks: every DEFAULT_PACKAGES entry with no
+ *  arguments, otherwise the one named, with the flags of its guarded entry
+ *  when it has one. */
+export function cliTargets(argv) {
+  const args = parseArgs(argv)
+  const explicit =
+    args.aip !== undefined || args.slug !== undefined || args.doctype !== undefined
+  if (!explicit) return DEFAULT_PACKAGES
+  const named = {
+    aip: Number(args.aip ?? DEFAULTS.aip),
+    slug: args.slug ?? DEFAULTS.slug,
+    doctype: (args.doctype ?? DEFAULTS.doctype).toUpperCase(),
+  }
+  const guarded = DEFAULT_PACKAGES.find(
+    p => p.aip === named.aip && p.slug === named.slug && p.doctype === named.doctype,
+  )
+  const inlineRefs = args["inline-refs"] === true || guarded?.inlineRefs === true
+  const inlineRef = args["inline-ref"]
+    ? String(args["inline-ref"]).split(",").filter(Boolean)
+    : guarded?.inlineRef
+  return [
+    {
+      ...named,
+      ...(inlineRefs ? { inlineRefs: true } : {}),
+      ...(inlineRef ? { inlineRef } : {}),
+    },
+  ]
+}
+
+/** Split schema.ts into its leading `/** ... *\/` doc comment (plus the
+ *  blank lines after it) and the generated code below it. */
+export function splitSchema(src) {
+  const match = src.match(/^(\/\*\*[\s\S]*?\*\/\n*)([\s\S]*)$/)
+  return match ? { header: match[1], code: match[2] } : { header: "", code: src }
+}
+
+/** schema.ts without its leading `/** ... *\/` doc comment (and the blank
+ *  lines after it), so a package-specific header is not reported as drift. */
+export function schemaCode(src) {
+  return splitSchema(src).code
+}
+
 export async function checkSpecDrift(opts = {}) {
-  const { aip, slug, doctype } = { ...DEFAULTS, ...opts }
+  const { aip, slug, doctype, inlineRefs, inlineRef, write } = { ...DEFAULTS, ...opts }
   const specJsonPath = resolve(ROOT, "specs", "resources", `aip-${aip}`, "draft", `${doctype}.schema.json`)
   if (!existsSync(specJsonPath)) {
     return { ok: false, message: `JSON draft not found: ${specJsonPath}` }
@@ -74,6 +141,8 @@ export async function checkSpecDrift(opts = {}) {
       "--slug", slug,
       "--doctype", doctype,
       "--schema-only",
+      ...(inlineRefs ? ["--inline-refs"] : []),
+      ...(inlineRef ? ["--inline-ref", inlineRef.join(",")] : []),
     ],
     { encoding: "utf8", cwd: ROOT },
   )
@@ -81,12 +150,24 @@ export async function checkSpecDrift(opts = {}) {
     return { ok: false, message: `scaffold-aip --schema-only failed:\n${res.stderr || res.stdout}` }
   }
 
-  const checkedIn = readFileSync(resolve(ROOT, "packages", slug, "src", "schema.ts"), "utf8")
-  if (res.stdout === checkedIn) {
-    return { ok: true, message: `spec↔codegen in sync for @agentproto/${slug}` }
+  const schemaPath = resolve(ROOT, "packages", slug, "src", "schema.ts")
+  const checkedInRaw = readFileSync(schemaPath, "utf8")
+  const checkedIn = schemaCode(checkedInRaw)
+  const regen = schemaCode(res.stdout)
+  if (regen === checkedIn) {
+    return { ok: true, changed: false, message: `spec↔codegen in sync for @agentproto/${slug}` }
+  }
+  if (write) {
+    const written = `${splitSchema(checkedInRaw).header}${regen}`
+    writeFileSync(schemaPath, written)
+    return {
+      ok: true,
+      changed: true,
+      message: `spec-codegen: rewrote packages/${slug}/src/schema.ts`,
+    }
   }
   const lines = []
-  const e = res.stdout.split("\n")
+  const e = regen.split("\n")
   const a = checkedIn.split("\n")
   for (let i = 0; i < Math.max(e.length, a.length); i++) {
     if (e[i] !== a[i]) {
@@ -99,27 +180,18 @@ export async function checkSpecDrift(opts = {}) {
     ok: false,
     message:
       `spec/codegen DRIFT in packages/${slug}/src/schema.ts — regenerate with ` +
-      `\`node scripts/scaffold-aip.mjs --aip ${aip} --slug ${slug} --doctype ${doctype} --schema-only\` ` +
+      `\`node scripts/scaffold-aip.mjs --aip ${aip} --slug ${slug} --doctype ${doctype} --schema-only${inlineRefs ? " --inline-refs" : ""}${inlineRef ? ` --inline-ref ${inlineRef.join(",")}` : ""}\` ` +
       `(or update the JSON draft first, then regen):\n${lines.join("\n")}`,
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = parseArgs(process.argv.slice(2))
-  const explicit =
-    args.aip !== undefined || args.slug !== undefined || args.doctype !== undefined
-  const targets = explicit
-    ? [
-        {
-          aip: Number(args.aip ?? DEFAULTS.aip),
-          slug: args.slug ?? DEFAULTS.slug,
-          doctype: (args.doctype ?? DEFAULTS.doctype).toUpperCase(),
-        },
-      ]
-    : DEFAULT_PACKAGES
+  const argv = process.argv.slice(2)
+  const targets = cliTargets(argv)
+  const write = argv.includes("--write")
   let ok = true
   for (const t of targets) {
-    const result = await checkSpecDrift(t)
+    const result = await checkSpecDrift({ ...t, write })
     if (result.ok) {
       console.log(result.message)
     } else {

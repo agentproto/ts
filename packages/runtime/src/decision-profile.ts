@@ -34,6 +34,7 @@ import {
   type DaemonReviewerHostDeps,
 } from "./review-reviewer-host.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
+import { AccountSlotError, isSlotRef, resolveProfileRef, type AccountSlots } from "./account-slots.js"
 import type { UserPreset } from "./user-presets.js"
 import type { SpawnAgentSessionInput } from "./session-spawn.js"
 import type { AuthProfile } from "@agentproto/auth"
@@ -43,7 +44,8 @@ export type DecisionEntitlement = "free-only" | "subscription"
 export interface DecisionEscalationTarget {
   /** A harness/user preset id (resolved through the existing preset stores). */
   readonly preset?: string
-  /** Or an explicit adapter + model (+ auth profile). */
+  /** Or an explicit harness + model (+ auth profile). Internal key; the
+   *  input spells it `harness` (see {@link DecisionProfileInput}). */
   readonly adapter?: string
   readonly model?: string
   readonly profileRef?: string
@@ -100,7 +102,9 @@ const PROFILE_ALIASES: Readonly<Record<string, DecisionProfileId>> = {
 export interface DecisionProfileInput {
   readonly profile?: string
   readonly jev?: boolean
-  readonly escalation?: DecisionEscalationTarget & { readonly timeoutMs?: number }
+  /** `harness` is canonical; `adapter` (from the target type) is its
+   *  deprecated alias, and `harness` wins when both are set. */
+  readonly escalation?: DecisionEscalationTarget & { readonly harness?: string; readonly timeoutMs?: number }
   readonly reviewTimeoutMs?: number
 }
 
@@ -123,7 +127,7 @@ export function resolveExecProfile(
   const target: DecisionEscalationTarget = e
     ? {
         ...(e.preset !== undefined ? { preset: e.preset } : {}),
-        ...(e.adapter !== undefined ? { adapter: e.adapter } : {}),
+        ...((e.harness ?? e.adapter) !== undefined ? { adapter: e.harness ?? e.adapter } : {}),
         ...(e.model !== undefined ? { model: e.model } : {}),
         ...(e.profileRef !== undefined ? { profileRef: e.profileRef } : {}),
         ...(e.roleDefault !== undefined ? { roleDefault: e.roleDefault } : {}),
@@ -231,6 +235,8 @@ export interface PresetLookups extends Pick<DaemonReviewerHostDeps, "getHarnessP
   readonly getDefaultHarnessPreset?: (harness: string) => Promise<{ profileRef: string; defaultModel?: string } | undefined>
   /** The configured `review.small` role (workspace/daemon `models` block). */
   readonly resolveRole?: (role: string) => ResolvedModelRole | undefined
+  /** Account slot map for a `slot:<name>` profileRef. Defaults to config.json. */
+  readonly loadAccountSlots?: () => Promise<AccountSlots>
 }
 
 export type ResolvedTarget =
@@ -305,7 +311,7 @@ export async function resolveAndValidateTarget(
   }
 
   const user = fields.preset as (UserPreset & Record<string, unknown>) | undefined
-  const adapter = fields.adapter ?? user?.adapter ?? user?.harness
+  const adapter = fields.adapter ?? user?.harness ?? user?.adapter
   const model = reviewerModel(fields)
   const verdict = validateSpawnTarget(profile, {
     adapter,
@@ -325,6 +331,22 @@ export async function resolveAndValidateTarget(
       profileRef = inherited?.profileRef
     } catch {
       return { ok: false, code: "profile_unreadable", reason: `could not read the default harness preset for "${verdict.adapter}"` }
+    }
+  }
+  // An account slot (`slot:<name>`, from the escalation target, the role or
+  // the default harness preset) is resolved to the real profile here, so the
+  // OpenRouter guard and the spawn both see the account that will bill.
+  if (profileRef && isSlotRef(profileRef)) {
+    try {
+      profileRef = (
+        await resolveProfileRef(profileRef, {
+          ...(lookups.getAuthProfile ? { getAuthProfile: lookups.getAuthProfile as (id: string) => Promise<AuthProfile | undefined> } : {}),
+          ...(lookups.loadAccountSlots ? { loadAccountSlots: lookups.loadAccountSlots } : {}),
+        })
+      ).profileRef
+    } catch (err) {
+      if (err instanceof AccountSlotError) return { ok: false, code: "account_slot_unresolved", reason: err.message }
+      throw err
     }
   }
   const guarded: FieldBag = {

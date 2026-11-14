@@ -169,6 +169,84 @@ describe("createAcpClient — mode folding + resume config re-apply", () => {
     warnSpy.mockRestore()
   })
 
+  it("retries a TRANSIENT model-apply rejection and keeps the requested model", async () => {
+    mockLoadSession.mockResolvedValue({ sessionId: "sess-retry" })
+    const transient: Error & { data?: { details?: string } } = Object.assign(
+      new Error("Internal error"),
+      { data: { details: "API error: 429 rate_limit_error" } },
+    )
+    mockSetSessionConfigOption
+      .mockRejectedValueOnce(transient)
+      .mockResolvedValueOnce({})
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    const client = await createAcpClient({
+      ...fakeStreams(),
+      modelApplyRetry: { baseDelayMs: 0, maxAttempts: 3 },
+    })
+    const session = await client.loadSession({
+      sessionId: "sess-retry",
+      cwd: "/tmp",
+      model: "claude-sonnet-5-5[1m]",
+    })
+
+    // The retry lands the requested model, so the descriptor records no
+    // rejection — this is the boot-resume downgrade the fix prevents.
+    expect(session.modelApplyRejection).toBeUndefined()
+    expect(mockSetSessionConfigOption).toHaveBeenCalledTimes(2)
+    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/retrying/i)
+    warnSpy.mockRestore()
+  })
+
+  it("gives up after the bounded retries when a transient rejection persists, recording the mismatch", async () => {
+    mockLoadSession.mockResolvedValue({ sessionId: "sess-retry-fail" })
+    const transient: Error & { data?: { details?: string } } = Object.assign(
+      new Error("Internal error"),
+      { data: { details: "API error: 429 rate_limit_error" } },
+    )
+    mockSetSessionConfigOption.mockRejectedValue(transient)
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    const client = await createAcpClient({
+      ...fakeStreams(),
+      modelApplyRetry: { baseDelayMs: 0, maxAttempts: 3 },
+    })
+    const session = await client.loadSession({
+      sessionId: "sess-retry-fail",
+      cwd: "/tmp",
+      model: "claude-sonnet-5-5[1m]",
+    })
+
+    expect(mockSetSessionConfigOption).toHaveBeenCalledTimes(3)
+    expect(session.modelApplyRejection?.requested).toBe("claude-sonnet-5-5[1m]")
+    expect(session.modelApplyRejection?.reason).toContain("429")
+    warnSpy.mockRestore()
+  })
+
+  it("does NOT retry a permanent (non-transient) model rejection", async () => {
+    mockLoadSession.mockResolvedValue({ sessionId: "sess-permanent" })
+    const permanent: Error & { data?: { details?: string } } = Object.assign(
+      new Error("Internal error"),
+      { data: { details: "Invalid value for config option model: bogus" } },
+    )
+    mockSetSessionConfigOption.mockRejectedValue(permanent)
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    const client = await createAcpClient({
+      ...fakeStreams(),
+      modelApplyRetry: { baseDelayMs: 0, maxAttempts: 3 },
+    })
+    const session = await client.loadSession({
+      sessionId: "sess-permanent",
+      cwd: "/tmp",
+      model: "bogus",
+    })
+
+    expect(mockSetSessionConfigOption).toHaveBeenCalledTimes(1)
+    expect(session.modelApplyRejection?.reason).toContain("Invalid value")
+    warnSpy.mockRestore()
+  })
+
   it("leaves availableModes empty when neither modes nor a mode config option is advertised", async () => {
     mockNewSession.mockResolvedValue({ sessionId: "sess-none" })
 

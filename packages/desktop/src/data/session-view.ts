@@ -54,6 +54,10 @@ export interface QuestionView {
 export function questionView(s: SessionDescriptor): QuestionView | null {
   const q = s.awaitingQuestion
   if (!q?.text) return null
+  // A multi-field harness question is a parked permission: the permission
+  // banner answers it. Its `options` are labels for old clients, and sending
+  // one as a prompt would not answer it.
+  if (q.requestId) return null
   return { text: q.text, options: q.options ?? [] }
 }
 

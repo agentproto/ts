@@ -23,6 +23,7 @@ import { describeSession, isLiveSession } from "./sessionActions.logic.js"
 import {
   accessRowsForSession,
   applyAccessProfile,
+  modelsForAccessProfile,
   planAccessChange,
 } from "./sessionAccessProfile.logic.js"
 import { describeRestart } from "./sessionRestart.logic.js"
@@ -88,7 +89,7 @@ async function setSessionAccessProfileCommand(
       const description = [
         row.description,
         isCurrent ? "(current)" : undefined,
-        row.eligible === false ? "not eligible for this route" : undefined,
+        row.eligible === false ? "requires a model on this profile's route" : undefined,
       ]
         .filter(Boolean)
         .join(" ")
@@ -98,6 +99,7 @@ async function setSessionAccessProfileCommand(
         ...(isCurrent ? { picked: true } : {}),
         value: row.value,
         addProfile: row.addProfile,
+        eligible: row.eligible,
       }
     }),
     {
@@ -119,6 +121,30 @@ async function setSessionAccessProfileCommand(
     // Re-open so the freshly-created profile can be attached in one motion.
     await vscode.commands.executeCommand("agentproto.setSessionAccessProfile", session)
     return
+  }
+
+  let targetModel: string | undefined
+  if (pick.eligible === false) {
+    const models = modelsForAccessProfile(
+      catalog,
+      plan.profileRef,
+      session.modelPolicy?.allow?.includes("zero-cost") === true,
+    )
+    if (models.length === 0) {
+      vscode.window.showWarningMessage(
+        `agentproto: no compatible model is available for "${plan.profileRef}" under this session's model policy.`,
+      )
+      return
+    }
+    const modelPick = await vscode.window.showQuickPick(
+      models.map(model => ({ label: model })),
+      {
+        title: `Model for ${plan.profileRef}`,
+        placeHolder: "Choose a model for the new account and route",
+      },
+    )
+    if (!modelPick) return
+    targetModel = modelPick.label
   }
 
   // plan.kind === "attach"
@@ -151,6 +177,7 @@ async function setSessionAccessProfileCommand(
     applier: client,
     sessionId: session.id,
     profileRef: plan.profileRef,
+    ...(targetModel ? { model: targetModel } : {}),
   })
   await store.refreshAll()
   if (!applied.ok) {

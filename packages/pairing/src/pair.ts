@@ -99,6 +99,15 @@ export interface PairedDaemon {
 
 export interface PendingPairing {
   daemon: PairedDaemon
+  /** This client's first-handshake fingerprint: the daemon records the same
+   *  value and both screens show its short code while the pairing waits for
+   *  the operator's confirmation (AIP-59 §3.7). */
+  clientFingerprint: string
+  /** Short, human-comparable form of `clientFingerprint`. */
+  code: string
+  /** Build the credential without persisting it, so a caller can wait for the
+   *  daemon's confirmation before it stores anything. */
+  credential(): Promise<PairCredential>
   /** Build the credential and (with `opts.store`) persist it. */
   confirm(): Promise<PairCredential>
   /** Discard the pairing on this side. */
@@ -174,26 +183,33 @@ export async function pairFromOffer(
     rendezvousUrl: offer.rendezvousUrl,
   }
 
+  const buildCredential = async (): Promise<PairCredential> => {
+    const root = pairRoot
+    if (root === null) throw new TunnelClientError("cancelled", "this pairing was already confirmed or cancelled")
+    pairRoot = null
+    const nowIso = new Date(now()).toISOString()
+    return {
+      protocol: PAIR_VERSION,
+      id: offer.fingerprint,
+      fingerprint: offer.fingerprint,
+      name: daemon.name,
+      clientName,
+      daemonX25519Pub: offer.daemonX25519Pub,
+      daemonEd25519Pub: offer.daemonEd25519Pub,
+      rendezvousUrl: offer.rendezvousUrl,
+      pairRoot: await importPairRootKey(root),
+      createdAt: nowIso,
+      lastSeen: nowIso,
+    }
+  }
+
   return {
     daemon,
+    clientFingerprint: channel.clientFingerprint,
+    code: clientCode(channel.clientFingerprint),
+    credential: buildCredential,
     async confirm() {
-      const root = pairRoot
-      if (root === null) throw new TunnelClientError("cancelled", "this pairing was already confirmed or cancelled")
-      pairRoot = null
-      const nowIso = new Date(now()).toISOString()
-      const credential: PairCredential = {
-        protocol: PAIR_VERSION,
-        id: offer.fingerprint,
-        fingerprint: offer.fingerprint,
-        name: daemon.name,
-        clientName,
-        daemonX25519Pub: offer.daemonX25519Pub,
-        daemonEd25519Pub: offer.daemonEd25519Pub,
-        rendezvousUrl: offer.rendezvousUrl,
-        pairRoot: await importPairRootKey(root),
-        createdAt: nowIso,
-        lastSeen: nowIso,
-      }
+      const credential = await buildCredential()
       await opts.store?.put(credential)
       return credential
     },
@@ -201,4 +217,8 @@ export async function pairFromOffer(
       pairRoot = null
     },
   }
+}
+
+function clientCode(fingerprint: string): string {
+  return fingerprint.slice(0, 8)
 }

@@ -48,7 +48,13 @@ The `maintain` workflow, one run:
    `applyReviewed: true` (only meaningful together with `applyMerged: true`)
    it also reclaims `review`-class branches whose stored verdict agreed for
    the same tip — subject to `branch_gc`'s deterministic line-coverage guard
-   (default 95%), which refuses an approval below the threshold. Without
+   (default 95%), which refuses an approval below the threshold, and passes
+   `worktree_gc` the reviewed held worktrees whose verdict agreed
+   (`reviewedPaths`): each is removed worktree only, branch kept, after an
+   apply-time re-check (same tip and index, clean, idle, no open PR, agreeing
+   stored verdict), so `branch_gc` then judges that branch behind the same
+   guard. Without `applyReviewed` the report prints
+   `agentproto worktree rm <path> --keep-branch` for them instead. Without
    `applyMerged` the checkpoint apply is another dry-run plan.
 5. Reports a markdown summary, and (only when `notify` is set AND there's a
    reclaimable ref or a review candidate) sends it through the daemon's
@@ -75,8 +81,22 @@ whose stored verdict agreed (`gate.agree: true` for that exact tip) can be
 reclaimed. This is safe because `branch_gc` re-classifies every ref
 immediately before touching it and enforces `lineCoverageGuard`: an agreeing
 verdict under the minimum line coverage (95% by default) is refused
-(`refused-guard`) and stays a `review` branch. The report lists those as a
-separate "Human decision queue" with their coverage percentage — the
+(`refused-guard`) and stays a `review` branch, unless `branch_gc`'s
+verified-pr pass proves it with no LLM involved: triage and gate both say
+`superseded`, the verdict cites a PR (`landedIn: [{ pr, commit? }]`, which the
+reviewer prompt asks for, else `#N` in the gate's reason/evidence), the forge
+confirms that PR merged into base, and every file with uncovered added lines
+was touched by it, is a consumed `.changeset/*.md`, or is a path base deleted
+or moved after that PR merged. "Touched" is file-level: a verdict citing a PR
+that edited the same files passes even if the branch's own lines never landed,
+so the check trusts the citation to be the PR that landed the work (it still
+has to be a real PR merged into base). No forge, or one unexplained file, keeps the refusal. Those
+tips are listed in their own "Auto-passed by verified-pr" section (branch, PR,
+why), and the outcome and restore log carry `guard: "verified-pr"` with the
+proof. `requireOperatorBelowGuard: true` turns the pass off. The report lists
+the remaining refusals as a separate "Human decision queue": one row per tip
+with its sha, coverage percentage, stored verdict, PR state, the reviewer's
+one-line reason and the reason the verified-pr pass refused it - the
 reviewer's `gate.agree` remains its honest safety judgement, not a statement
 that the guard's policy threshold should be applied by the reviewer. The
 default is false; the weekly routine template enables it, while daily never
@@ -92,7 +112,11 @@ human queue. Recording an operator approval for the **same tip sha**
 the human exit: `branch_gc` with `includeReviewed: true` then reclaims it
 despite the guard, and the plan entry shows
 `verdictGuard: "bypassed by operator <by>..."` with who approved. Apply still
-writes the restore log before deleting. These verdicts are shared with any
+writes the restore log before deleting. To undo a deletion through the system, run
+`agentproto branch gc restore <restore-log> [--sha <sha>...] [--local-only]`
+(or the `branch_gc_restore` MCP tool): it re-creates the refs and drops the
+operator approval of each restored tip, so the next run re-judges it through
+the guard and the verified-pr pass instead of deleting it again. These verdicts are shared with any
 other `includeReviewed`-enabled run (for example the weekly routine); this
 workflow's own apply step runs `includeReviewed: $input.applyReviewed`, so it
 stays false unless the run opts in with `applyReviewed: true`.
@@ -103,8 +127,14 @@ write lands with an atomic rename, so the parallelism-4 review fan-out cannot
 lose a verdict. Readers revalidate against the file's mtime/size, so a
 long-lived store also observes writes made elsewhere.
 
-The approval is accepted only through the operator MCP surface:
-`branch_gc_verdict` refuses an `operator` block when the daemon-verified caller
+The operator records them with `agentproto branch gc approve <sha>... --by <name>`
+(the report prints one such command listing every queued tip, a sha per line,
+so a tip the operator does not approve is one deleted line): it copies the stored
+verdict, so nobody retypes it, and refuses a tip with no agreeing verdict or
+one that moved since the review. The approval is accepted only from the
+operator: that command's `POST /branches/gc/approve` demands the daemon's
+per-boot bearer and refuses any request carrying a session identity, and the
+operator MCP surface is the other way in. `branch_gc_verdict` refuses an `operator` block when the daemon-verified caller
 is an agent session (including a scoped mount's owner), `POST
 /branches/gc/verdict` refuses it because that route carries no caller identity,
 and `operator.by` must name someone other than the verdict's `reviewer`. The

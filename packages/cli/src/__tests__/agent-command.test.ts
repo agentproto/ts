@@ -92,6 +92,46 @@ describe("agentproto agent create", () => {
   })
 })
 
+describe("agentproto agent create --grant", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mktmp()
+  })
+
+  it("writes no actions block by default (the create_tool right stays closed)", async () => {
+    const { code } = await capture(() => runAgentCreate(["plain", dir]))
+    expect(code).toBe(0)
+    const fm = matter(await readFile(join(dir, ".agents", "plain", "AGENT.md"), "utf8")).data as Record<string, unknown>
+    expect(fm.actions).toBeUndefined()
+  })
+
+  it("writes actions.granted: [create_tool] with --grant create_tool", async () => {
+    const { code } = await capture(() => runAgentCreate(["toolsmith", dir, "--grant", "create_tool"]))
+    expect(code).toBe(0)
+    const fm = matter(await readFile(join(dir, ".agents", "toolsmith", "AGENT.md"), "utf8")).data as {
+      actions?: { granted?: unknown[] }
+    }
+    expect(fm.actions?.granted).toEqual(["create_tool"])
+  })
+
+  it("accepts --grant more than once", async () => {
+    const { code } = await capture(() =>
+      runAgentCreate(["toolsmith", dir, "--grant", "create_tool", "--grant", "delete_tool"]),
+    )
+    expect(code).toBe(0)
+    const fm = matter(await readFile(join(dir, ".agents", "toolsmith", "AGENT.md"), "utf8")).data as {
+      actions?: { granted?: unknown[] }
+    }
+    expect(fm.actions?.granted).toEqual(["create_tool", "delete_tool"])
+  })
+
+  it("rejects an empty --grant value", async () => {
+    const { code, stderr } = await capture(() => runAgentCreate(["toolsmith", dir, "--grant", ""]))
+    expect(code).toBe(1)
+    expect(stderr).toMatch(/--grant/)
+  })
+})
+
 describe("agentproto agent list", () => {
   let dir: string
   beforeEach(async () => {

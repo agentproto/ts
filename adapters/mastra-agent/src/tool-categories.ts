@@ -84,3 +84,21 @@ export const DEFAULT_PERMISSION_RULES: PermissionRules = {
     submit_plan: "allow",
   },
 }
+
+/**
+ * Approval policy of an AUTONOMOUS agent (AGENT.md `autonomy: 10`): every
+ * category is allowed, nothing asks. For an unattended, scripted agent (a
+ * workflow step) that has no human to answer a permission request: a `ask`
+ * there suspends the run forever. Boundaries stay in the manifest's tool list
+ * (`tools:`) and `boundaries:`; this only removes the interactive gate.
+ */
+export const AUTONOMOUS_PERMISSION_RULES: PermissionRules = {
+  categories: {
+    read: "allow",
+    edit: "allow",
+    execute: "allow",
+    mcp: "allow",
+    other: "allow",
+  },
+  tools: {},
+}

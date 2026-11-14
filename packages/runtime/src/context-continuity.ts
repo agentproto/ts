@@ -1,7 +1,4 @@
-import {
-  AUTO_COMPACT_DEFAULT_TOKENS,
-  clampAutoCompactTokens,
-} from "./auto-compact.js"
+import { clampAutoCompactTokens, resolveAutoCompactTokens } from "./auto-compact.js"
 
 /**
  * Canonical context-continuity policy for long-running agent sessions.
@@ -75,8 +72,9 @@ export interface ContextContinuityPolicy
    * session can grow without ever compacting. An absolute count does not
    * care how big the window is.
    *
-   * Clamped into `[1000, 200000]`; `0` disables autocompact. Unset = the
-   * default (150k). */
+   * Clamped into `[1000, 600000]`; `0` disables autocompact. Unset = the
+   * default: `max(150k, warnAtPct% of the window)`, so a 1M window compacts
+   * at 550k, not 150k (see `resolveAutoCompactTokens`). */
   autoCompactAtTokens?: number
   /** Optional display label for UIs. */
   label?: string
@@ -106,6 +104,50 @@ export interface ContextContinuityPolicy
 }
 
 /**
+ * The AIP-46 name of the context-settings block. `contextContinuity` is the
+ * legacy spelling of the same block (AIP-70 section 4 alias).
+ */
+export type ContextSettings = ContextContinuityPolicy
+
+/**
+ * Layer context settings, lowest layer first. Each setting is its own axis
+ * (AIP-46 §Session context rule 4): the highest layer that sets a key wins
+ * for that key, and the other keys of a lower layer stay in force. An
+ * undefined layer and a key whose value is undefined are skipped. Returns
+ * undefined when no layer is given, so callers keep their "no policy" case.
+ */
+export function layerContextSettings(
+  ...layers: ReadonlyArray<ContextSettings | undefined>
+): ContextSettings | undefined {
+  let out: ContextSettings | undefined
+  for (const layer of layers) {
+    if (!layer) continue
+    const defined = Object.fromEntries(Object.entries(layer).filter(([, value]) => value !== undefined))
+    out = { ...out, ...defined }
+  }
+  return out
+}
+
+const POLICY_BAND_KEYS = ["warnAtPct", "compactAtPct", "continueFreshAtPct", "hardStopAtPct"] as const
+
+/**
+ * Say which layer sets which percent band, lowest layer first. Used by the
+ * error a conflicting layered block raises: each band is its own axis, so
+ * the conflict is usually two layers that are each valid alone.
+ */
+export function describeBandLayers(
+  layers: ReadonlyArray<{ name: string; block: ContextSettings | undefined }>,
+): string {
+  const parts: string[] = []
+  for (const { name, block } of layers) {
+    if (!block) continue
+    const set = POLICY_BAND_KEYS.filter(key => block[key] !== undefined).map(key => `${key}=${block[key]}`)
+    if (set.length > 0) parts.push(`${name} sets ${set.join(", ")}`)
+  }
+  return parts.length > 0 ? parts.join("; ") : "no layer sets a percent band"
+}
+
+/**
  * Fully-resolved, validated policy. This is the shape stored on a session
  * descriptor and returned by status queries.
  */
@@ -115,7 +157,7 @@ export interface ResolvedContextContinuityPolicy
   mode: ContextContinuityMode
   /** See {@link ContextContinuityPolicy.autoCompactAtTokens} (clamped).
    *  Optional so a policy persisted before autocompact existed still
-   *  deserialises; absent = {@link AUTO_COMPACT_DEFAULT_TOKENS}. */
+   *  deserialises; absent = the window-scaled default. */
   autoCompactAtTokens?: number
   /** Effective label (falls back to mode when absent). */
   label: string
@@ -129,7 +171,6 @@ export interface ResolvedContextContinuityPolicy
 
 export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
   mode: "ask",
-  autoCompactAtTokens: AUTO_COMPACT_DEFAULT_TOKENS,
   warnAtPct: 55,
   compactAtPct: 65,
   continueFreshAtPct: 75,
@@ -145,6 +186,15 @@ export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
   nextStep: true,
   config: true,
   label: "ask",
+}
+
+/** A session with no resolved policy is checkpointed, and continued fresh,
+ *  under the defaults (the same way its pre-compaction checkpoint is). */
+export function withContextPolicy<D extends { contextContinuity?: ResolvedContextContinuityPolicy }>(
+  desc: D,
+): { source: D; policy: ResolvedContextContinuityPolicy } {
+  const policy = desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS
+  return { source: desc.contextContinuity ? desc : { ...desc, contextContinuity: policy }, policy }
 }
 
 export interface ContextContinuityStatus {
@@ -247,9 +297,10 @@ function mergePolicyLayer(
   if (!override) return base
   return {
     mode: override.mode ?? base.mode,
-    autoCompactAtTokens: clampAutoCompactTokens(
-      override.autoCompactAtTokens ?? base.autoCompactAtTokens,
-    ),
+    autoCompactAtTokens:
+      override.autoCompactAtTokens === undefined
+        ? base.autoCompactAtTokens
+        : clampAutoCompactTokens(override.autoCompactAtTokens),
     warnAtPct: override.warnAtPct ?? base.warnAtPct,
     compactAtPct: override.compactAtPct ?? base.compactAtPct,
     continueFreshAtPct: override.continueFreshAtPct ?? base.continueFreshAtPct,
@@ -375,7 +426,7 @@ function stateSummary(pct: number | null, state: ContextContinuityState, policy:
     case "ok":
       return `Context at ${pct}% — below warn threshold (${policy.warnAtPct}%).`
     case "warn":
-      return `Context at ${pct}% — consider compacting soon (${policy.compactAtPct}% auto).`
+      return `Context at ${pct}%: compaction is automatic at the token threshold.`
     case "compact":
       return `Context at ${pct}% — compact recommended (${policy.continueFreshAtPct}% continues fresh).`
     case "continue-fresh":
@@ -405,7 +456,11 @@ export function computeContextContinuityStatus(
   const nextThreshold = pct === null ? null : thresholds.find(t => t > pct) ?? null
   const nextThresholdDelta = pct === null || nextThreshold === null ? null : nextThreshold - pct
 
-  const autoCompactAtTokens = clampAutoCompactTokens(policy.autoCompactAtTokens)
+  const autoCompactAtTokens = resolveAutoCompactTokens(
+    policy.autoCompactAtTokens,
+    contextSize,
+    policy.warnAtPct,
+  )
   return {
     sessionId,
     contextSize,

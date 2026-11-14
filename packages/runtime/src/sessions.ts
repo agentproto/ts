@@ -20,7 +20,13 @@
  *   - guilde-web Active tab (session cards + terminal viewer)
  */
 
-import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
+import type {
+  AcpMcpServer,
+  AcpPermissionResolution,
+  AgentPromptAnswers,
+  AgentPromptQuestion,
+} from "@agentproto/acp"
+import { QUESTION_SUBMIT_OPTION_ID, summarizeAgentPromptAnswers, validateAgentPromptAnswers } from "@agentproto/acp"
 import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
@@ -28,9 +34,10 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync, watch as watchFsPath } from "node:fs"
 import type { FSWatcher } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import type { PrFooterState } from "./pr-provenance-stamp.js"
 import { computeAgentRoleRefresh, renderRoleUpdateNotice } from "./agent-role-refresh.js"
 import type { AgentManifestRefError } from "./spawn-agent-manifest.js"
-import { encodeCloudSessionMeta, resolveCloudResumeId } from "./cloud-vendors.js"
+import { encodeCloudSessionMeta, resolveCloudResumeId } from "@agentproto/cloud-agent"
 import {
   CONVERSATION_STORES,
   conversationTerminalSlugFor,
@@ -56,8 +63,11 @@ import type {
   Posture,
   RouteSpec,
 } from "./session-config.js"
-import type { CostBudget } from "@agentproto/auth"
+import { getAuthProfile, type CostBudget } from "@agentproto/auth"
+import { profileAllowsModelId, profileModelAllowlistMessage } from "./auth-profile-model-allowlist.js"
+import type { Grant } from "@agentproto/policy"
 import type { HookCapabilityView } from "@agentproto/provider-kit"
+import type { SandboxProviderChoice } from "@agentproto/sandbox"
 import type { ResolvedSessionSkill } from "./skill-imports.js"
 import type { AdapterCapabilitiesLister, AgentAdapterResolver } from "./http-server.js"
 import type { QuotaReadableProfile, RemainingQuotaReader } from "./remaining-quota.js"
@@ -75,7 +85,15 @@ import type {
   SessionConfigChangedEvent,
   ContextRescueOutcome,
 } from "./session-event-bus.js"
-import { postureEnforcement, resolvePosture, type PostureEnforcement } from "./canonical-posture.js"
+import {
+  exceedsPostureCeiling,
+  postureEnforcement,
+  postureForModeId,
+  resolvePosture,
+  restartPosture,
+  samePosture,
+  type PostureEnforcement,
+} from "./canonical-posture.js"
 import { isSandboxBoxExpiredError } from "./sandbox-agent-session-proxy.js"
 import {
   buildBackgroundTaskWakePrompt,
@@ -83,6 +101,11 @@ import {
   readOutputTail,
   type SessionBackgroundTask,
 } from "./background-task-wake.js"
+import {
+  wakeClaudeSocket,
+  type ClaudeSocketWakeConfig,
+  type ClaudeSocketWakeOutcome,
+} from "./claude-socket-wake.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
 import { normalizeModelForWire } from "./model-wire.js"
 import {
@@ -98,6 +121,11 @@ import {
   type SessionRetentionOptions,
   type SessionRetentionResult,
 } from "./session-retention.js"
+import {
+  runAdapterCacheRetentionPass,
+  type AdapterCacheRetentionOptions,
+  type AdapterCacheRetentionResult,
+} from "./adapter-config-retention.js"
 import {
   addSessionArtifact as addSessionArtifactImpl,
   getSessionArtifact as getSessionArtifactImpl,
@@ -126,7 +154,10 @@ import {
   writeBucketSnapshot,
   writeBucketSnapshotSync,
 } from "./workspace-buckets.js"
-import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
+import {
+  createTerminalTranscriptWriter,
+  readTerminalLogTail,
+} from "./terminal-transcript-writer.js"
 import {
   deriveSessionUsage,
   pickUsageDetail,
@@ -135,10 +166,17 @@ import {
   type UsageReadResult,
 } from "./usage.js"
 import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
+import {
+  detectNativeCompaction,
+  NATIVE_COMPACTION_GUARD_WINDOW_MS,
+  type UsageSample,
+} from "./native-compaction.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import {
   attachParentRelayStore,
   forgetRelayToken,
+  forgetCredentialRelay,
+  rememberCredentialRelay,
   rememberRelayToken,
   revokeParentRelayGrantsForSession,
 } from "./parent-relay.js"
@@ -152,11 +190,16 @@ import type {
 import type { AgentsMdMode } from "./agents-md.js"
 import {
   buildAutoCompactCompactInstructions,
+  buildAutoCompactResumePrompt,
   buildAutoCompactTranscriptNote,
   compactCommandTakesInstructions,
   createAutoCompactController,
   deriveLastTurnOutcome,
+  hasWorkInProgress,
+  readFiniteTokens,
+  resolveAutoCompactTokens,
   type AutoCompactController,
+  type AutoCompactDecision,
   type AutoCompactOutcome,
   type WorkInProgressSnapshot,
 } from "./auto-compact.js"
@@ -169,6 +212,7 @@ import {
   isContextContinuityHardStopped,
   type ContextContinuityPolicy,
   type ResolvedContextContinuityPolicy,
+  withContextPolicy,
 } from "./context-continuity.js"
 import {
   buildContextCheckpoint,
@@ -190,14 +234,21 @@ import {
   type StopOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
-import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
-import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
+import {
+  DELIBERATE_END_REASONS,
+  isProviderLimitError,
+  providerLimitFromTurnText,
+  tagLimitErrorWithWallet,
+  type SessionEndReason,
+} from "./session-end-reason.js"
+import { isAutomatedPromptSource, isExternalInboxOpen, isRetired } from "./session-retirement.js"
 import type { TurnRetryPolicy } from "./turn-retry-policy.js"
+import { emptyTurnWarningLine } from "./turn-retry.js"
 import type { ModelPolicy } from "./model-policy.js"
 import { checkModelPolicy } from "./model-policy.js"
 import { getModelListSource } from "./model-list-store.js"
-import type { ClerkHookConfig } from "./clerk-hook-config.js"
-export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
+import type { ClerkHookConfig } from "@agentproto/clerk"
+export { isRetired, isExternalInboxOpen, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
   INDEX_TAIL_BYTES,
   indexEntryFromDescriptor,
@@ -210,6 +261,7 @@ import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
 import type { SandboxCheckpointConfig, SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
+import type { SessionPlacement } from "./placement-ladder.js"
 import { checkpointRefFromRecord, type SessionCheckpointRef } from "./checkpoint-resume.js"
 import {
   createSessionMessage,
@@ -219,7 +271,9 @@ import {
   isProtectedMessage,
   matchesMessageFilter,
   MESSAGE_PREAMBLE,
+  normalizeMessageRelation,
   renderInboxDigest,
+  renderSessionMessage,
   renderSessionMessages,
   type MessageDeliveryVia,
   type MessageFilter,
@@ -239,7 +293,7 @@ import { assertDecisionAllows, type Decision } from "./permissions.js"
 import {
   isModelSwitchAcknowledgement,
   parseModelSwitchCommand,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 /**
  * Minimal shape we need from a driver-agent-cli session — kept as a
@@ -362,6 +416,12 @@ export interface AgentSessionLike {
    *  `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.steeringSupported`
    *  (ACP `_session/steering`, advertised at initialize). */
   readonly steeringSupported?: boolean
+  /** Set by the driver when the connect-time model apply was REJECTED: the
+   *  session is alive on the adapter's own default model, not the requested
+   *  one. Recorded onto {@link SessionDescriptor.modelApplyRejection} at spawn
+   *  and restart so the descriptor stops claiming the requested model. Absent
+   *  for arms/adapters with no connect-time config apply. */
+  readonly modelApplyRejection?: { requested: string; reason: string }
   /** Inject content into the turn in flight — mirrors
    *  `AgentCliRuntimeSession.steer`: `"steered"` (injected), `"promptRequired"`
    *  (no host turn in flight — deliver as a normal prompt), `"unsupported"`.
@@ -376,6 +436,13 @@ export interface AgentSessionLike {
      *  a final checkpoint before teardown and stamps the ledger row with the
      *  reap provenance. Other sessions ignore it. */
     idleReap?: { idleMs: number; sessionId?: string }
+    /** Explicit session death (operator kill / crash): force a KILL teardown
+     *  even when the box's lifecycle would otherwise pause. A `reuse`-only
+     *  policy must not pause a box the operator just killed; a spawn that
+     *  explicitly asked for pause (`lifecycle.pause_after_idle`, reflected on
+     *  the descriptor's `sandboxPauseAfterIdleMs`) still pauses. Other
+     *  sessions ignore it. */
+    deathRelease?: boolean
   }): Promise<void>
   /**
    * Sandbox proxies only: peek at the data needed to re-attach to this
@@ -567,6 +634,17 @@ export interface AgentStreamEvent {
    *  submit_plan's plan text there) — see @agentproto/acp's `StreamEvent`'s
    *  `agent-prompt` kind. Harness-shaped and untyped. */
   _meta?: unknown
+  /** "agent-prompt" AIP-45 request kind (absent reads as "tool-permission")
+   *  and its typed payload, see @agentproto/acp's `StreamEvent`. Carried
+   *  through to the pending-permission inbox unchanged; `unknown` payloads
+   *  for the same reason as `options`. */
+  request?: string
+  question?: unknown
+  planApproval?: unknown
+  /** "mode-changed" fields (AIP-45), see @agentproto/acp's `StreamEvent`. */
+  modeId?: string
+  previousModeId?: string
+  cause?: string
   /** "plan" event title — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
   title?: string
   /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
@@ -790,6 +868,40 @@ function normalizePermissionOptions(
 }
 
 /**
+ * Classify an "agent-prompt" for `SessionAwaitingQuestion.kind` on its real
+ * fields, never its text: an AIP-45 `request: "question"` is the harness
+ * asking; otherwise a tool name, an explicit `tool-permission` /
+ * `plan-approval` request, or ACP permission options (`kind: allow_*` /
+ * `reject_*`) make it a permission. Anything else is a plain harness prompt.
+ */
+function agentPromptQuestionKind(evt: AgentStreamEvent): "permission" | "harness" {
+  if (evt.request === "question") return "harness"
+  if (evt.toolName || evt.request === "tool-permission" || evt.request === "plan-approval") {
+    return "permission"
+  }
+  const permissionShaped = normalizePermissionOptions(evt.options).some(o =>
+    /^(allow|reject)_/.test(o.kind ?? ""),
+  )
+  return permissionShaped ? "permission" : "harness"
+}
+
+/**
+ * Narrow an `agent-prompt` event's `question` (typed `unknown`) to an AIP-45
+ * `AgentPromptQuestion`: an object with a string `prompt`. Its members are
+ * driver-built and carried as-is; `fields` is kept only when it is an array.
+ */
+function asAgentPromptQuestion(raw: unknown): AgentPromptQuestion | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const q = raw as AgentPromptQuestion
+  if (typeof q.prompt !== "string") return undefined
+  if (q.fields !== undefined && !Array.isArray(q.fields)) {
+    const { fields: _drop, ...rest } = q
+    return rest
+  }
+  return q
+}
+
+/**
  * Map an inbox decision onto one of the offered permission options.
  *   - explicit `optionId` wins (must be one of the offered options)
  *   - approve → an `allow_*` option (allow-always when `scope: "always"` and
@@ -901,8 +1013,9 @@ export function mintSessionId(): string {
  * provider's conversation store). Sibling of the per-session transcript
  * dirs (`~/.agentproto/sessions/<id>/`) but under its own root so session
  * GC/archival never rips a live lineage's resume store out from under it.
- * Nothing cleans these up today — same accumulate-forever discipline as
- * `~/.agentproto/sessions/` itself.
+ * The dirs themselves are kept (they hold the resume store); the periodic
+ * adapter-cache sweep (`adapter-config-retention.ts`) deletes the cache
+ * content a dead lineage's dir lists in its session cache manifest.
  */
 export function adapterConfigDirFor(sessionId: string): string {
   return resolve(homedir(), ".agentproto", "adapter-config", sessionId)
@@ -969,6 +1082,12 @@ export const CALLER_SESSION_ID_HEADER = "x-agentproto-caller-session-id"
  *  `app_*` tool call that omits one, since the model driving the session has
  *  no way to know its own appId unless told. Absent on any other spawn. */
 export const APP_ID_ENV = "AGENTPROTO_APP_ID"
+/** Descriptor `meta` key naming the installed app whose own AGENT.md the
+ *  session runs. Stamped by the spawn core from an `app_run` spawn's `appId`
+ *  (never from a request), carried across a restart or a continue-fresh, and
+ *  never inherited by a child. The gateway reads it to apply the app's
+ *  `requires.apps[].tools` grants (exposed-tools-policy.ts). */
+export const APP_AGENT_META_KEY = "appAgent"
 /** Set for a spawn whose composed prompt carries an AGENTS.md POINTER to a
  *  file outside the session cwd (the daemon resolves AGENTS.md up to the git
  *  toplevel, but a session's own workspace tools are confined to its cwd).
@@ -1136,6 +1255,40 @@ export interface SessionWatcherInfo {
   since: string
 }
 
+/** One event in a coalesced follow digest, as plain JSON. Everything
+ *  `formatFollowDigest` needs is captured at classification time:
+ *  identifiers plus the already-resolved excerpt text, so a merged digest
+ *  never has to re-read a live session or its transcript after a restart. */
+export interface DigestEntry {
+  sessionId: string
+  event: string
+  ts: string
+  label?: string
+  cwd?: string
+  detail?: string
+  key?: string
+  boardId?: string
+  taskId?: string
+  awaitingInput?: boolean
+  empty?: boolean
+  /** `turn-end`: the agent acked its wake as an explicit no-op. */
+  silent?: boolean
+  /** `exited`: the source declared this success informational (fyi). */
+  fyi?: boolean
+  reason?: string
+  /** The level-3 pin this entry carried when it was produced. */
+  floor?: import("@agentproto/delivery").Floor
+  /** Already-resolved excerpt text for this event. */
+  text?: string
+}
+
+/** The persisted body of a follow digest queued behind a busy follower. */
+export interface QueuedDigest {
+  entries: DigestEntry[]
+  /** Events dropped by the merge cap, oldest first. */
+  omitted: number
+}
+
 /** One prompt waiting in `SessionDescriptor.promptQueue` — see that
  *  field's doc for the FIFO/force ordering contract. */
 export interface QueuedPrompt {
@@ -1189,6 +1342,14 @@ export interface QueuedPrompt {
   /** How many enqueues have collapsed into this item (absent ⇒ 1 — never
    *  coalesced). Lets a queue UI show "x3". */
   coalescedCount?: number
+  /** Retry-safe admission key that queued this item (`enqueuePrompt`'s
+   *  `opts.dedupeKey`). Retained on the item so a duplicate result can
+   *  echo its `queueId` while it still waits; a later coalesce-in-place
+   *  merge keeps the original item's key untouched. */
+  dedupeKey?: string
+  /** Follow-digest payload carried across a replace-in-place merge. Plain
+   *  JSON so it survives the promptQueue persist/restore round-trip. */
+  digest?: QueuedDigest
 }
 
 /** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
@@ -1204,7 +1365,9 @@ export interface EnqueuePromptResult {
   queued: boolean
   /** `delivered` — started as a turn (idle target, or an interrupt);
    *  `steered` — injected into the running turn; `queued-mid-turn` — parked
-   *  until the current turn ends (or a steer / `deliverWithin` fires).
+   *  until the current turn ends (or a steer / `deliverWithin` fires);
+   *  `duplicate`: a prompt with the same `dedupeKey` was already accepted
+   *  inside the window; nothing was delivered or queued.
    *  `delivery` / `pending` are always set by the registry; optional here so
    *  structural stand-ins that only know `queued` still type-check. */
   delivery?: PromptDelivery
@@ -1214,9 +1377,12 @@ export interface EnqueuePromptResult {
   pending?: boolean
   /** Id of the parked item (`delivery: "queued-mid-turn"`). */
   queueId?: string
+  /** `true` when a prompt with the same `dedupeKey` was already accepted
+   *  inside the window; nothing was delivered or queued. */
+  duplicate?: true
 }
 
-export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn"
+export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn" | "duplicate"
 
 /**
  * Short text preview of a queued `QueuedPrompt.message` (raw string OR an
@@ -1302,6 +1468,13 @@ export const INBOX_CAP = 200
  *  (blocker/question) message — the soft cap may be exceeded up to here. */
 export const INBOX_HARD_CAP = INBOX_CAP * 2
 
+/** Bound on `SessionDescriptor.promptDedupe` (accepted prompt dedupe keys). */
+export const PROMPT_DEDUPE_MAX = 128
+
+/** Prompt dedupe keys older than this are ignored, and dropped on the next
+ *  record (`SessionDescriptor.promptDedupe`). 24 hours. */
+export const PROMPT_DEDUPE_TTL_MS = 86_400_000
+
 /** R3 — a burst of `steer` messages must not thrash a recipient: at most
  *  one steer per recipient per this window; the excess is delivered as
  *  `next-turn` (and coalesces with its neighbours at turn-end). */
@@ -1313,12 +1486,39 @@ export const STEER_MIN_INTERVAL_MS = 10_000
  *  near-real-time without hammering either store. */
 export const USAGE_REFRESH_INTERVAL_MS = 5_000
 
+/** True when `key` was accepted inside the window ending at `now`. */
+function findPromptDedupe(
+  entries: Array<{ key: string; at: string }> | undefined,
+  key: string,
+  now: number,
+): boolean {
+  if (!entries?.length) return false
+  return entries.some(entry => {
+    if (entry.key !== key) return false
+    const at = Date.parse(entry.at)
+    return Number.isFinite(at) && now - at <= PROMPT_DEDUPE_TTL_MS
+  })
+}
+
+/** Record an accepted key: drop TTL-expired entries, append, evict oldest
+ *  past the bound, then replace the descriptor field with a NEW array. */
+function recordPromptDedupe(desc: SessionDescriptor, key: string, now: number): void {
+  const kept = (desc.promptDedupe ?? []).filter(entry => {
+    const at = Date.parse(entry.at)
+    return Number.isFinite(at) && now - at <= PROMPT_DEDUPE_TTL_MS
+  })
+  kept.push({ key, at: new Date(now).toISOString() })
+  while (kept.length > PROMPT_DEDUPE_MAX) kept.shift()
+  desc.promptDedupe = kept
+}
+
 /** What `sendMessage` did with a message — truthful, per AIP-46. */
 export interface SendMessageResult {
   messageId: string
   /** Set when the message already reached the recipient's context (a
-   *  waiter, a dispatched turn, an interrupt) or was parked as `fyi`
-   *  (`via: "inbox"`); `null` while it's queued behind a busy turn. */
+   *  waiter, a dispatched turn, an interrupt, or an external Claude Code
+   *  socket wake) or was parked for the hook (`via: "inbox"`); `null` while
+   *  it's queued behind a busy turn. */
   delivered: { via: MessageDeliveryVia } | null
   queued: boolean
   urgencyApplied: MessageUrgency
@@ -1326,6 +1526,12 @@ export interface SendMessageResult {
    *  `null`, `queued` is `false`): the recipient's inbox is entirely
    *  un-consumed blocker/question messages and this one is noise. */
   refused?: "inbox-full"
+  /** External Claude Code rows only: what the opt-in `claude-socket` wake
+   *  adapter did with this message. Absent for every other kind, and when the
+   *  feature is off. `written` means the socket delivered it (`delivered` is
+   *  `via: "socket"`, nothing is parked); a skipped or failed wake falls back
+   *  to the inbox and `reason` records why. */
+  wake?: ClaudeSocketWakeOutcome
 }
 
 export interface WaitForMessagesResult {
@@ -1374,6 +1580,8 @@ export interface QueuedPromptView {
   /** How many enqueues collapsed into this item — absent when it was never
    *  coalesced (a UI can show "x3"). */
   coalescedCount?: number
+  /** Retry-safe key carried on the waiting item, when one was supplied. */
+  dedupeKey?: string
 }
 
 /** One prompt still waiting to reach a session, with its age — the
@@ -1524,6 +1732,11 @@ export interface SessionDescriptor {
    *     `"steward-abandoned"` (the session steward's `closeWithOutcome` —
    *     verdict `"done"` vs. `"abandoned"`; a `"blocked"`/`"needs-input"`
    *     verdict doesn't close at all, see `SessionDescriptor.wrapupFlag`).
+   *  `"provider-limit"` may also be stamped on a row that is still live
+   *  (`status: "running"`) when an in-band turn failure is explained only by
+   *  the turn's own assistant text (see `providerLimitFromTurnText`). It is
+   *  cleared once a later turn succeeds — the quota recovered — so until
+   *  then a plain kill of that row leaves the cap in place as the reason.
    *  Absent for every terminal path this file doesn't tag (a plain natural
    *  exit, an ordinary turn error) — the session's own fault, or at least
    *  not something worth a special label. A string outside this list is
@@ -1556,6 +1769,10 @@ export interface SessionDescriptor {
    *  revives the row. Persisted, so it survives restarts and archiving. See
    *  `session-outcome.ts`. */
   outcome?: SessionOutcome
+  /** Link to this session's browser recordings, when a server it reached
+   *  minted an AIP-59 section 8 sub-session token for it (Bureau, AIP-63 M7).
+   *  A link only; the recordings themselves stay on the server. Persisted. */
+  browserRecordings?: { url: string }
   /** A steward verdict of `"blocked"` or `"needs-input"` from
    *  `registry.closeWithOutcome` (`session-wrapup.ts` / FIX-9A) — recorded
    *  INSTEAD of closing, since neither verdict means the session is done.
@@ -1608,6 +1825,11 @@ export interface SessionDescriptor {
    *  `withMemory: true`) since it costs a `ps` spawn; absent otherwise, and
    *  absent for a row with no `pid` or that `ps` didn't report. */
   rssBytes?: number
+  /** True when {@link operatorDigest} differs from the current digest a
+   *  `session_list` caller supplied for this session's operator. Ephemeral,
+   *  never persisted, absent unless the caller supplied a current digest and
+   *  the session records one. */
+  operatorStale?: boolean
   /** Process-tree resource sample for this session (`process-stats.ts`):
    *  RSS, %CPU, process count, top commands by RSS - plus, at `stats:"full"`,
    *  every process. Ephemeral and opt-in (`session_list`/`agent_sessions_list`
@@ -1776,6 +1998,14 @@ export interface SessionDescriptor {
    *  (absent, not `false`, on a productive turn) — never set by the
    *  abnormal (error/abort) turn-end path, matching the bus event. */
   lastTurnEmpty?: boolean
+  /** True when the LAST completed turn ended silent: the agent acked its wake
+   *  with `inbox_ack({ noop: true })`, made no other tool call, wrote no
+   *  assistant text, and was not interrupted, errored, awaiting input, or
+   *  started by a human prompt. Mirrors `SessionTurnEndEvent.silent`; see
+   *  that field's doc. Stamped every `turnCompleted` turn end (absent, not
+   *  `false`, on a turn that was not silent), never set by the abnormal
+   *  (error/abort) turn-end path, matching the bus event. */
+  lastTurnSilent?: boolean
   /** The LAST completed turn's `SessionTurnEndEvent.reason` (e.g.
    *  `"completed"`, `"error"`, `"aborted"`), when the adapter/daemon
    *  reported one. Twin of `lastTurnEmpty` — same reason for existing:
@@ -1784,6 +2014,15 @@ export interface SessionDescriptor {
    *  turn end (normal or abnormal); absent when the turn ended with no
    *  reason to report. */
   lastTurnReason?: string
+  /** ISO 8601 instant of the LAST turn that reached a turn-end (normal,
+   *  error, aborted, or autonomous). Unlike `lastActivityAt` (which pulses
+   *  on every adapter/protocol event and during a long in-flight turn), this
+   *  is specifically when the session last became idle after work. The eager
+   *  resume-on-boot pass measures how long a `keepAlive` row has been idle
+   *  from this stamp (falling back to `lastActivityAt`, then `startedAt`, for
+   *  rows persisted before it existed). PERSISTED; absent until the first
+   *  turn-end. */
+  lastTurnEndedAt?: string
   /** Device-spawn only: true when this session's FIRST turn ended errored or
    *  EMPTY — the field-observed shape where a `device:<fp>` spawn lands on a
    *  host whose adapter rejects the model id and the turn completes with no
@@ -2020,16 +2259,15 @@ export interface SessionDescriptor {
    *  `session_set_keepalive` (`registry.setKeepAlive`). Absent (not `false`)
    *  for every session that hasn't opted in. */
   keepAlive?: boolean
-  /** Server-persisted, list-visibility-only favorite flag — set/cleared via
-   *  `session_set_pinned` (`registry.setPinned`) or `POST /sessions/:id/pin`.
-   *  Purely a sort/display concern: pinned sessions sort to the top of the
-   *  session list (CLI table, VS Code webview's dedicated "Pinned" group).
-   *  Deliberately orthogonal to — and must NEVER be confused with —
-   *  `keepAlive` (idle-reaper exemption, operational), the VS Code
-   *  extension's client-side-only "watch" eye (toast notifications, never
-   *  persisted here), or `watchers` (live supervisor wait count). No side
-   *  effects on reaping, notifications, or anything else. Absent (not
-   *  `false`) for every session that hasn't been pinned. */
+  /** Server-persisted favorite flag, set/cleared via `session_set_pinned`
+   *  (`registry.setPinned`) or `POST /sessions/:id/pin`. Pinned sessions sort to
+   *  the top of the session list (CLI table, VS Code webview's "Pinned" group)
+   *  AND are never idle-reaped (`idle-reaper.ts`: pinned means "never
+   *  stopped"). It does not set `keepAlive` (a separate, explicit opt-out), and
+   *  only the idle sweep honours it: an operator kill, a crash or the host
+   *  guard still end a pinned session. Distinct from the VS Code extension's
+   *  client-side-only "watch" eye and from `watchers` (live supervisor wait
+   *  count). Absent (not `false`) for every session that hasn't been pinned. */
   pinned?: boolean
   /** Who may drive this session through the daemon MCP drive tools besides
    *  its owner (the session that spawned it, or the operator for a root
@@ -2044,12 +2282,41 @@ export interface SessionDescriptor {
    *  (i.e. the human operator or an operator-side client spawned it), and
    *  carried across restart / continue-fresh. The human operator may also
    *  stamp it directly on a live session via `agent_set_operator_label`
-   *  (`registry.setOperatorLabel`). Unlike `label`, no *session* can change
-   *  it (`session_rename` only touches `label`), so a `label:` entry in
-   *  another session's `allowPromptFrom` can safely key on it — see
-   *  `checkSessionOwnerGate`. Absent for every session spawned by another
-   *  session. */
+   *  (`registry.setOperatorLabel`), and a session may stamp one on a session
+   *  it owns (`checkOperatorLabelStamp`), never on itself. Unlike `label`,
+   *  `session_rename` never touches it, and a label on a session with a
+   *  parent only addresses it (`label:<x>`): a `label:` grant in
+   *  `allowPromptFrom` / `operatorDelegates` / a policy principal matches
+   *  root sessions only, see `checkSessionOwnerGate`. */
   operatorLabel?: string
+  /** The AIP-9 operator this session runs for, as a canonical AIP-54 ref
+   *  (`operator:<slug>[@<owner>/<workspace>]`) - AIP-46 §Operator binding.
+   *  Recorded at spawn from `agent_start.operator` once the ref is well formed
+   *  and the caller may name it, and copied from this registry onto a
+   *  continuation successor (restart, continue-fresh), never from a request.
+   *  It binds the session to the operator and grants nothing. Unrelated to
+   *  {@link operatorLabel}. */
+  operator?: string
+  /** The host's digest of what it resolved for {@link operator} at spawn
+   *  (opaque to the daemon). `session_list` and `session_role_refresh` compare
+   *  it with a current digest the caller supplies to flag a stale session. */
+  operatorDigest?: string
+  /** The AIP-38 `tool:invoke` deny grants of the AGENT manifest's `tools` deny
+   *  items (`{kind: mcp, server, deny: [...]}`), computed once at spawn from
+   *  the manifest the session was spawned from. The `/mcp` gateway and the
+   *  imported-call guard read them per call and refuse a denied
+   *  `<server>/<name>`. Deny-only: they never turn the session default-deny.
+   *  Absent when the manifest has no deny item (or there is no manifest), and
+   *  then nothing is evaluated. Copied from this registry onto a continuation
+   *  successor (restart, continue-fresh), never taken from a request. */
+  toolDenyGrants?: Grant[]
+  /** The tool names the AGENT manifest opted into with
+   *  `{kind: mcp, server: agentproto, allow: [...]}`. The `/mcp` gateway
+   *  registers an installed app's `write`/`approve` `exposes.tools` for this
+   *  session only when its MCP name matches one (a deny grant still wins).
+   *  Same provenance as {@link toolDenyGrants}: computed at spawn, copied onto
+   *  a continuation successor, never taken from a request. */
+  exposedToolOptIn?: string[]
   /** Ascending position among pinned sessions — the stored order behind
    *  the pinned group of the CLI table / VS Code webview list. Set by
    *  `registry.setPinned` (append-at-end) and `registry.reorderPinned`
@@ -2160,7 +2427,11 @@ export interface SessionDescriptor {
    * independent sessions. It is append-only and persists with the descriptor
    * so a restarted daemon can still show the hand-off / review links. */
   openedPrs?: readonly OpenedPullRequest[]
-  /** Adapter slug for agent-cli sessions — restart uses this with
+  /** @deprecated Read {@link SessionDescriptor.harness}: it is always set
+   *  wherever this is, and `adapterSlug` will be removed in the next major
+   *  of @agentproto/runtime.
+   *
+   *  Adapter slug for agent-cli sessions: restart uses this with
    *  `/sessions/agent` to spin up a fresh ACP runtime. ALSO stamped on a
    *  conversation-terminal PTY (`isConversationTerminal` — a native
    *  provider TUI launch like `claude`, classified at `spawnPty`), so the
@@ -2201,9 +2472,11 @@ export interface SessionDescriptor {
    */
   nativeHooks?: readonly HookCapabilityView[]
   /**
-   * Canonical harness slug for agent-cli sessions — the same identity as
-   *  `adapterSlug`, recorded under the canonical axis name. Falls back to
-   *  `adapterSlug` when not explicitly set. Undefined for pty/command kinds. */
+   * Canonical harness slug for agent-cli sessions (and conversation
+   *  terminals): the same identity as the deprecated `adapterSlug`. Always
+   *  set on every read surface whenever `adapterSlug` is (`stampHarness`),
+   *  including rows persisted before this field existed. Undefined for
+   *  plain-shell PTYs and command kinds. */
   harness?: string
   /**
    * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
@@ -2264,6 +2537,16 @@ export interface SessionDescriptor {
    * thing that lets a client show the two facts diverging.
    */
   activeModel?: string
+  /**
+   * Set when the adapter REJECTED the model requested at spawn/resume: the
+   * session is running the adapter's own default (or whatever model the
+   * wrapper reports) instead. Records the requested id + the server's reason,
+   * so the divergence is visible instead of the descriptor silently claiming
+   * a model the adapter never applied. When the adapter reports a model
+   * (config-option `currentValue` or a usage frame), `model` is moved to that
+   * reported id; this field preserves what was asked for. PERSISTED.
+   */
+  modelApplyRejection?: { requested: string; reason: string }
   // ── Decomposed per-session config axes (SPEC §3.1/§3.7,
   //    `agentproto-session-config-axes`). Each is the DESCRIPTOR ECHO of one
   //    orthogonal axis, recorded here so a picker chip renders that axis
@@ -2279,8 +2562,20 @@ export interface SessionDescriptor {
   effort?: EffortLevel
   /** What the agent may DO (SPEC §3.1 axis 5) — an agentproto-canonical
    *  posture or a raw `{ harnessModeId }` sourced from the harness's ACP mode
-   *  registry (SPEC §3.4a). */
+   *  registry (SPEC §3.4a). Follows an agent-caused AIP-45 `mode-changed`
+   *  too, so it is the mode the harness is in now (see `postureSource`). */
   posture?: Posture
+  /** `"agent"` once the agent itself has moved `posture` (an AIP-45
+   *  `mode-changed` with `cause: "agent"`), absent until then (spawn,
+   *  `agent_set_posture`). A restart carries it forward while the caller's
+   *  pick still owns the ceiling, so the ceiling survives the restart. */
+  postureSource?: "agent"
+  /** The caller's last posture, snapshotted when the agent first moves the
+   *  posture (absent: the caller never set one). The agent may move below it
+   *  freely; past it, the daemon warns and a restart clamps back to it
+   *  (`restartPosture`, canonical-posture.ts). Carried across restarts with
+   *  `postureSource`. */
+  postureCeiling?: Posture
   /**
    * Read-surface echo of the live harness's advertised ACP session modes
    * (`SessionModeState.availableModes`, #482) — stamped at READ TIME from the
@@ -2327,6 +2622,12 @@ export interface SessionDescriptor {
    *  `auth` fingerprint echo below, which stays as-is — see
    *  {@link SessionAccessProfileEcho}. NEVER the credential. */
   accessProfile?: SessionAccessProfileEcho
+  /** The account slot the session asked for (`slot:<name>` resolved through
+   *  config.json `accountSlots`), beside the real profile in `accessProfile`
+   *  (which billing keeps reading). Recomputed at each restart: kept only
+   *  while the slot still points at the profile the session bills. Absent for
+   *  a session that named a profile literally. */
+  accessSlot?: string
   /**
    * Deterministic billing-auth mode + a non-secret credential fingerprint,
    * recorded at spawn time for adapters that resolved an explicit
@@ -2413,10 +2714,11 @@ export interface SessionDescriptor {
   /** MCP servers mounted into the agent's session at spawn time
    *  (orchestrator WP1). Persisted so the resume/re-spawn path can
    *  re-mount the same host-chosen toolset instead of resuming a
-   *  capability-stripped agent. The current `AcpMcpServer` shape is
-   *  `{ name, transport, ref? }` — a reference, NOT inline credentials
-   *  — so this carries no secrets today. Should the shape ever grow
-   *  headers/tokens, NEVER log this field's contents. */
+   *  capability-stripped agent. An entry CAN carry secrets (`env`,
+   *  `headers`, an `/mcp/orchestrator` scope-token in `ref`): every
+   *  outward read goes through `publicSessionDescriptor` /
+   *  `redactMcpServers` (session-descriptor-public.ts), and this field's
+   *  contents must NEVER be logged. */
   mcpServers?: AcpMcpServer[]
   /** Resolved skills list at spawn time — explicit ∪ preset ∪ config
    *  defaults (`resolveSpawnDefaults`'s own merge), recorded regardless of
@@ -2528,12 +2830,14 @@ export interface SessionDescriptor {
    *  clears `blockedOn` when its toolCallId matches — so a nested or
    *  interleaved tool finishing first can't clear the flag early. */
   pendingToolCallId?: string
-  /** Session id of the orchestrator that spawned this session, set when
-   *  the spawn arrived via the scoped orchestrator sub-gateway (the
-   *  token carried the spawner's identity). Absent for direct `/mcp`
-   *  spawns (the root operator). Powers the subtree scoping of
-   *  list/kill and the per-parent child quota (orchestrator WP4).
-   *  Persisted so the tree survives a daemon restart. */
+  /** Session id of the session that spawned this one, set from the caller
+   *  session id the daemon trusts (the scoped orchestrator gateway's token,
+   *  or the derived caller the attach policy records on the anonymous
+   *  `/mcp` path - see `spawn-attach.ts`). Absent for a root spawn that
+   *  names no caller session (the human operator) or that asked for
+   *  `attach: false`. Powers the subtree scoping of list/kill and the
+   *  per-parent child quota (orchestrator WP4). Persisted so the tree
+   *  survives a daemon restart. */
   parentSessionId?: string
   /** A REMOTE parent: this session lives in a BOX daemon's registry while its
    *  parent lives in the HOST daemon's registry (see
@@ -2551,7 +2855,8 @@ export interface SessionDescriptor {
     sessionId: string
     url: string
   }
-  /** Opt-in (default false/absent): when this session crashes
+  /** Resolved at spawn (true for an executor with a parent unless opted out;
+   *  absent means off): when this session crashes
    *  (`markCrashed` → `session:exited` with `status:"error"`/
    *  `reason:"crashed"`), the supervisor-notify subscriber
    *  (`supervisor-notify.ts`) delivers a `[child-crashed]` notice to its
@@ -2629,6 +2934,21 @@ export interface SessionDescriptor {
    *  changes to the transcript panel. `[]` (not absent) once anything
    *  has ever been queued. */
   promptQueue?: QueuedPrompt[]
+  /** Bounded window of ACCEPTED `enqueuePrompt` `dedupeKey`s, newest last
+   *  (`{ key, at }`, ISO `at`), so a retried prompt (an MCP client that
+   *  timed out and calls again, or a replayed durable reaction) is delivered
+   *  at most once inside `PROMPT_DEDUPE_TTL_MS` (24 hours). Recording first
+   *  drops entries older than the TTL, then appends, then evicts the oldest
+   *  while the length exceeds `PROMPT_DEDUPE_MAX` (128); a lookup ignores an
+   *  entry older than the TTL. Always replaced with a NEW array on every
+   *  change, like `promptQueue`, and persisted with the descriptor through
+   *  `schedulePersist()`. Removing a waiting item with
+   *  `removeQueuedPrompt` does NOT free its key: dropping is an explicit
+   *  cancel, and a retry must not resurrect it. Residual: a daemon crash
+   *  between recording an idle session's key and its turn actually starting
+   *  loses that prompt (same as today without a key); a queued item is
+   *  persisted with its key in one step, so it is not lost. */
+  promptDedupe?: Array<{ key: string; at: string }>
   /** Best-effort context-handoff digest (Fix D), stashed on a descriptor
    *  whose resume degraded to a BLANK spawn — the adapter's own
    *  conversation store was missing, or the adapter declared `resumable:
@@ -2764,6 +3084,18 @@ export interface SessionDescriptor {
   /** `kind: "external"` only: the connecting client's `host` query param
    *  (e.g. `claude-desktop`). */
   externalHost?: string
+  /** `kind: "external"` only: the host harness's own session id for this
+   *  chat (e.g. Claude's `hostSessionId`), so the daemon row can be matched
+   *  back to the client that registered it. */
+  externalHostSessionId?: string
+  /** `kind: "external"` only: the host's own entrypoint tag for this chat,
+   *  as its registration file reports it (Claude Desktop: `claude-desktop-3p`).
+   *  Read-only metadata; nothing in the daemon branches on it. */
+  externalEntrypoint?: string
+  /** `kind: "external"` only: the permission mode the host's hooks last
+   *  reported (Claude's `permission_mode`, e.g. `bypassPermissions`). The
+   *  socket wake reads it when the host's registration file carries no mode. */
+  externalPermissionMode?: string
   /** `kind: "external"` only: ISO instant of the session's last MCP request
    *  (or inbox poll). The row is alive while `now - lastSeenAt` is inside the
    *  registry's liveness window; `startedAt` is the first sighting. */
@@ -2825,6 +3157,20 @@ export interface SessionDescriptor {
    *  just THAT one exists — the VS Code panel's sandbox chip names it in its
    *  tooltip alongside `sandboxId`. */
   sandboxProvider?: string
+  /** Public egress address of the box, when its provider brokers an address
+   *  pool. A throttled turn on this session cools it down in the egress
+   *  health ledger. */
+  sandboxEgressIp?: string
+  /** Egress pool slot id of {@link sandboxEgressIp}. */
+  sandboxEgressSlot?: string
+  /**
+   * How a composite sandbox provider (`auto`) chose the backend recorded in
+   * {@link sandboxProvider} — the requested slug, the actual provider, the
+   * provider it overflowed from (when any), and a short secret-free reason.
+   * Absent for a single-provider spawn, where the requested slug is already
+   * the actual provider.
+   */
+  sandboxProviderChoice?: SandboxProviderChoice
   /**
    * Non-secret sandbox spec config persisted for a later re-attach — the
    * effective boot config minus credentials, always carrying the stable
@@ -2863,11 +3209,26 @@ export interface SessionDescriptor {
    *  base commit). Persisted so a restart that re-attaches the box can still
    *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** HOST repo root the sandbox workspace was cloned from. The session's own
+   *  `cwd` names a path INSIDE the box (`/home/user/...`), which the host's
+   *  checkpoint gc cannot resolve; this is the host-side repo the
+   *  `agentproto-checkpoint/*` refs live on. Only set for a sandbox workspace
+   *  spawn. */
+  sandboxRepoRoot?: string
   /** The spawn's own `agent_start.sandboxCheckpoint` override, persisted so a
    *  restart or a boot-time re-attach re-resolves the same checkpoint policy
    *  (`false` stays off across a daemon restart). Absent ⇒ the global
    *  `defaults.sandbox.checkpoint` alone. */
   sandboxCheckpointOverride?: SandboxCheckpointConfig | false
+  /** The spawn's `agent_start.preflight` probe ids (for a ladder spawn, the
+   *  ones of the rung that placed it), persisted so a restart or migration
+   *  onto a fresh box runs the same probes. Absent ⇒ none. */
+  preflight?: string[]
+  /** How a `placement.ladder` spawn was placed: the rung it runs on, the
+   *  ladder as requested (a restart or migration onto a fresh box re-places
+   *  from rung 1) and one attempt per rung tried, so `session_list` shows why
+   *  a rung was skipped. Absent for a spawn without `placement`. */
+  placement?: SessionPlacement
   /** App ports exposed at boot time (`SandboxSpec.extraPorts`) — maps port
    *  number to its public URL. Only present for sandbox sessions where the
    *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
@@ -2991,7 +3352,10 @@ export interface SessionSummary {
   agentsMdMode?: AgentsMdMode
   /** Resolved workspace RULES.md path — see `SessionDescriptor.rulesMd`. */
   rulesMd?: string
+  /** @deprecated Read `harness`; removed in the next major of @agentproto/runtime. */
   adapterSlug?: string
+  /** Canonical harness slug: see `SessionDescriptor.harness`. */
+  harness?: string
   mode?: string
   model?: string
   costUsd?: number
@@ -3081,6 +3445,16 @@ export function isShellOnlyRow(
 }
 
 /** Project a full SessionDescriptor down to the panel summary shape. */
+/**
+ * Make `harness` the always-present canonical slug: a descriptor that only
+ * carries the deprecated `adapterSlug` (a row persisted before `harness`
+ * existed, a restart path that only copied `adapterSlug`) gets `harness`
+ * stamped from it. Never overwrites an explicit `harness`.
+ */
+export function stampHarness(desc: Pick<SessionDescriptor, "adapterSlug" | "harness">): void {
+  if (desc.harness === undefined && desc.adapterSlug) desc.harness = desc.adapterSlug
+}
+
 function toSessionSummary(desc: SessionDescriptor): SessionSummary {
   return {
     id: desc.id,
@@ -3124,6 +3498,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     agentsMdMode: desc.agentsMdMode,
     rulesMd: desc.rulesMd,
     adapterSlug: desc.adapterSlug,
+    harness: desc.harness ?? desc.adapterSlug,
     mode: desc.mode,
     model: desc.model,
     costUsd: desc.costUsd,
@@ -3182,8 +3557,35 @@ interface SessionRuntime {
   contextUsedInconsistent?: boolean
   /** In flight while the runtime rescues a session that reached
    *  `hardStopAtPct` (auto-compact, then continue fresh, then — last resort —
-   *  stop). Prompts are held (queued / answered "retry") until it settles. */
+   *  stop). Prompts are held (queued / answered "retry") until it settles.
+   *  The one lock for every runtime-initiated compaction: the absolute
+   *  auto-compact and the turn-boundary continue-fresh hold it too, and skip
+   *  when another owner already does. */
   contextRescue?: Promise<void>
+  /** The checkpoint the `/compact` gate in `runAgentTurn` wrote last, so the
+   *  auto-compaction reads its goal without writing a second one. In memory
+   *  only: never persisted, never on the descriptor. */
+  lastCompactionCheckpoint?: ContextCheckpoint
+  /** The last `usage_update` reading accepted as tokens-in-context (not
+   *  dropped by `plausibleContextUsed`): the native-compaction detector
+   *  compares the next one against it. In memory only, on purpose: the
+   *  persisted `desc.contextUsed` survives a daemon restart and would make
+   *  the first frame after a resume look like a drop. */
+  lastUsageSample?: UsageSample
+  /** `Date.now()` when a checkpoint was last written for this session (the
+   *  compaction gate, a hard stop, the checkpoint route or tool). A native
+   *  compaction within `NATIVE_COMPACTION_GUARD_WINDOW_MS` of it is guarded.
+   *  In memory only. */
+  lastCheckpointAtMs?: number
+  /** True while the current turn is a compaction prompt (`/compact`,
+   *  `/compress`): its usage drop is the compaction the turn asked for, not
+   *  a native one. Set with `turnStartedAtMs`, cleared when the turn ends. */
+  compactionTurn?: boolean
+  /** Set when a compaction turn ends and consumed by the next accepted
+   *  usage sample: a harness may report the compacted window only after the
+   *  turn is over, and that late frame is the compaction the turn asked for,
+   *  not a native one. In memory only. */
+  compactionDropExpected?: boolean
   /** The autocompact controller for this session (absolute token
    *  threshold). Created lazily on the first turn boundary that reaches it. */
   autoCompact?: AutoCompactController
@@ -3201,6 +3603,14 @@ interface SessionRuntime {
   toolCallIdsThisTurn?: Set<string>
   /** Per-turn tool-call count surfaced by the read-time status projection. */
   toolCallsThisTurn?: number
+  /** Per-turn record of `inbox_ack({ noop: true })` calls that actually acked
+   *  at least one message. Keyed on the turn number the ack landed in (the
+   *  caller's `turnsCompleted + 1` at ack time) so a stale record from an
+   *  earlier turn can never make a later turn look silent. `count` is the
+   *  number of noop-ack tool calls this turn; `attention` is true when any
+   *  acked message was a `blocker` or `question`. In-memory only, cleared at
+   *  turn end. */
+  noopAcks?: { turn: number; count: number; attention: boolean }
   /** Per-turn counter of tool-calls started with `run_in_background: true`
    *  (see `SessionDescriptor.pendingBgTasks`). Reset at each turn start by
    *  `runAgentTurn`; read at turn-end to decide whether the session parked
@@ -3305,8 +3715,19 @@ interface SessionRuntime {
    *  derived outcome's `summary` without re-reading the transcript. Not
    *  persisted. */
   lastAssistantText?: string
+  /** Snapshot of `lastAssistantText` taken at the moment this row went
+   *  terminal (see `emitExited`). A late relayed event can still append to
+   *  the live buffer after death, but the output-tail reader must keep
+   *  serving what the session actually finished with, not that straggler. */
+  finalOutputText?: string
   /** Set by a tool call: the next text-delta starts a new message. */
   lastAssistantTextSealed?: boolean
+  /** Assistant text accumulated during the CURRENT turn, tail-capped like
+   *  `lastAssistantText`. Unlike that field it is reset at every turn start
+   *  and never sealed by a tool call, so it never carries a previous turn's
+   *  text into this turn's classification (see
+   *  `providerLimitFromTurnText`). Not persisted. */
+  turnAssistantText?: string
   /** The most recent user prompt for this session (the caller's own ask, with
    *  any daemon-composed system preamble stripped), captured at turn start so
    *  the index sidecar can carry it without a transcript read on the write
@@ -3375,6 +3796,8 @@ interface SessionRuntime {
    *  running child tree killed). Set by `spawnAgentPending`'s `onCancel`;
    *  fired once from `emitExited`, the funnel every terminal path shares. */
   provisionCancel?: () => void
+  /** Partial trailing line of the provisioning output not yet newline-ended. */
+  provisionOutCarry?: string
   /** Per-session cost cap. When set, the turn-end finally block checks
    *  the accumulated costUsd against this ceiling and kills the session
    *  if exceeded. */
@@ -4050,6 +4473,10 @@ export type EagerResumeSkipReason =
   /** Retired (`isRetired`): archived, deliberately ended, superseded or
    *  `retiredAt`-stamped — never revived by an automatic pass. */
   | "retired"
+  /** Ran in a provider box (`isProviderBoxSession`): its `cwd` only exists
+   *  inside the box, so it can never be resumed in place on the host. The
+   *  sandbox reattach pass or `session_restart` owns it. */
+  | "provider-box"
 
 /** Why an eager in-place resume of one row failed after being attempted. */
 export type EagerResumeFailReason =
@@ -4194,7 +4621,12 @@ function deriveHeuristicQuestion(
   if (i < 0) return undefined
   const candidate = visible[i]!
   if (!candidate.endsWith("?")) return undefined
-  return { text: candidate, ...(options.length > 0 ? { options } : {}), source: "heuristic" }
+  return {
+    text: candidate,
+    ...(options.length > 0 ? { options } : {}),
+    source: "heuristic",
+    kind: "harness",
+  }
 }
 
 /**
@@ -4233,7 +4665,38 @@ export interface PendingPermission {
    * Harness-shaped and untyped — don't assume a stable schema across adapters.
    */
   _meta?: unknown
+  /** AIP-45 request kind from the `agent-prompt` event (absent reads as
+   *  "tool-permission"), carried through unchanged. */
+  request?: string
+  /** AIP-45 `question` payload from the `agent-prompt` event, unchanged.
+   *  With `fields`, answer it with `respondPermission(id, { answers })`. */
+  question?: AgentPromptQuestion
+  /** AIP-45 `planApproval` payload from the `agent-prompt` event, unchanged. */
+  planApproval?: unknown
+  /** Set on a permission the DAEMON raised itself (`requestToolPermission`,
+   *  e.g. the per-call gate on an imported MCP tool) rather than one an agent
+   *  driver parked. It has no driver RPC behind it: resolving it resumes the
+   *  daemon-side caller. Absent on every ACP-originated request. */
+  origin?: "daemon-gate"
 }
+
+/** Input to `SessionsRegistry.requestToolPermission`. */
+export interface ToolPermissionRequest {
+  /** Session the gated call is made on behalf of, when known. Absent for a
+   *  call with no session context (the permission is then attributed to the
+   *  pseudo-session `"daemon"`). */
+  sessionId?: string
+  toolName: string
+  text: string
+  rawInput?: unknown
+  /** Fail closed after this long with no human answer. Default 10 minutes. */
+  timeoutMs?: number
+}
+
+export type ToolPermissionOutcome =
+  | { decision: "approve"; optionId: string; feedback?: string }
+  | { decision: "deny"; optionId: string; feedback?: string }
+  | { decision: "cancelled"; reason: "timeout" | "session-ended" | "shutdown" }
 
 /** How a caller resolves a pending permission — an explicit `optionId` wins
  *  over the `decision`→option mapping (approve → an allow-flavored option,
@@ -4248,13 +4711,17 @@ export interface PermissionRespondInput {
   optionId?: string
   scope?: "once" | "always"
   feedback?: string
+  /** Answers to a multi-field question (`PendingPermission.question.fields`),
+   *  keyed by field id. When set, `decision` / `optionId` / `scope` /
+   *  `feedback` are ignored: the question is submitted with these answers. */
+  answers?: AgentPromptAnswers
 }
 
 export type PermissionRespondResult =
   | { ok: true; permission: PendingPermission; decision: "approve" | "deny"; optionId?: string }
   | {
       ok: false
-      error: "not_found" | "session_gone" | "no_matching_option" | "unsupported"
+      error: "not_found" | "session_gone" | "no_matching_option" | "unsupported" | "invalid_answers"
       message: string
     }
 
@@ -4363,6 +4830,11 @@ export interface SessionsRegistry {
    *  exist until it finishes) — only the descriptor update is skipped. Never
    *  touches a row that already left `starting`. */
   reportProvisioning(id: string, progress: WorktreeProvisionProgress): void
+  /** Append the live stdout/stderr of a still-`starting` row's provisioning
+   *  (deps / `worktree.setup` hooks) to its output, one `[phase] line` per
+   *  complete line, so `agent_output` shows progress during a long setup. A
+   *  no-op for an unknown row or one that already left `starting`. */
+  appendProvisioningOutput(id: string, text: string, stream: "stdout" | "stderr"): void
   /** Spawn a process under a real PTY (node-pty). Bytes flow through
    *  the registry's byte ring buffer + emitter; attach with
    *  `attachPty(id, ...)`. Throws when the registry was constructed
@@ -4387,6 +4859,14 @@ export interface SessionsRegistry {
   recordOpenedPr(
     sessionId: string,
     input: RecordOpenedPrInput,
+  ): SessionDescriptor | undefined
+  /** Persist provenance-footer bookkeeping onto an already-recorded PR (the
+   *  body hash at the last stamp, the removal count, and the stop flag). A
+   *  no-op when the session or the PR is unknown. */
+  recordPrFooterState(
+    sessionId: string,
+    url: string,
+    state: PrFooterState,
   ): SessionDescriptor | undefined
   /** Read back a `kind:"command"` session's full logged result (the
    *  `CommandLogEntry` `recordCommand` wrote). Resolves to null when the
@@ -4426,7 +4906,17 @@ export interface SessionsRegistry {
    *    it expired, unless it was deliberately ended) and returns it;
    *  - any other existing row, or an unknown `id` without `host` → no-op,
    *    `undefined` (today's behaviour is unchanged). */
-  touchExternal(input: { id: string; host?: string }): SessionDescriptor | undefined
+  touchExternal(input: {
+    id: string
+    host?: string
+    name?: string
+    cwd?: string
+    hostSessionId?: string
+    /** Host registration `entrypoint` (e.g. `claude-desktop-3p`); absent leaves the stored one. */
+    entrypoint?: string
+    /** Host-reported permission mode; absent leaves the stored one as is. */
+    permissionMode?: string
+  }): SessionDescriptor | undefined
   /** Send a follow-up turn to a live agent session and AWAIT it. Throws
    *  when the session is missing, not an agent-cli kind, dead (exited/
    *  killed/error and unresumable — `SessionNotAliveError`), or busy
@@ -4525,6 +5015,24 @@ export interface SessionsRegistry {
        *  key is REPLACED in place (newest message wins, id + position kept,
        *  `coalescedCount` incremented) instead of a second item being pushed. */
       coalesceKey?: string
+      /** Retry-safe admission key: once a prompt carrying this key is
+       *  ACCEPTED (queued or dispatched), a later `enqueuePrompt` with the
+       *  same key inside the 24 hour window returns `delivery: "duplicate"`
+       *  and delivers nothing. Trimmed; must be 1 to 200 characters. A
+       *  duplicate does not interrupt, resume, compact, trace, or touch the
+       *  inbox or queue. Dropping a waiting item keeps its key. Not
+       *  supported together with `envelope`. */
+      dedupeKey?: string
+      /** Digest payload for a freshly queued item (follow digests). */
+      digest?: QueuedDigest
+      /** On replacement only: synchronously merge with the item actually
+       *  still waiting under `coalesceKey`. Returned `message`/`envelope`
+       *  replace the fresh ones and `digest` becomes the queued payload. */
+      merge?: (existing: QueuedPrompt) => {
+        message: string
+        envelope?: SessionMessage
+        digest: QueuedDigest
+      }
     }
   ): Promise<EnqueuePromptResult>
   /** One pass over every prompt queue: force-deliver items past their
@@ -4572,6 +5080,14 @@ export interface SessionsRegistry {
        *  (sentinel notices use this so a burst about one PR/commit becomes
        *  one queued item). */
       coalesceKey?: string
+      /** Follow-digest payload for a freshly queued item. */
+      digest?: QueuedDigest
+      /** Merge callback carried through to `enqueuePrompt`'s queue arm. */
+      merge?: (existing: QueuedPrompt) => {
+        message: string
+        envelope?: SessionMessage
+        digest: QueuedDigest
+      }
     },
   ): Promise<SendMessageResult>
   /** Block until a message matching `filter` is in `id`'s inbox (returns at
@@ -4593,6 +5109,12 @@ export interface SessionsRegistry {
   /** Ack (remove) messages from `id`'s inbox — and from its prompt queue, so
    *  an acked-but-still-queued message is never delivered afterwards. */
   ackInbox(id: string, ids: readonly string[] | "all"): { acked: string[] }
+  /** Record that `id` acked messages with `inbox_ack({ noop: true })`, for
+   *  the turn currently in flight (`turnsCompleted + 1`). Multiple noop acks
+   *  in the same turn increment a per-turn count; any acked `blocker`/
+   *  `question` marks the turn as needing attention. The turn recorder reads
+   *  this to decide `silent` and clears it at turn end. */
+  recordNoopAck(id: string, acked: readonly SessionMessage[]): void
   /** Snapshot a session's prompt queue for inspection — the after-the-fact
    *  view of what's sitting in `SessionDescriptor.promptQueue` right now.
    *  Runs the shared preview + origin-label derivation so every consumer
@@ -4854,6 +5376,12 @@ export interface SessionsRegistry {
    *  configured `sessionRetention` defaults. Async + batched; never touches
    *  a live, pinned or keepAlive session or an ancestor of a live one. */
   pruneSessionDirs(opts?: SessionRetentionOptions): Promise<SessionRetentionResult>
+  /** Adapter-config cache sweep (`adapter-config-retention.ts`): delete the
+   *  cache content (session cache manifest paths: pnpm store, opencode
+   *  snapshot/tool-output/log) of dead lineages' `~/.agentproto/adapter-config/
+   *  <id>/` dirs, keeping what a resume needs. Unset `maxAgeDays` falls back
+   *  to the registry's `adapterCacheRetention` default (1 day). */
+  pruneAdapterConfigCaches(opts?: AdapterCacheRetentionOptions): Promise<AdapterCacheRetentionResult>
   /** Set or clear a session's user-facing name and/or its `slug`. This is
    *  the write-path behind `PATCH /sessions/:id` and the `session_rename` MCP
    *  verb; the registry honours a `slug` key on `patch`, and those two
@@ -4889,6 +5417,11 @@ export interface SessionsRegistry {
    *  same `schedulePersist` every descriptor mutation uses. Never touches
    *  the live agent. Throws when the id is unknown. */
   mergeMeta(id: string, patch: Record<string, string>): SessionDescriptor
+  /** Record the link to a session's recordings on a server that minted an
+   *  AIP-59 sub-session token for it (Bureau, AIP-63 M7). Stores the LINK
+   *  only, never a copy. Silently returns undefined when the session is gone
+   *  (a mint can land as the row is exiting). */
+  setBrowserRecordings(id: string, recordings: { url: string }): SessionDescriptor | undefined
   /** AIP-42 hot role refresh (the `session_role_refresh` MCP verb) — reload
    *  a manifest-spawned session's AGENT.md, re-render it through the SAME
    *  projection the spawn used, and diff against the fingerprint recorded
@@ -4922,19 +5455,18 @@ export interface SessionsRegistry {
    *  watcher in this codebase). Returns false when the session is unknown
    *  or has no `meta.agentManifestPath` to watch. */
   setAgentRoleWatch(id: string, enabled: boolean): boolean
-  /** Set or clear a session's list-visibility pin (the `session_set_pinned`
-   *  MCP verb / `POST /sessions/:id/pin`). `true` flips
-   *  `SessionDescriptor.pinned` on — pure sort/display state for the CLI
-   *  table and the VS Code webview's list, which sort a pinned session to
-   *  the top. Pinning a session that isn't pinned yet APPENDS it to the
+  /** Set or clear a session's pin (the `session_set_pinned` MCP verb /
+   *  `POST /sessions/:id/pin`). `true` flips `SessionDescriptor.pinned` on: the
+   *  CLI table and the VS Code webview's list sort a pinned session to the
+   *  top, and the idle reaper never stops it. Pinning a session that isn't pinned yet APPENDS it to the
    *  end of the pinned group (`pinnedOrder` = max pinned order over the
    *  currently pinned + 1, missing treated as -1); re-pinning an already
    *  pinned session keeps its order. `false` clears the pin and deletes
    *  `pinnedOrder`. Persists via the same `schedulePersist` every
    *  descriptor mutation uses and emits `session:pinned-changed` so a
    *  live UI resorts without waiting for its next snapshot poll. NEVER
-   *  touches `keepAlive`, reaper eligibility, or any notification path —
-   *  pin is quiet, structural state only. Throws when the id is unknown. */
+   *  touches `keepAlive` or any notification path. Unpinning makes the
+   *  session reapable again. Throws when the id is unknown. */
   setPinned(id: string, pinned: boolean): SessionDescriptor
   /** Manually reorder the pinned group (the `session_reorder_pinned` MCP
    *  verb / `POST /sessions/pinned/order`). Every id must exist and be
@@ -4959,6 +5491,15 @@ export interface SessionsRegistry {
    *  re-parenting, e.g. `agent_start.succeeds` on a spawn whose predecessor
    *  had no live children). Throws when either id is unknown. */
   setLineageSuccessor(fromId: string, toId: string): SessionDescriptor
+  /** Restart support: bring back the orchestrator scopes `id` lost when it
+   *  died, before a revival starts an adapter on its mount (see
+   *  `SessionsRegistryOptions.orchestratorScopes`). Returns a rollback for
+   *  a revival that fails. No-op when the hooks are not wired. */
+  reinstateOrchestratorScopes(id: string): () => void
+  /** Restart support: hand `from`'s orchestrator scopes to its successor
+   *  `to`, so the scope keeps verifying, spawns through it are attributed
+   *  to `to`, and only `to`'s own exit revokes it. No-op when not wired. */
+  transferOrchestratorScopes(from: string, to: string): void
   /** Lineage handover - re-parent a session: `id`'s `parentSessionId`
    *  becomes `newParentId` (the child keeps its own id, transcript and
    *  state; only the lineage pointer moves). This is what makes the
@@ -4976,9 +5517,20 @@ export interface SessionsRegistry {
   /** Stamp (or clear) the operator-assigned `operatorLabel` (see
    *  `SessionDescriptor.operatorLabel`). Called by the `agent_start` handler
    *  for operator spawns, by the restart / continue-fresh carry-forward, and
-   *  by the operator-only `agent_set_operator_label` MCP tool
-   *  (`agent-tools.ts`). No session-scoped caller may invoke it. */
+   *  by the `agent_set_operator_label` MCP tool (`agent-tools.ts`), which
+   *  gates session callers with `checkOperatorLabelStamp`. */
   setOperatorLabel(id: string, operatorLabel: string | undefined): SessionDescriptor
+  /** Stamp (or clear, with `operator` undefined) the AIP-46 `operator` and its
+   *  `operatorDigest`. Daemon-internal: the restart / continue-fresh
+   *  carry-forward copies them from the source row. No request path calls it. */
+  setOperator(id: string, operator: string | undefined, operatorDigest?: string): SessionDescriptor
+  /** Stamp (or clear, with `undefined` or an empty list) the descriptor's
+   *  `toolDenyGrants`. Daemon-internal: the restart / continue-fresh
+   *  carry-forward copies them from the source row. No request path calls it. */
+  setToolDenyGrants(id: string, grants: readonly Grant[] | undefined): SessionDescriptor
+  /** Stamp (or clear) the descriptor's `exposedToolOptIn`. Daemon-internal,
+   *  same carry-forward role as {@link setToolDenyGrants}. */
+  setExposedToolOptIn(id: string, optIn: readonly string[] | undefined): SessionDescriptor
   /** Record on the session event bus that a drive-tool prompt was accepted
    *  for `id`, and WHO sent it (`caller` = the trusted calling session id,
    *  or the literal `"operator"`). No-op when the registry was constructed
@@ -5097,6 +5649,12 @@ export interface SessionsRegistry {
    *  bytes at the end; `lastBytes` caps the returned size from the
    *  tail. Returns null when the session is missing or not a PTY. */
   readTerminalOutput(id: string, lastBytes?: number): Buffer | null
+  /** Last `lastN` output lines for an agent-cli/command row. Serves the
+   *  live ring while the row still has one; a finished row's rings are
+   *  cleared at exit, so it falls back to the last assistant text kept on
+   *  the runtime and then to the bounded transcript tail on disk. Returns
+   *  `[]` for a missing session or a row with no recoverable text. */
+  readOutputTail(id: string, lastN: number): string[]
   /** SIGTERM the underlying child + close the agent protocol session.
    *  `reason`, when given, is stamped onto `SessionDescriptor.endedReason`
    *  (see {@link SessionEndReason}) — pass it from every call site that
@@ -5194,9 +5752,10 @@ export interface SessionsRegistry {
    *  never violate — it refuses (returns false, no-op) a session that is not a
    *  live (`running`) agent-cli row (so a PTY/command/terminal or an
    *  already-terminal row is never touched). `idleMs` is stamped onto the
-   *  emitted `session:reaped` event for observability. Returns true iff a row
-   *  was actually reaped. */
-  reapIdle(id: string, idleMs?: number): boolean
+   *  emitted `session:reaped` event for observability. `endedReason` defaults
+   *  to `"idle-reaped"`; the host guard passes `"guard-reaped"` so its periodic
+   *  reaps are distinguishable. Returns true iff a row was actually reaped. */
+  reapIdle(id: string, idleMs?: number, endedReason?: SessionEndReason): boolean
   /** Flip a LIVE agent-cli row whose adapter OS process is gone to
    *  `status:"error"`/`endedReason:"crashed"` — the primitive the crash-detect
    *  sweep (`runCrashDetectPass`) drives on a periodic sweep. Unlike
@@ -5380,6 +5939,10 @@ export interface SessionsRegistry {
    * false for an unknown id or a non-`agent-cli` session.
    */
   setSandboxDeliveryTarget(id: string, target: SandboxDeliveryTarget): boolean
+  /** Stamp the `placement` record of a ladder spawn on the session's
+   *  descriptor. Returns the updated descriptor, or undefined for an unknown
+   *  id. Daemon-internal: only the spawn path calls it. */
+  recordPlacement(id: string, placement: SessionPlacement): SessionDescriptor | undefined
   /**
    * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
    * `device-mirror.ts`) into an agent-cli session's durable transcript.
@@ -5422,6 +5985,13 @@ export interface SessionsRegistry {
     id: string,
     input: PermissionRespondInput,
   ): Promise<PermissionRespondResult>
+  /** Raise a daemon-originated permission (no agent driver behind it) in the
+   *  same inbox + bus events as an ACP `session/request_permission`, and
+   *  resolve once a human answers via `respondPermission`. Offers only
+   *  `allow_once` / `reject_once` - there is no standing grant. Fails closed
+   *  (`cancelled`) on timeout, on the owning session's death, and on daemon
+   *  shutdown. */
+  requestToolPermission(input: ToolPermissionRequest): Promise<ToolPermissionOutcome>
   /** Stop tracking a session. A still-live session is torn down through
    *  `kill` first (same teardown as `agent_kill`), so forgetting never
    *  orphans a running process tree. */
@@ -5470,6 +6040,20 @@ export interface SessionsRegistry {
   noteSandboxReattachUnserved(count: number): void
   /** Live + restart bookkeeping for `/health` and `daemon_health`. */
   sandboxSessionStats(): SandboxSessionStats
+  /** Daemon-health warnings raised by message delivery (one per receiver):
+   *  a bypassPermissions Claude Code session was messaged while its
+   *  `crossSessionInbound` setting would make it hold the wake. */
+  wakeWarnings(): readonly WakeWarning[]
+  /** Record that a checkpoint was just written for a live session (the
+   *  checkpoint route, the `session_checkpoint` tool), so a native
+   *  compaction right after it is reported as guarded. No-op for an
+   *  unknown id. With `before`, also writes the same notice line a daemon
+   *  `/compact` writes (`[context] checkpoint <id> written to <path> before
+   *  <before>`) to the session output and its transcript. */
+  noteCheckpointWritten(
+    sessionId: string,
+    notice?: { checkpointId: string; checkpointPath: string; before: string },
+  ): void
   /** Stop persisting + close all sessions. Killed children are not
    *  awaited — the daemon shutdown loop handles process tree teardown. */
   shutdown(): void
@@ -5499,6 +6083,14 @@ export interface SandboxReattachOutcome {
 }
 
 /** Restart bookkeeping for sandbox sessions, as surfaced on `/health`. */
+export interface WakeWarning {
+  kind: "held-by-receiver-bypass"
+  sessionId: string
+  pid?: number
+  since: string
+  message: string
+}
+
 export interface SandboxSessionStats {
   /** Provider-box sessions currently attached and live in this daemon — the
    *  number a restart right now would DETACH rather than kill. */
@@ -5668,6 +6260,10 @@ export interface SpawnAgentInput {
    *  never on disk. Set by the box-side spawn that received a forwarded
    *  `remoteParent` block from the host. */
   remoteParent?: { sessionId: string; url: string; token: string }
+  /** CREDENTIAL relay forwarded by the host (see `credential-relay.ts`). The
+   *  token stays in memory only (`rememberCredentialRelay`); nothing of it
+   *  reaches a descriptor. */
+  credentialRelay?: { url: string; token: string }
   /** Source label for the new session (channel/harness). */
   origin?: string
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
@@ -5683,6 +6279,12 @@ export interface SpawnAgentInput {
    *  {@link SessionDescriptor.mode}. See that field's doc for why a client
    *  needs it (mode-mismatch detection for mid-session model switching). */
   mode?: string
+  /** Connect-time model-apply rejection (see
+   *  {@link SessionDescriptor.modelApplyRejection}), recorded verbatim. */
+  modelApplyRejection?: { requested: string; reason: string }
+  /** The model the adapter reports as active at spawn/resume, when it differs
+   *  from the requested one (see {@link SessionDescriptor.activeModel}). */
+  activeModel?: string
   /** Resolved auth echo (mode + fingerprint + provider/source/setEnv) —
    *  recorded verbatim onto {@link SessionDescriptor.auth}. See that field's
    *  doc for the full contract; the caller (`session-spawn.ts`) computes this
@@ -5695,11 +6297,21 @@ export interface SpawnAgentInput {
    *  on it. See each descriptor field's doc for the axis contract. */
   effort?: EffortLevel
   posture?: Posture
+  /** Agent-owned posture bookkeeping carried across a restart — see
+   *  {@link SessionDescriptor.postureSource}. Absent for a caller-set posture
+   *  (a fresh spawn or a restart override). */
+  postureSource?: "agent"
+  /** The caller's ceiling carried across a restart — see
+   *  {@link SessionDescriptor.postureCeiling}. Only meaningful with
+   *  `postureSource: "agent"`. */
+  postureCeiling?: Posture
   route?: RouteSpec
   contextProfile?: ContextProfile
   /** Named auth-profile echo for the `access` axis (SPEC §3.6). Non-secret —
    *  see {@link SessionAccessProfileEcho}. */
   accessProfile?: SessionAccessProfileEcho
+  /** Account slot the spawn asked for — see {@link SessionDescriptor.accessSlot}. */
+  accessSlot?: string
   /** Prior session id this spawn continues from — set by `restartAgentSession`
    *  (session-restart-core.ts) when this is a restart, recorded verbatim onto
    *  {@link SessionDescriptor.resumedFrom}. Absent for a direct (non-restart)
@@ -5730,6 +6342,16 @@ export interface SpawnAgentInput {
    *  {@link SessionDescriptor.clerkHook}. Absent ⇒ this session contributes
    *  no agent level and the less specific level applies. */
   clerkHook?: Partial<ClerkHookConfig>
+  /** AIP-46 operator binding, recorded verbatim onto
+   *  {@link SessionDescriptor.operator} / {@link SessionDescriptor.operatorDigest}.
+   *  Already validated by the spawn core. */
+  operator?: string
+  operatorDigest?: string
+  /** The AGENT manifest's tool deny grants, recorded verbatim onto
+   *  {@link SessionDescriptor.toolDenyGrants}. Computed by the spawn core. */
+  toolDenyGrants?: readonly Grant[]
+  /** The AGENT manifest's opt-in names, recorded onto {@link SessionDescriptor.exposedToolOptIn}. */
+  exposedToolOptIn?: readonly string[]
   /** Resolved context-continuity policy — recorded verbatim onto
    *  {@link SessionDescriptor.contextContinuity}. */
   contextContinuity?: ResolvedContextContinuityPolicy
@@ -5759,6 +6381,12 @@ export interface SpawnAgentInput {
   /** Sandbox provider slug, when `remote` is true — see
    *  `SessionDescriptor.sandboxProvider`. */
   sandboxProvider?: string
+  /** Box egress address and pool slot, see `SessionDescriptor.sandboxEgressIp`. */
+  sandboxEgressIp?: string
+  sandboxEgressSlot?: string
+  /** Composite-provider choice, when `remote` is true — see
+   *  `SessionDescriptor.sandboxProviderChoice`. */
+  sandboxProviderChoice?: SandboxProviderChoice
   /** Non-secret sandbox config replayed on re-attach — see
    *  `SessionDescriptor.sandboxConfig`. */
   sandboxConfig?: Record<string, unknown>
@@ -5769,8 +6397,13 @@ export interface SpawnAgentInput {
   sandboxPauseAfterIdleMs?: number
   /** The work branch inside the box — see `SessionDescriptor.sandboxDeliveryTarget`. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** HOST repo root behind the box checkout — see
+   *  `SessionDescriptor.sandboxRepoRoot`. */
+  sandboxRepoRoot?: string
   /** Per-spawn checkpoint override — see `SessionDescriptor.sandboxCheckpointOverride`. */
   sandboxCheckpointOverride?: SandboxCheckpointConfig | false
+  /** Preflight probe ids of the spawn, see `SessionDescriptor.preflight`. */
+  preflight?: string[]
   /** Effective adapter confinement, resolved by the caller — see
    *  `SessionDescriptor.commandSandbox`. */
   commandSandbox?: "off" | "workspace" | "strict"
@@ -5997,6 +6630,17 @@ export interface OpenedPullRequest {
   number: number
   url: string
   openedAt: string
+  /** ISO timestamp of the daemon's last provenance-footer stamp on this PR
+   *  (see `pr-provenance-stamp.ts`). */
+  footerStampedAt?: string
+  /** Digest of the PR body with the footer stripped at that last stamp, so a
+   *  later footerless body can be told apart from a genuine rewrite. */
+  footerBodyHash?: string
+  /** Consecutive polls that found the footer removed while the body was
+   *  unchanged since that stamp. */
+  footerRemovals?: number
+  /** Stop stamping this PR: its footer was removed deliberately twice. */
+  footerDisabled?: boolean
 }
 
 /** `RecordOpenedPrInput.adapter` for PRs the reconciler merely saw MENTIONED
@@ -6039,6 +6683,11 @@ export type AgentSessionResumer = (input: {
    *  same host-chosen toolset it had on the initial spawn (orchestrator
    *  WP1). Omitted for legacy rows spawned before this was persisted. */
   mcpServers?: AcpMcpServer[]
+  /** The posture to start the revived adapter in: the descriptor's current
+   *  posture clamped to the caller's ceiling (`restartPosture`). The hook
+   *  forwards it to `startSession({ posture })`; absent means the adapter
+   *  default. */
+  posture?: Posture
   /** Forwarded to the re-spawned adapter's `startSession({ onActivity })`
    *  so the resumed session keeps pulsing `lastActivityAt` the same way
    *  the original spawn did. */
@@ -6073,6 +6722,26 @@ export function computePinnedOrder(
   return order
 }
 
+/** Carry a session's list pin onto its SUCCESSOR — the shared rule behind
+ *  every succession path that already copies `keepAlive` (`continue-fresh`,
+ *  both restart spawn paths). `pinned` is the only flag that exempts a
+ *  keepAlive row from the boot-resume idle cutoff
+ *  (`eager-resume.ts` `staleKeepAlive`), so a succession that drops it
+ *  silently un-pins a long-lived brain. The retired predecessor KEEPS its
+ *  own pin, exactly as it keeps `keepAlive`, and the successor inherits the
+ *  same `pinnedOrder` slot (a legacy pin with no order stays unordered and
+ *  sorts by `startedAt`, same as its predecessor). No-op for an unpinned
+ *  source, so an accidental opt-in is impossible. */
+export function carrySessionPin(
+  registry: Pick<SessionsRegistry, "setPinned">,
+  from: Pick<SessionDescriptor, "pinned" | "pinnedOrder">,
+  toId: string,
+): void {
+  if (from.pinned !== true) return
+  const to = registry.setPinned(toId, true)
+  if (from.pinnedOrder !== undefined) to.pinnedOrder = from.pinnedOrder
+}
+
 /** The descriptor fields for a REMOTE parent (host relay), plus the side
  *  effect that keeps the relay TOKEN out of the descriptor entirely: the
  *  token is a secret, so it goes into an in-memory map keyed by the session
@@ -6081,11 +6750,19 @@ export function computePinnedOrder(
 function remoteParentFields(
   remoteParent: { sessionId: string; url: string; token: string } | undefined,
   sessionId: string,
+  credentialRelay?: { url: string; token: string },
 ): { remoteParent?: { sessionId: string; url: string } } {
+  if (credentialRelay) rememberCredentialRelay(sessionId, credentialRelay)
   if (!remoteParent) return {}
   rememberRelayToken(sessionId, remoteParent.token)
   return { remoteParent: { sessionId: remoteParent.sessionId, url: remoteParent.url } }
 }
+
+/** `endedReason` values the daemon sets on an external row on its own
+ *  (shutdown sweep `daemon-restart`, crash sweep `crashed`). The host session
+ *  behind the row is a separate process that may still be alive, so a later
+ *  `touchExternal` revives such a row; any other reason is a deliberate end. */
+const DAEMON_ENDED_EXTERNAL_REASONS: ReadonlySet<string> = new Set(["daemon-restart", "crashed"])
 
 export function createSessionsRegistry(opts?: {
   /** Liveness window for `external` sessions, ms. Default
@@ -6093,6 +6770,12 @@ export function createSessionsRegistry(opts?: {
   externalSessionLivenessMs?: number
   /** Clock override (ms since epoch) for external-session liveness — tests. */
   externalNow?: () => number
+  /** Opt-in `claude-socket` wake adapter for `cc:<session_id>` external rows.
+   *  When enabled, a level 2+ (next-turn / steer) message written to such a
+   *  row also wakes the idle Claude Code process over its unix socket; every
+   *  skip or failure falls back to the inbox and is reported on
+   *  `SendMessageResult.wake`. Off unless `enabled` is true. */
+  claudeSocketWake?: ClaudeSocketWakeConfig
   /** How long a queued prompt may wait before it is reported stuck
    *  (`pendingPrompts[].stale`, sender notice). Default
    *  {@link DEFAULT_PENDING_PROMPT_STALE_MS}; `sweepPendingPrompts({staleMs})`
@@ -6137,6 +6820,18 @@ export function createSessionsRegistry(opts?: {
    *  killed agent-cli sessions surface the legacy "not an agent
    *  session" error and the user must spawn fresh. */
   resumeAgent?: AgentSessionResumer
+  /** Orchestrator scope-token hooks for a revival, wired by the gateway
+   *  (index.ts, `createOrchestratorScopeHooks`) to the daemon's scope-token
+   *  registry. `reinstate(id)` brings back the scopes a row lost when it
+   *  died, BEFORE its adapter is started again on the same mount, and
+   *  returns a rollback for a revival that fails; `transfer(from, to)`
+   *  hands a restarted row's scopes to its successor. Omitted ⇒ both
+   *  `reinstateOrchestratorScopes` and `transferOrchestratorScopes` are
+   *  no-ops. */
+  orchestratorScopes?: {
+    reinstate(sessionId: string): () => void
+    transfer(from: string, to: string): void
+  }
   /** Hook the restart-scheduler's `"sandbox-gone"` policy drives: move a dead
    *  box session (its box is gone) to a FRESH box — the same
    *  `restartAgentSession` path `session_restart` takes. Wired by the gateway
@@ -6181,6 +6876,10 @@ export function createSessionsRegistry(opts?: {
    *  / `daemon.sessionRetentionDays`) — what `pruneSessionDirs` uses for an
    *  option its caller leaves unset. Omitted ⇒ review lanes 7 days, others off. */
   sessionRetention?: { reviewMaxAgeDays?: number | null; maxAgeDays?: number | null }
+  /** Adapter-config cache retention (`daemon.adapterCacheRetentionDays`):
+   *  default for `pruneAdapterConfigCaches`, plus the root it sweeps
+   *  (default `~/.agentproto/adapter-config`; tests pin a tmpdir). */
+  adapterCacheRetention?: { maxAgeDays?: number | null; baseDir?: string }
   /** Shared, opt-in Langfuse session observer. Built once in the bootstrap
    *  from eval-reporter creds. Events only reach it for sessions in the
    *  registry's traced-session set — see `langfuseTracingDefault`. */
@@ -6289,6 +6988,7 @@ export function createSessionsRegistry(opts?: {
   ])
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
+  const orchestratorScopes = opts?.orchestratorScopes
   const restartSandboxGoneHook = opts?.restartSandboxGone
   const moveReapedBoxHook = opts?.moveReapedBox
   const boxRestartPolicyDefault = opts?.boxRestartPolicyDefault
@@ -6313,6 +7013,8 @@ export function createSessionsRegistry(opts?: {
       ? opts.externalSessionLivenessMs
       : DEFAULT_EXTERNAL_SESSION_LIVENESS_MS
   const externalNowMs = opts?.externalNow ?? Date.now
+  const claudeSocketWake = opts?.claudeSocketWake
+  const wakeWarningsByReceiver = new Map<string, WakeWarning>()
   /** Lazily expire an `external` row whose last sighting fell out of the
    *  liveness window: there is no process whose exit could flip it, so every
    *  read/deliver path calls this first. Terminal status carries no
@@ -6432,6 +7134,13 @@ export function createSessionsRegistry(opts?: {
   // Insertion order is preserved so `listPendingPermissions` reads oldest→
   // newest without a sort.
   const pendingPermissions = new Map<string, PendingPermission>()
+  /** Daemon-originated permissions (`requestToolPermission`): the settle
+   *  callback that resumes the awaiting daemon-side caller. Keyed like
+   *  `pendingPermissions`; an id present here has no driver RPC. */
+  const daemonGatePermissions = new Map<
+    string,
+    { settle: (outcome: ToolPermissionOutcome) => void; timer: ReturnType<typeof setTimeout> }
+  >()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   // Monotonically-growing PTY-subscriber id. Detach is O(1) on
   // Map.delete(subId), so we never reuse — overflow at Number.MAX_-
@@ -6663,6 +7372,11 @@ export function createSessionsRegistry(opts?: {
       },
       recordedAt: new Date().toISOString(),
     }
+    // A completed session is no longer a permanent agent — drop the
+    // idle-reaper exemption so a later boot pass (and every other keepAlive
+    // consumer) stops treating it as live-forever. The row stays exactly as
+    // terminal as it was; only the revival exemption is lifted.
+    delete rt.desc.keepAlive
     schedulePersist()
     emitOutcomeRecorded(rt)
   }
@@ -6725,6 +7439,7 @@ export function createSessionsRegistry(opts?: {
     // have nobody left to deliver to, so they are revoked as well.
     revokeParentRelayGrantsForSession(rt.desc.id)
     forgetRelayToken(rt.desc.id)
+    forgetCredentialRelay(rt.desc.id)
     // Terminal means provisioning is over, one way or another: drop the
     // progress field, and abort whatever provisioning may still be queued or
     // running for this row (its queue entry is dropped, its child tree
@@ -6746,6 +7461,28 @@ export function createSessionsRegistry(opts?: {
     // Refresh the sidecar now: an exit is a terminal state, so its index
     // must land regardless of the throttled turn-end writes.
     writeIndexNow(rt)
+    // The row is terminal: its live replay buffers have done their job. The
+    // final text was captured above (`recordOutcome` / the index write), and
+    // durable history lives in `events.jsonl` / the command log, so a finished
+    // row must not keep its output rings for the rest of the daemon's life.
+    // Every terminal path funnels through here (kill, crash, pty exit, idle
+    // reap, steward close). Freeze the final text first: a relayed event can
+    // still land after this point and append to `lastAssistantText`, and the
+    // output-tail reader must keep serving the real result, not that late line.
+    if (rt.lastAssistantText !== undefined) rt.finalOutputText = rt.lastAssistantText
+    rt.recentLines.length = 0
+    rt.recentLinesChars = 0
+    // Keep a PTY's byte ring: it is already capped at 64 KiB, and it is the
+    // scrollback `terminal_output` / `/preview` must serve the instant the
+    // process exits. The durable `terminal.jsonl` write is asynchronous, so
+    // clearing the ring here would race that flush and briefly answer with
+    // zero bytes. Agent-cli rows drop their byte buffer as before.
+    if (!rt.pty) {
+      rt.recentBytes.length = 0
+      rt.recentBytesSize = 0
+    }
+    rt.textBuf = ""
+    rt.thoughtBuf = ""
     // A dead PTY has no transcript left to discover — stop its link probe.
     rt.linkProbeStop?.()
     // A dying session must never leave a held permission RPC dangling — cancel
@@ -6788,7 +7525,11 @@ export function createSessionsRegistry(opts?: {
     // reclaimer's own classify; absent port or absent work branch = no-op.
     if (runSandboxCheckpointGc && rt.desc.kind === "agent-cli" && rt.desc.sandboxDeliveryTarget?.branch) {
       const branch = rt.desc.sandboxDeliveryTarget.branch
-      const input = { cwd: rt.desc.cwd, branch }
+      // A sandbox session's `cwd` is a path INSIDE the box. The checkpoint
+      // refs live on the HOST workspace repo, which is why this used to
+      // no-op silently (repoRootOf(boxPath) == null) and left every
+      // `agentproto-checkpoint/wt/*` branch on the studio remote forever.
+      const input = { cwd: rt.desc.sandboxRepoRoot ?? rt.desc.cwd, branch }
       try {
         void runSandboxCheckpointGc(input).catch(err => {
           console.error(
@@ -6878,6 +7619,9 @@ export function createSessionsRegistry(opts?: {
       requestedAt: new Date().toISOString(),
       ...(evt.rawInput !== undefined ? { rawInput: evt.rawInput } : {}),
       ...(evt._meta !== undefined ? { _meta: evt._meta } : {}),
+      ...(evt.request !== undefined ? { request: evt.request } : {}),
+      ...(asAgentPromptQuestion(evt.question) ? { question: asAgentPromptQuestion(evt.question) } : {}),
+      ...(evt.planApproval !== undefined ? { planApproval: evt.planApproval } : {}),
     }
     pendingPermissions.set(id, pending)
     rt.desc.awaitingPermission = true
@@ -6903,10 +7647,17 @@ export function createSessionsRegistry(opts?: {
     for (const [id, pending] of pendingPermissions) {
       if (pending.sessionId !== rt.desc.id) continue
       pendingPermissions.delete(id)
-      try {
-        void rt.agentSession?.respondPermission?.(id, { cancelled: true })
-      } catch {
-        // driver already gone — the RPC is moot
+      const gate = daemonGatePermissions.get(id)
+      if (gate) {
+        daemonGatePermissions.delete(id)
+        clearTimeout(gate.timer)
+        gate.settle({ decision: "cancelled", reason: "session-ended" })
+      } else {
+        try {
+          void rt.agentSession?.respondPermission?.(id, { cancelled: true })
+        } catch {
+          // driver already gone - the RPC is moot
+        }
       }
       if (sessionEvents) {
         sessionEvents.emit({
@@ -6932,6 +7683,84 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
+   * Submit a parked multi-field question (`pending.question.fields`) with
+   * `answers`: validate them against the fields, resolve the held driver RPC
+   * with `{ answers }`, clear the session's awaiting state, and emit
+   * `session:permission-resolved` (approve) plus
+   * `session:awaiting-question-answered` carrying the answers.
+   */
+  const resolvePendingQuestion = async (
+    pending: PendingPermission,
+    answers: AgentPromptAnswers,
+  ): Promise<PermissionRespondResult> => {
+    const { id } = pending
+    const fields = pending.question?.fields
+    if (!fields?.length || daemonGatePermissions.has(id)) {
+      return {
+        ok: false,
+        error: "unsupported",
+        message: `permission "${id}" is not a multi-field question; answer it with decision/optionId`,
+      }
+    }
+    const invalid = validateAgentPromptAnswers(fields, answers)
+    if (invalid) return { ok: false, error: "invalid_answers", message: invalid }
+    const rt = sessions.get(pending.sessionId)
+    if (!rt || !rt.agentSession) {
+      pendingPermissions.delete(id)
+      if (rt) refreshAwaitingPermission(rt)
+      return {
+        ok: false,
+        error: "session_gone",
+        message: `session "${pending.sessionId}" for permission "${id}" is no longer alive`,
+      }
+    }
+    const respond = rt.agentSession.respondPermission
+    if (!respond) {
+      return {
+        ok: false,
+        error: "unsupported",
+        message: `session "${pending.sessionId}" driver does not support held permissions`,
+      }
+    }
+    pendingPermissions.delete(id)
+    const question: SessionAwaitingQuestion =
+      rt.desc.awaitingQuestion?.requestId === id
+        ? rt.desc.awaitingQuestion
+        : { text: pending.question!.prompt, source: "structured", kind: "harness", requestId: id, fields }
+    delete rt.desc.awaitingInput
+    rt.desc.awaitingQuestion = undefined
+    refreshAwaitingPermission(rt)
+    await respond(id, { answers })
+    const ts = new Date().toISOString()
+    if (sessionEvents) {
+      sessionEvents.emit({
+        type: "session:permission-resolved",
+        sessionId: pending.sessionId,
+        permissionId: id,
+        decision: "approve",
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+      sessionEvents.emit({
+        type: "session:awaiting-question-answered",
+        sessionId: pending.sessionId,
+        answer: summarizeAgentPromptAnswers(fields, answers),
+        answers,
+        question,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+    }
+    transcriptWriter.recordEvent(pending.sessionId, {
+      kind: "permission-resolved",
+      toolCallId: id,
+      decision: "approve",
+    })
+    schedulePersist()
+    return { ok: true, permission: pending, decision: "approve" }
+  }
+
+  /**
    * Resolve a parked permission by id — maps the decision (or explicit
    * optionId) to one of the offered options, resolves the held driver RPC,
    * clears the session's awaiting-permission state, and emits
@@ -6952,6 +7781,67 @@ export function createSessionsRegistry(opts?: {
         error: "not_found",
         message: `no pending permission "${id}" (unknown or already resolved)`,
       }
+    }
+    if (input.answers !== undefined) return resolvePendingQuestion(pending, input.answers)
+    const gate = daemonGatePermissions.get(id)
+    // A bare submit (the `submit` option, or an approve that would pick it)
+    // on a fields question carries no answers: forwarding it would accept an
+    // empty form and the agent would read it as "did not answer".
+    if (
+      !gate &&
+      pending.question?.fields?.length &&
+      (input.optionId === QUESTION_SUBMIT_OPTION_ID || (!input.optionId && input.decision === "approve"))
+    ) {
+      return {
+        ok: false,
+        error: "invalid_answers",
+        message:
+          `permission "${id}" is a question with fields; submitting it needs \`answers\` keyed by field id ` +
+          `(use decision "deny" or optionId "skip" to skip it)`,
+      }
+    }
+    if (gate) {
+      const selected = selectPermissionOptionId(pending.options, input)
+      if (selected === null || "cancelled" in selected) {
+        return {
+          ok: false,
+          error: "no_matching_option",
+          message:
+            `permission "${id}" offers no matching option; pass an explicit optionId ` +
+            `(one of: ${pending.options.map(o => o.optionId).join(", ")})`,
+        }
+      }
+      daemonGatePermissions.delete(id)
+      clearTimeout(gate.timer)
+      pendingPermissions.delete(id)
+      const owner = sessions.get(pending.sessionId)
+      if (owner) refreshAwaitingPermission(owner)
+      const chosen = pending.options.find(o => o.optionId === selected.optionId)
+      const decision = chosen?.kind?.startsWith("allow") ? "approve" : "deny"
+      gate.settle({
+        decision,
+        optionId: selected.optionId,
+        ...(input.feedback ? { feedback: input.feedback } : {}),
+      })
+      sessionEvents?.emit({
+        type: "session:permission-resolved",
+        sessionId: pending.sessionId,
+        permissionId: id,
+        decision,
+        optionId: selected.optionId,
+        ...(owner?.desc.label ? { label: owner.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+      if (owner) {
+        transcriptWriter.recordEvent(pending.sessionId, {
+          kind: "permission-resolved",
+          toolCallId: id,
+          decision,
+          optionId: selected.optionId,
+        })
+      }
+      schedulePersist()
+      return { ok: true, permission: pending, decision, optionId: selected.optionId }
     }
     const rt = sessions.get(pending.sessionId)
     if (!rt || !rt.agentSession) {
@@ -7422,6 +8312,7 @@ export function createSessionsRegistry(opts?: {
         availableModes: _availableModes,
         spawnEnforcedPostures: _spawnEnforcedPostures,
         configOptions: _configOptions,
+        availableCommands: _availableCommands,
         ...rest
       } = s.desc
       if (rest.remoteParent) {
@@ -7760,6 +8651,54 @@ export function createSessionsRegistry(opts?: {
     return { ...evt, size, reportedSize: evt.size }
   }
 
+  /**
+   * Fold an agent-caused AIP-45 mode switch onto the descriptor's `posture`
+   * (the canonical posture when the mode id maps to one, else the raw id). A
+   * caller-caused switch is not applied here: every caller path (spawn,
+   * `setPosture`, restart) already wrote the descriptor, and its stream echo
+   * must not apply it twice. The caller's last posture is kept as
+   * `postureCeiling`; moving past it is recorded (the harness IS in that
+   * mode) but announced as a warning, and a restart clamps back to it.
+   */
+  const followAgentMode = (rt: SessionRuntime, modeId: string): void => {
+    const posture = postureForModeId(modeId)
+    if (samePosture(rt.desc.posture, posture)) return
+    if (rt.desc.postureSource !== "agent") {
+      if (rt.desc.posture !== undefined) rt.desc.postureCeiling = rt.desc.posture
+      else delete rt.desc.postureCeiling
+      rt.desc.postureSource = "agent"
+    }
+    rt.desc.posture = posture
+    schedulePersist()
+    if (!sessionEvents) return
+    const ts = new Date().toISOString()
+    sessionEvents.emit({
+      type: "session:config-changed",
+      sessionId: rt.desc.id,
+      axis: "posture",
+      value: posture,
+      label: rt.desc.label,
+      ts,
+    })
+    if (exceedsPostureCeiling(posture, rt.desc.postureCeiling)) {
+      const ceiling = rt.desc.postureCeiling
+      const describe = (p: Posture | undefined) =>
+        p === undefined ? "the adapter default" : typeof p === "object" ? p.harnessModeId : p
+      const widerThan =
+        ceiling === undefined ? "the adapter default" : `the caller's ${describe(ceiling)}`
+      sessionEvents.emit({
+        type: "session:harness-warning",
+        sessionId: rt.desc.id,
+        warnings: [
+          `the agent switched to "${modeId}" (posture ${describe(posture)}), wider than ` +
+            `${widerThan}; a restart starts at ${describe(ceiling)}`,
+        ],
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+    }
+  }
+
   const projectEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
     switch (evt.kind) {
       case "text-delta":
@@ -7781,6 +8720,11 @@ export function createSessionsRegistry(opts?: {
           rt.lastAssistantText =
             text.length > LAST_ASSISTANT_TEXT_CAP ? text.slice(text.length - LAST_ASSISTANT_TEXT_CAP) : text
           rt.lastAssistantTextSealed = false
+          const turnText = (rt.turnAssistantText ?? "") + evt.text
+          rt.turnAssistantText =
+            turnText.length > LAST_ASSISTANT_TEXT_CAP
+              ? turnText.slice(turnText.length - LAST_ASSISTANT_TEXT_CAP)
+              : turnText
           // text-delta is a stream of chunks — split on newlines so
           // each line lands in the ring buffer separately. Coalesce
           // a trailing fragment via rt.textBuf.
@@ -7875,12 +8819,33 @@ export function createSessionsRegistry(opts?: {
       }
       case "agent-prompt": {
         rt.desc.awaitingInput = true
+        const fieldsQuestion = evt.request === "question" ? asAgentPromptQuestion(evt.question) : undefined
+        if (fieldsQuestion?.fields?.length && evt.toolCallId) {
+          // A multi-field harness question (an ACP form elicitation). Always
+          // parked for a human: the hook rule table decides tool calls, and
+          // no rule can answer a question. `options` keeps the first single
+          // field's labels for clients that only know `options`.
+          const firstSingle = fieldsQuestion.fields.find(f => f.input === "single")
+          const labels = firstSingle?.choices?.map(c => c.label) ?? []
+          rt.desc.awaitingQuestion = {
+            text: fieldsQuestion.prompt,
+            ...(labels.length > 0 ? { options: labels } : {}),
+            source: "structured",
+            kind: "harness",
+            requestId: evt.toolCallId,
+            fields: fieldsQuestion.fields,
+          }
+          registerPendingPermission(rt, evt)
+          appendLine(rt, `\x1b[33m[question] ${fieldsQuestion.prompt}\x1b[0m`, "stdout")
+          break
+        }
         const options = normalizeAgentPromptOptions(evt.options)
         if (options) {
           rt.desc.awaitingQuestion = {
             text: evt.text ?? (evt.toolName ? `Allow "${evt.toolName}"?` : "Agent is requesting input."),
             options,
             source: "structured",
+            kind: agentPromptQuestionKind(evt),
           }
         }
         // The rule table (`.agentproto/hooks.json`) generalizes the old
@@ -8039,6 +9004,21 @@ export function createSessionsRegistry(opts?: {
       // the descriptor here so the latest context window + any adapter-
       // reported cost/tokens are available live to session_list / session_usage.
       case "usage_update": {
+        // A session whose connect-time model apply was rejected must stop
+        // claiming the requested model once the adapter tells us what it is
+        // actually on. Usage frames are the live truth (claude-agent-acp names
+        // the model in `_meta`); prefer that id over the rejected request.
+        if (
+          rt.desc.modelApplyRejection &&
+          typeof evt.model === "string" &&
+          evt.model.length > 0 &&
+          evt.model !== rt.desc.model
+        ) {
+          rt.desc.model = evt.model
+          rt.desc.activeModel = evt.model
+          resetContextWindowForModel(rt.desc, evt.model)
+          schedulePersist()
+        }
         // Not "latest frame wins": an adapter's in-turn frames can carry an
         // INFERRED window (claude-agent-acp guesses 200k for a bare 1M model
         // id until its first result) — `foldUsageFrameWindow` keeps a
@@ -8055,7 +9035,15 @@ export function createSessionsRegistry(opts?: {
         // than let a fabricated-looking >100% occupancy figure through.
         if (typeof evt.used === "number" && evt.used > 0) {
           const used = plausibleContextUsed(rt.desc.contextSize, evt.used)
-          if (used !== undefined) rt.desc.contextUsed = used
+          if (used !== undefined) {
+            const sample: UsageSample = {
+              used,
+              ...(rt.desc.contextSize !== undefined ? { size: rt.desc.contextSize } : {}),
+            }
+            noteNativeCompaction(rt, rt.lastUsageSample, sample)
+            rt.lastUsageSample = sample
+            rt.desc.contextUsed = used
+          }
           rt.contextUsedInconsistent = used === undefined
         }
         if (evt.cost) {
@@ -8127,6 +9115,19 @@ export function createSessionsRegistry(opts?: {
       case "available-commands":
         rt.desc.availableCommands = evt.commands ?? []
         break
+      // AIP-45 mode change: one dim line, so the output shows when and why
+      // the session left its mode (e.g. an approved plan).
+      case "mode-changed":
+        if (evt.modeId) {
+          const why = evt.reason ? `${evt.cause ?? "agent"}: ${evt.reason}` : (evt.cause ?? "agent")
+          appendLine(
+            rt,
+            `\x1b[2m[mode] ${evt.previousModeId ?? "?"} -> ${evt.modeId} (${why})\x1b[0m`,
+            "stdout",
+          )
+          if (evt.cause === "agent") followAgentMode(rt, evt.modeId)
+        }
+        break
       case "background-task":
         noteBackgroundTask(rt, evt)
         break
@@ -8191,7 +9192,8 @@ export function createSessionsRegistry(opts?: {
     // Context floor: never admit a prompt into a window the policy calls
     // full — and never leave the session stuck behind it either: start the
     // rescue (auto-compact) and tell the caller to retry. A compaction prompt
-    // is the way out, so it is always admitted.
+    // is the way out, so it is always admitted. A session with no policy
+    // still has the default floor.
     if (!admit?.compaction) {
       if (rt.contextRescue) {
         throw new Error(`${caller}: session "${id}" ${CONTEXT_RESCUE_BUSY_MESSAGE}`)
@@ -8200,8 +9202,7 @@ export function createSessionsRegistry(opts?: {
       if (
         pct !== null &&
         !rt.contextUsedInconsistent &&
-        rt.desc.contextContinuity &&
-        isContextContinuityHardStopped(pct, rt.desc.contextContinuity)
+        isContextContinuityHardStopped(pct, rt.desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS)
       ) {
         void performContextRescue(rt, pct)
         throw new Error(`${caller}: session "${id}" ${CONTEXT_RESCUE_BUSY_MESSAGE} (context at ${pct}%)`)
@@ -8539,6 +9540,19 @@ export function createSessionsRegistry(opts?: {
     // prompt path here deliberately lets an operator's prompt to any killed
     // row through, treating it as explicit intent.
     if (!isResumable(rt.desc)) return
+    // A provider-box row's `cwd` is a path INSIDE the box (`/home/user/...`),
+    // not a host path. Resuming it in place would spawn the adapter on the
+    // HOST against a directory that does not exist here — Node reports that
+    // as `spawn <resolved npx> ENOENT`, indistinguishable from a missing
+    // binary, and the session dies for the wrong reason. Only a sandbox
+    // re-attach or a new-box restart (`session_restart`) can revive it. Fail
+    // loud instead of spawning against a box path.
+    if (isProviderBoxSession(rt.desc)) {
+      throw new Error(
+        `session "${rt.desc.id}" ran in provider sandbox "${rt.desc.sandboxId}" and cannot be resumed in place on the host ` +
+          `(its cwd "${rt.desc.cwd}" only exists inside the box) — use session_restart, which re-attaches or boots a replacement box.`,
+      )
+    }
     // Cap/backoff (§5): a session whose adapter fails to resume must not be
     // retried on every prompt forever. `isResumable` is already true here, so
     // a false `canResume` means the attempt counter has hit
@@ -8559,12 +9573,23 @@ export function createSessionsRegistry(opts?: {
       await rt.resumePromise
       return
     }
+    // A restart/recovery clamps the descriptor's posture to the caller's
+    // ceiling before the adapter starts, and reconciles the descriptor to the
+    // mode actually handed to `startSession` (passed to the resume hook as
+    // `posture`). Source/ceiling stay in place so a non-clamping revival does not
+    // re-baseline the caller's last pick.
+    const revivalPosture = restartPosture(rt.desc)
     rt.resumePromise = (async () => {
       appendLine(
         rt,
         `── resuming ${adapterSlug} session ${adapterSessionId} ──`,
         "stdout"
       )
+      // A row that died for real had its orchestrator scope revoked; the
+      // adapter is about to dial the same mount again, so bring the scope
+      // back first (same token, same parameters). Revoked again below if
+      // the resume does not take.
+      const rollbackScopes = orchestratorScopes?.reinstate(rt.desc.id)
       try {
         const fresh = await resumeAgent({
           adapterSlug,
@@ -8585,6 +9610,7 @@ export function createSessionsRegistry(opts?: {
           // The prior descriptor — the hook re-resolves billing-auth off its
           // `auth.mode` echo / `accessProfile` / model / route (money bug fix).
           descriptor: rt.desc,
+          ...(revivalPosture !== undefined ? { posture: revivalPosture } : {}),
           // Re-mount the persisted spawn-time toolset (orchestrator WP1).
           ...(rt.desc.mcpServers ? { mcpServers: rt.desc.mcpServers } : {}),
           // Keep pulsing lastActivityAt across a resume the same way the
@@ -8601,11 +9627,26 @@ export function createSessionsRegistry(opts?: {
             "stderr"
           )
           recordFailedResume(rt)
+          rollbackScopes?.()
           return
         }
         bindAgentSession(rt, fresh)
         bindOutOfTurnEvents(rt)
         stampCapabilities(rt)
+        if (!samePosture(rt.desc.posture, revivalPosture)) {
+          if (revivalPosture !== undefined) rt.desc.posture = revivalPosture
+          else delete rt.desc.posture
+          if (revivalPosture !== undefined) {
+            sessionEvents?.emit({
+              type: "session:config-changed",
+              sessionId: rt.desc.id,
+              axis: "posture",
+              value: revivalPosture,
+              label: rt.desc.label,
+              ts: new Date().toISOString(),
+            })
+          }
+        }
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
         // The resumed session is a fresh child process — refresh pid so
@@ -8713,6 +9754,7 @@ export function createSessionsRegistry(opts?: {
         const msg = err instanceof Error ? err.message : String(err)
         appendLine(rt, `[error] resume failed: ${msg}`, "stderr")
         recordFailedResume(rt)
+        if (rt.desc.status !== "running") rollbackScopes?.()
       }
     })()
     try {
@@ -8914,6 +9956,45 @@ export function createSessionsRegistry(opts?: {
     })
 
   /**
+   * Report a native compaction: the harness compacted its context on its own
+   * (Claude Code, Codex), which no `/compact` gate saw. Passive: one bus
+   * event and one transcript line per drop, nothing else changes. A drop the
+   * daemon or the operator caused is not one: a compaction turn, or any
+   * frame while the context rescue lock is held.
+   */
+  function noteNativeCompaction(rt: SessionRuntime, prev: UsageSample | undefined, next: UsageSample): void {
+    if (rt.contextRescue || rt.compactionTurn) return
+    if (rt.compactionDropExpected) {
+      rt.compactionDropExpected = undefined
+      return
+    }
+    const verdict = detectNativeCompaction(prev, next)
+    if (!verdict) return
+    const now = Date.now()
+    const sinceCheckpointMs = rt.lastCheckpointAtMs === undefined ? undefined : now - rt.lastCheckpointAtMs
+    const guarded =
+      sinceCheckpointMs !== undefined && sinceCheckpointMs >= 0 && sinceCheckpointMs <= NATIVE_COMPACTION_GUARD_WINDOW_MS
+    const checkpointNote = guarded ? `written ${Math.round(sinceCheckpointMs / 1000)}s earlier` : "none"
+    appendLine(
+      rt,
+      `[context] native compaction detected: ${verdict.usedBefore} -> ${verdict.usedAfter} tokens (checkpoint: ${checkpointNote})`,
+      "stderr",
+    )
+    const ts = new Date(now).toISOString()
+    sessionEvents?.emit({
+      type: "agentproto:context-compacted",
+      sessionId: rt.desc.id,
+      occurrenceId: `compact:${ts}`,
+      usedBefore: verdict.usedBefore,
+      usedAfter: verdict.usedAfter,
+      ...(next.size !== undefined ? { contextSize: next.size } : {}),
+      guarded,
+      ...(rt.desc.label ? { label: rt.desc.label } : {}),
+      ts,
+    })
+  }
+
+  /**
    * Fold the turn in progress into the cumulative `durationMs` / `toolCalls`
    * descriptor fields. Idempotent per turn (keyed on `turnStartedAtMs`), so
    * the exit recap and the turn's own `finally` can both call it.
@@ -8924,6 +10005,8 @@ export function createSessionsRegistry(opts?: {
       (rt.desc.durationMs ?? 0) + Math.max(0, Date.now() - rt.turnStartedAtMs)
     rt.desc.toolCalls = (rt.desc.toolCalls ?? 0) + (rt.toolCallsThisTurn ?? 0)
     rt.turnStartedAtMs = undefined
+    if (rt.compactionTurn) rt.compactionDropExpected = true
+    rt.compactionTurn = undefined
   }
 
   /**
@@ -9128,6 +10211,23 @@ export function createSessionsRegistry(opts?: {
     return agentSession.availableModes.some(m => m.id.toLowerCase() === "compact")
   }
 
+  /** The slash command this session's harness compacts with. */
+  function compactCommandFor(rt: SessionRuntime): "/compact" | "/compress" {
+    return (rt.desc.harness ?? rt.desc.adapterSlug ?? "").includes("hermes") ? "/compress" : "/compact"
+  }
+
+  /**
+   * Whether the session can be compacted by PROMPT: its harness advertises
+   * the exact slash command the runtime would send. The ACP adapters list
+   * compaction as a command (claude-code's `available_commands_update`
+   * carries `compact`), never as a session mode, so a mode-only check is
+   * false for every real session.
+   */
+  function harnessAdvertisesCompactCommand(rt: SessionRuntime): boolean {
+    const name = compactCommandFor(rt).slice(1)
+    return (rt.desc.availableCommands ?? []).some(c => c.name.toLowerCase() === name)
+  }
+
 
   /**
    * Write a checkpoint (goal, plan, decisions, changed files, tests, errors,
@@ -9156,6 +10256,7 @@ export function createSessionsRegistry(opts?: {
       { contextPct: pct, baseDir: transcriptBaseDir, registry, askSource },
     )
     await persistCheckpoint(checkpoint)
+    rt.lastCheckpointAtMs = Date.now()
     const line = `[context] checkpoint ${checkpoint.checkpointId} written to ${checkpoint.checkpointPath} before ${reason}`
     appendLine(rt, line, "stdout")
     transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
@@ -9184,37 +10285,6 @@ export function createSessionsRegistry(opts?: {
     throw new Error(
       `${caller}: session "${rt.desc.id}" requires the operator's agreement to compact its context — a compaction prompt from ${source} is refused`,
     )
-  }
-
-  async function attemptContextCompact(rt: SessionRuntime): Promise<void> {
-    if (!adapterSupportsCompact(rt.agentSession)) {
-      appendLine(
-        rt,
-        "[context] compact threshold reached but harness does not advertise compact support; waiting for continue-fresh threshold",
-        "stderr",
-      )
-      return
-    }
-    try {
-      await checkpointBeforeContextLoss(rt, "runtime compaction", false)
-    } catch (err) {
-      appendLine(
-        rt,
-        `[context] compact skipped: no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,
-        "stderr",
-      )
-      return
-    }
-    try {
-      await rt.agentSession?.setSessionMode?.("compact")
-      appendLine(rt, "[context] compact requested from harness", "stdout")
-    } catch (err) {
-      appendLine(
-        rt,
-        `[context] compact failed: ${err instanceof Error ? err.message : String(err)}`,
-        "stderr",
-      )
-    }
   }
 
   /**
@@ -9303,10 +10373,14 @@ export function createSessionsRegistry(opts?: {
       return
     }
     try {
-      const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
-        harness,
-        baseDir: transcriptBaseDir,
-      })
+      const result = await continueAgentSessionFresh(
+        { registry, resolveAgentAdapter },
+        withContextPolicy(rt.desc).source,
+        {
+          harness,
+          baseDir: transcriptBaseDir,
+        },
+      )
       appendLine(
         rt,
         `[context] handed off to ${harnessDisplayName(harness)} as ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId})`,
@@ -9350,7 +10424,15 @@ export function createSessionsRegistry(opts?: {
           ? `[context] auto-compaction could not free the window (${pctBefore}%${after}); the session was continued fresh`
           : `[context-hard-stop] context at ${pctBefore}% and neither compaction nor a fresh continuation was possible; the session was ended`
     appendLine(rt, text, outcome === "hard-stopped" ? "stderr" : "stdout")
-    transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+    // The rescue announces AFTER `performContextHardStop` (which used to close
+    // the transcript), so recording the notice there reopened a writer for a
+    // session that was already terminal. Write the notice first and let THIS
+    // be the one close for a dead session: one stream, no write to reopen.
+    try {
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+    } finally {
+      if (outcome !== "compacted") trackWrite(transcriptWriter.close(rt.desc.id))
+    }
     sessionEvents?.emit({
       type: "session:context-rescue",
       sessionId: rt.desc.id,
@@ -9378,8 +10460,8 @@ export function createSessionsRegistry(opts?: {
         while (rt.busy && isSessionAlive(rt)) await sleepMs(250)
         if (!isSessionAlive(rt)) return
         const pctBefore = contextPctNow(rt) ?? pct
-        const policy = rt.desc.contextContinuity
-        if (policy && pctBefore < policy.hardStopAtPct) return
+        const floor = rt.desc.contextContinuity?.hardStopAtPct ?? CONTEXT_CONTINUITY_DEFAULTS.hardStopAtPct
+        if (pctBefore < floor) return
         appendLine(
           rt,
           `[context] context at ${pctBefore}% — compacting automatically (checkpoint first, queued prompts wait)`,
@@ -9396,7 +10478,6 @@ export function createSessionsRegistry(opts?: {
           )
         }
         if (!isSessionAlive(rt)) return
-        const floor = policy?.hardStopAtPct ?? CONTEXT_CONTINUITY_DEFAULTS.hardStopAtPct
         const deadline = Date.now() + (opts?.contextRescueSettleMs ?? 30_000)
         let pctAfter = contextPctNow(rt)
         while ((pctAfter === null || pctAfter >= floor) && Date.now() < deadline && isSessionAlive(rt)) {
@@ -9412,13 +10493,14 @@ export function createSessionsRegistry(opts?: {
           return
         }
         if (resolveAgentAdapter) {
-          await performContextContinueFresh(rt)
+          // The rescue owns the final notice, so it also owns the one close.
+          await performContextContinueFresh(rt, { deferTranscriptClose: true })
           if (!isSessionAlive(rt)) {
             announceContextRescue(rt, "continued", pctBefore, pctAfter)
             return
           }
         }
-        await performContextHardStop(rt, pctAfter ?? pctBefore)
+        await performContextHardStop(rt, pctAfter ?? pctBefore, { deferTranscriptClose: true })
         announceContextRescue(rt, "hard-stopped", pctBefore, pctAfter)
       } finally {
         rt.contextRescue = undefined
@@ -9429,7 +10511,11 @@ export function createSessionsRegistry(opts?: {
     return rt.contextRescue
   }
 
-  async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
+  async function performContextHardStop(
+    rt: SessionRuntime,
+    pct: number,
+    opts?: { deferTranscriptClose?: boolean },
+  ): Promise<void> {
     // The stop itself is not optional (a prompt into a full window is
     // truncated or rejected), but the work done so far must survive it:
     // checkpoint first, while the transcript is still open. A failure here
@@ -9455,13 +10541,18 @@ export function createSessionsRegistry(opts?: {
     rt.desc.endedAt = new Date().toISOString()
     rt.desc.endedReason = "context-hard-stop"
     void rt.agentSession?.close().catch(() => undefined)
-    void transcriptWriter.close(rt.desc.id)
+    // The rescue defers this close so its final notice lands on the same
+    // stream; `announceContextRescue` then closes it exactly once.
+    if (!opts?.deferTranscriptClose) trackWrite(transcriptWriter.close(rt.desc.id))
     tracedSessions.delete(rt.desc.id)
     schedulePersist()
     emitExited(rt)
   }
 
-  async function performContextContinueFresh(rt: SessionRuntime): Promise<void> {
+  async function performContextContinueFresh(
+    rt: SessionRuntime,
+    opts?: { deferTranscriptClose?: boolean },
+  ): Promise<void> {
     if (!resolveAgentAdapter) {
       appendLine(
         rt,
@@ -9471,13 +10562,15 @@ export function createSessionsRegistry(opts?: {
       await performContextHardStop(
         rt,
         computeContextPct(rt.desc.contextSize, rt.desc.contextUsed) ?? 100,
+        { deferTranscriptClose: opts?.deferTranscriptClose },
       )
       return
     }
     try {
       const result = await continueAgentSessionFresh(
         { registry, resolveAgentAdapter },
-        rt.desc,
+        // A session with no policy is continued under the defaults, like its checkpoint.
+        withContextPolicy(rt.desc).source,
         // The session is at its context limit: don't spend another turn on
         // a handoff question, extract from the transcript instead.
         { askSource: false, baseDir: transcriptBaseDir },
@@ -9492,11 +10585,14 @@ export function createSessionsRegistry(opts?: {
       rt.desc.endedAt = new Date().toISOString()
       rt.desc.contextContinuityHardStopped = true
       void rt.agentSession?.close().catch(() => undefined)
-      void transcriptWriter.close(rt.desc.id)
       tracedSessions.delete(rt.desc.id)
       schedulePersist()
       emitExited(rt)
       retireRow(rt, "continued", result.descriptor.id)
+      // The rescue path defers and lets `announceContextRescue` write its
+      // notice before closing. The standalone callers (turn-boundary action,
+      // structured-question answer) have no rescue notice, so they close here.
+      if (!opts?.deferTranscriptClose) trackWrite(transcriptWriter.close(rt.desc.id))
     } catch (err) {
       appendLine(
         rt,
@@ -9526,32 +10622,67 @@ export function createSessionsRegistry(opts?: {
    * same one-line reminder as a pending note that rides along with the
    * NEXT prompt the session receives, never as a turn of its own.
    */
-  async function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
+  function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
+    // Another owner (the floor rescue, a turn-boundary continue-fresh) is
+    // already acting on the context: skip, no queued retry.
+    if (rt.contextRescue) {
+      return Promise.reject(new Error("another context compaction is in progress"))
+    }
     // The snapshot is taken FIRST, on purpose: the compaction is a turn of
     // its own, and a turn overwrites the turn-end markers
     // (`lastTurnReason` / `lastTurnErroredAt`) and clears `awaitingInput`.
     // Read after it, every session would look like a clean, completed turn
     // and nothing would ever be resumed.
     const snapshot = autoCompactSnapshot(rt)
-    let goal: string | undefined
-    try {
-      const checkpoint = await checkpointBeforeContextLoss(rt, "auto compaction", false)
-      // The checkpoint's goal section falls back to the session TITLE when
-      // the transcript carries no goal, and a title is not a mission: it is
-      // not repeated as one. The goal is optional TEXT in the resume
-      // prompt; it never decides whether that prompt is sent.
-      const checkpointGoal = checkpoint.sections.goal?.trim()
-      const title = rt.desc.title?.trim()
-      if (checkpointGoal && checkpointGoal !== title) goal = checkpointGoal
-    } catch (err) {
-      appendLine(
-        rt,
-        `[auto-compact] no checkpoint could be written: ${err instanceof Error ? err.message : String(err)}`,
-        "stderr",
-      )
+    // The lock is taken in the same synchronous run as the controller's idle
+    // check, and held until the compaction turn has ended: a prompt arriving
+    // meanwhile is queued or answered "retry" instead of starting a turn the
+    // `/compact` would then collide with.
+    const run = async (): Promise<AutoCompactOutcome> => {
+      let compacted = false
+      let outcome: AutoCompactOutcome | undefined
+      try {
+        outcome = await sendAutoCompactPrompt(rt, snapshot)
+        compacted = true
+        return outcome
+      } finally {
+        rt.contextRescue = undefined
+        // The compaction turn's own boundary check ran under the lock and
+        // skipped continue-fresh and the floor: evaluate once more now, so a
+        // compaction that did not free enough is acted on without waiting for
+        // the next prompt. Only after a compaction that ran (a refused one
+        // changed nothing), and without re-scheduling auto-compact, so this
+        // cannot loop. Before the queue drain: an action that takes the lock
+        // holds the queue until it is done.
+        // Do not re-evaluate while a resume turn will be injected for work in
+        // progress: that resume would race the re-evaluation and can be dropped
+        // or leave a stale question.
+        if (
+          compacted &&
+          isSessionAlive(rt) &&
+          !rt.busy &&
+          outcome &&
+          !hasWorkInProgress(outcome.snapshot)
+        ) {
+          void evaluateContextContinuity(rt, { skipAutoCompact: true }).catch(() => undefined)
+        }
+        if (isSessionAlive(rt)) dispatchQueuedPrompt(rt)
+      }
     }
+    const outcome = run()
+    rt.contextRescue = outcome.then(
+      () => undefined,
+      () => undefined,
+    )
+    return outcome
+  }
+
+  async function sendAutoCompactPrompt(
+    rt: SessionRuntime,
+    snapshot: WorkInProgressSnapshot,
+  ): Promise<AutoCompactOutcome> {
     const harness = rt.desc.harness ?? rt.desc.adapterSlug ?? ""
-    const cmd = harness.includes("hermes") ? "/compress" : "/compact"
+    const cmd = compactCommandFor(rt)
     // Harness support for a compact ARGUMENT (the instructions that tell
     // the summary where the full transcript is):
     //   - claude-code: its CLI accepts `/compact <instructions>`, and the
@@ -9569,7 +10700,22 @@ export function createSessionsRegistry(opts?: {
     // (`agent:<id>`), so a policy that reserves compaction for the operator
     // (`compactRequiresOperator`) still refuses session-initiated
     // compactions while the runtime may rescue a session on its own.
+    // The `/compact` gate in `runAgentTurn` writes the one checkpoint: a
+    // compaction prompt is admitted while the lock is held, and a gate that
+    // cannot write it refuses the compaction, which throws out of here.
+    rt.lastCompactionCheckpoint = undefined
     await registry.sendPrompt(rt.desc.id, prompt, { source: "runtime:auto-compact" })
+    // The checkpoint's goal section falls back to the session TITLE when the
+    // transcript carries no goal, and a title is not a mission: it is not
+    // repeated as one. The goal is optional TEXT in the resume prompt; it
+    // never decides whether that prompt is sent.
+    // (Cast: the narrowing from the reset above does not see the gate's write.)
+    const checkpoint = rt.lastCompactionCheckpoint as ContextCheckpoint | undefined
+    rt.lastCompactionCheckpoint = undefined
+    let goal: string | undefined
+    const checkpointGoal = checkpoint?.sections.goal?.trim()
+    const title = rt.desc.title?.trim()
+    if (checkpointGoal && checkpointGoal !== title) goal = checkpointGoal
     // The pointer to the full transcript must reach the session after EVERY
     // autocompaction, also when no resume prompt is sent (the idle case):
     // arm it for the next prompt the session receives. It never starts a
@@ -9631,13 +10777,17 @@ export function createSessionsRegistry(opts?: {
     if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
     // A harness that does not advertise compact support would be sent
     // `/compact` again on every growth re-arm — a repeated-prompt loop. Stay
-    // silent instead, like `attemptContextCompact` (which also gates on this).
-    if (!adapterSupportsCompact(rt.agentSession)) return
+    // silent instead. Autocompact compacts by prompt, so the advertised
+    // slash command is what counts; a `compact` mode is still accepted.
+    if (!harnessAdvertisesCompactCommand(rt) && !adapterSupportsCompact(rt.agentSession)) return
     const controller = (rt.autoCompact ??= createAutoCompactController({
       readTokens: () => rt.desc.contextUsed,
       readThreshold: () =>
-        rt.desc.contextContinuity?.autoCompactAtTokens ??
-        CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens,
+        resolveAutoCompactTokens(
+          rt.desc.contextContinuity?.autoCompactAtTokens,
+          rt.desc.contextSize,
+          (rt.desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS).warnAtPct,
+        ),
       isIdle: () => rt.busy !== true,
       hasBackgroundTask: () =>
         (rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0,
@@ -9673,15 +10823,23 @@ export function createSessionsRegistry(opts?: {
     }, 0)
   }
 
-  async function evaluateContextContinuity(rt: SessionRuntime): Promise<void> {
+  async function evaluateContextContinuity(
+    rt: SessionRuntime,
+    evalOpts?: { skipAutoCompact?: boolean },
+  ): Promise<void> {
     if (rt.desc.kind !== "agent-cli") return
     // Autocompact is ABSOLUTE and window-independent: it must be evaluated
     // even when the window size is unknown (the percent ladder cannot act
     // without one, and that is exactly the 1M-context case).
-    scheduleAutoCompact(rt)
+    if (!evalOpts?.skipAutoCompact) scheduleAutoCompact(rt)
     const policy = rt.desc.contextContinuity
-    if (!policy) return
     const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (!policy) {
+      // No policy, no percent ladder (no warning, no question, no
+      // continue-fresh below the floor), but the default floor still holds.
+      if (pct !== null && pct >= CONTEXT_CONTINUITY_DEFAULTS.hardStopAtPct) rescueAtFloor(rt, pct)
+      return
+    }
     if (pct === null) return
 
     const nextAction = contextContinuityNextAction(
@@ -9729,6 +10887,7 @@ export function createSessionsRegistry(opts?: {
           // The question IS the recommendation — "Continue fresh" is the
           // daemon's own sentence — so surface it for one-click answers.
           recommended: "continue-fresh",
+          kind: "context",
         }
         appendLine(
           rt,
@@ -9739,27 +10898,48 @@ export function createSessionsRegistry(opts?: {
         return
       }
       case "compact":
-        await attemptContextCompact(rt)
+        // Percent-band compaction is not performed: the absolute auto-compact controller owns compaction.
         return
-      case "continue-fresh":
-        await performContextContinueFresh(rt)
-        return
-      case "hard-stop":
-        // The latest frame's `used` contradicted the window (see
-        // `contextUsedInconsistent`), so `pct` is a stale reading — ending a
-        // session on it is irreversible, a warning is not.
-        if (rt.contextUsedInconsistent) {
-          appendLine(
-            rt,
-            `[context] hard-stop skipped at ${pct}% — the adapter's last usage frame reported more tokens than the window holds, so the reading is unreliable`,
-            "stderr",
-          )
-          return
+      case "continue-fresh": {
+        // The same lock as auto-compact and the floor rescue: skip when
+        // another owner already acts on the context. Taken here, not inside
+        // `performContextContinueFresh`, which the rescue calls while it
+        // already holds the lock.
+        if (rt.contextRescue) return
+        const run = async (): Promise<void> => {
+          try {
+            await performContextContinueFresh(rt)
+          } finally {
+            rt.contextRescue = undefined
+            if (isSessionAlive(rt)) dispatchQueuedPrompt(rt)
+          }
         }
-        // Not awaited: the rescue waits for this very turn to settle.
-        void performContextRescue(rt, pct)
+        const fresh = run()
+        rt.contextRescue = fresh
+        await fresh
+        return
+      }
+      case "hard-stop":
+        rescueAtFloor(rt, pct)
         return
     }
+  }
+
+  /** The turn-boundary floor, with or without a policy. */
+  function rescueAtFloor(rt: SessionRuntime, pct: number): void {
+    // The latest frame's `used` contradicted the window (see
+    // `contextUsedInconsistent`), so `pct` is a stale reading: ending a
+    // session on it is irreversible, a warning is not.
+    if (rt.contextUsedInconsistent) {
+      appendLine(
+        rt,
+        `[context] hard-stop skipped at ${pct}%: the adapter's last usage frame reported more tokens than the window holds, so the reading is unreliable`,
+        "stderr",
+      )
+      return
+    }
+    // Not awaited: the rescue waits for this very turn to settle.
+    void performContextRescue(rt, pct)
   }
 
   // ── Inbox + waiters (AIP-46 §Session messages) ────────────────────────
@@ -10093,6 +11273,7 @@ export function createSessionsRegistry(opts?: {
       to: msg.to,
       kind: msg.kind,
       urgency: msg.urgency,
+      ...(msg.replyAddress ? { replyAddress: msg.replyAddress } : {}),
     })
   }
 
@@ -10104,7 +11285,9 @@ export function createSessionsRegistry(opts?: {
       sessionId: msg.to,
       messageId: msg.id,
       ...(msg.from.sessionId ? { fromSessionId: msg.from.sessionId } : {}),
-      relation: msg.from.relation,
+      // A message persisted in an inbox before `granted` replaced `peer`
+      // is delivered with its stored value: the bus speaks the new one.
+      relation: normalizeMessageRelation(msg.from.relation) ?? msg.from.relation,
       kind: msg.kind,
       urgency: msg.urgency,
       ...(msg.delivered ? { delivered: msg.delivered } : {}),
@@ -10177,13 +11360,14 @@ export function createSessionsRegistry(opts?: {
       throw new Error("runAgentTurn: session has no agentSession")
     }
     const reattachTurn = turnOpts?.reattach === true
+    const compactionTurn = isCompactPrompt(message)
     // A compaction prompt discards context: refuse it where the policy
     // reserves compaction to the operator, and otherwise checkpoint BEFORE
     // it reaches the harness. This is the single choke point every prompt
     // path funnels through (sendPrompt, enqueuePrompt, the queue drain), and
     // it must run before `busy` is taken — a throw inside the turn would mark
     // the session errored. No checkpoint, no compaction.
-    if (isCompactPrompt(message)) {
+    if (compactionTurn) {
       assertCompactionAllowed(rt, message, turnOpts?.promptSource, "runAgentTurn")
       // A handoff turn is opt-in (`compactHandoffTurn`), and the rescue never
       // asks: default `/compact` writes the checkpoint from the transcript
@@ -10193,7 +11377,10 @@ export function createSessionsRegistry(opts?: {
         compactHandoffTurn && turnOpts?.promptSource !== CONTEXT_RESCUE_SOURCE
       try {
         // The rescue runs at the window's edge: no handoff turn into it.
-        await checkpointBeforeContextLoss(rt, "compaction", askSource)
+        const checkpoint = await checkpointBeforeContextLoss(rt, "compaction", askSource)
+        // Only the runtime auto-compaction reads it back: an operator
+        // `/compact` does not pin a checkpoint for the rest of the session.
+        if (isRuntimeAutoCompactSource(turnOpts?.promptSource)) rt.lastCompactionCheckpoint = checkpoint
       } catch (err) {
         throw new Error(
           `runAgentTurn: compaction refused — no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,
@@ -10306,7 +11493,9 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
+    rt.compactionTurn = compactionTurn
     rt.turnHadOutput = false
+    rt.turnAssistantText = undefined
     // Clear a stale parked-with-background-tasks flag from the prior turn —
     // the session was re-prompted, so it is by definition no longer parked:
     // this turn will see whatever its background tasks produced. Counter
@@ -10352,6 +11541,11 @@ export function createSessionsRegistry(opts?: {
     // `SessionDescriptor.lastTurnErroredAt`'s doc. Also rides along on
     // `lastTurnErrorMessage` and the `session:turn-end` bus event's `error`.
     let turnErrorMessage: string | undefined
+    // True once THIS turn was classified as a provider limit (whether from a
+    // specific driver error or the turn's own assistant text). The recovery
+    // branch below must not un-classify the same turn it just classified;
+    // only a cap carried over from an earlier turn is cleared by success.
+    let providerLimitThisTurn = false
     // Productivity signals for empty-turn detection: a turn that produces
     // ZERO assistant text AND zero tool calls is a silent no-op (a bad /
     // unrecognized model id, or a provider that returned an empty
@@ -10401,6 +11595,13 @@ export function createSessionsRegistry(opts?: {
               }
             : undefined
         )
+        // The prompt record is queued on the writer's in-memory stream, so a
+        // transcript read issued right after `sendPrompt` (the
+        // transcript-tools tests, and any caller that inspects the
+        // transcript at a turn boundary) can observe the file without the
+        // prompt. Track the flush through `pendingWrites` (see `trackWrite`)
+        // so `settlePendingWrites()` can gate those reads.
+        trackWrite(transcriptWriter.drain?.(rt.desc.id) ?? Promise.resolve())
         // Capture the caller's own ask (system preamble stripped, mirroring the
         // transcript writer) so the index sidecar carries it without a
         // transcript read on the write path.
@@ -10533,10 +11734,18 @@ export function createSessionsRegistry(opts?: {
         // A thrown provider/subscription usage-cap error (or one reported via
         // an `error` stream event just before the generator gave up) gets its
         // own reason instead of the bare "turn error" — see
-        // `isProviderLimitError`'s doc.
-        if (isProviderLimitError(message) || isProviderLimitError(rt.lastErrorMessage)) {
+        // `isProviderLimitError`'s doc. When the thrown error is an opaque
+        // generic one, the turn's assistant text may be the only place the cap
+        // was stated (see `providerLimitFromTurnText`).
+        const providerLimitMessage = isProviderLimitError(message)
+          ? message
+          : isProviderLimitError(rt.lastErrorMessage)
+            ? rt.lastErrorMessage
+            : providerLimitFromTurnText(message, rt.turnAssistantText)
+        if (providerLimitMessage) {
+          providerLimitThisTurn = true
           rt.desc.endedReason = "provider-limit"
-          rt.desc.lastError = message
+          rt.desc.lastError = providerLimitMessage
         }
         recordExitUsageSnapshot(rt)
         schedulePersist()
@@ -10570,6 +11779,25 @@ export function createSessionsRegistry(opts?: {
       // before the turn-end so transcript reducers can resolve the segment.
       settlePendingToolCalls()
 
+      // ── Provider cap printed as assistant text ────────────────────────
+      // Codex (codex-acp) reports the subscription cap as the final assistant
+      // message, then fails the turn with a bare "Internal error". A generic
+      // driver error names no cause, so the turn's own text is the only
+      // evidence — only then, and only the exact cap wording, classifies (see
+      // `providerLimitFromTurnText`). Replacing `turnErrorMessage` also lets
+      // the `session:turn-end` consumer (turn-retry) classify the failure.
+      const providerLimitFromText = providerLimitFromTurnText(turnErrorMessage, rt.turnAssistantText)
+      if (providerLimitFromText) {
+        providerLimitThisTurn = true
+        turnErrorMessage = providerLimitFromText
+        if (rt.desc.endedReason !== "provider-limit") {
+          rt.desc.endedReason = "provider-limit"
+          rt.desc.lastError = providerLimitFromText
+          appendLine(rt, `[provider-limit] ${providerLimitFromText}`, "stderr")
+          void suggestHandoff(rt, "provider-limit", "turn")
+        }
+      }
+
       // ── P5: guarantee exactly one terminal turn-end per turn ──────────
       // If the adapter's event stream ended without a turn-end (generator
       // returned early, subprocess exited, threw, or was aborted), inject
@@ -10602,7 +11830,9 @@ export function createSessionsRegistry(opts?: {
       if (turnCompleted) {
         // Record that a turn finished so a late `session_monitor` (subscribed
         // after a fast turn already ended) can still fast-return.
-        rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+        const turnNumber = (rt.desc.turnsCompleted ?? 0) + 1
+        rt.desc.turnsCompleted = turnNumber
+        rt.desc.lastTurnEndedAt = new Date().toISOString()
 
         // ── Interrupted-turn contract (§4): a SUCCESSFUL turn-end clears the
         // daemon-restart interruption markers, so the derived `interrupted`
@@ -10662,9 +11892,18 @@ export function createSessionsRegistry(opts?: {
             delete rt.desc.lastTurnErrorMessage
           }
           schedulePersist()
-        } else if (rt.desc.lastTurnErroredAt !== undefined) {
+        } else if (rt.desc.lastTurnErroredAt !== undefined || rt.desc.endedReason === "provider-limit") {
           delete rt.desc.lastTurnErroredAt
           delete rt.desc.lastTurnErrorMessage
+          // A cap stamped on a still-live row is spent once a turn succeeds
+          // again (the quota reset), so it must not outlive the failure. But
+          // a cap classified for THIS turn stays even when the adapter's own
+          // turn-end reason is not "error" — otherwise the block above would
+          // undo its own classification in the same turn.
+          if (rt.desc.endedReason === "provider-limit" && !providerLimitThisTurn) {
+            delete rt.desc.endedReason
+            delete rt.desc.lastError
+          }
           schedulePersist()
         }
 
@@ -10723,13 +11962,33 @@ export function createSessionsRegistry(opts?: {
         // turn-end for real progress.
         const emptyTurn =
           !sawAssistantText && !sawToolCall && !(rt.desc.awaitingInput ?? false)
+        // ── Silent-turn detection (host-recorded explicit no-op) ─────
+        // An agent woken by a daemon/session/system prompt can look at its
+        // inbox and decide there is nothing to do. When it says so through
+        // `inbox_ack({ noop: true })`, the host records that fact per turn
+        // and turns the whole turn into a `silent` turn-end, deterministic,
+        // never inferred from prose. Every guard below is deliberate: an
+        // extra tool call, any assistant text, an error/interrupt, an
+        // awaiting-input stop, an acked blocker/question, or a human-origin
+        // prompt all make the turn NOT silent.
+        const noopAck = rt.noopAcks?.turn === turnNumber ? rt.noopAcks : undefined
+        const silentTurn =
+          noopAck !== undefined &&
+          !sawAssistantText &&
+          turnToolNames.size === noopAck.count &&
+          turnEndReason !== "error" &&
+          turnErrorMessage === undefined &&
+          interruptedBy === undefined &&
+          !(rt.desc.awaitingInput ?? false) &&
+          !noopAck.attention &&
+          isAutomatedPromptSource(turnOpts?.promptSource)
         if (emptyTurn) {
           appendLine(
             rt,
-            `\x1b[33m[warning] empty turn — no assistant output, no tool call, ` +
-              `cost ${rt.desc.costUsd !== undefined ? `$${rt.desc.costUsd}` : "unknown"}. ` +
-              `Likely an invalid model id or a provider that returned nothing; ` +
-              `verify the model slug (agentproto models <adapter>).\x1b[0m`,
+            emptyTurnWarningLine({
+              ...(rt.desc.costUsd !== undefined ? { costUsd: rt.desc.costUsd } : {}),
+              ...(turnErrorMessage !== undefined ? { errorMessage: turnErrorMessage } : {}),
+            }),
             "stderr",
           )
         }
@@ -10740,6 +11999,11 @@ export function createSessionsRegistry(opts?: {
           rt.desc.lastTurnEmpty = true
         } else if (rt.desc.lastTurnEmpty !== undefined) {
           delete rt.desc.lastTurnEmpty
+        }
+        if (silentTurn) {
+          rt.desc.lastTurnSilent = true
+        } else if (rt.desc.lastTurnSilent !== undefined) {
+          delete rt.desc.lastTurnSilent
         }
         if (turnEndReason !== undefined) {
           rt.desc.lastTurnReason = turnEndReason
@@ -10790,6 +12054,7 @@ export function createSessionsRegistry(opts?: {
             ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
             ...(turnEndReason ? { reason: turnEndReason } : {}),
             ...(emptyTurn ? { empty: true } : {}),
+            ...(silentTurn ? { silent: true } : {}),
             ...(turnErrorMessage !== undefined ? { error: turnErrorMessage } : {}),
             ...(interruptedBy ? { interrupted: true } : {}),
             ...(turnToolNames.size > 0 ? { toolCalls: [...turnToolNames.values()] } : {}),
@@ -10846,11 +12111,13 @@ export function createSessionsRegistry(opts?: {
         // (or any consumer waiting on completion) doesn't hang on a turn
         // that will never signal done through the normal path.
         rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+        rt.desc.lastTurnEndedAt = new Date().toISOString()
         // Not an "empty" turn in the tracked sense (that classification is
         // normal-path only, mirroring the bus event) — but the reason still
         // needs to reach the sync fast-path the same way. See
         // `SessionDescriptor.lastTurnEmpty`/`lastTurnReason`'s doc.
         if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
+        if (rt.desc.lastTurnSilent !== undefined) delete rt.desc.lastTurnSilent
         if (turnEndReason !== undefined) {
           rt.desc.lastTurnReason = turnEndReason
         } else if (rt.desc.lastTurnReason !== undefined) {
@@ -10880,6 +12147,9 @@ export function createSessionsRegistry(opts?: {
           })
         }
       }
+
+      // The per-turn noop-ack record belongs to the turn that just ended.
+      delete rt.noopAcks
 
       // A turn just ended (normal or abnormal) — refresh the sidecar on the
       // throttled trailing schedule, never per streaming frame.
@@ -11078,7 +12348,9 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
+    rt.compactionTurn = false
     rt.turnHadOutput = false
+    rt.turnAssistantText = undefined
     // No longer parked — same as a prompted turn start.
     if (rt.desc.pendingBgTasks !== undefined) {
       delete rt.desc.pendingBgTasks
@@ -11122,8 +12394,11 @@ export function createSessionsRegistry(opts?: {
     rt.activeToolCalls?.clear()
     clearStalledFlag(rt)
     rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+    rt.desc.lastTurnEndedAt = new Date().toISOString()
     rt.desc.lastTurnReason = reason
     if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
+    if (rt.desc.lastTurnSilent !== undefined) delete rt.desc.lastTurnSilent
+    delete rt.noopAcks
     const usage = buildUsageSnapshot(rt)
     rt.desc.usageSource = usage.source
     rt.desc.costUsd = usage.costUsd
@@ -11594,7 +12869,7 @@ export function createSessionsRegistry(opts?: {
         // The relay TOKEN stays in memory (see `remoteParentFields`) - the
         // descriptor (and therefore the persisted row) carries only the
         // parent session id and the relay URL.
-        ...remoteParentFields(input.remoteParent, id),
+        ...remoteParentFields(input.remoteParent, id, input.credentialRelay),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
@@ -11603,15 +12878,20 @@ export function createSessionsRegistry(opts?: {
         // caller mutating its own input map can't reach the descriptor.
         ...(input.meta ? { meta: { ...input.meta } } : {}),
         ...(input.model ? { model: input.model } : {}),
+        ...(input.activeModel ? { activeModel: input.activeModel } : {}),
+        ...(input.modelApplyRejection ? { modelApplyRejection: input.modelApplyRejection } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.auth ? { auth: input.auth } : {}),
         // Decomposed config-axis echoes (SPEC §3.7), same optional-spread
         // shape as `model`/`mode`/`auth` above.
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.postureSource === "agent" ? { postureSource: "agent" as const } : {}),
+        ...(input.postureCeiling !== undefined ? { postureCeiling: input.postureCeiling } : {}),
         ...(input.route ? { route: input.route } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
+        ...(input.accessSlot ? { accessSlot: input.accessSlot } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
@@ -11621,15 +12901,20 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxEgressIp ? { sandboxEgressIp: input.sandboxEgressIp } : {}),
+        ...(input.sandboxEgressSlot ? { sandboxEgressSlot: input.sandboxEgressSlot } : {}),
+        ...(input.sandboxProviderChoice ? { sandboxProviderChoice: input.sandboxProviderChoice } : {}),
         ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPauseAfterIdleMs !== undefined
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
           : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxRepoRoot ? { sandboxRepoRoot: input.sandboxRepoRoot } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
+        ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -11647,6 +12932,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
         ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
+        ...(input.operator ? { operator: input.operator } : {}),
+        ...(input.operator && input.operatorDigest ? { operatorDigest: input.operatorDigest } : {}),
+        ...(input.toolDenyGrants?.length ? { toolDenyGrants: [...input.toolDenyGrants] } : {}),
+        ...(input.exposedToolOptIn?.length ? { exposedToolOptIn: [...input.exposedToolOptIn] } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -11837,20 +13126,25 @@ export function createSessionsRegistry(opts?: {
         // The relay TOKEN stays in memory (see `remoteParentFields`) - the
         // descriptor (and therefore the persisted row) carries only the
         // parent session id and the relay URL.
-        ...remoteParentFields(input.remoteParent, id),
+        ...remoteParentFields(input.remoteParent, id, input.credentialRelay),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: input.depth ?? 0,
         ...(input.meta ? { meta: { ...input.meta } } : {}),
         ...(input.model ? { model: input.model } : {}),
+        ...(input.activeModel ? { activeModel: input.activeModel } : {}),
+        ...(input.modelApplyRejection ? { modelApplyRejection: input.modelApplyRejection } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.auth ? { auth: input.auth } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.postureSource === "agent" ? { postureSource: "agent" as const } : {}),
+        ...(input.postureCeiling !== undefined ? { postureCeiling: input.postureCeiling } : {}),
         ...(input.route ? { route: input.route } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
+        ...(input.accessSlot ? { accessSlot: input.accessSlot } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
@@ -11860,15 +13154,20 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxEgressIp ? { sandboxEgressIp: input.sandboxEgressIp } : {}),
+        ...(input.sandboxEgressSlot ? { sandboxEgressSlot: input.sandboxEgressSlot } : {}),
+        ...(input.sandboxProviderChoice ? { sandboxProviderChoice: input.sandboxProviderChoice } : {}),
         ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPauseAfterIdleMs !== undefined
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
           : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxRepoRoot ? { sandboxRepoRoot: input.sandboxRepoRoot } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
+        ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -11881,6 +13180,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
         ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
+        ...(input.operator ? { operator: input.operator } : {}),
+        ...(input.operator && input.operatorDigest ? { operatorDigest: input.operatorDigest } : {}),
+        ...(input.toolDenyGrants?.length ? { toolDenyGrants: [...input.toolDenyGrants] } : {}),
+        ...(input.exposedToolOptIn?.length ? { exposedToolOptIn: [...input.exposedToolOptIn] } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -11938,10 +13241,45 @@ export function createSessionsRegistry(opts?: {
       desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
       return desc
     },
+    appendProvisioningOutput(id, text, stream) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.status !== "starting") return
+      const phase = rt.desc.provisioning?.phase ?? "worktree"
+      const parts = stripAnsiCodes((rt.provisionOutCarry ?? "") + text).split(/\r?\n|\r/)
+      rt.provisionOutCarry = (parts.pop() ?? "").slice(-4096)
+      for (const line of parts) {
+        if (line.trim() !== "") appendLine(rt, `[${phase}] ${line}`, stream)
+      }
+    },
     reportProvisioning(id, progress) {
       const rt = sessions.get(id)
       const ts = new Date().toISOString()
+      console.warn(
+        `[worktree] ${id}${rt?.desc.label ? ` (${rt.desc.label})` : ""} provisioning ` +
+          (progress.kind === "done"
+            ? `done: ${progress.outcome}`
+            : progress.kind === "queued"
+              ? `queued for ${progress.phase} (position ${progress.position})`
+              : progress.kind === "started"
+                ? `started (${progress.phase})`
+                : `phase ${progress.phase}`),
+      )
       if (rt && rt.desc.status === "starting") {
+        if (progress.kind === "done" && rt.provisionOutCarry?.trim()) {
+          appendLine(rt, `[${rt.desc.provisioning?.phase ?? "worktree"}] ${rt.provisionOutCarry}`, "stdout")
+        }
+        if (progress.kind === "done") rt.provisionOutCarry = undefined
+        else {
+          appendLine(
+            rt,
+            progress.kind === "queued"
+              ? `── provisioning: queued for ${progress.phase} (position ${progress.position}) ──`
+              : progress.kind === "started"
+                ? `── provisioning: started (${progress.phase}) ──`
+                : `── provisioning: phase ${progress.phase} ──`,
+            "stdout",
+          )
+        }
         const startedAt = rt.desc.provisioning?.startedAt ?? rt.desc.startedAt
         if (progress.kind === "queued") {
           rt.desc.provisioning = {
@@ -12164,7 +13502,7 @@ export function createSessionsRegistry(opts?: {
         // Same rule as spawnAgent: a NEW spawn's label is a slug, not a
         // human rename — let a later derived title outrank it.
         ...(input.label ? { renamedByUser: false } : {}),
-        ...(conversationSlug ? { adapterSlug: conversationSlug } : {}),
+        ...(conversationSlug ? { adapterSlug: conversationSlug, harness: conversationSlug } : {}),
         ...(conversationSlug && RESUME_STRATEGIES[conversationSlug]?.spawnArgs
           ? { nativeTerminalResume: true }
           : {}),
@@ -12374,9 +13712,11 @@ export function createSessionsRegistry(opts?: {
 
       // A network reply can be lost after the forge accepted the create.
       // Repeating the reporting call must not manufacture a second
-      // provenance link for the same PR.
+      // provenance link for the same PR. Keyed on the url alone: the stamper,
+      // `pr_open` and the reconciler label the same PR with different
+      // adapters, and each new record fires the sentinel auto-link.
       const existing = rt.desc.openedPrs ?? []
-      if (!existing.some(pr => pr.adapter === input.adapter && pr.url === input.url)) {
+      if (!existing.some(pr => pr.url === input.url)) {
         rt.desc.openedPrs = [
           ...existing,
           {
@@ -12403,6 +13743,21 @@ export function createSessionsRegistry(opts?: {
           )
         }
       }
+      return rt.desc
+    },
+    recordPrFooterState(sessionId, url, state) {
+      const rt = sessions.get(sessionId)
+      if (!rt) return undefined
+      const existing = rt.desc.openedPrs ?? []
+      const index = existing.findIndex(pr => pr.url === url)
+      if (index === -1) return undefined
+      const next = { ...existing[index]! }
+      if (state.stampedAt !== undefined) next.footerStampedAt = state.stampedAt
+      if (state.bodyHash !== undefined) next.footerBodyHash = state.bodyHash
+      if (state.removals !== undefined) next.footerRemovals = state.removals
+      if (state.disabled !== undefined) next.footerDisabled = state.disabled
+      rt.desc.openedPrs = existing.map((pr, i) => (i === index ? next : pr))
+      schedulePersist()
       return rt.desc
     },
     async readCommandLog(sessionId) {
@@ -12474,14 +13829,23 @@ export function createSessionsRegistry(opts?: {
       if (existing) {
         const desc = existing.desc
         if (desc.kind !== "external") return undefined
-        // A deliberately ended row (operator kill / retire) stays ended.
-        const deliberate = desc.endedReason !== undefined || isRetired(desc)
+        // A deliberately ended row (operator kill / retire / archive /
+        // superseded) stays ended. A row the daemon itself ended (restart,
+        // crash) did not stop the host session, so a fresh sighting revives it.
+        const daemonEnded = desc.endedReason !== undefined && DAEMON_ENDED_EXTERNAL_REASONS.has(desc.endedReason)
+        const deliberate = (desc.endedReason !== undefined && !daemonEnded) || isRetired(desc)
         if (desc.status !== "running" && desc.status !== "starting" && !deliberate) {
           desc.status = "running"
           delete desc.endedAt
+          delete desc.endedReason
         }
         desc.lastSeenAt = nowIso
         if (input.host && !desc.externalHost) desc.externalHost = input.host
+        if (input.name) desc.name = input.name
+        if (input.cwd) desc.cwd = input.cwd
+        if (input.hostSessionId) desc.externalHostSessionId = input.hostSessionId
+        if (input.entrypoint) desc.externalEntrypoint = input.entrypoint
+        if (input.permissionMode) desc.externalPermissionMode = input.permissionMode
         schedulePersist()
         return desc
       }
@@ -12496,6 +13860,11 @@ export function createSessionsRegistry(opts?: {
         startedAt: nowIso,
         lastSeenAt: nowIso,
         externalHost: input.host,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.hostSessionId ? { externalHostSessionId: input.hostSessionId } : {}),
+        ...(input.entrypoint ? { externalEntrypoint: input.entrypoint } : {}),
+        ...(input.permissionMode ? { externalPermissionMode: input.permissionMode } : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -12563,6 +13932,31 @@ export function createSessionsRegistry(opts?: {
       if (!rtPre) {
         throw new Error(`enqueuePrompt: no session "${id}"`)
       }
+      const dedupeKey = opts?.dedupeKey?.trim()
+      if (dedupeKey !== undefined && (dedupeKey.length < 1 || dedupeKey.length > 200)) {
+        throw new Error("enqueuePrompt: dedupeKey must be 1 to 200 characters")
+      }
+      // A typed envelope message already has its own daemon-minted id, and it
+      // records a sender trace on acceptance that a duplicate answer could
+      // not take back. Refuse the combination instead of leaking the trace.
+      if (dedupeKey !== undefined && opts?.envelope) {
+        throw new Error("enqueuePrompt: dedupeKey is not supported with a typed envelope message")
+      }
+      // A duplicate does NOTHING else: no interrupt, resume, compaction,
+      // envelope trace, inbox write, queue change, or persist.
+      const duplicateResult = (): EnqueuePromptResult => {
+        const waiting = (rtPre.desc.promptQueue ?? []).find(p => p.dedupeKey === dedupeKey)
+        return {
+          queued: false,
+          delivery: "duplicate",
+          pending: false,
+          duplicate: true,
+          ...(waiting ? { queueId: waiting.id } : {}),
+        }
+      }
+      if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
+        return duplicateResult()
+      }
       assertCompactionAllowed(rtPre, message, opts?.source, "enqueuePrompt")
       // `interrupt` only ever changes behavior on a mid-turn session —
       // an idle session falls straight through to the normal admission
@@ -12597,6 +13991,7 @@ export function createSessionsRegistry(opts?: {
             to: envelope.to,
             kind: envelope.kind,
             urgency: envelope.urgency,
+            ...(envelope.replyAddress ? { replyAddress: envelope.replyAddress } : {}),
           })
         }
       }
@@ -12612,18 +14007,60 @@ export function createSessionsRegistry(opts?: {
           const idx = waiting.findIndex(p => p.coalesceKey === coalesceKey)
           if (idx !== -1) {
             const existing = waiting[idx]!
+            const merged = opts.merge?.(existing)
+            const replacingEnvelope = merged?.envelope ?? envelope
+            const replacingMessage = merged?.message ?? (envelope ? envelope.text : message)
+            const finalEnvelope: SessionMessage | undefined = replacingEnvelope
+              ? replacingEnvelope.text === replacingMessage
+                ? replacingEnvelope
+                : {
+                    ...replacingEnvelope,
+                    text: typeof replacingMessage === "string" ? replacingMessage : replacingEnvelope.text,
+                  }
+              : undefined
             const replaced: QueuedPrompt = {
               ...existing,
-              message: envelope ? envelope.text : message,
+              message: replacingMessage,
               queuedAt: new Date().toISOString(),
-              ...(envelope ? { envelope } : {}),
+              ...(finalEnvelope ? { envelope: finalEnvelope } : {}),
+              ...(merged?.digest ? { digest: merged.digest } : {}),
               coalesceKey,
               coalescedCount: (existing.coalescedCount ?? 1) + 1,
+            }
+            // A merge replaces the older digest's inbox copy too, so the
+            // inbox holds one digest rather than N.
+            if (merged) {
+              const toRemove = new Set<string>()
+              const superseded = existing.envelope?.id
+              if (superseded !== undefined && superseded !== finalEnvelope?.id) {
+                toRemove.add(superseded)
+              }
+              if (envelope?.id && envelope.id !== finalEnvelope?.id) {
+                toRemove.add(envelope.id)
+              }
+              if (toRemove.size > 0) {
+                removeFromInbox(rtPre, toRemove)
+              }
+              if (finalEnvelope) {
+                if (envelope && finalEnvelope.id === envelope.id && finalEnvelope.text !== envelope.text) {
+                  setInbox(
+                    rtPre,
+                    (rtPre.desc.inbox ?? []).map(m => (m.id === finalEnvelope.id ? finalEnvelope : m)),
+                  )
+                } else if (!envelope || finalEnvelope.id !== envelope.id) {
+                  // Replace fresh/stale inbox copy with the merged envelope.
+                  setInbox(
+                    rtPre,
+                    (rtPre.desc.inbox ?? []).filter(m => m.id !== finalEnvelope.id).concat([finalEnvelope]),
+                  )
+                }
+              }
             }
             const next = [...waiting]
             next[idx] = replaced
             rtPre.desc.promptQueue = next
-            if (envelope) emitSessionMessage(envelope)
+            if (dedupeKey !== undefined) recordPromptDedupe(rtPre.desc, dedupeKey, Date.now())
+            if (finalEnvelope) emitSessionMessage(finalEnvelope)
             schedulePersist()
             return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: existing.id }
           }
@@ -12638,6 +14075,8 @@ export function createSessionsRegistry(opts?: {
           ...(envelope ? { envelope } : {}),
           ...(steerable ? { steer: true } : {}),
           ...(coalesceKey !== undefined ? { coalesceKey } : {}),
+          ...(dedupeKey !== undefined ? { dedupeKey } : {}),
+          ...(opts.digest ? { digest: opts.digest } : {}),
           ...(opts.deliverWithinMs !== undefined && opts.deliverWithinMs > 0
             ? {
                 deliverBy: new Date(Date.now() + opts.deliverWithinMs).toISOString(),
@@ -12649,6 +14088,7 @@ export function createSessionsRegistry(opts?: {
         rtPre.desc.promptQueue = opts.force
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
           : [...(rtPre.desc.promptQueue ?? []), item]
+        if (dedupeKey !== undefined) recordPromptDedupe(rtPre.desc, dedupeKey, Date.now())
         schedulePersist()
         if (steerable) {
           await flushSteerableQueue(rtPre)
@@ -12672,7 +14112,21 @@ export function createSessionsRegistry(opts?: {
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.forceResume ? { force: true } : {}),
       })
+      // The awaits above (resume attempt, reaped box move) leave a window in
+      // which a retry carrying the same key, sent while this call was still
+      // resuming, may already have been accepted. Check again in the same
+      // synchronous block as admission and the record below, so the retry
+      // answers duplicate instead of a mid-turn error.
+      if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
+        return duplicateResult()
+      }
       const rt = validateAgentTurn(id, "enqueuePrompt", { compaction: isCompactPrompt(message) })
+      // Admission succeeded: record the key before any turn is launched, and
+      // before the structured-answer branch.
+      if (dedupeKey !== undefined) {
+        recordPromptDedupe(rtPre.desc, dedupeKey, Date.now())
+        schedulePersist()
+      }
       if (envelope) {
         void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
           appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
@@ -12713,7 +14167,13 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
       expireExternalIfStale(rt)
-      if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+      // An external row has no process to die: `exited` from a lapsed
+      // liveness window only means "not seen lately", so its inbox stays
+      // deliverable until the row is killed or retired. Otherwise a quiet
+      // Desktop session would bounce sentinel / follow events that nothing
+      // can restart (`restartSession` rejects external rows).
+      const externalInboxOpen = isExternalInboxOpen(rt.desc)
+      if (!externalInboxOpen && rt.desc.status !== "running" && rt.desc.status !== "starting") {
         if (isRetired(rt.desc)) {
           throw new SessionRetiredError(msg.to, rt.desc.status, "sendMessage", rt.desc.continuedTo)
         }
@@ -12736,9 +14196,58 @@ export function createSessionsRegistry(opts?: {
         waiter.resolve([stamped!])
         return { messageId: msg.id, delivered: { via: "wait" }, queued: false, urgencyApplied: msg.urgency }
       }
-      // An external session has no process to start a turn on: every tier
-      // lands in its inbox (the hook / `inbox_list` pulls it from there).
+      // An external session has no process to start a turn on. A level-2+
+      // envelope may be delivered straight over its Claude Code socket; a
+      // written wake IS the delivery, so it is never also parked in the
+      // inbox — a later Stop/UserPromptSubmit hook would re-inject a parked
+      // copy and the session would see the message twice. Every other case
+      // (fyi, disabled, any skip/fallback, a wake held by a bypassPermissions
+      // receiver) lands in the inbox for the hook / `inbox_list` to pull.
       if (msg.urgency === "fyi" || rt.desc.kind === "external") {
+        let wake: ClaudeSocketWakeOutcome | undefined
+        if (rt.desc.kind === "external" && claudeSocketWake?.enabled) {
+          wake = await wakeClaudeSocket({
+            sessionId: rt.desc.id,
+            text: renderSessionMessage(msg),
+            urgency: msg.urgency,
+            config: claudeSocketWake,
+            ...(rt.desc.externalPermissionMode ? { rowPermissionMode: rt.desc.externalPermissionMode } : {}),
+          })
+          const held = wake.reason === "held-by-receiver-bypass"
+          ;(held ? console.warn : console.info)(
+            `[socket-wake] to=${msg.to} written=${wake.written} reason=${wake.reason} ` +
+              `pid=${wake.pid ?? "-"} rowMode=${rt.desc.externalPermissionMode ?? "-"}`,
+          )
+          if (held && !wakeWarningsByReceiver.has(msg.to)) {
+            wakeWarningsByReceiver.set(msg.to, {
+              kind: "held-by-receiver-bypass",
+              sessionId: msg.to,
+              ...(wake.pid !== undefined ? { pid: wake.pid } : {}),
+              since: new Date().toISOString(),
+              message:
+                `${msg.to} runs in bypassPermissions and Claude Code holds messages from other sessions ` +
+                `until crossSessionInbound is "accept": run \`agentproto doctor --fix\``,
+            })
+          }
+          if (wake.reason === "written") wakeWarningsByReceiver.delete(msg.to)
+          // A held wake is not a delivery: the receiver parks it, so the
+          // inbox copy below is what the session actually sees.
+          if (wake.written && !held) {
+            const delivered: SessionMessage = {
+              ...msg,
+              delivered: { via: "socket", at: new Date().toISOString() },
+            }
+            recordSent(delivered)
+            emitSessionMessage(delivered)
+            return {
+              messageId: msg.id,
+              delivered: { via: "socket" },
+              queued: false,
+              urgencyApplied: msg.urgency,
+              wake,
+            }
+          }
+        }
         const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
         if (!addToInbox(rt, parked)) {
           // Refused: don't ack a delivery that never happened, don't emit.
@@ -12752,7 +14261,13 @@ export function createSessionsRegistry(opts?: {
         }
         recordSent(parked)
         emitSessionMessage(parked)
-        return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: msg.urgency }
+        return {
+          messageId: msg.id,
+          delivered: { via: "inbox" },
+          queued: false,
+          urgencyApplied: msg.urgency,
+          ...(wake ? { wake } : {}),
+        }
       }
       // An un-granted interrupt never cuts a turn: the fastest thing short
       // of that is steering it in.
@@ -12774,6 +14289,8 @@ export function createSessionsRegistry(opts?: {
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.origin ? { origin: opts.origin } : {}),
         ...(opts?.coalesceKey ? { coalesceKey: opts.coalesceKey } : {}),
+        ...(opts?.digest ? { digest: opts.digest } : {}),
+        ...(opts?.merge ? { merge: opts.merge } : {}),
       })
       return {
         messageId: msg.id,
@@ -12860,6 +14377,19 @@ export function createSessionsRegistry(opts?: {
       dropQueuedEnvelopes(rt, ackedSet)
       return { acked }
     },
+    recordNoopAck(id, acked) {
+      const rt = sessions.get(id)
+      if (!rt || acked.length === 0) return
+      const turn = (rt.desc.turnsCompleted ?? 0) + 1
+      const prior = rt.noopAcks?.turn === turn ? rt.noopAcks : undefined
+      rt.noopAcks = {
+        turn,
+        count: (prior?.count ?? 0) + 1,
+        attention:
+          (prior?.attention ?? false) ||
+          acked.some(m => m.kind === "blocker" || m.kind === "question"),
+      }
+    },
     removeQueuedPrompt(id, queueId) {
       const rt = sessions.get(id)
       if (!rt?.desc.promptQueue?.length) return { removed: false }
@@ -12882,6 +14412,7 @@ export function createSessionsRegistry(opts?: {
         queuedAt: p.queuedAt,
         position,
         ...(p.coalescedCount !== undefined ? { coalescedCount: p.coalescedCount } : {}),
+        ...(p.dedupeKey !== undefined ? { dedupeKey: p.dedupeKey } : {}),
       }))
     },
     readBackgroundTaskTail(id, taskId) {
@@ -12952,6 +14483,12 @@ export function createSessionsRegistry(opts?: {
       // never spawns again — the persisted counter is what bounds a launchd
       // crash-loop across boots (skip, don't count a further attempt).
       if (!canResume(rt.desc)) return { status: "skipped", reason: "cap-exhausted" }
+      // A provider-box row's `cwd` only exists inside the box. Resuming it in
+      // place would spawn the adapter on the host (and fail with a misleading
+      // `spawn <npx> ENOENT`); skip before the cwd preflight so a box row
+      // never burns a `resumeAttempts` slot for a spawn that cannot work. The
+      // sandbox reattach pass / `session_restart` owns these rows.
+      if (isProviderBoxSession(rt.desc)) return { status: "skipped", reason: "provider-box" }
       // Worktree re-association (§5). `cwd` was already required by
       // `isResumable`, so the non-null assertions below are narrowing only.
       const cwd = rt.desc.cwd!
@@ -13037,6 +14574,23 @@ export function createSessionsRegistry(opts?: {
           suggestedOverride: { route: { gateway: targetRoute }, model: modelId },
         }
       }
+      // Auth-profile model curation is enforced on the LIVE switch too, not
+      // only at spawn: the profile's allow-list is the wallet's contract, and
+      // `agent_set_model` can otherwise bill a model the profile excludes.
+      // Resolve the CURRENT profile (not a spawn-time snapshot) so an edited
+      // allow-list takes effect on the next switch; a since-deleted profile is
+      // left to the spawn/restart gate rather than blocking a live switch.
+      const accessProfileRef = rt.desc.accessProfile?.profileRef
+      if (accessProfileRef) {
+        const profile = await getAuthProfile(accessProfileRef)
+        const route = targetRoute ?? currentRoute
+        if (profile && !profileAllowsModelId(profile, modelId, { ...(route ? { route } : {}) })) {
+          return {
+            applied: false,
+            reason: profileModelAllowlistMessage(profile.id, modelId, profile.models?.ids ?? []),
+          }
+        }
+      }
       if (!rt.agentSession.setModel) {
         return { applied: false, reason: "not-supported" }
       }
@@ -13113,6 +14667,9 @@ export function createSessionsRegistry(opts?: {
         // agree — mirror onto `activeModel` too (SessionDescriptor's doc)
         // rather than leaving it stale from a prior divergence.
         rt.desc.activeModel = modelId
+        // A successful live switch resolves an earlier connect-time rejection:
+        // the descriptor now genuinely runs what it names.
+        delete rt.desc.modelApplyRejection
         // The sticky window belonged to the previous model.
         resetContextWindowForModel(rt.desc, modelId)
         schedulePersist()
@@ -13227,6 +14784,9 @@ export function createSessionsRegistry(opts?: {
         }
       }
       rt.desc.posture = posture
+      // The caller's pick is the new ceiling.
+      delete rt.desc.postureSource
+      delete rt.desc.postureCeiling
       schedulePersist()
       if (sessionEvents) {
         sessionEvents.emit({
@@ -13264,6 +14824,7 @@ export function createSessionsRegistry(opts?: {
         .map(rt => {
           const desc = rt.desc
           expireExternalIfStale(rt)
+          stampHarness(desc)
           stampReadLiveness(desc)
           stampInterrupted(desc)
           stampCurrentStatus(rt)
@@ -13320,6 +14881,7 @@ export function createSessionsRegistry(opts?: {
       const slice = all.slice(offset, offset + limit)
       const summaries = slice.map(rt => {
         const desc = rt.desc
+        stampHarness(desc)
         stampReadLiveness(desc)
         stampInterrupted(desc)
         stampCurrentStatus(rt)
@@ -13345,6 +14907,7 @@ export function createSessionsRegistry(opts?: {
       const desc = rt?.desc
       if (rt && desc) {
         expireExternalIfStale(rt)
+        stampHarness(desc)
         stampReadLiveness(desc)
         stampInterrupted(desc)
         stampCurrentStatus(rt)
@@ -13495,15 +15058,56 @@ export function createSessionsRegistry(opts?: {
     readTerminalOutput(id, lastBytes) {
       const rt = sessions.get(id)
       if (!rt || !rt.pty) return null
-      const joined = Buffer.concat(rt.recentBytes, rt.recentBytesSize)
-      if (typeof lastBytes === "number" && lastBytes > 0 && joined.byteLength > lastBytes) {
-        return joined.subarray(joined.byteLength - lastBytes)
+      const cap =
+        typeof lastBytes === "number" && lastBytes > 0 ? lastBytes : RECENT_BYTES_CAP
+      if (rt.recentBytes.length > 0) {
+        const joined = Buffer.concat(rt.recentBytes, rt.recentBytesSize)
+        return joined.byteLength > cap ? joined.subarray(joined.byteLength - cap) : joined
       }
-      return joined
+      // The ring is empty. A LIVE row simply has no output yet: never read
+      // disk for it, or stale scrollback from an earlier run would surface.
+      // A terminal row falls back to the durable `terminal.jsonl` copy.
+      if (rt.desc.status === "running" || rt.desc.status === "starting") {
+        return Buffer.alloc(0)
+      }
+      return readTerminalLogTail(rt.desc.id, cap, transcriptBaseDir)
+    },
+    readOutputTail(id, lastN) {
+      const rt = sessions.get(id)
+      if (!rt) return []
+      const terminal =
+        rt.desc.status !== "running" && rt.desc.status !== "starting"
+      if (!terminal) {
+        return rt.recentLines.slice(-lastN)
+      }
+      // Terminal-row reads must not be fooled by a late stream event that
+      // appended after `emitExited` cleared the ring: prefer the text frozen
+      // at the terminal transition over the still-mutable live buffer.
+      let text = rt.finalOutputText ?? rt.lastAssistantText
+      if (!text) {
+        text = readTranscriptTail(
+          sessionEventsPath(rt.desc.id, transcriptBaseDir),
+          INDEX_TAIL_BYTES,
+        ).lastOutputText
+      }
+      // External rows go terminal without passing through `emitExited`, so
+      // their ring may still be the only readable tail.
+      if (!text) return rt.recentLines.slice(-lastN)
+      return text.split(/\r?\n/).slice(-lastN)
     },
     kill(id, signal = "SIGTERM", reason, outcome) {
       const rt = sessions.get(id)
       if (!rt) return false
+      // An operator kill of the LAST session on a box is an explicit teardown,
+      // not a pause request: `reuse` alone used to resolve the lifecycle to
+      // "pause", so every killed reusable box was left parked and billing
+      // (2026-10-29: a 12 GB paused box held the whole host capacity). A
+      // spawn that explicitly asked to pause (`lifecycle.pause_after_idle` is
+      // stamped on the descriptor) still pauses on kill.
+      const killCloseOpts =
+        isProviderBoxSession(rt.desc) && rt.desc.sandboxPauseAfterIdleMs === undefined
+          ? { deathRelease: true as const }
+          : undefined
       if (
         rt.desc.status === "exited" ||
         rt.desc.status === "killed" ||
@@ -13520,7 +15124,7 @@ export function createSessionsRegistry(opts?: {
           const session = rt.agentSession
           delete rt.agentSession
           toreDownSandbox = true
-          void session.close().catch(err => {
+          void session.close(killCloseOpts).catch(err => {
             const detail = err instanceof Error ? err.message : String(err)
             console.warn(
               `[sessions] ${id}: sandbox teardown on kill of an ended row failed: ${detail} — ` +
@@ -13533,6 +15137,7 @@ export function createSessionsRegistry(opts?: {
         // (re)labels the recorded outcome — nothing is retired or relabeled.
         if (outcome && reason === undefined) {
           layerDeclaredOutcome(rt, outcome)
+          if (outcome.verdict === "done") delete rt.desc.keepAlive
           return true
         }
         // "Mark as completed" on an already-ended row (see
@@ -13571,6 +15176,12 @@ export function createSessionsRegistry(opts?: {
       // timer here rather than letting it expire on the next tick.
       stopUsageRefresh(rt)
       if (reason) rt.desc.endedReason = reason
+      // A completion ends the "permanent agent" contract: drop the idle-reaper
+      // exemption so the row can never look like a live-forever keepAlive
+      // session again (the eager boot pass also skips completed outcomes).
+      if (reason === "operator-completed" || outcome?.verdict === "done") {
+        delete rt.desc.keepAlive
+      }
       // A dead row carries no live parked-with-background-tasks flag. kill()
       // doesn't run clearInFlightFlags (an idle kill has no in-flight turn to
       // unwind), so drop it here — same "no dangling flag on a dead row" rule.
@@ -13583,7 +15194,7 @@ export function createSessionsRegistry(opts?: {
         delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
-        void rt.agentSession.close().catch(() => undefined)
+        void rt.agentSession.close(killCloseOpts).catch(() => undefined)
         void transcriptWriter.close(rt.desc.id)
         tracedSessions.delete(rt.desc.id)
       }
@@ -13644,6 +15255,11 @@ export function createSessionsRegistry(opts?: {
       // ("abandoned"/"partial"/"failed") closes as not-completed — the
       // Level-2 `outcome.verdict` below keeps the nuance either way.
       const reason: SessionEndReason = input.verdict === "done" ? "steward-completed" : "steward-abandoned"
+      // A declared completion ends the "permanent agent" contract too: clear
+      // the idle-reaper exemption so the row never looks like a live-forever
+      // keepAlive session again (the eager boot pass also skips completed
+      // outcomes, but clearing the flag is the durable half).
+      if (input.verdict === "done") delete rt.desc.keepAlive
 
       rt.desc.killedMidTurn = false // guaranteed by the busy guard above
       rt.desc.status = "killed"
@@ -13705,7 +15321,7 @@ export function createSessionsRegistry(opts?: {
       layerStewardOutcome(rt, input)
       return true
     },
-    reapIdle(id, idleMs = 0) {
+    reapIdle(id, idleMs = 0, endedReason: SessionEndReason = "idle-reaped") {
       const rt = sessions.get(id)
       if (!rt) return false
       // Only a LIVE agent-cli row is reapable. A PTY/command/terminal/browser
@@ -13739,8 +15355,9 @@ export function createSessionsRegistry(opts?: {
       // teardown reason that (a) surfaces "reaped while idle" in the UI and (b)
       // — critically — keeps this row OUT of the eager resume-on-boot pass,
       // which gates on `endedReason === "daemon-restart"`. A reaped row must
-      // never join a boot-time resume-storm of dead work.
-      rt.desc.endedReason = "idle-reaped"
+      // never join a boot-time resume-storm of dead work. The host guard passes
+      // `"guard-reaped"`; the idle reaper keeps the historical `"idle-reaped"`.
+      rt.desc.endedReason = endedReason
       if (rt.agentSession) {
         releaseOutOfTurnEvents(rt)
         delete rt.desc.backgroundTasks
@@ -14053,6 +15670,14 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       return true
     },
+    recordPlacement(id, placement) {
+      const rt = sessions.get(id)
+      if (!rt) return undefined
+      rt.desc.placement = placement
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
     appendDeviceMirrorRecords(id, records) {
       const rt = sessions.get(id)
       if (!rt || rt.desc.kind !== "agent-cli" || !rt.desc.hostSessionId) return 0
@@ -14182,6 +15807,17 @@ export function createSessionsRegistry(opts?: {
         ...(pruneOpts?.onlyIds ? { onlyIds: pruneOpts.onlyIds } : {}),
       })
     },
+    pruneAdapterConfigCaches(pruneOpts) {
+      const defaults = opts?.adapterCacheRetention ?? {}
+      const maxAgeDays = pruneOpts?.maxAgeDays !== undefined ? pruneOpts.maxAgeDays : defaults.maxAgeDays
+      return runAdapterCacheRetentionPass({
+        registry,
+        ...(defaults.baseDir ? { baseDir: defaults.baseDir } : {}),
+        ...(maxAgeDays !== undefined ? { maxAgeDays } : {}),
+        ...(pruneOpts?.dryRun ? { dryRun: true } : {}),
+        ...(pruneOpts?.onlyIds ? { onlyIds: pruneOpts.onlyIds } : {}),
+      })
+    },
     renameSession(id, patch) {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`renameSession: no session "${id}"`)
@@ -14254,6 +15890,14 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`mergeMeta: no session "${id}"`)
       rt.desc.meta = { ...rt.desc.meta, ...patch }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setBrowserRecordings(id, recordings) {
+      const rt = sessions.get(id)
+      if (!rt) return undefined
+      rt.desc.browserRecordings = recordings
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc
@@ -14456,6 +16100,45 @@ export function createSessionsRegistry(opts?: {
       stampReadLiveness(rt.desc)
       return rt.desc
     },
+    setOperator(id, operator, operatorDigest) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setOperator: no session "${id}"`)
+      if (operator === undefined || operator === "") {
+        delete rt.desc.operator
+        delete rt.desc.operatorDigest
+      } else {
+        rt.desc.operator = operator
+        if (operatorDigest) rt.desc.operatorDigest = operatorDigest
+        else delete rt.desc.operatorDigest
+      }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setToolDenyGrants(id, grants) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setToolDenyGrants: no session "${id}"`)
+      if (!grants || grants.length === 0) delete rt.desc.toolDenyGrants
+      else rt.desc.toolDenyGrants = [...grants]
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setExposedToolOptIn(id, optIn) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setExposedToolOptIn: no session "${id}"`)
+      if (!optIn || optIn.length === 0) delete rt.desc.exposedToolOptIn
+      else rt.desc.exposedToolOptIn = [...optIn]
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    reinstateOrchestratorScopes(id) {
+      return orchestratorScopes?.reinstate(id) ?? (() => {})
+    },
+    transferOrchestratorScopes(from, to) {
+      orchestratorScopes?.transfer(from, to)
+    },
     setLineageSuccessor(fromId, toId) {
       const from = sessions.get(fromId)
       if (!from) throw new Error(`setLineageSuccessor: no session "${fromId}"`)
@@ -14628,7 +16311,10 @@ export function createSessionsRegistry(opts?: {
       // false ALWAYS clears the question too — a question cannot outlive
       // its awaiting-input flag. `source: "structured"` because an explicit
       // human/orchestrator override is at least as authoritative as a
-      // driver-reported prompt (the other "structured" producer).
+      // driver-reported prompt (the other "structured" producer). No
+      // `kind`: the operator classified the wait in their own words, and
+      // the daemon cannot tell a permission from a question in free text,
+      // so it stays unclassified rather than guessed.
       rt.desc.awaitingQuestion =
         patch.awaitingInput && patch.question !== undefined
           ? { text: patch.question, source: "structured" }
@@ -14656,6 +16342,9 @@ export function createSessionsRegistry(opts?: {
     },
     respondPermission(id, input) {
       return resolvePendingPermission(id, input)
+    },
+    requestToolPermission(input) {
+      return requestToolPermissionImpl(input)
     },
     forget(id) {
       const rt = sessions.get(id)
@@ -14829,6 +16518,9 @@ export function createSessionsRegistry(opts?: {
     noteSandboxReattachUnserved(count) {
       reattachBoot.unserved = Math.max(0, Math.floor(count))
     },
+    wakeWarnings() {
+      return [...wakeWarningsByReceiver.values()]
+    },
     sandboxSessionStats() {
       let attached = 0
       for (const rt of sessions.values()) {
@@ -14853,12 +16545,87 @@ export function createSessionsRegistry(opts?: {
         },
       }
     },
+    noteCheckpointWritten(sessionId, notice) {
+      const rt = sessions.get(sessionId)
+      if (!rt) return
+      rt.lastCheckpointAtMs = Date.now()
+      if (notice) {
+        const line = `[context] checkpoint ${notice.checkpointId} written to ${notice.checkpointPath} before ${notice.before}`
+        appendLine(rt, line, "stdout")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+      }
+    },
     shutdown() {
+      cancelDaemonGatePermissions("shutdown")
       shutdownImpl()
     },
   }
 
   return registry
+
+  function requestToolPermissionImpl(input: ToolPermissionRequest): Promise<ToolPermissionOutcome> {
+    const id = `gate_${randomUUID()}`
+    const owner = input.sessionId ? sessions.get(input.sessionId) : undefined
+    const sessionId = owner ? owner.desc.id : (input.sessionId ?? "daemon")
+    const pending: PendingPermission = {
+      id,
+      sessionId,
+      toolCallId: id,
+      toolName: input.toolName,
+      text: input.text,
+      options: [
+        { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+      ],
+      requestedAt: new Date().toISOString(),
+      ...(input.rawInput !== undefined ? { rawInput: input.rawInput } : {}),
+      origin: "daemon-gate",
+    }
+    return new Promise<ToolPermissionOutcome>(resolve => {
+      const timer = setTimeout(() => {
+        if (!daemonGatePermissions.delete(id)) return
+        pendingPermissions.delete(id)
+        if (owner) {
+          refreshAwaitingPermission(owner)
+          schedulePersist()
+        }
+        sessionEvents?.emit({
+          type: "session:permission-resolved",
+          sessionId,
+          permissionId: id,
+          decision: "cancelled",
+          ...(owner?.desc.label ? { label: owner.desc.label } : {}),
+          ts: new Date().toISOString(),
+        })
+        resolve({ decision: "cancelled", reason: "timeout" })
+      }, input.timeoutMs ?? 10 * 60_000)
+      timer.unref?.()
+      daemonGatePermissions.set(id, { settle: resolve, timer })
+      pendingPermissions.set(id, pending)
+      if (owner) {
+        owner.desc.awaitingPermission = true
+        schedulePersist()
+      }
+      sessionEvents?.emit({
+        type: "session:permission-request",
+        sessionId,
+        permissionId: id,
+        toolName: input.toolName,
+        text: input.text,
+        ...(owner?.desc.label ? { label: owner.desc.label } : {}),
+        ts: pending.requestedAt,
+      })
+    })
+  }
+
+  function cancelDaemonGatePermissions(reason: "shutdown"): void {
+    for (const [id, gate] of daemonGatePermissions) {
+      daemonGatePermissions.delete(id)
+      pendingPermissions.delete(id)
+      clearTimeout(gate.timer)
+      gate.settle({ decision: "cancelled", reason })
+    }
+  }
 
   /**
    * Detach a live provider-box session from this daemon: close its connection
@@ -15134,6 +16901,9 @@ function loadHistorySnapshot(
   const now = new Date().toISOString()
   for (const desc of sorted) {
     if (sessions.has(desc.id)) continue // collision with a live entry — keep live
+    // Legacy rows carry only `adapterSlug`: read it once as `harness` (data
+    // compatibility, rewritten as both on the next persist).
+    stampHarness(desc)
     const wasAlive = desc.status === "running" || desc.status === "starting"
     // An external row has no process to have died with the daemon: it simply
     // expires (lazily) like any other, and a later sighting revives it.
@@ -15183,6 +16953,12 @@ function loadHistorySnapshot(
     }
     // A row loaded from disk has no live provisioning, whatever it recorded.
     delete reclassified.provisioning
+    // `availableCommands` is a live read-surface stamped by the ACP
+    // `available_commands_update` event, never a durable property. Snapshots
+    // written by older daemons may still carry it; drop it on the way back in
+    // so a ghost never holds a stale command list (and the next persist drops
+    // it from disk for good).
+    delete reclassified.availableCommands
     // Unconditional, not `if (wasAlive)`: a ghost carries no child/
     // agentSession, so it is idle whatever the snapshot claimed — and rows
     // that were ALREADY terminal can carry frozen flags too. Two ways in: a

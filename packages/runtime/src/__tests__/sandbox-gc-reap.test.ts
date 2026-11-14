@@ -115,6 +115,24 @@ describe("reapGcEntry — capacity-free reaping", () => {
     expect(res2).toEqual({ ok: true, action: "stopped" })
   })
 
+  it("a reconnect whose provider says the box 'no longer exists' stamps the row stopped, not a repeat failure", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [entryOf({ sandboxId: "bx_vanished", state: "paused" })])
+    const goneErr = new Error(
+      'sandbox "bx_vanished" no longer exists on its provider — the box is gone',
+    )
+    goneErr.name = "SandboxBoxGoneError"
+    const res = await reapGcEntry(entryOf({ sandboxId: "bx_vanished" }), {
+      // Explicit pause reaches the connect path (remove is skipped).
+      pause: true,
+      resolveProvider: async () =>
+        handleFor({ connect: async () => { throw goneErr } }),
+      ledgerPath: ledger,
+    })
+    expect(res).toEqual({ ok: true, action: "stopped" })
+    expect(readFileSync(ledger, "utf8")).toContain('"stopped"')
+  })
+
   it("a REAL remove failure leaves the ledger row alone", async () => {
     const ledger = await tmpLedgerPath()
     await seedLedger(ledger, [entryOf()])
@@ -305,6 +323,8 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
         fetchSessionLineage: () => new Map([["sess_dead", { sandboxTeardown: "pause" }]]),
         resolveProvider: async () => ({ provider: { remove, connect } }) as SandboxGcProviderHandle,
         ledgerPath: ledger,
+        // Keep the age bound out of this test: the row is old on purpose.
+        pausedMaxAgeMs: Number.POSITIVE_INFINITY,
       },
       line => lines.push(line),
     )
@@ -313,6 +333,32 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     expect(pause).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
     expect(readFileSync(ledger, "utf8")).toContain('"paused"')
+  })
+
+  it("a paused row PAST the age bound is reaped (kill, not kept) even with a pause teardown", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [
+      entryOf({ sandboxId: "bx_paused_expired", state: "paused", originSessionId: "sess_dead" }),
+    ])
+    const pause = vi.fn(async () => {})
+    const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
+    const connect = vi.fn(async (id: string) => ({ sandboxId: id, stop: vi.fn(async () => {}), pause }))
+    const summary = await runSandboxGcPass(
+      {
+        fetchSessionStatuses: () => new Map([["sess_dead", "killed"]]),
+        fetchSessionLineage: () => new Map([["sess_dead", { sandboxTeardown: "pause" }]]),
+        resolveProvider: async () => ({ provider: { remove, connect } }) as SandboxGcProviderHandle,
+        ledgerPath: ledger,
+        pausedMaxAgeMs: 30 * 60_000,
+      },
+      line => lines.push(line),
+    )
+    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 1, paused: 0, kept: 0, failures: 0 })
+    expect(remove).toHaveBeenCalledWith("bx_paused_expired", { force: true })
+    expect(connect).not.toHaveBeenCalled()
+    expect(pause).not.toHaveBeenCalled()
+    expect(readFileSync(ledger, "utf8")).toContain('"stopped"')
+    expect(lines.some(line => line.includes("paused for") && line.includes("reaping"))).toBe(true)
   })
 
   it("a paused row whose origin teardown is kill/unset is still deleted", async () => {
@@ -387,6 +433,122 @@ afterEach(() => {
   while (lines.length) lines.pop()
 })
 
+describe("runSandboxGcPass — dead attaches on a box that stays in use", () => {
+  const attachedOf = (path: string, id: string): string[] => {
+    const rows = JSON.parse(readFileSync(path, "utf8")).sandboxes as SandboxLedgerEntry[]
+    return rows.find(r => r.sandboxId === id)?.attachedSessions ?? []
+  }
+
+  it("releases a dead attaché's provider slot and ledger attach while the live session keeps the box", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [
+      entryOf({
+        sandboxId: "bx_shared",
+        state: "connected",
+        originSessionId: "sess_live",
+        attachedSessions: ["sess_dead", "sess_live"],
+      }),
+    ])
+    const remove = vi.fn(async (_id: string) => {})
+    const releaseSession = vi.fn(async (_id: string, _holder: string) => {})
+    const summary = await runSandboxGcPass(
+      {
+        fetchSessionStatuses: () =>
+          new Map([
+            ["sess_dead", "exited"],
+            ["sess_live", "running"],
+          ]),
+        resolveProvider: async () => ({ provider: { remove, releaseSession } }),
+        ledgerPath: ledger,
+      },
+      line => lines.push(line),
+    )
+    expect(releaseSession).toHaveBeenCalledTimes(1)
+    expect(releaseSession).toHaveBeenCalledWith("bx_shared", "sess_dead")
+    expect(remove).not.toHaveBeenCalled()
+    expect(summary.released).toBe(1)
+    expect(attachedOf(ledger, "bx_shared")).toEqual(["sess_live"])
+  })
+
+  it("keeps the ledger attach when the provider cannot release the slot (retried next pass)", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [
+      entryOf({
+        sandboxId: "bx_shared",
+        state: "connected",
+        originSessionId: "sess_live",
+        attachedSessions: ["sess_dead", "sess_live"],
+      }),
+    ])
+    const summary = await runSandboxGcPass(
+      {
+        fetchSessionStatuses: () =>
+          new Map([
+            ["sess_dead", "exited"],
+            ["sess_live", "running"],
+          ]),
+        resolveProvider: async () => ({
+          provider: {
+            releaseSession: async () => {
+              throw new Error("controller unreachable")
+            },
+          },
+        }),
+        ledgerPath: ledger,
+      },
+      line => lines.push(line),
+    )
+    expect(summary.released).toBeUndefined()
+    expect(attachedOf(ledger, "bx_shared")).toEqual(["sess_dead", "sess_live"])
+  })
+
+  it("with absentSessionsAreDead, a session the registry no longer knows is dead once past the grace", async () => {
+    const ledger = await tmpLedgerPath()
+    const old = "2026-10-18T00:00:00.000Z"
+    await seedLedger(ledger, [
+      entryOf({ sandboxId: "bx_pruned", state: "connected", originSessionId: "sess_pruned", updatedAt: old }),
+    ])
+    const remove = vi.fn(async (_id: string) => {})
+    const summary = await runSandboxGcPass({
+      fetchSessionStatuses: () => new Map([["sess_other", "running"]]),
+      resolveProvider: async () => handleFor({ remove }),
+      ledgerPath: ledger,
+      absentSessionsAreDead: true,
+    })
+    expect(summary.stopped).toBe(1)
+    expect(remove).toHaveBeenCalledWith("bx_pruned", { force: true })
+  })
+
+  it("an absent session is NOT dead by default, nor inside the grace window", async () => {
+    const remove = vi.fn(async (_id: string) => {})
+    const old = "2026-10-18T00:00:00.000Z"
+    const fresh = new Date().toISOString()
+    const defaultLedger = await tmpLedgerPath()
+    await seedLedger(defaultLedger, [
+      entryOf({ sandboxId: "bx_a", state: "connected", originSessionId: "sess_gone", updatedAt: old }),
+    ])
+    const byDefault = await runSandboxGcPass({
+      fetchSessionStatuses: () => new Map(),
+      resolveProvider: async () => handleFor({ remove }),
+      ledgerPath: defaultLedger,
+    })
+    expect(byDefault.candidates).toBe(0)
+
+    const graceLedger = await tmpLedgerPath()
+    await seedLedger(graceLedger, [
+      entryOf({ sandboxId: "bx_b", state: "connected", originSessionId: "sess_gone", updatedAt: fresh }),
+    ])
+    const inGrace = await runSandboxGcPass({
+      fetchSessionStatuses: () => new Map(),
+      resolveProvider: async () => handleFor({ remove }),
+      ledgerPath: graceLedger,
+      absentSessionsAreDead: true,
+    })
+    expect(inGrace.candidates).toBe(0)
+    expect(remove).not.toHaveBeenCalled()
+  })
+})
+
 describe("parseSandboxGcInterval — the env knob", () => {
   const FALLBACK = 123_456
   it("unset or non-numeric falls back to the default", () => {
@@ -426,6 +588,26 @@ describe("startSandboxGcTimer — wiring shape", () => {
     timer.stop()
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect(passes).toBe(3)
+    vi.useRealTimers()
+  })
+
+  it("initialDelayMs runs a first pass shortly after start, not one full interval later", async () => {
+    vi.useFakeTimers()
+    let passes = 0
+    const timer = startSandboxGcTimer({
+      fetchSessionStatuses: () => {
+        passes++
+        return new Map()
+      },
+      resolveProvider: async () => null,
+      intervalMs: 60 * 60_000,
+      initialDelayMs: 2 * 60_000,
+    })
+    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    expect(passes).toBe(1)
+    timer.stop()
+    await vi.advanceTimersByTimeAsync(2 * 60 * 60_000)
+    expect(passes).toBe(1)
     vi.useRealTimers()
   })
 

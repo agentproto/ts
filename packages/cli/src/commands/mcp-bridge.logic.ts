@@ -97,7 +97,11 @@ export function watchParentExit(
 /** Codex Desktop's app-tools plugin reads these same per-call metadata keys.
  * They are host context, never model-facing tool arguments. No metadata means
  * no identity; in particular, clientInfo.name alone is insufficient. */
-export function bridgeCallerUrl(baseUrl: string, meta?: Record<string, unknown>, hostName?: string): string {
+export function bridgeCallerUrl(
+  baseUrl: string,
+  meta?: Record<string, unknown>,
+  hostName?: string,
+): string {
   const url = new URL(baseUrl)
   // Preserve daemon-spawned self-mounts and explicit bridge configuration.
   // Approval cards deliberately forbid caller identities on their surface.
@@ -128,4 +132,110 @@ export function bridgeCallerUrl(baseUrl: string, meta?: Record<string, unknown>,
   url.searchParams.set("callerSessionId", `codex:${thread}`)
   url.searchParams.set("host", "codex")
   return url.toString()
+}
+
+/** The only `?surface=` values the bridge will dial. */
+export const BRIDGE_SURFACES: readonly string[] = ["approval-cards"]
+
+/**
+ * Parse the bridge's own flags. Unknown flags are ignored (the bridge has
+ * always tolerated them); only `--surface <name>` / `--surface=<name>` is
+ * read, and only the names in `BRIDGE_SURFACES` are accepted.
+ */
+export function parseBridgeArgs(
+  args: readonly string[],
+): { surface?: string } | { error: string } {
+  let surface: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === "--surface") {
+      surface = args[++i]
+      if (surface === undefined || surface.startsWith("--")) {
+        return { error: "--surface needs a value" }
+      }
+    } else if (arg.startsWith("--surface=")) {
+      surface = arg.slice("--surface=".length)
+    }
+  }
+  if (surface === undefined) return {}
+  if (!BRIDGE_SURFACES.includes(surface)) {
+    return {
+      error: `unknown surface "${surface}" (accepted: ${BRIDGE_SURFACES.join(", ")})`,
+    }
+  }
+  return { surface }
+}
+
+/** `url` with `?surface=<surface>` set; every other query parameter is kept. */
+export function withSurface(url: string, surface: string): string {
+  const next = new URL(url)
+  next.searchParams.set("surface", surface)
+  return next.toString()
+}
+
+/** Header the bridge uses to attest the real Claude Code session to the
+ *  daemon. Mirrors `CLAUDE_SESSION_HEADER` in `@agentproto/runtime`
+ *  (session-message.ts); the two literals must stay equal. */
+export const CLAUDE_SESSION_HEADER = "x-agentproto-claude-session"
+
+/** Claude Code sets this in the environment of hooks, Bash and STDIO MCP
+ *  servers; it equals the hook payload's `session_id`. */
+export const CLAUDE_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
+
+/** Same charset as the `cc:<session_id>` addresses (agent-start-schema.ts). */
+const CLAUDE_SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/
+
+/**
+ * The real Claude Code session id from the bridge's environment, or undefined
+ * when it is absent or malformed (a malformed value is ignored, never
+ * forwarded).
+ */
+export function readClaudeSessionId(
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const raw = env[CLAUDE_SESSION_ENV]?.trim()
+  return raw && CLAUDE_SESSION_ID.test(raw) ? raw : undefined
+}
+
+/** Headers to add to every proxied request: the attested session, or none. */
+export function claudeSessionHeaders(
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const id = readClaudeSessionId(env)
+  return id ? { [CLAUDE_SESSION_HEADER]: id } : {}
+}
+
+/** Log form of the id: first 8 characters only. */
+export function redactSessionId(id: string): string {
+  return `${id.slice(0, 8)}...`
+}
+
+/** The single startup line describing the attestation decision. stderr only. */
+export function describeClaudeSessionAttestation(
+  env: Readonly<Record<string, string | undefined>>,
+  url: string,
+): string {
+  const id = readClaudeSessionId(env)
+  let callerInUrl = false
+  try {
+    callerInUrl = new URL(url).searchParams.has("callerSessionId")
+  } catch {
+    // unparseable URL: report "no", never echo it
+  }
+  const state = id
+    ? `sent (id=${id.slice(0, 8)})`
+    : `not sent (${CLAUDE_SESSION_ENV} ${env[CLAUDE_SESSION_ENV]?.trim() ? "invalid" : "unset"})`
+  return `[mcp-bridge] claude session header: ${state}; callerSessionId in url: ${callerInUrl ? "yes" : "no"}`
+}
+
+/** `url` for a log line: origin and path, query VALUES dropped (a token or key
+ *  may ride in them); only the parameter names are kept. */
+export function urlForLog(url: string): string {
+  try {
+    const u = new URL(url)
+    const keys = [...new Set(u.searchParams.keys())]
+    return `${u.origin}${u.pathname}${keys.length ? `?${keys.join("&")}` : ""}`
+  } catch {
+    return "<unparseable url>"
+  }
 }

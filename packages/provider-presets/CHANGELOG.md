@@ -1,5 +1,14 @@
 # @agentproto/provider-presets
 
+## 0.7.2
+
+### Patch Changes
+
+- 8d8c10c: Release and doc hygiene after the AIP-70 renames: fix remaining old package
+  names and dead paths, add the missing harness and doctype READMEs, document
+  the `inference-endpoint` command alongside its `llm-endpoint` alias, and
+  classify the AIP-70 rename shims as archived in STATUS.md.
+
 ## 0.7.1
 
 ### Patch Changes

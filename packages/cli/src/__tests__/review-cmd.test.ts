@@ -479,7 +479,7 @@ describe("review verify", () => {
       const bad = await captureRun(["verify", "--cwd", repo.dir, "--json"])
       expect(bad.code).toBe(VERIFY_EXIT.invalid)
       expect(JSON.parse(bad.out).problems[0]).toMatch(
-        /attested with digest algorithm 'agentproto-pack-digest\/v2-from-the-future'.*only knows 'agentproto-pack-digest\/v1'/,
+        /attested with digest algorithm 'agentproto-pack-digest\/v2-from-the-future'.*only knows 'review.pack-digest\/v1'/,
       )
     })
   })

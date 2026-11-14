@@ -158,4 +158,24 @@ describe("createBrainManager", () => {
     const status = await second.status()
     expect(status.skippedSessions).toBe(0)
   })
+
+  it("answers a query over the configured index ceiling, from the on-disk index", async () => {
+    const capped = createBrainManager({
+      workspace: "capped-ws",
+      brainDir,
+      maxIndexDocs: 1,
+      readSession: async () => transcript("Ship it", "we cut a release with cargo cut"),
+      listSessionRefs: async () => [],
+    })
+    await capped.ingestSession("sess-one")
+    await capped.ingestSession("sess-two")
+    const res = await capped.getProvider().query({ query: "cargo" })
+    expect(res.hits.map(h => h.sourceId).sort()).toEqual([
+      "knowledge/sources/sess-one.md",
+      "knowledge/sources/sess-two.md",
+    ])
+    const { stat } = await import("node:fs/promises")
+    expect((await stat(path.join(brainDir, ".index", "fts-local.sqlite"))).isFile()).toBe(true)
+    await capped.dispose()
+  })
 })

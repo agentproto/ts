@@ -34,6 +34,7 @@ import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
 import { runQuota } from "./commands/quota.js"
+import { runAccounts } from "./commands/accounts.js"
 import { runHost } from "./commands/host.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
@@ -78,7 +79,7 @@ Usage:
   agentproto auth      <login|status|logout> [--host <url>] [--label <name>]
   agentproto config    <show|path|get|set|unset|edit> [args]
   agentproto daemon    <install|uninstall|start|stop|status|logs> [args]
-  agentproto doctor    [--json] [--only <step>...] [--skip <step>...]
+  agentproto doctor    [--json] [--fix] [--only <step>...] [--skip <step>...]
                                            read-only check of this install
   agentproto install   <slug> [--force] [--dry-run] [--skip-setup] [--allow-unverified]
                        <slug> ∈ { <adapter-slug> | runtime-profile/<name> }
@@ -125,6 +126,9 @@ Usage:
                                            local spend estimate over a rolling window
   agentproto quota    status --profile <ref> [--refresh] [--json]
                                            live provider quota for a named auth profile
+  agentproto accounts slots [--json]       account slots (accountSlots) + alive sessions on each
+  agentproto accounts swap <family> [--move-alive] [--dry-run]
+                                           swap <family>-primary and <family>-secondary
   agentproto brain    query "<query>" [--workspace <slug>] [--topk <n>] [--json]
                                            fuzzy search over session transcripts
   agentproto browser   install <adapter> [--force] [--dry-run]
@@ -154,9 +158,11 @@ Usage:
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
                                            register the daemon's MCP server with coding CLIs
                          [--app <appId>]  write a scoped mcp-app entry instead (book apps only)
+                         [--approvals [--write]]
+                                           Claude Desktop approval cards: print / add the agentproto-approvals entry
   agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
                                            alias of \`agentproto setup\` (the wizard)
-  agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
+  agentproto cron      add --schedule <cron> (--command <cmd> | --harness <slug> --prompt <text>) [--once]
   agentproto cron      list [--json]
   agentproto cron      remove <id>
   agentproto cron      run    <id>
@@ -214,6 +220,7 @@ Usage:
   agentproto rendezvous serve [--port <n>] [--host <ip>]
   agentproto sandbox   list [--json] | attach <provider> <sandboxId> | rm <id|label> [--box] | gc [--apply]
   agentproto sandbox   exec <provider> [--sandbox-id <id>] [--env-profile NAME=<profile>] [--file <local>:<box>] -- <command...>
+  agentproto sandbox   egress-health [--provider <slug>] [--model <id>] [--probe <model>] [--json]
   agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
   agentproto app       unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app       install <appDir>
@@ -264,7 +271,7 @@ Examples:
   agentproto config set daemon.allowedOrigins https://guilde.work
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
-  agentproto doctor                    # check the whole install (read-only)
+  agentproto doctor                    # check the whole install (--fix: let bypass sessions accept messages)
   agentproto setup                         # guided first run (wizard)
 `
 
@@ -288,6 +295,7 @@ const VERBS = new Set([
   "conversation",
   "usage",
   "quota",
+  "accounts",
   "host",
   "brain",
   "tunnel",
@@ -413,6 +421,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runUsage(rest)
     case "quota":
       return runQuota(rest)
+    case "accounts":
+      return runAccounts(rest)
     case "brain":
       return runBrain(rest)
     case "tunnel":

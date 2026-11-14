@@ -31,7 +31,7 @@ provider's `setup` (stored creds), plus env fallbacks:
 | `token` (secret) | `COMPUTER_CONTROLLER_TOKEN` | — | Controller bearer service token. Resolved from a credential ref by the runtime (`setup_sandbox_provider` → stored creds → env), **never** logged or written anywhere else. |
 | `tenantId` | `COMPUTER_TENANT_ID` | `agentproto` | Sent as `X-Tenant-Id` on every request; computers are created under it. A stored `setup_sandbox_provider` value fills the env var when unset. |
 | `egress` | — | none | Allowlist forwarded as the create body's `egress.allow`: entries `"host"`, `"host:port"` (port defaults to 443) or `{host, port?}`. The reference controller denies ALL egress, DNS included, when this is absent, so the on-boot `npm i -g @agentproto/cli` needs at least `registry.npmjs.org`. |
-| `egressIp` | — | `"shared"` | Egress IP selection forwarded as create `egressIp` (AIP-36 v1.3): `"shared"` (default, omitted from the create body so older controllers keep working), `"auto"`, `"dedicated"`, or a 1-8 character lowercase alphanumeric pool slot id. Also accepted from the spec-level `network.egressIp`; precedence: `config.egressIp` wins when set, otherwise `network.egressIp` applies, and `"shared"` is the default. A spec-level `network.egressIp` of `"shared"` counts as unset, so a conflict is only rejected before any controller call when both sides set different non-`"shared"` values. The booted handle reports the controller's `egressIp: {id, publicIp} | null` on boot and connect. |
+| `egressIp` | — | `"shared"` | Egress IP selection forwarded as create `egressIp` (AIP-36 v1.3): `"shared"` (default, omitted from the create body so older controllers keep working), `"auto"`, `"dedicated"`, or a 1-8 character lowercase alphanumeric pool slot id. Also accepted from the spec-level `network.egressIp`; precedence: `config.egressIp` wins when set, otherwise `network.egressIp` applies, and `"shared"` is the default. A spec-level `network.egressIp` of `"shared"` counts as unset, so a conflict is only rejected before any controller call when both sides set different non-`"shared"` values. The booted handle reports the controller's `egressIp: {id, publicIp} | null` on boot and connect. With `"auto"`, and a cooldown view in the boot options (`SandboxBootOpts.egressHealth`, which the runtime's egress health ledger fills for a spawn that names a model), the provider reads `GET /v1/egress-pool` and names an explicit healthy slot (least loaded first) instead of sending `auto`, moving to the next one if the controller refuses a slot as dedicated or full. A fleet treats a named slot as a pin on the host that owns it, so a `fleet-capacity` refusal of a named slot (the fleet's `reason` names the shortfall, e.g. `memory`, `cpus` or `egress-slot-unavailable`) means that host is full: the provider skips the remaining slots of that host (the fleet's pool entries carry `hostId`; without it the next slot is tried) and tries a slot on another host, and once none is left sends plain `auto`, which the fleet places host-first, before the ordinary fleet-capacity wait. Each skip is logged as a boot line. A `no-active-host` refusal is not skipped, since no other slot can relieve it. If every slot's address is cooling down for the model it throws `SandboxEgressAllCoolingError` (`sandbox_egress_all_cooling`) without creating a box. An unreadable pool falls back to the controller's own `auto`. `provider.egressPool(spec)` lists the slots and their public addresses. |
 | `template` | — | `agentproto-workstation` | Controller template id. The reference controller's stock registry currently only ships `base`/`node`/`browser` — point this at whatever template id your controller advertises (or ask the controller admin to register a workstation template). |
 | `cpus`, `memoryMiB`, `rootDiskMiB` | — | — | Resource limits forwarded to create. |
 | `ttlSeconds` | — | — | Computer TTL sent as create `ttl`. |
@@ -42,10 +42,60 @@ provider's `setup` (stored creds), plus env fallbacks:
 | `gatewayUrl` | `COMPUTER_GATEWAY_URL` | `http://<computer-name>:<port>` | URL template with `{port}`/`{id}`/`{hostPort}` placeholders for reaching a computer's ports (`{hostPort}` is the host port the controller published for the daemon port; the boot fails if none). Default assumes the box network is addressable by the computer's generated name; set it when computers sit behind an edge proxy. The daemon is started with `--allow-origin` for this URL's origin, recorded in `~/.agentproto-daemon.origin`; on reconnect a healthy daemon whose recorded origin differs (the host port changed) is restarted. A daemon without that file (autostarted by the template) is left as is. The runtime exposes it as an optional setup field (stored provider creds fill `COMPUTER_GATEWAY_URL` when unset), which a daemon-restart re-attach needs because it carries no per-spawn config. It is not required in `daemonRoute` mode; supplying both is rejected as a conflicting configuration. When the controller's GET omits `ports`, a reconnect recovers the host port from the origin marker. `mcpUrl` is the resolved URL plus `/mcp`. |
 | `daemonRoute` | `COMPUTER_DAEMON_ROUTE` (`1`) | off | Reach each computer's daemon through the controller at `<controllerUrl>/v1/computers/{id}/daemon` instead of a per-port `gatewayUrl`, which is not required in this mode and must be omitted (supplying both is rejected with a clear error). The daemon call then carries the controller credential in `X-Controller-Authorization: Bearer …` and the tenant in `X-Tenant-Id`, next to the daemon's own `Authorization`, via `BootedSandbox.authHeaders`. Needs a controller that serves that route. |
 | `extraHeaders` | `COMPUTER_EXTRA_HEADERS` (JSON object), `COMPUTER_ACCESS_CLIENT_ID` + `COMPUTER_ACCESS_CLIENT_SECRET` | none | Headers added to every controller call (and to daemon calls in `daemonRoute` mode), for a proxy in front of the controller that wants its own credentials. The id/secret pair maps to `CF-Access-Client-Id` / `CF-Access-Client-Secret`. Values are secrets: never logged, redacted from errors. `Authorization`, `X-Tenant-Id` and `Content-Type` are owned by the client and ignored here. Prefer the env vars (or the stored provider profile) over `config`, which can end up in session metadata. |
-| `updateCliOnBoot`, `cliVersion`, `installPackages`, `setupCommands` | — | install on | Same semantics as sandbox-e2b's boot flow. |
+| `updateCliOnBoot`, `cliVersion`, `installPackages`, `setupCommands` | — | install on | Same semantics as sandbox-e2b's boot flow, except the install is skipped when the image already carries what it would install (see "Baked toolchain" below). |
+| `forceInstall` | `COMPUTER_FORCE_INSTALL` (`1`) | off | Always run the boot `npm i -g`, even when the image's baked toolchain satisfies the request. |
 | `waitReadyTimeoutMs`, `daemonReadyTimeoutMs` | — | 120s / 30s | Boot readiness windows. |
+| `fleetCapacityWaitMs` | none | 12 min | How long a create answered `503 fleet-capacity` keeps being retried while the fleet frees or wakes a host (an OVH-shelved host takes about 10 min to come back). Each wait honours `Retry-After`, else `fleetCapacityRetryMs`, and is logged; the wait does not count against the boot deadline, and a cancelled spawn stops it. Every attempt of one boot sends the same `Idempotency-Key`, so a replayed create returns the same box. `0` fails on the first refusal. The `auto` provider sets it to `0` when overflow to e2b is on, unless set explicitly. |
+| `fleetCapacityRetryMs` | none | 30s | Wait between two fleet-capacity retries when the refusal carries no `Retry-After`. |
+
+**Baked toolchain.** Before installing, the boot reads the versions baked into the image (one `agentproto --version` exec, plus one exec reading the `package.json` of each `installPackages` entry in the global tree the `agentproto` on PATH lives in) and skips `npm i -g` when all of them satisfy the request: `cliVersion` unset or `latest` accepts whatever CLI is baked, an exact `x.y.z` must equal it; an `installPackages` entry with no tag or `@latest` needs the package baked next to the CLI at any version, an exact `@x.y.z` must equal the baked one. Ranges, partial versions and other dist-tags always install. If anything is missing, differs, or cannot be read, one `npm i -g` installs the CLI and every extra together, as before. Each decision is logged as `boot: npm install skipped|needed: <reason>`. Freshness of a baked image is the image refresh job's responsibility, not the boot's; set `forceInstall` to restore the old install-latest-on-every-boot behavior.
 
 The provider validates the controller's `egressIp` field with the typed `@agentproto/computer-api` contract, so a malformed `egressIp` in a controller response fails the call instead of being ignored.
+
+## Template and box environment contract
+
+The computer template image (`agentproto-workstation` by default) is NOT built
+from this repository. This repo only defines the e2b workstation under
+`templates/workstation/`; the microVM template is registered on the computer
+controller (a separate deployment/repository). Change the template there, then
+point `config.template` at the new id here.
+
+The template must provide these basics for an agentproto session:
+
+| item | requirement |
+| --- | --- |
+| `gh` | GitHub CLI must be on `PATH`. Without it a boxed agent cannot open or inspect PRs. |
+| writable scratch dirs | `/tmp/opencode` and the other adapter temp dirs must be writable by the session user (uid 1000), not root-owned. |
+| Node heap | The provider sets `NODE_OPTIONS` from `config.memoryMiB`: 60% of the box's RAM clamped to 768–8192 MB (8192 MB when memory is unknown). A caller `NODE_OPTIONS` that already sets `--max-old-space-size` wins; otherwise the heap flag is appended. Without this a monorepo `pnpm install`/`build` can die at Node's default heap. |
+| base tools | `git`, `bash`, `curl` and a TLS trust store are assumed by the boot flow. |
+
+### Recommended default egress
+
+The controller denies all egress (DNS included) when `config.egress` is absent.
+For a normal coding session the allowlist should at least include:
+
+```ts
+egress: [
+  "registry.npmjs.org",
+  "github.com",
+  "api.github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+]
+```
+
+`objects.githubusercontent.com` / `release-assets.githubusercontent.com` are
+needed by native package prebuilds (sharp, esbuild, etc.) that redirect there
+after the registry fetch. Add the model/provider endpoints your adapters use.
+
+### Git token scope
+
+The workspace Git token is injected as `AGENTPROTO_GIT_TOKEN` (and mirrored as
+`GH_TOKEN`) by the runtime, not by this provider. It is minted outside this
+repository. If boxed `gh` calls to the check-runs API answer `403`, the token
+needs `checks:read` (and `pull_requests:read`) in addition to the contents
+scope used for clone/push. That scope is configured where the workspace
+credential is created, not here.
 
 ## Capabilities
 

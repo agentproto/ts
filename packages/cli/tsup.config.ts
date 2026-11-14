@@ -65,13 +65,14 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
   external: [
     "@agentproto/acp",
     "@agentproto/driver",
-    "@agentproto/driver-agent-cli",
+    "@agentproto/harness",
     // Independently-published workspace packages consumed both directly by the
     // pairing CLI (`pair`, `rendezvous`) and transitively by the bundled runtime
     // dist. Externalised (like @agentproto/acp) so the published cli installs
     // them via npm; declared under `dependencies` in package.json.
     "@agentproto/secrets",
     "@agentproto/secrets/*",
+    "@agentproto/usage-presets",
     "@agentproto/rendezvous",
     "@agentproto/rendezvous/*",
     // Loaded via a runtime dynamic import by the bundled runtime's sandbox
@@ -133,6 +134,14 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // whichever one happens to be installed locally. Externalise it like
     // node-pty so it resolves from node_modules at runtime instead.
     "@ast-grep/napi",
+    // canvas is an optional peer of linkedom (bundled via runtime -> defuddle),
+    // which loads it as `try { require("canvas") } catch { shim }`. It is not a
+    // dependency of this package, so it must never be bundled: in a pnpm
+    // workspace where another package installs it with its build script
+    // disabled (the agentik-studio monorepo), esbuild would follow the require
+    // into canvas/lib/bindings.js and fail on the missing canvas.node. Left
+    // external, the guarded require runs at load time and falls back to the shim.
+    "canvas",
   ],
   // Workspace @agentproto/* packages NOT yet on npm — bundle them
   // into cli.mjs. Once each lands on npm independently, move it to
@@ -151,7 +160,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@agentproto/manifest",
     "@agentproto/mcp-server",
     "@agentproto/extension",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
   ],
   // The stage board module is a plain-JS asset served verbatim by
   // `app serve` / `app dev` (see src/stageboard/serve.ts) — esbuild only

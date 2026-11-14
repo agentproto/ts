@@ -144,6 +144,7 @@ describe("ask-mode context question offers a handoff", () => {
       text: "Context is at 25%. Continue fresh to avoid losing continuity?",
       options: ["continue-fresh", "handoff:codex", "keep-going"],
       recommended: "continue-fresh",
+      kind: "context",
     })
     reg.shutdown()
   })

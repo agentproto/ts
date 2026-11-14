@@ -425,3 +425,143 @@ for that.
 ### llm:huggingface
 - Added: BSC-LT/ALIA-40b-instruct-2606, XiaomiMiMo/MiMo-V2.6-Pro-RL, aisingapore/Nemotron-SEA-LION-v4.8-120B-A12B, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-v1.5-70B, zai-org/GLM-5.1, zai-org/GLM-5.1-FP8
 - Removed: CohereLabs/command-a-plus-05-2026-bf16, CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, Qwen/Qwen3-Coder-30B-A3B-Instruct, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8
+
+## 2026-10-26
+
+### llm:openrouter
+- Added: liquid/lfm-2.5-2.6b, minimax/minimax-m3.1-flash, moonshotai/kimi-k3.1-pro
+- Removed: google/gemini-2.5-flash-lite:batch, openai/gpt-3.5-turbo, openai/gpt-3.5-turbo-instruct, openai/gpt-3.5-turbo:batch
+
+### llm:requesty
+- Added: melious/clef, melious/clef-flash, moonshot/kimi-k3.1-pro, moonshot/kimi-k3.1-pro-highspeed, runware/deepseek-v4.1-flash-1017, tensorx/minimax-m3.1-flash
+- Removed: bedrock/claude-sonnet-4, bedrock/claude-sonnet-4@eu-central-1, bedrock/claude-sonnet-4@eu-north-1, bedrock/claude-sonnet-4@eu-west-1, bedrock/claude-sonnet-4@eu-west-3, bedrock/claude-sonnet-4@us-east-1, bedrock/claude-sonnet-4@us-east-2, bedrock/claude-sonnet-4@us-west-2
+
+### llm:opencode-go
+- Added: opencode-go/gemini-4-argon, opencode-go/iceman-contributor-free, opencode-go/kimi-k3.1-pro, opencode-go/minimax-m3.1-flash
+- Removed: opencode-go/gemini-4-argon-contributor, opencode-go/longcat-2.5-preview-free, opencode-go/minimax-m3.1-flash-free
+
+### llm:opencode-zen
+- Added: opencode/flint-40b-free, opencode/muse-wonder-1.0
+- Removed: opencode/claude-sonnet-4, opencode/deepseek-v4-flash-vision-exp, opencode/longcat-2.5-preview-free, opencode/minimax-m3.1-flash-free
+
+### llm:huggingface
+- Added: MiniMaxAI/MiniMax-M3.1-Flash, reflection/Beam-1.0-501B-A23B
+- Removed: aisingapore/Gemma-SEA-LION-v4-27B-IT, aisingapore/Qwen-SEA-LION-v4-32B-IT, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4, nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16, prism-ml/Ternary-Bonsai-27B-AWQ-4bit, prism-ml/Ternary-Bonsai-27B-gguf, stepfun-ai/Step-3.7-Flash, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1-FP8
+
+### llm:context-windows
+- Added: kimi-k3.1-pro, kimi-k3.1-pro-highspeed
+
+### llm:moonshot
+- Added: kimi-k3.1-pro, kimi-k3.1-pro-highspeed
+
+### llm:openai
+- Removed: gpt-3.5-turbo, gpt-3.5-turbo-instruct, gpt-3.5-turbo:batch
+
+## 2026-10-28
+
+### llm:openrouter
+- Added: openai/gpt-6.1-terra, openai/gpt-6.1-terra-pro, openai/gpt-6.1-terra-pro:batch, openai/gpt-6.1-terra:batch, prism-ml/ternary-bonsai-2-9b
+- Removed: arcee-ai/trinity-large-thinking, ibm-granite/granite-4.0-h-micro, mistralai/codestral-2508:batch, mistralai/ministral-8b-2512:batch, mistralai/mistral-large-2512:batch, mistralai/mistral-medium-3.1:batch, mistralai/mistral-small-2603:batch
+
+### llm:requesty
+- Added: azure/gpt-6.1-terra@francecentral, azure/gpt-6.1-terra@germanywestcentral, azure/gpt-6.1-terra@swedencentral, azure/gpt-6.1-terra@westeurope, openai/gpt-6.1-terra, openai/gpt-6.1-terra:flex
+
+### llm:opencode-zen
+- Removed: opencode/deepseek-v4-flash
+
+### llm:huggingface
+- Added: Qwen/Qwen3.8-Flash-Next-FP8, aisingapore/Gemma-SEA-LION-v4-27B-IT, aisingapore/Qwen-SEA-LION-v4-32B-IT, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, stepfun-ai/Step-3.7-Flash, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1-FP8
+- Removed: CohereLabs/command-a-vision-07-2025
+
+### llm:openai
+- Added: gpt-6.1-terra, gpt-6.1-terra-pro, gpt-6.1-terra-pro:batch, gpt-6.1-terra:batch
+
+## 2026-11-01
+
+### llm:openrouter
+- Added: particle-ai/particle-1
+- Removed: openai/gpt-4-turbo, openai/o1, openai/o1-pro, openai/o3-mini, openai/o3-mini-high, openai/o4-mini, openai/o4-mini-high, poolside/laguna-s-2.1, poolside/laguna-xs-2.1, qwen/qwen3-next-80b-a3b-thinking, upstage/solar-pro-3
+
+### llm:requesty
+- Added: azure/gpt-6.1-terra@eastus, fireworks/ultramarine-1-flash, particle/particle-1
+
+### llm:opencode-zen
+- Removed: opencode/nemotron-3-ultra-free
+
+### llm:huggingface
+- Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-8B-Instruct-2509
+
+### llm:openai
+- Removed: gpt-4-turbo, o1, o1-pro, o3-mini, o3-mini-high, o4-mini, o4-mini-high
+
+## 2026-11-02
+
+### image:openrouter
+- Added: black-forest-labs/flux-3-image, black-forest-labs/flux-3-image-klein, black-forest-labs/flux.2-flex, black-forest-labs/flux.2-klein-4b, black-forest-labs/flux.2-max, black-forest-labs/flux.2-pro, bytedance-seed/seedream-4.5, bytedance-seed/seedream-5-0-flash, bytedance-seed/seedream-5-0-lite, bytedance-seed/seedream-5-0-pro, google/gemini-2.5-flash-image, google/gemini-3-pro-image, google/gemini-3-pro-image-preview, google/gemini-3.1-flash-image, google/gemini-3.1-flash-image-preview, google/gemini-3.1-flash-lite-image, google/gemini-nano-banana-2.1, krea/k3-edit, krea/krea-2-large, krea/krea-2-medium, krea/krea-2-medium-turbo, meta/muse-image, microsoft/mai-image-2.5, microsoft/mai-image-2.5-pro, microsoft/mai-image-2.6, microsoft/mai-image-2.6-flash, openai/gpt-5-image, openai/gpt-5-image-mini, openai/gpt-5.4-image-2, openai/gpt-image-1, openai/gpt-image-1-mini, openai/gpt-image-2, openai/gpt-image-2.5-flare, openai/gpt-image-2.5-sunburst, qwen/qwen-image-2.1-pro, qwen/qwen-image-2.1-turbo, qwen/qwen-image-3, qwen/qwen-image-3-pro, recraft/recraft-v3, recraft/recraft-v4, recraft/recraft-v4-pro, recraft/recraft-v4-pro-vector, recraft/recraft-v4-styles, recraft/recraft-v4-styles-pro, recraft/recraft-v4-styles-pro-vector, recraft/recraft-v4-styles-vector, recraft/recraft-v4-vector, recraft/recraft-v4.1, recraft/recraft-v4.1-flash, recraft/recraft-v4.1-pro, recraft/recraft-v4.1-pro-vector, recraft/recraft-v4.1-utility, recraft/recraft-v4.1-utility-pro, recraft/recraft-v4.1-vector, sourceful/riverflow-v2-fast, sourceful/riverflow-v2-pro, sourceful/riverflow-v2.5-fast, sourceful/riverflow-v2.5-pro, sourceful/riverflow-v2.6-pro, tencent/hy-image-v3.5-preview, x-ai/grok-imagine-image-2.0, x-ai/grok-imagine-image-quality
+
+### llm:openrouter
+- Added: z-ai/glm-5.3-flashx-legal
+- Removed: nousresearch/hermes-3-llama-3.1-405b, nousresearch/hermes-3-llama-3.1-70b
+
+### llm:huggingface
+- Added: CohereLabs/c4ai-command-r7b-arabic-02-2025
+
+## 2026-11-05
+
+### llm:openrouter
+- Added: inclusionai/ling-3.0-tiny, openrouter/auto-code, ricursiveai/ripple-65b-preview, tencent/hy4, x-ai/grok-4.6:batch, x-ai/grok-4.7:batch
+- Removed: minimax/minimax-01, minimax/minimax-m2, minimax/minimax-m2-her, minimax/minimax-m2.1
+
+### llm:requesty
+- Added: azure/gpt-5.6-luna@polandcentral, azure/gpt-5.6-sol@polandcentral, azure/gpt-5.6-terra@polandcentral, azure/gpt-6-luna@polandcentral, azure/gpt-6-sol@polandcentral, azure/gpt-6.1-sol@polandcentral, azure/gpt-6.1-terra@polandcentral, deepinfra/kimi-k3.1-pro, fireworks/kimi-k3.1-pro, novita/kimi-k3.1-pro, runware/kimi-k3.1-pro, tensorx/kimi-k3.1-pro, together/kimi-k3.1-pro
+- Removed: anthropic/claude-sonnet-4-5, openai/gpt-4.1-nano
+
+### llm:opencode-go
+- Added: opencode-go/hy4
+
+### llm:opencode-zen
+- Added: opencode/crouton-alpha-free, opencode/pulse-alpha-free
+
+### llm:huggingface
+- Added: swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-8B-Instruct-2509
+- Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, Qwen/Qwen2.5-72B-Instruct, Qwen/Qwen2.5-Coder-32B-Instruct, Qwen/Qwen2.5-Coder-3B-Instruct, Qwen/Qwen2.5-Coder-7B-Instruct, Qwen/Qwen3-235B-A22B, Qwen/Qwen3-4B-Instruct-2507, Qwen/Qwen3-4B-Thinking-2507, Qwen/Qwen3-8B, deepseek-ai/DeepSeek-R1-Distill-Llama-8B, deepseek-ai/DeepSeek-R1-Distill-Qwen-14B, deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+
+### llm:context-windows
+- Removed: grok-imagine-image-quality
+
+### image:openrouter
+- Added: openai/gpt-image-2.6-flare, openai/gpt-image-2.6-sunburst
+- Removed: x-ai/grok-imagine-image-quality
+
+### llm:minimax
+- Removed: M2-her
+
+### video:replicate
+- Removed: replicate:xai/grok-imagine-video
+
+## 2026-11-10
+
+### llm:openrouter
+- Added: anthropic/claude-fable-5.2, anthropic/claude-fable-5.2:batch, deepseek/deepseek-v4-flash-0731:batch, deepseek/deepseek-v4.1-flash-1017:batch, google/gemini-omni-1.1-flash, google/gemini-omni-1.2-flash, liquid/lfm-3-1.7b, meta/muse-ember, meta/muse-glimmer-30b:batch, minimax/minimax-m3:batch, morph/morph-v3-fast:batch, morph/morph-v3-large:batch, nex-agi/nex-n2.6, qwen/qwen3.8-27b:batch, qwen/qwen3.8-max-0902:batch, thinkingmachines/inkling-small:batch, z-ai/glm-5.2:batch
+- Removed: inception/mercury-2, inception/mercury-2.5, inception/mercury-3, minimax/minimax-m1
+
+### llm:requesty
+- Added: anthropic/claude-fable-5.2
+- Removed: doubleword/deepseek-v4-flash-0424, doubleword/deepseek-v4-flash-0424:flex, doubleword/deepseek-v4-pro-0424, doubleword/deepseek-v4-pro-0424:flex, fireworks/deepseek-v4-flash-0731, fireworks/deepseek-v4-flash-vision-exp, fireworks/deepseek-v4-pro-0813, fireworks/glm-5.1, fireworks/glm-5.2, fireworks/gpt-oss-20b, fireworks/kimi-k2.6, fireworks/kimi-k2.7-code, fireworks/muse-glimmer-30b, fireworks/qwen3.7-plus, inceptron/minimax-m2.5, lyceum/deepseek-v4-flash-0731, lyceum/deepseek-v4-pro, lyceum/deepseek-v4.1-flash, lyceum/glm-5.3, lyceum/glm-5.3-flash, lyceum/kimi-k3, nebius/meta-llama/Llama-3.3-70B-Instruct, nebius/minimaxi/minimax-m2.5, nebius/moonshotai/kimi-k2.6, nebius/nousresearch/hermes-4-70b, nebius/nvidia/nemotron-3-nano-omni, nebius/qwen/qwen3-32b, nebius/qwen/qwen3-next-80b-a3b-thinking, nebius/qwen/qwen3.5-397b-a17b, novita/deepseek/deepseek-r1, novita/deepseek/deepseek-r1-distill-llama-70b, novita/deepseek/deepseek-v3-0324, novita/deepseek/deepseek-v3-turbo, novita/deepseek/deepseek-v3.2, novita/inclusionai/ling-2.6-1t, novita/inclusionai/ling-2.6-flash, novita/inclusionai/ring-2.6-1t, novita/kwaipilot/kat-coder-pro, novita/mistralai/mistral-nemo, novita/qwen/qwen-2.5-72b-instruct, novita/qwen/qwen3-235b-a22b-fp8, novita/sao10k/l3-8b-lunaris, novita/sao10k/l31-70b-euryale-v2.2, openai/o1, openai/o1:high, openai/o1:low, openai/o1:medium, openai/o3-mini, openai/o3-mini:high, openai/o3-mini:low, openai/o3-mini:medium, openai/o4-mini, openai/o4-mini:flex, openai/o4-mini:high, openai/o4-mini:low, openai/o4-mini:medium, vertex/claude-opus-4, vertex/claude-opus-4-1, vertex/claude-opus-4-1@us-east5, vertex/claude-opus-4@us-east5, vertex/kimi-k2
+
+### llm:opencode-go
+- Added: opencode-go/longcat-2.5-free
+
+### llm:opencode-zen
+- Added: opencode/claude-fable-5-2, opencode/iceman-free, opencode/inkling-2-small-free, opencode/longcat-2.5-free, opencode/minimax-m3.1-flash-free, opencode/muse-ember-1.0
+- Removed: opencode/crouton-alpha-free, opencode/pulse-alpha-free
+
+### llm:huggingface
+- Added: CohereLabs/c4ai-command-r7b-arabic-02-2025, Qwen/Qwen2.5-72B-Instruct
+- Removed: google/gemma-3-12b-it
+
+### llm:context-windows
+- Added: claude-fable-5-2
+
+### llm:anthropic
+- Added: claude-fable-5-2

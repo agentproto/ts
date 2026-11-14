@@ -32,7 +32,10 @@ import {
 import { planSandboxWorkspace } from "../sandbox-workspace-remote.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike } from "../sessions.js"
-import type { SandboxDeliveryRecord } from "../sandbox-delivery.js"
+import {
+  buildSnapshotCommand,
+  type SandboxDeliveryRecord,
+} from "../sandbox-delivery.js"
 
 /** The commands the FAKE box received. */
 const box = vi.hoisted(() => ({ commands: [] as string[] }))
@@ -90,6 +93,18 @@ vi.mock("../workspaces-config.js", async importOriginal => {
 /** Run a shell command in `cwd`; returns stdout. */
 function sh(command: string, cwd: string): string {
   return execFileSync("bash", ["-c", command], { cwd, encoding: "utf8" })
+}
+
+/** Take the checkpoint snapshot with the command production runs in the box. */
+function snapshotAt(dir: string): string {
+  const head = sh("git rev-parse HEAD", dir).trim()
+  const out = sh(
+    buildSnapshotCommand({ checkoutDir: dir, branch: "wt/abc123", baseSha: head }),
+    dir,
+  )
+  const snap = /^snapshot=([0-9a-f]{40,64})$/m.exec(out)?.[1]
+  expect(snap).toMatch(/^[0-9a-f]{40}$/)
+  return snap as string
 }
 
 /** A checkpoint record whose snapshot reached the remote. */
@@ -250,7 +265,7 @@ describe("checkpoint resume", () => {
     it("restores the work of a crashed session (real git, simulated crash)", () => {
       const dir = mkdtempSync(join(tmpdir(), "checkpoint-resume-"))
       try {
-        sh("git init -q . && git config user.email a@b.c && git config user.name t", dir)
+        sh("git init -q -b wt/abc123 . && git config user.email a@b.c && git config user.name t", dir)
         writeFileSync(join(dir, "a.txt"), "v1\n")
         sh("git add -A && git commit -qm init", dir)
 
@@ -262,14 +277,8 @@ describe("checkpoint resume", () => {
         // throwaway index and parked on the checkpoint ref (the same shape as
         // `sandbox-delivery.ts`'s probe), then force-pushed to the remote -
         // here the remote-tracking ref of the local clone.
-        const snap = sh(
-          "idx=$(mktemp -u) && { cp \"$(git rev-parse --git-path index)\" \"$idx\" 2>/dev/null || true; } && " +
-            'GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ' +
-            'snap=$(git commit-tree "$tree" -p HEAD -m "agentproto checkpoint") && ' +
-            "git update-ref refs/remotes/origin/agentproto-checkpoint/wt/abc123 \"$snap\" && echo \"$snap\"",
-          dir,
-        ).trim()
-        expect(snap).toMatch(/^[0-9a-f]{40}$/)
+        const snap = snapshotAt(dir)
+        sh(`git update-ref refs/remotes/origin/agentproto-checkpoint/wt/abc123 ${snap}`, dir)
 
         // THE CRASH: the box dies, the worktree is gone, the branch is back
         // at its base commit.
@@ -297,17 +306,12 @@ describe("checkpoint resume", () => {
     it("removes a tracked path added after the checkpoint (documented behaviour)", () => {
       const dir = mkdtempSync(join(tmpdir(), "checkpoint-resume-extra-"))
       try {
-        sh("git init -q . && git config user.email a@b.c && git config user.name t", dir)
+        sh("git init -q -b wt/abc123 . && git config user.email a@b.c && git config user.name t", dir)
         writeFileSync(join(dir, "a.txt"), "v1\n")
         sh("git add -A && git commit -qm init", dir)
 
-        const snap = sh(
-          "idx=$(mktemp -u) && { cp \"$(git rev-parse --git-path index)\" \"$idx\" 2>/dev/null || true; } && " +
-            'GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ' +
-            'snap=$(git commit-tree "$tree" -p HEAD -m "agentproto checkpoint") && ' +
-            "git update-ref refs/remotes/origin/agentproto-checkpoint/wt/abc123 \"$snap\" && echo \"$snap\"",
-          dir,
-        ).trim()
+        const snap = snapshotAt(dir)
+        sh(`git update-ref refs/remotes/origin/agentproto-checkpoint/wt/abc123 ${snap}`, dir)
 
         // A later commit (after the checkpoint) adds a tracked path that the
         // snapshot does not contain.
@@ -335,15 +339,10 @@ describe("checkpoint resume", () => {
     it("leaves the checkout alone when the checkpoint is not the recorded one", () => {
       const dir = mkdtempSync(join(tmpdir(), "checkpoint-resume-sha-"))
       try {
-        sh("git init -q . && git config user.email a@b.c && git config user.name t", dir)
+        sh("git init -q -b wt/abc123 . && git config user.email a@b.c && git config user.name t", dir)
         writeFileSync(join(dir, "a.txt"), "v1\n")
         sh("git add -A && git commit -qm init", dir)
-        const snap = sh(
-          "idx=$(mktemp -u) && cp \"$(git rev-parse --git-path index)\" \"$idx\" && " +
-            'GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ' +
-            'git commit-tree "$tree" -p HEAD -m "agentproto checkpoint"',
-          dir,
-        ).trim()
+        const snap = snapshotAt(dir)
         sh(`git update-ref refs/remotes/origin/agentproto-checkpoint/wt/abc123 ${snap}`, dir)
 
         const command = buildCheckpointRestoreCommand({

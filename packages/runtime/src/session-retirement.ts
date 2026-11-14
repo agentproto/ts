@@ -31,6 +31,25 @@ export function isRetired(desc: Omit<RetirementFields, "endedReason"> & { endedR
   )
 }
 
+export type ExternalInboxFields = Pick<
+  SessionDescriptor,
+  "kind" | "status" | "archived" | "continuedTo" | "retiredAt"
+> & { endedReason?: string }
+
+/** An `external` row (Claude Desktop / `claude` CLI) has no process the daemon
+ *  can restart, so `exited` after its liveness window lapsed only means "not
+ *  seen lately": the inbox stays deliverable until the row is killed or
+ *  retired. Shared by `sendMessage` and session-follow so the delivery gates
+ *  cannot drift apart. */
+export function isExternalInboxOpen(desc: ExternalInboxFields): boolean {
+  return (
+    desc.kind === "external" &&
+    desc.status === "exited" &&
+    desc.endedReason === undefined &&
+    !isRetired(desc)
+  )
+}
+
 const AUTOMATED_SOURCE_RE =
   /^(?:session-follow|sentinel|restart|boot|cron|policy|workflow|daemon:|child:|agent:)/
 

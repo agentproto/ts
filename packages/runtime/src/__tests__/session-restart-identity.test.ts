@@ -92,6 +92,49 @@ describe("restartAgentSession — immutable spawn-time flags survive a restart",
     expect(restarted.desc.restartPolicy).toEqual(RESTART_POLICY)
   })
 
+  it("carries the list pin (and its order slot) onto the restarted session", async () => {
+    // `pinned` is the only flag exempting a keepAlive row from the boot-resume
+    // idle cutoff (eager-resume.ts `staleKeepAlive`). A restart mints a NEW
+    // id, so before the fix it silently un-pinned a long-lived brain.
+    const { resolver } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "hermes",
+      keepAlive: true,
+    })
+    registry.setPinned(prev.id, true)
+    const pinOrder = registry.get(prev.id)!.pinnedOrder
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: NOOP_DEFAULTS,
+    })
+
+    expect(restarted.desc.pinned).toBe(true)
+    expect(restarted.desc.pinnedOrder).toBe(pinOrder)
+  })
+
+  it("leaves the restarted session unpinned when the prior session was never pinned", async () => {
+    const { resolver } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "hermes",
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: NOOP_DEFAULTS,
+    })
+
+    expect(restarted.desc.pinned).toBeUndefined()
+  })
+
   it("omits the flags on the fresh descriptor when the prior session never had them (no accidental opt-in)", async () => {
     const { resolver } = makeResolver()
     const registry = createSessionsRegistry({ persist: false })
@@ -192,6 +235,41 @@ describe("restartAgentSession — mcpServers callerSessionId identity stamp", ()
     // Carried through exactly as `prev` had it — stale id and all — never
     // stripped to a bare, identity-less entry.
     expect(storedRef).toBe(`${daemonMcpUrl}?callerSessionId=${prev.id}`)
+  })
+
+  it("re-stamps an imported passthrough mount with the FRESH session's id", async () => {
+    const { resolver, calls } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    const daemonMcpUrl = "http://127.0.0.1:4848/mcp"
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "opencode",
+    })
+    prev.mcpServers = [
+      {
+        name: "chrome-devtools",
+        transport: "http",
+        ref: `${daemonMcpUrl}/imported/imp1?callerSessionId=${prev.id}`,
+        headers: { "x-agentproto-caller-session-id": prev.id },
+      },
+    ]
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: NOOP_DEFAULTS,
+      daemonMcpUrl,
+    })
+
+    const newId = restarted.desc.id
+    const stored = restarted.desc.mcpServers?.[0]
+    expect(stored?.ref).toBe(`${daemonMcpUrl}/imported/imp1?callerSessionId=${newId}`)
+    expect(stored?.headers?.["x-agentproto-caller-session-id"]).toBe(newId)
+
+    const sent = calls[0]?.mcpServers as Array<{ ref: string; headers?: Record<string, string> }> | undefined
+    expect(sent?.[0]?.ref).toContain(`callerSessionId=${newId}`)
+    expect(sent?.[0]?.headers?.["x-agentproto-caller-session-id"]).toBe(newId)
   })
 
   it("leaves a caller's explicit third-party callerSessionId pin untouched (not our stamp to strip)", async () => {

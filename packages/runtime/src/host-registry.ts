@@ -412,6 +412,13 @@ export interface HostRegistry {
    * their join-time `lastSeen`. Idempotent; call once at boot.
    */
   start(): Promise<void>
+  /**
+   * Sizes of the registry's in-memory state, for the daemon's `[heap]` log
+   * line: entry counts, plus the bytes held by the cached snapshot and
+   * `/sessions*` bodies. Cheap (no I/O). Optional so test doubles need not
+   * implement it.
+   */
+  memoryStats?(): Record<string, number>
 }
 
 function defaultHostsPath(): string {
@@ -1102,6 +1109,34 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     }
   }
 
+  function memoryStats(): Record<string, number> {
+    let snapshotBytes = 0
+    let snapshotOutputs = 0
+    for (const snap of snapshots.values()) {
+      snapshotBytes += snap.listBody.byteLength
+      snapshotOutputs += snap.outputs.size
+    }
+    let cachedBodies = 0
+    let cachedBodyBytes = 0
+    for (const byPath of sessionsCache.values()) {
+      for (const entry of byPath.values()) {
+        cachedBodies++
+        cachedBodyBytes += entry.body.byteLength
+      }
+    }
+    return {
+      hosts: hosts.size,
+      pollers: pollers.size,
+      inFlight: onlineCounts.size,
+      snapshots: snapshots.size,
+      snapshotOutputs,
+      snapshotBytes,
+      cachedBodies,
+      cachedBodyBytes,
+      handshakeFailures: handshakeFailures.size,
+    }
+  }
+
   async function forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse> {
     await ensureLoaded()
     const record = findHost(idOrName)
@@ -1176,6 +1211,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     markEnded,
     sweep,
     start: sweep,
+    memoryStats,
   }
 }
 

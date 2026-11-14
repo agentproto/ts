@@ -1,5 +1,84 @@
 # @agentproto/app-kit
 
+## 2.5.0
+
+### Minor Changes
+
+- bb8ae6b: AIP-53 `services[].expose`: a service declared in APP.md can ask the host for a public URL through a tunnel.
+
+  - `@agentproto/app`: `AppService.expose?: { auth?: "guard" | "service"; hostname?: string }` (new `AppServiceExpose` type), validated by `parseServiceList`, `defineApp` and the loader, carried through `emit`. Closed object, `auth` enum, hostname a lowercase DNS label or FQDN; `expose` without `port` is rejected with `services[i].expose requires a port`.
+  - `@agentproto/runtime`: one tunnel per exposed service through the daemon's `TunnelRegistry`, keyed `app.<a>.<s>.<h>` (AIP-53 Tunnel key as amended by agentproto/agentproto#152: slugged app id, service name, 8 hex of sha256 of `<appId>:<name>`, always within the provisioner key alphabet; new `TunnelRegistry.ensureKeyed` / `findByKey`, tunnels found again by their stamped owner), so a reinstall or a daemon boot gets the same tunnel back. A kept service whose spawn origin is no longer the current one is respawned with the new `AGENTPROTO_PUBLIC_URL`. The tunnel is ensured before the process spawns and the bare origin is passed as `AGENTPROTO_PUBLIC_URL`; `auth: service` is an unguarded tunnel, `auth: guard` keeps the access guard and never puts the entry link in the env. A failed tunnel never fails the install nor blocks the process. The install result and `app_status` report each exposure (publicUrl, auth, stable, state, tunnelId). Uninstall, removing the service, or dropping `expose` deletes the tunnel. The provider is host config, `defaults.apps.exposeProvider`; unset, it is `cloudflare-provisioned` when registered, else `cloudflare-managed`, else `cloudflare-quick` reported as not stable.
+
+- ef716d5: AIP-53 `services[].activation`: a service can opt into on-demand activation instead of being kept running, so a service that is only needed occasionally no longer runs (and can no longer crash-loop or be orphaned) when nobody uses it.
+
+  - `@agentproto/app`: `AppService.activation?: { mode: "always" | "on-demand"; idleStopMs?: number; startTimeoutMs?: number }` (new `AppServiceActivation` type, `DEFAULT_SERVICE_IDLE_STOP_MS` = 300000 and `DEFAULT_SERVICE_START_TIMEOUT_MS` = 30000), validated by `parseServiceList`, `defineApp` and the loader, carried through `emit`. Closed object; `mode` is required; `on-demand` requires `port` (`services[i].activation.mode 'on-demand' requires a port`); `idleStopMs` is an integer 1000..86400000 and `startTimeoutMs` an integer 1000..300000, both refused under `mode: always`. Omitted `activation` keeps the existing keep-alive behaviour. The vendored `APP.schema.json` gains the same field (listed in `specs/spec-drift-allowlist.json` until the upstream AIP-53 amendment merges).
+  - `@agentproto/runtime`: an `on-demand` service is no longer spawned at install and boot. The daemon listens on the declared `port` (loopback, and the target of the `expose` tunnel) and starts the process on the first request with `PORT` set to a free loopback port, proxies HTTP and WebSocket upgrades to it, and stops its process group after `idleStopMs` without an open request or connection. Requests arriving during a cold start wait for it (one start serves them all, bounded by `startTimeoutMs`); a start that fails answers `503` with `Retry-After` and no detail in the body, and the restart policy's backoff (1s doubling to 60s) becomes a start circuit breaker with no give-up state. A crash while running returns the service to idle instead of restarting it. Owner records carry `activation: "on-demand"`; flipping a service between `always` and `on-demand` replaces the running owner so the port changes hands; a bind failure is reported like a failed start (`port <n> is already in use`). `app_status` reports `services.activations` (`idle`, `starting`, `running`, `stopping`, `absent`), and daemon stop stops every on-demand host and its process. `startAppServiceProcess` gains an internal single-attempt mode (`singleAttempt.onExit`: no restart loop, no entry in the supervisor registry) that the host builds on.
+
+## 2.4.1
+
+### Patch Changes
+
+- b67f58e: AGENT.md `tools` accepts the AIP-42 structured item `{ kind: mcp, server, allow?, deny? }` and refuses a malformed one (missing `server`, a `/` in a name, an extra key, an unknown `kind`); the item is part of the generated agent schema and exported as `McpToolRef` / `ToolRef`. The operator `tools` item is that same schema, taken from the agent package, and still accepts the deprecated scoped form `{ id, source?, scope? }`. `projectAgentToSpawn` maps each structured item to a per-server `allowTools` / `denyTools` (`servers` on the projection) instead of dropping it with a warning; a deny wins over an allow and over any other item admitting the same tool, and a bare string joins the `agentproto` server. The spec generator gains `--inline-ref <def>` and proves disjoint closed-object `oneOf` branches, so the agent package is now covered by `check:spec-drift`. The vendored specs are re-synced, which regenerates the memory frontmatter schema line; the bridge and `refKey` in the app package take the widened `ToolRef` (a server ref keys as `mcp:<server>`).
+
+  Narrowing: a `server` in an operator or agent `tools` item must now match `^[A-Za-z0-9_.-]+$`, so a URL such as `https://mcp.local` is refused; use a host name such as `mcp-local`. The spawn still carries a single `allowTools` list for the daemon gateway, so a filter on any other server, or a `denyTools` with no allowlist, is exposed on `servers` and reported as a harness warning ("not applied") rather than enforced. The corpus validator and the corpus-cli bundle register the AIP-42 AGENT schema they now `$ref`.
+
+- 59256dd: Reject an absolute or `..`-containing `cwd` on an app `services[]` entry, matching AIP-53 (the service must start inside its app directory). Both were previously accepted: `/abs/dir`, `../x` and `a/../b` now fail validation with an error naming the service and the `cwd` field. `.` and plain relative paths such as `sub/dir` are unchanged. Also syncs the vendored AIP-53 `APP.schema.json` services schema to canonical.
+- e47f3cd: AIP-42 `AgentEntry`, one AGENT.md renderer, and a configurable instructions composer.
+
+  - `@agentproto/agent` exports `AgentEntry { agent, body? }` and `renderAgentMd(entry)`, the single AGENT.md renderer. `agentVerbs` (create and update) and the app emitter both go through it, so the same agent renders to the same bytes on either path. The body is trimmed on render, so an update no longer grows blank lines.
+  - `defineAgent` refuses a missing or blank `model` with `model is required` (the generated schema types `model` as `any`, so a blank string used to pass).
+  - `composeInstructions(handle, body, opts?)` takes `boundariesHeader` and `sectionOrder`. The default boundaries header is now `Hard rules (these MUST be followed):`, without the em dash.
+  - `@agentproto/manifest`: `DoctypeSpec` gains an optional `render(handle, body)` hook that `create` and `update` use in place of the generic frontmatter renderer.
+  - `@agentproto/skill` exports `SkillEntry { skill, body }`.
+  - `@agentproto/app`: `renderAgentManifest` and `emitApp` delegate to `renderAgentMd`; ref comments cite AIP-54.
+
+- 59256dd: Reject absolute and `..`-containing `cwd` values on an AIP-53 app `services[]` entry, so a service can only start inside its app directory. The vendored `specs/resources/aip-53/draft/APP.schema.json` services schema is resynced to canonical, and the now-obsolete `pending/services` draft schema is removed. This mirrors the changeset already present at `.changeset/app-services-cwd-relative.md`.
+- Updated dependencies [b67f58e]
+- Updated dependencies [152ec6e]
+- Updated dependencies [e47f3cd]
+- Updated dependencies [152ec6e]
+- Updated dependencies [e301b84]
+- Updated dependencies [9fb4e90]
+  - @agentproto/agent@0.6.0
+  - @agentproto/bridge@0.3.1
+  - @agentproto/workspace@2.0.0
+  - @agentproto/driver@0.4.1
+  - @agentproto/tool@0.6.1
+  - @agentproto/driver-cli@0.3.1
+  - @agentproto/driver-http@0.2.1
+
+## 2.4.0
+
+### Minor Changes
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+### Patch Changes
+
+- f41d51c: Docs-only sync: the `@agentproto/app` README now documents the AIP-53 `services` production-hosting surface as deterministic managed child processes, including the structured `{ name, command, args?, cwd?, port? }` declaration, legacy `entry` compatibility, boot re-ensure via `daemon.resumeServicesOnBoot`, and manifest reconciliation on install/uninstall.
+- Updated dependencies [001368d]
+- Updated dependencies [52f8616]
+- Updated dependencies [97a0074]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [97a0074]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+  - @agentproto/agent@0.5.0
+  - @agentproto/workspace@1.1.0
+  - @agentproto/bridge@0.3.0
+  - @agentproto/driver-cli@0.3.0
+  - @agentproto/driver-http@0.2.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow@0.8.0
+  - @agentproto/workflow-loader@0.2.10
+
 ## 2.3.0
 
 ### Minor Changes

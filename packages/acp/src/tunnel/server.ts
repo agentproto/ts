@@ -116,6 +116,10 @@ export interface TunnelServerOptions {
    * (see ./tunnel-e2e.ts); this flag does not turn anything on. Default false.
    */
   e2e?: boolean
+  /** Advertise `hello.capabilities.e2ePadding`: this daemon's E2E wrapper
+   *  supports bucket padding. Set it only on an E2E sink. Default false, so
+   *  an older host is never sent padded frames. */
+  e2ePadding?: boolean
   /**
    * Whether this daemon advertises PTY support. Set to true only when
    * `spawnPty` is also provided.
@@ -307,6 +311,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       ...(opts.dialUpstreamWs !== undefined && !!opts.httpUpstream ? { wsFragments: true } : {}),
       ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
       ...(opts.e2e === true ? { e2e: true } : {}),
+      ...(opts.e2ePadding === true ? { e2ePadding: true } : {}),
     },
     label: opts.label,
     daemon: {

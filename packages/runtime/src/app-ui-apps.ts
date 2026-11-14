@@ -37,7 +37,10 @@ export function appUiToolId(appId: string): string {
 }
 
 interface UiHtmlCache {
-  get(path: string, version: string): Promise<string>
+  /** Bridge-injected html for `path`, with `baseUrl`'s public-base script
+   *  applied when given. The same string is returned to every caller that
+   *  asks for the same (path, stamp, baseUrl). */
+  get(path: string, version: string, baseUrl?: string): Promise<string>
 }
 
 /**
@@ -133,6 +136,7 @@ export const MCP_APP_BRIDGE_SCRIPT = `<script>
     return null;
   }
   window.addEventListener("message", function (e) {
+    if (e.source !== window.parent) return;
     var m = e.data;
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (_) { return; } }
     if (!m || m.jsonrpc !== "2.0") return;
@@ -224,6 +228,21 @@ function injectAfterStructuralTag(html: string, script: string): string {
   return script + html
 }
 
+/** `window.__AGENTPROTO_BASEURL__` assignment for the public base this page was
+ *  reached at (origin plus any `/d/<id>` prefix), so an app builds absolute
+ *  links against it instead of `location` or 127.0.0.1. `<` is escaped so the
+ *  value cannot close the script. */
+function publicBaseScript(baseUrl: string): string {
+  return `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl).replace(/</g, "\\u003c")};</script>`
+}
+
+/** Apply the public base to already bridge-injected html (the cached form);
+ *  a no-op when this exact assignment is already present. */
+export function injectPublicBaseUrl(html: string, baseUrl: string): string {
+  const script = publicBaseScript(baseUrl)
+  return html.includes(script) ? html : injectAfterStructuralTag(html, script)
+}
+
 /** Inject `MCP_APP_BRIDGE_SCRIPT` followed by the two
  *  `window.AgentprotoUI` scripts (`DISPLAY_MODE_SCRIPT`, then
  *  `RUNNER_SELECT_SCRIPT`) — every installed app UI gets the shared
@@ -241,11 +260,13 @@ function injectAfterStructuralTag(html: string, script: string): string {
  *  app panel CONSUMES `window.McpApp.connect()`, so matching any mention
  *  would skip injection for exactly the documents that need it, leaving
  *  `window.McpApp` undefined in the host iframe. */
-export function injectMcpAppBridge(html: string): string {
+export function injectMcpAppBridge(html: string, baseUrl?: string): string {
   const hasBridge = /window\.McpApp\s*=/.test(html)
   const hasUiNamespace = /window\.AgentprotoUI\s*=/.test(html)
-  if (hasBridge && hasUiNamespace) return html
+  const baseScript = baseUrl && !html.includes(publicBaseScript(baseUrl)) ? publicBaseScript(baseUrl) : ""
+  if (hasBridge && hasUiNamespace && !baseScript) return html
   const script =
+    baseScript +
     (hasBridge ? "" : MCP_APP_BRIDGE_SCRIPT) +
     (hasUiNamespace ? "" : DISPLAY_MODE_SCRIPT + RUNNER_SELECT_SCRIPT)
   return injectAfterStructuralTag(html, script)
@@ -361,9 +382,7 @@ export function injectStandaloneAppBridge(
   baseUrl?: string,
 ): string {
   const hasUiNamespace = /window\.AgentprotoUI\s*=/.test(html)
-  const baseUrlScript = baseUrl
-    ? `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl).replace(/</g, "\\u003c")};</script>`
-    : ""
+  const baseUrlScript = baseUrl ? publicBaseScript(baseUrl) : ""
   const script =
     baseUrlScript +
     STANDALONE_REST_BRIDGE_SCRIPT +
@@ -387,19 +406,52 @@ export function injectStandaloneAppBridge(
  *  paid for and it still catches the reinstall case for free. A stat per
  *  request is cheap compared to the read + bridge injection it usually
  *  saves. The cached value is post-bridge-injection, so injection only runs
- *  once per (path, stamp) rather than on every served request. */
-export function createUiHtmlCache(): UiHtmlCache {
-  const cache = new Map<string, { stamp: string; html: string }>()
+ *  once per (path, stamp) rather than on every served request.
+ *
+ *  The public-base variant is cached too, per (path, stamp, baseUrl): every
+ *  McpServer built for the same base gets the SAME string. Injecting it per
+ *  build gave each live server a private copy of every installed panel
+ *  (~110 MB of duplicated html measured on a daemon with 17 servers). The
+ *  bases a daemon is reached at are few (loopback, a tunnel, a relay
+ *  prefix), but each `/d/<id>` relay prefix is its own base, so the variants
+ *  per file are capped (`maxBaseVariants`, least recently used out). A
+ *  concurrent miss shares one in-flight read instead of reading per caller. */
+export function createUiHtmlCache(
+  opts: { injectBase?: (html: string, baseUrl: string) => string; maxBaseVariants?: number } = {},
+): UiHtmlCache {
+  const injectBase = opts.injectBase ?? injectPublicBaseUrl
+  const maxBaseVariants = Math.max(1, opts.maxBaseVariants ?? 16)
+  const cache = new Map<string, { stamp: string; html: Promise<string>; variants: Map<string, string> }>()
   return {
-    async get(path, version) {
+    async get(path, version, baseUrl) {
       const st = await stat(path)
       const stamp = `${version}:${st.mtimeMs}:${st.size}`
-      const cached = cache.get(path)
-      if (cached && cached.stamp === stamp) return cached.html
-      const raw = await readFile(path, "utf8")
-      const html = injectMcpAppBridge(raw)
-      cache.set(path, { stamp, html })
-      return html
+      let entry = cache.get(path)
+      if (!entry || entry.stamp !== stamp) {
+        const html = readFile(path, "utf8").then(raw => injectMcpAppBridge(raw))
+        const fresh = { stamp, html, variants: new Map<string, string>() }
+        entry = fresh
+        cache.set(path, fresh)
+        // A failed read must not stick: the next request retries it.
+        html.catch(() => {
+          if (cache.get(path) === fresh) cache.delete(path)
+        })
+      }
+      const html = await entry.html
+      if (!baseUrl) return html
+      const hit = entry.variants.get(baseUrl)
+      if (hit !== undefined) {
+        entry.variants.delete(baseUrl)
+        entry.variants.set(baseUrl, hit)
+        return hit
+      }
+      const withBase = injectBase(html, baseUrl)
+      entry.variants.set(baseUrl, withBase)
+      if (entry.variants.size > maxBaseVariants) {
+        const oldest = entry.variants.keys().next().value
+        if (oldest !== undefined) entry.variants.delete(oldest)
+      }
+      return withBase
     },
   }
 }
@@ -418,6 +470,9 @@ export async function makeInstalledAppUiApps(
   appRegistry: AppRegistry,
   cache: UiHtmlCache,
   existingToolNames: Set<string>,
+  /** Public base of the request building this server (see `resolvePublicBase`);
+   *  baked into each app's html. Absent: the html is served without one. */
+  baseUrl?: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<AgnoMcpApp<any, any>[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -459,7 +514,7 @@ export async function makeInstalledAppUiApps(
             })
           }
           try {
-            return await cache.get(ui.path, app.updatedAt)
+            return await cache.get(ui.path, app.updatedAt, baseUrl)
           } catch (err) {
             return renderAppUiErrorHtml({
               appName,

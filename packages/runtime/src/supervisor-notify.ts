@@ -13,7 +13,7 @@
  * dedup, see sessions.ts) and, for the unexpected-death set only
  * (`status:"error"` or `reason:"crashed"`), delivers a `[child-crashed] …`
  * notice to the crashed child's parent — but ONLY when the child opted in
- * (`notifyParentOnCrash`, default false) and a parent is actually resolvable.
+ * (`notifyParentOnCrash`, resolved at spawn: on by default for an executor with a parent, `false` opts out) and a parent is actually resolvable.
  *
  * The delivery itself never interrupts a busy parent: `enqueuePrompt`/
  * `sendPrompt` reject a busy session unless `interrupt:true`, and
@@ -61,14 +61,34 @@ function isUnexpectedDeath(ev: SessionExitedEvent): boolean {
   return ev.status === "error" || ev.reason === "crashed"
 }
 
+/** Plain-words account of what the child was doing when it died, from the
+ *  descriptor alone (no transcript read). */
+function describeLastStatus(child: SessionDescriptor): string {
+  const turns = child.turnsCompleted ?? 0
+  const state = child.busy
+    ? "it was in the middle of a turn"
+    : turns > 0
+      ? `it was idle after finishing ${turns === 1 ? "1 turn" : `${turns} turns`}`
+      : "it had not finished a turn yet"
+  const at = child.lastActivityAt ? `, last activity at ${child.lastActivityAt}` : ""
+  return `${state}${at}`
+}
+
 /** Compose the `[child-crashed] <label/id>: <reason> — <lastError>` notice
- *  text delivered to the parent. `lastError` (stamped by `markCrashed`) is
- *  appended when present; the reason alone is still informative without it. */
+ *  text delivered to the parent, followed by one sentence naming the session
+ *  that died (label and id) and its last status in plain words. `lastError`
+ *  (stamped by `markCrashed`) is appended when present; the reason alone is
+ *  still informative without it. */
 function formatCrashNotice(child: SessionDescriptor, ev: SessionExitedEvent): string {
   const who = child.label ?? child.id
   const reason = ev.reason ?? "crashed"
   const detail = child.lastError ? ` — ${child.lastError}` : ""
-  return `[child-crashed] ${who}: ${reason}${detail}`
+  const named = child.label ? `${child.label} (session ${child.id})` : `session ${child.id}`
+  return (
+    `[child-crashed] ${who}: ${reason}${detail}. ` +
+    `Your child ${named} died unexpectedly; ${describeLastStatus(child)}. ` +
+    `It can no longer be messaged: restart it or hand its work to a new session.`
+  )
 }
 
 /** Wire the subscriber onto `sessionEvents`. Returns the unsubscribe fn

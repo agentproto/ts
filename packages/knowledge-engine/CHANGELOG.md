@@ -1,5 +1,37 @@
 # @agentproto/knowledge-engine
 
+## 0.4.0
+
+### Minor Changes
+
+- e56ebfe: Give the files brain an on-disk, incremental search index, and never refuse a search. With `indexPath` set and a runtime whose `node:sqlite` has FTS5 (Node 22.13+, 23.4+, 24+; 22.5 to 22.12 only with `--experimental-sqlite`), `FilesKnowledgeAdapter` keeps its BM25 index in a SQLite FTS5 file run in a worker thread: `ingest()` upserts that document's row and `deleteSource()` empties it instead of invalidating the whole brain, a stat-only scan on open (then at most every `reconcileIntervalMs`, default 5 minutes, in the background) re-indexes only changed files and drops vanished ones, and a query during the first build answers from what is indexed with `partial: true`. The index stores pre-tokenized text from the same tokenizer, and FTS5 candidates are re-scored with the package's own BM25, so rankings match the in-memory engine (exact on the captured parity fixture, 99.7% top-10 overlap on a generated corpus). The file is derived data: deleted or unreadable, it is rebuilt; a schema or tokenizer change rebuilds it. Without FTS5 (Node 20, older 22) the adapter falls back to the in-memory index, which now indexes the most recently modified `maxIndexDocs` files and flags results `partial` above the ceiling instead of throwing `FilesIndexTooLargeError` (kept, deprecated, no longer thrown). `LocalFs` gains `walkStat()`. `KnowledgeQueryResult` gains an optional `partial` flag. Workspace brains put each `files` provider's index at `<brain>/.index/fts-<id>.sqlite` (`"onDiskIndex": false` in `knowledge.json` opts out), the federated provider propagates `partial`, `GET /brain/query` reports `partial` (and `workspacesPartial` in federated mode), and the `maxIndexDocs` config help now describes it as the in-memory fallback's ceiling.
+
+## 0.3.5
+
+### Patch Changes
+
+- @agentproto/driver@0.4.1
+- @agentproto/tool@0.6.1
+- @agentproto/driver-cli@0.3.1
+- @agentproto/driver-http@0.2.1
+- @agentproto/driver-mcp@0.2.1
+
+## 0.3.4
+
+### Patch Changes
+
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+  - @agentproto/driver-cli@0.3.0
+  - @agentproto/driver-http@0.2.0
+  - @agentproto/driver-mcp@0.2.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+
 ## 0.3.3
 
 ### Patch Changes

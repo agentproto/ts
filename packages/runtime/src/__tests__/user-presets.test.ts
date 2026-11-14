@@ -135,6 +135,7 @@ describe("deriveRecentSpawnConfigs", () => {
     ]
     expect(deriveRecentSpawnConfigs(rows)).toEqual([
       {
+        harness: "hermes",
         adapter: "hermes",
         model: "deepseek",
         profileRef: "openrouter-cheap",
@@ -264,8 +265,10 @@ describe("session preset fields and save-time validation", () => {
         ],
       }),
     )
+    // A preset saved with only the deprecated `adapter` loads with the
+    // canonical `harness` mirrored in.
     await expect(listUserPresets()).resolves.toEqual([
-      { id: "legacy", label: "Legacy", adapter: "hermes", model: "old-model", effort: "high" },
+      { id: "legacy", label: "Legacy", harness: "hermes", adapter: "hermes", model: "old-model", effort: "high" },
     ])
     // The flattened legacy entry still saves through the new boundary.
     await expect(

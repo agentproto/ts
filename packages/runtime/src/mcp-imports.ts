@@ -72,6 +72,14 @@ export interface ImportedMcpEntry {
   /** http/sse only: the server authenticates with OAuth. Tokens live in the
    *  keychain (`mcpOAuthRef`), never in this file. Set by `mcp login`. */
   auth?: ImportedMcpAuth
+  /** http/sse only: also send the caller session and node headers
+   *  (`x-agentproto-caller-session`, `x-agentproto-caller-node`) to this server
+   *  when it is not on this machine. Loopback servers always receive them. */
+  forwardCaller?: boolean
+  /** http only: mint an AIP-59 section 8 sub-session token per caller session
+   *  and send it as `Agentproto-Subsession` instead of the bare caller header.
+   *  Only meaningful when the server serves `POST /pair/subsessions`. */
+  subsession?: "aip-59"
 }
 
 export interface ImportedMcpAuth {
@@ -353,6 +361,16 @@ function normalize(parsed: unknown): ImportedMcpsConfig {
       if (secretRefs) extra.secretRefs = secretRefs
       const auth = parseAuth(e.auth)
       if (auth) extra.auth = auth
+      if (e.forwardCaller === true) extra.forwardCaller = true
+      if (e.subsession !== undefined) {
+        if (e.subsession === "aip-59" && snapshot.type === "http") {
+          extra.subsession = "aip-59"
+        } else {
+          console.warn(
+            `agentproto: import "${alias}" declares subsession but is not an http "aip-59" entry; ignoring`,
+          )
+        }
+      }
       imports.push({ id, alias, addedAt, snapshot, ...extra })
     }
   }

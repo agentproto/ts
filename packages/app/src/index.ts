@@ -39,13 +39,34 @@
 
 export const SPEC_NAME = "app/v1" as const
 
-export { defineApp, AppDefinitionError } from "./define-app.js"
+export { defineApp, AppDefinitionError, TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS } from "./define-app.js"
 export { emitApp, renderAgentManifest } from "./emit.js"
 export type { AgentManifestLayout, RenderAgentManifestTarget, RenderedAgentManifest } from "./emit.js"
 export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFromMarkdownText } from "./load-app.js"
 export type { AppUiPeek } from "./load-app.js"
-export { loadAppBundledTools } from "./load-app-tools.js"
-export { parseServiceList } from "./manifest-fields.js"
+export { loadAppBundledTools, loadBundledTool, type LoadedBundledTool } from "./load-app-tools.js"
+export {
+  checkExposedTools,
+  exposedToolName,
+  parseExposedResources,
+  parseExposedTools,
+  resolveExposedTools,
+  validateExposedToolsAgainstBundle,
+  EXPOSED_TOOL_ACCESS,
+  EXPOSED_TOOL_NAME_MAX,
+  EXPOSED_TOOL_DESCRIPTION_MAX,
+} from "./exposed-tools.js"
+export type {
+  ExposedToolBundledTool,
+  ExposedToolReservedNames,
+  RefusedExposedTool,
+  ResolvedExposedTool,
+} from "./exposed-tools.js"
+export {
+  parseServiceList,
+  DEFAULT_SERVICE_IDLE_STOP_MS,
+  DEFAULT_SERVICE_START_TIMEOUT_MS,
+} from "./manifest-fields.js"
 export type { ServiceListResult } from "./manifest-fields.js"
 export {
   packApp,
@@ -65,6 +86,8 @@ export { refKey, stripOwner } from "./refs.js"
 export { versionSatisfies } from "./version-range.js"
 export type {
   AppDefinition,
+  AppExposedTool,
+  AppExposedToolAccess,
   AppHandle,
   AgentEntry,
   DoctypeHandle,
@@ -83,6 +106,8 @@ export type {
   AppDataDefinition,
   AppDevDefinition,
   AppService,
+  AppServiceExpose,
+  AppServiceActivation,
   AppSetupStep,
   AppSetupStepBase,
   AppSetupCmdStep,

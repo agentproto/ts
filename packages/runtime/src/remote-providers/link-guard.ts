@@ -47,6 +47,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http"
+import { PUBLIC_BASE_HEADER, resolvePublicBase, signPublicBase } from "../public-origins.js"
 
 export interface LinkGuardOptions {
   /** The real target this guard forwards authenticated requests to. */
@@ -207,6 +208,19 @@ export function createLinkGuard(opts: LinkGuardOptions): LinkGuard {
     delete headers.cookie // never forward the guard's own cookie upstream
     if (req.headers.host && headers["x-forwarded-host"] === undefined) {
       headers["x-forwarded-host"] = req.headers.host
+    }
+    // The gateway behind the guard sees Host = the target, so tell it where the
+    // client really went: x-forwarded-proto (kept if an upstream edge set it) and
+    // a daemon-signed public base. A client-sent copy of the signed header is
+    // dropped first; it must only ever come from here. A loopback Host (a local
+    // visit, not a tunnel) gets neither.
+    delete headers[PUBLIC_BASE_HEADER]
+    const reached = resolvePublicBase(headers, "")
+    if (reached.source !== "loopback") {
+      if (headers["x-forwarded-proto"] === undefined) {
+        headers["x-forwarded-proto"] = reached.origin.startsWith("https:") ? "https" : "http"
+      }
+      headers[PUBLIC_BASE_HEADER] = signPublicBase(reached.baseUrl)
     }
     headers.host = `${opts.target.host}:${opts.target.port}`
 

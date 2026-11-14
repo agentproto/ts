@@ -80,13 +80,115 @@ grant.
 
 The concrete motivating case is a session-chat link sent over Telegram: the
 daemon's `app_link_mint` tool (privileged — never itself placed in
-`ui.tools`) mints a token bound to one `(appId, sessionId, telegramUserId)`;
+`ui.tools`) mints a token bound to one `(appId, claims, telegramUserId)`
+(`sessionId` is the usual claim);
 opening it requires the holder's Telegram account to pass `POST
-/apps/:appId/link-auth` before anything scoped actually works. See
+/apps/:appId/link-auth` before anything scoped actually works. The link
+token is reusable until its own expiry (a second tap on the button, a
+reload, a silent re-auth all work); each exchange needs fresh Telegram
+`initData` signed for that same user, so the token alone is useless.
+`link-auth` also accepts a same-origin browser POST (an `Origin` equal to the
+origin the request was reached at, such as a tunnel hostname): it is gated by
+the link token plus `initData`, not by the `daemon.allowedOrigins` allowlist,
+and any other cross-origin `Origin` is still refused. See
 `packages/runtime/src/app-link-token.ts`, `app-link-auth.ts` and
 `app-link-gate.ts` for the full mechanism, and `AGENTS.md`/this file's note
 above for why it's a UI-call concern only — it never touches an AGENT.md's
 own `tools:`.
+
+### What `app_link_mint` takes
+
+- `appId`, `telegramUserId`: as above. `ttlMs`, `sessionTtlMs` and `botAlias`
+  keep their defaults and caps.
+- `sessionId` (optional): becomes the `sessionId` claim, which unlocks the
+  session read routes below and `permissions_respond`'s ownership check.
+- `claims` (optional): a map of string to string for a link about something
+  other than a session (`{ approvalId: "a1" }`, a dossier id, ...). The app
+  pins them with `"$link.<name>"` in its `ui.toolScope`. Names match
+  `^[A-Za-z][A-Za-z0-9_]{0,31}$`, values are 1 to 200 characters, 8 claims at
+  most. `telegramUserId`, `botAlias`, `sessionTtlMs`, `exp`, `kind`, `appId`
+  (and the audit stamps `authIp`, `authUaHash`) are reserved and refused, and
+  `sessionId` must come through its own argument, not through `claims`.
+
+At least one of `sessionId` or a non-empty `claims` is required. A link with
+no `sessionId` claim reads no session over HTTP; it only calls the tools the
+app's `toolScope` names, pinned on the claims it does carry.
+
+`POST /apps/:appId/link-auth` answers `{ ok, token, exp, appId, sessionId?,
+claims }`: `claims` is the link's non-reserved claims (so a UI can read its
+`approvalId`), never the daemon-owned ones.
+
+What a link-SESSION token can reach, and nothing more:
+
+- **Reads over HTTP**, for its own session only (a token with a `sessionId`
+  claim): `GET /sessions/:id`, `/sessions/:id/events`,
+  `/sessions/:id/events/stream`, `/sessions/:id/capabilities` and the live
+  browser frames `/sessions/:id/screencast`, `/sessions/:id/screencast.jpg`,
+  `/sessions/:id/screencast.mjpg`. The token may ride as `?token=<session
+  token>` (an `<img>` cannot send headers). Any other `/sessions/*` route
+  (kill, PTY, prompt, the plain `/stream` tail, another session's reads or
+  screencast) and `/mcp` stay behind the tunnel bearer.
+- **The screencast of the session's own open Bureau tab**: `GET
+  /sessions/<sessionId>/screencast.jpg` answers a JPEG screenshot of the
+  session's newest open Bureau tab (no recording, the session does nothing). The
+  daemon asks Bureau as that session, so Bureau's own tab ownership decides what
+  is visible: a link only ever sees the viewport of its own session's tabs,
+  read-only, one JPEG per request. Frames are cached per session for 800 ms and
+  at most 2 captures run at once daemon-wide, so a link reads at most about one
+  fresh frame per 800 ms. No open tab, or Bureau unreachable, answers the same
+  404 `no_screencast_frame`. Only `.jpg` is served this way; `.mjpg` and the
+  extensionless viewer stay 404 for such an id.
+- **The screencast of a chrome-live browser session** (retired), for a token
+  with a `browserSessionId` claim (pass it through `claims`): the claim unlocks
+  `GET /sessions/<browserSessionId>/screencast`, `.jpg` and `.mjpg` and nothing
+  else, but only a chrome-live descriptor answers there and the daemon no
+  longer registers one. A token may carry both `sessionId` and
+  `browserSessionId`; each keeps its own rule.
+- **One daemon approval**, for a token with an `approvalId` claim (pass it
+  through `claims`): `GET /approvals/<approvalId>` reads that approval (the
+  same record the route returns to the operator, no card ticket) and
+  `POST /approvals/<approvalId>/decision/telegram` with
+  `{"decision":"approve"|"deny"}` decides it through the `telegram` channel.
+  `GET /approvals/<approvalId>/attachments` lists the files the approval's
+  preview names and `GET /approvals/<approvalId>/attachments/<name>` serves one
+  (action `files`, read only, for that approval id only). All of them need the token's verified `telegramUserId` to be listed in the
+  owner-only `approvals.humanTelegramIds` (digits only, `writable: false`, so
+  an agent cannot add itself; empty by default, which refuses every link).
+  A decide also needs the approval to be `pending` with `telegram` among its
+  channels. Every refusal is the same `403 {"error":"approval_link_forbidden"}`
+  (which condition failed is only in the daemon's `approval-link:` audit
+  line), the decision record and the `approval:decided` event carry the
+  decider's `telegramUserId`, and the bot bridge's
+  `approvals.telegramBotSecret` keeps working unchanged. The list, create,
+  wait, consume and `web_click` routes, another approval id (files routes
+  included) and any other method stay behind the tunnel bearer.
+- **Tool calls** through its own app's `POST /apps/:appId/tool-call`, limited
+  to that app's `ui.toolScope`. A link is not read-only: if the app scopes a
+  write tool (e.g. `agent_prompt` or `agent_interrupt` with
+  `sessionId: "$link.sessionId"`), the token can call it, for its own
+  session only.
+
+A tool addressed by an opaque id instead of a session argument has nothing
+to pin from a claim. `permissions_respond` is the one such tool today: it is
+declared with an empty entry,
+
+```yaml
+ui:
+  tools: [permissions_list, permissions_respond]
+  toolScope:
+    permissions_list:
+      sessionId: "$link.sessionId"
+    permissions_respond: {}
+```
+
+and the daemon checks, before dispatching, that the permission `id` is a
+pending permission of the link's session (the same inbox `permissions_list`
+reads). An unknown id, or one parked by another session, is refused with
+nothing dispatched. `defineApp` accepts an empty entry only for tools the
+daemon checks this way (`TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS` in
+`@agentproto/app`, matched by `LINK_OWNERSHIP_CHECKS` in
+`packages/runtime/src/app-tools.ts`); for any other tool an empty entry is
+an authoring error, and the daemon refuses it under a link token as well.
 
 ## `appId` — filled in for you
 

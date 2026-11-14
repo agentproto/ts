@@ -1,5 +1,11 @@
 # @agentproto/registry
 
+## 0.2.0
+
+### Minor Changes
+
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+
 ## 0.1.2
 
 ### Patch Changes

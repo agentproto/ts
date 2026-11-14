@@ -109,7 +109,7 @@ describe("model role presets", () => {
   })
 
   it("adapterForModelId: opencode ids need opencode (even opencode-go/claude-*), bare claude-* needs claude-code", () => {
-    expect(adapterForModelId("opencode-go/longcat-2.5-preview-free")).toBe("opencode")
+    expect(adapterForModelId("opencode-go/beam-free")).toBe("opencode")
     expect(adapterForModelId("opencode/big-pickle")).toBe("opencode")
     expect(adapterForModelId("opencode-go/claude-haiku-5-5")).toBe("opencode")
     expect(adapterForModelId("claude-haiku-5-5")).toBe("claude-code")
@@ -231,8 +231,8 @@ describe("model_roles tool + config_set", () => {
     const fromConfig = await modelRoles({ roles: ["review.small", "review.large"] }, { loadCfg: load, resolveRoot: async () => undefined })
     expect(fromConfig.preset).toBe("go-free")
     expect(fromConfig.models).toEqual({
-      "review.small": "opencode-go/longcat-2.5-preview-free",
-      "review.large": "opencode-go/longcat-2.5-preview-free",
+      "review.small": "opencode-go/beam-free",
+      "review.large": "opencode-go/beam-free",
     })
     expect(fromConfig.adapters).toEqual({ "review.small": "opencode", "review.large": "opencode" })
 

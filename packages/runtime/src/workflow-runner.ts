@@ -35,7 +35,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname, basename, isAbsolute, resolve as resolvePath } from "node:path"
 import { existsSync, cpSync, rmSync } from "node:fs"
-import { buildAgentStep, runWorkflow, validateWorkflowInput, validateAgainstJsonSchema, StepOutcomeError, MissingArtifactError } from "@agentproto/workflow-runtime"
+import { buildAgentStep, runWorkflow, validateWorkflowInput, applyWorkflowInputDefaults, validateAgainstJsonSchema, StepOutcomeError, MissingArtifactError } from "@agentproto/workflow-runtime"
 import type { AgentSandboxRef, ApprovalDecision, ArtifactEntry, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -46,28 +46,30 @@ import { createSessionMessage } from "./session-message.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
-import type { RoutinePolicy, RoutineStepState } from "./step-run-types.js"
-import { SessionsRegistryAgentHost } from "./sessions-registry-agent-host.js"
-import { createFileStepCache } from "./workflow-step-cache.js"
-import { appendAppStateEvent } from "./app-state.js"
-import type { AppStateEventInput } from "./app-state.js"
-import type { AppRegistry, InstalledApp } from "./app-registry.js"
-import { createRunEventLog, readRunEvents, DEFAULT_RUNS_ROOT, type RunEventLog, type RunEventEnvelope } from "./run-event-log.js"
-import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
-import { ensureRunWorkspace, runWorkspacePaths, type RunWorkspacePaths } from "./run-workspace.js"
-import { buildAppBoundary, isPathWithin, type AppBoundary } from "./app-boundary.js"
-import { ownedAppWorkspaceSlug } from "./app-workspace.js"
-import { copyFile, mkdir, readFile } from "node:fs/promises"
+import type {
+  RoutinePolicy,
+  RoutineStepState,
+  WorkflowRun,
+  WorkflowRunStatus,
+  WorkflowStage,
+  WorkflowStageState,
+  WorkflowStep,
+} from "@agentproto/run"
 import {
   DEFAULT_OUTPUT_LIMITS,
+  DEFAULT_RUNS_ROOT,
   RUN_OUTPUT_REF,
   STEP_OUTPUT_REF_PREFIX,
   boundOutput,
   clipError,
+  createFileStepCache,
+  createRunEventLog,
+  ensureRunWorkspace,
   isBoundedOutputRef,
   listLeaseRunIds,
   listRunIds,
   migrateLegacyRuns,
+  readRunEvents,
   readRunFull,
   readRunHeader,
   readSpillValue,
@@ -75,6 +77,7 @@ import {
   removeLeaseFileSync,
   runFilePath,
   runStoreDir,
+  runWorkspacePaths,
   serializeRunFile,
   slimRun,
   spillFilePath,
@@ -84,183 +87,32 @@ import {
   writeFileAtomicSync,
   writeLeaseFile,
   writeSpill,
+  type RunEventEnvelope,
+  type RunEventLog,
+  type RunWorkspacePaths,
   type WorkflowOutputLimits,
-} from "./workflow-run-store.js"
+} from "@agentproto/run"
+import { SessionsRegistryAgentHost } from "./sessions-registry-agent-host.js"
+import { appendAppStateEvent } from "./app-state.js"
+import type { AppStateEventInput } from "./app-state.js"
+import type { AppRegistry, InstalledApp } from "./app-registry.js"
+import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
+import { buildAppBoundary, isPathWithin, type AppBoundary } from "./app-boundary.js"
+import type { AppReadGrantResolver } from "./app-read-grants.js"
+import { ownedAppWorkspaceSlug } from "./app-workspace.js"
+import { copyFile, mkdir, readFile } from "node:fs/promises"
+
+export type {
+  RoutinePolicy,
+  RoutineStepState,
+  WorkflowRun,
+  WorkflowRunStatus,
+  WorkflowStage,
+  WorkflowStageState,
+  WorkflowStep,
+} from "@agentproto/run"
 
 // ── Public types ─────────────────────────────────────────────────────
-
-export interface WorkflowStep {
-  label: string
-  /** Prompt to send to the agent. Omit to just spawn/reuse and wait. */
-  prompt?: string
-  /** Adapter slug for spawning a NEW session. Omit to reuse a prior session. */
-  adapter?: string
-  /** Model id override forwarded to the spawn — same semantics as
-   *  `agent_start.model`. Omitted ⇒ unchanged behaviour (the adapter keeps
-   *  its default). Only meaningful with `adapter`. */
-  model?: string
-  /** Reuse the session spawned by an earlier step (any prior stage),
-   *  identified by that step's `label`. Ignored if `adapter` is set. */
-  sessionRef?: string
-  /** Run this step's session inside a sandbox — a provider slug (e.g.
-   *  `"local"`, `"e2b"`) or an inline AIP-36 spec object. Only meaningful
-   *  with `adapter`. Requires the runner to be wired with
-   *  `resolveSandboxProvider`; fails loudly otherwise. */
-  sandbox?: AgentSandboxRef
-  policy?: RoutinePolicy
-  /** Cache this step's output under the run's `cacheKey` — opt-in, for idempotent steps. */
-  cacheable?: boolean
-}
-
-export interface WorkflowStage {
-  /** Optional label for this stage (surfaced in status output). */
-  label?: string
-  steps: WorkflowStep[]
-}
-
-export type WorkflowRunStatus =
-  | "idle"
-  | "running"
-  | "awaiting-input"
-  | "awaiting-approval"
-  | "done"
-  | "failed"
-  | "cancelled"
-
-export interface WorkflowStageState {
-  index: number
-  label?: string
-  status: "pending" | "running" | "done" | "failed" | "skipped" | "cancelled"
-  steps: RoutineStepState[]
-}
-
-export interface WorkflowRun {
-  runId: string
-  workflowId: string
-  status: WorkflowRunStatus
-  startedAt: string
-  endedAt?: string
-  stages: WorkflowStageState[]
-  notifyUrl?: string
-  error?: string
-  /** AIP-58 §10 error code for `error`, when the failure has one — today
-   *  only `startFromFile`'s pre-dispatch input-validation rejection sets
-   *  this (`"invalid-input"`). Absent on every other failure path. */
-  errorCode?: string
-  result?: { sessionIds: string[] }
-  /** The workflow's own final output (its declared `result` block, else the
-   *  last step's output) — set when the run completes `done`. Persisted with
-   *  the run and returned by `workflow_status` (compact form included), so a
-   *  run's report outlives the run without the caller digging it out of one
-   *  step's `output`. */
-  output?: unknown
-  /** F25: the working directory agent steps (and the run itself) spawn
-   *  under — the caller's explicit `cwd` when given, else `startFromFile`'s
-   *  resolved default (owning app's root > daemon's active workspace >
-   *  process cwd, never a bare "/"; see `resolveRunCwd`). Recorded here even
-   *  when defaulted, so a run's actual spawn location is never silently
-   *  invisible. Only set by `startFromFile` today — `start` (the
-   *  `WorkflowStage[]` path) is unaffected by this default. */
-  cwd?: string
-  /** App provenance — set when the run was started on behalf of an
-   *  installed app (explicit input, or the workflow id is owned by exactly
-   *  one installed app per the registry). Drives the app state ledger
-   *  appends in `executeRunWorkflow` (see `createLedgerAppender`). */
-  appId?: string
-  /** The app_run this run belongs to, when started through an app. */
-  appRunId?: string
-  /** The session that started this run (`workflow_start` / `workflow_run_file`
-   *  over an MCP connection carrying `callerSessionId`). The runner posts ONE
-   *  AIP-46 inbox item to it when the run succeeds, fails, or parks for an
-   *  approval / input — so a caller that is not a daemon-spawned agent (an
-   *  `external` Desktop session) still hears about its run. Inherited by
-   *  `retry()`. */
-  callerSessionId?: string
-  /** AIP-58 §4 Run workspace — `<runsRoot>/<runId>/`, this run's own
-   *  allocation (never shared with another run). Steps see the `scratch/`
-   *  subdirectory as `$run.workspace` / `{{run.workspace}}`; every
-   *  `artifacts[]` entry's `path` is relative to THIS root. Set at run
-   *  creation (`ensureRunWorkspace`), so it's populated even before
-   *  execution starts. */
-  workspace?: string
-  /** AIP-58 §1/§4 `Run.artifacts[]` — every file a `kind: "artifact"` step
-   *  (or a declared `outputsFiles` key) has copied into
-   *  `<workspace>/artifacts/` so far. Compact `workflow_status` projects
-   *  this to `{key, path, size}` (see `compactWorkflowRunStatus`). */
-  artifacts?: ArtifactEntry[]
-  /** AIP-16 `outputsFiles` (as amended by AIP-58 §4), copied from the
-   *  compiled workflow at `startFromFile` time — retained so `publish()`
-   *  can resolve an artifact key's default destination (`to`) without
-   *  re-loading/re-compiling the WORKFLOW.md. Only set by `startFromFile`. */
-  outputsFiles?: Record<string, { path: string; required?: boolean; contentType?: string }>
-  /** Optional ledger `item` — stamped on EVERY app-ledger event this run
-   *  appends, scoping them to one sub-key inside each stage (e.g. the map
-   *  item or entity the run processes). */
-  item?: string
-  /** Set while the run is parked at a `kind: "approval"` step (status
-   *  "awaiting-approval") — the human-in-the-loop inbox entry. Cleared on
-   *  decision; survives a daemon restart (see loadRuns). */
-  awaitingApproval?: {
-    approvalId: string
-    stepId: string
-    prompt: string
-    since: string
-  }
-  /** Set while the run is parked awaiting EITHER a `kind: "suspend"` step's
-   *  external event (`on` set, per AIP-15 conformance rule 7) OR an
-   *  agent-backed step's AIP-58 §3(a) `run.requestInput` signal (`reason:
-   *  "input-required"` + `prompt`/`schema?`, mirroring AIP-58's
-   *  `StepRecord.suspend` exactly — status "awaiting-input" either way).
-   *  Cleared on resume; survives a daemon restart (see loadRuns + the
-   *  reload re-registration). */
-  awaitingSuspend?: {
-    stepId: string
-    since: string
-    on?: string[]
-    reason?: "input-required"
-    prompt?: string
-    schema?: Record<string, unknown>
-  }
-  /** AIP-58 §2 "a `running` run MUST have a live owner" — a lease with a
-   *  heartbeat. Set at dispatch, renewed on a timer while `executeRunWorkflow`
-   *  is in flight, persisted with every renewal. `sweep()` marks the run
-   *  `failed { code: "orphaned" }` once `heartbeatAt` is older than the
-   *  runner's `leaseTtlMs` — the case a host restart doesn't catch (the
-   *  owning process/worker died without the DAEMON itself restarting). Only
-   *  meaningful while `status === "running"`; cleared on every terminal
-   *  transition and on reload (a fresh process is a fresh owner). */
-  lease?: {
-    ownerId: string
-    heartbeatAt: string
-  }
-  /** AIP-58 §6 Journal — set on a run created by `retry()`: the runId it
-   *  retried. Absent on an original (non-retried) run. There is no
-   *  `retryOf`/`replayOf` field on the spec's own Run resource (V7's own
-   *  vector note: the linkage lives on `run.created`'s event `data` only) —
-   *  this host records it on the run record too, so `workflow_status` and
-   *  `workflow_list` show the lineage without a caller having to page the
-   *  event log. Mirrored onto `run.created`'s `data.retryOf` either way. */
-  retryOf?: string
-  /** The workflow's own `$input` binding, when this run has one
-   *  (`startFromFile`-originated runs only — `start()`'s `WorkflowStage[]`
-   *  path has no `$input` binding, see `translateStages`). Persisted (not
-   *  just held in the in-memory `RunState`) so `retry()` can rebuild the
-   *  SAME binding — or apply a caller override — after a daemon restart,
-   *  when nothing but this record survives. */
-  input?: unknown
-  /** `startFromFile`'s own `path` — persisted so `retry()` can reload +
-   *  recompile the SAME WORKFLOW.md after a daemon restart. Absent on a
-   *  `start()`-originated run (see `startStages` below instead). */
-  path?: string
-  /** `start()`'s own `stages` — persisted so `retry()` can rebuild the SAME
-   *  `RuntimeWorkflow` (via `translateStages`) after a daemon restart.
-   *  Absent on a `startFromFile`-originated run (see `path` above instead). */
-  startStages?: WorkflowStage[]
-  /** `workspaceSlug` passed to `start()`/`startFromFile()` — persisted
-   *  (unlike the in-memory-only `RunState.workspaceSlug`) so `retry()` can
-   *  reuse it after a daemon restart. */
-  workspaceSlug?: string
-}
 
 export interface WorkflowRunner {
   start(input: {
@@ -281,6 +133,13 @@ export interface WorkflowRunner {
     item?: string
     /** Session to notify (inbox item) on success / failure / approval. */
     callerSessionId?: string
+    /**
+     * Supervising session every step session nests under. Recorded as each
+     * spawned step session's `parentSessionId`, so a review/fix run reads as
+     * ONE supervisor with children instead of a set of anonymous depth-0
+     * roots. Descriptor-only lineage - it never relaxes a depth/role guard.
+     */
+    supervisorSessionId?: string
   }): Promise<WorkflowRun>
 
   startFromFile(input: {
@@ -295,6 +154,8 @@ export interface WorkflowRunner {
     item?: string
     /** Session to notify (inbox item) on success / failure / approval. */
     callerSessionId?: string
+    /** Supervising session step sessions nest under - see `start`'s doc. */
+    supervisorSessionId?: string
   }): Promise<WorkflowRun>
 
   /** The run record. A run that is no longer resident (older terminal runs)
@@ -312,6 +173,16 @@ export interface WorkflowRunner {
    *  asynchronous and dirty-run-only; await this where a test or a shutdown
    *  path needs durability. */
   flush(): Promise<void>
+  /** Stop this runner and drain persistence: clears its trailing-flush and
+   *  lease-heartbeat timers, unsubscribes its bus listeners, removes its
+   *  process-exit drain, awaits every queued write, and removes lease
+   *  sidecars. After it resolves, nothing more is written by this runner and
+   *  further writes are dropped, so call it only when no run is actively
+   *  executing (a shutdown path should stop or await those runs first).
+   *  Concurrent calls share one disposal promise. Production daemons that
+   *  live for the process lifetime need not call it; tests that delete a
+   *  persist directory MUST. */
+  dispose(): Promise<void>
 
   /** AIP-58 §5/§9 `run.events` — events with `seq > sinceSeq`, in order.
    *  `undefined` when `runId` is unknown; an empty array is a known run
@@ -1522,6 +1393,7 @@ async function executeRunWorkflow(
   // or another. Cleared unconditionally below once execution is done.
   if (lease) {
     const renew = (): void => {
+      if (!isActiveStatus(state.run.status)) return
       state.run.lease = { ownerId: lease.ownerId, heartbeatAt: lease.now().toISOString() }
       lease.onRenew?.(state)
     }
@@ -2187,8 +2059,14 @@ async function executeRunWorkflow(
     for (const step of stage.steps) delete step.phase
   }
 
-  // Drain the ledger append queue before the run's terminal state is
-  // persisted, so the file reflects the run by the time status() flips.
+  // Persist the terminal transition BEFORE the (possibly slow) ledger drain:
+  // `status()`/`waitStatus` can observe the in-memory terminal status as soon
+  // as it is set, and `flush()` must then see the run-file write and lease
+  // removal already queued. Persisting only in the caller's `.then()` left a
+  // window where `flush()` resolved with the lease sidecar still present.
+  persist?.()
+
+  // Drain the ledger append queue so the persisted record reflects it too.
   if (ledger) await ledger.flush()
 
   fireNotifyUrl(state.run)
@@ -2211,6 +2089,8 @@ export function createWorkflowRunner(opts: {
   /** The daemon's own workspace root — kept out of reach of app-workflow
    *  sessions (their fs boundary hides it; see `app-boundary.ts`). */
   daemonWorkspace?: string
+  /** Operator-granted read-only paths per app id (`apps.readGrants`). Omitted ⇒ none. */
+  appReadGrants?: AppReadGrantResolver
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/workflow-runs.json */
   persistPath?: string
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
@@ -2308,6 +2188,7 @@ export function createWorkflowRunner(opts: {
       app,
       ...(run.workspace !== undefined ? { runWorkspace: run.workspace } : {}),
       extraReadOnly,
+      ...(opts.appReadGrants !== undefined ? { readGrants: opts.appReadGrants(app.appId) } : {}),
       ...(opts.daemonWorkspace !== undefined ? { daemonWorkspace: opts.daemonWorkspace } : {}),
     })
   }
@@ -2347,7 +2228,10 @@ export function createWorkflowRunner(opts: {
   // Serial async write chain: spills, then run files, then lease sidecars,
   // then compaction — a pointer never lands before its target.
   let writeChain: Promise<void> = Promise.resolve()
+  let disposed = false
+  let disposal: Promise<void> | undefined
   const enqueue = (job: () => Promise<void> | void): void => {
+    if (disposed) return
     writeChain = writeChain.then(job).catch((err: unknown) => {
       console.warn(`[workflow-runner] persist failed: ${err instanceof Error ? err.message : String(err)}`)
     })
@@ -2382,7 +2266,10 @@ export function createWorkflowRunner(opts: {
     const lease = state.run.lease
     if (!lease) return
     const runId = state.run.runId
-    enqueue(() => writeLeaseFile(storeDir, runId, { ownerId: lease.ownerId, heartbeatAt: lease.heartbeatAt }))
+    enqueue(() => {
+      if (isTerminalStatus(state.run.status) || !state.run.lease) return
+      return writeLeaseFile(storeDir, runId, { ownerId: lease.ownerId, heartbeatAt: lease.heartbeatAt })
+    })
   }
 
   const demote = (state: RunState): void => {
@@ -2469,9 +2356,10 @@ export function createWorkflowRunner(opts: {
     }
   }
 
+  let onExit: (() => void) | undefined
   if (shouldPersist) {
     // Last-chance synchronous drain: dirty runs and any spill still queued.
-    process.once("exit", () => {
+    onExit = () => {
       try {
         for (const [file, text] of pendingWrites) writeFileAtomicSync(file, storeDir, text)
         for (const state of dirty.values()) {
@@ -2487,7 +2375,8 @@ export function createWorkflowRunner(opts: {
       } catch {
         // Best-effort at exit.
       }
-    })
+    }
+    process.once("exit", onExit)
   }
 
   const loadFull = (runId: string): WorkflowRun | undefined => {
@@ -2557,6 +2446,12 @@ export function createWorkflowRunner(opts: {
   // once that run reaches a terminal state (see the `.then()` after each
   // `executeRunWorkflow` call below).
   const sessionToRun = new Map<string, { runId: string; stepId: string; host: SessionsRegistryAgentHost }>()
+
+  // runId → the supervising session the caller named at start time (AIP-58
+  // `supervisorSessionId`). Threaded into each run's agent host so its step
+  // sessions nest under that parent; also carried onto `retry()` so a
+  // retried run keeps the same supervisor instead of orphaning its children.
+  const supervisorByRun = new Map<string, string>()
 
   // ── Reload re-registration (WP-S restart safety) ────────────────────
   //
@@ -2718,20 +2613,22 @@ export function createWorkflowRunner(opts: {
     }
   }
 
-  sessionEvents.on("workflow:approval-requested", (ev) => {
-    notifyCaller(ev.runId, "approval", {
-      text: `Workflow run ${ev.runId} is waiting for approval at step "${ev.stepId}": ${clip(ev.prompt)}`,
-      data: { stepId: ev.stepId, approvalId: ev.approvalId },
-    })
-  })
-  sessionEvents.on("workflow:suspended", (ev) => {
-    notifyCaller(ev.runId, "input", {
-      text:
-        `Workflow run ${ev.runId} is suspended at step "${ev.stepId}"` +
-        (ev.prompt ? `, waiting for input: ${clip(ev.prompt)}` : ev.on?.length ? `, waiting for: ${ev.on.join(", ")}` : "."),
-      data: { stepId: ev.stepId },
-    })
-  })
+  const unsubscribers = [
+    sessionEvents.on("workflow:approval-requested", (ev) => {
+      notifyCaller(ev.runId, "approval", {
+        text: `Workflow run ${ev.runId} is waiting for approval at step "${ev.stepId}": ${clip(ev.prompt)}`,
+        data: { stepId: ev.stepId, approvalId: ev.approvalId },
+      })
+    }),
+    sessionEvents.on("workflow:suspended", (ev) => {
+      notifyCaller(ev.runId, "input", {
+        text:
+          `Workflow run ${ev.runId} is suspended at step "${ev.stepId}"` +
+          (ev.prompt ? `, waiting for input: ${clip(ev.prompt)}` : ev.on?.length ? `, waiting for: ${ev.on.join(", ")}` : "."),
+        data: { stepId: ev.stepId },
+      })
+    }),
+  ]
 
   // ── Public interface ───────────────────────────────────────────────
 
@@ -2783,6 +2680,7 @@ export function createWorkflowRunner(opts: {
         ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      if (input.supervisorSessionId !== undefined) supervisorByRun.set(runId, input.supervisorSessionId)
       attachBounds(state)
       const persist = (): void => markDirty(state)
       persist()
@@ -2813,6 +2711,9 @@ export function createWorkflowRunner(opts: {
           cwd: input.cwd,
           notifyUrl: input.notifyUrl,
           run: { runId, workflowId: input.workflowId },
+          ...(input.supervisorSessionId !== undefined
+            ? { parentSessionId: input.supervisorSessionId }
+            : {}),
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -2864,7 +2765,10 @@ export function createWorkflowRunner(opts: {
       // BEFORE any step runs — never a `compileWorkflow` call, never an
       // `executeRunWorkflow` dispatch, so zero steps execute and zero
       // sessions spawn on a rejected run.
-      const validation = validateWorkflowInput(handle.inputs, args.input)
+      // Declared `default`s fill the keys the caller left out, so the prompts'
+      // `{{input.x}}` resolve instead of staying literal placeholders.
+      const input = applyWorkflowInputDefaults(handle.inputs, args.input)
+      const validation = validateWorkflowInput(handle.inputs, input)
       if (!validation.valid) {
         const runId = `wfrun_${randomUUID()}`
         const now = new Date().toISOString()
@@ -2969,6 +2873,7 @@ export function createWorkflowRunner(opts: {
         ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      if (args.supervisorSessionId !== undefined) supervisorByRun.set(runId, args.supervisorSessionId)
       attachBounds(state)
       const persist = (): void => markDirty(state)
       persist()
@@ -2984,6 +2889,9 @@ export function createWorkflowRunner(opts: {
           workspaceSlug,
           cwd,
           run: { runId, workflowId: handle.id },
+          ...(args.supervisorSessionId !== undefined
+            ? { parentSessionId: args.supervisorSessionId }
+            : {}),
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -3025,7 +2933,7 @@ export function createWorkflowRunner(opts: {
         sessionEvents,
         cache,
         effectiveCacheKey,
-        args.input,
+        input,
         persist,
         opts.appRegistry,
         eventLog,
@@ -3055,6 +2963,37 @@ export function createWorkflowRunner(opts: {
     flush: async () => {
       flushDirty()
       await writeChain
+    },
+
+    dispose: () => {
+      if (disposal) return disposal
+      disposal = (async () => {
+        if (trailingFlush) {
+          clearTimeout(trailingFlush)
+          trailingFlush = undefined
+        }
+        for (const state of runs.values()) {
+          if (state.heartbeatTimer) {
+            clearInterval(state.heartbeatTimer)
+            state.heartbeatTimer = undefined
+          }
+        }
+        for (const unsubscribe of unsubscribers) unsubscribe()
+        if (onExit) process.removeListener("exit", onExit)
+        // Queue whatever is still dirty BEFORE closing the enqueue gate, so it
+        // lands in the chain we await below.
+        flushDirty()
+        disposed = true
+        await writeChain
+        // A run's lease sidecar outlives its heartbeat timer; remove it so a
+        // restart cannot observe a live-looking lease from a stopped runner.
+        await Promise.all(
+          [...runs.values()]
+            .filter(state => state.run.lease !== undefined)
+            .map(state => removeLeaseFile(storeDir, state.run.runId)),
+        )
+      })()
+      return disposal
     },
 
     // AIP-58 §2 owner liveness — see the interface doc comment. A run this
@@ -3354,6 +3293,10 @@ export function createWorkflowRunner(opts: {
         ...(orig.workspaceSlug !== undefined ? { workspaceSlug: orig.workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      {
+        const supervisor = supervisorByRun.get(originalRunId)
+        if (supervisor !== undefined) supervisorByRun.set(runId, supervisor)
+      }
       attachBounds(state)
       const persist = (): void => markDirty(state)
       persist()
@@ -3374,6 +3317,9 @@ export function createWorkflowRunner(opts: {
           workspaceSlug: orig.workspaceSlug,
           cwd: orig.cwd,
           run: { runId, workflowId: orig.workflowId },
+          ...(supervisorByRun.get(originalRunId) !== undefined
+            ? { parentSessionId: supervisorByRun.get(originalRunId)! }
+            : {}),
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })

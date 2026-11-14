@@ -174,6 +174,28 @@ export interface SandboxOrphanScanDeps {
   now?: number
 }
 
+/** Providers whose boxes cannot be ATTRIBUTED to this daemon. The orphan
+ *  rule ("not in THIS daemon's ledger") only holds when the provider scopes
+ *  its boxes to this daemon; a shared account holds boxes from other
+ *  daemons, machines, CI and tools, and all of them would look like
+ *  orphans. Such a provider may only be swept when its boxes carry a
+ *  metadata marker written at boot by this daemon. */
+const PROVIDERS_REQUIRING_DAEMON_MARKER: ReadonlySet<string> = new Set(["e2b"])
+
+/** Why a provider cannot be attributed to this daemon, when it writes no
+ *  marker at boot. `@agentproto/sandbox-e2b` writes NO metadata on
+ *  `Sandbox.create`, so every box on a shared e2b account - including
+ *  another daemon's, another machine's, or CI's - is indistinguishable
+ *  from an orphan here. */
+function missingDaemonMarkerReason(slug: string): string | undefined {
+  if (!PROVIDERS_REQUIRING_DAEMON_MARKER.has(slug)) return undefined
+  return (
+    `the ${slug} provider writes no daemon marker at boot, so its boxes ` +
+    "cannot be attributed to this daemon; its account is shared with other " +
+    "daemons, machines, CI and tools - refusing to sweep it"
+  )
+}
+
 /**
  * Scan every provider for orphan boxes. One provider's failure is reported
  * on that provider's scan and never aborts the others.
@@ -186,6 +208,11 @@ export async function scanSandboxProviderOrphans(
 ): Promise<SandboxOrphanScan[]> {
   const scans: SandboxOrphanScan[] = []
   for (const slug of deps.providerSlugs) {
+    const noMarker = missingDaemonMarkerReason(slug)
+    if (noMarker !== undefined) {
+      scans.push({ provider: slug, candidates: [], scanned: false, skipped: noMarker })
+      continue
+    }
     let handle: SandboxGcProviderHandle | null = null
     try {
       handle = await deps.resolveProvider(slug)

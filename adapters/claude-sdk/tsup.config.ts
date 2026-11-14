@@ -16,7 +16,7 @@ export default createTsupConfig({
   // The Claude Agent SDK ships its own (heavy) bundled harness + MCP graph —
   // keep it external so it resolves from the host's node_modules at runtime.
   external: [
-    "@agentproto/driver-agent-cli",
+    "@agentproto/harness",
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
   ],

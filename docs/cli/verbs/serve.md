@@ -55,6 +55,26 @@ By default, any `Origin` that resolves to `127.0.0.1:*` /
 The Bearer-token check on `/mcp` and other routes is independent of
 the Origin check — a valid token bypasses the Origin allowlist.
 
+### Framing the app page
+
+`GET /apps/:appId/ui` may only be framed by itself, `vscode-webview:` and
+`vscode-file:` by default. To let a browser-based Telegram client open an app
+link inside its Mini App iframe, add its origins:
+
+```bash
+agentproto config set daemon.frameAncestors https://web.telegram.org,https://webk.telegram.org,https://webz.telegram.org
+```
+
+then restart the daemon. Without this, Telegram Web shows "refused to connect"
+for the link while a top-level tab opens it fine. Only exact
+`https://host[:port]` origins (and custom schemes such as `vscode-webview:`)
+are accepted; `*`, wildcards, bare `https:`, paths and non-loopback `http://`
+are dropped with one warning line each on the daemon log. `*` is refused on
+purpose: the page injects the tool-call bridge, so any page allowed to frame
+it could drive it. This is a separate list from `daemon.allowedOrigins`, which
+governs who may call the daemon, and it is not the app's own
+`ui.csp.frameDomains` (frames the app itself embeds).
+
 ## Modes
 
 ### Local-only

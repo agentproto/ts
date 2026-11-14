@@ -7,6 +7,7 @@
 
 import {
   findSubaccountProvider,
+  reauthHintOf,
   type AuthProfile,
   type SubaccountPin,
   type SubaccountResolution,
@@ -77,7 +78,9 @@ export async function resolveProfileSubaccount(
     const res = await provider.resolve(profile as AuthProfile & { subaccount: SubaccountPin }, ctx)
     return mapSubaccountResolution(pin, res, ctx.credential)
   } catch (err) {
-    if (isSubaccountError(err)) throw new SubscriptionSourceError("auth_source_unresolved", err.message)
+    if (isSubaccountError(err)) {
+      throw new SubscriptionSourceError("auth_source_unresolved", err.message, reauthHintOf(err))
+    }
     throw err
   }
 }

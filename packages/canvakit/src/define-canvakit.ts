@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { canvakitFrontmatterSchema } from "./schema.js"
 import type { CanvakitDefinition, CanvakitHandle } from "./types.js"
 

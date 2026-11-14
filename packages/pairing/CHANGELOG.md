@@ -1,5 +1,50 @@
 # @agentproto/pair-client
 
+## 1.2.0
+
+### Minor Changes
+
+- 98ec20f: Require operator confirmation before a new pairing is usable
+
+### Patch Changes
+
+- Updated dependencies [ae6751d]
+- Updated dependencies [c710e7e]
+- Updated dependencies [aa778c3]
+  - @agentproto/acp@0.15.0
+
+## 1.1.2
+
+### Patch Changes
+
+- Updated dependencies [6effe4d]
+  - @agentproto/acp@0.14.0
+
+## 1.1.1
+
+### Patch Changes
+
+- Updated dependencies [0e0fd10]
+- Updated dependencies [03d7c58]
+- Updated dependencies [dd134f4]
+- Updated dependencies [dd134f4]
+- Updated dependencies [03d7c58]
+  - @agentproto/acp@0.13.0
+
+## 1.1.0
+
+### Minor Changes
+
+- dfb1aef: Rename `@agentproto/pair-client` to the AIP-70 name `@agentproto/pairing`, with a `@agentproto/pair-client` shim that re-exports it unchanged. `@agentproto/pairing-host` keeps its name.
+
+### Patch Changes
+
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/acp@0.12.0
+  - @agentproto/secrets@2.2.0
+
 ## 1.0.5
 
 ### Patch Changes

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { AgentCliModelEntry } from "@agentproto/driver-agent-cli"
+import type { AgentCliModelEntry } from "@agentproto/harness"
 import { listOpencodeAnthropicModelRefs } from "@agentproto/model-catalog/llm"
 import { claudeCode } from "../index.js"
 

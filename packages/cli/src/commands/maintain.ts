@@ -1,5 +1,5 @@
 /**
- * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]`
+ * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--worktrees-root <dir>]... [--wait] [--json]`
  *
  * Convenience shortcut over `agentproto workflow run-file` for the built-in
  * `repo-maintenance` app's `maintain` workflow (`@agentproto/apps`'s
@@ -28,14 +28,15 @@ import { basename, dirname, join, resolve } from "node:path"
 import { mcpToolCall, withDaemon } from "./workflow.js"
 import { repoRootOf } from "./worktree.js"
 import { resolveWorktreesRoot } from "./worktree.js"
-import { discoverWorktreeOwningRepos, resolveAllRepos } from "./maintain-discovery.js"
+import { discoverWorktreeOwningRepos, normalizeExtraRoots, resolveAllRepos } from "./maintain-discovery.js"
+import { loadConfig } from "@agentproto/runtime/config"
 import { httpGetJson } from "./_daemon-helpers.js"
-import { MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
+import { APP_INSTALL_WORKTREE_REPOINT_REFUSED, MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
 
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
 Usage:
-  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]
+  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--worktrees-root <dir>]... [--wait] [--json]
   agentproto maintain --help
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
@@ -50,13 +51,30 @@ Usage:
   --apply-reviewed With --apply-merged, also reclaim review-class branches
                    whose stored verdict agreed (includeReviewed true).
                    branch_gc refuses approvals below its line-coverage guard
-                   (default 95%) and reports them. Ignored without
-                   --apply-merged.
+                   (default 95%) and reports them, unless its verified-pr
+                   pass proves them (a cited PR merged into base explains
+                   every uncovered file) or its dep-bump pass does (every
+                   added line is a lockfile, changeset or dependency spec
+                   base already has at least as new) or its history-covered
+                   pass does (every missing line was once added to the same
+                   path on base). Ignored without --apply-merged.
+  --require-operator-below-guard
+                   Turn the verified-pr, dep-bump and history-covered passes off: below the
+                   guard only an operator approval reclaims.
   --review-preset <name>
                    Reviewer model set for this run: ${MODEL_ROLE_PRESET_NAMES.join(", ")}.
                    Default: the daemon's modelRolePreset (switch it with
                    \`agentproto config set modelRolePreset <name>\`), else
                    Sonnet/Opus. \`model_roles\` lists what each one uses.
+  --max-reviews <n> Most unmerged branches to send to a reviewer this run
+                   (newest tip first). Default: the workflow's own (40).
+                   Branches with a stored verdict are never re-reviewed, so
+                   repeated runs walk the backlog.
+  --worktrees-root <dir>
+                   With --all: also scan this dir for worktrees (repeatable), in
+                   addition to the configured worktrees root. A dir may hold
+                   worktrees directly (\`<dir>/<slug>\`) or in buckets
+                   (\`<dir>/<repo>/<slug>\`).
   --wait           Block until each run ends, then print its markdown report
                    (exit 0 when all done, 1 when any failed/was cancelled).
   --json           Print the raw workflow_run_file reply (with --wait: the
@@ -74,6 +92,7 @@ Examples:
   agentproto maintain --repo ~/code/my-app --apply-merged --apply-reviewed
   agentproto maintain --all --apply-merged
   agentproto maintain --review-preset go-free --wait
+  agentproto maintain --max-reviews 10 --wait
   agentproto maintain --wait
 `
 
@@ -86,6 +105,20 @@ function resolveRepoMaintenanceApp(): { appDir: string; workflowPath: string } {
 	const appsPackageJson = require.resolve("@agentproto/apps/package.json")
 	const appDir = join(dirname(appsPackageJson), "repo-maintenance")
 	return { appDir, workflowPath: join(appDir, ".agentproto", "workflows", "maintain", "WORKFLOW.md") }
+}
+
+/** The daemon refused `app_install {dir}` because it would re-point an app
+ *  installed from a live dir into a linked git worktree. */
+export function isWorktreeRepointRefusal(err: unknown): boolean {
+	return err instanceof Error && err.message.includes(APP_INSTALL_WORKTREE_REPOINT_REFUSED)
+}
+
+/** `--max-reviews`: undefined when absent (the workflow default applies),
+ *  null when it is not a positive integer. */
+export function parseMaxReviews(raw: string | undefined): number | undefined | null {
+	if (raw === undefined) return undefined
+	if (!/^[1-9][0-9]*$/.test(raw.trim())) return null
+	return Number(raw.trim())
 }
 
 /** The `--repo` values actually given (possibly none, possibly repeated). */
@@ -108,7 +141,10 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			all: { type: "boolean", default: false },
 			"apply-merged": { type: "boolean" },
 			"apply-reviewed": { type: "boolean" },
+			"require-operator-below-guard": { type: "boolean" },
 			"review-preset": { type: "string" },
+			"max-reviews": { type: "string" },
+			"worktrees-root": { type: "string", multiple: true },
 			wait: { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
 		},
@@ -118,6 +154,14 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 	if (reviewPreset !== undefined && !MODEL_ROLE_PRESET_NAMES.includes(reviewPreset)) {
 		process.stderr.write(
 			`agentproto maintain: unknown --review-preset "${reviewPreset}" (known: ${MODEL_ROLE_PRESET_NAMES.join(", ")})\n`,
+		)
+		return 2
+	}
+
+	const maxReviews = parseMaxReviews(values["max-reviews"])
+	if (maxReviews === null) {
+		process.stderr.write(
+			`agentproto maintain: --max-reviews must be a positive integer, got "${values["max-reviews"]}"\n`,
 		)
 		return 2
 	}
@@ -140,7 +184,11 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			return root
 		})
 		if (explicit.some((r) => r === null)) return 2
-		repos = await resolveAllRepos(worktreesRoot, explicit as string[])
+		// Config `worktrees.extraRoots` first, then the flag. An unreadable
+		// config must not stop a maintenance run: fall back to the flag alone.
+		const cfg = await loadConfig().catch(() => undefined)
+		const extraRoots = normalizeExtraRoots([...(cfg?.worktrees?.extraRoots ?? []), ...(values["worktrees-root"] ?? [])])
+		repos = await resolveAllRepos([worktreesRoot, ...extraRoots], explicit as string[])
 		if (repos.length === 0) {
 			process.stderr.write(
 				`agentproto maintain: --all found no repos — no worktrees under ${worktreesRoot} and no --repo given.\n`,
@@ -184,12 +232,23 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 	try {
 		await mcpToolCall(daemon.endpoint, "app_install", { dir: appDir })
 	} catch (err) {
-		process.stderr.write(
-			`agentproto maintain: failed to install the repo-maintenance app: ${
-				err instanceof Error ? err.message : String(err)
-			}\n`,
-		)
-		return 1
+		// Run from a linked worktree's build while the app is installed from a
+		// live checkout: the daemon refuses to re-point the global record into
+		// the worktree (it would break the app for every caller once the
+		// worktree is removed). Keep the installed copy and run anyway.
+		if (isWorktreeRepointRefusal(err)) {
+			process.stderr.write(
+				`agentproto maintain: kept the installed repo-maintenance app (not re-pointed into this worktree; ` +
+					`\`agentproto app install <dir> --repoint\` does that on purpose).\n`,
+			)
+		} else {
+			process.stderr.write(
+				`agentproto maintain: failed to install the repo-maintenance app: ${
+					err instanceof Error ? err.message : String(err)
+				}\n`,
+			)
+			return 1
+		}
 	}
 
 	// One full workflow per repo, sequential. Any failed run fails the
@@ -206,7 +265,9 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 					repoRoot: repo,
 					applyMerged: values["apply-merged"] === true,
 					applyReviewed: values["apply-reviewed"] === true,
+					...(values["require-operator-below-guard"] === true ? { requireOperatorBelowGuard: true } : {}),
 					...(reviewPreset !== undefined ? { reviewPreset } : {}),
+					...(maxReviews !== undefined ? { maxReviews } : {}),
 				},
 			})) as Record<string, unknown>
 		} catch (err) {

@@ -9,8 +9,14 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
+import type { Grant } from "@agentproto/policy"
+
+import { buildMessagingPermissionContext } from "./messaging-context.js"
+import { DRIVE_TOOL_ACTIONS } from "./drive-gate.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { SessionsRegistry } from "./sessions.js"
+import { loadConfig } from "./config.js"
+import { callerProfileSet } from "./profile-gate.js"
 import {
   decide,
   PERMISSION_ACTIONS,
@@ -30,8 +36,19 @@ export interface RegisterPermissionsToolsOptions {
   allowSameWorkspace?: boolean
   /** `defaults.messaging.peerGroups`, resolved for this request. */
   peerGroups?: readonly (readonly string[])[]
+  /** `defaults.messaging.grants`, resolved for this request: explicit
+   *  AIP-38 `session:message` grants that may admit a pair. */
+  messagingGrants?: readonly Grant[]
   /** `defaults.messaging.agentInterrupt === "allow"`, resolved for this request. */
   allowInterrupt?: boolean
+  /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
+  peerBinding?: "slug" | "verified"
+  /** `defaults.messaging.anonymousSend`, resolved for this request. */
+  anonymousSend?: "block" | "label"
+  /** cwd to registered-workspace resolver for verified peer binding. Omitted: no cwd resolves, so "verified" links no peers. */
+  workspaceOfCwd?: (cwd: string) => string | undefined
+  /** `defaults.spawn.sharedProfiles`, resolved for this request. Omitted: read from config per call. */
+  sharedProfiles?: readonly string[]
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
@@ -42,8 +59,20 @@ const text = (body: Record<string, unknown>, isError = false): ToolResult => ({
 })
 
 export function registerPermissionsTools(server: McpServer, opts: RegisterPermissionsToolsOptions): void {
-  const { registry, callerScope, callerSessionId, allowSiblings, allowSameWorkspace, peerGroups, allowInterrupt } =
-    opts
+  const {
+    registry,
+    callerScope,
+    callerSessionId,
+    allowSiblings,
+    allowSameWorkspace,
+    peerGroups,
+    messagingGrants,
+    allowInterrupt,
+    peerBinding,
+    anonymousSend,
+    workspaceOfCwd,
+    sharedProfiles,
+  } = opts
 
   server.tool(
     "permissions_explain",
@@ -62,6 +91,17 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         .min(1)
         .optional()
         .describe("Explain for this session as the principal instead of yourself."),
+      profile: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("The auth profile ref, for action auth.profile.use."),
+      tool: z
+        .enum(Object.keys(DRIVE_TOOL_ACTIONS) as [string, ...string[]])
+        .optional()
+        .describe(
+          "For action session.drive: the drive tool whose action and refusal text to explain. Default agent_prompt.",
+        ),
     },
     async input => {
       const callerId = callerScope?.ownerSessionId ?? callerSessionId
@@ -101,10 +141,17 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         if (!self) {
           return text({ ok: false, error: "no_such_session", message: `session "${selfId}" is not in the registry` }, true)
         }
-        principal = { kind: "session", session: self }
+        // An external identifier is a label, evaluated as anonymous (AIP-46
+        // rule 7); for an auth profile it explains as the spawn gate treats it.
+        principal =
+          input.profile && self.kind === "external"
+            ? { kind: "operator", via: "anonymous-local" }
+            : { kind: "session", session: self }
       }
       let resource: PermissionResource = { kind: "none" }
-      if (input.sessionId) {
+      if (input.profile) {
+        resource = { kind: "profile", ref: input.profile }
+      } else if (input.sessionId) {
         const target = registry.get(input.sessionId)
         if (!target) {
           return text(
@@ -113,16 +160,42 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
           )
         }
         resource = { kind: "session", session: target }
+        if (input.action === "session.drive") {
+          const tool = input.tool ?? "agent_prompt"
+          resource = {
+            kind: "session",
+            session: target,
+            drive: { tool, action: DRIVE_TOOL_ACTIONS[tool] ?? "session:control" },
+          }
+        }
       }
-      const decision = decide(principal, input.action, resource, {
-        messaging: {
+      // The same shared messaging context the enforcement sites build, so
+      // explain and enforce cannot drift (including explicit grants).
+      const messagingContext = buildMessagingPermissionContext({
+        defaults: {
           allowSiblings: allowSiblings === true,
-          ...(allowSameWorkspace !== undefined ? { allowSameWorkspace } : {}),
-          ...(peerGroups ? { peerGroups } : {}),
+          allowSameWorkspace: allowSameWorkspace !== false,
+          peerGroups: peerGroups ?? [],
+          peerBinding: peerBinding ?? "slug",
           agentInterrupt: allowInterrupt ? "allow" : "deny",
+          ...(anonymousSend ? { anonymousSend } : {}),
+          grants: messagingGrants ?? [],
         },
-        parentOf: id => registry.get(id)?.parentSessionId,
-        operatorLabelOf: id => registry.get(id)?.operatorLabel,
+        registry,
+        ...(workspaceOfCwd ? { workspaceOfCwd } : {}),
+      })
+      const decision = decide(principal, input.action, resource, {
+        ...messagingContext,
+        ...(input.profile
+          ? {
+              profiles: {
+                callerAllowed: callerProfileSet({
+                  caller: selfId ? registry.get(selfId) : undefined,
+                  shared: sharedProfiles ?? (await defaultSharedProfiles()),
+                }),
+              },
+            }
+          : {}),
       })
       return text({
         ok: true,
@@ -135,4 +208,13 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
       })
     },
   )
+}
+
+/** `defaults.spawn.sharedProfiles`, read per call; a missing or malformed config gives none. */
+async function defaultSharedProfiles(): Promise<readonly string[]> {
+  try {
+    return (await loadConfig()).defaults?.spawn?.sharedProfiles ?? []
+  } catch {
+    return []
+  }
 }

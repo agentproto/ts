@@ -6,9 +6,9 @@
  * Tools:
  *   app_install   loadAppHandle(dir) → validate → persist an installed-app record
  *   app_list      installed apps + a runs summary
- *   app_run       spawn a session per selected agent (default mastra-agent;
- *                 adapter/harness/model are pass-through, optional `sequence`
- *                 runs agents one-at-a-time under one appRunId)
+ *   app_run       spawn a session per selected agent (each agent resolves its
+ *                 own adapter/harness; model is pass-through, optional
+ *                 `sequence` runs agents one-at-a-time under one appRunId)
  *   app_status    fan out an app_run's sessions + the app's workflow runs
  *   app_stop      kill an app_run's sessions
  *
@@ -26,11 +26,15 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
+import { exposedToolName, loadAppHandle, loadAppBundledTools, parseExposedTools, peekAppUi, type AppExposedTool, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
+import { gatewayToolRefusal } from "./tool-deny-gate.js"
+import type { ToolLists } from "./tool-subset.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
-import type { AgentHandle, AnyRef } from "@agentproto/agent"
+import type { AgentHandle, ToolRef } from "@agentproto/agent"
+import type { WorkflowHandle } from "@agentproto/workflow"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import type { ToolHandle } from "@agentproto/tool"
@@ -45,16 +49,22 @@ import {
   appServiceLogPath,
   assessRecordedServicePid,
   isAppServicePendingRestart,
+  isAppServiceSupervised,
 } from "./app-service-process.js"
+import { isOnDemandService, onDemandServiceState, startOnDemandService } from "./app-service-on-demand.js"
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
+import type { AppReadGrantResolver } from "./app-read-grants.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
+import { resolveMainRepoPath, resolveWorktreeIdentity } from "./worktree-identity.js"
+import { loadWorkspacesConfig } from "./workspaces-config.js"
 import {
   createAppServiceStore,
   ensureAppServiceOwners,
   parseAppServices,
   reensureAppServiceOwners,
   removeAppServiceOwners,
+  serviceActivationMode,
   serviceDisplayEntry,
   serviceOwnerLabel,
   type AppService,
@@ -64,11 +74,23 @@ import {
   type SpawnServiceOwner,
   type SpawnServiceOwnerResult,
 } from "./app-services.js"
+import { APP_SERVICE_PUBLIC_URL_ENV, isExposedService, type AppServiceExposer, type AppServiceExposure } from "./app-service-expose.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, APP_DATA_ROOT_SUBDIR, defaultRemoteAppDataDir, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
-import { mintAppLinkToken } from "./app-link-token.js"
+import { mintAppLinkToken, validateGenericLinkClaims } from "./app-link-token.js"
+import { DAEMON_TOOL_NAMES } from "./daemon-tool-names.generated.js"
+import {
+  appVersionProblem,
+  exposedToolVisible,
+  planExposedTools,
+  unexposedRequiredTools,
+  unmetRequires,
+  type ExposedToolCaller,
+  type ExposedToolsMode,
+  type UnmetRequirement,
+} from "./exposed-tools-policy.js"
 import {
   APP_INSTALL_EXCLUSIVE_ERROR,
   appInstallInputSchema,
@@ -98,8 +120,20 @@ import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-env
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { createHash, randomBytes } from "node:crypto"
+import { ADAPTER_FIELD_DEPRECATION } from "./harness-alias.js"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+
+/** Data-plane tools an app UI may only point at its own app (`args.appId`). */
+const APP_DATA_PLANE_TOOLS: ReadonlySet<string> = new Set([
+  "app_data_read",
+  "app_data_write",
+  "app_data_list",
+  "app_data_migrate",
+  "app_state_append",
+  "app_state_get",
+  "app_state_list",
+])
 
 /**
  * Local companion to the shared `paginated()` transformer for tools whose
@@ -136,13 +170,6 @@ function paginatedLegacyList<TItem extends object>(opts: {
     },
   }
 }
-
-/** mastra-agent's adapter slug — the one agent adapter this WP knows how to
- *  run an emitted AGENT.md under via its `agent` option (`--agent <path>`).
- *  No longer a silent fallback: an agent only lands here when its own
- *  `metadata.adapter`/`metadata.harness` (or a caller-passed `adapter`)
- *  names it. */
-const DEFAULT_AGENT_ADAPTER = "mastra-agent"
 
 /** A spawned session descriptor's terminal statuses (see `SessionStatus` in
  *  sessions.ts): clean exit, operator kill, or a crash/error. Any of these
@@ -247,7 +274,7 @@ function defaultAdapterForModel(model: string | undefined): string | undefined {
  * change than this bug fix.
  */
 function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): string | undefined {
-  const value = metadata?.adapter ?? metadata?.harness
+  const value = metadata?.harness ?? metadata?.adapter
   return typeof value === "string" && value.trim().length > 0 ? value : undefined
 }
 
@@ -280,7 +307,7 @@ function resolveAgentSpawnAdapter(
  *  put this in an `app_run` run's `errors` list (per-agent) or throw it
  *  (workflow agent-ref resolution). */
 function noAdapterError(agentId: string): string {
-  return `agent "${agentId}" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run`
+  return `agent "${agentId}" has no harness: set metadata.harness in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass harness to app_run`
 }
 
 /** The shared failure for an installed app's AGENT.md that cannot be read at
@@ -292,6 +319,63 @@ function agentManifestReadError(app: InstalledApp, agentId: string, agentPath: s
     ? ""
     : `; installed app dir "${app.dir}" no longer exists, re-run app_install for "${app.appId}" from a live checkout`
   return `agent "${agentId}": could not read AGENT.md "${agentPath}": ${cause}${dirGone}`
+}
+
+type WorkflowStep = WorkflowHandle["steps"][number]
+
+/**
+ * Recursively collect every `agent.ref` in the step graph. Returns `false`
+ * when a `subworkflow` step is present: its own WORKFLOW.md is not loaded
+ * here, so the caller must keep resolving every agent of the app (the
+ * pre-filter behaviour).
+ */
+function collectAgentRefs(steps: readonly WorkflowStep[], out: Set<string>): boolean {
+  for (const step of steps) {
+    switch (step.kind) {
+      case "agent":
+        if (step.agent !== undefined) out.add(step.agent.ref)
+        break
+      case "map":
+      case "loop":
+        if (!collectAgentRefs(step.steps, out)) return false
+        break
+      case "parallel":
+        for (const branch of step.branches) {
+          if (!collectAgentRefs(branch.steps, out)) return false
+        }
+        break
+      case "subworkflow":
+        return false
+      default:
+        break
+    }
+  }
+  return true
+}
+
+/**
+ * The installed app that owns a workflow. A known WORKFLOW.md path wins:
+ * resolve its app root ({@link findAppRootFromFile}) and match an installed
+ * app by `dir`. No match (a WORKFLOW.md outside the registry) falls back to
+ * the workflow-id lookup, with one warning (unlike F40's tool lookup, that
+ * fallback IS the historical behaviour for a workflow the registry does not
+ * know.
+ */
+function resolveOwningApp(
+  appRegistry: AppRegistry,
+  workflowId: string,
+  workflowPath: string | undefined,
+): InstalledApp | undefined {
+  if (workflowPath !== undefined) {
+    const root = findAppRootFromFile(dirname(resolve(workflowPath)))
+    const byDir =
+      root !== undefined ? appRegistry.listApps().find(a => resolve(a.dir) === root) : undefined
+    if (byDir !== undefined) return byDir
+    console.warn(
+      `[workflow ${workflowId}] WORKFLOW.md at ${workflowPath} belongs to no installed app dir; resolved by workflow id`,
+    )
+  }
+  return appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
 }
 
 /**
@@ -320,18 +404,35 @@ function agentManifestReadError(app: InstalledApp, agentId: string, agentPath: s
  * `workflow_run_file` outside any app), so a `kind:"agent"` step using
  * `agent.ref` fails compilation naming "no agent refs are configured"
  * rather than a silently-empty map producing the same message either way.
+ *
+ * Pass `opts.steps` (the run's own step graph) to resolve ONLY the agents
+ * those steps reference; a `subworkflow` step has no loaded sub-graph here,
+ * so it keeps resolving every agent of the app. Pass `opts.workflowPath` to
+ * find the owning app by its WORKFLOW.md path first (falling back to the
+ * workflow-id lookup for a path outside the installed registry).
  */
 export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
   resolveRole?: ModelRoleResolver,
   resolveAgentAdapter?: AgentAdapterResolver,
+  opts?: { workflowPath?: string; steps?: WorkflowHandle["steps"] },
 ): Promise<Record<string, AgentRefResolution> | undefined> {
-  const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+  const app = resolveOwningApp(appRegistry, workflowId, opts?.workflowPath)
   if (!app) return undefined
+  // When the caller knows the workflow's step graph, resolve only the agents
+  // those steps reference: an unroutable agent the workflow never uses must
+  // not break the whole app. An unknown step shape (subworkflow) keeps the
+  // old "every agent" behaviour.
+  let referencedAgentIds: Set<string> | undefined
+  if (opts?.steps !== undefined) {
+    const ids = new Set<string>()
+    if (collectAgentRefs(opts.steps, ids)) referencedAgentIds = ids
+  }
   const refs: Record<string, AgentRefResolution> = {}
   const caps = new Map<string, Promise<AgentProjectionCaps>>()
   for (const agent of app.agents) {
+    if (referencedAgentIds !== undefined && !referencedAgentIds.has(agent.id)) continue
     let loaded: LoadedAgentManifest
     try {
       loaded = await loadAgentPromptDefaults(agent.path, resolveRole)
@@ -494,14 +595,40 @@ function notEnabled(tool: string): ReturnType<typeof errorResult> {
 
 export interface AppToolCallDeps {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
-  callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
+  /** `callerSessionId` is the calling session, forwarded to the imported MCP
+   *  server (Bureau binds tab ownership to it). */
+  callImportedTool?: (
+    alias: string,
+    tool: string,
+    args: Record<string, unknown>,
+    callerSessionId?: string,
+  ) => Promise<unknown>
+  /** Who is calling: the session (forwarded to an imported tool), its AGENT.md
+   *  opt-in and its app's `requires.apps` grants. A `write`/`approve` exposed
+   *  tool on the HTTP twin needs a caller session plus an opt-in or a grant
+   *  (or mode `all`), like on the gateway. */
+  caller?: ExposedToolCaller
+  /** `defaults.apps.exposedTools`, resolved by the caller. Set only by the HTTP
+   *  twin of `app_tool_call`: it then also accepts an installed app's
+   *  `exposes.tools` ids that are not in `ui.tools` (what `agentproto mcp-app`
+   *  forwards), under the kill-switch's access limit. Absent = `ui.tools` only. */
+  exposedToolsMode?: ExposedToolsMode
+  /** The request's `?denyTools=` / `?allowTools=`, same wire contract as
+   *  `/mcp`: an exposed tool they filter out is refused, like the gateway's
+   *  wrapped server never registers it. */
+  toolLists?: ToolLists
+  /** The daemon's pending-permission inbox lookup (the same source
+   *  `permissions_list` reads, `SessionsRegistry.listPendingPermissions`),
+   *  used by `LINK_OWNERSHIP_CHECKS` to check a `permissions_respond` under a
+   *  link token. Absent = that check fails closed. */
+  findPendingPermission?: (id: string) => { sessionId: string } | undefined
 }
 
 /**
  * The `app_tool_call` gateway's whole behaviour minus allowlist resolution
  * — allowlist enforcement against the caller-supplied `declaredAllowlist`
  * UNION the read-only, non-secret `APP_UI_DISCOVERY_TOOLS` (`adapter_list`,
- * `harness_preset_list` — every app UI gets these for free, regardless of
+ * `harness_list`, `harness_preset_list` — every app UI gets these for free, regardless of
  * what it declared, so `@agentproto/app-client/runner-select`'s
  * `mountRunnerSelect` works out of the box) — then dispatch through the
  * daemon's own tools or an imported MCP server. Factored out of
@@ -703,8 +830,67 @@ export interface AppLinkScope {
   claims: Readonly<Record<string, string>>
 }
 
+/**
+ * Per-tool ownership checks for scoped mode, run after the claim-pinned
+ * arguments are resolved and before dispatch. For a tool addressed by an
+ * opaque id rather than a session argument, `ui.toolScope` has nothing to
+ * pin, so the daemon resolves the id itself and refuses one that does not
+ * belong to the link's session. Returns an error message, or `undefined`
+ * to let the call through. Keys must equal `@agentproto/app`'s
+ * `TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS` (the tools allowed an empty
+ * `toolScope` entry); an empty entry for any other tool is refused.
+ */
+const LINK_OWNERSHIP_CHECKS: Readonly<
+  Record<string, (args: Record<string, unknown>, claims: AppLinkScope["claims"], deps: AppToolCallDeps) => string | undefined>
+> = {
+  // Stricter than the retired session-chat mini-app, which let any pending
+  // permission id through: the id must be parked by the linked session.
+  // Unknown and foreign ids get the same message, so a link can't probe
+  // which ids exist elsewhere.
+  permissions_respond: (args, claims, deps) => {
+    const id = args.id
+    if (typeof id !== "string" || id === "") return `"permissions_respond" needs a string \`id\` under a scoped link token.`
+    if (!claims.sessionId) return `scoped link token carries no "$link.sessionId" claim (required by "permissions_respond").`
+    if (!deps.findPendingPermission) return `"permissions_respond" is not enabled under a scoped link token (no permission lookup wired).`
+    if (deps.findPendingPermission(id)?.sessionId !== claims.sessionId) {
+      return `permission "${id}" is not a pending permission of this link's session, refused.`
+    }
+    return undefined
+  },
+}
+
+/** Tool ids `LINK_OWNERSHIP_CHECKS` covers (exported for the drift test
+ *  against `@agentproto/app`'s `TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS`). */
+export const LINK_OWNERSHIP_CHECKED_TOOL_IDS: readonly string[] = Object.freeze(Object.keys(LINK_OWNERSHIP_CHECKS))
+
 function parseLinkClaimRef(claimRef: string): string | undefined {
   return claimRef.startsWith("$link.") ? claimRef.slice("$link.".length) : undefined
+}
+
+/**
+ * Run one of the app's OWN bundled TOOL.md contracts through its DRIVER.md
+ * implementations (AIP-30 `runTool`). `found: false` when the app bundles no
+ * such tool. Re-read from disk per call: the compiled handles are not
+ * persisted on the InstalledApp record. The registered data dir reaches the
+ * driver (only if it declares the name in sandbox.env.pass):
+ * docs/design/app-bundled-tool-data-dir.md.
+ */
+async function runBundledAppTool(
+  appDir: string,
+  toolId: string,
+  args: Record<string, unknown>,
+  appDataDir?: string,
+): Promise<{ found: false } | { found: true; output: unknown }> {
+  const bundled = await loadAppBundledTools(appDir)
+  const bundledTool = bundled.tools.find(t => t.id === toolId)
+  if (!bundledTool) return { found: false }
+  const output = await runTool({
+    tool: bundledTool,
+    candidates: bundled.drivers,
+    input: args,
+    ...(appDataDir !== undefined ? { hostEnv: { AGENTPROTO_APP_DATA_DIR: appDataDir } } : {}),
+  })
+  return { found: true, output }
 }
 
 async function dispatchAllowlistedAppTool(
@@ -713,6 +899,7 @@ async function dispatchAllowlistedAppTool(
   deps: AppToolCallDeps,
   appDir?: string,
   linkScope?: AppLinkScope,
+  appDataDir?: string,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
   // `app_link_mint` is privileged (mints a scoped token — app-link-token.ts)
   // and must NEVER be reachable through this gateway at all, scoped or not:
@@ -754,6 +941,18 @@ async function dispatchAllowlistedAppTool(
         )
       }
     }
+    const ownershipCheck = Object.hasOwn(LINK_OWNERSHIP_CHECKS, input.tool) ? LINK_OWNERSHIP_CHECKS[input.tool] : undefined
+    if (ownershipCheck) {
+      const refusal = ownershipCheck(scopedArgs, linkScope.claims, deps)
+      if (refusal) return errorResult(`app_tool_call: ${refusal}`)
+    } else if (Object.keys(argMap).length === 0) {
+      // `defineApp` only lets an ownership-checked tool declare `{}`; an
+      // empty entry reaching here otherwise would grant the tool with no
+      // constraint at all, so fail closed.
+      return errorResult(
+        `app_tool_call: tool "${input.tool}" has an empty ui.toolScope entry and no daemon ownership check, refused under a scoped link token.`,
+      )
+    }
     args = scopedArgs
   } else {
     const effectiveAllowlist: readonly string[] = [...declaredAllowlist, ...APP_UI_DISCOVERY_TOOLS]
@@ -764,6 +963,12 @@ async function dispatchAllowlistedAppTool(
       )
     }
     args = input.args ?? {}
+  }
+  if (APP_DATA_PLANE_TOOLS.has(input.tool) && args.appId !== undefined && args.appId !== input.appId) {
+    return errorResult(
+      `app_tool_call: app "${input.appId}" may only address its own data; ` +
+        `"${input.tool}" named app "${String(args.appId)}".`,
+    )
   }
   // App-UI install guard: an `app_install` routed through an app panel's
   // tool-call surface (`window.McpApp` bridge → this dispatcher) needs an
@@ -792,7 +997,12 @@ async function dispatchAllowlistedAppTool(
           `app_tool_call: malformed imported tool id "${input.tool}" — expected "imported:<alias>/<toolName>".`,
         )
       }
-      const result = await deps.callImportedTool(rest.slice(0, slash), rest.slice(slash + 1), dispatchArgs)
+      const result = await deps.callImportedTool(
+        rest.slice(0, slash),
+        rest.slice(slash + 1),
+        dispatchArgs,
+        deps.caller?.sessionId,
+      )
       return textResult(result)
     }
     // G1: an allowlisted id that names one of the app's OWN bundled TOOL.md
@@ -801,12 +1011,8 @@ async function dispatchAllowlistedAppTool(
     // Re-read from disk per call, like the workflow path: the compiled
     // handles are not persisted on the InstalledApp record.
     if (appDir !== undefined) {
-      const bundled = await loadAppBundledTools(appDir)
-      const bundledTool = bundled.tools.find(t => t.id === input.tool)
-      if (bundledTool) {
-        const output = await runTool({ tool: bundledTool, candidates: bundled.drivers, input: args })
-        return textResult(output)
-      }
+      const bundled = await runBundledAppTool(appDir, input.tool, args, appDataDir)
+      if (bundled.found) return textResult(bundled.output)
     }
     if (!deps.dispatchTool) return notEnabled("app_tool_call")
     const result = await deps.dispatchTool(input.tool, dispatchArgs)
@@ -839,13 +1045,140 @@ export async function performAppToolCall(
   linkClaims?: Readonly<Record<string, string>>,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
   const installed = appRegistry.getApp(input.appId)
+  const exposedEntry = installed?.exposes?.tools?.find(t => t.id === input.tool)
+  if (
+    installed &&
+    exposedEntry &&
+    deps.exposedToolsMode !== undefined &&
+    linkClaims === undefined &&
+    !(installed.ui?.tools ?? []).includes(input.tool)
+  ) {
+    const refusal = exposedCallRefusal(installed, exposedEntry, deps.exposedToolsMode, deps.caller, deps.toolLists)
+    if (refusal !== undefined) return errorResult(`app_tool_call: tool "${input.tool}" of app "${input.appId}" ${refusal}`)
+    // The app_tool_call surfaces (UI bridge, REST) keep their JSON-in-text
+    // envelope for an imported result, like an imported `ui.tools` id.
+    const out = await dispatchExposedEntry(appRegistry, { appId: input.appId, id: input.tool, args: input.args ?? {} }, deps)
+    return "imported" in out ? textResult(out.imported) : out.result
+  }
   if (!installed || !installed.ui) {
     return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
   }
   const linkScope: AppLinkScope | undefined = linkClaims
     ? { toolScope: installed.ui.toolScope ?? {}, claims: linkClaims }
     : undefined
-  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir, linkScope)
+  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps, installed.dir, linkScope, installed.dataDir)
+}
+
+/**
+ * Why the HTTP twin refuses this `exposes.tools` call, or undefined when it may
+ * run. Same rules as the gateway: its deny grants and deny/allow lists
+ * (`gatewayToolRefusal`, any access class), then its visibility rule
+ * (`exposedToolVisible`); a `write` or `approve` tool also needs a caller
+ * session, so an anonymous request only ever reaches `read` tools.
+ */
+function exposedCallRefusal(
+  installed: InstalledApp,
+  entry: AppExposedTool,
+  mode: ExposedToolsMode,
+  caller: ExposedToolCaller | undefined,
+  toolLists: ToolLists | undefined,
+): string | undefined {
+  if (entry.access !== "read" && caller?.sessionId === undefined) {
+    return `is exposed as access: ${entry.access}, which needs a caller session; none was given.`
+  }
+  let name: string
+  try {
+    name = exposedToolName(installed.exposes?.prefix ?? "", entry)
+  } catch (err) {
+    return `has no MCP name: ${err instanceof Error ? err.message : String(err)}`
+  }
+  const gateRefusal = gatewayToolRefusal(name, {
+    ...toolLists,
+    denyGrants: caller?.denyGrants,
+    callerSessionId: caller?.sessionId,
+  })
+  if (gateRefusal !== undefined) return `("${name}") ${gateRefusal}`
+  if (exposedToolVisible(mode, { appId: installed.appId, entry, name }, caller)) return undefined
+  return entry.access === "read"
+    ? `is exposed as access: read, which defaults.apps.exposedTools "${mode}" does not allow.`
+    : `is exposed as access: ${entry.access}; the caller's AGENT.md does not opt in to "${name}" and its app's requires.apps does not grant it.`
+}
+
+/**
+ * Run one entry of an installed app's `exposes.tools`: a bundled TOOL.md
+ * through its driver, or an `imported:<alias>/<tool>` id through the imported
+ * MCP server. Unlike `app_tool_call` it never falls through to the daemon's own
+ * tools, and `ui.tools` plays no part: the entry must be declared in
+ * `exposes.tools`. Who may call (access class, opt-in, kill-switch) is decided
+ * where the tool is registered or routed, not here.
+ *
+ * An imported result is the import's own `CallToolResult`, returned as is
+ * (content blocks, `structuredContent`, `isError`, `_meta`), so the exposed
+ * tool behaves like the original one; a bundled tool's output is wrapped as
+ * JSON text like everywhere else.
+ */
+export async function performExposedToolCall(
+  appRegistry: AppRegistry,
+  input: { appId: string; id: string; args?: Record<string, unknown> },
+  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller">,
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult> | CallToolResult> {
+  const out = await dispatchExposedEntry(appRegistry, input, deps)
+  if (!("imported" in out)) return out.result
+  return asCallToolResult(out.imported) ?? textResult(out.imported)
+}
+
+/** `value` when it has the shape of an MCP `CallToolResult` (a `content` array). */
+function asCallToolResult(value: unknown): CallToolResult | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
+  return Array.isArray((value as { content?: unknown }).content) ? (value as CallToolResult) : undefined
+}
+
+/**
+ * `args` without the keys `inputSchema` does not declare, so an exposed entry
+ * can narrow the imported tool (e.g. drop a `path` that writes a file). No
+ * declared `properties`, or `additionalProperties: true`: `args` unchanged.
+ */
+function argsDeclaredBy(
+  inputSchema: Readonly<Record<string, unknown>> | undefined,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const properties = inputSchema?.properties
+  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) return args
+  if (inputSchema?.additionalProperties === true) return args
+  return Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(properties, key)))
+}
+
+async function dispatchExposedEntry(
+  appRegistry: AppRegistry,
+  input: { appId: string; id: string; args?: Record<string, unknown> },
+  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller">,
+): Promise<{ result: ReturnType<typeof textResult> | ReturnType<typeof errorResult> } | { imported: unknown }> {
+  const installed = appRegistry.getApp(input.appId)
+  const entry = installed?.exposes?.tools?.find(t => t.id === input.id)
+  if (!installed || !entry) {
+    return { result: errorResult(`exposed tool "${input.id}" is not declared in app "${input.appId}"'s exposes.tools.`) }
+  }
+  const args = input.args ?? {}
+  try {
+    if (entry.id.startsWith("imported:")) {
+      if (!deps.callImportedTool) return { result: notEnabled("exposed tool") }
+      const rest = entry.id.slice("imported:".length)
+      const slash = rest.indexOf("/")
+      if (slash === -1) return { result: errorResult(`malformed imported tool id "${entry.id}".`) }
+      const imported = await deps.callImportedTool(
+        rest.slice(0, slash),
+        rest.slice(slash + 1),
+        argsDeclaredBy(entry.inputSchema, args),
+        deps.caller?.sessionId,
+      )
+      return { imported }
+    }
+    const bundled = await runBundledAppTool(installed.dir, entry.id, args, installed.dataDir)
+    if (!bundled.found) return { result: errorResult(`app "${input.appId}" bundles no TOOL.md "${entry.id}" any more.`) }
+    return { result: textResult(bundled.output) }
+  } catch (err) {
+    return { result: errorResult(err instanceof Error ? err.message : String(err)) }
+  }
 }
 
 /**
@@ -938,17 +1271,6 @@ export const MAX_APP_CALL_TIMEOUT_MS = 300_000
 /** Poll interval while awaiting a run's terminal status. */
 const APP_CALL_POLL_INTERVAL_MS = 500
 
-/** `versionSatisfies` throws on a malformed version or range; a refusal is a
- *  result, never an exception. A missing provider version fails closed. */
-function checkVersion(providerVersion: string | undefined, range: string): string | undefined {
-  if (providerVersion === undefined) return "has no recorded version"
-  try {
-    return versionSatisfies(providerVersion, range) ? undefined : `is installed at version ${providerVersion}`
-  } catch (err) {
-    return `has an unusable version (${err instanceof Error ? err.message : String(err)})`
-  }
-}
-
 function appCallLog(input: { callerAppId: string; appId: string; workflow: string }, durationMs: number, ok: boolean): void {
   console.error(
     `app_call: caller=${input.callerAppId} provider=${input.appId} workflow=${input.workflow} durationMs=${durationMs} ok=${ok}`,
@@ -1013,7 +1335,7 @@ export async function performAppCall(
   }
   // 6. The provider's installed version must satisfy the declared range.
   if (declared.version !== undefined) {
-    const problem = checkVersion(provider.version, declared.version)
+    const problem = appVersionProblem(provider.version, declared.version)
     if (problem !== undefined) {
       return {
         ok: false,
@@ -1092,8 +1414,9 @@ export async function performAppCall(
   }
 }
 
-function refIdOf(ref: AnyRef): string {
+function refIdOf(ref: ToolRef): string {
   if (typeof ref === "string") return ref
+  if ("kind" in ref) return `mcp:${ref.server}`
   return ref.ref ?? ref.file ?? "inline"
 }
 
@@ -1177,6 +1500,8 @@ export interface RegisterAppToolsOptions {
   /** The daemon's own workspace root — hidden from `app_run` sessions (see
    *  `app-boundary.ts`). */
   daemonWorkspace?: string
+  /** Operator-granted read-only paths per app id (`apps.readGrants`). Omitted ⇒ none. */
+  appReadGrants?: AppReadGrantResolver
   /** The daemon's own plain `/mcp` gateway URL — lets an `app_run` session
    *  get the gateway mount `agent_start` gives (scoped to the agent's
    *  declared tools, see `SpawnAgentSessionInput.allowTools`). Omitted ⇒ no
@@ -1227,6 +1552,9 @@ export interface RegisterAppToolsOptions {
    *  `killServiceProcess(pid)` (process group) + `registry.kill(sessionId)`;
    *  tests inject a spy. */
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
+  /** AIP-53 `services[].expose` tunnels (the daemon's TunnelRegistry, see
+   *  `createTunnelRegistryExposer`). Omitted: `expose` publishes nothing. */
+  serviceExposer?: AppServiceExposer
   /** Root for remote-installed apps (`<appsDir>/<slug>`, `app_install {url|file}`).
    *  Defaults to `apps/` next to `persistPath` (the daemon state dir). */
   appsDir?: string
@@ -1347,6 +1675,14 @@ export interface PerformInstallOptions {
   readonly skipDaemonChecks?: boolean
   /** `workspaces.json` the app-owned workspace is registered in. Default `~/.agentproto/workspaces.json`. */
   readonly workspacesConfigPath?: string
+  /** Allow re-pointing an already-installed app, whose current `dir` still
+   *  exists, at a `dir` inside a linked git worktree. Default false: that
+   *  install is refused ({@link APP_INSTALL_WORKTREE_REPOINT_REFUSED}),
+   *  because the worktree is removed with its branch and the global record
+   *  would then break the app for every caller. A first install, a re-install
+   *  from the same dir, or one replacing a dir that is already gone is never
+   *  refused. */
+  readonly allowWorktreeRepoint?: boolean
   /**
    * Service-owner launcher (frozen `services:` semantics). Called after the
    * record is upserted and the app workspace registered, once per install,
@@ -1401,13 +1737,32 @@ export async function resolveInstallDataDir(input: {
   return { ok: true, dataDir }
 }
 
+/** Stable marker in the error `performInstall` returns when it refuses to
+ *  re-point an installed app into a linked git worktree (see
+ *  `PerformInstallOptions.allowWorktreeRepoint`). Callers that install
+ *  implicitly (`agentproto maintain` / `steward`) match on it to keep the
+ *  installed copy and carry on. */
+export const APP_INSTALL_WORKTREE_REPOINT_REFUSED = "worktree-repoint-refused"
+
+/** Error-message prefix when a second app asks for an `exposes.prefix` another installed app holds. */
+export const APP_INSTALL_EXPOSED_PREFIX_TAKEN = "exposed-prefix-taken"
+
 export async function performInstall(
   dir: string,
   appRegistry: AppRegistry,
   listRegisteredToolIds: () => Promise<string[]>,
   resolveAgentAdapter?: AgentAdapterResolver,
   opts?: PerformInstallOptions,
-): Promise<{ ok: true; record: Awaited<ReturnType<typeof appRegistry.upsertApp>> } | { ok: false; error: string }> {
+): Promise<
+  | {
+      ok: true
+      record: Awaited<ReturnType<typeof appRegistry.upsertApp>>
+      services?: AppServiceInstallReport
+      /** `requires.apps` entries that do not hold yet; each grants nothing until it does. */
+      unmetRequires?: UnmetRequirement[]
+    }
+  | { ok: false; error: string }
+> {
   // `loadAppHandle` reads `ui.path` eagerly and throws when it's missing —
   // exactly the case a declared `ui.build` exists to recover from. Peek the
   // frontmatter first (no html read) and build BEFORE the real load, so a
@@ -1455,6 +1810,57 @@ export async function performInstall(
     return { ok: false, error: "the app has no `id` — set one in defineApp()/APP.md frontmatter to install it." }
   }
 
+  // AIP-53 Requirements rule 1: every requires.apps[].tools name must be
+  // exposed by its provider when that provider is installed.
+  const unexposed = unexposedRequiredTools(appRegistry, handle.appRequirements)
+  if (unexposed !== undefined) return { ok: false, error: `app_install: ${unexposed}` }
+
+  const exposedPrefix = handle.exposes.prefix
+  if (exposedPrefix !== undefined && (handle.exposes.tools?.length ?? 0) > 0) {
+    try {
+      parseExposedTools(
+        handle.exposes.tools,
+        exposedPrefix,
+        m => new Error(m),
+        { daemonToolNames: DAEMON_TOOL_NAMES },
+        handle.exposes.resources,
+      )
+    } catch (err) {
+      return { ok: false, error: `app_install: ${err instanceof Error ? err.message : String(err)}` }
+    }
+    const holder = appRegistry
+      .listApps()
+      .find(a => a.appId !== handle.id && a.exposes?.prefix === exposedPrefix && (a.exposes.tools?.length ?? 0) > 0)
+    if (holder) {
+      return {
+        ok: false,
+        error:
+          `${APP_INSTALL_EXPOSED_PREFIX_TAKEN}: exposes.prefix "${exposedPrefix}" is already used by installed app ` +
+          `"${holder.appId}". Two apps cannot share an MCP prefix; change 'exposes.prefix' or uninstall "${holder.appId}". ` +
+          "Reinstalling the same appId is unaffected.",
+      }
+    }
+  }
+
+  const installed = appRegistry.getApp(handle.id)
+  if (
+    installed !== undefined &&
+    opts?.allowWorktreeRepoint !== true &&
+    resolve(installed.dir) !== resolve(dir) &&
+    existsSync(installed.dir)
+  ) {
+    const linked = resolveWorktreeIdentity(dir)
+    if (linked !== undefined) {
+      return {
+        ok: false,
+        error:
+          `${APP_INSTALL_WORKTREE_REPOINT_REFUSED}: "${handle.id}" is installed from "${installed.dir}"; ` +
+          `"${dir}" is inside the linked git worktree "${linked.worktreePath}", which goes away with its branch. ` +
+          "Not re-pointing the installed app there implicitly: pass repoint: true (CLI: --repoint) to install from the worktree on purpose.",
+      }
+    }
+  }
+
   // A workflow `tool` step id is satisfied by either a registered daemon
   // tool OR one of the app's OWN bundled TOOL.md ids (BRIEF-D) — the same
   // id-coverage `mergeAppAndDaemonToolRegistry` applies at compile time
@@ -1473,16 +1879,6 @@ export async function performInstall(
     return {
       ok: false,
       error: `unknown daemon tool id(s) referenced by workflow step(s) — would otherwise fail at STEP-DISPATCH time: ${JSON.stringify(missingByWorkflow)}`,
-    }
-  }
-
-  if (handle.agents.length > 0 && !skipDaemonChecks) {
-    const resolved = resolveAgentAdapter ? await resolveAgentAdapter(DEFAULT_AGENT_ADAPTER) : null
-    if (!resolved) {
-      return {
-        ok: false,
-        error: `agent adapter "${DEFAULT_AGENT_ADAPTER}" could not be resolved — run \`agentproto install ${DEFAULT_AGENT_ADAPTER}\` first.`,
-      }
     }
   }
 
@@ -1581,7 +1977,9 @@ export async function performInstall(
     unvalidatedAgentTools,
     ...(handle.requires ? { requires: handle.requires } : {}),
     ...(handle.appRequirements.length > 0 ? { requiresApps: handle.appRequirements } : {}),
-    ...(handle.exposes.agents.length > 0 || handle.exposes.workflows.length > 0
+    ...(handle.exposes.agents.length > 0 ||
+    handle.exposes.workflows.length > 0 ||
+    (handle.exposes.tools?.length ?? 0) > 0
       ? { exposes: handle.exposes }
       : {}),
     ...(ui ? { ui } : {}),
@@ -1612,9 +2010,12 @@ export async function performInstall(
   // Runs AFTER the record + workspace exist; idempotent and best-effort — a
   // service that fails to spawn is reported, never fails the install. An app
   // without `services` skips this entirely (byte-for-byte unchanged).
+  let services: AppServiceInstallReport | undefined
   if (parsedServices.services.length > 0 && opts?.ensureServices) {
     try {
-      await opts.ensureServices({ app: record, dir, services: parsedServices.services })
+      services = serviceInstallReport(
+        await opts.ensureServices({ app: record, dir, services: parsedServices.services }),
+      )
     } catch (err) {
       console.warn(
         `[app-services] could not launch service owners for "${record.appId}": ` +
@@ -1623,7 +2024,48 @@ export async function performInstall(
     }
   }
 
-  return { ok: true, record }
+  const unmet = unmetRequires(appRegistry, record.requiresApps)
+  return {
+    ok: true,
+    record,
+    ...(services !== undefined ? { services } : {}),
+    ...(unmet.length > 0 ? { unmetRequires: unmet } : {}),
+  }
+}
+
+/** What an install reports about the app's services: spawn failures and,
+ *  per exposed service, its public URL / auth / stability / tunnel state
+ *  (AIP-53 host rule 2 and Exposure rules 4 and 6). */
+export interface AppServiceInstallReport {
+  errors?: Array<{ name: string; error: string }>
+  exposures?: AppServiceExposure[]
+}
+
+function serviceInstallReport(result: EnsureAppServiceOwnersResult): AppServiceInstallReport | undefined {
+  const report: AppServiceInstallReport = {
+    ...(result.errors.length > 0 ? { errors: result.errors } : {}),
+    ...(result.exposures !== undefined && result.exposures.length > 0 ? { exposures: result.exposures } : {}),
+  }
+  return Object.keys(report).length > 0 ? report : undefined
+}
+
+/** `{ unmetRequires }` for an app listing, recomputed from the registry; empty when every dependency holds. */
+function unmetRequiresField(appRegistry: AppRegistry, app: InstalledApp): { unmetRequires?: UnmetRequirement[] } {
+  const unmet = unmetRequires(appRegistry, app.requiresApps)
+  return unmet.length > 0 ? { unmetRequires: unmet } : {}
+}
+
+/** `app_install`'s payload: the record, plus the service report and the unmet `requires.apps` when any. */
+function installPayload(result: {
+  record: object
+  services?: AppServiceInstallReport
+  unmetRequires?: UnmetRequirement[]
+}): object {
+  return {
+    ...result.record,
+    ...(result.services !== undefined ? { services: result.services } : {}),
+    ...(result.unmetRequires !== undefined ? { unmetRequires: result.unmetRequires } : {}),
+  }
 }
 
 /**
@@ -1647,6 +2089,110 @@ export async function repairIncompleteApps(
       skipDaemonChecks: true,
     }).catch(() => ({ ok: false as const }))
     if (result.ok && result.record.appId === issue.appId) repaired.push(issue.appId)
+  }
+  return repaired
+}
+
+/** `path` is strictly below `root`. */
+function isInside(path: string, root: string): boolean {
+  const rel = relative(root, path)
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
+}
+
+/**
+ * Self-heal ANY `dir-missing` record (local installs included, not only one
+ * a removed linked worktree left) whose app reappears under a known main
+ * worktree: re-install it from that copy and record the repair
+ * (`AppRegistry.recordRepoint` + a log line). The motivating case is an app
+ * installed, or silently re-pointed, from a PR worktree that was then
+ * removed; a removed path cannot prove it WAS a linked worktree, so the
+ * scope is every `dir-missing` record and the safety comes from the match
+ * rule below, not from the record's history.
+ *
+ * Candidates come only from what the daemon already knows (the removed
+ * worktree's `.git` file is gone, so its main worktree cannot be read off
+ * the dead path): the main worktree of every user workspace root
+ * (`workspaces.json`) and of every other installed app whose dir is live.
+ * The relative path is the part of the dead dir below its topmost missing
+ * ancestor (the removed worktree's root, when the whole worktree went away).
+ * Fail-closed: the record is re-pointed only when exactly one candidate
+ * `<mainWorktree>/<relative path>` holds an app manifest declaring the same
+ * `appId`, and never into a main worktree that contains the dead dir; a
+ * different id, no copy, an unloadable manifest, or more than one match
+ * leaves the `dir-missing` issue exactly as it was. Returns the app ids
+ * re-pointed.
+ *
+ * A `dataDir` at or under the dead dir lost its contents with
+ * it, so it is resolved afresh as on a first install from the new dir (the
+ * APP.md `data.dir` hint, else `<to>/data`; never the app root itself, even
+ * when the old dataDir was `<from>`). A `dataDir` outside the dead dir is
+ * kept.
+ */
+export async function repairWorktreeMissingApps(
+  appRegistry: AppRegistry,
+  listRegisteredToolIds: () => Promise<string[]>,
+  resolveAgentAdapter?: AgentAdapterResolver,
+  opts?: { workspacesConfigPath?: string },
+): Promise<string[]> {
+  const missing = appRegistry.listIssues().filter(i => i.kind === "dir-missing" && i.appId !== null && i.dir !== null)
+  if (missing.length === 0) return []
+
+  const knownDirs: string[] = appRegistry
+    .listApps()
+    .map(a => a.dir)
+    .filter(d => existsSync(d))
+  try {
+    const config = await loadWorkspacesConfig(opts?.workspacesConfigPath)
+    for (const ws of config.workspaces) if (ws.ownerApp === undefined) knownDirs.push(ws.path)
+  } catch {
+    // An unreadable workspaces.json only narrows the candidates.
+  }
+  const mainRoots = new Set<string>()
+  for (const d of knownDirs) {
+    const main = resolveMainRepoPath(d)
+    if (main !== undefined) mainRoots.add(resolve(main))
+  }
+
+  const repaired: string[] = []
+  for (const issue of missing) {
+    const appId = issue.appId!
+    const from = resolve(issue.dir!)
+    let top = from
+    while (!existsSync(dirname(top)) && dirname(top) !== top) top = dirname(top)
+    const rel = relative(top, from)
+    const matches: { dir: string; dataHint: string | undefined }[] = []
+    for (const root of mainRoots) {
+      if (from === root || isInside(from, root)) continue
+      const candidate = join(root, rel)
+      if (!existsSync(join(candidate, ".agentproto", "APP.md"))) continue
+      let handle: Awaited<ReturnType<typeof loadAppHandle>>
+      try {
+        handle = await loadAppHandle(candidate)
+      } catch {
+        continue
+      }
+      if (handle.id === appId) matches.push({ dir: candidate, dataHint: handle.data?.dir })
+    }
+    if (matches.length !== 1) continue
+    const { dir: to, dataHint } = matches[0]!
+    // A dataDir at or under the dead dir went with it: there is no data left
+    // to keep a relation to, so it resolves as on a first install from `to`
+    // (the APP.md `data.dir` hint, else `<to>/data`). A dataDir elsewhere is
+    // live data and is kept (`performInstall` prefers the previous one).
+    const prevData = appRegistry.getApp(appId)?.dataDir
+    const dataDir =
+      prevData !== undefined && (resolve(prevData) === from || isInside(resolve(prevData), from))
+        ? (dataHint ?? DEFAULT_APP_DATA_SUBDIR)
+        : undefined
+    const result = await performInstall(to, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+      skipDaemonChecks: true,
+      ...(dataDir !== undefined ? { dataDir } : {}),
+      ...(opts?.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+    }).catch(() => ({ ok: false as const }))
+    if (!result.ok || result.record.appId !== appId) continue
+    appRegistry.recordRepoint(appId, from, to)
+    console.warn(`[app-registry] re-pointed "${appId}" from ${from} (dir missing) to ${to} (main worktree copy)`)
+    repaired.push(appId)
   }
   return repaired
 }
@@ -1677,6 +2223,8 @@ export interface AppServiceEnsurerDeps {
   workspacesConfigPath?: string
   spawnServiceOwner?: SpawnServiceOwner
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
+  /** AIP-53 `services[].expose` tunnels. Omitted: nothing is published. */
+  exposer?: AppServiceExposer
 }
 
 /**
@@ -1745,6 +2293,7 @@ export function buildAppServiceEnsurer(
     dir: string
     service: AppService
     workspaceSlug?: string
+    env?: Record<string, string>
     stateDir: string
   }): Promise<SpawnServiceOwnerResult> => {
     // Upgrade path: reap a service child orphaned by the previous
@@ -1755,25 +2304,55 @@ export function buildAppServiceEnsurer(
       serviceDisplayEntry(input.service),
     )
     if (legacy.killed) console.warn(`[app-services] ${input.appId}:${input.service.name}: ${legacy.reason}`)
+    /** The persisted owner record, pointing at the live attempt (or, for an
+     *  idle on-demand service, at the last one with no pid). */
+    const recordOwner = (info: { sessionId: string; pid?: number; startTicks?: number }): void => {
+      deps.serviceStore.upsert({
+        appId: input.appId,
+        name: input.service.name,
+        entry: serviceDisplayEntry(input.service),
+        sessionId: info.sessionId,
+        ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
+        ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
+        ...(input.service.port !== undefined ? { port: input.service.port } : {}),
+        ...(serviceActivationMode(input.service) === "on-demand" ? { activation: "on-demand" as const } : {}),
+        // A restart keeps the env, so the record keeps the origin with it.
+        ...(input.env?.[APP_SERVICE_PUBLIC_URL_ENV] !== undefined
+          ? { publicUrl: input.env[APP_SERVICE_PUBLIC_URL_ENV] }
+          : {}),
+        startedAt: new Date().toISOString(),
+      })
+    }
+    // `activation: on-demand`: the host takes the declared port and starts
+    // the process on the first request (see app-service-on-demand.ts). Nothing
+    // is spawned here.
+    if (isOnDemandService(input.service)) {
+      let lastSessionId = ""
+      const hosted = await startOnDemandService({
+        registry: deps.registry,
+        appId: input.appId,
+        dir: input.dir,
+        service: input.service,
+        ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+        ...(input.env !== undefined ? { env: input.env } : {}),
+        logFile: appServiceLogPath(input.stateDir, input.service.name),
+        onProcessChange: info => {
+          if (info !== undefined) lastSessionId = info.sessionId
+          recordOwner(info ?? { sessionId: lastSessionId })
+        },
+      })
+      if (!hosted.ok) return { ok: false, error: hosted.error }
+      return { ok: true, sessionId: hosted.handle.sessionId }
+    }
     const result = startAppServiceProcess({
       registry: deps.registry,
       appId: input.appId,
       dir: input.dir,
       service: input.service,
       ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+      ...(input.env !== undefined ? { env: input.env } : {}),
       logFile: appServiceLogPath(input.stateDir, input.service.name),
-      onRespawn: (_attempt, info) => {
-        deps.serviceStore.upsert({
-          appId: input.appId,
-          name: input.service.name,
-          entry: serviceDisplayEntry(input.service),
-          sessionId: info.sessionId,
-          ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
-          ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
-          ...(input.service.port !== undefined ? { port: input.service.port } : {}),
-          startedAt: new Date().toISOString(),
-        })
-      },
+      onRespawn: (_attempt, info) => recordOwner(info),
     })
     if (!result.ok) return { ok: false, error: result.error }
     const { handle } = result
@@ -1795,12 +2374,13 @@ export function buildAppServiceEnsurer(
     const stateDir = app.stateDir ?? app.dataDir ?? dir
     const spawnOwner: SpawnServiceOwner =
       deps.spawnServiceOwner ?? (input => defaultSpawnServiceOwner({ ...input, stateDir }))
-    const spawn = (service: AppService): Promise<SpawnServiceOwnerResult> =>
+    const spawn = (service: AppService, extra?: { env?: Record<string, string> }): Promise<SpawnServiceOwnerResult> =>
       spawnOwner({
         appId: app.appId,
         dir,
         service,
         ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
+        ...(extra?.env !== undefined ? { env: extra.env } : {}),
       })
     const killOwner = createServiceOwnerKiller(deps.registry, deps.killServiceOwner)
     const result =
@@ -1811,12 +2391,16 @@ export function buildAppServiceEnsurer(
             services,
             spawn,
             killOwner,
+            ...(deps.exposer !== undefined ? { exposer: deps.exposer } : {}),
           })
         : await ensureAppServiceOwners({
             store: deps.serviceStore,
             appId: app.appId,
             services,
             isOwnerAlive: owner => {
+              // An on-demand service has no process to look at while idle:
+              // it is alive as long as this daemon holds its host.
+              if (owner.activation === "on-demand") return isAppServiceSupervised(owner.appId, owner.name)
               // Dead-but-restarting (backoff timer in flight): still
               // supervised — a concurrent install in the restart gap must
               // KEEP the record instead of double-spawning (F-5).
@@ -1826,9 +2410,15 @@ export function buildAppServiceEnsurer(
             },
             spawn,
             killOwner,
+            ...(deps.exposer !== undefined ? { exposer: deps.exposer } : {}),
           })
     for (const e of result.errors) {
       console.warn(`[app-services] service "${app.appId}:${e.name}" not started: ${e.error}`)
+    }
+    for (const x of result.exposures ?? []) {
+      if (x.state === "error") {
+        console.warn(`[app-services] service "${app.appId}:${x.name}" has no public URL: ${x.error ?? "tunnel failed"}`)
+      }
     }
     return result
   }
@@ -1878,6 +2468,9 @@ export async function reensureInstalledAppServicesOnBoot(
       const result = await ensureServices({ app, dir: app.dir, services, force: true })
       spawned += result.spawned.length
       for (const e of result.errors) errors.push(`${app.appId}:${e.name}: ${e.error}`)
+      for (const x of result.exposures ?? []) {
+        if (x.state === "error") errors.push(`${app.appId}:${x.name}: tunnel: ${x.error ?? "failed"}`)
+      }
     } catch (err) {
       errors.push(`${app.appId}: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -1898,9 +2491,18 @@ export function registerAppTools(
 
   // Once per registry (this runs per MCP server instance): heal partial
   // records from disk without blocking the first request.
-  if (!repairStarted.has(appRegistry) && appRegistry.listIssues().some(i => i.kind === "incomplete")) {
+  if (
+    !repairStarted.has(appRegistry) &&
+    appRegistry.listIssues().some(i => i.kind === "incomplete" || i.kind === "dir-missing")
+  ) {
     repairStarted.add(appRegistry)
-    void repairIncompleteApps(appRegistry, listRegisteredToolIds, resolveAgentAdapter).catch(() => {})
+    void repairIncompleteApps(appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+      .then(() =>
+        repairWorktreeMissingApps(appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+          ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+        }),
+      )
+      .catch(() => {})
   }
 
   const appsDir =
@@ -1934,6 +2536,7 @@ export function registerAppTools(
     ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
     ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
     ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
+    ...(opts.serviceExposer ? { exposer: opts.serviceExposer } : {}),
   })
 
   interface RemoteCatalogEntryRef {
@@ -2051,10 +2654,12 @@ export function registerAppTools(
       "and any mismatch is refused before anything is installed. A remote app's `ui.build` command is NOT " +
       "run unless `allowBuild: true` (git only; a `.agentapp` never builds) — without it the UI bundle must " +
       "already be in the source. " +
-      "Remote installs are kept current with `app_resync`. Validates every " +
+      "Remote installs are kept current with `app_resync`. A `requires.apps[].tools` name the installed " +
+      "provider does not expose refuses the install; a provider that is missing or unmet does not, and is " +
+      "reported in `unmetRequires` (reason not-installed, version-mismatch or tool-not-exposed). Validates every " +
       "WORKFLOW.md `tool` step's id against the daemon's dispatchable tools (missing " +
       "ids are reported ALL at once, instead of failing one at a time at " +
-      "STEP-DISPATCH time) and checks the `mastra-agent` adapter resolves. Agent-" +
+      "STEP-DISPATCH time). Agent-" +
       "declared tool refs (workspace tools like `read_file`) are the adapter's own " +
       "business and are never validated here — see `unvalidatedAgentTools` on the " +
       "result. Re-installing the same appId upserts (and keeps its existing " +
@@ -2085,6 +2690,13 @@ export function registerAppTools(
           "Remote installs only: URL of the catalog this install comes from (the entry's `catalogUrl` in " +
             "`app_catalog`). Recorded as `source.catalogId` so `app_updates` / `app_resync` follow that catalog's entry.",
         ),
+      repoint: z
+        .boolean()
+        .optional()
+        .describe(
+          "`dir` installs only: allow re-pointing an app that is already installed from a live dir at a `dir` " +
+            "inside a linked git worktree. Default false (refused: the worktree is removed with its branch).",
+        ),
       dataDir: z
         .string()
         .optional()
@@ -2103,11 +2715,12 @@ export function registerAppTools(
       if ("dir" in input) {
         const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
           ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
+          ...(input.repoint === true ? { allowWorktreeRepoint: true } : {}),
           ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
           ensureServices,
         })
         if (!result.ok) return errorResult(`app_install: ${result.error}`)
-        return textResult(result.record)
+        return textResult(installPayload(result))
       }
       if ("url" in input && isAgentappUrl(input.url)) {
         if (input.ref !== undefined || input.subdir !== undefined || input.sha !== undefined) {
@@ -2140,7 +2753,7 @@ export function registerAppTools(
         input.catalogUrl,
       )
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
-      return textResult(result.record)
+      return textResult(installPayload(result))
     },
   )
 
@@ -2320,7 +2933,9 @@ export function registerAppTools(
     app: InstalledApp & {
       dataDir: string
       dirMissing: boolean
+      operatorReadGrants?: string[]
       registryProblems?: string[]
+      unmetRequires?: UnmetRequirement[]
       runs: {
         appRunId: string
         status: string
@@ -2341,7 +2956,9 @@ export function registerAppTools(
     dataDir: app.dataDir,
     ...(app.source !== undefined ? { source: app.source } : {}),
     ...(app.dirMissing ? { dirMissing: true } : {}),
+    ...(app.operatorReadGrants ? { operatorReadGrants: app.operatorReadGrants } : {}),
     ...(app.registryProblems ? { registryProblems: app.registryProblems } : {}),
+    ...(app.unmetRequires ? { unmetRequires: app.unmetRequires } : {}),
     agents: app.agents.map(a => a.id),
     workflows: app.workflows.map(w => w.id),
     requires: app.requires,
@@ -2351,7 +2968,7 @@ export function registerAppTools(
   const appListSchema = z.object({})
   type AppListInput = z.infer<typeof appListSchema>
 
-  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string; dirMissing: boolean; registryProblems?: string[] })[]>(server, {
+  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string; dirMissing: boolean; operatorReadGrants?: string[]; registryProblems?: string[] })[]>(server, {
     id: "app_list",
     description: "List installed apps, each with a summary of its app_run history. " +
       "COMPACT BY DEFAULT: each entry keeps appId/name/version/description/" +
@@ -2361,18 +2978,29 @@ export function registerAppTools(
       "installed record including ui/artifact/skill/dev details and the " +
       "full agent/workflow refs. `dirMissing: true` flags an install whose " +
       "`dir` no longer exists on disk (moved worktree, deleted checkout) — " +
-      "its ui panel (if any) serves an error page until reinstalled.",
+      "its ui panel (if any) serves an error page until reinstalled. " +
+      "`operatorReadGrants` lists the extra READ-ONLY paths the operator granted " +
+      "this app in `apps.readGrants` of the daemon config (absent when none). " +
+      "`unmetRequires` lists the `requires.apps` entries that do not hold right now " +
+      "(absent when every dependency holds).",
     inputSchema: appListSchema,
     handler: async () => {
       const runs = appRegistry.listRuns()
       const issues = appRegistry.listIssues()
+      const repairs = new Map(appRegistry.listRepairs().map(r => [r.appId, r]))
       return appRegistry.listApps().map(app => ({
         ...app,
         dataDir: appDataDir(app),
         dirMissing: !existsSync(app.dir),
+        ...(opts.appReadGrants !== undefined && opts.appReadGrants(app.appId).length > 0
+          ? { operatorReadGrants: [...opts.appReadGrants(app.appId)] }
+          : {}),
         ...(issues.some(i => i.appId === app.appId)
           ? { registryProblems: issues.filter(i => i.appId === app.appId).flatMap(i => [...i.problems]) }
           : {}),
+        // A completed self-heal, not a problem: reported apart.
+        ...(repairs.has(app.appId) ? { registryRepair: repairs.get(app.appId) } : {}),
+        ...unmetRequiresField(appRegistry, app),
         runs: runs
           .filter(r => r.appId === app.appId)
           .map(r => ({
@@ -2433,22 +3061,20 @@ export function registerAppTools(
         .string()
         .optional()
         .describe("When passed, refuse to run if the app is not applied to this scope."),
-      adapter: z
-        .string()
-        .optional()
-        .describe(
-          "Agent adapter slug. Omitted → EACH agent resolves its own (AGENT.md " +
-            "`metadata.adapter`/`metadata.harness` > `claude-*` model → `claude-code` > " +
-            "`mastra-agent`). Given → this slug is used for EVERY agent; sets `harness` " +
-            "when `harness` is absent.",
-        ),
       harness: z
         .string()
         .optional()
         .describe(
-          "Canonical harness slug (defaults to `adapter`, or to each agent's resolved " +
-            "adapter when neither is given). Recorded on the run + each session; sets " +
-            "`adapter` when `adapter` is absent.",
+          "Harness slug. Omitted: each agent resolves its own (AGENT.md " +
+            "`metadata.harness`, or the deprecated `metadata.adapter`, then the model " +
+            "prefix). Given: used for every agent and recorded on the run + each session.",
+        ),
+      adapter: z
+        .string()
+        .optional()
+        .describe(
+          "Deprecated alias of `harness` (`harness` wins when both are set); removed in " +
+            "the next major of @agentproto/runtime. Using it adds a warning.",
         ),
       model: z
         .string()
@@ -2519,8 +3145,10 @@ export function registerAppTools(
       // agent whose metadata and model route resolve to nothing lands in the
       // run's `errors` instead. A caller-given adapter/harness still wins for
       // EVERY agent.
-      const callerAdapter = input.adapter ?? input.harness
-      const callerHarness = callerAdapter === undefined ? undefined : (input.harness ?? input.adapter)!
+      // `harness` is canonical, `adapter` its deprecated alias (warns).
+      const callerAdapter = input.harness ?? input.adapter
+      const callerHarness = callerAdapter
+      const appRunWarnings = input.adapter !== undefined ? [`app_run: ${ADAPTER_FIELD_DEPRECATION}`] : []
       const model = input.model
 
       // Run-level `adapter`/`harness` (recorded on the run, echoed by the
@@ -2530,8 +3158,8 @@ export function registerAppTools(
       let runAdapter = callerAdapter
       let runHarness = callerHarness
       const reportedRunner = () => ({
-        adapter: runAdapter ?? DEFAULT_AGENT_ADAPTER,
-        harness: runHarness ?? runAdapter ?? DEFAULT_AGENT_ADAPTER,
+        ...(runAdapter !== undefined ? { adapter: runAdapter } : {}),
+        ...(runHarness !== undefined ? { harness: runHarness } : {}),
       })
 
       // B — the AGENT.md reaches EVERY harness (AIP-42 is runner-agnostic):
@@ -2622,6 +3250,7 @@ export function registerAppTools(
               app,
               // An operator-chosen cwd outside the app is readable, never writable.
               ...(input.cwd !== undefined ? { extraReadOnly: [input.cwd] } : {}),
+              ...(opts.appReadGrants !== undefined ? { readGrants: opts.appReadGrants(app.appId) } : {}),
               ...(opts.daemonWorkspace !== undefined ? { daemonWorkspace: opts.daemonWorkspace } : {}),
             }),
             ...(spawnPrompt ? { prompt: spawnPrompt } : {}),
@@ -2711,6 +3340,7 @@ export function registerAppTools(
             status: run.status,
             sessions,
             ...(errors.length > 0 ? { errors } : {}),
+            ...(appRunWarnings.length > 0 ? { warnings: appRunWarnings } : {}),
           })
         }
 
@@ -2738,6 +3368,7 @@ export function registerAppTools(
           ...(run.endedAt ? { endedAt: run.endedAt } : {}),
           sessions,
           ...(errors.length > 0 ? { errors } : {}),
+          ...(appRunWarnings.length > 0 ? { warnings: appRunWarnings } : {}),
         })
       }
 
@@ -2752,12 +3383,21 @@ export function registerAppTools(
         ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
       })
+      if (sessions.length === 0 && errors.length > 0) {
+        appRegistry.endRun(run.appRunId, {
+          status: "failed",
+          error: errors.map(e => `${e.agentId}: ${e.error}`).join("; "),
+        })
+      }
       return textResult({
         appRunId: run.appRunId,
+        status: run.status,
+        ...(run.endedAt ? { endedAt: run.endedAt } : {}),
         ...reportedRunner(),
         ...(model !== undefined ? { model } : {}),
         sessions,
         ...(errors.length > 0 ? { errors } : {}),
+        ...(appRunWarnings.length > 0 ? { warnings: appRunWarnings } : {}),
       })
     },
   )
@@ -2828,6 +3468,49 @@ export function registerAppTools(
       if (app && (await appStateLedgerExists(app))) {
         state = { snapshot: await appStateSnapshot(app) }
       }
+      // AIP-53 Exposure rule 6: per exposed service, its public origin, auth,
+      // stability and tunnel state.
+      const exposures: AppServiceExposure[] = []
+      // AIP-53 Activation: where each on-demand service stands (`absent` =
+      // this daemon holds no host for it, e.g. it could not bind its port).
+      const activations: Array<{ name: string; mode: "on-demand"; state: string }> = []
+      let declared: readonly AppService[] = []
+      if (app) {
+        try {
+          declared = parseAppServices((await readAppRefs(app.dir)).services).services
+        } catch {
+          declared = []
+        }
+        for (const service of declared) {
+          if (!isOnDemandService(service)) continue
+          activations.push({
+            name: service.name,
+            mode: "on-demand",
+            state: onDemandServiceState(app.appId, service.name) ?? "absent",
+          })
+        }
+      }
+      if (app && opts.serviceExposer) {
+        for (const service of declared) {
+          if (!isExposedService(service)) continue
+          exposures.push(
+            opts.serviceExposer.status(app.appId, service) ?? {
+              name: service.name,
+              auth: service.expose.auth ?? "guard",
+              stable: false,
+              state: "stopped",
+            },
+          )
+        }
+      }
+      let exposedTools: { tools: string[]; skipped: Array<{ name: string; reason: string }> } | undefined
+      if (app && (app.exposes?.tools?.length ?? 0) > 0) {
+        const plan = await planExposedTools(appRegistry)
+        exposedTools = {
+          tools: plan.tools.filter(t => t.appId === app.appId).map(t => t.name),
+          skipped: plan.skipped.filter(x => x.appId === app.appId).map(({ name, reason }) => ({ name, reason })),
+        }
+      }
       return textResult({
         appRunId: run.appRunId,
         appId: run.appId,
@@ -2848,6 +3531,15 @@ export function registerAppTools(
         workflowRuns,
         ...(awaitingApprovals.length > 0 ? { awaitingApprovals } : {}),
         ...(state !== undefined ? { state } : {}),
+        ...(exposedTools !== undefined ? { exposedTools } : {}),
+        ...(exposures.length > 0 || activations.length > 0
+          ? {
+              services: {
+                ...(exposures.length > 0 ? { exposures } : {}),
+                ...(activations.length > 0 ? { activations } : {}),
+              },
+            }
+          : {}),
         ...(app && !existsSync(app.dir) ? { dirMissing: true } : {}),
       })
     },
@@ -2921,7 +3613,7 @@ export function registerAppTools(
         if (dep.version === undefined) continue
         const provider = appRegistry.getApp(dep.id)
         if (!provider) continue
-        const problem = checkVersion(provider.version, dep.version)
+        const problem = appVersionProblem(provider.version, dep.version)
         if (problem !== undefined) {
           return errorResult(
             `app_apply: app "${input.appId}" requires "${dep.id}" ${dep.version}, but "${dep.id}" ${problem}.`,
@@ -3057,17 +3749,33 @@ export function registerAppTools(
       "`initData`, which the daemon verifies against the stored bot token (telegram_bot_token_set) and " +
       "the exact telegramUserId claimed here — only a matching account exchanges it for a short-lived " +
       "session token that can actually call tools (scoped by the app's `ui.toolScope`) or read that one " +
-      "session. Never put \"app_link_mint\" in an app's `ui.tools` — it is refused there and unreachable " +
+      "session. The link is about a session (`sessionId`), about anything else the app scopes on " +
+      "(`claims`, e.g. `{ approvalId }`), or both: at least one of the two is required. Never put \"app_link_mint\" in an app's `ui.tools` — it is refused there and unreachable " +
       "from any UI's own tool-call surface regardless.",
     {
       appId: z.string().describe("Installed app id — must declare a non-empty `ui.toolScope`."),
-      sessionId: z.string().min(1).describe("The session this link is scoped to."),
+      sessionId: z.string().min(1).optional().describe("The session this link is scoped to. Optional when `claims` is given."),
+      claims: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe(
+          "Extra claims the app's `ui.toolScope` can pin as `$link.<name>` (e.g. `{ approvalId: \"a1\" }`). " +
+            "Names: letters, digits, underscores, starting with a letter, 32 characters at most; values 1 to 200 " +
+            "characters; 8 claims at most. Reserved names (telegramUserId, botAlias, sessionTtlMs, exp, kind, appId) " +
+            "and `sessionId` are refused here.",
+        ),
       telegramUserId: z.string().min(1).describe("The Telegram numeric user id (as a string) allowed to open this link."),
       ttlMs: z.number().int().positive().optional().describe("How long the link stays openable before Telegram auth. Default 1 hour."),
       sessionTtlMs: z.number().int().positive().optional().describe("How long the resulting session token lasts once authorized. Default 30 minutes."),
       botAlias: z.string().optional().describe('Telegram bot alias to verify against at link-auth time; default "default".'),
     },
-    async ({ appId, sessionId, telegramUserId, ttlMs, sessionTtlMs, botAlias }) => {
+    async ({ appId, sessionId, claims, telegramUserId, ttlMs, sessionTtlMs, botAlias }) => {
+      const extraClaims = claims ?? {}
+      if (sessionId === undefined && Object.keys(extraClaims).length === 0) {
+        return errorResult("app_link_mint: give a `sessionId`, a non-empty `claims` map, or both.")
+      }
+      const claimsError = validateGenericLinkClaims(extraClaims)
+      if (claimsError) return errorResult(`app_link_mint: ${claimsError}`)
       const installed = appRegistry.getApp(appId)
       if (!installed || !installed.ui) {
         return errorResult(`app_link_mint: app "${appId}" is not installed or has no UI.`)
@@ -3080,7 +3788,8 @@ export function registerAppTools(
       const { token, exp } = mintAppLinkToken({
         appId,
         claims: {
-          sessionId,
+          ...extraClaims,
+          ...(sessionId !== undefined ? { sessionId } : {}),
           telegramUserId,
           sessionTtlMs: String(sessionTtlMs ?? DEFAULT_APP_LINK_SESSION_TTL_MS),
           ...(botAlias ? { botAlias } : {}),
@@ -3088,7 +3797,14 @@ export function registerAppTools(
         ttlMs: ttlMs ?? DEFAULT_APP_LINK_TTL_MS,
         pendingTelegramAuth: true,
       })
-      return textResult({ linkToken: token, exp, appId, sessionId, telegramUserId })
+      return textResult({
+        linkToken: token,
+        exp,
+        appId,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(Object.keys(extraClaims).length > 0 ? { claims: extraClaims } : {}),
+        telegramUserId,
+      })
     },
   )
 
@@ -3188,6 +3904,7 @@ export function registerAppTools(
         store: serviceStore,
         appId: removed.appId,
         killOwner: createServiceOwnerKiller(registry, opts.killServiceOwner),
+        ...(opts.serviceExposer ? { exposer: opts.serviceExposer } : {}),
       })
       await unregisterAppWorkspace(removed.appId, opts.workspacesConfigPath)
       return textResult({ appId: removed.appId, ...(killedServices.length > 0 ? { services: killedServices } : {}) })

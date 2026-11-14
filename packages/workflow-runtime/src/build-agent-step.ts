@@ -7,7 +7,16 @@
  * instead of drifting apart.
  */
 
-import type { AgentHarness, AgentSandboxRef, AgentStep, AgentStepAccess, Bindings, Selector } from "./types.js"
+import type {
+  AgentHarness,
+  AgentPlacementRef,
+  AgentSandboxRef,
+  AgentStep,
+  AgentStepAccess,
+  AgentTurnRetryRef,
+  Bindings,
+  Selector,
+} from "./types.js"
 
 export interface AgentStepFields {
   /** A literal prompt string, or a per-run selector (declarative manifest
@@ -21,6 +30,10 @@ export interface AgentStepFields {
   route?: Selector<string | undefined> | string
   sessionRef?: string
   sandbox?: AgentSandboxRef
+  /** See {@link AgentStep.placement}. */
+  placement?: Selector<AgentPlacementRef | undefined> | AgentPlacementRef
+  /** See {@link AgentStep.turnRetry}. */
+  turnRetry?: Selector<AgentTurnRetryRef | undefined> | AgentTurnRetryRef
   cacheable?: boolean
   policy?: AgentStep["policy"]
   outputSchema?: AgentStep["outputSchema"]
@@ -47,6 +60,8 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     ...(fields.route !== undefined ? { route: fields.route } : {}),
     ...(fields.sessionRef !== undefined ? { sessionRef: fields.sessionRef } : {}),
     ...(fields.sandbox !== undefined ? { sandbox: fields.sandbox } : {}),
+    ...(fields.placement !== undefined ? { placement: fields.placement } : {}),
+    ...(fields.turnRetry !== undefined ? { turnRetry: fields.turnRetry } : {}),
     ...(fields.cacheable ? { cacheable: true } : {}),
     ...(fields.options !== undefined ? { options: fields.options } : {}),
     prompt: typeof prompt === "function" ? prompt : ((_b: Bindings) => prompt),

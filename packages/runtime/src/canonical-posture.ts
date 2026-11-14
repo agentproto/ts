@@ -270,3 +270,79 @@ export function postureEnforcement(
       return "unavailable"
   }
 }
+
+/**
+ * The {@link Posture} a harness mode id reports itself as: the canonical
+ * posture when the id maps to one through {@link canonicalForModeId}, else the
+ * raw native id (`{ harnessModeId }`), e.g. mastra-controller's `execute`.
+ * Used to fold an agent-caused AIP-45 `mode-changed` back onto the session
+ * descriptor's `posture` axis.
+ */
+export function postureForModeId(modeId: string): Posture {
+  return canonicalForModeId(modeId) ?? { harnessModeId: modeId }
+}
+
+/** True when two postures name the same mode (canonical or normalized raw id). */
+export function samePosture(a: Posture | undefined, b: Posture | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b
+  const key = (p: Posture) => (typeof p === "object" ? postureForModeId(p.harnessModeId) : p)
+  const ka = key(a)
+  const kb = key(b)
+  if (typeof ka === "object" || typeof kb === "object") {
+    return (
+      typeof ka === "object" &&
+      typeof kb === "object" &&
+      normalizeModeId(ka.harnessModeId) === normalizeModeId(kb.harnessModeId)
+    )
+  }
+  return ka === kb
+}
+
+/**
+ * How much a canonical posture lets the agent do without asking, for the
+ * caller-ceiling check. `plan` ranks with `default`: plan is a phase the agent
+ * is expected to leave once its plan is approved, so leaving it for the normal
+ * approval mode is not a widening, while leaving it for `accept-edits` or
+ * `bypass` is.
+ */
+const POSTURE_PERMISSIVENESS: Readonly<Record<CanonicalPosture, number>> = {
+  "read-only": 0,
+  plan: 1,
+  default: 1,
+  "accept-edits": 2,
+  bypass: 3,
+}
+
+function postureRank(posture: Posture | undefined): number | undefined {
+  // No caller posture: the harness started in its own default.
+  if (posture === undefined) return POSTURE_PERMISSIVENESS.default
+  const canonical = typeof posture === "object" ? canonicalForModeId(posture.harnessModeId) : posture
+  return canonical === undefined ? undefined : POSTURE_PERMISSIVENESS[canonical]
+}
+
+/**
+ * True when `posture` lets the agent do more than the caller's `ceiling`.
+ * Only canonical postures are ranked: a native mode the canonical vocabulary
+ * does not name (on either side) cannot be compared, so it is never reported
+ * as a widening.
+ */
+export function exceedsPostureCeiling(posture: Posture | undefined, ceiling: Posture | undefined): boolean {
+  const rank = postureRank(posture)
+  const ceilingRank = postureRank(ceiling)
+  return rank !== undefined && ceilingRank !== undefined && rank > ceilingRank
+}
+
+/**
+ * The posture a restart starts in: the session's CURRENT posture, clamped to
+ * the caller's ceiling when the agent itself moved past it
+ * (`postureSource: "agent"`). A clamp returns the ceiling as the caller set it,
+ * `undefined` included (the adapter's own default).
+ */
+export function restartPosture(desc: {
+  posture?: Posture
+  postureCeiling?: Posture
+  postureSource?: "agent"
+}): Posture | undefined {
+  if (desc.postureSource !== "agent") return desc.posture
+  return exceedsPostureCeiling(desc.posture, desc.postureCeiling) ? desc.postureCeiling : desc.posture
+}

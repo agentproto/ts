@@ -226,6 +226,9 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(bootEnvs[0]?.GH_TOKEN).toBe(FAKE_TOKEN)
     expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
     expect(result.descriptor.cwd).toBe("/home/user/agentproto")
+    // The exit-time checkpoint gc needs the HOST repo root: the session cwd
+    // above is a path inside the box and does not exist on this host.
+    expect(result.descriptor.sandboxRepoRoot).toBe("/Users/op/projects/agentproto")
 
     const commands = execCalls.map(c => c.command)
     expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/agentproto.git'"))).toBe(true)
@@ -264,6 +267,26 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(result.descriptor.sandboxConfig).not.toHaveProperty("connectionString")
     expect(result.descriptor.sandboxConfig).not.toHaveProperty("buildEnv")
     expect(JSON.stringify(result.descriptor)).not.toContain("provider-secret")
+  })
+
+  it("sends the session label and workspace slug to the provider, without persisting them", async () => {
+    const result = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      sandbox: "fake",
+      workspaceSlug: "agentproto",
+      label: "pr-review",
+      worktree: { slug: "x" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(bootSpecs[0]?.config).toMatchObject({
+      sessionHolder: result.descriptor.id,
+      sessionLabel: "pr-review",
+      workspaceSlug: "agentproto",
+    })
+    expect(result.descriptor.sandboxConfig).not.toHaveProperty("sessionLabel")
+    expect(result.descriptor.sandboxConfig).not.toHaveProperty("workspaceSlug")
   })
 
   it("killing the session pushes the work branch and records the delivery before the box stops", async () => {
@@ -396,11 +419,11 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       expect(pauseSpy).not.toHaveBeenCalled()
       expect(stopSpy).not.toHaveBeenCalled()
       expect(readFileSyncSync(ledgerFile).toString()).toContain(idB)
-      // B is the LAST session on the box: its close pauses the box (a reused
-      // box is marked pauseable), never an outright stop.
+      // B is the LAST session on the box: an explicit agent_kill tears the
+      // reusable box down (reuse alone is not a pause request).
       registry.kill(idB)
-      await vi.waitFor(() => expect(pauseSpy).toHaveBeenCalledTimes(1))
-      expect(stopSpy).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(stopSpy).toHaveBeenCalledTimes(1))
+      expect(pauseSpy).not.toHaveBeenCalled()
     })
   })
 

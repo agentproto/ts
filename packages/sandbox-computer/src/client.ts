@@ -15,19 +15,23 @@ import {
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
+  egressPoolResponseSchema,
   errorResponseSchema,
   execResponseSchema,
   resumeResponseSchema,
   sessionsResponseSchema,
   suspendResponseSchema,
+  usageResponseSchema,
   type CapacityResponse,
   type ComputerListEntry,
   type ComputerStatus,
   type CreateComputerResponse,
+  type EgressPoolResponse,
   type ExecResponse,
   type ResumeResponse,
   type SessionsResponse,
   type SuspendResponse,
+  type UsageResponse,
 } from "@agentproto/computer-api"
 
 export interface ComputerClientConfig {
@@ -78,12 +82,17 @@ export class ComputerApiError extends Error {
   readonly available: number | undefined
   /** The tenant's total budget for `resource`, when the controller sent it. */
   readonly budget: number | undefined
+  /** The configured limit for a count-cap refusal, when the controller sent it. */
+  readonly cap: number | undefined
+  /** Why a `fleet-capacity` refusal happened (`memory`, `cpus`,
+   *  `egress-slot-unavailable`, ...), when the fleet sent one. */
+  readonly reason: string | undefined
 
   constructor(
     status: number,
     message: string,
     code?: string,
-    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number; budget?: number } = {},
+    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number; budget?: number; cap?: number; reason?: string } = {},
   ) {
     super(message)
     this.name = "ComputerApiError"
@@ -94,6 +103,8 @@ export class ComputerApiError extends Error {
     this.requested = details.requested
     this.available = details.available
     this.budget = details.budget
+    this.cap = details.cap
+    this.reason = details.reason
   }
 }
 
@@ -173,12 +184,13 @@ export class ComputerControllerClient {
     schema: { safeParse: (v: unknown) => { success: true; data: T } | { success: false } },
     body?: unknown,
     signal?: AbortSignal,
+    requestHeaders?: Record<string, string>,
   ): Promise<T> {
     let res: Response
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
-        headers: this.headers(),
+        headers: { ...requestHeaders, ...this.headers() },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         ...(signal !== undefined ? { signal } : {}),
       })
@@ -223,6 +235,8 @@ export class ComputerControllerClient {
           requested: numberField("requested"),
           available: numberField("available"),
           budget: numberField("budget") ?? numberField("total"),
+          cap: numberField("cap"),
+          reason: typeof fields?.reason === "string" ? redactSecret(fields.reason, this.secrets()) : undefined,
         },
       )
     }
@@ -247,9 +261,12 @@ export class ComputerControllerClient {
 
   /** `POST /v1/computers`. Rejects with 400 (validation / unknown template),
    *  429 (capacity), 500 (msb create failure). */
+  /** `POST /v1/computers`. `idempotencyKey` is sent as `Idempotency-Key`:
+   *  the controller and the fleet replay the first successful answer for the
+   *  same key and tenant, so a retry of the same boot never creates twice. */
   async createComputer(
     input: CreateComputerInput,
-    opts: { signal?: AbortSignal } = {},
+    opts: { signal?: AbortSignal; idempotencyKey?: string } = {},
   ): Promise<CreateComputerResponse> {
     // Outbound bodies are contract-checked too: a mistyped input fails
     // locally, wrapped in a redacted ComputerApiError, not as a
@@ -266,7 +283,14 @@ export class ComputerControllerClient {
         ),
       )
     }
-    return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data, opts.signal)
+    return this.request(
+      "POST",
+      "/v1/computers",
+      createComputerResponseSchema,
+      body.data,
+      opts.signal,
+      opts.idempotencyKey !== undefined ? { "Idempotency-Key": opts.idempotencyKey } : undefined,
+    )
   }
 
   /** `GET /v1/computers` - every computer the controller holds for the
@@ -275,6 +299,20 @@ export class ComputerControllerClient {
   async listComputers(): Promise<ComputerListEntry[]> {
     const body = await this.request("GET", "/v1/computers", computerListResponseSchema)
     return body.computers
+  }
+
+  /** `GET /v1/usage?from&to[&endUser]` - the controller's usage ledger for
+   *  the calling tenant in the requested window. */
+  async getUsage(opts: { from: string; to: string; endUser?: string }): Promise<UsageResponse> {
+    const params = new URLSearchParams({ from: opts.from, to: opts.to })
+    if (opts.endUser !== undefined) params.set("endUser", opts.endUser)
+    return this.request("GET", `/v1/usage?${params.toString()}`, usageResponseSchema)
+  }
+
+  /** `GET /v1/egress-pool` - the egress address pool: each slot's id, source
+   *  and public address, and how many computers use it. */
+  async getEgressPool(): Promise<EgressPoolResponse> {
+    return this.request("GET", "/v1/egress-pool", egressPoolResponseSchema)
   }
 
   /** `GET /v1/capacity` - the tenant's whole host budget per resource

@@ -254,7 +254,7 @@ agentproto auth subaccounts list opencode-console --create --prefix opencode
 
 An account can have sub-accounts with their own quota. `list` asks the
 sub-account provider that owns the account (providers ship with their adapter)
-for its sub-accounts; `--create` makes one pinned profile per sub-account
+for its sub-accounts (for opencode, the orgs of every stored console login; a non-active login that is expired or fails is skipped); `--create` makes one pinned profile per sub-account
 (`<prefix>-<name>`, idempotent) with `--subaccount <kind>:<id>` and no stored
 secret where the provider resolves its own. `auth profile opencode-orgs` is a
 deprecated alias for `auth subaccounts list opencode-console`.

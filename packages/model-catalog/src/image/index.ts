@@ -15,3 +15,6 @@ export {
   generateImageModelTable,
 } from "./catalog.js"
 export type { ImageModelDefinition } from "./catalog.js"
+
+export { OPENROUTER_IMAGE_PRICING } from "./openrouter-pricing.generated.js"
+export { REPLICATE_IMAGE_PRICING } from "./replicate-pricing.generated.js"

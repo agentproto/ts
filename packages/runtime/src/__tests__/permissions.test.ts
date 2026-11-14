@@ -181,26 +181,144 @@ describe("decide(session.drive) mirrors the owner gate", () => {
         const gate = checkSessionOwnerGate({ callerSessionId: caller?.id, target, tool: "x", parentOf })
         const d = decide(caller ? as(caller) : operator, "session.drive", to(target), { parentOf })
         expect(d.allow).toBe(gate.ok)
-        expect(d.authoritative).toBe(false)
+        expect(d.authoritative).toBe(true)
       }
     }
+  })
+
+  it("is authoritative for the operator, a session, the system and a relay", () => {
+    expect(decide(operator, "session.drive", to(P)).authoritative).toBe(true)
+    expect(decide(as(A), "session.drive", to(P)).authoritative).toBe(true)
+    expect(decide({ kind: "system" }, "session.drive", to(P)).authoritative).toBe(true)
+    expect(
+      decide({ kind: "relay", boxSessionId: "box", parentSessionId: "P" }, "session.drive", to(P)).authoritative,
+    ).toBe(true)
   })
 })
 
 describe("action vocabulary", () => {
-  it("declares every action, and only the messaging pair is routed", () => {
+  it("declares every action, and only the routed actions are routed", () => {
     for (const a of PERMISSION_ACTIONS) expect(PERMISSION_ACTION_INFO[a]).toBeDefined()
     expect(PERMISSION_ACTIONS.filter(a => PERMISSION_ACTION_INFO[a].routed)).toEqual([
+      "session.drive",
       "session.message",
       "session.message.interrupt",
+      "mcp.mount.stdio",
+      "auth.profile.use",
     ])
+  })
+  it("cron.schedule is enforced as tool.invoke on /mcp, not left to /mcp auth", () => {
+    const info = PERMISSION_ACTION_INFO["cron.schedule"]
+    expect(info.enforcedAt).toContain("tool-deny-gate.ts")
+    expect(info.enforcedAt).toContain("tool.invoke")
+    expect(info.enforcedAt).not.toContain("/mcp auth only")
+    expect(info.surfaces).toEqual(expect.arrayContaining(["cron_create", "cron_update", "cron_delete"]))
   })
   it("an unrouted action is never reported as authoritative", () => {
     for (const a of PERMISSION_ACTIONS) {
-      if (PERMISSION_ACTION_INFO[a].routed || a === "session.drive") continue
+      if (PERMISSION_ACTION_INFO[a].routed) continue
       const d = decide(operator, a, { kind: "none" })
       expect(d).toMatchObject({ action: a, allow: false, authoritative: false, rule: "not-routed" })
     }
+  })
+})
+
+describe("decide(session, auth.profile.use)", () => {
+  const ctx = { profiles: { callerAllowed: ["p-own", "p-shared"] } }
+
+  it("allows a profile in the caller's set", () => {
+    const d = decide(as(A), "auth.profile.use", { kind: "profile", ref: "p-shared" }, ctx)
+    expect(d).toMatchObject({
+      allow: true,
+      rule: "profile.parent-set",
+      authoritative: true,
+    })
+  })
+
+  it("denies a profile outside the caller's set", () => {
+    const d = decide(as(A), "auth.profile.use", { kind: "profile", ref: "p-other" }, ctx)
+    expect(d).toMatchObject({
+      allow: false,
+      rule: "profile.outside-parent-set",
+      authoritative: true,
+    })
+    expect(d.reason).toContain("p-other")
+  })
+
+  it("the operator may name any profile", () => {
+    const d = decide(operator, "auth.profile.use", { kind: "profile", ref: "p-other" }, ctx)
+    expect(d).toMatchObject({ allow: true, rule: "operator", authoritative: true })
+  })
+
+  it("a system principal may name any profile", () => {
+    const d = decide({ kind: "system" }, "auth.profile.use", { kind: "profile", ref: "p-other" }, ctx)
+    expect(d).toMatchObject({ allow: true, rule: "system", authoritative: true })
+  })
+
+  it("a relay grant carries no profile", () => {
+    const d = decide(
+      { kind: "relay", boxSessionId: "box", parentSessionId: "P" },
+      "auth.profile.use",
+      { kind: "profile", ref: "p-own" },
+      ctx,
+    )
+    expect(d).toMatchObject({ allow: false, rule: "relay", authoritative: true })
+  })
+
+  it("a non-profile resource is refused", () => {
+    const d = decide(as(A), "auth.profile.use", { kind: "session", session: B }, ctx)
+    expect(d).toMatchObject({ allow: false, rule: "resource", authoritative: true })
+  })
+})
+
+describe("decide(session, mcp.mount.stdio)", () => {
+  const allowlist = [{ command: "node" }, { command: "git", args: ["status"] }]
+
+  it("allows a command the allowlist admits", () => {
+    const d = decide(
+      as(A),
+      "mcp.mount.stdio",
+      { kind: "command", command: "node", args: ["server.js"] },
+      { mounts: { allowlist } },
+    )
+    expect(d).toMatchObject({ allow: true, rule: "mount.allowlisted", authoritative: true })
+  })
+
+  it("denies a command outside the allowlist, without leaking args", () => {
+    const d = decide(
+      as(A),
+      "mcp.mount.stdio",
+      { kind: "command", command: "evil", args: ["--token", "S3CRET-ARG"] },
+      { mounts: { allowlist } },
+    )
+    expect(d).toMatchObject({ allow: false, rule: "mount.outside-allowlist", authoritative: true })
+    expect(d.reason).toContain("evil")
+    expect(d.reason).not.toContain("S3CRET-ARG")
+  })
+
+  it("the operator may mount any command", () => {
+    const d = decide(operator, "mcp.mount.stdio", { kind: "command", command: "evil", args: [] }, { mounts: { allowlist } })
+    expect(d).toMatchObject({ allow: true, rule: "operator", authoritative: true })
+  })
+
+  it("a system principal may mount any command", () => {
+    const d = decide({ kind: "system" }, "mcp.mount.stdio", { kind: "command", command: "evil", args: [] }, { mounts: { allowlist } })
+    expect(d).toMatchObject({ allow: true, rule: "system", authoritative: true })
+  })
+
+  it("a relay grant carries no stdio mount", () => {
+    const d = decide(
+      { kind: "relay", boxSessionId: "box", parentSessionId: "P" },
+      "mcp.mount.stdio",
+      { kind: "command", command: "node", args: [] },
+      { mounts: { allowlist } },
+    )
+    expect(d).toMatchObject({ allow: false, rule: "relay", authoritative: true })
+  })
+
+  it("a non-command resource is refused", () => {
+    const d = decide(as(A), "mcp.mount.stdio", { kind: "session", session: B }, { mounts: { allowlist } })
+    expect(d).toMatchObject({ allow: false, rule: "resource", authoritative: true })
   })
 })
 

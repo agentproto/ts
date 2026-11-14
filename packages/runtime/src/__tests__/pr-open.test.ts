@@ -125,6 +125,21 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
     expect(registry.recorded).toEqual([expect.objectContaining({ sessionId: "sess_box1", number: 77 })])
   })
 
+  it("still opens the PR but skips the footer for a skipRepos repo, matching it case-insensitively", async () => {
+    const registry = makeRegistry(rows)
+    const gh = fakeGh()
+    const outcome = await openPrForSession({
+      ...input,
+      registry,
+      run: gh.run,
+      // The fake create prints agentproto/agentproto; the entry differs in case.
+      skipFooterRepos: () => ["AgentProto/AgentProto"],
+    })
+    expect(outcome).toMatchObject({ opened: true, number: 77, sessionId: "sess_box1", stamped: false })
+    expect(gh.calls.filter(c => c.args[1] === "create")).toHaveLength(1)
+    expect(gh.edits).toHaveLength(0)
+  })
+
   it("credits a session known only by an Agentproto-Session trailer on the PR's commits", async () => {
     const gh = fakeGh({ commitText: "checkpoint\n\nAgentproto-Session: sess_gone\n" })
     const outcome = await openPrForSession({ ...input, registry: makeRegistry(rows), run: gh.run })

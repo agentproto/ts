@@ -16,11 +16,17 @@
 // already verb-agnostic.
 //
 // Config source of truth: `.github/agentic-review.json`. Global keys set the
-// lane (reviewerAdapter / reviewerSandbox / reviewerSandboxEnv); per-verb
+// lane (reviewerAdapter / reviewerSandbox or reviewerPlacement /
+// reviewerSandboxEnv / reviewerTurnRetry); per-verb
 // `commands.<verb>` overrides (skills, fixDelivery) are resolved with
 // `resolveCommandConfig` — the same shallow-merge semantics as
 // `scripts/lib/agent-core.mjs` (inlined here because this module runs inside
 // the workflow-loader import, not the scripts toolchain).
+
+import {
+  CAS_STOP_RULE,
+  buildCasPushCommand,
+} from "../../../packages/git-cas/dist/index.mjs"
 
 /** `{...global, ...commands[verb]}` — per-verb keys win; `commands` removed. */
 export const resolveCommandConfig = (config, verb) => {
@@ -86,12 +92,317 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
   `git config --global core.hooksPath "$HOME/.agentproto-git-hooks"`,
 ].join("\n")
 
+const isPlainObject = v => v !== null && typeof v === "object" && !Array.isArray(v)
+
+const loggedAutoLegs = new Set()
+const logAutoLeg = line => {
+  if (loggedAutoLegs.has(line)) return
+  loggedAutoLegs.add(line)
+  console.log(line)
+}
+
+/**
+ * `reviewerSandbox.provider === "auto"`: computer fleet first, opt-in capped
+ * overflow to e2b (`packages/runtime/src/sandbox-providers/auto.ts`).
+ *
+ *   · The computer leg needs `COMPUTER_CONTROLLER_URL` on THIS process (the
+ *     runner exports it from the `computer-controller-url` action input). Without
+ *     it (fork PR, secrets not provisioned) the spec degrades to the plain e2b
+ *     spec, identical to a `provider: "e2b"` reviewerSandbox, so the reviewer
+ *     runs exactly as it did before `auto` existed.
+ *   · With it, the spec stays `auto` and `config.overflow.secretAllowlist` is
+ *     narrowed to the names actually in this run's passthrough. The overflow
+ *     refuses when an allowlisted name has no value (a run without
+ *     AGENTPROTO_JOIN) or a passed name is not allowlisted, so the declared
+ *     list in agentic-review.json is the ceiling, not the exact set.
+ *   · AGENTPROTO_JOIN_PROVIDER defaults to the leg that is tried first, only
+ *     when a join token is present (same gate as the other JOIN_* names).
+ *     An overflow to e2b still reports "computer": the daemon env is fixed
+ *     before the box is placed.
+ */
+const autoSpecFor = ({ raw, nativeConfig, nativeEnv, passthrough, sandboxConfig, hasJoinToken }) => {
+  const computerUrl = process.env.COMPUTER_CONTROLLER_URL
+  const hasComputer = typeof computerUrl === "string" && computerUrl.trim() !== ""
+  const leg = hasComputer ? "computer" : "e2b"
+  if (
+    hasJoinToken &&
+    !(typeof process.env.AGENTPROTO_JOIN_PROVIDER === "string" && process.env.AGENTPROTO_JOIN_PROVIDER.trim() !== "")
+  ) {
+    process.env.AGENTPROTO_JOIN_PROVIDER = leg
+    if (!passthrough.includes("AGENTPROTO_JOIN_PROVIDER")) passthrough = [...passthrough, "AGENTPROTO_JOIN_PROVIDER"]
+  }
+  const { computer, fleet, e2b, residency, overflow, ...shared } = nativeConfig
+  if (!hasComputer) {
+    logAutoLeg(
+      "reviewerSandbox auto: COMPUTER_CONTROLLER_URL is not set on this runner, using the e2b leg only",
+    )
+    const { config: _config, ...rest } = raw
+    return {
+      ...rest,
+      provider: "e2b",
+      config: { ...sandboxConfig, ...shared, ...(isPlainObject(e2b) ? e2b : {}) },
+      env: { ...(nativeEnv ?? {}), passthrough },
+    }
+  }
+  logAutoLeg(
+    `reviewerSandbox auto: computer leg configured, overflow to e2b ${isPlainObject(overflow) && overflow.enabled === true ? "enabled" : "disabled"}`,
+  )
+  const narrowedOverflow =
+    isPlainObject(overflow) && Array.isArray(overflow.secretAllowlist)
+      ? { ...overflow, secretAllowlist: passthrough.filter(name => overflow.secretAllowlist.includes(name)) }
+      : overflow
+  return {
+    ...raw,
+    provider: "auto",
+    config: {
+      ...sandboxConfig,
+      ...shared,
+      ...(computer !== undefined ? { computer } : {}),
+      ...(fleet !== undefined ? { fleet } : {}),
+      ...(e2b !== undefined ? { e2b } : {}),
+      ...(residency !== undefined ? { residency } : {}),
+      ...(narrowedOverflow !== undefined ? { overflow: narrowedOverflow } : {}),
+    },
+    env: { ...(nativeEnv ?? {}), passthrough },
+  }
+}
+
+const envPresent = name => typeof process.env[name] === "string" && process.env[name].trim() !== ""
+
+const loggedLines = new Set()
+const logOnce = line => {
+  if (loggedLines.has(line)) return
+  loggedLines.add(line)
+  console.log(line)
+}
+
+const hasFleet = () => envPresent("COMPUTER_CONTROLLER_URL")
+
+/** Sandbox provider slug of a rung's / `reviewerSandbox`'s declaration. */
+const providerOf = sandbox =>
+  typeof sandbox === "string" ? sandbox.trim() : isPlainObject(sandbox) && typeof sandbox.provider === "string" ? sandbox.provider.trim() : ""
+
+/** `reviewerPlacement.ladder` of the resolved config, or undefined (also for an
+ *  explicit `reviewerPlacement: null`). */
+const ladderOf = cfg => {
+  const ladder = isPlainObject(cfg.reviewerPlacement) ? cfg.reviewerPlacement.ladder : undefined
+  return Array.isArray(ladder) && ladder.length > 0 ? ladder : undefined
+}
+
+/** The e2b declaration of the first e2b rung: what a verb with no placement
+ *  support of its own (`agent-verb`, `docs-audit`) boots when the config
+ *  declares a ladder instead of a plain `reviewerSandbox`. e2b is the rung
+ *  every runner can place, so it is the one a single-box verb can rely on. */
+const e2bRungSandbox = cfg => ladderOf(cfg)?.find(rung => providerOf(rung?.sandbox) === "e2b")?.sandbox
+
+// ── owner-sanctioned metered models + the OpenCode Go key ───────────────────
+//
+// A free-tier cap is answered by a paid `opencode-go/*` model (a placement
+// rung, or a `turnRetry.fallback`). The metered-model guard in ci.yml only
+// inspects `reviewerModel` and `reviewerFallbackModels[0]`, so it never sees
+// those ids; the SAME owner-only allowlist (`AGENT_ALLOWED_METERED_MODELS`, a
+// repo variable a PR cannot set) is therefore enforced here, fail closed: a
+// paid id that is not listed is dropped from the ladder / fallback list, never
+// spawned.
+
+const METERED_ALLOWLIST_ENV = "AGENT_ALLOWED_METERED_MODELS"
+const GO_KEY_ENV = "OPENCODE_GO_API_KEY"
+const OPENCODE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT"
+const GO_PROVIDER = "opencode-go"
+
+/** Same free test as the ci.yml guard: suffix `-free`, or `big-pickle`. */
+const isFreeModel = model => /-free$/.test(model) || /\/big-pickle$/.test(model)
+
+const isGoModel = model => model.startsWith(`${GO_PROVIDER}/`)
+
+/** May a spawn route to `model`? An `opencode-go/*` id only on the opencode
+ *  adapter. Free ids always; a metered id only when the
+ *  owner listed it (comma / whitespace separated, exact match) and, for an
+ *  `opencode-go/*` id, only when the Go key is present to pay for it. */
+const modelUsable = (model, adapter) => {
+  if (typeof model !== "string" || !model.trim()) return false
+  const id = model.trim()
+  if (isGoModel(id) && adapter !== "opencode") return false
+  if (!isFreeModel(id)) {
+    const allowed = (process.env[METERED_ALLOWLIST_ENV] ?? "").split(/[\s,]+/).filter(Boolean)
+    if (!allowed.includes(id)) {
+      logOnce(`placement: dropping metered model ${id}: not listed in ${METERED_ALLOWLIST_ENV}`)
+      return false
+    }
+  }
+  if (isGoModel(id) && !envPresent(GO_KEY_ENV)) {
+    logOnce(`placement: dropping ${id}: ${GO_KEY_ENV} is not set on this runner`)
+    return false
+  }
+  return true
+}
+
+/** Make `provider.opencode-go.options.apiKey` read `$OPENCODE_GO_API_KEY`.
+ *
+ *  OpenCode Zen (`opencode/*`) and Go (`opencode-go/*`) both read
+ *  `OPENCODE_API_KEY`, and this lane's `api-key` input only carries ONE of the
+ *  two (chosen from the primary model's route), so a Go model reached by a
+ *  fallback or the paid rung needs its own variable. The inline config
+ *  (`OPENCODE_CONFIG_CONTENT`, the per-session top config layer the harness
+ *  merges into) points the Go provider at that variable. Written onto THIS
+ *  process's env so a host session inherits it from the daemon and a boxed one
+ *  receives it through `env.passthrough`. Idempotent; returns the env names that
+ *  must reach the session (empty when no Go key is configured). */
+const prepareGoKeyEnv = () => {
+  if (!envPresent(GO_KEY_ENV)) return []
+  let inline = {}
+  const existing = process.env[OPENCODE_CONFIG_ENV]
+  if (typeof existing === "string" && existing.trim()) {
+    try {
+      const parsed = JSON.parse(existing)
+      if (isPlainObject(parsed)) inline = parsed
+    } catch {
+      // Unparseable inline config from the caller: leave it untouched rather
+      // than overwrite it; the Go key then simply is not wired.
+      logOnce(`placement: ${OPENCODE_CONFIG_ENV} is not valid JSON, not wiring ${GO_KEY_ENV}`)
+      return []
+    }
+  }
+  const provider = isPlainObject(inline.provider) ? inline.provider : {}
+  const goProvider = isPlainObject(provider[GO_PROVIDER]) ? provider[GO_PROVIDER] : {}
+  const options = isPlainObject(goProvider.options) ? goProvider.options : {}
+  process.env[OPENCODE_CONFIG_ENV] = JSON.stringify({
+    ...inline,
+    provider: {
+      ...provider,
+      [GO_PROVIDER]: { ...goProvider, options: { ...options, apiKey: `{env:${GO_KEY_ENV}}` } },
+    },
+  })
+  return [GO_KEY_ENV, OPENCODE_CONFIG_ENV]
+}
+
+/** Keep only the usable `fallback` overlays of a turnRetry policy. */
+const filterTurnRetry = (policy, adapter) => {
+  if (!isPlainObject(policy)) return policy
+  if (!Array.isArray(policy.fallback)) return policy
+  const fallback = policy.fallback.filter(o => !isPlainObject(o) || o.model === undefined || modelUsable(o.model, adapter))
+  const { fallback: _dropped, ...rest } = policy
+  return fallback.length > 0 ? { ...rest, fallback } : rest
+}
+
+/** Any usable `opencode-go/*` model reachable from this placement: a rung model
+ *  or a turnRetry fallback. */
+const goModelsIn = ({ ladder, turnRetry }) => {
+  const models = []
+  for (const rung of ladder ?? []) {
+    if (typeof rung.model === "string") models.push(rung.model)
+    for (const o of rung.turnRetry?.fallback ?? []) if (typeof o?.model === "string") models.push(o.model)
+  }
+  for (const o of turnRetry?.fallback ?? []) if (typeof o?.model === "string") models.push(o.model)
+  return models.filter(isGoModel)
+}
+
+/**
+ * Turn-retry policy for the lane's agent session (host OR boxed), read from
+ * `reviewerTurnRetry` once so every workflow that spawns a reviewer shares it.
+ *
+ *   · key absent ⇒ undefined ⇒ the host's own default;
+ *   · `null` ⇒ null ⇒ explicit opt-out;
+ *   · otherwise the policy with unusable `fallback` overlays removed (see
+ *     {@link modelUsable}). When a usable `opencode-go/*` fallback remains, the
+ *     Go key is wired into this process's env ({@link prepareGoKeyEnv}) so a
+ *     host session started after this call can reach it.
+ *
+ * Idempotent (selectors run more than once per step).
+ */
+export const reviewerTurnRetryFor = (config, verb) => {
+  const cfg = resolveCommandConfig(config, verb)
+  if (cfg.reviewerTurnRetry === null) return null
+  if (!isPlainObject(cfg.reviewerTurnRetry)) return undefined
+  const turnRetry = filterTurnRetry(cfg.reviewerTurnRetry, adapterFor(config, verb))
+  if (goModelsIn({ turnRetry }).length > 0) prepareGoKeyEnv()
+  return turnRetry
+}
+
+/**
+ * Placement ladder for the lane's box session, from `reviewerPlacement`.
+ *
+ *   · no ladder configured ⇒ undefined (the caller falls back to `sandboxRefFor`);
+ *   · each rung's `sandbox` is built exactly like `reviewerSandbox` (adapter
+ *     auth passthrough, attribution-strip hook, join names);
+ *   · a `computer` rung is dropped when this runner has no
+ *     `COMPUTER_CONTROLLER_URL` (fork PR, fleet secrets not provisioned), so the
+ *     review still runs on the e2b rung exactly as before the fleet existed;
+ *   · a rung whose `model` is not usable ({@link modelUsable}) is dropped;
+ *   · when a usable `opencode-go/*` model is reachable (a rung, or a fallback),
+ *     the Go key env names are added to every surviving rung's passthrough, so
+ *     the mid-run fallback works on whichever rung the session started on;
+ *   · a ladder left with no rung throws: a configured review never silently
+ *     degrades to a host spawn.
+ */
+// ── placement preference (owner-controlled, no PR edit needed) ──────────────
+//
+// `AGENT_REVIEW_PLACEMENT` is a repo VARIABLE: an ordered, comma/space
+// separated list of sandbox providers (`e2b`, `e2b,computer`). It REORDERS the
+// shipped ladder, it never adds or removes a rung: listed providers move to
+// the front in the order given, unlisted ones keep their relative order after
+// them. So swapping the preferred lane is a variable edit, and the paid /
+// fallback rungs of the config stay reachable. Unset or empty = config order.
+const PLACEMENT_PREFERENCE_ENV = "AGENT_REVIEW_PLACEMENT"
+
+const placementPreference = () =>
+  envPresent(PLACEMENT_PREFERENCE_ENV)
+    ? process.env[PLACEMENT_PREFERENCE_ENV].split(/[\s,]+/).map(p => p.trim().toLowerCase()).filter(Boolean)
+    : []
+
+const byProviderPreference = rungs => {
+  const prefs = placementPreference()
+  if (prefs.length === 0) return rungs
+  const rank = rung => {
+    const i = prefs.indexOf(providerOf(rung?.sandbox).toLowerCase())
+    return i === -1 ? prefs.length : i
+  }
+  return rungs.map((rung, i) => ({ rung, i })).sort((a, b) => rank(a.rung) - rank(b.rung) || a.i - b.i).map(x => x.rung)
+}
+
+export const reviewerPlacementFor = (config, verb) => {
+  const cfg = resolveCommandConfig(config, verb)
+  const ladder = ladderOf(cfg)
+  if (!ladder) return undefined
+  const adapter = adapterFor(config, verb)
+  const turnRetry = reviewerTurnRetryFor(config, verb)
+  const rungs = byProviderPreference(ladder
+    .filter(rung => {
+      if (providerOf(rung?.sandbox) === "computer" && !hasFleet()) {
+        logOnce("placement: COMPUTER_CONTROLLER_URL is not set on this runner, skipping computer rungs")
+        return false
+      }
+      return rung.model === undefined || modelUsable(rung.model, adapter)
+    })
+    .map(rung => (rung.turnRetry === undefined ? rung : { ...rung, turnRetry: filterTurnRetry(rung.turnRetry, adapter) })))
+  if (rungs.length === 0) {
+    throw new Error(
+      "reviewerPlacement: no placement rung is usable on this runner (computer rungs need COMPUTER_CONTROLLER_URL; " +
+        `a metered model needs ${METERED_ALLOWLIST_ENV}); add an e2b rung or provision the fleet`,
+    )
+  }
+  const goEnv = goModelsIn({ ladder: rungs, turnRetry }).length > 0 ? prepareGoKeyEnv() : []
+  // The join provider is fixed on the daemon env before any box is placed, so
+  // it names the rung tried first (an overflow to a later rung still reports it).
+  if (envPresent("AGENTPROTO_JOIN") && !envPresent("AGENTPROTO_JOIN_PROVIDER")) {
+    process.env.AGENTPROTO_JOIN_PROVIDER = providerOf(rungs[0].sandbox)
+  }
+  return {
+    ladder: rungs.map(({ sandbox, ...rest }) => ({
+      sandbox: sandboxSpecFor(cfg, sandbox, goEnv),
+      ...rest,
+    })),
+  }
+}
+
 /**
  * Sandbox placement. `reviewerSandbox` accepts two shapes:
  *
  *   · **string** (e.g. "e2b") — a provider slug; the spec is fully derived
  *     here (adapter install + attribution-strip hook + env passthrough).
- *   · **object** — a NATIVE SandboxSpec used verbatim as the base:
+ *   · **object**: a NATIVE SandboxSpec used verbatim as the base (a
+ *     `provider: "auto"` object is resolved by `autoSpecFor`: it stays `auto`
+ *     when this process has `COMPUTER_CONTROLLER_URL`, else degrades to plain e2b):
  *     `{ provider: "e2b", config?: {...}, env?: { passthrough?: [...] },
  *     lifecycle?: {...}, reuse?: … }`. Defaults are merged under it, never
  *     over it: if the object's `env.passthrough` is absent it falls back to
@@ -115,7 +426,14 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
  */
 export const sandboxRefFor = (config, verb) => {
   const cfg = resolveCommandConfig(config, verb)
-  const raw = cfg.reviewerSandbox
+  return sandboxSpecFor(cfg, cfg.reviewerSandbox ?? e2bRungSandbox(cfg), [])
+}
+
+/** Build the spec for one raw sandbox declaration (a slug, or a native object)
+ *  under an already-resolved command config. `extraPassthrough` names are
+ *  appended to the winning passthrough list (the caller guarantees each one is
+ *  set in this process, since a passthrough name is strict). */
+const sandboxSpecFor = (cfg, raw, extraPassthrough) => {
   const slug = typeof raw === "string" ? raw.trim() : ""
   const nativeProvider =
     raw !== null && typeof raw === "object" && typeof raw.provider === "string"
@@ -179,6 +497,7 @@ export const sandboxRefFor = (config, verb) => {
     ...passthroughBase,
     ...(hasJoinToken && !passthroughBase.includes("AGENTPROTO_JOIN") ? ["AGENTPROTO_JOIN"] : []),
     ...presentJoinMetaEnvVars.filter(name => !passthroughBase.includes(name)),
+    ...extraPassthrough.filter(name => !passthroughBase.includes(name)),
   ]
   // The verb's adapter is NOT installed here anymore: the runtime
   // auto-injects the adapter boot package since #1232
@@ -200,6 +519,9 @@ export const sandboxRefFor = (config, verb) => {
     // derived defaults merge UNDER it (its own config/env keys win).
     const nativeConfig =
       raw.config !== null && typeof raw.config === "object" ? raw.config : {}
+    if (nativeProvider === "auto") {
+      return autoSpecFor({ raw, nativeConfig, nativeEnv, passthrough, sandboxConfig, hasJoinToken })
+    }
     return {
       ...raw,
       provider: nativeProvider,
@@ -262,43 +584,85 @@ export const restPostReviewBlock = ({ repo, prNumber }) => [
   `   Write the review body to a file first (safe JSON quoting), then deliver it via the shared helper (which POSTs to the GitHub REST API AND records the created review to the artifact ledger so CI can stamp its provenance footer):`,
   `   \`\`\`bash`,
   `   # review.md contains your review markdown`,
-  `   node -e 'const fs=require("fs");fs.writeFileSync("payload.json",JSON.stringify({event:process.argv[1],body:fs.readFileSync("review.md","utf8")}))' COMMENT`,
+  `   node -e 'const fs=require("fs");fs.writeFileSync("payload.json",JSON.stringify({event:process.argv[1],body:fs.readFileSync("review.md","utf8")}))' APPROVE`,
   `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
   `     --kind review --body-file payload.json \\`,
   `     --url "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews"`,
   `   \`\`\``,
-  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
+  `   Set the first node argument to the verdict your review body states: APPROVE or REQUEST_CHANGES. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response; read it and retry once.`,
 ].join("\n")
 
 /**
  * Author changes on a branch and OPEN A PR via curl REST — the `pr`-delivery
  * recipe shared by /pr and /fix (fixDelivery: "pr"). gh-free by design.
  */
-export const restOpenPrBlock = ({ repo, branch, base, titleHint }) => [
-  `   Deliver as a NEW pull request (the box has no \`gh\` — pure git + curl REST):`,
-  `   \`\`\`bash`,
-  `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
-  `   git checkout -b "${branch}"`,
-  `   git add -A && git commit -m "<concise conventional-commit title>"`,
-  `   git push origin "HEAD:${branch}"`,
-  `   node -e 'const fs=require("fs");fs.writeFileSync("pr.json",JSON.stringify({title:process.argv[1],head:"${branch}",base:"${base}",body:fs.readFileSync("pr-body.md","utf8")}))' "<PR title>"`,
-  `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
-  `     --kind pr --body-file pr.json \\`,
-  `     --url "https://api.github.com/repos/${repo}/pulls"`,
-  `   \`\`\``,
-  `   Write \`pr-body.md\` BEFORE running the helper: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}. Do NOT add a signature or provenance footer — the CI runner stamps a deterministic \`@agentproto-bot\` footer (session id, cost, run link) onto the PR body it just recorded.`,
-  `   The helper (\`.github/agentproto-workflows/lib/deliver-artifact.mjs\`) POSTs the PR AND records it to the artifact ledger so CI can stamp by id. It exits 0 and prints \`created pr id=… number=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
-].join("\n")
+export const restOpenPrBlock = ({
+  repo,
+  branch,
+  base,
+  titleHint,
+  expected = { absent: true },
+  freshBranchOnCollision = "absent" in expected,
+}) => {
+  const push = buildCasPushCommand({ cwd: ".", branch, expected })
+  return [
+    `   Deliver as a NEW pull request (the box has no \`gh\`: pure git + curl REST):`,
+    `   \`\`\`bash`,
+    `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
+    `   git checkout -b "${branch}"`,
+    `   git add -A && git commit -m "<concise conventional-commit title>"`,
+    `   ${push}`,
+    `   node -e 'const fs=require("fs");fs.writeFileSync("pr.json",JSON.stringify({title:process.argv[1],head:"${branch}",base:"${base}",body:fs.readFileSync("pr-body.md","utf8")}))' "<PR title>"`,
+    `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
+    `     --kind pr --body-file pr.json \\`,
+    `     --url "https://api.github.com/repos/${repo}/pulls"`,
+    `   \`\`\``,
+    ...(freshBranchOnCollision
+      ? [
+          `   If that push reports \`head_moved\` only because a branch named \`${branch}\` already exists, choose ONE fresh branch name by appending a short suffix to \`${branch}\` (for example \`${branch}-w1\`), then run the same commit, push and PR commands with that new name substituted for \`${branch}\` throughout. Do this at most once; if the fresh branch is also rejected, stop and report \`head_moved\`.`,
+        ]
+      : []),
+    `   ${CAS_STOP_RULE}`,
+    `   Write \`pr-body.md\` BEFORE running the helper: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}. Do NOT add a signature or provenance footer: the CI runner stamps a deterministic \`@agentproto-bot\` footer (session id, cost, run link) onto the PR body it just recorded.`,
+    `   The helper (\`.github/agentproto-workflows/lib/deliver-artifact.mjs\`) POSTs the PR AND records it to the artifact ledger so CI can stamp by id. It exits 0 and prints \`created pr id=… number=…\` on success; if it exits non-zero it prints the API response; read it and retry once.`,
+  ].join("\n")
+}
 
-/** Commit-mode delivery: push the change directly onto an existing branch. */
-export const commitDeliveryBlock = ({ branch }) => [
-  `   Deliver by committing DIRECTLY to the existing branch \`${branch}\`:`,
-  `   \`\`\`bash`,
-  `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
-  `   git add -A && git commit -m "<concise conventional-commit title>"`,
-  `   git push origin "HEAD:${branch}"`,
-  `   \`\`\``,
-].join("\n")
+/**
+ * Commit-mode delivery: push the change directly onto an existing branch.
+ *
+ * The push is a compare-and-swap lease: `expectedSha` is the head the host
+ * resolved BEFORE the agent ran. When it is missing (or malformed) there is no
+ * safe lease to render, so the block tells the model to stop instead of
+ * falling back to a plain push. `expectAbsent` is for a brand-new branch
+ * (docs-audit): the lease expects the ref not to exist yet.
+ */
+export const commitDeliveryBlock = ({ branch, expectedSha, expectAbsent = false }) => {
+  const header = `   Deliver by committing DIRECTLY to the branch \`${branch}\`:`
+  const shaOk = typeof expectedSha === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(expectedSha)
+  if (!expectAbsent && !shaOk) {
+    return [
+      header,
+      `   The expected head SHA for \`${branch}\` was not resolved, so no compare-and-swap push is possible. Do NOT push, pull, rebase or merge.`,
+      `   ${CAS_STOP_RULE}`,
+      `   End your turn reporting \`head_moved\` with the branch name.`,
+    ].join("\n")
+  }
+  const push = buildCasPushCommand({
+    cwd: ".",
+    branch,
+    expected: expectAbsent ? { absent: true } : { sha: expectedSha },
+  })
+  return [
+    header,
+    `   \`\`\`bash`,
+    `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
+    `   git add -A && git commit -m "<concise conventional-commit title>"`,
+    `   ${push}`,
+    `   \`\`\``,
+    `   ${CAS_STOP_RULE}`,
+  ].join("\n")
+}
 
 /** Changeset authoring rules (shared verbatim across verbs that touch code). */
 export const changesetRulesBlock = () => [

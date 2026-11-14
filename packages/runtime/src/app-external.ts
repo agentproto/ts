@@ -35,6 +35,8 @@ import { extname, isAbsolute, join, resolve, sep } from "node:path"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
+import { appDataDir } from "./app-data.js"
+import { assertServed, callerScopes, type CallerScope, type CallerScopes } from "./caller-scope.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
@@ -181,6 +183,10 @@ function errorResult(text: string): {
 
 export interface RegisterAppExternalToolsOptions {
   appRegistry: AppRegistry
+  /** Whose node scope decides which apps and external roots exist. Missing or refused: every tool refuses. */
+  callerScope?: CallerScope
+  /** Where trees are read from. Default: the daemon's shared instance. */
+  scopes?: CallerScopes
 }
 
 export function registerAppExternalTools(
@@ -188,6 +194,23 @@ export function registerAppExternalTools(
   opts: RegisterAppExternalToolsOptions,
 ): void {
   const { appRegistry } = opts
+  const scopes = opts.scopes ?? callerScopes
+  // AIP-34 node scope: an app whose dir lies in a node the caller cannot see
+  // is not installed for this caller, and a granted root inside such a node
+  // is not granted.
+  const visibleApp = (appId: string): InstalledApp | undefined => {
+    assertServed(opts.callerScope)
+    const app = appRegistry.getApp(appId)
+    if (!app) return undefined
+    const visible =
+      scopes.pathVisible(opts.callerScope, app.dir) && scopes.pathVisible(opts.callerScope, appDataDir(app))
+    return visible ? app : undefined
+  }
+  const assertRootVisible = (installed: InstalledApp, root: string): void => {
+    if (!scopes.pathVisible(opts.callerScope, root, { subtree: true })) {
+      throw new ExternalRootNotGrantedError(root, installed.appId)
+    }
+  }
 
   type AppExternalListInput = {
     appId: string
@@ -211,10 +234,11 @@ export function registerAppExternalTools(
       path: z.string().optional().describe("Path relative to `root`. Defaults to the root itself."),
     }),
     handler: async (input) => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_external_list: no installed app "${input.appId}".`)
       try {
         assertRootGranted(installed, input.root)
+        assertRootVisible(installed, input.root)
       } catch (err) {
         return errorResult(`app_external_list: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -281,10 +305,16 @@ export function registerAppExternalTools(
       path: z.string().describe("Path relative to `root`."),
     },
     async input => {
-      const installed = appRegistry.getApp(input.appId)
+      let installed: InstalledApp | undefined
+      try {
+        installed = visibleApp(input.appId)
+      } catch (err) {
+        return errorResult(`app_external_read: ${err instanceof Error ? err.message : String(err)}`)
+      }
       if (!installed) return errorResult(`app_external_read: no installed app "${input.appId}".`)
       try {
         assertRootGranted(installed, input.root)
+        assertRootVisible(installed, input.root)
       } catch (err) {
         return errorResult(`app_external_read: ${err instanceof Error ? err.message : String(err)}`)
       }

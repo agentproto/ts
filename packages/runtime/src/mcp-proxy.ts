@@ -32,7 +32,17 @@
 
 import { promises as fs } from "node:fs"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { DEAD_CONNECTION_RE, openMcpClient, safeClose } from "./mcp-client-pool.js"
+import { ToolListChangedNotificationSchema, type ReadResourceResult } from "@modelcontextprotocol/sdk/types.js"
+import {
+  DEFAULT_TOOL_CACHE_TTL_MS,
+  DEAD_CONNECTION_RE,
+  isUnknownToolError,
+  openMcpClient,
+  resultIsUnknownTool,
+  safeClose,
+  shouldForwardCallerHeaders,
+  withCallHeaders,
+} from "./mcp-client-pool.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { liveSourcePaths, resolveImportConnection } from "./mcp-import-resolve.js"
 import {
@@ -49,8 +59,13 @@ interface ProxyClient {
    *  connection error — the next call retries. */
   client: Client | null
   /** Tools list cached after the first successful fetch. Cleared on
-   *  disconnect so stale tool names don't survive a reconnect. */
+   *  disconnect, a `tools/list_changed` notification, an expired HTTP TTL,
+   *  an unknown-tool reply, or an explicit `invalidate`. */
   tools: ProxyToolDescriptor[] | null
+  /** When `tools` was last listed (epoch ms). */
+  toolsFetchedAt?: number
+  /** In-flight re-list, so concurrent refreshes share one request. */
+  refreshing?: Promise<void> | null
   /** Last connection error message, kept so listAliases can surface
    *  diagnostics to the operator without re-throwing on every list. */
   lastError: string | null
@@ -101,7 +116,70 @@ export interface CallError {
 }
 export type ProxyCallOutcome = CallResult | CallError
 
+/** Who is making an imported-MCP call, when the entry point knows. */
+export interface ProxyCallContext {
+  callerSessionId?: string
+}
+
+/**
+ * Pre-dispatch hook consulted by every `callTool`. Returning `{allow:false}`
+ * short-circuits the call with `reason` as its error; the upstream is never
+ * contacted. `allow` may carry per-call `headers` (the caller session and node,
+ * `caller-scope.ts`) that a connection opened for forwarding sends with that
+ * call and no other. Unset by default, so a bare registry dispatches exactly
+ * as before.
+ */
+export type ProxyCallGuard = (call: {
+  alias: string
+  toolName: string
+  args: unknown
+  context?: ProxyCallContext
+}) => Promise<{ allow: true; headers?: Record<string, string> } | { allow: false; reason: string }>
+
+/**
+ * Post-dispatch hook consulted by every successful `callTool`. It sees the
+ * upstream result and may return a replacement (e.g. one carrying an approval
+ * id). It must not throw; if it does, the registry keeps the original result.
+ * Unset by default, so a bare registry returns exactly what the upstream sent.
+ */
+export type ProxyResultHook = (call: {
+  alias: string
+  toolName: string
+  result: unknown
+  context?: ProxyCallContext
+}) => Promise<unknown> | unknown
+
+export interface McpProxyRegistryOptions {
+  /** `http`/`sse` only: how long a cached `tools/list` stays fresh. */
+  toolCacheTtlMs?: number
+  /** Clock seam for tests. */
+  now?: () => number
+  /** How long `listAliases` (mcp_imported_status) waits on a stale refresh
+   *  before answering from the cache, so a hung server cannot block status. */
+  statusRefreshTimeoutMs?: number
+}
+
 export class McpProxyRegistry {
+  private callGuard: ProxyCallGuard | undefined
+  private resultHook: ProxyResultHook | undefined
+  private readonly ttlMs: number
+  private readonly now: () => number
+  private readonly statusRefreshTimeoutMs: number
+
+  constructor(options: McpProxyRegistryOptions = {}) {
+    this.ttlMs = options.toolCacheTtlMs ?? DEFAULT_TOOL_CACHE_TTL_MS
+    this.now = options.now ?? Date.now
+    this.statusRefreshTimeoutMs = options.statusRefreshTimeoutMs ?? 5_000
+  }
+
+  setCallGuard(guard: ProxyCallGuard | undefined): void {
+    this.callGuard = guard
+  }
+
+  setResultHook(hook: ProxyResultHook | undefined): void {
+    this.resultHook = hook
+  }
+
   private clients = new Map<string, ProxyClient>()
   private lastMtimeMs = 0
   /** Sentinel so we know whether the file has *ever* been read.
@@ -150,10 +228,19 @@ export class McpProxyRegistry {
       if (existing) {
         // Snapshot may have changed (user re-imported same id with
         // different command). Detect by comparing serialised
-        // snapshots; on mismatch, force reconnect.
+        // snapshots; on mismatch, force reconnect. `subsession` is part
+        // of the connection's shape: it decides whether per-call
+        // headers (the AIP-59 token) reach the upstream, and that flag
+        // is fixed when the client opens.
         if (
-          JSON.stringify([existing.entry.snapshot, existing.entry.secretRefs, existing.entry.resolve, existing.entry.auth]) !==
-          JSON.stringify([entry.snapshot, entry.secretRefs, entry.resolve, entry.auth])
+          JSON.stringify([
+            existing.entry.snapshot,
+            existing.entry.secretRefs,
+            existing.entry.resolve,
+            existing.entry.auth,
+            existing.entry.subsession,
+          ]) !==
+          JSON.stringify([entry.snapshot, entry.secretRefs, entry.resolve, entry.auth, entry.subsession])
         ) {
           await safeClose(existing.client)
           this.clients.set(entry.id, freshPlaceholder(entry))
@@ -202,31 +289,129 @@ export class McpProxyRegistry {
   /**
    * Lazy connect: the first call to `connectIfNeeded(alias)`
    * actually opens the transport + handshakes. Subsequent calls
-   * reuse the live client.
+   * reuse the live client, re-listing first when the cached list is
+   * missing, expired (network TTL) or `refresh` is forced.
    */
-  private async connectIfNeeded(alias: string): Promise<ProxyClient | null> {
+  private async connectIfNeeded(
+    alias: string,
+    options?: { refresh?: boolean }
+  ): Promise<ProxyClient | null> {
     await this.ensureCurrent()
     const handle = this.findByAlias(alias)
     if (!handle) return null
-    if (handle.client) return handle
-    try {
-      const opened = await openClient(handle.entry)
-      const client = opened.client
-      handle.stale = opened.stale
-      handle.originName = opened.originName
-      handle.client = client
-      handle.lastError = null
-      // Eagerly fetch tools so listTools doesn't pay the round-trip
-      // on next call. Cheap (single tools/list request).
-      const t = await client.listTools()
-      handle.tools = t.tools.map(toDescriptor)
-      return handle
-    } catch (err) {
-      handle.client = null
-      handle.tools = null
-      handle.lastError = err instanceof Error ? err.message : String(err)
-      return handle
+    if (!handle.client) {
+      let client: Client | null = null
+      try {
+        const opened = await openClient(handle.entry)
+        client = opened.client
+        handle.stale = opened.stale
+        handle.originName = opened.originName
+        // Eagerly fetch tools so listTools doesn't pay the round-trip
+        // on next call. Cheap (single tools/list request). Publish the
+        // client only once the list is in, so a concurrent caller never
+        // sees a connected client with a null cache and starts a second
+        // `tools/list` at connect time.
+        const t = await client.listTools()
+        handle.client = client
+        handle.tools = t.tools.map(toDescriptor)
+        handle.toolsFetchedAt = this.now()
+        handle.lastError = null
+        // A server that advertises `tools.listChanged` (or sends it anyway)
+        // invalidates our cache; the next read re-lists. Registered after the
+        // first list so a racing notification cannot be overwritten by it.
+        client.setNotificationHandler?.(ToolListChangedNotificationSchema, () => {
+          handle.tools = null
+          handle.toolsFetchedAt = 0
+        })
+        return handle
+      } catch (err) {
+        await safeClose(client)
+        handle.client = null
+        handle.tools = null
+        handle.toolsFetchedAt = 0
+        handle.lastError = err instanceof Error ? err.message : String(err)
+        return handle
+      }
     }
+    if (options?.refresh || handle.tools === null || this.toolsStale(handle)) {
+      await this.refreshTools(handle)
+    }
+    return handle
+  }
+
+  /** Re-list one connection's tools, coalescing concurrent callers. A failed
+   *  refresh keeps the existing cache unless the connection itself died. */
+  private async refreshTools(handle: ProxyClient): Promise<void> {
+    if (handle.refreshing) return handle.refreshing
+    handle.refreshing = (async () => {
+      const client = handle.client
+      if (!client) return
+      try {
+        const t = await client.listTools()
+        // The handle may have been reset/invalidated while the list was in
+        // flight; never overwrite a newer connection's cache with this list.
+        if (handle.client !== client) return
+        handle.tools = t.tools.map(toDescriptor)
+        handle.toolsFetchedAt = this.now()
+        handle.lastError = null
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        handle.lastError = msg
+        if (DEAD_CONNECTION_RE.test(msg)) {
+          await safeClose(client)
+          if (handle.client === client) {
+            handle.client = null
+            handle.tools = null
+            handle.toolsFetchedAt = 0
+          }
+        }
+      }
+    })().finally(() => {
+      handle.refreshing = null
+    })
+    return handle.refreshing
+  }
+
+  /** Refresh with a status-only deadline: a hung server must not block
+   *  `mcp_imported_status`, which used to be a pure in-memory read. The
+   *  refresh keeps running and updates the cache if it eventually lands. */
+  private async boundedRefresh(handle: ProxyClient): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, this.statusRefreshTimeoutMs)
+      timer.unref?.()
+    })
+    try {
+      await Promise.race([this.refreshTools(handle), deadline])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /** A network cache older than the TTL is stale; stdio is not TTL'd (its
+   *  process death is already a visible disconnect). */
+  private toolsStale(handle: ProxyClient): boolean {
+    if (handle.entry.snapshot.type !== "http" && handle.entry.snapshot.type !== "sse") {
+      return false
+    }
+    return this.now() - (handle.toolsFetchedAt ?? 0) > this.ttlMs
+  }
+
+  /**
+   * Drop one import's pooled client and cache so the next read reconnects and
+   * re-lists. `mcp_import` of an existing id calls this: re-saving an
+   * unchanged snapshot leaves `ensureCurrent`'s cache untouched, which is how
+   * a re-import could still report the old tool count.
+   */
+  async invalidate(importIdOrAlias: string): Promise<void> {
+    await this.ensureCurrent()
+    const handle = this.findByAlias(importIdOrAlias)
+    if (!handle) return
+    await safeClose(handle.client)
+    const fresh = freshPlaceholder(handle.entry)
+    if (handle.liveSig !== undefined) fresh.liveSig = handle.liveSig
+    if (handle.originName !== undefined) fresh.originName = handle.originName
+    this.clients.set(handle.entry.id, fresh)
   }
 
   /** Find a client handle by alias *or* import id (defensive — agents
@@ -241,6 +426,16 @@ export class McpProxyRegistry {
 
   async listAliases(): Promise<ProxyAliasSummary[]> {
     await this.ensureCurrent()
+    // Status is one of the "moments that matter": re-list a connected network
+    // import whose cached list has outlived its TTL, so the reported
+    // toolCount matches a server that restarted with a new tool set.
+    await Promise.all(
+      Array.from(this.clients.values()).map(c => {
+        if (!c.client) return Promise.resolve()
+        if (c.tools !== null && !this.toolsStale(c)) return Promise.resolve()
+        return this.boundedRefresh(c)
+      })
+    )
     return Array.from(this.clients.values()).map(c => ({
       alias: c.entry.alias,
       importId: c.entry.id,
@@ -276,8 +471,15 @@ export class McpProxyRegistry {
   async callTool(
     alias: string,
     toolName: string,
-    args: unknown
+    args: unknown,
+    context?: ProxyCallContext
   ): Promise<ProxyCallOutcome> {
+    let callHeaders: Record<string, string> | undefined
+    if (this.callGuard) {
+      const verdict = await this.callGuard({ alias, toolName, args, ...(context ? { context } : {}) })
+      if (!verdict.allow) return { ok: false, error: verdict.reason }
+      callHeaders = verdict.headers
+    }
     const handle = await this.connectIfNeeded(alias)
     if (!handle) return { ok: false, error: `unknown alias "${alias}"` }
     if (!handle.client) {
@@ -286,6 +488,12 @@ export class McpProxyRegistry {
         error: handle.lastError ?? "client not connected",
       }
     }
+    // A name the cache does not know: the server may have added tools since
+    // the last list (a restart on a stateless transport is invisible), so
+    // re-list before forwarding.
+    if (handle.tools && !handle.tools.some(t => t.name === toolName)) {
+      await this.refreshTools(handle)
+    }
     const hint = handle.tools
       ?.find(t => t.name === toolName)
       ?._meta?.["x-client-resolve"] as
@@ -293,24 +501,82 @@ export class McpProxyRegistry {
       | undefined
     const resolved = await applyClientResolve(hint, args)
     try {
-      const result = await handle.client.callTool({
-        name: toolName,
-        arguments:
-          resolved && typeof resolved === "object"
-            ? (resolved as Record<string, unknown>)
-            : {},
-      })
-      return { ok: true, result }
+      const client = handle.client
+      const result = await withCallHeaders(callHeaders, () =>
+        client.callTool({
+          name: toolName,
+          arguments:
+            resolved && typeof resolved === "object"
+              ? (resolved as Record<string, unknown>)
+              : {},
+        }),
+      )
+      // The SDK surfaces an unknown tool as an `isError` result rather than
+      // a thrown error; either way, drop the cache so the next read re-lists.
+      if (resultIsUnknownTool(result)) {
+        handle.tools = null
+        handle.toolsFetchedAt = 0
+        await this.refreshTools(handle)
+      }
+      let finalResult: unknown = result
+      if (this.resultHook) {
+        try {
+          finalResult = await this.resultHook({
+            alias,
+            toolName,
+            result,
+            ...(context ? { context } : {}),
+          })
+        } catch {
+          // A hook failure must never turn a successful call into an error.
+          finalResult = result
+        }
+      }
+      return { ok: true, result: finalResult }
     } catch (err) {
       // Mark the client as dirty — the connection may have died
       // mid-call (process crash, http server restart). The next call
       // re-opens via connectIfNeeded.
       const msg = err instanceof Error ? err.message : String(err)
-      if (DEAD_CONNECTION_RE.test(msg)) {
+      if (isUnknownToolError(msg)) {
+        handle.tools = null
+        handle.toolsFetchedAt = 0
+        await this.refreshTools(handle)
+      } else if (DEAD_CONNECTION_RE.test(msg)) {
         await safeClose(handle.client)
         handle.client = null
         handle.tools = null
+        handle.toolsFetchedAt = 0
         handle.lastError = msg
+      }
+      return { ok: false, error: msg }
+    }
+  }
+
+  /**
+   * Relay one `resources/read` to an import. No allowlist here: the caller
+   * (the /mcp gateway's exposed resources) decides which URIs may reach it.
+   */
+  async readResource(
+    alias: string,
+    uri: string,
+  ): Promise<{ ok: true; result: ReadResourceResult } | { ok: false; error: string }> {
+    const handle = await this.connectIfNeeded(alias)
+    if (!handle) return { ok: false, error: `unknown alias "${alias}"` }
+    const client = handle.client
+    if (!client) return { ok: false, error: handle.lastError ?? "client not connected" }
+    try {
+      return { ok: true, result: await client.readResource({ uri }) }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (DEAD_CONNECTION_RE.test(msg)) {
+        await safeClose(client)
+        if (handle.client === client) {
+          handle.client = null
+          handle.tools = null
+          handle.toolsFetchedAt = 0
+          handle.lastError = msg
+        }
       }
       return { ok: false, error: msg }
     }
@@ -370,6 +636,19 @@ function toDescriptor(tool: {
 }
 
 /**
+ * Whether per-call headers reach this import. Loopback servers and imports
+ * that opted in with `forwardCaller` always did; an AIP-59 import
+ * (`subsession: "aip-59"`) needs them too, since its sub-session token
+ * travels as a per-call header and its server is usually remote.
+ */
+export function forwardsCallHeaders(
+  entry: Pick<ImportedMcpEntry, "forwardCaller" | "subsession">,
+  config: Parameters<typeof shouldForwardCallerHeaders>[0],
+): boolean {
+  return shouldForwardCallerHeaders(config, entry.forwardCaller === true || entry.subsession === "aip-59")
+}
+
+/**
  * Open a transport for a discovered MCP. stdio spawns the command;
  * http/sse open over the network. Returns a connected `Client` on
  * success; throws with a useful message on failure.
@@ -385,6 +664,7 @@ async function openClient(entry: ImportedMcpEntry): Promise<{
     label: `import "${entry.alias}"`,
     // claude-code `.mcp.json` semantics; parity with McpClientPool.
     expandHeaders: true,
+    forwardCallHeaders: forwardsCallHeaders(entry, config),
     // Pass explicitly rather than relying on `openMcpClient`'s own
     // `getMcpCredentialDeps()` fallback: this module and `serve.ts`'s
     // `setMcpCredentialDeps` call happen to share a bundle today (both

@@ -74,11 +74,11 @@
     "confinedReadPaths": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "READ-only paths an OS-confined spawn needs to boot (e.g. the CLI's own global config files under $HOME, which the sandbox denies). `~/...` anchors at the operator's home; a leading `$VAR`/`${VAR}` is read from the per-spawn env and dropped when unset. Never grants write access; mutable state belongs in the adapter's state home."
+      "description": "READ-only paths an OS-confined spawn needs to boot (e.g. the CLI's own global config files under $HOME, which the sandbox denies). `~/...` anchors at the operator's home; a leading `$VAR`/`${VAR}` is read from the per-spawn env and dropped when unset. Never grants write access; mutable state belongs in the harness's state home."
     },
     "protocol": {
       "enum": ["acp", "mcp", "proprietary"],
-      "description": "Wire protocol discriminator. acp = AIP-44 ACP server; mcp = MCP-over-stdio; proprietary = adapter package implements AgentCliClient."
+      "description": "Wire protocol discriminator. acp = AIP-44 ACP server; mcp = MCP-over-stdio; proprietary = harness package implements AgentCliClient."
     },
     "acp": {
       "type": "string",
@@ -96,7 +96,7 @@
         "url":       { "type": "string", "format": "uri" }
       }
     },
-    "adapter": {
+    "harness": {
       "type": "string",
       "pattern": "^@?[a-z0-9][a-z0-9\\-./]*$",
       "description": "NPM package name implementing AgentCliClient. REQUIRED when protocol=proprietary."
@@ -158,7 +158,7 @@
     },
     {
       "if":   { "properties": { "protocol": { "const": "proprietary" } }, "required": ["protocol"] },
-      "then": { "required": ["adapter"] }
+      "then": { "required": ["harness"] }
     },
     {
       "if": {
@@ -314,16 +314,16 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["id"],
-                "description": "A model id annotated with who serves/bills it and how this adapter reaches it. A bare string (still legal) leaves provider unstated — the projector MUST NOT guess one.",
+                "description": "A model id annotated with who serves/bills it and how this harness reaches it. A bare string (still legal) leaves provider unstated — the projector MUST NOT guess one.",
                 "properties": {
                   "id": { "type": "string", "description": "Model id, unchanged on the wire — this is annotation, not renaming." },
                   "provider": { "type": "string", "description": "ProviderPreset id (or direct provider, e.g. \"anthropic\") — who serves and bills this model. Omit when unstated." },
-                  "mode": { "type": "string", "description": "This adapter's mode id that routes to `provider` (e.g. \"moonshot\"). Omit when the adapter routes on its own (e.g. a model-id prefix) or needs no mode switch." }
+                  "mode": { "type": "string", "description": "This harness's mode id that routes to `provider` (e.g. \"moonshot\"). Omit when the harness routes on its own (e.g. a model-id prefix) or needs no mode switch." }
                 }
               }
             ]
           },
-          "description": "Model ids the host MAY route to. Each entry is either a bare id (provider unstated, adapter default) or a { id, provider?, mode? } binding declaring who serves it and which adapter mode reaches it."
+          "description": "Model ids the host MAY route to. Each entry is either a bare id (provider unstated, harness default) or a { id, provider?, mode? } binding declaring who serves it and which harness mode reaches it."
         },
         "env": {
           "type": "object",
@@ -343,7 +343,85 @@
         "file_io":       { "type": "boolean" },
         "multimodal":    { "type": "boolean" },
         "resumable":     { "type": "boolean" },
-        "bidirectional": { "type": "boolean" }
+        "bidirectional": { "type": "boolean" },
+        "hooks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nativeHookCapability" },
+          "description": "AIP-71 native hook declaration (section 3): an open list of the native hook seams this harness can project. Metadata only: it does not enable a hook, install user code, or grant a permission. Two entries MUST NOT share the same (event, native_event) pair (AIP-71 section 3 rule 4; not expressible in JSON Schema). A harness-extension capability, excluded from the ACP subset check."
+        },
+        "mode_events": {
+          "type": "boolean",
+          "description": "The harness exposes session modes and emits the mode-changed stream event for every change of the current mode the caller did not make itself (SHOULD for the caller's own setSessionMode too). Absent reads as false. A harness-extension capability, excluded from the ACP subset check."
+        },
+        "typed_prompts": {
+          "type": "boolean",
+          "description": "The harness sets `request` on agent-prompt events and carries the `question` or `planApproval` payload for those kinds (see STREAM-EVENTS.schema.json). Absent reads as false: every agent-prompt is a tool-permission. A harness-extension capability, excluded from the ACP subset check."
+        },
+        "memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "AIP-72 memory projection declaration (section 9). Metadata only: the host resolves the effective projection, native first with the system prompt as the fallback. Absent reads as { inject: none, capture: none }. A harness-extension capability, excluded from the ACP subset check.",
+          "properties": {
+            "inject": {
+              "enum": ["native-dir", "system-prompt", "none"],
+              "description": "How a digest of in-force memory items reaches a session at spawn: written into the harness's native memory location, appended to the system prompt, or not at all."
+            },
+            "capture": {
+              "enum": ["native-dir-diff", "none"],
+              "description": "Whether the native memory location can be diffed after the session so its changes become memory store proposals."
+            }
+          }
+        }
+      }
+    },
+    "nativeHookCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "native_event", "path", "can_block", "handlers"],
+      "description": "One native hook seam (AIP-71 NativeHookCapability, section 3 rules 1 to 4). A lifecycle seam cannot block (rule 3); the uniqueness of (event, native_event) pairs across the hooks array (rule 4) cannot be expressed in JSON Schema and is enforced by the reader.",
+      "properties": {
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "description": "The portable AIP-37 semantic event (e.g. tool-call). A namespaced <host>:<event> name is non-portable and MUST be registered by that host. MUST NOT contain whitespace."
+        },
+        "native_event": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "description": "The harness callback identifier (e.g. PreToolUse). Descriptive and harness-owned; portable configuration MUST NOT reference it. MUST NOT contain whitespace."
+        },
+        "path": {
+          "enum": ["admission", "lifecycle"],
+          "description": "admission = the native seam runs before an operation; lifecycle = it observes a lifecycle transition."
+        },
+        "can_block": {
+          "type": "boolean",
+          "description": "True only when a successful native callback can prevent the corresponding operation. A timeout or malformed callback response MUST NOT be advertised as a successful denial. MUST be false when path is lifecycle."
+        },
+        "handlers": {
+          "type": "array",
+          "items": { "enum": ["command", "mcp", "http", "prompt", "agent"] },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Mechanisms the harness can execute at that seam. MUST list at least one mechanism, without duplicates."
+        },
+        "async": {
+          "type": "boolean",
+          "description": "The harness can run the handler in the background."
+        },
+        "context": {
+          "enum": ["none", "append"],
+          "description": "append = a successful handler may add bounded context to the next model turn. It does not permit replacing the user's prompt."
+        }
+      },
+      "if": {
+        "properties": { "path": { "const": "lifecycle" } },
+        "required": ["path"]
+      },
+      "then": {
+        "properties": { "can_block": { "const": false } }
       }
     },
     "mode": {
@@ -480,7 +558,7 @@
         "scrubEnv": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Env vars to scrub when this preset is active. Optional — an adapter that scrubs in code may omit it. Not surfaced to catalog clients."
+          "description": "Env vars to scrub when this preset is active. Optional — a harness that scrubs in code may omit it. Not surfaced to catalog clients."
         },
         "defaultModel": { "type": "string", "description": "Conventional default model id for this provider, if any." },
         "homepage": { "type": "string", "description": "Optional homepage/docs URL for the catalog UI." }

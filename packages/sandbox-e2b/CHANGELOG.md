@@ -1,5 +1,54 @@
 # @agentproto/sandbox-e2b
 
+## 0.11.2
+
+### Patch Changes
+
+- Updated dependencies [d7b0174]
+- Updated dependencies [0fcf3f4]
+  - @agentproto/sandbox@0.16.1
+
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [c0dc0c8]
+- Updated dependencies [9fcc8aa]
+  - @agentproto/sandbox@0.16.0
+
+## 0.11.0
+
+### Minor Changes
+
+- e395b66: Tag e2b sandboxes with tenantId, owner and label metadata
+- a5475aa: Add fail-closed overflow safety rails to the auto sandbox provider: residency, daily box and EUR caps, a secret allowlist, template CLI parity, and a maxEurPerBox timeout ceiling.
+
+### Patch Changes
+
+- b027bf4: Bake the `@anthropic-ai/claude-code` runtime CLI alongside `opencode-ai` in the workstation template, and generalize the template generator to emit one ARG and one build-time `--version` smoke check per runtime package.
+- f765a96: Record the proven stable `agentproto-workstation` bake: template `53ybr99wdfgoebi9nee8` now reports CLI `1.31.0`, the bumped adapter set (including `@agentproto/adapter-claude-code` and `@agentproto/adapter-openclaw`), and the matching runtime pins in the generated `TEMPLATES.stable.baked` metadata.
+- 2584203: Bump baked @agentproto/cli in e2b workstation template to 1.31.0
+- Updated dependencies [e395b66]
+  - @agentproto/sandbox@0.15.0
+
+## 0.10.0
+
+### Minor Changes
+
+- a00f77d: Add list and estimated usage windows for e2b boxes. Usage is a live inventory estimate, not a billing history (a killed box drops out of the list; the fleet ledger is the record). Paused boxes are listed for inventory/gc but excluded from usage, since e2b stops billing them once paused.
+
+### Patch Changes
+
+- 84ac51b: Move the typed session presets from `@agentproto/harness` to `@agentproto/session-presets`. This is step 1 of 2 for AIP-45: the presets moved to `@agentproto/session-presets`, and the name `@agentproto/harness` now carries the AIP-45 runner (see the aip-45 changeset). `@agentproto/worktree` now imports the new package. The sandbox providers only update a doc comment that names the package, so they take a patch bump to satisfy the changeset coverage gate.
+- Updated dependencies [61e6068]
+- Updated dependencies [1d7b55a]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [804db17]
+- Updated dependencies [5ab8114]
+- Updated dependencies [61e6068]
+  - @agentproto/sandbox@0.14.0
+
 ## 0.9.1
 
 ### Patch Changes

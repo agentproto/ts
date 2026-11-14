@@ -56,7 +56,7 @@ from source before writing any code:
    tool by name, ANY tool). `target.agent` and `target.workflow` are sugar
    that lower to a tool call:
    - `target.tool = { tool, inputs? }` → dispatched as-is.
-   - `target.agent = { adapter, prompt, model?, cwd?, ...any other
+   - `target.agent = { harness, prompt, model?, cwd?, ...any other
      agent_start field }` → dispatched as `tool:"agent_start"` with those
      fields as `inputs`, validated against agent_start's own input schema
      (`packages/runtime/src/agent-start-schema.ts`; `wait` is dropped). **New target kind —
@@ -88,8 +88,9 @@ from source before writing any code:
    `z.any()`: only `target` was in-scope for tightening per the brief, and a
    `ScheduleCron`-only zod schema would reject the four other schedule kinds
    the type already documents. Instead, `routine-registrar.ts` runtime-guards
-   `schedule.kind === "cron"` at the point of use and reports the other four
-   kinds as a clear "not yet supported" skip, not a validation failure at
+   `schedule.kind === "cron"` at the point of use for cron jobs and resolves
+   `schedule.kind === "event"` to a reaction binding; the remaining kinds are
+   reported as a clear "not yet supported" skip, not a validation failure at
    parse time.
 4. **Dispatch mechanism — one shared `dispatchTool`, not four bespoke
    wrappers.** `createGateway` (`index.ts`) builds ONE lazily-constructed,
@@ -111,10 +112,13 @@ from source before writing any code:
    `label:"routine:<id>"`; a routine that disappears or turns
    `enabled:false` has its tagged job deleted; a routine whose resolved
    `{schedule, action}` changed gets its old job deleted and a new one
-   created (delete+recreate — `CronScheduler` has no `update()`). Called
-   once at gateway boot; re-callable on demand (no file-watcher in this
-   pass — noted as a follow-up, not silently dropped). Per-file parse/target
-   errors are collected and skip only that file, not the whole scan.
+   created (delete+recreate, `CronScheduler` has no `update()`). An
+   `enabled:true` + `schedule.kind:"event"` routine is resolved to a reaction
+   binding instead, and the reaction wiring reloads the runner's binding set
+   on every pass. Called once at gateway boot; re-callable on demand (no
+   file-watcher in this pass, noted as a follow-up, not silently dropped).
+   Per-file parse/target errors are collected and skip only that file, not
+   the whole scan.
    A `target.workflow` target is bound to that same workspace: a relative
    `file` resolves under it, the dispatched `workflow_run_file` call runs
    with `cwd` set to it, and `input.repoRoot` defaults to it unless the
@@ -143,10 +147,6 @@ registrar's `list()`, and `/routine-defs/*` keeps its own prefix regardless.
 
 ### Specs-repo follow-up (not applied here — separate repo, per brief)
 
-- Document `target.agent` (`{ adapter, prompt, model?, cwd? }`) as a
-  first-class AIP-41 target kind in `resources/aip-41/draft/ROUTINE.schema.json`
-  upstream — this repo's `types.ts`/`schema.ts` are ahead of the generated
-  draft for this one shape.
 - Consider documenting `schedule.kind` values beyond `cron` as MAY-be-partial
   in v1 runtimes, since this bridge only implements `cron` (interval /
   calendar / manual / event are parsed-but-unscheduled here).

@@ -1,10 +1,12 @@
 /**
  * `agentproto pair <subcommand>` — E2E daemon pairing (design: DESIGN §6).
  *
- *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr [--pair-page <url|template>]] [--host]
+ *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr | --url [--pair-page <url|template>]] [--host]
  *          daemon side: mint an offer URL (+ QR) and start listening on the
  *          rendezvous. `--qr` renders the phone link instead: the web pair page
  *          with the offer in its fragment (`https://<fp>.agentproto.cloud/pair#…`).
+ *          `--url` prints that same browser link on its own, with no QR, for a
+ *          desktop browser. `--qr`, `--url` and `--no-qr` are mutually exclusive.
  *          `--host` mints a HOST-scoped offer: the accepting side may register
  *          this daemon as a driveable device (`agentproto devices add`), not
  *          just remote-control it.
@@ -12,6 +14,10 @@
  *          persist the pairing.
  *   ls     [--json]                                       list pairings (daemon
  *          side via REST; falls back to the client store when no daemon).
+ *   pending [--json]                                      daemon side: list
+ *          handshakes waiting for the operator's confirmation.
+ *   confirm <code|fingerprint>                             daemon side.
+ *   decline <code|fingerprint>                             daemon side.
  *   revoke <fingerprint|name>                             daemon side.
  *   exec   <fingerprint|name> -- <verb> [args…]           route any verb over the
  *          pairing's E2E channel (client routing).
@@ -46,9 +52,12 @@ import { loadConfig } from "@agentproto/runtime/config"
 const USAGE = `agentproto pair — end-to-end daemon pairing over an untrusted rendezvous
 
 Usage:
-  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json] [--host]
+  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr | --url [--pair-page <url|template>]] [--json] [--host]
   agentproto pair accept "<offer-url>" [--name <label>]
   agentproto pair ls     [--json]
+  agentproto pair pending [--json]
+  agentproto pair confirm <code|fingerprint>
+  agentproto pair decline <code|fingerprint>
   agentproto pair revoke <fingerprint|name>
   agentproto pair exec   <fingerprint|name> -- <verb> [args…]
   agentproto pair --help
@@ -58,13 +67,22 @@ Usage:
           public keys (MITM-proof) and a short-lived secret. --qr shows a QR
           for a phone browser instead: ${DEFAULT_PAIR_PAGE}#<offer>
           ({fp} = the daemon fingerprint: one browser origin per daemon; the
-          offer rides in the fragment, never sent to a server).
+          offer rides in the fragment, never sent to a server). --url prints
+          that same browser link with no QR, for a desktop browser. --qr, --url
+          and --no-qr are mutually exclusive.
           --pair-page (or config pairing.pairPage) picks another page: a
           template with {fp} in the host, or a plain URL (one shared origin).
   accept  Client side: verify the daemon's identity from the URL and persist the
           pairing to ~/.agentproto/pair-credentials.json.
-  ls      List pairings. Uses the daemon's REST route when reachable; otherwise
-          lists this machine's client-side pairings.
+  ls      List persisted pairings. Uses the daemon's REST route when reachable;
+          otherwise lists this machine's client-side pairings.
+  pending List handshakes waiting for confirmation: the daemon holds them in
+          memory only and they can drive nothing until confirmed. Compare the
+          short code with the one on the client's screen.
+  confirm Promote a pending pairing into pairings.json and start serving it.
+          Takes the short code or full fingerprint, never the client name.
+  decline Drop a pending pairing without saving it. Takes the short code or
+          full fingerprint, never the client name.
   revoke  Daemon side: drop a pairing so the client can no longer reconnect.
   exec    Client side: run any agentproto verb against the paired daemon over the
           E2E channel (e.g. \`agentproto pair exec my-laptop -- sessions ls\`).
@@ -84,6 +102,12 @@ export async function runPair(args: readonly string[]): Promise<number> {
     case "ls":
     case "list":
       return runLs(args.slice(1))
+    case "pending":
+      return runPending(args.slice(1))
+    case "confirm":
+      return runPendingDecision(args.slice(1), "confirm")
+    case "decline":
+      return runPendingDecision(args.slice(1), "decline")
     case "revoke":
     case "rm":
       return runRevoke(args.slice(1))
@@ -94,7 +118,7 @@ export async function runPair(args: readonly string[]): Promise<number> {
       return 0
     default:
       process.stderr.write(
-        `agentproto pair: unknown subcommand "${sub}"\n  Known: offer | accept | ls | revoke | exec\n`,
+        `agentproto pair: unknown subcommand "${sub}"\n  Known: offer | accept | ls | pending | confirm | decline | revoke | exec\n`,
       )
       return 2
   }
@@ -112,23 +136,34 @@ async function runOffer(args: readonly string[]): Promise<number> {
       rendezvous: { type: "string" },
       "no-qr": { type: "boolean" },
       qr: { type: "boolean" },
+      url: { type: "boolean" },
       "pair-page": { type: "string" },
       json: { type: "boolean" },
       host: { type: "boolean" },
     },
   })
-  if (values.qr && values["no-qr"]) {
-    process.stderr.write(`agentproto pair offer: --qr and --no-qr are mutually exclusive\n`)
+  const webModes = [values.qr, values.url, values["no-qr"]].filter(Boolean).length
+  if (webModes > 1) {
+    process.stderr.write(
+      `agentproto pair offer: --qr, --url and --no-qr are mutually exclusive\n`,
+    )
     return 2
   }
-  if (values["pair-page"] && !values.qr) {
-    process.stderr.write(`agentproto pair offer: --pair-page only applies with --qr\n`)
+  const wantsWebLink = Boolean(values.qr || values.url)
+  if (values["pair-page"] && !wantsWebLink) {
+    process.stderr.write(`agentproto pair offer: --pair-page only applies with --qr or --url\n`)
+    return 2
+  }
+  if (values.url && values.host) {
+    process.stderr.write(
+      `agentproto pair offer: --host offers are accepted with \`agentproto pair accept\`; use them without --url\n`,
+    )
     return 2
   }
   // The pair page: --pair-page, else config pairing.pairPage, else the default.
   // Checked BEFORE minting, so a bad template never spends an offer.
   let pairPage: string = DEFAULT_PAIR_PAGE
-  if (values.qr) {
+  if (wantsWebLink) {
     try {
       pairPage = values["pair-page"] ?? (await loadConfig()).pairing?.pairPage ?? DEFAULT_PAIR_PAGE
       resolvePairPageUrl(pairPage, "0".repeat(32))
@@ -185,7 +220,7 @@ async function runOffer(args: readonly string[]): Promise<number> {
   // The phone link: the same offer, carried in the fragment of the web pair
   // page (a fragment never leaves the browser).
   let webUrl: string | undefined
-  if (values.qr) {
+  if (wantsWebLink) {
     try {
       // A `{fp}` template resolves to this daemon's own origin.
       webUrl = encodeOfferWebUrl(result.url, pairPage)
@@ -199,6 +234,24 @@ async function runOffer(args: readonly string[]): Promise<number> {
 
   if (values.json) {
     process.stdout.write(JSON.stringify(webUrl ? { ...result, webUrl } : result, null, 2) + "\n")
+    return 0
+  }
+
+  // --url: the browser link on its own, with no QR and no CLI link.
+  if (values.url) {
+    const rvNote = result.rendezvousIsHostedDefault
+      ? `The daemon is now relaying through ${result.rendezvous} (hosted default).\n`
+      : `The daemon is now listening on ${result.rendezvous}.\n`
+    process.stdout.write(
+      `Pairing offer for daemon ${result.fingerprint}, expires ${result.expiresAt} (single use).\n\n` +
+        `Open this link in any browser on the pairing machine:\n\n  ${webUrl}\n\n` +
+        `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n` +
+        rvNote +
+        `This window can close.\n` +
+        `When the client connects, run \`agentproto pair pending\` to see its\n` +
+        `short code, compare it with the code on the client's screen, then run\n` +
+        `\`agentproto pair confirm <code>\` (or \`agentproto pair decline <code>\`).\n`,
+    )
     return 0
   }
 
@@ -219,7 +272,8 @@ async function runOffer(args: readonly string[]): Promise<number> {
     process.stdout.write(`Scan with a phone (opens the pair page in the browser):\n\n  ${webUrl}\n\n`)
     await printQr(webUrl)
     process.stdout.write(
-      `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n`,
+      `No camera? Run \`agentproto pair offer --url\` for a link to open in any browser.\n\n` +
+        `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n`,
     )
   } else if (!values["no-qr"]) {
     await printQr(result.url)
@@ -234,7 +288,10 @@ async function runOffer(args: readonly string[]): Promise<number> {
     `On the other machine:\n` +
       `  agentproto pair accept "${result.url}"\n\n` +
       rvNote +
-      `This window can close.\n`,
+      `This window can close.\n` +
+      `When the client connects, run \`agentproto pair pending\` to see its\n` +
+      `short code, compare it with the code on the client's screen, then run\n` +
+      `\`agentproto pair confirm <code>\` (or \`agentproto pair decline <code>\`).\n`,
   )
   return 0
 }
@@ -271,6 +328,118 @@ async function runAccept(args: readonly string[]): Promise<number> {
       `Confirm this fingerprint matches what the daemon showed at \`pair offer\`.\n` +
       `Run a verb over the pairing with:\n` +
       `  agentproto pair exec ${result.name} -- sessions ls\n`,
+  )
+  return 0
+}
+
+// ── pending / confirm / decline ──────────────────────────────────
+
+interface PendingRow {
+  id: string
+  fingerprint: string
+  code: string
+  name: string
+  createdAt: string
+  expiresAt: string
+  rendezvous: string
+  scope?: "host"
+}
+
+async function runPending(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: { json: { type: "boolean" } },
+  })
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto pair pending")
+    return 2
+  }
+
+  let rows: PendingRow[]
+  try {
+    const body = await httpGetJson<{ pending: PendingRow[] }>(
+      `${report.found.url}/pairings/pending`,
+    )
+    rows = body.pending ?? []
+  } catch (err) {
+    process.stderr.write(
+      `agentproto pair pending: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ pending: rows }, null, 2) + "\n")
+    return 0
+  }
+  if (rows.length === 0) {
+    process.stdout.write("No pending pairings.\n")
+    return 0
+  }
+  process.stdout.write(
+    `${"CODE".padEnd(10)}  ${"NAME".padEnd(20)}  ${"FINGERPRINT".padEnd(32)}  EXPIRES\n`,
+  )
+  for (const p of rows) {
+    process.stdout.write(
+      `${(p.code ?? "").padEnd(10)}  ${(p.name ?? "").slice(0, 20).padEnd(20)}  ${p.fingerprint.padEnd(32)}  ${p.expiresAt}\n`,
+    )
+  }
+  process.stdout.write(
+    `\nConfirm only if the code matches the one on the client's screen:\n` +
+      `  agentproto pair confirm <code>\n` +
+      `  agentproto pair decline <code>\n`,
+  )
+  return 0
+}
+
+async function runPendingDecision(
+  args: readonly string[],
+  action: "confirm" | "decline",
+): Promise<number> {
+  const { positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {},
+  })
+  const target = positionals[0]
+  if (!target) {
+    process.stderr.write(`agentproto pair ${action}: missing <code|fingerprint>.\n`)
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, `agentproto pair ${action}`)
+    return 2
+  }
+
+  try {
+    const result = await httpPostJson<{ ok: boolean; message?: string }>(
+      `${report.found.url}/pairings/${action}`,
+      { target },
+      report.found.token,
+    )
+    if (!result.ok) {
+      process.stderr.write(
+        `agentproto pair ${action}: ${result.message ?? `no pending pairing matched "${target}"`}\n`,
+      )
+      return 1
+    }
+  } catch (err) {
+    process.stderr.write(
+      `agentproto pair ${action}: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+  process.stdout.write(
+    action === "confirm"
+      ? `Confirmed pending pairing "${target}".\n`
+      : `Declined pending pairing "${target}".\n`,
   )
   return 0
 }

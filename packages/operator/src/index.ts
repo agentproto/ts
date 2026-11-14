@@ -17,8 +17,18 @@ export const SPEC_NAME = "operator/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineOperator } from "./define-operator.js"
+export { renderOperatorMd, OperatorLegacyFieldError, type OperatorRenderInput } from "./render.js"
+export { operatorSpec, operatorVerbs } from "./spec.js"
 export type {
+  AgentSkillRef,
+  AgentToolRef,
   Autonomy,
+  DefineOperatorOptions,
+  LegacyGovernance,
+  LegacyMemory,
+  LegacyScopedToolRef,
+  LegacySkillRef,
+  McpToolRef,
   MemoryKind,
   MemoryPolicy,
   OperatorDefinition,
@@ -27,7 +37,27 @@ export type {
   OperatorMemory,
   OperatorParticipation,
   OperatorProfile,
+  OperatorRole,
+  OperatorRoleBinding,
+  OperatorRuntime,
+  OperatorWarning,
   ParticipationMode,
+  RoleSlotValue,
   SkillRef,
   ToolRef,
 } from "./types.js"
+
+export { resolveOperator } from "./resolve.js"
+export { exposedToolOptIn, toolDenyGrants } from "./resolve-tools.js"
+export { OperatorResolutionError, ROLE_CHAIN_MAX } from "./resolve-types.js"
+export type {
+  IdentityEntry,
+  OperatorEntry,
+  OperatorSources,
+  PersonaEntry,
+  ResolutionErrorCode,
+  ResolutionIssue,
+  ResolutionWarning,
+  ResolutionWarningCode,
+  ResolvedOperator,
+} from "./resolve-types.js"

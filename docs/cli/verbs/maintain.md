@@ -1,7 +1,7 @@
 # `agentproto maintain`
 
 ```text
-agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]
+agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--worktrees-root <dir>]... [--wait] [--json]
 ```
 
 Convenience shortcut over `agentproto workflow run-file` for the built-in
@@ -17,7 +17,8 @@ One run:
    `agentproto-checkpoint/*` refs a dead sandbox left on the remote as
    safe / keep / unknown).
 2. Fans a reviewer agent out over the unmerged branch candidates with no
-   stored verdict yet — at most `maxReviews` (default 40) per run, newest
+   stored verdict yet — at most `maxReviews` (`--max-reviews`, default 40)
+   per run, newest
    tip first, so daily runs walk a large backlog — one turn per unique tip
    sha: a small model when the candidate's residual is 3 files or fewer, a
    large model otherwise. Each turn records a verdict via
@@ -43,14 +44,40 @@ One run:
    with `includeReviewed: true`, so a `review`-class branch whose stored
    verdict agreed for the same tip is reclaimed too. `branch_gc` still
    enforces its deterministic line-coverage guard (default 95%): an approval
-   below it is refused (`refused-guard`) and listed in the report's "Human
-   decision queue" with its coverage percentage. Without `--apply-reviewed`,
+   below it is refused (`refused-guard`) unless the
+   [verified-pr pass](./branch.md#verified-pr-pass) proves it (a superseded
+   verdict whose cited PR the forge confirms merged into base, with every
+   uncovered file explained by that PR, a changeset, a later move on base or
+   the dep-bump per-file rules), or the
+   [dep-bump pass](./branch.md#dep-bump-pass) does (every added line is a
+   lockfile, changeset, dependency spec, `version` or `packageManager` pin
+   base already has at least as new), or the
+   [history-covered pass](./branch.md#history-covered-pass) does (every line
+   missing from base's tip was once added to the same path in base's history,
+   and nothing base still has is deleted).
+   Tips that pass are listed in "Auto-passed by verified-pr" (branch, PR, why,
+   for example `uncovered files: 1 touched by #2143, 1 manifest-proven`),
+   "Auto-passed by dep-bump" (branch, lines checked) and "Auto-passed by
+   history-covered" (branch, lines found, base commits);
+   `--require-operator-below-guard` turns all three passes off. The rest are listed in the report's "Human decision queue",
+   each row ending with the reason the pass refused it. That queue is never
+   capped: every refused tip is listed
+   once (a branch and its remote twin share one line, with the ref kinds and
+   the sha), lowest coverage first, each row with its line coverage, stored
+   verdict, PR state (by head branch name from the forge's bulk PR lists,
+   `unknown` only when the forge gave no answer) and the reviewer's one-line
+   reason. Below the rows is ONE `agentproto branch gc approve <sha>...
+   --by <your name>` command covering every queued tip, one sha per line
+   with the flags last, so deleting a line drops that tip
+   (see [`branch gc approve`](./branch.md#gc-approve)). Other lists in the report stop at 20 names and say where the
+   full list is in the run output. Without `--apply-reviewed`,
    a `review`-class branch is never reclaimed.
 5. Reports a markdown summary.
 
-Verdicts are recorded with `branch_gc_verdict`, which also accepts an
-`operator: { by, note? }` block. A reviewer verdict under the line-coverage
-guard is refused by `branch_gc`; an operator approval for the same tip sha is
+Verdicts are recorded with `branch_gc_verdict`. A reviewer verdict under the
+line-coverage guard is refused by `branch_gc`; an operator approval for the
+same tip sha (`agentproto branch gc approve`, which copies the stored verdict
+and adds an `operator: { by, note? }` block) is
 the human exit from that queue and lets `includeReviewed` reclaim it despite
 the guard (the plan shows `verdictGuard: bypassed by operator <by>`). The
 maintain workflow applies with `includeReviewed: $input.applyReviewed` —
@@ -62,9 +89,12 @@ branch.
 |------|---------|-------------|
 | `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
 | `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root, plus any `--repo` dirs. Prints the discovered repo list first; exits `1` if any run fails. |
+| `--worktrees-root <dir>` | none | With `--all`: also scan this dir for worktrees, in addition to the configured worktrees root. **Repeatable.** A dir holds worktrees directly (`<dir>/<slug>`) or in buckets (`<dir>/<repo>/<slug>`); main checkouts inside it are skipped. Use it for pools outside the root (e.g. a repo's `_worktrees/`), or set them once in config `worktrees.extraRoots`; the flag adds to that list. |
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
-| `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) and reports them; ignored without `--apply-merged`. |
+| `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) unless its verified-pr pass proves them, and reports them; ignored without `--apply-merged`. |
+| `--require-operator-below-guard` | `false` | Workflow input `requireOperatorBelowGuard`: turn the verified-pr, dep-bump and history-covered passes off, so below the guard only an operator approval reclaims. |
 | `--review-preset <name>` | daemon `modelRolePreset` | Reviewer model set for this run: `opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet` (see [`modelRolePreset`](../reference/config-schema.md#modelrolepreset-string)). Each reviewer spawns on the adapter its model needs, so `go-free` runs on opencode. |
+| `--max-reviews <n>` | workflow `maxReviews` (`40`) | Cap how many unmerged branches this run sends to a reviewer (newest tip first). Must be a positive integer, else exit `2` before any daemon contact. Branches with a stored verdict are never re-reviewed, so repeated runs walk the backlog. |
 | `--wait` | `false` | Block until each run ends, then print its markdown report. Exit `0` when all done, `1` when any failed or was cancelled. |
 | `--json` | `false` | Print the raw `workflow_run_file` reply (with `--wait`: the finished run records, one per repo). |
 

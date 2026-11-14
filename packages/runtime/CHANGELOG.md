@@ -1,5 +1,803 @@
 # @agentproto/runtime
 
+## 6.2.0
+
+### Minor Changes
+
+- 59d30ee: Relay host-owned credentials to nested spawns inside box orchestrators
+- 88087a1: Add an opt-in `claude-socket` wake adapter for external Claude Code sessions. When `daemon.claudeSocketWake` is true, a level 2 or higher message (next-turn, steer) to a `cc:<session_id>` row is delivered directly to the idle Claude Code process over its per-session unix socket, using the two-frame auth/user wire protocol; the message is consumed rather than also parked in the inbox, so a later Stop/UserPromptSubmit hook cannot re-inject it. Level 1 (fyi), `bypassPermissions` targets, and missing, non-socket, or foreign-owned registration/socket/key all fall back to the existing inbox delivery and report the reason on the send result. The `Notification` hook now refreshes the external row's liveness (POST /sessions/:id/touch), and `hook install` registers it alongside the existing inbox hooks.
+- d30132f: Route a retired follower's digest to its live parent with its level kept and `routedTo` in the ledger, replay parked follow digests when the follower respawns (the retirement sweep replays before cancelling), and forward a sentinel notice for a closed session at its own level.
+- fc1e587: Record follow and message deliveries in the shared append-only delivery ledger.
+
+  - `@agentproto/runtime`: follow digests append one `producer: "follow"` line per entry after the digest outcome, with a deterministic event id, the contributing follow id (or `follower:<id>`), the must-wake `floor`, triage `level` / `rule` / `repeatKey`, and the digest `messageId` for delivered entries. The parent relay and `POST /sessions/:id/messages` append one `producer: "message"` line after the send outcome, with `eventId`/`messageId` set to the envelope id, the sender as `subject`, and the level derived from urgency. A ledger write failure never changes the response. `follow-triage.jsonl` is no longer written; delivery behaviour is unchanged.
+
+- ec66378: Add named MCP surface profiles (`core`, `orchestrator`, `apps`, `admin`,
+  `full`) selectable per request with `?profile=` or daemon-wide with
+  `defaults.mcp.profile`, plus a budget test that requires every generated
+  daemon tool to be classified.
+- c7cbcb5: Make pairing the default phone path and the tunnel phone link opt-in
+- 98ec20f: Require operator confirmation before a new pairing is usable
+- 30f500a: Follow triage rules now live behind the `session-lifecycle` delivery
+  classifier, built in the runtime and closing over the follow facts. Session
+  follow signals produce delivery envelopes carrying a `floor` for
+  awaiting-input, crashed, and turn-end-with-a-question, and `computeLevel`
+  turns that floor into level 3. The three separate always-wake pins (the rule
+  branch, the classifier guard, and the digest urgency bump) are replaced by
+  that one floor, so an empty classifier registry still pins a floored
+  `session.awaiting_input` envelope at level 3 and a `fyi` digest containing
+  one is delivered as `next-turn`. Delivery with triage off is unchanged.
+- ab9ca12: Turn retry now treats network-level provider failures as transient. A one-off TLS handshake failure (`EPROTO: The TLS handshake failed`), a reset, timed-out or broken socket (`ECONNRESET`, `ETIMEDOUT`, `EPIPE`, `socket hang up`, undici `UND_ERR_SOCKET` / `UND_ERR_CONNECT_TIMEOUT`) and a transient DNS miss (`EAI_AGAIN`) are classified `upstream-5xx` instead of `other`, so an opted-in session re-prompts with its normal backoff instead of stopping mid-work. `ENOTFOUND` and `ECONNREFUSED` stay non-transient: a wrong host or port does not recover with backoff.
+
+### Patch Changes
+
+- 1c3c800: Sync generated catalog data from the pinned provider sources.
+- eec6ecf: Refresh stale imported-MCP tool lists on change, TTL and unknown tool
+- d7b0174: Stop a dead or dropped session from pinning a computer box. `sandbox_attach` rendezvous connects no longer take a session slot nobody can release, a failed `boot`/`connect` releases the slots it took, a throwing MCP `close()` can no longer skip the provider release, and the sandbox gc pass releases dead attachés' slots on boxes that stay in use (`releaseSession`), treats registry-absent sessions as dead (daemon opt-in, grace-limited) and runs its first pass two minutes after daemon start.
+- fc1aaae: `agentproto sandbox egress-health --probe` now boots its per-slot probe boxes in parallel (1 CPU, 1 GiB, with the egress hosts opencode needs, `models.dev` included) instead of one after another with the template default size, and a `model-answers` timeout with no output is reported as unknown with a hint to re-run opencode with `--print-logs --log-level WARN`, since opencode retries rate limits silently.
+- 0fcf3f4: A placement-ladder rung that has a next rung no longer sits out the computer fleet's 12 minute `503 fleet-capacity` wait. The runtime passes the new `SandboxBootOpts.capacityWaitBudgetMs` (the rung's `agentStartTimeoutMs`, default 5 minutes) to every non-final rung; the computer provider then fails the rung at once when the refusal has no `Retry-After`, or waits once, capped by that budget, when it has one. The refusal reason (for example `no-active-host`) stays in the failure message and in the `[placement]` log line. A plain `sandbox` spawn and the last rung keep the existing wait.
+- 06e0ecc: New config key `worktrees.extraRoots`: extra directories `maintain --all` scans for worktrees, so scheduled maintenance routines cover pools outside the worktrees root without passing `--worktrees-root` on every run. The flag still adds to the list.
+- 4217da7: Replace sandbox preflight's boolean `runsWithSpawnAuth` with an explicit `phase: "prelaunch" | "postlaunch"`. `prelaunch` (the default for config probes) runs before the agent starts and always runs, authed spawn or not; `postlaunch` needs the session's credentials and is skipped with a warning on an authed spawn. The built-in `model-answers` probe is `postlaunch`. `runsWithSpawnAuth` is still accepted as a deprecated alias (`true` maps to `prelaunch`, `false` to `postlaunch`). Behaviour change: a config probe that set neither field was previously skipped on an authed spawn; it now defaults to `prelaunch` and runs.
+- 2cbfa02: Make the sandbox preflight a generic yes/no check that a deployment extends from config. `defaults.sandbox.preflight.probes` declares probes as one shell command run in the box (`command`, `okExitCode`, `okStdoutMatches`, `koWhen` patterns with an error class, `failAs`), so "the Zen free model still answers from this IP" or "gh is installed" is a config entry, not code. Each probe now says whether it may run when the spawn carries credentials (`runsWithSpawnAuth`); before, any spawn with auth skipped the whole preflight, so CI's api-key lane never ran its ladder preflight. Probes that need the credential (the built-in `model-answers`) are still skipped, per probe, with a warning.
+- f17cea4: Fix the PR provenance footer crediting a supervisor instead of its executor: the reconciler's branch lane no longer stamps a session that supervises a child sharing its cwd, so a body that lost its footer is restamped by the executor that wrote the PR (agentproto/ts#2541, #2542).
+- 2fe27c6: Test only: `command-list-provenance.test.ts` drains the registry's pending writes before deleting its temp dir, so the fire-and-forget command-log write no longer logs an ENOENT on CI.
+- c62b5de: Add per-target batching to the delivery kernel. A sentinel target can set
+  `batchMs`; a burst of envelopes for the same session inside that window is
+  delivered as one message, so the session starts one turn instead of one per
+  envelope. The ledger still records one line per envelope and target, and the
+  sentinel triage level / rule for each event is unchanged. The sentinel default
+  is `batchMs: 0`, which keeps the existing one-delivery-per-envelope behaviour.
+- 898175f: Move GitHub delivery knowledge out of the kernel: sentinel triage now runs
+  through the delivery classifier registry, GitHub verdicts, the explicit triage
+  table from #2444, coalesce keys and repeat keys live in
+  `@agentproto/delivery-github`, and the runtime daemon registers that module
+  next to `createSentinelRuntime`. The kernel drops `ClassifyContext.facts` and
+  `Classifier.repeatKey`; `SentinelEvent` now extends the delivery `Envelope`.
+  GitHub failures carry no repeat key, so a repeated failure on the same head
+  still wakes.
+
+  Decision changes from main, for a first non-terminal event:
+
+  | Event type                             | Verdict                         | main | this branch |
+  | -------------------------------------- | ------------------------------- | ---- | ----------- |
+  | `github.check_suite.completed`         | `success`, `neutral`, `skipped` | wake | fyi         |
+  | `github.workflow_run.completed`        | `success`, `neutral`, `skipped` | wake | fyi         |
+  | `github.pull_request_review.submitted` | `approved`, `commented`         | wake | fyi         |
+  | `github.issue_comment.created`         | bot actor                       | wake | fyi         |
+  | `github.pull_request.synchronize`      | none                            | wake | fyi         |
+
+  No other decision changes. Failure-class verdicts remain wake. Normalized
+  `github.pull_request.closed` events remain wake because they are terminal, so
+  the terminal rule wins before the closed rows in the table.
+
+- aa778c3: Refuse bare submit on fields questions; trim redundant choice text
+- b08d66d: Keep `tool_help` available under every named MCP surface profile
+- ec5f33e: Fix tunnel health probes caching an NXDOMAIN for fresh hostnames: wait for public DNS-over-HTTPS visibility before the first probe, then probe the pinned DoH address instead of the system resolver.
+- b33ff7d: Re-probe a fresh Cloudflare tunnel on a short settle ladder so its first health check does not report an edge 530 for a full minute.
+- 42ea874: Stop turn-retry from retrying an out-of-funds refusal as a transient 5xx. pi prints provider errors as `402: {"type":"server_error","message":"... Insufficient account funds"}`: `extractHttpStatus` now reads a status that leads the message (`NNN: ...`), the billing match covers `insufficient <word> funds/credits/balance`, and the reviewer host's wallet-exhausted cooldown recognises the same wording. The turn is classified `auth` and is no longer retried.
+- fa4dd61: Turn retry no longer counts provably read-only shell commands as side-effecting tool calls. A shell call's recorded name is its command line, and the gate used to look only at its first word, so `git status --short && git diff --stat` blocked the retry of a turn cut by a transient error (EPROTO, 5xx, 429) while `cat >> notes.md` passed as a read. The gate now parses the command and accepts it only when every command in it is an allowlisted read-only program (`git status|diff|log|show|rev-parse|ls-remote|...`, `cat`, `sed -n`, `grep`, `rg`, `ls`, `head`, `tail`, `wc`, `pwd`, `echo`, `cd`, ...) joined by `&&`, `||`, `;` or `|`, with no output redirection to a file. Anything it cannot parse (command substitution, subshells, heredocs, loops) still counts, as do `git commit`, `sed -i`, `tee`, `> file` and `pnpm test`.
+- Updated dependencies [1c3c800]
+- Updated dependencies [88087a1]
+- Updated dependencies [ae6751d]
+- Updated dependencies [d7b0174]
+- Updated dependencies [d30132f]
+- Updated dependencies [c710e7e]
+- Updated dependencies [0fcf3f4]
+- Updated dependencies [c7cbcb5]
+- Updated dependencies [98ec20f]
+- Updated dependencies [bfff8fa]
+- Updated dependencies [c62b5de]
+- Updated dependencies [898175f]
+- Updated dependencies [aa778c3]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/sentinel@0.5.0
+  - @agentproto/harness@3.1.0
+  - @agentproto/acp@0.15.0
+  - @agentproto/sandbox@0.16.1
+  - @agentproto/apps@0.27.0
+  - @agentproto/pairing-host@0.4.0
+  - @agentproto/delivery@0.2.0
+  - @agentproto/delivery-github@0.2.0
+  - @agentproto/providers-store@0.4.4
+  - @agentproto/inference-endpoint@1.0.2
+
+## 6.1.0
+
+### Minor Changes
+
+- bb8ae6b: AIP-53 `services[].expose`: a service declared in APP.md can ask the host for a public URL through a tunnel.
+
+  - `@agentproto/app`: `AppService.expose?: { auth?: "guard" | "service"; hostname?: string }` (new `AppServiceExpose` type), validated by `parseServiceList`, `defineApp` and the loader, carried through `emit`. Closed object, `auth` enum, hostname a lowercase DNS label or FQDN; `expose` without `port` is rejected with `services[i].expose requires a port`.
+  - `@agentproto/runtime`: one tunnel per exposed service through the daemon's `TunnelRegistry`, keyed `app.<a>.<s>.<h>` (AIP-53 Tunnel key as amended by agentproto/agentproto#152: slugged app id, service name, 8 hex of sha256 of `<appId>:<name>`, always within the provisioner key alphabet; new `TunnelRegistry.ensureKeyed` / `findByKey`, tunnels found again by their stamped owner), so a reinstall or a daemon boot gets the same tunnel back. A kept service whose spawn origin is no longer the current one is respawned with the new `AGENTPROTO_PUBLIC_URL`. The tunnel is ensured before the process spawns and the bare origin is passed as `AGENTPROTO_PUBLIC_URL`; `auth: service` is an unguarded tunnel, `auth: guard` keeps the access guard and never puts the entry link in the env. A failed tunnel never fails the install nor blocks the process. The install result and `app_status` report each exposure (publicUrl, auth, stable, state, tunnelId). Uninstall, removing the service, or dropping `expose` deletes the tunnel. The provider is host config, `defaults.apps.exposeProvider`; unset, it is `cloudflare-provisioned` when registered, else `cloudflare-managed`, else `cloudflare-quick` reported as not stable.
+
+- ef716d5: AIP-53 `services[].activation`: a service can opt into on-demand activation instead of being kept running, so a service that is only needed occasionally no longer runs (and can no longer crash-loop or be orphaned) when nobody uses it.
+
+  - `@agentproto/app`: `AppService.activation?: { mode: "always" | "on-demand"; idleStopMs?: number; startTimeoutMs?: number }` (new `AppServiceActivation` type, `DEFAULT_SERVICE_IDLE_STOP_MS` = 300000 and `DEFAULT_SERVICE_START_TIMEOUT_MS` = 30000), validated by `parseServiceList`, `defineApp` and the loader, carried through `emit`. Closed object; `mode` is required; `on-demand` requires `port` (`services[i].activation.mode 'on-demand' requires a port`); `idleStopMs` is an integer 1000..86400000 and `startTimeoutMs` an integer 1000..300000, both refused under `mode: always`. Omitted `activation` keeps the existing keep-alive behaviour. The vendored `APP.schema.json` gains the same field (listed in `specs/spec-drift-allowlist.json` until the upstream AIP-53 amendment merges).
+  - `@agentproto/runtime`: an `on-demand` service is no longer spawned at install and boot. The daemon listens on the declared `port` (loopback, and the target of the `expose` tunnel) and starts the process on the first request with `PORT` set to a free loopback port, proxies HTTP and WebSocket upgrades to it, and stops its process group after `idleStopMs` without an open request or connection. Requests arriving during a cold start wait for it (one start serves them all, bounded by `startTimeoutMs`); a start that fails answers `503` with `Retry-After` and no detail in the body, and the restart policy's backoff (1s doubling to 60s) becomes a start circuit breaker with no give-up state. A crash while running returns the service to idle instead of restarting it. Owner records carry `activation: "on-demand"`; flipping a service between `always` and `on-demand` replaces the running owner so the port changes hands; a bind failure is reported like a failed start (`port <n> is already in use`). `app_status` reports `services.activations` (`idle`, `starting`, `running`, `stopping`, `absent`), and daemon stop stops every on-demand host and its process. `startAppServiceProcess` gains an internal single-attempt mode (`singleAttempt.onExit`: no restart loop, no entry in the supervisor registry) that the host builds on.
+
+- f12741f: Let an operator approve a guard-refused branch verdict without retyping it.
+
+  - New `agentproto branch gc approve <sha|branch>... --by <name> [--note <text>] [--repo <dir>] [--dry-run] [--json]`. It copies the stored verdict for each tip and adds `operator: { by, note }`. It refuses, and records nothing, when no verdict is stored, the stored `gate.agree` is not true, no ref named in the verdict still points at its sha, or `--by` is the reviewer.
+  - The approval goes through the new daemon route `POST /branches/gc/approve`. The route accepts only `Authorization: Bearer <per-boot token>` (no loopback bypass, no allowlisted Origin, no `?token=`) and refuses any request carrying a session identity (a session token or a caller-session claim). The CLI forwards `$AGENTPROTO_SESSION_ID`, so the command is refused from inside an agent session. The existing `branch_gc_verdict` session refusal is unchanged.
+  - `@agentproto/worktree` exports `approveBranchVerdict`; `@agentproto/runtime` exports the `BranchGcOperatorApprover` port (`approveBranchGcVerdict` in `createGateway`).
+  - The repo-maintenance `maintain` report prints one `agentproto branch gc approve <sha> --by <your name>` command per queued tip instead of a JSON template, and counts and lists the decision queue and the reviewed-reclaimed list once per tip sha, with the ref kinds on one line.
+
+- 35a339d: branch gc: a deterministic `verified-pr` pass lets a reviewed branch past the line-coverage guard when a `superseded` verdict cites a PR (new optional `landedIn`, else `#N` in the gate) that the forge confirms merged into base, and every file with uncovered lines was touched by that PR, is a consumed `.changeset/*.md`, or is a path base deleted or moved after that PR merged. On by default; `requireOperatorBelowGuard` / `--require-operator-below-guard` turns it off. The outcome and restore log carry `guard: "verified-pr"` with the proof, refusals carry `verifiedPrRefusal`, and the maintain report lists auto-passed tips apart from the human decision queue. New `agentproto branch gc restore <restore-log>` (and the `branch_gc_restore` MCP tool) re-creates deleted refs from a restore log (commands rebuilt from validated fields, the log's repo must be the caller's), refuses to overwrite a ref at another sha, and drops the restored tips' operator approval so the next run re-judges them.
+- 8acac8f: Mint AIP-59 section 8 sub-session tokens for imported MCP servers that opt in. An import can now declare `subsession: "aip-59"` (http only); when a session calls one of its tools, the daemon mints a per-session token with the device credential the import already carries and sends it as `Agentproto-Subsession`, instead of the spoofable `x-agentproto-caller-session` header (review B2). Tokens are cached per (alias, session) and re-minted within 60 s of expiry, concurrent callers share one in-flight mint, a mint failure refuses the call rather than falling back to a device-level call, and every token is revoked when its session exits. The session descriptor records the server's recordings LINK (`browserRecordings.url`) when a token is minted (AIP-63 M7). Inert until an import sets `subsession: "aip-59"`.
+- 42d1366: Bound the daemon's usage-rollup transcript reads and log the heap by owner. `collectSessionSnapshots` (behind `usage_rollup` and `GET /usage/rollup`) read every agent-cli transcript at once, each as one string with every line parsed: one rollup over 480 MB of transcripts took the daemon's heap from about 200 MB to 0.9-1.2 GB. `readUsageSnapshots` now streams the file and parses only lines that mention `usage_snapshot`, the collector reads at most 8 transcripts at a time, and a `profileRef` rollup filters on the descriptor before reading anything (peak 260-275 MB on the same rollup). The daemon also logs a `[heap]` line every 5 minutes (`AGENTPROTO_HEAP_LOG_INTERVAL_MS`, `0` turns it off) with heapUsed, rss, the heap right after the last major GC, live handles by type, and the sizes of its long-lived structures (sessions, policies, workflow runs, the events index cache, hosts, pairing). The same report is served by the operator-only `GET /debug/heap`, and `POST /debug/heap-snapshot` writes a heap snapshot under `~/.agentproto/heap-snapshots/`, refusing with 507 when free memory (capped by a cgroup v2 limit) is below heapUsed plus 256 MB (the write blocks the event loop); once the daemon has a bearer token, that route requires it. `HostRegistry` and `PairingRegistry` gain an optional `memoryStats()`.
+- 0664ea3: Register Claude Desktop chats as external sessions so their per-chat inbox works: runtime gains a trusted `POST /sessions/:id/touch` plus percent-encoded id decoding on the inbox/message routes, and the cli `hook inbox` registers `cc:<session_id>` before its GET while `hook install` drops the legacy `AGENTPROTO_SESSION_ID` env.
+- ec30aa8: Remove the dormant `projectBrowserTools` export (and its `browser_kit_*` tool projection). It was never mounted by the daemon and had no consumer; Bureau now owns the browser tool surface (Browser Fabric, AIP-63 S4).
+- c0dc0c8: Add egress IP health ledger and cooldown-aware slot selection
+- 68a84bc: Add per-rung agentStartTimeoutMs and box start diagnostics to placement
+- 1395906: Add a derived "launched by" answer to `session_list` (`launchedBy`) and a `LAUNCHED BY` column between `AGE` and `COMMAND` in the default `agentproto sessions` table, folding the existing parent, caller, operator and origin fields into one readable line.
+- 457da84: Remove agreed reviewed held worktrees via worktree_gc, keep the branch
+- eb4ba8a: Proxy browser_* tools to a Bureau import and add a built-in browser bundle
+- 420384b: Add opt-in usage-limit turnRetry class that falls back instead of retrying. Behavior change beyond the new class: a turn that already made a side-effecting tool call no longer walks the AIP-46 fallback chain after an auth or usage-limit failure unless `retryAfterToolCalls` is set.
+- 6effe4d: Structured harness questions (AIP-45 multi-field questions). With permission hold on, the ACP client advertises `elicitation.form` and turns a form `elicitation/create` (claude-code's AskUserQuestion: single choice, multiple choice, "Other" free text, several questions at once) into an `agent-prompt` with `request: "question"` and `question.fields`, parked like a permission. `respondPermission(id, { answers })` sends the answers back as the elicitation content. The runtime exposes the fields on `awaitingQuestion` (`requestId`, `fields`), and `permissions_respond`, `POST /permissions/:id` and the new `agentproto permissions answer` accept `answers`. `@agentclientprotocol/sdk` moves to 1.x in `@agentproto/acp`: 0.21.1 stripped the `_meta` and option descriptions the form relies on.
+- 6c86b8c: Show branch PR state and evidence in the maintain decision queue. `branch_gc` plan entries for unmerged local and remote refs now carry `headPr`, the forge's PR for the branch name (open, newest merged, newest closed-unmerged, or none) read from bulk PR lists, through the new optional `ForgeClient.listClosedUnmergedPullRequests`. The maintain report prints that PR state instead of `unknown`, gives every human decision queue row its stored verdict, PR state and the reviewer's reason, prints one batch `agentproto branch gc approve` command (a sha per line, flags last), and its Worktrees header says `mode: apply` when worktree_gc applied.
+- 650fa3a: Let worktree gc reclaim integrated worktrees whose only changes carry no work (an emptied checkout, turbo's managed AGENTS.md block, or changes already on base), reported as `reclaimReason: "dirty-no-work"` with the sub-cases in `dirtyNoWork`. Anything unexplained keeps its previous class.
+- 3977111: Add `agent_start.placement`: an ordered ladder of sandbox rungs (each with optional model, access, preflight and turnRetry overrides). A rung that cannot place the box (failed preflight, capacity or overflow refusal, exhausted egress pool, boot failure before the agent started) is skipped for the next one; a failure after the agent started never advances. The descriptor records `placement` with every attempt, an exhausted ladder fails with `sandbox_placement_exhausted`, and `session_migrate` and fresh-box `session_restart` re-place from rung 1 and carry `preflight` and `placement`.
+- 24967db: Add an apiKey (service-to-service) auth mode to the `cloudflare-provisioned` tunnel provider, making the OIDC device-flow fields optional when a provisioner API key is supplied.
+- 74c2942: `app_install {dir}` no longer silently re-points an app installed from a live dir into a linked git worktree: that is refused unless `repoint: true` (CLI `agentproto app install <dir> --repoint`), so `agentproto maintain` / `steward` run from a worktree build keep the installed copy. The daemon also self-heals a `dir-missing` record left by a removed worktree by re-pointing it at the main worktree's copy of the same app (fail-closed), reported as a `dir-repointed` registry issue.
+- 0bc7927: Bound worktree provisioning with a stall timeout (default 2 min without setup output) and a hard cap (default 30 min). A tripped bound kills the setup process tree and fails the session with the phase, elapsed time and last output lines. Configurable per spawn (`worktree.stallTimeoutMs` / `maxMs`), via `worktrees.provisionStallTimeoutMs` / `provisionMaxMs` or env. The setup hook output now streams into the starting session's output and provisioning start, phases and failure are logged to daemon.log.
+- 9a31444: Make branch gc output something an operator can act on.
+
+  - `summarizeBranchGcPlan` adds `summary.distinct`: branch counts keyed by name across ref kinds (a local branch and its remote twin count once), next to the per-kind ref counts. `agentproto branch gc` prints it.
+  - The `branch_gc` MCP reply is compact by default: the summary, the plan metadata and one page of entries (name, kind, sha, class, status, reclaimReason / mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard when set), 100 rows per page. An apply pages its outcomes by default (pass `section: "entries"` to page the plan entries instead) and keeps the restore log and `applySummary`. `cursor` pages the same run and the same filtered slice without re-running it, keeping the `section`/`classes`/`limit` it was created with. `fields`, `classes`, `section` and `limit` shape the page, and `full: true` returns today's whole result. Callers that read full plan entries must now pass `full: true`.
+  - The repo-maintenance `maintain` workflow requests `full: true` on each branch_gc call, headlines "N branches (M refs)", lists the whole human decision queue (lowest line coverage first) with the `branch_gc_verdict` operator-approval call that clears an entry, and names where the full list is for every other capped list (`review` and `verdictRecords` are now in the run output).
+
+- 6f84e12: Add sandbox preflight probes and model-answers probe to agent_start
+- 24967db: Add apiKey auth mode to cloudflare-provisioned tunnel provider
+- b0d7203: Pick the hostname root of a provisioned tunnel. A provisioning service that serves several domains (the agentik tunnel service now serves `tunnel.agentik.net` and `agentproto.cloud`) assigns the hostname under the `root` the caller asks for, else under the API key's default.
+
+  - `@agentproto/tunnel`: `CreateTunnelInput.root?: string`.
+  - `@agentproto/tunnel-agentik`: `create` sends `root` in the PUT body when set.
+  - `@agentproto/runtime`: `tunnel_create` and `POST /tunnels` accept `root`. Only `cloudflare-provisioned` takes it (any other provider refuses it, as does an empty value); it is normalized, stored on the descriptor (`TunnelDescriptor.root`, persisted), handed to the provider as `TunnelIdentity.root`, and sent on every PUT (start, restore on boot, hostname swaps). `ensureKeyed` treats a root change as a config change: it restarts the tunnel and, without an explicit hostname request, lets the service assign a new name under the new root.
+  - `@agentproto/cli`: `agentproto tunnel create --root <domain>`; the usage text now lists `cloudflare-provisioned`.
+
+### Patch Changes
+
+- b4daa21: Keep the session pin across continue-fresh and restart succession
+- c7a8fb0: Scale the default autocompact threshold with the context window: unset `autoCompactAtTokens` is now `max(150000, warnAtPct% of the window)` (550000 on a 1M window) instead of a flat 150000, so a 1M-window session no longer compacts at 15%. An explicit value stays absolute.
+- a492f59: Fix the daemon boot re-ensure of app services: the gateway now creates one service-owner store and shares it with both `registerAppTools` and the boot pass, so leftover children from the previous daemon are found and killed and the fresh owners are persisted.
+- e56ebfe: Give the files brain an on-disk, incremental search index, and never refuse a search. With `indexPath` set and a runtime whose `node:sqlite` has FTS5 (Node 22.13+, 23.4+, 24+; 22.5 to 22.12 only with `--experimental-sqlite`), `FilesKnowledgeAdapter` keeps its BM25 index in a SQLite FTS5 file run in a worker thread: `ingest()` upserts that document's row and `deleteSource()` empties it instead of invalidating the whole brain, a stat-only scan on open (then at most every `reconcileIntervalMs`, default 5 minutes, in the background) re-indexes only changed files and drops vanished ones, and a query during the first build answers from what is indexed with `partial: true`. The index stores pre-tokenized text from the same tokenizer, and FTS5 candidates are re-scored with the package's own BM25, so rankings match the in-memory engine (exact on the captured parity fixture, 99.7% top-10 overlap on a generated corpus). The file is derived data: deleted or unreadable, it is rebuilt; a schema or tokenizer change rebuilds it. Without FTS5 (Node 20, older 22) the adapter falls back to the in-memory index, which now indexes the most recently modified `maxIndexDocs` files and flags results `partial` above the ceiling instead of throwing `FilesIndexTooLargeError` (kept, deprecated, no longer thrown). `LocalFs` gains `walkStat()`. `KnowledgeQueryResult` gains an optional `partial` flag. Workspace brains put each `files` provider's index at `<brain>/.index/fts-<id>.sqlite` (`"onDiskIndex": false` in `knowledge.json` opts out), the federated provider propagates `partial`, `GET /brain/query` reports `partial` (and `workspacesPartial` in federated mode), and the `maxIndexDocs` config help now describes it as the in-memory fallback's ceiling.
+- 8d3a80e: `branch gc --include-reviewed`: a second deterministic pass, `dep-bump`, reclaims a guard-refused tip with an agreeing `obsolete` or `superseded` verdict when every line it adds is in `pnpm-lock.yaml` or a `.changeset/*.md`, or is a `package.json` dependency spec (or `version`) that base already declares at an equal or higher semver lower bound. It is computed from git objects only. Any other line keeps the tip in the human queue, including a deleted line base still has, and `depBumpRefusal` names the first unexplained line (also shown on the maintain report's human decision queue rows). The pass is recorded as `guard: "dep-bump"` + `depBump` on the apply outcome and the restore log, and listed under "Auto-passed by dep-bump" in the maintain report. It is on by default, and `requireOperatorBelowGuard` turns it off together with verified-pr.
+- 29a0599: `branch gc --include-reviewed`: a third deterministic pass, `history-covered`, runs when verified-pr and dep-bump both refuse. It reclaims a guard-refused tip with an agreeing `obsolete` or `superseded` verdict when every changed file is proven by the dep-bump per-file rules, or is a text file that deletes no line base still has and whose every uncovered added line was added to that same path (or the path base moved it to) by a commit in base's history. Lines from other paths never count. Each path's history is read once per plan, bounded at 50 files and 32 MiB of history per tip, and past the bound it refuses. The pass is recorded as `guard: "history-covered"` + `historyCovered` (files checked, lines matched, per file the oldest and newest base commit) on the plan entry, the apply outcome and the restore log; a refusal sets `historyRefusal`. The maintain report gains an "Auto-passed by history-covered" section and a "history refused" fragment on human queue rows. `requireOperatorBelowGuard` turns it off with the other two passes.
+- 440acad: `branch gc restore`: entries of one restore log that map to the same target (with `--local-only`, a remote and a local entry of the same name) are resolved before anything runs, from content rather than log order, so a dry run reports exactly what the real run does. The same sha twice is restored once (the next is `already-present`); when one sha descends from the other, the descendant is restored and the ancestor gets the new `contained` result; diverged shas are both `refused-conflict`, naming each other, until `--sha` picks one. The CLI summary counts `contained`.
+- 7b7e06b: branch gc: the verified-pr pass now also explains an uncovered file the cited PR did not touch when the dep-bump per-file rules prove every line it changes (recorded as `why: "manifest-proven"`, shown by `maintain` as `N manifest-proven`), and the dep-bump rules prove a `packageManager` pin `<name>@<version>[+<hash>]` when base declares the same manager at the same or a newer version.
+- 9d55db7: Gate the chrome-live screencast routes (`GET /sessions/:id/screencast`, `.jpg`, `.mjpg`) behind the per-boot sessions token. They streamed the agent tab's pixels to any caller, including a cross-origin page (CORS answers `*` to an untrusted origin). The HTML viewer carries its `?token=` / `?et=` onto the MJPEG stream URL and HTML-escapes the session id.
+- 84345e9: Let `tunnel_delete` forget a `cloudflare-provisioned` record that was never provisioned remotely while the provider is unconfigured, and keep refusing to delete one with a stored remote tunnel id.
+- ef84907: Keep the gh shim's provenance footer when a PR body is rewritten
+- e65057d: The repo-maintenance `maintain` workflow now re-reviews, once per tip, a tip whose stored verdict says superseded (triage and gate), agreed, cites no PR and sits under branch_gc's line-coverage guard, so the verified-pr pass can reclaim it once the reviewer cites the merged PR that landed the work (or the reviewer changes the verdict). Re-reviews come after every unreviewed tip under the same `maxReviews`, the report's Review section counts them, and `rereviewUncited: false` turns them off. The verdict store stamps `revision` on a record that replaces an earlier verdict for the same tip (so a re-review is never repeated), and branch_gc's plan entry verdict summary now carries `gateVerdict`, `citedPrs` (from `citedPrsOf`) and `revision`.
+- 2cf5019: Default the daemon `/mcp` self-mount for every on-host adapter (not just hermes/claude-code) when a spawn supplies no explicit `mcpServers`; on-host workflow agent steps likewise receive the gateway by default. The injected entry carries a per-session `callerSessionId` and keeps `agent_start` visible to `delegationReachFor`, preventing depth-0 sessions from being downgraded to executor. Sandbox spawns remain excluded except hermes.
+- ef84907: Keep the `gh` provenance shim's footer when an agent rewrites a PR body: `gh pr edit --body/-b/--body-file/-F` and `gh api -X PATCH .../(pulls|issues)/N` now re-append the existing rendered footer if the new body dropped it, so a rewritten description no longer fails the provenance/hygiene check on the next push.
+- 61f0498: Host guard no longer kills work in flight: it reaps idle sessions instead.
+
+  - `agentproto host guard` (and the thin `scripts/host-guard.mjs` cron wrapper) now closes a session through a new `POST /sessions/:id/reap` route instead of `/kill`, so the row is tagged `guard-reaped` (not `operator-stopped`) and stays lazy-resumable.
+  - New `work-in-flight` and `child-alive` refusals: a dirty/unpushed/unknown worktree or a live `fix-pr*|exec-*|diag-*|fix-*` session younger than 2 h is never reaped; git probes are bounded to 2 s and any failure keeps the session.
+  - The CRIT idle window now has an absolute 900 s floor.
+  - `guard-reaped` is a known end reason and a deliberate end, so no automated pass (including eager resume-on-boot) revives it.
+
+- ac1a69f: Serve a plain `application/json` MCP response to hosts that send a JSON-only `Accept` header. The daemon's `/mcp` (plus `/mcp/orchestrator` and `/mcp/imported/<id>`) and the standalone app MCP server previously bounced `Accept: application/json` with 406 "Client must accept both application/json and text/event-stream", and answered SSE-mode by default; a JSON-only MCP Apps host could not initialize or make a follow-up `tools/call`. Both servers now widen a JSON-only `Accept` before handing the request to the SDK transport (POST only, `rawHeaders` included) and enable `enableJsonResponse` so the body is JSON-RPC. Clients that already accept `text/event-stream` keep the SSE path unchanged, and a missing `Accept` still gets the SDK's 406.
+- b7d4143: The PR-provenance reconciler's branch lane no longer stamps a sandboxed session as a PR's opener unless an `Agentproto-Session` trailer on the PR's commits or checkpoint names it. A sandboxed reviewer whose box checked out the PR head was credited as the opener of a PR opened outside agentproto (#2447).
+- 56380b7: Fix chrome-live screencast mp4 pacing: each frame is now shown for the gap to the NEXT frame instead of the gap behind it, which shifted every frame one slot late and flashed the first frame for 0.05s.
+- 18dd915: Thread a supervising session through workflow runs: `workflow_start` / `workflow_run_file` accept `supervisorSessionId`, and every agent-step session the run spawns records it as `parentSessionId`, so a supervised review/fix loop reads as one parent with reviewer and fixer children instead of anonymous depth-0 roots. Descriptor-only lineage; it never relaxes a depth or role guard.
+- 0380c2b: Agent workflow steps accept `placement` (an ordered sandbox ladder) and `turnRetry` (usage-limit and rate-limit fallback) selectors, and export the `AgentPlacementRef` and `AgentTurnRetryRef` types. The runtime session host forwards both onto the spawn, and a failed sandbox boot now settles its dedupe claim, so a labelled spawn walking a placement ladder moves on to the next rung instead of waiting on its own failed first attempt. The CI review-lane skill doc now describes the placement ladder and the turn-retry fallback.
+- Updated dependencies [bb8ae6b]
+- Updated dependencies [ef716d5]
+- Updated dependencies [e56ebfe]
+- Updated dependencies [8d3a80e]
+- Updated dependencies [29a0599]
+- Updated dependencies [f12741f]
+- Updated dependencies [7b7e06b]
+- Updated dependencies [35a339d]
+- Updated dependencies [2d5f4b9]
+- Updated dependencies [1b66f60]
+- Updated dependencies [42d1366]
+- Updated dependencies [7f9ea8b]
+- Updated dependencies [cbbbee8]
+- Updated dependencies [c0dc0c8]
+- Updated dependencies [457da84]
+- Updated dependencies [e65057d]
+- Updated dependencies [7f8bf00]
+- Updated dependencies [6effe4d]
+- Updated dependencies [6c86b8c]
+- Updated dependencies [1b66f60]
+- Updated dependencies [9fcc8aa]
+- Updated dependencies [9a31444]
+- Updated dependencies [0380c2b]
+  - @agentproto/app@2.5.0
+  - @agentproto/workspace-brain@0.7.0
+  - @agentproto/apps@0.26.0
+  - @agentproto/model-catalog@0.15.0
+  - @agentproto/pairing-host@0.3.0
+  - @agentproto/sentinel@0.4.0
+  - @agentproto/sandbox@0.16.0
+  - @agentproto/acp@0.14.0
+  - @agentproto/workflow-runtime@0.21.0
+  - @agentproto/providers-store@0.4.3
+  - @agentproto/harness@3.0.1
+  - @agentproto/review@1.0.0
+  - @agentproto/run@0.2.2
+  - @agentproto/inference-endpoint@1.0.1
+  - @agentproto/eval-reporters@0.2.31
+  - @agentproto/telemetry-langfuse@0.2.29
+
+## 6.0.0
+
+### Major Changes
+
+- e301b84: Remove the pre-AIP-70 leftovers: deprecated `SPEC_NAME` exports, the `definePack`/`Pack` model-routing aliases, the runtime re-exports of symbols owned by extracted packages, and the `inference-endpoint` compatibility bin. Import those symbols from their owning packages and use `defineRoutingPack`/`RoutingPack` for model-routing packs.
+- e301b84: Remove the pre-AIP-70 aliases (`SPEC_NAME` exports, `definePack`/`Pack`, runtime re-exports, the duplicate `llm-endpoint` bin) and centralize the Anthropic unified rate-limit parser in `@agentproto/quota`. The CLI `review verify` path and the runtime review ledger and compose paths now treat `agentproto-pack-digest/v1` and `review.pack-digest/v1` as the same digest recipe, so attestations written with either tag compare correctly.
+
+### Minor Changes
+
+- 68c476e: Stop per-session adapter config dirs (`~/.agentproto/adapter-config/<id>`) from growing without bound. When a spawn redirects a base dir (opencode's credential `XDG_DATA_HOME`), the tool caches known to derive from it (pnpm store, uv managed Pythons) are now symlinked to the operator's own location instead of being rebuilt per session; confined spawns keep per-session caches. The driver records each dir's disposable paths in `.agentproto-cache.json` (`credentialDataHome.disposable`; opencode lists `snapshot`, `tool-output`, `log`), and a new adapter-cache sweep deletes them once every session of the lineage is dead and quiet for `daemon.adapterCacheRetentionDays` (default 1), keeping the resume store. Runs with the periodic retention sweep, and on demand via `session_gc adapterCaches:true` and `agentproto sessions gc --adapter-caches`.
+- d6c4305: An AGENT.md `on: {turn-end: session:clerk-pass}` entry now enables the AIP-68 clerk for that agent's sessions. The clerk's configuration (debounce, run, exclude) stays in `metadata.hooks.clerk`; the `on` entry only adds `enabled: true` at the agent level, and an explicit `metadata.hooks.clerk.enabled` (true or false) still wins, so existing manifests keep their behaviour. The agent `on` scanner no longer reports the `turn-end` clerk entry as a refused reaction binding, since the clerk's own turn-end controller owns it.
+- b67f58e: AGENT.md `tools` accepts the AIP-42 structured item `{ kind: mcp, server, allow?, deny? }` and refuses a malformed one (missing `server`, a `/` in a name, an extra key, an unknown `kind`); the item is part of the generated agent schema and exported as `McpToolRef` / `ToolRef`. The operator `tools` item is that same schema, taken from the agent package, and still accepts the deprecated scoped form `{ id, source?, scope? }`. `projectAgentToSpawn` maps each structured item to a per-server `allowTools` / `denyTools` (`servers` on the projection) instead of dropping it with a warning; a deny wins over an allow and over any other item admitting the same tool, and a bare string joins the `agentproto` server. The spec generator gains `--inline-ref <def>` and proves disjoint closed-object `oneOf` branches, so the agent package is now covered by `check:spec-drift`. The vendored specs are re-synced, which regenerates the memory frontmatter schema line; the bridge and `refKey` in the app package take the widened `ToolRef` (a server ref keys as `mcp:<server>`).
+
+  Narrowing: a `server` in an operator or agent `tools` item must now match `^[A-Za-z0-9_.-]+$`, so a URL such as `https://mcp.local` is refused; use a host name such as `mcp-local`. The spawn still carries a single `allowTools` list for the daemon gateway, so a filter on any other server, or a `denyTools` with no allowlist, is exposed on `servers` and reported as a harness warning ("not applied") rather than enforced. The corpus validator and the corpus-cli bundle register the AIP-42 AGENT schema they now `$ref`.
+
+- 0e0fd10: Adopt the AIP-45 `mode-changed` stream event and typed `agent-prompt` requests (agentproto/agentproto #121).
+
+  `@agentproto/acp`: `StreamEvent` gains the `mode-changed` variant (`modeId`, `previousModeId`, `cause: "caller" | "agent"`, `reason?`) and the `agent-prompt` event gains `request?` (`tool-permission | question | plan-approval`, absent reads as `tool-permission`) with the `question` and `planApproval` payloads (new `AgentPromptRequestKind`, `AgentPromptQuestion`, `AgentPromptPlanApproval` types). The ACP client turns a `current_mode_update` into `mode-changed`: `cause: "caller"` when it echoes the caller's own `setSessionMode`, `"agent"` otherwise, with `previousModeId` from the tracked mode. A `setSessionMode` the agent does not echo is reported once it is applied; when the agent reports another mode during the call, that report stands. No-op updates are not reported.
+
+  `@agentproto/harness`: `capabilities` accepts `mode_events` and `typed_prompts` (booleans, the `HARNESS.schema.json` fields), and re-exports the new acp types.
+
+  `@agentproto/adapter-mastra-controller`: a controller mode switch is a `mode-changed` event instead of the `thought` notice (`cause: "agent"`, `reason: "plan approved"` after an approved plan), and the host's own `setSessionMode` is reported with `cause: "caller"`. Prompts carry `request`, with a `question` payload (choices, or free text on the `answer` option) or a `planApproval` payload (plan text, `planRef`, target mode, approve and reject option ids). Declares `mode_events` and `typed_prompts`. Deprecated: the `_meta` keys `mastra-controller/request`, `mastra-controller/plan` and `mastra-controller/transitionsTo` (and the `META_REQUEST`, `META_PLAN`, `META_TRANSITIONS_TO` exports) are kept for one release as aliases of the typed fields.
+
+  `@agentproto/runtime`: the pending-permission inbox (`GET /permissions`, `permissions_list`) and the session transcript carry `request`, `question` and `planApproval` unchanged; `mode-changed` is recorded in the transcript, relayed from sandbox sessions, exported, and shown as a `[mode]` output line.
+
+  `@agentproto/cli`: `permissions ls` renders a plan from the typed `planApproval` first, falling back to the `_meta` aliases.
+
+- 489ae40: `SessionAwaitingQuestion` gains an optional `kind` (`permission`, `context` or `harness`) set by every daemon writer of the awaiting question: a driver-reported permission request, the context-continuity ask, and a harness or heuristic question.
+  The `session_flag_status` override leaves it absent (unclassified); nothing reads it yet, so no client behaviour changes.
+- 30a58b6: Keep the workspace brain's BM25 index lean and log every build. The files engine no longer keeps each doc's text or a per-doc `tf` Map in the resident index: docs keep only id and token count, every doc's (term id, frequency) pairs live in shared packed typed arrays, and a query reads the top-K files back for their snippet and frontmatter (same ids, order, scores, spans, and snippets as before). A build reads files 50 at a time, builds are serialized across the process, and one line is logged per build (docs, bytes read, duration, heapUsed before and after), per refusal, and per query that times out while a cold build keeps going. Above `maxIndexDocs` indexable files (default 100,000; `defaults.reactions.brainIngest.maxIndexDocs`, or a `knowledge.json` files entry's own `maxIndexDocs`) the engine refuses to build and the query fails with `FilesIndexTooLargeError`, which the federated provider now surfaces instead of swallowing. The federated `GET /brain/query` queries brains one at a time. Breaking for direct BM25 users: `Bm25Index` is reshaped (`vocab` + typed arrays, `df` is a `Uint32Array`), `Bm25Doc` has no `text`/`tf`, and `score()` no longer attaches snippets (use `makeSnippet`).
+- ac14e7d: branch gc: a branch whose work landed through a merged PR is now `pr-merged` (reclaim) even when its tip is not that PR's exact head. Two new deterministic matches, both read from one `git log --stdin` over every merged PR head that is present locally: `ancestor` (the tip is an ancestor of a merged PR's head, the PR kept going after the branch stopped) and `patch` (every non-merge commit of the tip has a patch-equivalent commit, same `git patch-id --stable` and same author time and email, in some merged PR's history, so a rebased branch or one whose commits landed across stacked PRs matches). Entries carry `mergedPrMatch` (`head`, `ancestor` or `patch`) next to `mergedPr`. Before, these branches sat in the review class, where the line-coverage guard refused their agreeing verdicts. The plan still never fetches: a merged PR head missing from the object database offers no match.
+- 68b4f1e: The built-in `executor` and `supervisor` roles declare `delegatesTo`. `defaults.spawn.defaultAgent.root` and `.nested` choose the agent a spawn that names none binds (today's values `supervisor` and `executor`); `defaults.defaultRoleDepthCutoff` stays the boundary and is deprecated. A session records the agent it is bound to as `meta.agentSlug`, which message envelopes expose as `from.agentSlug`.
+- c350f3a: AIP-72 section 9 native-dir projection and native-dir-diff capture for claude-code. `@agentproto/harness` adds `native-memory.ts` (`projectNativeMemory`, `diffNativeMemory`, `nativeToMemoryV1`, `nativeMemoryProposals`, `nativeMemoryUnavailable` and the snapshot helpers) and a `memoryProjection` start option: the claude-code driver pins `autoMemoryDirectory: <configDir>/memory` in the isolated `settings.json`, writes one `agentproto_<slug>.md` topic file per in-force item plus a bounded fenced block at the top of `MEMORY.md`, and persists a `{file: sha}` snapshot in the config dir. When auto memory is off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY`, a repo `autoMemoryEnabled: false`) or the repo pins its own `autoMemoryDirectory`, it projects nothing and appends the digest to the system prompt instead. `@agentproto/runtime` routes a `native-dir` adapter's digest selection into that option and, at each turn end and session exit, diffs the dir and writes new or changed native files to the agent's store as proposals, never commits, once per content. `@agentproto/adapter-claude-code` declares `capabilities.memory { inject: "native-dir", capture: "native-dir-diff" }`. `@agentproto/cli` forwards the projection and the adapter's `capabilities.memory.capture`.
+- ad378ee: Collapse restart/continue-fresh/`agent_start.succeeds` chains in session listing instead of showing every retired hop under the same label. `session_list`'s new `collapseLineage:true` and `GET /sessions?collapseLineage=true` hide a row whenever another row in the same result points back to it via `resumedFrom`, `continuedFrom` or `succeeds`; `agentproto sessions board` always applies it, since a glanceable one-row-per-session board was otherwise accumulating one dead row per restart for any long-lived session (a persistent brain, a PM) that gets restarted repeatedly.
+- 42be982: `session_continue_fresh` now carries the source's role, agent name, frozen delegation list and memory opt-out to the successor, which used to restart on the default agent for its depth. An explicit `agent` or `role` in the request wins and nothing is carried.
+- bbff7ce: cron jobs now record `createdBy` (operator, system, external, or a session with `proven` or `claimed` proof), frozen at creation and shown by `cron_create` and `cron_list`; it is not yet used to restrict what a fired job may do.
+- d9a8be3: Let a cron job declare `notify: "onFailure"` so a successful `kind: "command"` run reaches followers as an `fyi` inbox entry instead of waking them. A failing command still crashes and wakes. Exposed by `cron_create`, `cron_update`, `cron_list`, `POST /cron`, `PATCH /cron/:id`, and `agentproto cron add --notify`.
+- 60ef4c7: The daemon now evaluates the calling agent's `delegatesTo` on every nested spawn, scoped and unscoped, and counts the verdicts on `GET /permissions/grants` under `delegation`. With `defaults.spawn.delegationGate: enforce` it refuses a child the caller does not declare with `delegation_denied` (`details.legacyCode` `role_spawn_denied`). The default `observe` changes no decision. No export is removed or renamed, and the level lattice stays for agents that declare no list.
+- 14a77d0: Derive the interception level per harness (`intercept`, `permission-gate`, `observe`, `unavailable`) from the session arm, `permissionHold` and the declared native hooks.
+  `session_capabilities` and `GET /sessions/:id/capabilities` now expose it as `interception` for agent-cli sessions.
+- fa8a6bf: The five drive tools (`agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart`, `session_continue_fresh`) are now decided by `decide()`: `session.drive` is routed and authoritative, with unchanged outcomes. A matching `session:prompt` or `session:control` grant under `defaults.messaging.grants` can now admit a caller the legacy owner gate refuses; with no grants configured nothing changes.
+- 9e6f54c: Cap what the workspace brain materializes from one session's transcript. The brain reader now refuses an `events.jsonl` larger than 32 MB before parsing and stops at 8 MB of accumulated message text while parsing; an oversized session is recorded as a durable `too-large` skip (with the measured size and ceiling) and logged once, instead of building a huge `ExportedMessage[]`. Both ceilings are configurable under `defaults.reactions.brainIngest.maxTranscriptBytes` / `maxTranscriptTextBytes`. Explicit operator exports (session transcript, conversation read/export, checkpoints) keep their uncapped behavior; only the brain reader passes ceilings. The public `@agentproto/runtime` `readSessionForBrain` signature is unchanged — the capped reader is an internal variant. In `@agentproto/workspace-brain` (pre-1.0, where a minor is the breaking-change channel) `IngestResult` / `BrainStateSkip` gain the `too-large` reason and optional size fields, `BrainConfig.readSession` may now return a `SkippedTranscript` result, and `ExportedSessionLike` exposes optional `reasoning` / `toolCalls` fields.
+- e45c909: The session message envelope now carries `from.relation: "granted"` (no tree edge, an allowance or grant admitted the send) instead of `"peer"`, plus `from.agentSlug` (the sender's AIP-42 agent); `from.role` stays one more release, deprecated.
+  `"peer"` stays in the relation unions as a deprecated member (never produced): stored records are read as `granted`, exported records keep the historical value. The transcript exporter does not carry `from.agentSlug` (like `from.role`/`adapter`); it stays on the live/stored envelope. `@agentproto/sentinel` mirrors both changes, so it is a minor bump.
+- a903334: `defaults.identity.sessionTokens` gains `"enforce"`: invalid tokens, mismatching claims and claim-only callers naming a token-delivered session are refused (403 `identity_unverified` / `identity_mismatch`); `GET /identity` splits `claim_only` by class and reports what it enforces. The default stays `"shadow"`.
+  A session caller can no longer write `defaults.messaging.*`, `defaults.identity.*` or `defaults.tasks.operatorDelegates` through `config_set` or `PATCH /config` (`operator_only`). Like the memory write policy, that is a write policy on the loopback trust model, not an authentication boundary: a session that omits both its token and its caller claim is indistinguishable from the operator.
+- 37bc541: The caller identity counters behind `GET /identity` now persist in `identity-observations.json` and add up across daemon restarts; `since` is the first boot recorded, `bootedAt` and `boots` (last 50, with build sha) are new; deleting the file starts a new window.
+- 4ac415f: A task `verify` gate or supervisor shell gate written as a whole shell line in `command` with no `args` (for example `grep -q x /a/b/RAPPORT.md`) is now run as `bash -c <line>` instead of being allowlist-checked by `basename()` of the whole string, which refused it with a misleading `command 'RAPPORT.md' not in allowlist`. A relative `command` that exists in the gate's cwd stays a plain command. The allowlist now applies to `bash` (honouring any argv constraint on a `bash` entry), and the refusal names the command actually checked plus the original line. The structured `{command, args}` form is unchanged. Adds the exports `resolveShellGateExec`, `isShellGateExecAllowed`, `describeGateRefusal` and `ResolvedShellGateExec` to `command-allowlist`.
+- 8a28a15: Reap stale paused boxes, kill reused boxes on kill, bound create
+- e395b66: Tag e2b sandboxes with tenantId, owner and label metadata
+- b3225f0: Rename the keepAlive boot-resume idle cutoff to `daemon.bootResumeKeepAliveMaxIdleMinutes` with a 30-minute default (0 disables). This replaces the `daemon.bootResumeKeepAliveMaxIdleHours` key shipped in #2413. No release consumed the hours key in between, so the rename does not break any published config. Only explicitly pinned sessions remain exempt, and completed sessions drop `keepAlive`.
+- 05437a1: The runtime now reads an AIP-42 manifest agent's `delegates_to` once at spawn (agent ids and role names), records the resolved identities on the session, and the delegation gate evaluates them for manifest-bound callers, with the default `observe` mode changing no decision. An absent or empty list, or an entry it cannot resolve yet, stays `undeclared`, and the list is frozen at spawn.
+- 152ec6e: The daemon serves the AIP-72 memory store as MCP tools: `memory_search`, `memory_list`, `memory_read`, `memory_write` (default mode `propose`), `memory_supersede`, `memory_archive` and `memory_dismiss`. Anyone proposes; a commit, supersede, archive or dismiss needs the operator or a session spawned with the `supervisor` role, read from the role now recorded on every session's descriptor (`meta.role`); a session whose agent sets AIP-42 `memory.enabled: false` writes nothing. The default store lives at `~/.agentproto/memory` (new config key `memory.root`), and an agent's AIP-42 `memory.store` wins when it names a files root. An agent whose AGENT.md binds memory (`memory.enabled: true`, `store` or `anchors`) gets the AIP-72 section 9 digest of its in-force, in-scope items appended to its system prompt at spawn, bounded with an "items left out" line; an adapter declaring `capabilities.memory.inject: native-dir` gets none through this path. `@agentproto/cli` forwards the adapter's `capabilities.memory.inject` to the runtime. `@agentproto/agent` types the AIP-42 `memory` block's AIP-72 fields (`enabled`, `store`, `anchors`) on `MemoryConfig`.
+- 4ed9796: `@agentproto/memory` implements AIP-72 section 10 (node scope). The anchor vocabulary gains `node:<id>` (visibility) and `operator:<id>` (ownership). `MemoryScope` (`{nodes, tree?, operator?}`, the precomputed node projection, nearest node first and already cut at a sealed or hard wall) is accepted by `MemoryFilter`, `read`, `write`, `supersede`, `archive` and `dismiss`. `FilesMemoryStore` applies the projection on every operation, so an item outside it reads as not found and a scoped `search` filters before ranking, snippets and the limit. A scoped write gets the session's node and operator anchors by default, `owner: "node"` leaves the operator off, a node anchor must be in the projection, an operator anchor must be the session's, and promotion is a re-tag of the node anchor only. With `declaresTrees: true` a host write with no node anchor is refused. The pure helpers (`isInNodeProjection`, `applyWriteScope`, `assertRetagOnly`, `nodeTag`, `operatorTag`) are exported.
+
+  `@agentproto/runtime`: `selectMemoryItems`, `buildMemoryDigest` and `buildNativeMemoryProjection` take an optional `scope` and `operatorGrants`. The node projection is applied before ordering and the size bound, and the digest order now ranks the operator anchor between PR and agent and node anchors between project and global.
+
+- 6b2c2d4: A `session:message` grant written under the new `defaults.messaging.grants` now admits a send between two sessions the tree and the switches would refuse (relation `granted`), evaluated by the same `decide()` for `message_send`, `message_reply` and `POST /sessions/:id/messages`. With no grants configured nothing changes.
+- b6d928d: Observe a harness's native context compaction (Claude Code, Codex): a usage drop the daemon did not cause emits the `agentproto:context-compacted` host event and a `[context] native compaction detected` transcript line.
+  The event says whether a checkpoint was written in the two minutes before (`guarded`); it only observes, and a routine or an agent `on` map can bind to it.
+- dd134f4: Retry transient model re-assert on resume and enforce profile allowlists
+- 4e47016: Add `defaults.messaging.peerBinding` ("slug" default, "verified"): the verified rule makes two sessions peers only when both cwds resolve to the same registered workspace.
+  Default behaviour is unchanged; decisions now report `peerVerified` and the daemon logs a `peer-unverified` warning where the two rules disagree.
+- 4ef88d9: Add `GET /permissions/grants`, a read-only report of the effective grants derived from the messaging switches and each session's `allowPromptFrom`, plus the configured entries no grant expresses.
+- 3b6ef27: Keep model, billing profile and policy when restarting a session
+- c73874f: `@agentproto/policy` gains `evaluateGrants(inputs, request)`, a pure AIP-38 evaluator: the union of allow grants, a matching deny wins over any allow in any composed policy, `default: deny` prevails over `default: allow`, and revoked, expired (`ttl_seconds`, a missing `granted_at` counts as expired) and unsatisfied-condition grants contribute nothing. Scopes follow rules 1, 2 and 5, plus the typed forms (`label:`, `workspace:`) and `selector:<id>` that the caller declares; a scope that cannot be resolved fails closed (an allow does not match, a deny matches). A malformed grant throws `PolicyGrantError` instead of being guessed at. `evaluateToolInvoke` and `qualifyToolName` implement the `tool:invoke` scope of AIP-38 §Tool names: an exact `<server>/<name>`, `<server>/*` and `<server>/<prefix>*` through rule 2, a bare name matches nothing, a legacy bare built-in becomes `agentproto/<name>` before the requested scope is formed, and a tool that declares `implements` is decided under both `tool:invoke` and the implemented action (a deny on either refuses, an allow on either admits). The `Grant` type gains `effect?: "allow" | "deny"`.
+
+  `decide()` in `@agentproto/runtime` accepts `PermissionContext.policy` (`{ inputs, principals?, now?, resolveSelector?, evaluateCondition? }`) and reads it per call, so a revoked grant applies on the next call. An explicit deny of `session:message` removes the grant-derived reasons of `session.message` (sibling and peer) and never a tree edge, the operator or the system (AIP-46 rule 3); malformed grants refuse those same reasons. The new `tool.invoke` action takes a `{ kind: "tool", name, implements? }` resource and is decided by `evaluateToolInvoke`; it is declared `routed: false` because no dispatch site calls it yet. No existing caller passes `policy`, so no current decision changes.
+
+- ad378ee: Collapse restart / continue-fresh / `agent_start.succeeds` lineage chains to their live tail in session listings. Adds the exported `collapseLineageChains` helper, an opt-in `collapseLineage:true` parameter on `session_list` and `GET /sessions`, and always-on collapsing for `agentproto sessions board` so a repeatedly restarted long-lived session no longer accumulates one dead row per restart under the same label. (Confirms/duplicates `.changeset/collapse-lineage-chains.md`, already included in this PR.)
+- 4e47016: Add `defaults.messaging.peerBinding` ("slug" default, "verified"): verified binds no-tree-edge peers only when both cwds resolve to the same registered workspace, reports `peerVerified` on decisions, and logs a shadow `peer-unverified` warning where the two rules disagree.
+- 26fce99: Per-session identity tokens in shadow mode (ts#2165 step 5): spawned claude-code/hermes sessions receive a daemon-minted token on the adapter's daemon self-mount, stored hashed in `session-credentials.json` and revoked on retirement, while the persisted descriptor never carries a token. `defaults.identity.sessionTokens` (default `"shadow"`) enables it and `GET /identity` reports the caller counts.
+- 152ec6e: AIP-72 daemon memory surface. `@agentproto/runtime` serves the memory store as seven `memory_*` MCP tools with a propose/commit write policy (commit, supersede, archive and dismiss require the operator or a `supervisor` session, read from `meta.role` on both the sync and async-worktree descriptors; `memory.enabled: false` sessions write nothing), resolves a per-agent `memory.store` for both the spawn digest and the tools, adds the `memory.root` config key, and appends a bounded AIP-72 section 9 digest to the system prompt at spawn. `@agentproto/agent` types the AIP-42 `memory` block's AIP-72 fields (`enabled`, `store`, `anchors`). `@agentproto/cli` forwards the adapter's `capabilities.memory.inject` to the runtime. `@agentproto/memory` documents the daemon tools and digest in its README.
+- c350f3a: AIP-72 section 9 native-dir projection and native-dir-diff capture for claude-code. `@agentproto/harness` adds `native-memory.ts` (project/normalize/diff/snapshot helpers) and a `memoryProjection` start option that pins `autoMemoryDirectory` inside the session config dir, writes one `agentproto_<slug>.md` per in-force item plus a bounded `MEMORY.md` index block, and falls back to the system-prompt digest when auto memory is off or the repo pins its own dir. `@agentproto/runtime` routes a `native-dir` adapter's selection into that option, splits `selectMemoryItems`/`renderMemoryDigest` out of the digest builder, and diffs the projected dir at turn end and exit to write new or changed native files as proposals (never commits, once per content). `@agentproto/adapter-claude-code` declares `capabilities.memory { inject: "native-dir", capture: "native-dir-diff" }`. `@agentproto/cli` forwards the projection and the adapter's capture capability. `@agentproto/memory` documents the native memory behavior.
+- 14a77d0: Derive the interception level per harness (`intercept`, `permission-gate`, `observe`, `unavailable`) from the session arm, `permissionHold` and the declared native hooks, and expose it as an additive `interception` field on `session_capabilities` and `GET /sessions/:id/capabilities` for agent-cli sessions (`packages/runtime/src/action-hooks/interception.ts`, `packages/runtime/src/session-capabilities.ts`).
+- b6d928d: Observe a harness's native context compaction (Claude Code, Codex) as a passive usage-drop detector: a drop the daemon did not cause emits the `agentproto:context-compacted` host event and a `[context] native compaction detected` transcript line, with a `guarded` flag recording whether a checkpoint was written shortly before. Routines and `on` reactions can subscribe to the new event.
+- 30961a9: Projected PreCompact checkpoint hook: `defaults.nativeHooks.preCompactCheckpoint: "on"` gives a local claude-code session a synchronous PreCompact (auto) hook running `agentproto hook pre-compact`, which asks the daemon for a checkpoint and always exits 0. Adds the `agentproto hook pre-compact` CLI command, the `preCompactCommand` harness start option, and `reason` / `occurrenceId` / `trigger` on `POST /sessions/:id/checkpoint` (`reason: "native-pre-compact"` never asks the session for a handoff turn and repeats are deduped by `occurrenceId`).
+- a764942: Follow agent-caused AIP-45 `mode-changed` events in a session's `posture`, and record the caller's last posture as a `postureCeiling`: an agent move past the ceiling emits `session:harness-warning`, and a restart clamps back to the ceiling. The ceiling (and `postureSource`) is carried across both in-place revivals and new-id restarts when the caller did not set a new posture, and the in-place resume hook now starts the harness at the clamped posture.
+- 4ed9796: AIP-72 section 10 (node scope): `MemoryScope` (`{nodes, tree?, operator?}`) is accepted by `MemoryFilter`, `read`, `write`, `supersede`, `archive` and `dismiss`; `FilesMemoryStore` applies the node projection on every operation (outside it reads as not found, scoped `search` filters before ranking/snippets/limit), scoped writes default the session's `node:` and `operator:` anchors, `owner: "node"` omits the operator anchor, and promotion is a re-tag of the node anchor only. The pure helpers (`isInNodeProjection`, `applyWriteScope`, `assertRetagOnly`, `nodeTag`, `operatorTag`) are exported.
+
+  `@agentproto/runtime`: `selectMemoryItems`, `buildMemoryDigest` and `buildNativeMemoryProjection` accept an optional `scope` and `operatorGrants`; the node projection is applied before ordering and the size bound, and the section 9 order now ranks the operator anchor between PR and agent and node anchors between project and global.
+
+- c73874f: `@agentproto/policy` adds `evaluateGrants`/`combineDecisions` (a pure AIP-38 grant evaluator where a matching deny wins over any allow across composed policies, `default: deny` prevails, revoked/expired/condition-failing grants contribute nothing, and unresolvable scopes fail closed), `evaluateToolInvoke`/`qualifyToolName` for the `tool:invoke` action (exact `<server>/<name>`, `<server>/*`, `<server>/<prefix>*`, legacy bare built-in names qualified to `agentproto/<name>`, and `implements` actions decided together), plus the new `Grant.effect?: "allow" | "deny"` field.
+
+  `@agentproto/runtime` accepts an optional `PermissionContext.policy` (`{ inputs, principals?, now?, resolveSelector?, evaluateCondition? }`) read per call: an explicit deny removes the grant-derived `session.message` reasons (sibling/peer, never tree edges, operator or system), malformed grants refuse those same reasons, and the new `tool.invoke` action takes a `{ kind: "tool", name, implements? }` resource. No existing caller passes `policy`, so current decisions are unchanged.
+
+- a903334: `defaults.identity.sessionTokens` gains `"enforce"`: invalid tokens, mismatching claims and claim-only callers naming a token-delivered session are refused (403 `identity_unverified` / `identity_mismatch`), `GET /identity` reports refusals and splits `claim_only` by class, and the default stays `"shadow"`. A session caller can also no longer write `defaults.messaging.*`, `defaults.identity.*` or `defaults.tasks.operatorDelegates` through `config_set` or `PATCH /config` (`operator_only`). Like the memory write policy, that is a write policy on the loopback trust model, not an authentication boundary: a session that omits both its token and its caller claim is indistinguishable from the operator.
+- 483257f: `DAEMON_TOOL_NAMES` is now emitted as an `as const` tuple and typed as `readonly DaemonToolName[]`, and the new `DaemonToolName` union is exported from the `./daemon-tool-names` subpath. A mismatched tool name in a typed registry list is now a typecheck error. Note this also narrows the public `DAEMON_TOOL_NAMES` type, so external callers that use `.includes()` with a plain `string` will need a type guard.
+- 489ae40: Add an optional `SessionAwaitingQuestion.kind` (`permission`, `context`, or `harness`) so every daemon writer of the awaiting question classifies what kind of wait it is; the operator `session_flag_status` override leaves it absent as unclassified.
+
+  The desktop and VS Code client types mirror the new optional field; those packages are private, so the patch bump only tracks the type-level mirror.
+
+- d6c4305: An AGENT.md `on: {turn-end: session:clerk-pass}` entry now enables the AIP-68 clerk for that agent's sessions. The clerk's configuration (debounce, run, exclude) stays in `metadata.hooks.clerk`; the `on` entry only adds `enabled: true` at the agent level, and an explicit `metadata.hooks.clerk.enabled` (true or false) still wins. The agent `on` scanner leaves the clerk's turn-end entry out of the reaction bindings so it is not refused there.
+- 9e6f54c: Cap what the workspace brain materializes from one session's transcript. The brain reader refuses an `events.jsonl` larger than 32 MB before parsing and stops at 8 MB of accumulated message text while parsing; an oversized session is recorded as a durable `too-large` skip (with the measured size and ceiling) instead of building a huge `ExportedMessage[]`. Both ceilings are configurable under `defaults.reactions.brainIngest.maxTranscriptBytes` / `maxTranscriptTextBytes`.
+- dd134f4: Retry transient model re-assert on resume and enforce profile allow-lists.
+
+  - `@agentproto/acp`: add optional `AcpClientOptions.modelApplyRetry` to bound the re-assert retry after a connect-time model-apply failure, retrying only transient (429/rate-limit) rejections.
+  - `@agentproto/harness`: expose `AgentCliRuntimeSession.modelApplyRejection` so hosts can see a rejected model apply instead of assuming the requested model.
+  - `@agentproto/runtime`: fold per-profile model curation into spawn eligibility (ordered `profileRefs` fall through to the next model-eligible profile), share one canonical identity rule between the catalog read path and the spawn/live `set_model` write paths, and stop the descriptor from claiming a rejected/unknown model.
+
+- 3b6ef27: Keep model, billing profile, and context policy when restarting a session.
+
+  `@agentproto/cli`: `sessions restart` gains `--model` and `--access-profile` and routes agent restarts through the daemon so spawn fields (model, wallet, policy, lineage) survive.
+
+  `@agentproto/runtime`: the restart override accepts and validates a `contextContinuity` policy, merging it with the previous resolved policy and carrying it onto the restarted descriptor.
+
+  `agentproto-vscode`: expose `SessionDescriptor.modelPolicy` and add `modelsForAccessProfile`, so an access-profile switch can pick a compatible model and restart with model and account applied atomically.
+
+- c576bcd: When `defaults.nativeHooks.command` is unset, the projected `PreCompact` hook now runs the CLI that serves the daemon by absolute path (`'<node>' '<cli-entry>'`), so a launchd/systemd daemon with a minimal `PATH` still finds it; an explicit value still wins. The runtime exports `servingCliCommand` and `setServingCli`, and the CLI's `serve` command registers the serving CLI for spawned and restarted sessions.
+- 8a28a15: Sandbox lifecycle leak fixes: an explicit `agent_kill` now tears down a reuse-only box instead of leaving it paused, the periodic sandbox GC reaps paused dead-session rows past a configurable age bound (`AGENTPROTO_SANDBOX_GC_PAUSED_MAX_AGE_MS`), and gone-box reconnect failures are recognised via the shared sentinel. `@agentproto/runtime` also exports `DEFAULT_PAUSED_BOX_MAX_AGE_MS` and `parsePausedBoxMaxAge`. `@agentproto/sandbox-computer` logs the create deadline phase and controller rejection reason so a stuck spawn no longer fails silently.
+- 156b6ab: `agent_start` and `POST /sessions/agent` gain a single `agent` reference that resolves an AGENT.md path, an agent id, or a role name through `resolveAgentRef`; `agentId` and `agentPath` keep working as aliases. `role` is now a deprecated alias of `agent` (announced in the spawn result warnings) and will be removed in `@agentproto/runtime` 6.0.0.
+- 4ef88d9: Add `GET /permissions/grants`, a read-only report of the effective grants derived from the messaging switches and each session's `allowPromptFrom`, plus the configured entries no grant expresses.
+- 1a3b9f9: Context settings now layer setting by setting over the request, adapter and daemon blocks (AIP-46 §Session context rule 4), and `contextSettings` is the name of the block on `agent_start`, `POST /sessions/agent`, `POST /sessions/:id/restart` and in `defaults.contextSettings` and `defaults.adapters.<slug>.contextSettings`; `contextContinuity` stays an alias. A layered block whose percent bands conflict fails the spawn as `invalid_context_settings` (HTTP 400) and names the layers.
+
+  Minor, not major (`.changeset/README.md` reserves major for a removed export, a changed signature or a renamed type): nothing is removed or renamed, `ContextSettings` and `layerContextSettings` are new exports. A partial block now inherits its unset keys from the adapter and daemon blocks instead of the built-in defaults, which is the AIP-46 conformance fix.
+
+- b963e07: `role_list` rows now carry `delegatesTo`, the agents a role declares it may spawn. The delegation gate resolves the calling agent from the owner session's recorded `agentSlug` first, so a session bound to a manifest agent is judged the same way on the scoped and unscoped paths; the scope's role (scoped) or the owner's recorded `role` (unscoped) names it only when no `agentSlug` is recorded.
+- 05437a1: The runtime now reads an AIP-42 manifest agent's `delegates_to` once at spawn, resolves each entry to an agent identity or role name, and records the frozen list on the session as `meta.agentDelegatesTo`. The delegation gate evaluates that recorded list for manifest-bound callers; `observe` remains decision-neutral, while `enforce` gains the manifest allowlist. An absent, empty, or partly unresolvable list stays `undeclared` and on the legacy lattice, and a restart carries the frozen list.
+- 42be982: `session_continue_fresh` now hands the source's recorded agent binding to its successor: the spawn role, the manifest/bound agent slug, the frozen `delegatesTo` list and a memory opt-out. An explicit `agent`, `role`, `agentId` or `agentPath` in the continuation request still wins and nothing is carried.
+- c6bf4d1: AIP-46 auth-profile gate for spawns that name an access profile: `defaults.spawn.profileGate` (off/observe/enforce, observe by default) evaluates `access.profileRef` and every `access.profileRefs` entry against the calling session's own profile plus `defaults.spawn.sharedProfiles`. `observe` counts would-deny verdicts, exposed on `GET /permissions/grants` under `profileUse`; `enforce` refuses with `auth_profile_denied`. Also adds the routed `auth.profile.use` decision and `permissions_explain` support for a `profile` ref.
+- 30fbeb3: Add an observe-by-default `defaults.spawn.stdioMountGate` that evaluates the `stdio` entries a caller names in `agent_start.mcpServers` against the workspace command allowlist (`allowed-commands.json`), counting would-deny mounts in `GET /permissions/grants` under `stdioMounts` and, in `enforce`, refusing them with `stdio_mount_denied`. Routes `mcp.mount.stdio` through `decide()` and wires the allowlist loader through the root and scoped orchestrator gateways.
+- 4a1139a: Give PR-watch sentinels one owner rule: the auto-linked `auto:pr#N` sentinel now targets the session that recorded the PR and that session's live parent, and a sentinel whose target is dead or retired with no successor is re-targeted to the live parent (rather than parked) so the supervisor is never left blind. `sweepWiringLifecycle` follows the same rule. Adds the optional `resolveParentSession` auto-link option and wires it from the gateway.
+- 8c87741: Sentinel now redelivers events parked in `sentinels-parked.jsonl` once their sentinel gets a reachable target again: `SentinelRuntime.replayParked(sessionId?)` redelivers and drops the delivered journal lines, each poll tick replays for sentinels whose target changed since the last attempt (covering retargets and daemon boot), and the daemon replays for a session on `session:spawned`. Events parked because their subject was already closed are marked `replay: false` and never replayed.
+
+  The daemon wires the new hook so a session that registers receives notices parked while it was unreachable.
+
+- f913028: Add the opt-in AIP-46 spawn proof gate and always-on `spawnProof` counters. `defaults.identity.requireProof` (default empty, `session:spawn` only) refuses a claimed caller with `identity_unverified` and a token minted for another session with `identity_mismatch`; the list is ignored while `sessionTokens` is `"off"`. `GET /identity` now reports `spawnProof` verdict counts, the `claimed` split by token deliverability, `wouldRefuse`, `refused`, `requireProofIgnored` and the listed actions. HTTP spawns now carry their trusted caller id into the delegation, auth-profile and stdio-mount gates instead of reading `no_caller`. This complements `.changeset/spawn-proof-observe.md`.
+- 4ac415f: Run a task `verify` / supervisor shell gate written as a whole shell line in `command` with no `args` (for example `grep -q x /a/b/RAPPORT.md`) as `bash -c <line>` instead of allowlist-checking `basename()` of the whole string. The allowlist now applies to `bash`, and refusals name the command actually checked plus the original line; the structured `{command, args}` form is unchanged. Also exports `resolveShellGateExec`, `describeGateRefusal`, and `ResolvedShellGateExec` from the `./command-allowlist` subpath, hence a minor bump.
+- bbff7ce: Cron jobs now record a frozen `createdBy` principal (`operator`, `system`, `external`, or a session with `proven`/`claimed` proof), shown by `cron_create` and `cron_list`. The field records who created a job and how well they were proven; it is not yet used to restrict what a fired job may do.
+- 6b2c2d4: Add explicit `defaults.messaging.grants`: AIP-38 `session:message` grants that may admit a send between two sessions the messaging tree and switches refuse (relation `granted`), evaluated by the same `decide()` for `message_send`, `message_reply`, `POST /sessions/:id/messages` and `permissions_explain`. A matching deny still wins and tree edges, the operator and the system are unaffected; with no grants configured nothing changes. `GET /permissions/grants` now also returns the configured grants under `configured`.
+- fa8a6bf: Route the five drive tools (`agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart`, `session_continue_fresh`) through `decide()` so `session.drive` is authoritative, and let explicit `session:prompt` / `session:control` grants under `defaults.messaging.grants` admit a caller the legacy owner gate refuses. With no grants configured behavior is unchanged.
+- ac14e7d: branch gc: a branch whose work landed through a merged PR is now `pr-merged` (reclaim) even when its tip is not that PR's exact head. Two new deterministic matches read from one `git log --stdin` over every merged PR head present locally: `ancestor` (the tip is an ancestor of a merged PR's head) and `patch` (every non-merge commit of the tip has a patch-equivalent commit, same `git patch-id --stable` and same author time and email, in some merged PR's history, so a rebased branch or one whose commits landed across stacked PRs matches). Entries carry `mergedPrMatch` (`head`, `ancestor` or `patch`) next to `mergedPr`. The plan still never fetches: a merged PR head missing from the object database offers no match.
+- 30a58b6: Keep the workspace brain's in-process BM25 index lean: docs retain only id and token count, postings live in shared packed typed arrays, and a query reads the top-K files back for their snippet and frontmatter. Builds run one step of 50 files at a time and are serialized across the process, with one log line per build, refusal, and cold-build query timeout. A new `maxIndexDocs` ceiling (default 100,000, configurable via `defaults.reactions.brainIngest.maxIndexDocs` or a `knowledge.json` files entry) refuses to build and surfaces `FilesIndexTooLargeError`, and federated `GET /brain/query` now queries brains one at a time. Breaking for direct BM25 users (pre-1.0 minor channel): `Bm25Index`/`Bm25Doc` are reshaped and `score()` no longer attaches snippets — use `makeSnippet`.
+- 4a1139a: One owner rule for PR watches: the auto-linked `auto:pr#N` sentinel now reaches the session the PR was recorded on AND that session's live parent (the supervisor), so a supervisor that opens a PR for an executor, or a reconciler that discovers it on the executor, never leaves the supervisor blind. When a sentinel's target is dead or retired with no successor, the notice is delivered to the live parent and the sentinel is re-targeted there instead of being parked and orphaned; `sweepWiringLifecycle` follows the same rule (re-point to the live parent, cancel only when none exists).
+- 30961a9: Checkpoint before Claude Code's own compaction: `defaults.nativeHooks.preCompactCheckpoint: "on"` projects a synchronous PreCompact (auto) hook running `agentproto hook pre-compact`, which asks the daemon for a checkpoint and always exits 0.
+  `POST /sessions/:id/checkpoint` accepts `reason`, `occurrenceId` (deduped) and `trigger`; `reason: "native-pre-compact"` never asks the session for a handoff turn.
+- c6bf4d1: A spawn that names an auth profile outside its caller's set (the caller's own profile plus `defaults.spawn.sharedProfiles`) is now counted by an `observe`-by-default `defaults.spawn.profileGate`, readable on `GET /permissions/grants` under `profileUse`. Setting the gate to `enforce` refuses that spawn with `auth_profile_denied`.
+- b963e07: `role_list` rows now carry `delegatesTo`, the agents a role declares it may spawn. The delegation gate names the calling agent from the owner session's recorded `agentSlug` first, so a session bound to a manifest agent is judged the same way on the scoped and unscoped paths (it was judged as its role on the scoped one).
+- 68b863b: Stop eager-resuming keepAlive sessions idle past a configurable cutoff
+- a5475aa: Add fail-closed overflow safety rails to the auto sandbox provider: residency, daily box and EUR caps, a secret allowlist, template CLI parity, and a maxEurPerBox timeout ceiling.
+- 37191ac: Enforce AIP-34 node scope on the daemon's read paths. The scope is derived from the calling session's own ground (`desc.cwd`) and operator, never from server config. The spawn digest and every respawn (session restart, lazy resume) project only the caller's node, and a ground the tree cannot place injects nothing. `memory_*` tools pass a `MemoryScope` to the store, so a sealed sibling's items and items above a sealed wall are filtered before pagination and snippets; scoped writes carry the node and operator anchors. `file_*` and `directory_*` tools add node confinement next to root confinement, and `directory_list` filters before paging. `app_data_*`, `app_state_*` and `app_external_*` treat an app inside an invisible node as not installed, and a granted external root inside an invisible node as not granted. `workspace_brain_query` drops hits ingested from sessions outside the caller's projection before the top-K cut. The imported-MCP call guard derives the caller itself and forwards `x-agentproto-caller-session` (and `x-agentproto-caller-node` when the session has a node) as per-call headers to http/sse servers on loopback or with `forwardCaller: true`. A request that names a session the daemon does not know is refused; a request with no caller id stays a host call; a session grounded in no declared tree keeps today's behavior. `registerFsTools`, `registerMemoryTools`, `registerBrainTools`, `registerAppDataTools` and `registerAppExternalTools` take an optional `callerScope`; an external caller that omits it is now refused (fail closed, never served unscoped), and one that wants the old behavior passes `HOST_CALLER`. `CallerScope`, `HOST_CALLER`, `CallerScopes`, `callerScopes` and `CallerRefusedError` are exported from the package root.
+- 8c87741: Events parked in `sentinels-parked.jsonl` (target dead, retired or unresumable) are now redelivered once when their sentinel gets a reachable target again: the sentinel runtime exposes `replayParked(sessionId?)`, each poll tick replays for sentinels whose target changed since the last attempt (covers retargets and daemon boot), and the daemon replays for a session on `session:spawned`. Delivered lines are dropped from the journal; events parked because their subject was already closed are marked `replay: false` and never replayed.
+- 2275be0: Stop persisting the live-only `availableCommands` list on session rows and omit it from the default `GET /sessions` projection (still available via `?fields=availableCommands` and always on `GET /sessions/:id`). Agent-cli rows drop their output rings and stream buffers at exit once the final text is captured; PTY rows keep their capped 64 KiB byte ring so `terminal_output` and `GET /sessions/:id/preview` still have scrollback immediately after exit. `terminal.jsonl` is only a fallback for a terminal row with an empty ring. `agent_output` and `GET /sessions/:id/output` still serve a finished executor from its captured final text.
+- ff61d82: Record the AIP-46 operator binding on `agent_start`. The MCP tool and `POST /sessions/agent` accept an optional `operator` (`operator:<slug>[@<owner>/<workspace>]` or `ws://operators/<slug>`, stored in its compact form) and an optional `operatorDigest`, both recorded on the session descriptor and copied from the registry (never the request) onto a `session_restart` / `session_continue_fresh` successor. A malformed ref, or a digest with no operator, is refused with `operator_unresolvable` (HTTP 400) before any session starts; the daemon has no operator resolver, so semantic resolution stays with the host that composes the agent. A session caller may name only the operator of its own session (`delegation_denied`, HTTP 403) and a nested spawn that names none starts without one. `session_list` (`operatorDigests`) and `session_role_refresh` (`operatorDigest`) take the current operator digest from the caller and report `operatorStale` when it differs from the recorded one. The MCP `agent_start` schema now also accepts `agentId` and `agentPath`, as the HTTP route already did.
+- 26fce99: Per-session identity tokens in shadow mode: each spawned claude-code or hermes session gets a daemon-minted token on its daemon self-mount, stored hashed in `session-credentials.json` and revoked when the session retires (`defaults.identity.sessionTokens`, default `"shadow"`).
+  The daemon counts verified, mismatching, invalid, claim-only and anonymous callers and serves the counts at `GET /identity`; no request is refused or reclassified.
+- fe908f2: The daemon now counts its spawn admission decisions (reuse, deny, allow per stage) and `GET /spawn-admission` reads them, with one `[spawn-admission]` log line per non-allow decision. `canSpawn` takes an optional `ignoreLevel`, and no decision changes.
+- f913028: Spawn proof counters are now on `GET /identity` under `spawnProof`: verdict counts, the `claimed` split by whether a token was deliverable, `wouldRefuse`, `refused` and `requireProofIgnored`. The new `defaults.identity.requireProof` (default empty) refuses a claimed or mismatching session spawning with `identity_unverified` or `identity_mismatch`; it is ignored while `sessionTokens` is `"off"`. The delegation, auth-profile and stdio mount gates now also see a session spawning over the HTTP routes (`POST /sessions/agent`, `POST /sessions/chat`) instead of reading `no_caller`.
+- 30fbeb3: A spawn that mounts a stdio MCP server whose command the workspace allowlist does not admit is now counted by an `observe`-by-default `defaults.spawn.stdioMountGate`, readable on `GET /permissions/grants` under `stdioMounts`. `enforce` refuses it with `stdio_mount_denied`.
+- a764942: Follow agent-caused mode changes in the session posture. An AIP-45 `mode-changed` with `cause: "agent"` now updates the descriptor's `posture` (canonical when the mode id maps through the alias table, else `{ harnessModeId }`) and emits `session:config-changed {axis: "posture"}`. Caller echoes are not re-applied. The descriptor gains `postureSource` and `postureCeiling`: an agent move past the caller's posture is recorded, warned via `session:harness-warning`, and a restart clamps back to the caller's posture; otherwise a restart starts in the current posture.
+- b2d7afa: Refuse a tool call at dispatch when the calling session's AGENT manifest denies it. A session spawned from an AGENT.md with a `tools` deny item (`{kind: mcp, server, deny: [...]}`) now records the matching AIP-38 `tool:invoke` deny grants on its descriptor (`toolDenyGrants`, additive and optional, carried across restart and continue-fresh). The `/mcp` server factory (`agentproto/<name>`) and the imported-call guard (`<server>/<name>`) evaluate them with `decide("tool.invoke")` composed as default allow, so only an explicit deny refuses, with a typed error naming the tool and the refusing grant. A session with no grants, and a host call with no caller session, are not evaluated and behave as before. Adds the `@agentproto/operator` dependency for the deny-grant helper.
+
+### Patch Changes
+
+- 056a504: Deliver must-wake follow events at next-turn even on fyi follows
+- 201b612: End a clerk reaction dead when its command exits non-zero instead of recording a dishonest done.
+- 9aa70f2: Context compaction has one owner: the percent-band compaction is no longer attempted, an auto-compaction writes one checkpoint instead of two, and it holds the context lock until its compaction turn has ended so a prompt arriving meanwhile waits instead of failing it with "mid-turn".
+  The turn-boundary continue-fresh takes the same lock, so auto-compact and continue-fresh never both act on one session.
+- 709bc8d: Close the transcript exactly once on context hard stop and continue fresh, including the standalone turn-boundary and structured-answer paths.
+- 19073d8: Exempt only pinned rows from the keepAlive boot-resume idle cutoff
+- 3d4da0b: Fix a flaky transcript read racing the prompt write. `sendPrompt` recorded the user prompt onto the transcript writer's in-memory stream buffer without tracking the flush, so a `transcript_search` / `transcript_read` issued right after the turn could observe events.jsonl without the prompt. The flush is now tracked through the registry's pending writes, so `settlePendingWrites()` gates reads on it like the other transcript writes.
+- 3f90a9d: Adapter discovery accepts the canonical `harness-` prefix next to `adapter-` (AIP-70): `@agentproto/harness-<slug>` and `@<scope>/agentproto-harness-<slug>` packages are discovered alongside the `adapter-` spellings, the bare `@agentproto/harness` package never matches, and the `harness-` name wins on a same-slug collision.
+- d909a0c: Stop injecting undeclared base_url option on session resume
+- bcceb41: An `external` session (Claude Desktop / `claude` CLI) whose liveness window lapsed now still accepts inbox delivery. Previously `sendMessage` raised `session_not_alive` for the expired row and `restartSession` cannot revive an external row, so sentinel events, `session_follow` digests and workflow notices were parked or dropped instead of reaching the session inbox that `agentproto hook inbox` drains. `session_follow` also no longer routes an expired external follower through the revive path. A killed or retired external row is still refused. The rule lives in one exported predicate, `isExternalInboxOpen`, shared by `sendMessage` and `session_follow`.
+- b71159f: The context hard-stop floor now holds for a session with no context continuity policy, at admission and at the turn boundary, and the checkpoint and handoff routes no longer answer 409 for such a session.
+  After an auto-compaction that did not free enough, the session is evaluated once more right away instead of at its next prompt.
+- 03d7c58: Close sockets after failed handshakes, drop stale abort listeners, and fail ready() promptly on a pre-hello tunnel error or close
+- 40a2617: Approval holds and node scope for imported-MCP calls now use the calling session on the `/mcp/imported` passthrough, `POST /mcps/proxy/call` and `transmit_message`, A caller-supplied imported mount is now stamped with the session id at spawn like the daemon self-mount (a bundle's imported mounts already named the session in their URL; they also gain the identity header). Calls with no caller are unchanged.
+- 5c26879: Run sandbox checkpoint gc against the host repo, not the box path
+- 66c9f6d: Spawn sandbox sessions without the initial prompt, then deliver it over the box's `agent_prompt`, so a cold box's adapter install and first session cannot hold the spawn request open. Keep a bounded `agent_start` request ceiling (5 min, below the outer spawn budget) and log box id, adapter and elapsed ms on boot and restart failures.
+- 11b18bf: AIP-72 memory follow-ups. The spawn digest now follows section 9 resolution step 3: an adapter whose `capabilities.memory.inject` is `none`, or that declares no memory capability, gets no digest; only `system-prompt` (with a usable channel) and the `native-dir` fallback carry it. codex, hermes, opencode and pi, which have a system-prompt channel, now declare `memory: { inject: "system-prompt", capture: "none" }` so they keep the digest. `session_restart` now carries the spawn role (`meta.role`), so the memory commit gate gives the same answer before and after a restart. `@agentproto/memory` documents the unfilled `tags` default in `validateMemory` and scopes the `renderMemory` status-rewrite note to files it wrote.
+- bd5ba7c: `session_migrate` now hands an orchestrator's scope over to the migrated session, like `session_restart` does: the new session keeps the same scope-token and parameters, owned by its own id, so closing the old row no longer revokes the token the new row carries, and the new row's real exit still revokes the scope and reaps its children. A box that crashed before the migration gets its scope reinstated for the new session, and a migration that fails leaves the scope with the old session.
+- 0d70a0a: Read process start ticks on macOS and fix tmpdir realpath in test
+- 096cf18: Never resume a provider-box session in place on the host
+- e673406: An orchestrator scope no longer comes back wider after a daemon restart. Revoked scopes are now kept in `orchestrator-scopes.json` with their original tools, role, depth and limits, so restarting a crashed session after a daemon restart restores exactly that scope, and the boot prune drops them once their owner can never be revived. The legacy adoption no longer resurrects a revoked token with the default supervisor scope: it skips tokens the file holds as revoked, runs only while no persist file exists, and skips descriptors whose spawn role is not supervisor.
+- 496843d: Peer binding follow-ups: the `peer-unverified` shadow warning is written once per sender/recipient pair instead of on every message, `permissions_explain` is pinned to agree with `decide()` under `defaults.messaging.peerBinding`, and the config help states that `verified` can also link pairs whose recorded slugs differ.
+- 4de939f: Keep must-wake follow events (awaiting-input, crashed, and a turn-end carrying a question) visible through the digest caps. The merge and render caps drop non-must-wake entries first, and a later turn-end no longer collapses an earlier awaiting-input entry from the same session.
+- 201b612: End a clerk reaction dead when its `run.command` exits non-zero or is terminated by a signal/timeout, instead of recording a dishonest done (runtime). Document the behavior in the shipped `ap-reactions` skill guide (skill pack).
+- f767993: Raise the autocompact absolute-threshold ceiling (`contextContinuity.autoCompactAtTokens`) from 200000 to 600000 tokens so a session on a 1M-token window can compact later than 200k. The default (150000) and `0` = disabled are unchanged.
+- 4de939f: Keep must-wake follow events (`awaiting-input`, `crashed`, and a `turn-end` carrying a question) visible through both follow-digest caps. Merge and render now drop non-must-wake entries first and count only those as omitted, and a later turn-end no longer collapses an earlier awaiting-input entry from the same session.
+- 99985f0: Add characterization tests that pin current context-continuity behaviour (auto-compact token threshold, percent ladder, hard-stop floor, `compactRequiresOperator`, and spawn-default precedence) ahead of the context rework. No runtime behaviour changes.
+- 467af3b: Reviewer-proposed changeset for PR #2323. The PR's own changeset covers the worktree/cli/runtime/apps changes; this file additionally bumps `agentproto-vscode` for the mirrored `skipped-stale` outcome and `reason` field in its worktree GC client types. All five packages are listed here in one frontmatter block so no changed package is missed.
+- 79f59ac: Documentation sync: the chrome-live adapter README now reflects the `discover: true` default (with `discover: false` as a legacy escape hatch for pre-155 toggles) and the runtime README lists the `browser_press_key`, `browser_select`, and `browser_wait_for` chrome-live tools.
+- 9aa70f2: One owner for runtime-initiated context compaction: the percent-band compaction path is no longer attempted, an auto-compaction writes a single checkpoint that the resume prompt reads its goal from, and auto-compact holds the context lock until its compaction turn has ended so a prompt arriving meanwhile queues or retries instead of colliding with it. The turn-boundary continue-fresh takes the same lock, so the two never act on one session in the same turn boundary.
+- b71159f: The context hard-stop floor now holds for a session with no context continuity policy, at admission and at the turn boundary, and the checkpoint, handoff, and continue-fresh paths work for such a session under the defaults instead of returning an error. After an auto-compaction, the session is re-evaluated immediately so a compaction that did not free enough is acted on without waiting for the next prompt.
+- 1fdf387: Give async-provisioned worktree spawns the same driver env as synchronous spawns — `AGENTPROTO_SESSION_ID`, `AGENTPROTO_WORKSPACE_SLUG`, `AGENTPROTO_PARENT_SESSION_ID`, `AGENTPROTO_APP_ID`, cloud relay vars, and the opt-in `gh` provenance shim on `PATH` — so `gh pr create` run from a worktree session carries the provenance footer (E75).
+- 056a504: Deliver must-wake follow events (awaiting-input, crashed, and a turn-end carrying a question) at least at `next-turn` even when the follow is `fyi`, so the always-wake set is never parked silently in the inbox.
+- 89484cb: Restarting an orchestrator session now preserves its delegation surface: the `/mcp/orchestrator` scope token and its role/depth/tools/limits move to the successor row (or are reinstated for an in-place revival), and the old row's live children are re-parented to the successor through the lineage hand-over so drive rights, `message_parent`, `session_tree` and subtree kills keep working. The `mcpServers` override announcement now redacts the orchestrator scope token.
+- e673406: Persist revoked orchestrator scopes as tombstones so a session revived after a daemon restart is reinstated with its original tools, role, depth and limits rather than a re-adopted default supervisor scope. The boot prune now drops those tombstones once their owner can never be revived, and legacy adoption runs only while no persist file exists, skips revoked tokens, and skips descriptors whose spawn role is not supervisor.
+- 0d70a0a: Read process start-time identity on macOS (via `ps -o lstart=`) so recorded app-service pids can be verified during boot reconcile instead of being signalled blindly, and fix the upload-path test to compare against the realpath-resolved temp directory on macOS.
+- bd5ba7c: `session_migrate` now hands an orchestrator's scope and children over to the migrated session, matching `session_restart`: the new session keeps the same scope-token and parameters, owned by its own id, so closing the old row no longer revokes the token the new row carries and the new row's real exit later revokes the scope and reaps its children. A box that crashed before the migration gets its scope reinstated for the new session, and a failed migration leaves the scope with the old session.
+- e9ba96a: Turn retry now treats an upstream capacity refusal (`[ttft_admission_refused]` / "at capacity; retry shortly") as a transient `upstream-5xx` error, so an executor re-prompts instead of ending the turn empty, honours the provider's `(after N s)` delay hint (capped at `maxDelayMs`) on 5xx errors too, and the `[warning] empty turn` line names the provider error instead of guessing an invalid model id when the turn ended on a provider failure.
+- 2275be0: Heap hygiene for long-lived daemons: the live-only `availableCommands` list is no longer written to `sessions.json` (and is dropped when loading an older snapshot), and a finished session's output rings (lines, PTY bytes, stream buffers) are cleared in the shared exit funnel. `agent_output` and `GET /sessions/:id/output` fall back to the session's captured final text, so a completed executor is still readable.
+- 66c9f6d: runtime: spawn a box session without the initial prompt and deliver it with the box's own `agent_prompt` afterward, both on boot and restart, so a cold box that installs an adapter before answering does not time out the spawn dial. Log sandbox `agent_start` failures with box id, adapter and elapsed ms.
+
+  session-presets: keep the `agent_start` request ceiling at 5 minutes, below the outer spawn budget, instead of raising it to the outer budget.
+
+- 5c26879: Run the exit-time sandbox checkpoint GC against the host workspace repo instead of the in-box `cwd`. Sandbox descriptors now persist a `sandboxRepoRoot` (the host repo root) so `agentproto-checkpoint/*` refs can be reclaimed after a session exits, including across session restart.
+- d909a0c: Stop injecting an undeclared `base_url` option when resuming a session. Lazy in-place resume now builds its launch config through the same route-aware builder as fresh spawn and restart, so a derived-from-model adapter (e.g. opencode-Go) receives no `base_url` and a stale persisted one is stripped instead of crashing manifest validation with `unknown_option`.
+- 839b223: Fix dispatch of the usage rollup HTTP route so `GET /usage/rollup` reaches its handler instead of 404ing.
+- 096cf18: Never resume a provider-box session in place on the host: a box session's `cwd` only exists inside the box, so the lazy resume-on-prompt path now fails loud and directs callers to `session_restart` instead of spawning the adapter against a nonexistent host directory.
+- 03d7c58: Close sandboxed transports after failed handshakes, remove stale abort listeners on settle, and make `tunnelClient.ready()` fail promptly on a pre-hello tunnel error or transport close instead of waiting out the hello timeout.
+- 6be6ce3: Drain in-flight transcript writes in the pre-compact checkpoint route test teardown to avoid an ENOTEMPTY race when the temp dir is removed. Test-only change; no runtime behavior change.
+- bcceb41: Keep an `external` session's AIP-46 inbox deliverable after its liveness window lapses: `sendMessage` no longer raises `session_not_alive` for an `external` row that is merely `exited` with no end reason and is not retired, so sentinel and workflow notices reach the inbox that `agentproto hook inbox` drains. A killed or retired external row is still refused. (The PR already ships an equivalent changeset; this records the reviewer's confirmation.)
+- 3b505bf: A computer `create` answered `503 fleet-capacity` is now retried for up to `fleetCapacityWaitMs` (default 12 minutes) instead of failing the spawn at once, honouring `Retry-After`/`fleetCapacityRetryMs`, stopping on cancellation, not counting the wait against `bootDeadlineMs`, and reusing one `Idempotency-Key` per boot. The `auto` provider disables this wait for its computer leg when e2b overflow is enabled so a capacity refusal still overflows immediately.
+- 19073d8: Exempt only explicitly pinned rows from the `keepAlive` boot-resume idle cutoff. An `operatorLabel` is identity metadata stamped on every operator spawn (executors included) and no longer bypasses the cutoff, so stale keepAlive executors stay dead-but-lazy-resumable instead of being respawned on every daemon boot. Documentation, config help text, and tests are updated to match.
+- 40a2617: Attribute imported-MCP calls to the calling session on the `/mcp/imported` passthrough, `POST /mcps/proxy/call` and `transmit_message`/`sendOutbound`, and stamp imported-passthrough mounts with the session id (query + identity header, never the session token) at spawn, restart and fresh continue. Calls with no caller remain host calls. This mirrors the changeset already present in the PR (`.changeset/imported-approval-attribution.md`); it is recorded here only as the reviewer's proposed changeset.
+- 839b223: Fix dispatch of the usage rollup HTTP route.
+- f767993: Raise the autocompact absolute-threshold ceiling (`contextContinuity.autoCompactAtTokens`) from 200000 to 600000 tokens, so a session on a 1M-token window can be configured to compact later than 200k. Default (150000) and `0` = disabled are unchanged.
+- 89484cb: Restarting an orchestrator session no longer breaks its delegation or kills its children. A new-id restart hands the orchestrator scope (same token, role, depth, tools and limits) and the old row's live children to the restarted row before the old row is closed, through the same lineage handover `agent_start.succeeds` uses. A row that died for real gets its revoked scope back when it is restarted, in place or under a new id; children reaped by that death stay dead. A real exit of the restarted row still revokes the scope and reaps its children. The `mcpServers` override announcement no longer carries the scope token.
+- 1fdf387: A session spawned into an async-provisioned worktree (the default for worktree spawns) now starts its driver with the same env as a synchronous spawn: `AGENTPROTO_SESSION_ID`, `AGENTPROTO_WORKSPACE_SLUG`, `AGENTPROTO_PARENT_SESSION_ID`, `AGENTPROTO_APP_ID`, the cloud relay vars, and the `gh` provenance shim on PATH when `provenance.wrapGh` is on. Before, that lane passed no `env` at all, so a `gh pr create` run from the child's own shell was never stamped with the `@agentproto-bot` footer.
+- d3f8ed3: Async worktree spawns now start the driver and record the descriptor through the same builders as synchronous spawns: one helper builds the start options (resume target, config dir, app-boundary fs zones and host-context isolation, env) and one builds the descriptor meta. A resumed async worktree spawn now hands the adapter the resolved conversation id and its config dir instead of the raw session id and a fresh dir, and an async worktree session spawned from an agent manifest now records `agentId`, `agentManifestPath` and the role hashes.
+- e9ba96a: Turn retry now treats an upstream capacity refusal as transient. OpenCode Go's `[ttft_admission_refused] the cell is at capacity; retry shortly (after 8 s)` (and other "at capacity" / "over capacity" / "retry shortly" refusals) is classified `upstream-5xx` instead of `other`, so an executor re-prompts instead of ending the turn empty, and the `(after N s)` hint is read as the backoff, capped at `maxDelayMs`. A retry-after hint is now honoured on `upstream-5xx` errors too, not only on rate limits. The `[warning] empty turn` line no longer suggests an invalid model id when the turn ended on a provider error: it names that error, and says when it is transient.
+- 3b505bf: A computer create answered `503 fleet-capacity` is now retried instead of failing the spawn at once: the provider waits while the fleet frees or wakes a shelved host, for up to `fleetCapacityWaitMs` (default 12 minutes, `0` restores the old behaviour). Each wait honours `Retry-After`, else `fleetCapacityRetryMs` (default 30 s), is logged on the boot log, stops on cancellation, and does not count against `bootDeadlineMs`. Every attempt of one boot carries the same `Idempotency-Key`, so a replayed create never makes a second box. The `auto` provider turns the wait off for its computer leg when overflow to e2b is enabled, so a capacity refusal still overflows at once.
+- 2584203: Bump baked @agentproto/cli in e2b workstation template to 1.31.0
+- a255a13: Make `worktree gc` and `worktree archive`/`rm` safe for unmerged commits. A detached HEAD is now reclaimed by `gc` only when its sha is proven in base (ancestor, squash, patch, or a merged PR's head) and is held otherwise; proven ones are reclaimed by default, so `maintain` handles them, and `--include-detached` stays accepted. `archive`/`rm` keep the branch unless it is proven merged into base (`--force` overrides), print the decision, and record it in `MANIFEST.json`. The `worktree --help` text for `archive` now states exactly what is preserved.
+- 467af3b: Follow-ups on `worktree gc`/`status` and the `maintain` workflow:
+
+  - `worktree gc --apply` (and the daemon's `worktree_gc` apply from a precomputed plan) re-checks each entry's branch, HEAD sha and index mtime right before touching it, and skips with `skipped-stale` if anything moved since the plan was made.
+  - Liveness now consults the daemon's session registry (an alive session whose cwd is the worktree, or under it, blocks reclaim) and the newest mtime among modified/untracked files, not only the index; it degrades to mtime-only and says so when the daemon is unreachable.
+  - `pnpm-lock.yaml` is noise only when the worktree's `package.json` files are unchanged versus HEAD; a changed manifest keeps the lockfile as real dirt. An explicit `--noise` override still wins outright.
+  - `worktree ls --status` and the gc/maintain integration state gain `closed-unmerged(#N)` for a branch whose PR was closed without merge.
+  - The `maintain` reviewer input carries each candidate's PR state (open/merged/closed-unmerged/none) and a `git cherry` summary against the compare base; the maintain report prints one reason line per verdict.
+  - Forge resolution normalizes `github.com-<alias>` SSH host aliases to `github.com` for the owner/repo slug, resolves the `gh` token from a neutral cwd, and both `ls --status` and `gc` print once to stderr when PR status can't be fetched instead of staying silent.
+  - `worktree gc` lists and classifies worktrees with bounded concurrency instead of serially, cutting a ~40-worktree sweep from the 50s+ range down substantially (see PR body for before/after numbers).
+
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [b67f58e]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [59256dd]
+- Updated dependencies [30a58b6]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [6991cfa]
+- Updated dependencies [c53688d]
+- Updated dependencies [3f90a9d]
+- Updated dependencies [9e6f54c]
+- Updated dependencies [e45c909]
+- Updated dependencies [03d7c58]
+- Updated dependencies [e395b66]
+- Updated dependencies [e301b84]
+- Updated dependencies [152ec6e]
+- Updated dependencies [11b18bf]
+- Updated dependencies [4ed9796]
+- Updated dependencies [cda5782]
+- Updated dependencies [f1dab61]
+- Updated dependencies [e47f3cd]
+- Updated dependencies [ec3a660]
+- Updated dependencies [812c17c]
+- Updated dependencies [8c86ff8]
+- Updated dependencies [dd134f4]
+- Updated dependencies [c73874f]
+- Updated dependencies [e301b84]
+- Updated dependencies [59256dd]
+- Updated dependencies [467af3b]
+- Updated dependencies [18584b5]
+- Updated dependencies [152ec6e]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [ec3a660]
+- Updated dependencies [4ed9796]
+- Updated dependencies [c73874f]
+- Updated dependencies [9e6f54c]
+- Updated dependencies [dd134f4]
+- Updated dependencies [1a3b9f9]
+- Updated dependencies [03d7c58]
+- Updated dependencies [4a1139a]
+- Updated dependencies [8c87741]
+- Updated dependencies [30a58b6]
+- Updated dependencies [4a1139a]
+- Updated dependencies [30961a9]
+- Updated dependencies [e301b84]
+- Updated dependencies [8c87741]
+- Updated dependencies [4464e19]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+- Updated dependencies [9fb4e90]
+- Updated dependencies [467af3b]
+  - @agentproto/harness@3.0.0
+  - @agentproto/agent@0.6.0
+  - @agentproto/operator@1.0.0
+  - @agentproto/app@2.4.1
+  - @agentproto/memory@0.1.0
+  - @agentproto/acp@0.13.0
+  - @agentproto/workspace-brain@0.6.0
+  - @agentproto/model-catalog@0.14.1
+  - @agentproto/command-sandbox@0.3.2
+  - @agentproto/provider-kit@0.6.0
+  - @agentproto/sentinel@0.3.0
+  - @agentproto/pairing-host@0.2.12
+  - @agentproto/sandbox@0.15.0
+  - @agentproto/inference-endpoint@1.0.0
+  - @agentproto/manifest@0.3.0
+  - @agentproto/apps@0.25.0
+  - @agentproto/policy@0.3.0
+  - @agentproto/quota@0.2.0
+  - @agentproto/governance-engine@1.0.0
+  - @agentproto/governance@1.0.0
+  - @agentproto/review@1.0.0
+  - @agentproto/workspace@2.0.0
+  - @agentproto/mcp-server@0.7.3
+  - @agentproto/workflow-runtime@0.20.3
+  - @agentproto/providers-store@0.4.2
+  - @agentproto/driver-browser@0.4.1
+  - @agentproto/eval-reporters@0.2.30
+  - @agentproto/telemetry-langfuse@0.2.28
+  - @agentproto/driver@0.4.1
+  - @agentproto/routine@0.4.1
+  - @agentproto/tool@0.6.1
+  - @agentproto/model-intel@0.4.1
+  - @agentproto/adapter-browser@0.9.1
+  - @agentproto/run@0.2.1
+  - @agentproto/driver-http@0.2.1
+  - @agentproto/storage-github@0.2.3
+  - @agentproto/plugin-local-browser@0.3.8
+
+## 5.30.0
+
+### Minor Changes
+
+- aca2e3a: Make the AIP-42 `on` map of a workspace `AGENT.md` live: the daemon scans manifests on every routine reconcile and fires their `agentproto:session-completed` actions for that agent's sessions.
+- 0c114ae: Add the opt-in brain-ingest reaction on `agentproto:session-completed`, owned per workspace via `defaults.reactions.brainIngest.workspaces`, with boot reconciliation and a gateway handle method.
+- 56b7fd0: Add an opt-in durable reaction that dispatches the AIP-68 clerk pass, per workspace, while preserving the legacy dispatch as the default owner.
+- 86e541d: Resolve event routines and agent `on:` maps into one shape of event binding exposed by the routine registrar, adding `resolveRoutineEventBinding`, `resolveAgentOnBindings`, `matchEventFilter`, `EventBindingError`, and `eventBindings()` on the routine registrar.
+- 639d67f: Turn resolved event bindings into runnable reaction bindings with one typed action registry and the action, tool, workflow and agent target arms.
+- 2e3fa73: Reaction chains now carry their causation through every arm, so the depth cap bounds sessions started by tool and workflow reactions too.
+- dae78b8: Add the generic durable reaction runner over the reaction receipt store with single-flight execution, retries, recursion capping and boot reconciliation.
+- 9ae92a7: Wire AIP-41 event routines into the daemon through a hot-refreshed reaction runner binding set.
+- 5ce470d: Add a synchronous reaction runner health read model, one structured trace line per terminal transition and a read-only `GET /reactions` route.
+- ff060de: Add the durable reaction receipt store for action hooks with durable pending and running writes, a five-state lifecycle, redaction, retention and load validation.
+- fb5159a: Add the `session:archive` action so an event routine can archive the session of a completed event through the durable reaction runner.
+- bcb6a8c: Keep sandbox gc off boxes a live successor or paused teardown holds
+- a68476e: Discover Chrome browser UUID, fail loudly, add key/select/wait tools
+- 1d7b55a: Add auto sandbox provider with capacity overflow from computer to e2b
+- 8d53429: Add model lists with selectors, ordering and composition. A seeded `zero-cost` list (catalog price 0/0) replaces the free-model predicates, and the runtime enforces one generic `modelPolicy` (`allow`/`block` over list ids, set on `agent_start`) at spawn, `setModel`, restart and rotation instead of any free-versus-paid rule. Also, `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools.
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+- 76003b9: Declare native hook capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session harness's declared hooks from `session_capabilities`.
+- 8c4169e: Make `allowPromptFrom` and `operatorLabel` survive restart/continue-fresh and the HTTP spawn path.
+
+  - New MCP tool `agent_set_operator_label`: lets the human operator stamp a
+    session's operator-assigned `operatorLabel` directly, without a fresh root
+    spawn.
+    Needed for a lineage that has lived by resume/continue-fresh since before
+    it ever got a label, so there was never a prior label for the existing
+    carry-forward logic to propagate.
+  - `session_restart` and `session_continue_fresh` now also carry forward
+    `allowPromptFrom` from the replaced session to its successor, the same way
+    they already carry forward `operatorLabel`. Previously a permanent agent's
+    drive grants (e.g. a `label:` grant) were silently dropped at the next
+    restart/continuation.
+  - `POST /sessions/agent` now applies `allowPromptFrom` post-spawn, the same
+    way the `agent_start` MCP tool handler already does. Previously the HTTP
+    spawn path (used by non-MCP callers such as Pygmalion's `EngineClient`)
+    silently accepted and dropped the field.
+  - New route `POST /sessions/:id/prompt-policy`, the HTTP twin of
+    `agent_set_prompt_policy`: (re-)grants `allowPromptFrom` on a session
+    that is ALREADY LIVE, for a non-MCP caller. The spawn-time field above
+    only reaches a fresh spawn, so a permanent `keepAlive` agent already
+    running before a grant was added would otherwise never pick it up until
+    it happens to restart.
+
+- 5a429e0: Corrective bump for PR #2177: beyond the reliability fixes already covered by
+  `.changeset/follow-sentinel-message-reliability.md` (bumped `patch`), this PR
+  adds new public exports from `@agentproto/runtime` — `PROTECTED_MESSAGE_KINDS`,
+  `isProtectedMessage`, `isNoiseMessage`, and `effectiveMessageUrgency` — via
+  `export * from "./session-message.js"` in `index.ts`, plus behavior changes
+  (blocker/question urgency upgrade, noise-first inbox eviction, the default
+  7-day `expiresAt` backstop on follows and session-target sentinels, and the new
+  `sweepWiringLifecycle` pass). Repo bump rules make added exports and behavior
+  changes a `minor`; combined with the committed patch changeset the release
+  resolves to `minor`.
+- 8c4169e: Carry `allowPromptFrom` forward across `session_restart` / `session_continue_fresh`, apply it on the HTTP `POST /sessions/agent` spawn path, and add the operator-only `agent_set_operator_label` MCP tool for stamping a session's `operatorLabel` without a fresh root spawn.
+- 8d53429: Add model lists with selectors, ordering and composition. The new `zero-cost` list (seed: catalog price 0/0) replaces every free-model predicate in the runtime, and `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools. `@agentproto/model-intel` reuses an internal `isZeroPriced` helper for the same rule.
+- 3d5d2eb: Add `turnRetry.fallback` overlays that move a failed session across models, auth profiles and harnesses after same-config retries are exhausted, recording each step and emitting a `session:fallback` event.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy`,
+  nested `config` and key-merged `options` on the user preset store; one pure
+  session-config resolver shared by the spawn path and exposed as
+  `agentproto preset resolve` / `user_preset_resolve`; preset model policies
+  compose with the request's so both apply.
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+- ff060de: Add the durable AIP-71 reaction receipt store for action hooks. The new exports (`createReactionReceiptStore`, `buildReactionReceiptKey`, `ReceiptTransitionError`, `RECEIPT_REDACTION_REVISION`, and the receipt types/options) provide durable pending/running/terminal writes, a five-state lifecycle, redaction, retention, and load-time validation. Persistence is enabled by default when using the built-in receipt path.
+- dae78b8: Add the generic durable reaction runner over the reaction receipt store: single-flight execution, deterministic retry backoff, recursion capping, boot reconciliation and a retry/sweep tick. Exposes `createReactionRunner` and the `ReactionTarget`, `ReactionBinding`, `ReactionRunner` and related types.
+- d57dccf: Add `WorkflowRunner.dispose()`: a new exported method that clears the runner's trailing-flush and lease-heartbeat timers, unsubscribes its session-event-bus listeners, removes its process-exit drain, and awaits queued persistence so a test or shutdown path can tear down a persist directory without racing an in-flight write.
+
+  > Reviewer note: the PR's existing `.changeset/workflow-runner-dispose.md` marks this `patch`, but a new exported method on the public `WorkflowRunner` interface is a new feature. If this file lands alongside it, changesets selects the highest bump (minor). Adjust/supersede the existing changeset accordingly.
+
+- 9ae92a7: Wire AIP-41 `schedule.kind: "event"` routines into the daemon: `createReactionWiring`/`sessionFactsOf` turn resolved event bindings into reaction bindings, and `ReactionRunner.replaceBindings` hot-swaps the live binding set on every reconcile/boot. The agent-arm guard now fails closed when an event's session facts cannot be read.
+
+  Document how event routines are resolved in the routine README.
+
+- 02c8d08: Add in-place merging for queued session-follow digests: a busy follower now receives one persisted digest carrying all coalesced events (with a 50-entry cap) instead of a new digest per flush. This also exposes the digest/merge hook on the sessions registry.
+- 2e3fa73: Reaction chains now carry their causation through every arm: the runner derives each receipt's reaction depth and caused event id from the completing session's facts, enters an async reaction context around every target, and stamps sessions spawned inside it with origin and reaction meta. The depth cap therefore bounds sessions started by tool and workflow reactions too. This mirrors the existing `.changeset/action-hooks-reaction-causation.md` in the PR.
+- 5ce470d: Expose reaction runner health through a new `ReactionRunner.health()` read model and a read-only `GET /reactions` HTTP route, add a `ReactionWiring.current()` accessor, and emit one structured trace line per terminal reaction transition on a separate `trace` channel.
+- fb5159a: Add the `session:archive` action so an event routine can archive the session of a completed event through the durable reaction runner. The handler skips missing, already-archived, alive, pinned and keepAlive sessions with an `outcomeRef`, and surfaces an archive failure as a retryable reaction failure.
+- 3c0045a: Add a persisted, bounded `dedupeKey` to prompt admission (`enqueuePrompt` and the MCP `agent_prompt` tool) so a retried prompt is delivered at most once inside a 24 hour window, returning `delivery: "duplicate"` with no delivery or queue mutation.
+- aca2e3a: Make the AIP-42 `on` map of a workspace `AGENT.md` live: the daemon rescans `.agents/<id>/AGENT.md` on every routine reconcile, scopes each entry to sessions whose `meta.agentId` matches the declaring agent, and fires the named action for `agentproto:session-completed`.
+- 8955834: Add `sandbox_list` / `collectSandboxInventory` for a unified, per-provider sandbox inventory. `sandbox_gc` defaults to `computer` only, and reports an explicit `e2b` sweep as `notScanned` (the shared account writes no daemon marker, so its boxes cannot be attributed to this daemon).
+- 3c0045a: Add a persisted, bounded `dedupeKey` to prompt admission so a retried prompt is delivered at most once inside a 24 hour window. The exported `PromptDelivery` union gains `"duplicate"`; a consumer with an exhaustive switch must handle it.
+- 8955834: Add sandbox_list across every concrete provider; sandbox_gc now defaults to `computer` only (its controller scopes boxes to this daemon's tenant), and refuses an explicit e2b sweep because that shared account writes no daemon marker at boot
+- 2797c4a: Add per-call human approval for imported MCP tools. A `hold` rule in `.agentproto/hooks.json` matching an imported tool (for example `send_message` on agentpush) now parks the call as a real pending permission (`allow_once` / `reject_once`, fail-closed on timeout, session death and shutdown) before it reaches the upstream server; `deny` and `gate` rules are treated as the same human hold at this seam. New exports `ToolPermissionRequest` and `ToolPermissionOutcome`, new `SessionsRegistry.requestToolPermission`. An opt-in Telegram bridge (`approvals.permissionTelegramChatId` + `approvals.permissionTelegramUserIds`, plus `permissionTelegramAlias` and `permissionTelegramTools`) mirrors each pending permission on the configured tools to a chat with tap buttons and routes the tap back to the permission, through callback_query updates on a signed telegram inbound endpoint. With no hold rule and no bridge config, behaviour is unchanged.
+- 3d5d2eb: Add `turnRetry.fallback` overlays that move a failed session across models, auth profiles and harnesses after same-config retries are exhausted, recording each step and emitting a `session:fallback` event.
+- 02c8d08: Merge queued follow digests in place instead of stacking one per flush, retaining both batches across a daemon restart and capping merged events at 50.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy` and
+  an optional nested `config` on the user preset store; one pure session-config
+  resolver used by the spawn path and exposed as `agentproto preset resolve` /
+  `user_preset_resolve`; preset model policies compose with the request's.
+- d57dccf: Add `WorkflowRunner.dispose()` to stop trailing-flush and lease timers, unsubscribe bus listeners, and drain pending persistence writes.
+
+### Patch Changes
+
+- b60089c: Add the internal action-hooks contract types for the action envelope, admission decisions, hook owner, and occurrence keys.
+- 1b09503: Add the `agentproto:session-completed` host event with a pure derivation helper and an emitter wired into the runtime composition root.
+- a031ce9: Route the existing spawn dedupe and collision decisions through the pure spawn admission policy, with unchanged behaviour.
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- ecd171b: Autocompact now fires on sessions whose harness advertises its compact slash command (`/compact`, or `/compress` for hermes) in `available-commands`. It used to require a `compact` session mode, which no real ACP adapter advertises, so the absolute token threshold never compacted a claude-code session.
+- 5391176: Checkpoint snapshots no longer miss a same-size edit made in the same second.
+- 6366c83: Allow at most one continue-fresh per source session: a duplicate or concurrent call with the same options now returns the first call's checkpoint and successor instead of spawning a second one, while a later call with different options is refused with `already_continued` rather than silently returning the first successor.
+- f370600: Extract the durable keyed-row file mechanics into a shared module and use it from the sentinel webhook outbox, with no behavior change.
+- 2aea136: Extract the AIP-66 managed cloud spawn surface into the new `@agentproto/cloud-agent` package. The vendor registry, pure spawn resolver and refusal shapes, `meta.cloud` identity helpers, relay session-meta side file and declared-remote spawn env now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- a54ae71: Extract the AIP-65 decision core into the new `@agentproto/decision` package. Policy parsing, bounded evidence collection, and the typed decision primitive now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- 89e3acc: Extract the AIP-58 run substrate into the new `@agentproto/run` package. The per-run workspace, the append-only event log, the on-disk run store, the file-backed step cache, and the pure run-record types now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- 07daf79: Extract the AIP-60 sentinel primitive into the new `@agentproto/sentinel` package. The sentinel store, runtime, providers, MCP tools and webhook outbox now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- bf31a70: Stop a late lease heartbeat from recreating a finished run's lease sidecar.
+- 15c186b: Persist a workflow run's terminal state before draining the app ledger, so `flush()` waits for the lease sidecar removal once the run is observed done or failed.
+- 5a429e0: Harden blocker delivery, inbox eviction, and follow/sentinel lifetimes.
+
+  - `blocker` and `question` messages are never downgraded to `fyi`: an
+    explicit `fyi` is applied as `next-turn`, so the recipient wakes (or the
+    message parks with the inbox's non-loss guarantee).
+  - A full inbox now evicts noise (`notice`/`fyi`) first and never drops an
+    un-consumed `blocker`/`question`. When every entry is protected, a new
+    noisy message is refused instead; a new protected message may exceed the
+    soft cap rather than lose a blocker.
+  - Follows and sentinels now carry an `expiresAt` (defaulted to 7 days,
+    matching the cron scheduler's owned-job backstop) and a periodic wiring
+    sweep removes expired records and those whose recipient is gone or retired
+    (relinking to a live successor when one exists). The sweep runs at boot and
+    every 60 seconds, cleaning up orphans left by an older daemon.
+
+- c9edab3: Fail open when follow triage throws, and add event timestamps, occurrence keys, task ids and a per-flush digest id to the follow triage ledger.
+- 1ac9090: Checkpoint sandbox work every 3 minutes by default instead of 10
+- 0f880f5: Stamp `operatorLabel` on operator spawns via `POST /sessions/agent`, matching `agent_start` so `label:` entries in `allowPromptFrom` apply.
+- e9256c2: Report installed apps whose dir is gone instead of a no-adapter error
+- 2391104: Keep box sessions alive across a dropped relay stream
+- 3e78d31: Extract the AIP-68 clerk pass into the new `@agentproto/clerk` package. The hook configuration, the turn-end subscriber and the pass runner now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- 449ab6f: Move the AIP-67 quota API to the new `@agentproto/quota` package. `@agentproto/model-intel` keeps `diffCatalog` and re-exports the quota API as deprecated aliases; `@agentproto/runtime` imports quota symbols from `@agentproto/quota`.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- c2a17e4: Quiesce active workflow runs (cancel, wait for lease release, flush persistence) before tmpdir teardown in the workflow-retry tests, deflaking teardown against late asynchronous writes.
+- 2391104: Keep box sessions alive across a dropped relay stream: re-open the structured `/events/stream` from the last consumed transcript seq with a bounded retry budget instead of declaring the box dead, reconstruct live tool-call phase state from flattened relay `[tool]` lines, and surface ring-buffer output on long-poll timeouts so long-running box builds don't trip the stall watchdog.
+- f370600: Extract the durable keyed-row file mechanics into a shared module and rewire the sentinel webhook outbox to use it, with no behavior change.
+- 0f880f5: Stamp `operatorLabel` on operator spawns made through `POST /sessions/agent`, matching the `agent_start` MCP tool so `label:` entries in `allowPromptFrom` apply to sessions that Pygmalion launches over HTTP.
+- c1a17d7: Correct the `ContextProfile` documentation to accurately describe the adapters' `lean` semantics and the built-in executor default, and drop a stale source line reference.
+- df98be7: Record follow-triage rule verdicts to the triage ledger for every session-follow event even when triage is disabled. Ledger lines now include `source: "follow"` and `applied: false` in that mode; digest text, urgency, and delivery are unchanged.
+- 9d4f337: Fix sentinel triage key timing: record the coalesce key only after a successful delivery so a failed send is retried without being classified as a repeat of itself, and guard the repeat window against backwards clock steps.
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+- a031ce9: Route the existing spawn dedupe and worktree collision decisions through the pure spawn admission policy. Adds observer parity telemetry and parity tests; no public API change and no behaviour change.
+- 1b09503: Wire the `agentproto:session-completed` host event: a pure derivation helper for the terminal-transition occurrence (`exit:<endedAt>`), a bounded in-process emitter wired to `session:exited` and `policy:passed`, and the corresponding bus event type. The PR already ships `.changeset/action-hooks-session-completed.md` with the same package and bump; this file is redundant and CI may drop it. Once completions recorded after the exit event (steward close, `session_mark_completed`, operator "Mark as completed") are emitted too, revisit whether the new host-event contract warrants a `minor` bump.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- 3e78d31: Extract the AIP-68 clerk pass into the new `@agentproto/clerk` package: hook configuration (agent > workspace > daemon resolution), the debounced/single-flight turn-end subscriber, and the routine/command pass runner now live there. `@agentproto/runtime` depends on the package and re-exports the same public names, so its public API is unchanged.
+- 89e3acc: Extract the AIP-58 run substrate into the new `@agentproto/run` package: the per-run workspace layout, the append-only event log, the on-disk run store, the file-backed step cache, and the pure run-record types. `@agentproto/runtime` depends on the package and re-exports the same public names, so existing consumers keep working.
+- ecd171b: Autocompact now recognises the slash command a harness actually advertises in `available-commands` (`/compact`, or `/compress` on hermes) rather than requiring an unadvertised `compact` session mode, so sessions on real ACP adapters compact at the absolute token threshold again. This is already covered by `.changeset/autocompact-advertised-compact-command.md` on the branch; this entry mirrors the same patch bump for the workflow handoff.
+- 07daf79: Extract the AIP-60 sentinel primitive into the new `@agentproto/sentinel` package (store, runtime, providers, MCP tools, webhook outbox). `@agentproto/runtime` now depends on the package through a runtime-owned platform-port layer and re-exports the same public names, so its API is unchanged.
+- 2aea136: Extract the AIP-66 managed cloud spawn surface into the new `@agentproto/cloud-agent` package: the vendor registry, pure spawn resolver and refusal shapes, `meta.cloud` identity helpers, relay session-meta side file, `GIT_TOKEN_ENV`, and declared-remote spawn env (now taking the runtime's remote validators through a `CloudRemotePort`). `@agentproto/runtime` depends on the new package and keeps the same behavior at its spawn/restart call sites.
+- 7114c28: Record a host-side `silent` turn-end when an agent acks its wake as an explicit `inbox_ack({ noop: true })` no-op, and let session-follow skip or deliver it like an empty turn.
+- b626b79: Classify a Codex usage cap printed as assistant text as provider-limit, so a bare "Internal error" that follows the cap message is attributed to the provider quota rather than a generic turn failure.
+- dfb1aef: Rename `@agentproto/redaction` to the AIP-70 name `@agentproto/processor`, with a `@agentproto/redaction` shim that re-exports it unchanged.
+- d3ce829: Point the `go-free` and `free-sonnet` model-role presets at `opencode-go/beam-free`: upstream deprecated `opencode-go/longcat-2.5-preview-free`, so the catalog no longer carries it.
+- 0aa32f3: Surface the PR's head branch name (`headRefName`) in `review_pr`'s status
+  snapshot and in `local-gh` sentinel events, so a watching session can read
+  who opened a PR directly from the event's `data` instead of GitHub's
+  `author` field — which is always the same bot account for every PR we open,
+  and so cannot distinguish which agent/role opened it. The branch's own
+  prefix convention (`pm-brain/...`, `mainteneur/...`, `fix-pr-<n>-...`) does.
+- 68485ca: Keep sentinel triage from demoting a failing verdict on a head already seen as pending, use a fixed repeat window, and add the event timestamp and triage key to the observation ledger.
+- 9d4f337: Record what a triage stage would decide for sentinel deliveries. The new `sentinel-triage` module classifies each session delivery as `wake` or `fyi` using ordered rules (`terminal`, `coalesced-repeat` within 10 minutes, then `default`) and appends an observation-only JSONL line (`applied: false`) to `~/.agentproto/sentinel-triage.jsonl`. Delivery itself is unchanged.
+- 7114c28: Record a host-side `silent` turn-end when an agent acks its wake as an explicit `inbox_ack({ noop: true })` no-op, and let session-follow skip or deliver it like an empty turn.
+- b626b79: Classify a Codex usage cap printed as assistant text as provider-limit
+- 34216fc: Attribute task tools called on the root `/mcp` via `?callerSessionId=` to that session instead of the operator, and add `defaults.tasks.operatorDelegates` to keep the ledger's operator rights for explicitly listed sessions.
+- df98be7: Record follow triage decisions in the ledger while triage is off, without changing delivery.
+- Updated dependencies [ba7e5a1]
+- Updated dependencies [001368d]
+- Updated dependencies [7a90c4b]
+- Updated dependencies [6b78431]
+- Updated dependencies [52f8616]
+- Updated dependencies [97a0074]
+- Updated dependencies [d3ce829]
+- Updated dependencies [61e6068]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [2aea136]
+- Updated dependencies [a54ae71]
+- Updated dependencies [89e3acc]
+- Updated dependencies [07daf79]
+- Updated dependencies [a68476e]
+- Updated dependencies [9fbf379]
+- Updated dependencies [bee10e3]
+- Updated dependencies [1d7b55a]
+- Updated dependencies [8d53429]
+- Updated dependencies [3e78d31]
+- Updated dependencies [84ac51b]
+- Updated dependencies [449ab6f]
+- Updated dependencies [d3dd524]
+- Updated dependencies [76003b9]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f41d51c]
+- Updated dependencies [8d53429]
+- Updated dependencies [bee10e3]
+- Updated dependencies [804db17]
+- Updated dependencies [97a0074]
+- Updated dependencies [5ab8114]
+- Updated dependencies [3e78d31]
+- Updated dependencies [89e3acc]
+- Updated dependencies [07daf79]
+- Updated dependencies [2aea136]
+- Updated dependencies [9ae92a7]
+- Updated dependencies [d3ce829]
+- Updated dependencies [0865827]
+- Updated dependencies [61e6068]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [dfb1aef]
+  - @agentproto/lifecycle@0.2.0
+  - @agentproto/agent@0.5.0
+  - @agentproto/harness@2.16.0
+  - @agentproto/governance@0.2.0
+  - @agentproto/governance-engine@0.2.0
+  - @agentproto/review@0.7.0
+  - @agentproto/inference-endpoint@0.12.0
+  - @agentproto/app@2.4.0
+  - @agentproto/apps@0.24.2
+  - @agentproto/app-client@0.4.4
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/sandbox@0.14.0
+  - @agentproto/provider-presets@0.7.2
+  - @agentproto/mcp-server@0.7.2
+  - @agentproto/driver-http@0.2.0
+  - @agentproto/driver-browser@0.4.0
+  - @agentproto/cloud-agent@0.2.0
+  - @agentproto/decision@0.2.0
+  - @agentproto/run@0.2.0
+  - @agentproto/sentinel@0.2.0
+  - @agentproto/adapter-browser@0.9.0
+  - @agentproto/model-intel@0.4.0
+  - @agentproto/clerk@0.2.0
+  - @agentproto/quota@0.1.0
+  - @agentproto/acp@0.12.0
+  - @agentproto/auth@1.4.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/routine@0.4.0
+  - @agentproto/secrets@2.2.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow@0.8.0
+  - @agentproto/provider-kit@0.5.0
+  - @agentproto/manifest@0.2.5
+  - @agentproto/processor@0.3.0
+  - @agentproto/workflow-runtime@0.20.2
+  - @agentproto/workspace-brain@0.5.5
+  - @agentproto/eval-reporters@0.2.29
+  - @agentproto/telemetry-langfuse@0.2.27
+  - @agentproto/providers-store@0.4.1
+  - @agentproto/pairing-host@0.2.11
+  - @agentproto/storage-github@0.2.2
+  - @agentproto/workflow-loader@0.2.10
+  - @agentproto/plugin-local-browser@0.3.7
+
 ## 5.29.0
 
 ### Minor Changes
@@ -2984,7 +3782,7 @@ handshake: <reason>` vs a hello timeout), and the channel-closed log carries the
 - d5eb115: Separate daemon-composed system prompts from user prompts in transcripts. The role disposition (and other daemon-synthesized preambles like lineage, AGENTS.md) are now recorded as a distinct `system-prompt` event ahead of the `user-prompt`, allowing viewers to fold synthesized context instead of rendering it as a user bubble. The adapter still receives the single composed prompt unchanged; the split is recording-only on the daemon's event stream.
 - 8900417: Add support for `usage_update` and `usage_snapshot` transcript record kinds as known no-ops. These high-frequency cost/context bookkeeping records were previously falling through to the unknown-kind error path. Fixes spurious error chunks and console logging on every turn against a live daemon.
 - dcfaa65: Fix text fragment rejoining logic to use only the explicit `partial` flag instead of heuristic `endsWith("\n")` check. This prevents complete text blocks from being incorrectly concatenated when tool calls interleave, which was causing paragraphs to run together (e.g., "…the client.Trial logic…"). The writer's transcript contract emits end-of-message blocks as non-partial records without trailing newlines, making the explicit `partial: true` flag the only reliable glue signal.
-- baf8570: Surface ACP's `available_commands_update` notification instead of silently dropping it. `translateSessionUpdate` now maps it to a new `available-commands` StreamEvent, `transcript-writer` persists it to `events.jsonl`, and the daemon mirrors the latest command list onto `SessionDescriptor.availableCommands`, exposed read-only via `GET /sessions` / `GET /sessions/:id`.
+- baf8570: Surface ACP's `available_commands_update` notification instead of silently dropping it. `translateSessionUpdate` now maps it to a new `available-commands` StreamEvent, `transcript-writer` persists it to `events.jsonl`, and the daemon mirrors the latest command list onto `SessionDescriptor.availableCommands`, exposed read-only via `GET /sessions` / `GET /sessions/:id`. (The list surface now omits this live-only field by default; pass `?fields=availableCommands` to `GET /sessions`, or read `GET /sessions/:id`, which always carries it.)
 - 7220068: Fix "restart starts a terminal but it doesn't work" bug: add origin-gate that prevents agent-cli/ACP-origin sessions from defaulting to provider-native terminal restart. ACP-origin sessions now default to agent-level resume, with explicit opt-in via `preferNativeTerminal` flag. Implement billing-auth re-resolution for pty-native path to prevent ambient credential leaks, closing #824/#490 for this codepath.
 - bdc7d6f: Fix profile-aware route fallback for model-derived API key adapters: when a model's naive prefix-guessed route doesn't make a named profile eligible, search the model's actual serviceable routes for one that does, allowing models like "deepseek/deepseek-v4-flash" (billed via "openrouter") to work with appropriate profiles without requiring explicit `route.gateway`.
 - 6372c19: Implement exit-time auto-reclaim for policy-provisioned (implicit) worktrees. When a session spawned under the `"always"` isolation policy without an explicit `worktree` request exits cleanly (merged/fresh, no uncommitted work), its worktree is automatically reclaimed using the same safety-layered classify→re-verify→remove pipeline as `worktree gc`. Caller-explicit worktrees (today's manual-cleanup behavior) are never auto-reclaimed. The feature is fire-and-forget, best-effort only, and never interrupts session teardown.

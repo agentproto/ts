@@ -83,7 +83,9 @@ export async function findComposeCandidate(input: FindComposeCandidateInput): Pr
     if (!rubric || rubric.sha256 !== input.rubricSha256) continue
     if (input.packDigest) {
       const priorPack = (a.packs ?? []).find((p) => p.id === input.packDigest!.id)
-      if (!priorPack || priorPack.alg !== input.packDigest.alg || priorPack.sha256 !== input.packDigest.sha256) continue
+      if (!priorPack) continue
+      const normalizeAlg = (alg: string | undefined) => (alg === "agentproto-pack-digest/v1" ? "review.pack-digest/v1" : alg)
+      if (normalizeAlg(priorPack.alg) !== normalizeAlg(input.packDigest.alg) || priorPack.sha256 !== input.packDigest.sha256) continue
     }
     if (!(await isAncestor(input.repoRoot, a.target.headSha, input.headSha))) continue
     return { attestation: a }

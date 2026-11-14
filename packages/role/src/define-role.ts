@@ -1,5 +1,5 @@
-import { createDoctype } from "@agentproto/define-doctype"
-import { roleFrontmatterSchema } from "./schema.js"
+import { createDoctype } from "@agentproto/doctype"
+import { roleFrontmatterSchema } from "./frontmatter.js"
 import type { RoleDefinition, RoleHandle } from "./types.js"
 
 /**

@@ -56,12 +56,13 @@ automatically (a caller-declared pin always wins, nothing is injected for
 non-sandbox spawns).
 
 For harnesses BEYOND the spawned adapter, declare semantic slugs instead of
-raw npm specs: `config.installAdapters: ["hermes", "claude-code"]`. Each slug
+raw npm specs: `config.installHarnesses: ["hermes", "claude-code"]`. Each slug
 expands to `@agentproto/adapter-<slug>@latest` (plus that adapter's declared
 boot extras, e.g. `@anthropic-ai/claude-code`) and merges into
 `config.installPackages` with dedupe — a caller's explicit pin for the same
 package always wins. An unknown slug still expands (the box's npm install is
-the authority); an absent field changes nothing.
+the authority); an absent field changes nothing. The pre-AIP-36-rename key
+`config.installAdapters` is rejected with an error naming `installHarnesses`.
 
 ## Billing-auth auto-passthrough (opt-in)
 

@@ -20,6 +20,9 @@ import {
   type DriverHandle,
 } from "@agentproto/driver"
 
+/** AIP-70 registry spec id for this package (`mcp/v1`, AIP-32). */
+export const SPEC_NAME = "mcp/v1" as const
+
 export type McpServerConfig =
   | { kind: "binary"; path: string; args?: readonly string[]; env?: Record<string, string> }
   | { kind: "npm"; package: string; args?: readonly string[]; env?: Record<string, string> }

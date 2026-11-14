@@ -129,6 +129,24 @@ describe("GET /brain/query", () => {
     }, brains)
   })
 
+  it("says when a brain answered from an incomplete index", async () => {
+    registerWorkspaces("agentik-studio")
+    const hit = (id: string) => ({ sourceId: id, chunkId: id, text: id, score: 1, metadata: {} })
+    const brains = fakeBrains(
+      { default: [hit("sess-a")], "agentik-studio": [hit("sess-b")] },
+      ["agentik-studio"],
+    )
+    await withServer(async base => {
+      const named = (await (await fetch(`${base}/brain/query?q=x&workspace=agentik-studio`)).json()) as Record<string, unknown>
+      expect(named.partial).toBe(true)
+      const complete = (await (await fetch(`${base}/brain/query?q=x&workspace=default`)).json()) as Record<string, unknown>
+      expect(complete.partial).toBeUndefined()
+      const all = (await (await fetch(`${base}/brain/query?q=x`)).json()) as Record<string, unknown>
+      expect(all.partial).toBe(true)
+      expect(all.workspacesPartial).toEqual(["agentik-studio"])
+    }, brains)
+  })
+
   it("named workspace: falls back to parsing sessionId from sourceId when metadata carries none", async () => {
     const brains = fakeBrains({
       default: [
@@ -285,6 +303,51 @@ describe("GET /brain/query", () => {
     }, brains)
   })
 
+  it("federated: queries the brains one at a time, never two at once", async () => {
+    registerWorkspaces("agentproto", "agentik-studio")
+    // Each query stands in for a cold index build: it holds the brain for a
+    // while. Federated mode must not overlap two of them.
+    let running = 0
+    let maxRunning = 0
+    const order: string[] = []
+    const brains: WorkspaceBrains = {
+      getBrain: (workspace: string) =>
+        stubBrainManager(() =>
+          stubProvider(async () => {
+            running++
+            maxRunning = Math.max(maxRunning, running)
+            order.push(workspace)
+            await new Promise(r => setTimeout(r, 25))
+            running--
+            return {
+              hits: [
+                {
+                  sourceId: `sess-${workspace}`,
+                  chunkId: `sess-${workspace}`,
+                  text: workspace,
+                  score: 1,
+                  metadata: { sessionId: `sess-${workspace}` },
+                },
+              ],
+              tookMs: 0,
+              engine: "fake",
+              modeUsed: "hybrid" as const,
+            }
+          }),
+        ),
+      resolveWorkspace: async () => undefined,
+      resolveWorkspaceSlug: (workspace, callerSlug) => workspace ?? callerSlug ?? "default",
+    }
+    await withServer(async base => {
+      const res = await fetch(`${base}/brain/query?q=hit`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { hits: Array<{ workspace: string }> }
+      expect(body.hits.map(h => h.workspace).sort()).toEqual(["agentik-studio", "agentproto", "default"])
+    }, brains)
+    expect(order).toEqual(["default", "agentproto", "agentik-studio"])
+    expect(maxRunning).toBe(1)
+  })
+
   it('explicit workspace=all is equivalent to the default federated mode', async () => {
     const brains = fakeBrains({ default: [] })
     await withServer(async base => {
@@ -361,7 +424,10 @@ function stubBrainManager(getProvider: () => ReturnType<typeof stubProvider>) {
   }
 }
 
-function fakeBrains(hitsByWorkspace: Record<string, FakeHit[]>): WorkspaceBrains {
+function fakeBrains(
+  hitsByWorkspace: Record<string, FakeHit[]>,
+  partialWorkspaces: readonly string[] = [],
+): WorkspaceBrains {
   return {
     getBrain: (workspace: string) =>
       stubBrainManager(() =>
@@ -370,6 +436,7 @@ function fakeBrains(hitsByWorkspace: Record<string, FakeHit[]>): WorkspaceBrains
           tookMs: 0,
           engine: "fake",
           modeUsed: "hybrid" as const,
+          ...(partialWorkspaces.includes(workspace) ? { partial: true } : {}),
         })),
       ),
     resolveWorkspace: async () => undefined,

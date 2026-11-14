@@ -21,6 +21,7 @@
  * never a guess).
  */
 
+import { tmpdir } from "node:os"
 import { z } from "zod"
 import { execArgv } from "./exec.js"
 
@@ -32,6 +33,23 @@ export interface ForgePullRequestRef {
   mergedAt: string | null
   headRefName: string
   headRefOid: string
+}
+
+/**
+ * One PR/MR as the `verified-pr` guard pass of `branch-gc.ts` needs to see
+ * it: is it merged, into which branch, and which paths did it touch (a
+ * rename counts both its old and its new path).
+ */
+export interface ForgePullRequestFacts {
+  number: number
+  state: "open" | "closed"
+  merged: boolean
+  /** The branch the PR targets (`main`), without any remote prefix. */
+  baseRefName: string
+  /** The commit the merge produced on the base branch (the squash commit for a squash merge); `null` when unmerged. */
+  mergeCommitOid: string | null
+  /** Every path the PR touched. */
+  files: string[]
 }
 
 /**
@@ -83,11 +101,25 @@ export interface ForgeClient {
    * those callers, never as "no merged PRs".
    */
   listMergedPullRequests?(): Promise<ForgePullRequestRef[]>
+  /**
+   * Every PR/MR closed WITHOUT merging, in one round-trip: with the open and
+   * merged lists it answers "what PR did this head branch have" for every
+   * branch at once (`branch-gc.ts`'s `headPr`). Optional like the other bulk
+   * lists; a client without it leaves that answer unknown, never `none`.
+   */
+  listClosedUnmergedPullRequests?(): Promise<ForgePullRequestRef[]>
+  /**
+   * One PR/MR by number with the paths it touched, or `null` when the forge
+   * has no PR with that number. Optional so existing test doubles keep
+   * compiling; a client without it is treated by `branch-gc.ts` as "forge
+   * unavailable" for the `verified-pr` pass, which then refuses.
+   */
+  pullRequestFacts?(prNumber: number): Promise<ForgePullRequestFacts | null>
 }
 
 /** A client that always reports itself unreachable — the "no gh, no token" case. */
 export class UnreachableForgeClient implements ForgeClient {
-  constructor(private readonly reason: string) {}
+  constructor(readonly reason: string) {}
   async pullRequestsForBranch(): Promise<ForgePullRequestRef[]> {
     throw new ForgeUnavailableError(this.reason)
   }
@@ -103,6 +135,95 @@ export class UnreachableForgeClient implements ForgeClient {
   async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
     throw new ForgeUnavailableError(this.reason)
   }
+  async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    throw new ForgeUnavailableError(this.reason)
+  }
+  async pullRequestFacts(): Promise<ForgePullRequestFacts | null> {
+    throw new ForgeUnavailableError(this.reason)
+  }
+}
+
+/**
+ * Wrap `client` so the first `ForgeUnavailableError` it throws also calls
+ * `notify` once with a loud, human-readable line, then rethrows unchanged.
+ * Status code keeps degrading to `unknown(offline)` exactly as before; this
+ * only guarantees the operator is told why, instead of seeing a silently
+ * empty status. Legitimate empty answers never notify.
+ */
+export function withUnavailableNotice(client: ForgeClient, notify: (message: string) => void): ForgeClient {
+  let told = false
+  const guard = async <T>(call: () => Promise<T>): Promise<T> => {
+    try {
+      return await call()
+    } catch (err) {
+      if (err instanceof ForgeUnavailableError && !told) {
+        told = true
+        notify(`forge unavailable: ${err.message}; PR/merge status shown as unknown(offline)`)
+      }
+      throw err
+    }
+  }
+  const wrapped: ForgeClient = {
+    pullRequestsForBranch: (branch) => guard(() => client.pullRequestsForBranch(branch)),
+    pullRequestsForCommit: (sha) => guard(() => client.pullRequestsForCommit(sha)),
+    ensurePullHeadFetched: (n, oid) => guard(() => client.ensurePullHeadFetched(n, oid)),
+  }
+  if (client.listOpenPullRequests) {
+    const list = client.listOpenPullRequests.bind(client)
+    wrapped.listOpenPullRequests = () => guard(list)
+  }
+  if (client.listMergedPullRequests) {
+    const list = client.listMergedPullRequests.bind(client)
+    wrapped.listMergedPullRequests = () => guard(list)
+  }
+  if (client.listClosedUnmergedPullRequests) {
+    const list = client.listClosedUnmergedPullRequests.bind(client)
+    wrapped.listClosedUnmergedPullRequests = () => guard(list)
+  }
+  if (client.pullRequestFacts) {
+    const facts = client.pullRequestFacts.bind(client)
+    wrapped.pullRequestFacts = (n) => guard(() => facts(n))
+  }
+  return wrapped
+}
+
+// ── PR facts (REST shape, read by both clients) ─────────────────────────
+
+const restPullFactsSchema = z.object({
+  number: z.number(),
+  state: z.string(),
+  merged_at: z.string().nullable(),
+  merge_commit_sha: z.string().nullable().optional(),
+  base: z.object({ ref: z.string() }),
+})
+const restPullFilesSchema = z.array(z.object({ filename: z.string(), previous_filename: z.string().optional() }))
+/** GitHub lists at most 3000 files per PR, 100 per page. */
+const PR_FILES_MAX_PAGES = 30
+
+function pullFactsOf(pr: z.infer<typeof restPullFactsSchema>, files: string[]): ForgePullRequestFacts {
+  return {
+    number: pr.number,
+    state: pr.state === "open" ? "open" : "closed",
+    merged: pr.merged_at !== null,
+    baseRefName: pr.base.ref,
+    mergeCommitOid: pr.merged_at !== null ? (pr.merge_commit_sha ?? null) : null,
+    files,
+  }
+}
+
+/** Page through `pulls/:n/files` with `page(p)` returning one page's raw JSON body. */
+async function collectPullFiles(page: (p: number) => Promise<unknown>, where: string): Promise<string[]> {
+  const files = new Set<string>()
+  for (let p = 1; p <= PR_FILES_MAX_PAGES; p++) {
+    const parsed = restPullFilesSchema.safeParse(await page(p))
+    if (!parsed.success) throw new ForgeUnavailableError(`${where} did not match the expected PR files shape`)
+    for (const f of parsed.data) {
+      files.add(f.filename)
+      if (f.previous_filename) files.add(f.previous_filename)
+    }
+    if (parsed.data.length < 100) break
+  }
+  return [...files]
 }
 
 // ── gh CLI implementation ───────────────────────────────────────────────
@@ -162,19 +283,40 @@ function isCommitNotFoundError(output: string): boolean {
   return /\(HTTP (404|422)\)/.test(output)
 }
 
-/** Runs `gh` in `repoRoot` so it auto-detects owner/repo from the `origin` remote there. */
+/**
+ * Runs `gh` against an explicit `owner/repo` slug resolved once from `origin`
+ * (never from `gh`'s own cwd-based host detection, which does not recognise an
+ * ssh-config alias host such as `github.com-work`). When origin is not a
+ * github.com remote the slug is unknown and `gh` falls back to its own
+ * detection in `repoRoot` (GitHub Enterprise and the like).
+ */
 export class GhCliForgeClient implements ForgeClient {
+  private slug: Promise<{ owner: string; repo: string } | null> | undefined
+
   constructor(private readonly repoRoot: string) {}
 
+  private resolveSlug(): Promise<{ owner: string; repo: string } | null> {
+    this.slug ??= readOriginSlug(this.repoRoot)
+    return this.slug
+  }
+
   private async runRaw(args: readonly string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const slug = await this.resolveSlug()
+    const full = slug ? this.qualify(args, slug) : args
     try {
-      return await execArgv("gh", args, this.repoRoot)
+      return await execArgv("gh", full, this.repoRoot, slug ? { env: { GH_HOST: "github.com" } } : {})
     } catch (err) {
       throw new ForgeUnavailableError(
-        `gh ${args.join(" ")} could not be run: ${err instanceof Error ? err.message : String(err)}`,
+        `gh ${full.join(" ")} could not be run: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       )
     }
+  }
+
+  private qualify(args: readonly string[], slug: { owner: string; repo: string }): readonly string[] {
+    const full = `${slug.owner}/${slug.repo}`
+    if (args[0] === "pr") return [...args, "-R", full]
+    return args.map((a) => a.replace("{owner}/{repo}", full))
   }
 
   private async run(args: readonly string[]): Promise<string> {
@@ -242,6 +384,41 @@ export class GhCliForgeClient implements ForgeClient {
     return this.parseOutput(stdout, ghPrListSchema, args).map(normalizeGhPrListItem)
   }
 
+  async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    // `--state closed` also lists merged PRs: keep the ones that never merged.
+    const args = ["pr", "list", "--state", "closed", "--limit", "1000", "--json", "number,state,headRefName,headRefOid,mergedAt"]
+    const stdout = await this.run(args)
+    return this.parseOutput(stdout, ghPrListSchema, args)
+      .map(normalizeGhPrListItem)
+      .filter((pr) => !pr.merged)
+  }
+
+  async pullRequestFacts(prNumber: number): Promise<ForgePullRequestFacts | null> {
+    const args = ["api", `repos/{owner}/{repo}/pulls/${prNumber}`]
+    const result = await this.runRaw(args)
+    if (result.exitCode !== 0) {
+      if (/\(HTTP 404\)/.test(result.stderr) || /\(HTTP 404\)/.test(result.stdout)) return null
+      throw new ForgeUnavailableError(`gh ${args.join(" ")} failed (exit ${result.exitCode}): ${result.stderr.trim() || result.stdout.trim()}`)
+    }
+    const pr = restPullFactsSchema.safeParse(this.parseJson(result.stdout, args))
+    if (!pr.success) throw new ForgeUnavailableError(`gh ${args.join(" ")} output did not match the expected shape`)
+    const files = await collectPullFiles(async (p) => {
+      const pageArgs = ["api", `repos/{owner}/{repo}/pulls/${prNumber}/files?per_page=100&page=${p}`]
+      return this.parseJson(await this.run(pageArgs), pageArgs)
+    }, `gh api pulls/${prNumber}/files`)
+    return pullFactsOf(pr.data, files)
+  }
+
+  private parseJson(stdout: string, args: readonly string[]): unknown {
+    try {
+      return JSON.parse(stdout)
+    } catch (err) {
+      throw new ForgeUnavailableError(
+        `gh ${args.join(" ")} produced non-JSON output: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {
     const check = await execArgv("git", ["-C", this.repoRoot, "cat-file", "-e", `${oid}^{commit}`], this.repoRoot)
     if (check.exitCode === 0) return
@@ -281,18 +458,30 @@ function normalizeRestPr(item: RestPullRequest): ForgePullRequestRef {
 }
 
 /**
- * Parse `owner/repo` out of a `git remote get-url origin` value (ssh or https
- * form). The ssh form also accepts the multi-account `~/.ssh/config` alias
- * convention, `git@github.com-<alias>:owner/repo` (a `Host github.com-work`
- * entry that picks a key but still points at github.com), which is what a
- * machine juggling two GitHub identities has as its origin.
+ * Parse `owner/repo` out of a `git remote get-url origin` value: scp form
+ * (`git@host:o/r`), `ssh://`, `git://` and `https://`, with or without a
+ * `.git` suffix, trailing slash, user info or port. `host` is `github.com` or
+ * the multi-account `~/.ssh/config` alias convention `github.com-<alias>`
+ * (a `Host github.com-work` entry that picks a key but still points at
+ * github.com), which is normalized to github.com by returning only the slug.
  */
 export function parseGithubOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
-  const ssh = remoteUrl.match(/^git@github\.com(?:-[\w.-]+)?:([^/]+)\/(.+?)(\.git)?$/)
-  if (ssh?.[1] && ssh[2]) return { owner: ssh[1], repo: ssh[2] }
-  const https = remoteUrl.match(/^https:\/\/github\.com\/([^/]+)\/(.+?)(\.git)?\/?$/)
-  if (https?.[1] && https[2]) return { owner: https[1], repo: https[2] }
-  return null
+  const host = String.raw`github\.com(?:-[\w.-]+)?`
+  const path = String.raw`([^/:]+)\/([^/]+?)(?:\.git)?\/*$`
+  const url = remoteUrl.trim()
+  const scp = url.match(new RegExp(String.raw`^(?:[^@/\s]+@)?${host}:${path}`))
+  const proto = url.match(new RegExp(String.raw`^(?:ssh|git|https):\/\/(?:[^@/]+@)?${host}(?::\d+)?\/${path}`))
+  const m = scp ?? proto
+  return m?.[1] && m[2] ? { owner: m[1], repo: m[2] } : null
+}
+
+async function readOriginSlug(repoRoot: string): Promise<{ owner: string; repo: string } | null> {
+  try {
+    const remote = await execArgv("git", ["-C", repoRoot, "remote", "get-url", "origin"], repoRoot)
+    return remote.exitCode === 0 ? parseGithubOwnerRepo(remote.stdout) : null
+  } catch {
+    return null
+  }
 }
 
 export class RestForgeClient implements ForgeClient {
@@ -369,7 +558,20 @@ export class RestForgeClient implements ForgeClient {
     return all
   }
 
-  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+  private closedInFlight: Promise<ForgePullRequestRef[]> | undefined
+
+  /** Every closed PR (merged or not), up to 10 pages of 100. The merged and
+   *  closed-unmerged lists are both cut from it and branch_gc asks for them
+   *  together, so concurrent callers share ONE in-flight read (dropped once it
+   *  settles: a later plan sees fresh data). */
+  private listClosedPullRequests(): Promise<ForgePullRequestRef[]> {
+    this.closedInFlight ??= this.fetchClosedPullRequests().finally(() => {
+      this.closedInFlight = undefined
+    })
+    return this.closedInFlight
+  }
+
+  private async fetchClosedPullRequests(): Promise<ForgePullRequestRef[]> {
     const all: ForgePullRequestRef[] = []
     for (let page = 1; page <= 10; page++) {
       const res = await this.get(`/repos/${this.owner}/${this.repo}/pulls?state=closed&per_page=100&page=${page}`)
@@ -380,7 +582,29 @@ export class RestForgeClient implements ForgeClient {
       all.push(...batch)
       if (batch.length < 100) break
     }
-    return all.filter((pr) => pr.merged)
+    return all
+  }
+
+  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    return (await this.listClosedPullRequests()).filter((pr) => pr.merged)
+  }
+
+  async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    return (await this.listClosedPullRequests()).filter((pr) => !pr.merged)
+  }
+
+  async pullRequestFacts(prNumber: number): Promise<ForgePullRequestFacts | null> {
+    const res = await this.get(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`)
+    if (res.status === 404) return null
+    if (!res.ok) throw new ForgeUnavailableError(`GitHub REST pulls/${prNumber} failed: ${res.status} ${res.statusText}`)
+    const pr = restPullFactsSchema.safeParse(await res.json())
+    if (!pr.success) throw new ForgeUnavailableError(`GitHub REST pulls/${prNumber} did not match the expected PR shape`)
+    const files = await collectPullFiles(async (p) => {
+      const page = await this.get(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}/files?per_page=100&page=${p}`)
+      if (!page.ok) throw new ForgeUnavailableError(`GitHub REST pulls/${prNumber}/files failed: ${page.status} ${page.statusText}`)
+      return page.json()
+    }, `GitHub REST pulls/${prNumber}/files`)
+    return pullFactsOf(pr.data, files)
   }
 
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {
@@ -420,9 +644,11 @@ export class RestForgeClient implements ForgeClient {
  * exactly what `ForgeUnavailableError` and the memo/`unknown(offline)` fallback
  * already handle.
  */
-async function ghIsUsable(repoRoot: string): Promise<boolean> {
+async function ghIsUsable(): Promise<boolean> {
   try {
-    const res = await execArgv("gh", ["auth", "token"], repoRoot)
+    // Neutral cwd + explicit host: `gh` must not try to detect a host from the
+    // repo's origin, which is an unrecognised ssh alias for multi-account setups.
+    const res = await execArgv("gh", ["auth", "token", "--hostname", "github.com"], tmpdir())
     return res.exitCode === 0 && res.stdout.trim() !== ""
   } catch {
     return false
@@ -436,16 +662,18 @@ async function ghIsUsable(repoRoot: string): Promise<boolean> {
  * knows how to fall back from that (memo, else `unknown(offline)`).
  */
 export async function createForgeClient(repoRoot: string): Promise<ForgeClient> {
-  if (await ghIsUsable(repoRoot)) return new GhCliForgeClient(repoRoot)
+  if (await ghIsUsable()) return new GhCliForgeClient(repoRoot)
 
   const token = process.env.GITHUB_TOKEN
   if (token) {
-    const remote = await execArgv("git", ["-C", repoRoot, "remote", "get-url", "origin"], repoRoot)
-    const parsed = remote.exitCode === 0 ? parseGithubOwnerRepo(remote.stdout.trim()) : null
+    const parsed = await readOriginSlug(repoRoot)
     if (parsed) return new RestForgeClient(parsed.owner, parsed.repo, repoRoot, token)
+    return new UnreachableForgeClient(
+      "no usable forge client: `gh auth token --hostname github.com` printed no token and origin is not a github.com remote (GITHUB_TOKEN REST needs one)",
+    )
   }
 
   return new UnreachableForgeClient(
-    "no usable forge client: `gh` is not installed/authenticated and GITHUB_TOKEN is not set (or origin isn't a GitHub remote)",
+    "no usable forge client: `gh auth token --hostname github.com` printed no token (gh missing or not logged in to github.com) and GITHUB_TOKEN is not set",
   )
 }

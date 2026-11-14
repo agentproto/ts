@@ -53,6 +53,7 @@ function holdSession(
   rawInput?: unknown,
   toolName = "Write",
   meta?: unknown,
+  extra: Record<string, unknown> = {},
 ): {
   session: AgentSessionLike
   responded: Array<{ requestId: string; resolution: unknown }>
@@ -71,6 +72,7 @@ function holdSession(
         options: OPTIONS,
         ...(rawInput !== undefined ? { rawInput } : {}),
         ...(meta !== undefined ? { _meta: meta } : {}),
+        ...extra,
       }
       await new Promise<void>(r => {
         release = r
@@ -195,6 +197,30 @@ describe("pending-permissions inbox — registry", () => {
     const pending = registry.listPendingPermissions()
     expect(pending).toHaveLength(1)
     expect(pending[0]).toMatchObject({ id: "perm-meta", sessionId: id, _meta: meta })
+
+    registry.shutdown()
+  })
+
+  it("carries an AIP-45 typed request (request + planApproval) through to the pending permission and the transcript", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const typed = {
+      request: "plan-approval",
+      planApproval: {
+        plan: "# Plan",
+        planRef: "plan.md",
+        targetModeId: "execute",
+        approveOptionId: "opt-once",
+        rejectOptionId: "opt-reject",
+      },
+    }
+    const fake = holdSession("acp-typed", "perm-typed", undefined, "submit_plan", undefined, typed)
+    const id = await spawnAndPark(registry, fake)
+
+    expect(registry.listPendingPermissions()[0]).toMatchObject({ id: "perm-typed", ...typed })
+    await registry.respondPermission("perm-typed", { decision: "approve" })
+    await new Promise(r => setTimeout(r, 20))
+    const prompt = readTranscript(transcriptDir, id).find(r => r.kind === "agent-prompt")
+    expect(prompt).toMatchObject({ toolCallId: "perm-typed", ...typed })
 
     registry.shutdown()
   })
@@ -529,6 +555,33 @@ describe("pending-permissions inbox — MCP tools", () => {
     registry.shutdown()
   })
 
+  it("permissions_list carries the AIP-45 request kind", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const question = { prompt: "Which?", choices: [], allowFreeText: true, freeTextOptionId: "opt-once" }
+    const fake = holdSession("acp-mcp-q", "perm-mcp-q", undefined, "ask_user", undefined, {
+      request: "question",
+      question,
+    })
+    await spawnAndPark(registry, fake)
+
+    const server = new McpServer({ name: "perms-mcp", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    const listed = parse(await client.callTool({ name: "permissions_list", arguments: {} }))
+    expect(listed.permissions[0]).toMatchObject({ id: "perm-mcp-q", request: "question" })
+    const full = parse(await client.callTool({ name: "permissions_list", arguments: { full: true } }))
+    const rows = (full.permissions ?? full.items) as Array<Record<string, unknown>>
+    expect(rows[0]).toMatchObject({ id: "perm-mcp-q", request: "question", question })
+
+    registry.shutdown()
+  })
+
   it("permissions_list: page-walk with limit=2 covers exactly the unpaginated scoped list", async () => {
     const bus = createSessionEventBus()
     const eventRing = createEventRing()
@@ -724,6 +777,24 @@ describe("pending-permissions inbox — REST routes", () => {
     registry.shutdown()
   })
 
+  it("GET /permissions carries an AIP-45 typed question unchanged", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const typed = {
+      request: "question",
+      question: { prompt: "Which?", choices: [{ optionId: "opt-once", label: "This" }], allowFreeText: false },
+    }
+    const fake = holdSession("acp-http-q", "perm-http-q", undefined, "ask_user", undefined, typed)
+    await spawnAndPark(registry, fake)
+
+    await withServer(registry, async base => {
+      const list = (await (await fetch(`${base}/permissions`)).json()) as {
+        permissions: Array<Record<string, unknown>>
+      }
+      expect(list.permissions[0]).toMatchObject({ id: "perm-http-q", ...typed })
+    })
+    registry.shutdown()
+  })
+
   it("POST /permissions/:id 404s on an unknown id and 400s on a bad decision", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     await withServer(registry, async base => {
@@ -779,3 +850,244 @@ function noopHeartbeat(): HeartbeatRunner {
     async fireNow() {},
   }
 }
+
+// ── Multi-field harness questions (AIP-45 `question.fields`) ──────────────
+//
+// The shape `@agentproto/acp`'s client emits for claude-agent-acp's
+// two-question AskUserQuestion form elicitation (see
+// packages/acp/src/__tests__/client-elicitation.test.ts).
+
+const QUESTION_FIELDS = [
+  {
+    id: "question_0",
+    input: "single",
+    header: "Database",
+    prompt: "Which database should we use?",
+    choices: [
+      { value: "Postgres", label: "Postgres" },
+      { value: "SQLite", label: "SQLite" },
+    ],
+    allowFreeText: true,
+  },
+  {
+    id: "question_1",
+    input: "multi",
+    header: "Features",
+    prompt: "Which features do you want?",
+    choices: [
+      { value: "Logs", label: "Logs" },
+      { value: "Traces", label: "Traces" },
+    ],
+    allowFreeText: true,
+  },
+]
+
+function questionSession(requestId: string): ReturnType<typeof holdSession> {
+  const fake = holdSession(`acp-${requestId}`, requestId)
+  const send = fake.session.send.bind(fake.session)
+  fake.session.send = async function* (message) {
+    let first = true
+    for await (const evt of send(message)) {
+      if (first && evt.kind === "agent-prompt") {
+        first = false
+        yield {
+          kind: "agent-prompt",
+          toolCallId: requestId,
+          text: "Please answer the following questions.",
+          options: [
+            { optionId: "submit", name: "Submit", kind: "allow_once" },
+            { optionId: "skip", name: "Skip", kind: "reject_once" },
+          ],
+          request: "question",
+          question: {
+            prompt: "Please answer the following questions.",
+            choices: [],
+            allowFreeText: false,
+            fields: QUESTION_FIELDS,
+          },
+        }
+        continue
+      }
+      yield evt
+    }
+  }
+  return fake
+}
+
+describe("pending-permissions inbox: multi-field questions", () => {
+  let tmp: string
+  let transcriptDir: string
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "pending-questions-"))
+    transcriptDir = join(tmp, "sessions")
+  })
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }))
+
+  it("exposes the question on awaitingQuestion and submits answers to the driver", async () => {
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(e => events.push(e))
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = questionSession("perm-q")
+    const id = await spawnAndPark(registry, fake)
+
+    expect(registry.get(id)?.awaitingQuestion).toEqual({
+      text: "Please answer the following questions.",
+      options: ["Postgres", "SQLite"],
+      source: "structured",
+      kind: "harness",
+      requestId: "perm-q",
+      fields: QUESTION_FIELDS,
+    })
+    expect(registry.listPendingPermissions()[0]?.question?.fields).toEqual(QUESTION_FIELDS)
+
+    const answers = { question_0: { selected: ["SQLite"] }, question_1: { selected: ["Logs"], text: "profiles" } }
+    const result = await registry.respondPermission("perm-q", { decision: "approve", answers })
+    expect(result).toMatchObject({ ok: true, decision: "approve" })
+    expect(fake.responded).toEqual([{ requestId: "perm-q", resolution: { answers } }])
+    expect(registry.get(id)?.awaitingQuestion).toBeUndefined()
+    expect(registry.listPendingPermissions()).toHaveLength(0)
+    expect(events.find(e => e.type === "session:awaiting-question-answered")).toMatchObject({
+      sessionId: id,
+      answer: "Database: SQLite; Features: Logs, profiles",
+      answers,
+      question: { requestId: "perm-q" },
+    })
+    registry.shutdown()
+  })
+
+  it("rejects answers that do not fit the fields and keeps the question parked", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = questionSession("perm-bad")
+    await spawnAndPark(registry, fake)
+    const result = await registry.respondPermission("perm-bad", {
+      decision: "approve",
+      answers: { question_0: { selected: ["Oracle"] } },
+    })
+    expect(result).toMatchObject({ ok: false, error: "invalid_answers" })
+    expect(fake.responded).toEqual([])
+    expect(registry.listPendingPermissions()).toHaveLength(1)
+    registry.shutdown()
+  })
+
+  it("refuses a bare submit on a fields question and keeps it parked; skip still declines", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = questionSession("perm-bare")
+    await spawnAndPark(registry, fake)
+    // What an outdated client sends when it only knows Submit / Skip.
+    for (const input of [
+      { decision: "approve" as const, optionId: "submit" },
+      { decision: "approve" as const },
+    ]) {
+      const result = await registry.respondPermission("perm-bare", input)
+      expect(result).toMatchObject({ ok: false, error: "invalid_answers" })
+    }
+    expect(fake.responded).toEqual([])
+    expect(registry.listPendingPermissions()).toHaveLength(1)
+
+    const skipped = await registry.respondPermission("perm-bare", { decision: "deny" })
+    expect(skipped).toMatchObject({ ok: true })
+    expect(fake.responded).toEqual([{ requestId: "perm-bare", resolution: { optionId: "skip" } }])
+    registry.shutdown()
+  })
+
+  it("POST /permissions/:id with a bare submit 400s invalid_answers", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = questionSession("perm-http-bare")
+    await spawnAndPark(registry, fake)
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/permissions/perm-http-bare`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approve", optionId: "submit" }),
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ error: "invalid_answers" })
+      expect(fake.responded).toEqual([])
+    } finally {
+      await http.stop()
+    }
+    registry.shutdown()
+  })
+
+  it("deny skips the question; answers on a plain permission are refused", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const q = questionSession("perm-skip")
+    await spawnAndPark(registry, q)
+    await registry.respondPermission("perm-skip", { decision: "deny" })
+    expect(q.responded).toEqual([{ requestId: "perm-skip", resolution: { optionId: "skip" } }])
+
+    const plain = holdSession("acp-plain", "perm-plain")
+    await spawnAndPark(registry, plain)
+    const result = await registry.respondPermission("perm-plain", {
+      decision: "approve",
+      answers: { x: { text: "y" } },
+    })
+    expect(result).toMatchObject({ ok: false, error: "unsupported" })
+    registry.shutdown()
+  })
+
+  it("permissions_respond takes answers without a decision", async () => {
+    const bus = createSessionEventBus()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = questionSession("perm-mcp-q")
+    await spawnAndPark(registry, fake)
+    const server = new McpServer({ name: "perms-mcp-q", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing: createEventRing() })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-q-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    const answers = { question_1: { selected: ["Traces"] } }
+    const res = await client.callTool({ name: "permissions_respond", arguments: { id: "perm-mcp-q", answers } })
+    expect(res.isError).toBeFalsy()
+    expect(fake.responded).toEqual([{ requestId: "perm-mcp-q", resolution: { answers } }])
+    registry.shutdown()
+  })
+
+  it("POST /permissions/:id takes { answers } and 400s on answers that do not fit", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = questionSession("perm-http-answers")
+    await spawnAndPark(registry, fake)
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const post = (body: unknown) =>
+        fetch(`http://127.0.0.1:${port}/permissions/perm-http-answers`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      expect((await post({ answers: { nope: {} } })).status).toBe(400)
+      const ok = await post({ answers: { question_0: { text: "MySQL" } } })
+      expect(ok.status).toBe(200)
+      expect(fake.responded).toEqual([
+        { requestId: "perm-http-answers", resolution: { answers: { question_0: { text: "MySQL" } } } },
+      ])
+    } finally {
+      await http.stop()
+    }
+    registry.shutdown()
+  })
+})

@@ -23,6 +23,7 @@
 import { promises as fs, readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, resolve } from "node:path"
+import type { CloudRemotePort } from "@agentproto/cloud-agent"
 
 export const WORKSPACES_CONFIG_VERSION = 1 as const
 
@@ -274,6 +275,15 @@ export function validateCredentialRef(raw: string): string {
     throw new Error("remote credentialRef must be a non-empty keychain slot name with no whitespace.")
   }
   return trimmed
+}
+
+/** The port a cloud spawn passes to `@agentproto/cloud-agent` so it can
+ *  validate a declared remote and default its branch without importing this
+ *  module. */
+export const workspaceRemotePort: CloudRemotePort = {
+  defaultBranch: DEFAULT_REMOTE_BRANCH,
+  validateUrl: validateRemoteUrl,
+  validateBranch: validateRemoteBranch,
 }
 
 /** Validate a candidate remote, returning a canonical copy. Throws on the

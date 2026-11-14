@@ -126,7 +126,7 @@ function fakeDaemonClient(script) {
   }
 }
 
-test('reviewViaDaemon: placement/baseRef/prNumber are set and reviewerSandbox is stripped from reviewConfig', async () => {
+test('reviewViaDaemon: placement/baseRef/prNumber are set and reviewerSandbox / reviewerPlacement are stripped from reviewConfig', async () => {
   const seenInputs = []
   const client = fakeDaemonClient({
     workflow_run_file: (args) => {
@@ -143,7 +143,8 @@ test('reviewViaDaemon: placement/baseRef/prNumber are set and reviewerSandbox is
   assert.equal(seenInputs[0].baseRef, 'main')
   assert.equal(seenInputs[0].prNumber, 0)
   assert.equal(seenInputs[0].reviewConfig.reviewerSandbox, undefined)
-  // .github/agentic-review.json really does set reviewerSandbox — assert the
+  assert.equal(seenInputs[0].reviewConfig.reviewerPlacement, undefined)
+  // .github/agentic-review.json really does set reviewerPlacement — assert the
   // strip actually removed a real key, not just "was already absent."
   assert.equal(seenInputs[0].reviewConfig.reviewerAdapter, 'opencode')
 })

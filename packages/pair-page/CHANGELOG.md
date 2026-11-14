@@ -1,5 +1,32 @@
 # @agentproto/pair-page
 
+## 0.0.18
+
+### Patch Changes
+
+- Updated dependencies [98ec20f]
+  - @agentproto/pairing@1.2.0
+
+## 0.0.17
+
+### Patch Changes
+
+- @agentproto/pairing@1.1.2
+
+## 0.0.16
+
+### Patch Changes
+
+- @agentproto/pairing@1.1.1
+
+## 0.0.15
+
+### Patch Changes
+
+- dfb1aef: Rename `@agentproto/pair-client` to the AIP-70 name `@agentproto/pairing`, with a `@agentproto/pair-client` shim that re-exports it unchanged. `@agentproto/pairing-host` keeps its name.
+- Updated dependencies [dfb1aef]
+  - @agentproto/pairing@1.1.0
+
 ## 0.0.14
 
 ### Patch Changes

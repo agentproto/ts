@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/operator",
-  "version": "0.1.5",
+  "version": "1.0.0",
   "description": "@agentproto/operator — AIP-9 OPERATOR.md reference implementation. A single canonical operator shell — pluggable profile, skills, tools, memory, governance — that any agent runtime can implement and any conforming workflow can dispatch to.",
   "keywords": [
     "agentproto",
@@ -54,7 +54,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/agent": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
+    "@agentproto/manifest": "workspace:*",
+    "@agentproto/identity": "workspace:*",
+    "@agentproto/persona": "workspace:*",
+    "@agentproto/policy": "workspace:*",
+    "@agentproto/role": "workspace:*",
+    "@agentproto/skill": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.7"
   },

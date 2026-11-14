@@ -17,6 +17,8 @@ export interface FakeChromeOptions {
   consent?: "allow" | "hold" | "reject" | "silent"
   /** After Target.activateTarget, focus jumps back to the user's window (a user clicking elsewhere). */
   stealFocus?: boolean
+  /** `window.open` from an agent tab opens a tab in THAT tab's window (what Chrome does), with `openerId`. Default off: the call answers false. */
+  windowOpen?: boolean
   /** `Runtime.evaluate("document.documentElement.outerHTML")` answers with this. Default a minimal page. */
   domHtml?: string
   /** `Runtime.evaluate("document.title")` answers with this. Default "". */
@@ -51,7 +53,7 @@ export interface FakeChrome {
   acknowledgments: Array<{ sessionId?: string; params: Record<string, unknown> }>
   userTargets: readonly string[]
   /** Targets alive now, with their window. */
-  targets: Map<string, { windowId: number; url: string; created: boolean }>
+  targets: Map<string, { windowId: number; url: string; created: boolean; openerId?: string }>
   /** Files passed to every DOM.setFileInputFiles, per selector (the fake records instead of touching a real input). */
   filesAttached: Map<string, string[]>
   /** Key presses (Input.dispatchKeyEvent) seen, in order. */
@@ -60,7 +62,7 @@ export interface FakeChrome {
   /** Emit a Page.screencastFrame event into an open flat session (test hook). */
   emitScreencastFrame(
     cdpSessionId: string,
-    frame: { data: string; sessionId?: string; deviceWidth?: number; deviceHeight?: number },
+    frame: { data: string; sessionId?: string; timestamp?: number; deviceWidth?: number; deviceHeight?: number },
   ): void
   /** Whether Page.startScreencast (without a following stop) was seen for this CDP session. */
   screencastActive(sessionId: string): boolean
@@ -127,8 +129,14 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
               // Real Chrome puts a frame identifier in params.sessionId; the
               // ack echoes it back (this is NOT the flat session's id).
               sessionId: frame.sessionId ?? "frame-1",
-              ...(frame.deviceWidth !== undefined || frame.deviceHeight !== undefined
-                ? { metadata: { deviceWidth: frame.deviceWidth ?? 0, deviceHeight: frame.deviceHeight ?? 0 } }
+              ...(frame.deviceWidth !== undefined || frame.deviceHeight !== undefined || frame.timestamp !== undefined
+                ? {
+                    metadata: {
+                      deviceWidth: frame.deviceWidth ?? 0,
+                      deviceHeight: frame.deviceHeight ?? 0,
+                      ...(frame.timestamp !== undefined ? { timestamp: frame.timestamp } : {}),
+                    },
+                  }
                 : {}),
             },
           })
@@ -198,6 +206,15 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
           fake.targets.set(id, { windowId, url: String(msg.params?.url ?? ""), created: true })
           return reply(msg.id, undefined, { targetId: id })
         }
+        case "Target.getTargets":
+          return reply(msg.id, undefined, {
+            targetInfos: [...fake.targets].map(([id, t]) => ({
+              targetId: id,
+              type: "page",
+              url: t.url,
+              ...(t.openerId ? { openerId: t.openerId } : {}),
+            })),
+          })
         case "Target.activateTarget": {
           const t = targetId ? fake.targets.get(targetId) : undefined
           if (!t) return fail(msg.id, "No target with given id found")
@@ -212,6 +229,12 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
         case "Target.attachToTarget":
           if (!targetId || !fake.targets.has(targetId)) return fail(msg.id, "No target with given id found")
           return reply(msg.id, undefined, { sessionId: `session-${targetId}` })
+        case "Target.detachFromTarget": {
+          const detached = String(msg.params?.sessionId ?? "")
+          reply(msg.id, undefined, {})
+          // Chrome tells the browser connection about EVERY detach, a helper session's included
+          return emit("Target.detachedFromTarget", { sessionId: detached, targetId: detached.replace(/^session-/, "") })
+        }
         case "Target.closeTarget":
           if (!targetId || !fake.targets.delete(targetId)) return fail(msg.id, "No target with given id found")
           reply(msg.id, undefined, { success: true })
@@ -226,6 +249,17 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
         }
         case "Runtime.evaluate": {
           const expression = String(msg.params?.expression ?? "")
+          if (expression.includes("window.open(")) {
+            const opener = msg.sessionId?.replace(/^session-/, "")
+            const from = opener ? fake.targets.get(opener) : undefined
+            if (fake.options.windowOpen && from) {
+              const id = `agent-target-${++nextTarget}`
+              created.add(id)
+              fake.targets.set(id, { windowId: from.windowId, url: "about:blank", created: true, openerId: opener! })
+              return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: true } })
+            }
+            return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: false } })
+          }
           if (expression === "document.documentElement.outerHTML") {
             return reply(msg.id, msg.sessionId, { result: { type: "string", value: fake.options.domHtml ?? "<html><body>hi</body></html>" } })
           }

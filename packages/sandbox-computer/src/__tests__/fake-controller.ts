@@ -5,6 +5,7 @@
  * knobs per test for failures and exec-script interception.
  */
 
+import { createHash } from "node:crypto"
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
 import {
   attachRequestSchema,
@@ -13,12 +14,15 @@ import {
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
+  egressPoolResponseSchema,
   errorResponseSchema,
   execRequestSchema,
   execResponseSchema,
   resumeResponseSchema,
   sessionsResponseSchema,
   suspendResponseSchema,
+  usageResponseSchema,
+  type UsageWindow,
 } from "@agentproto/computer-api"
 
 /** Contract guard: the fake must emit controller-shaped bodies (the
@@ -39,9 +43,34 @@ export interface FakeControllerOptions {
   createStatus?: number
   createError?: string
   execStatus?: number
+  /** Model the edge cutting a long single request: return this status for an
+   *  exec whose `timeoutSec` exceeds `execTimeoutOverSec` (default 100). */
+  execTimeoutStatus?: number
+  execTimeoutOverSec?: number
+  /** Outcome of a detached launch's embedded command. `"pending"` models a
+   *  command that never writes its exit file, for the timeout tests. */
+  detachedOutcome?: (
+    command: string,
+  ) => { exitCode: number; stdout: string; stderr: string } | "pending" | undefined
+  /** Model a launch whose backgrounded runner could not start (missing
+   *  setsid/nohup/bash, bad cwd, unreadable script): no exit file is written,
+   *  so the launch's liveness probe finds the child already gone and exits 1
+   *  with this stderr — exactly what the real launch script produces. */
+  detachedLaunchFails?: string
   /** Fail GET /v1/computers (the list) with this status/body. */
   listStatus?: number
   listError?: string
+  /** Extra W0b fields merged into every `GET /v1/computers` entry. */
+  listExtra?: Record<string, unknown>
+  /** Fail GET /v1/usage with this status/body. */
+  usageStatus?: number
+  usageError?: string
+  /** Windows served by GET /v1/usage (already contract-shaped). */
+  usageWindows?: UsageWindow[]
+  /** `host.unallocatedEur` served by GET /v1/usage; defaults to null. */
+  usageUnallocatedEur?: number | null
+  /** Extra fields merged into `totals` on GET /v1/usage. */
+  usageTotalsExtra?: Record<string, unknown>
   /** Fail every GET /v1/computers/:id with this status/body (capacity tests). */
   statusStatus?: number
   statusError?: string
@@ -62,8 +91,20 @@ export interface FakeControllerOptions {
   detachStatus?: number
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
+  /** Delay an exec response by this many ms (models a controller/agent wedged
+   *  while a probe is outstanding). Return 0/undefined for no delay. */
+  execDelayMs?: (argv: string[], body: { timeoutSec: number }) => number | undefined
   /** `egressIp` reported on create and GET. Omitted from responses when undefined. */
   egressIp?: { id: string; publicIp: string } | null
+  /** Slots served by `GET /v1/egress-pool`. A create that names a slot id
+   *  reports that slot as its `egressIp`. Unset: the route answers 400
+   *  `egress-pool-disabled`. */
+  egressPool?: Array<{ id: string; sourceIp: string; publicIp: string; computers: number; hostId?: string }>
+  /** Slot ids whose explicit create is refused with `409 egress-slot-dedicated`. */
+  dedicatedSlots?: string[]
+  /** Slot id to the `reason` of the `503 fleet-capacity` that create gets: a
+   *  fleet pinning the host that owns the slot and finding it full. */
+  capacityRefusedSlots?: Record<string, string>
   /** `egressIp` reported by GET for a computer created by resume (models a
    *  resumed row that carries a different address than the suspended one). */
   egressIpAfterResume?: { id: string; publicIp: string } | null
@@ -71,6 +112,9 @@ export interface FakeControllerOptions {
   createErrorExtra?: Record<string, unknown>
   /** `Retry-After` header sent with a create error. */
   createRetryAfter?: string
+  /** With `createStatus`: refuse only this many creates, then serve them
+   *  normally (a fleet that wakes a shelved host). Unset refuses every one. */
+  createRefusals?: number
   /** Delay the create response by this many ms (deadline/cancel tests). A
    *  request aborted during the delay creates nothing. */
   createDelayMs?: number
@@ -86,15 +130,66 @@ export interface FakeControllerOptions {
   }
 }
 
+/** Shorter values are only rejected on an exact match, like the controller. */
+const MIN_SECRET_LEN = 6
+
+/** Hand-kept mirror of the controller's per-computer secret registry check
+ *  (`SecretRegistry.rejectsArgv`, projects/computer/apps/controller/src/policy/secrets.ts;
+ *  re-check it when that rule changes): an argv element is refused when it IS a
+ *  registered value, contains it (or its base64 / hex / sha256 form) once the
+ *  value is at least MIN_SECRET_LEN long, or is a `key=value` whose value part
+ *  matches. Returns the offending argv indexes. */
+export function rejectsArgv(secrets: readonly string[], argv: readonly string[]): number[] {
+  const bad: number[] = []
+  argv.forEach((arg, i) => {
+    for (const value of secrets) {
+      if (value.length === 0) continue
+      if (arg === value) {
+        bad.push(i)
+        return
+      }
+      const b64 = Buffer.from(value, "utf8").toString("base64")
+      const forms = [
+        value,
+        b64,
+        b64.replace(/=+$/, ""),
+        b64.replace(/\+/g, "-").replace(/\//g, "_"),
+        Buffer.from(value, "utf8").toString("hex"),
+        createHash("sha256").update(value).digest("hex"),
+      ]
+      const valuePart = arg.split("=").slice(1).join("=")
+      for (const form of forms) {
+        if (value.length >= MIN_SECRET_LEN && (arg.includes(form) || valuePart.includes(form))) {
+          bad.push(i)
+          return
+        }
+      }
+      if (valuePart === value) {
+        bad.push(i)
+        return
+      }
+    }
+  })
+  return bad
+}
+
 /** Everything recorded, for assertions (no secrets captured in plain logs). */
 export class FakeController {
   readonly server: Server
   readonly requestHeaders: Array<Record<string, string | string[] | undefined>> = []
   readonly createBodies: Array<Record<string, unknown>> = []
+  /** `Idempotency-Key` of every create attempt, refused ones included. */
+  readonly createIdempotencyKeys: Array<string | undefined> = []
+  /** Successful create answers by `Idempotency-Key`, replayed for the same
+   *  key like the real controller and fleet do. */
+  private readonly createdByIdempotencyKey = new Map<string, unknown>()
+  private createRefusalsServed = 0
   readonly execs: Array<{ id: string; argv: string[]; timeoutSec: number }> = []
   readonly suspended: string[] = []
   readonly resumed: string[] = []
   readonly removed: string[] = []
+  /** Query parameters of every GET /v1/usage call. */
+  readonly usageRequests: Array<{ from?: string; to?: string; endUser?: string }> = []
   /** Every DELETE, with the force flag the caller sent. */
   readonly deletes: Array<{ id: string; force: boolean }> = []
   /** Bodies of the attach/detach calls, for holder assertions. `holder` is
@@ -113,12 +208,17 @@ export class FakeController {
     headers: Record<string, string | string[] | undefined>
   }> = []
   readonly states = new Map<string, string>()
+  /** Create-time env values per computer: registered as secrets, and an exec
+   *  whose argv carries one is refused with 400, like the real controller. */
+  readonly registeredSecrets = new Map<string, string[]>()
   /** Controller-held session refcount and per-computer cap. */
   readonly sessions = new Map<string, number>()
   readonly maxSessions = new Map<string, number>()
   /** Holders currently occupying a session slot, per computer. */
   readonly sessionHolders = new Map<string, Set<string>>()
   readonly fileSystem = new Map<string, string>()
+  /** Every `egressIp` a create named, refused or served, in order. */
+  readonly createEgressAttempts: string[] = []
   /** Per-computer egress overrides; absent means `options.egressIp`. */
   readonly egressIpByComputer = new Map<string, { id: string; publicIp: string } | null>()
   // Process-wide so ids never repeat across instances: the provider keeps
@@ -217,14 +317,38 @@ export class FakeController {
     }
 
     if (url.pathname === "/v1/computers" && req.method === "POST") {
-      if (this.options.createStatus) {
+      const rawKey = req.headers["idempotency-key"]
+      const idempotencyKey = typeof rawKey === "string" ? rawKey : undefined
+      this.createIdempotencyKeys.push(idempotencyKey)
+      if (idempotencyKey !== undefined && this.createdByIdempotencyKey.has(idempotencyKey)) {
+        return reply(res, 201, this.createdByIdempotencyKey.get(idempotencyKey))
+      }
+      const refusalStatus = this.options.createStatus
+      if (
+        refusalStatus !== undefined &&
+        (this.options.createRefusals === undefined || this.createRefusalsServed < this.options.createRefusals)
+      ) {
+        this.createRefusalsServed++
         const body = { error: this.options.createError ?? "failed", ...this.options.createErrorExtra }
         assertContract(errorResponseSchema, body)
         if (this.options.createRetryAfter !== undefined) res.setHeader("Retry-After", this.options.createRetryAfter)
-        return reply(res, this.options.createStatus, body)
+        return reply(res, refusalStatus, body)
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
       assertContract(createComputerRequestSchema, parsed)
+      if (typeof parsed.egressIp === "string") this.createEgressAttempts.push(parsed.egressIp)
+      const capacityReason =
+        typeof parsed.egressIp === "string" ? this.options.capacityRefusedSlots?.[parsed.egressIp] : undefined
+      if (capacityReason !== undefined) {
+        const refusal = { error: "fleet-capacity", reason: capacityReason }
+        assertContract(errorResponseSchema, refusal)
+        return reply(res, 503, refusal)
+      }
+      if (typeof parsed.egressIp === "string" && this.options.dedicatedSlots?.includes(parsed.egressIp)) {
+        const refusal = { error: "egress-slot-dedicated" }
+        assertContract(errorResponseSchema, refusal)
+        return reply(res, 409, refusal)
+      }
       if (this.options.createDelayMs !== undefined) {
         await new Promise((resolve) => setTimeout(resolve, this.options.createDelayMs))
         // The client aborted while waiting: do not provision a box nobody
@@ -236,15 +360,19 @@ export class FakeController {
       const state = this.nextStateSnapshot ?? this.lastCreateState
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
+      this.registeredSecrets.set(id, Object.values((parsed.env ?? {}) as Record<string, string>))
       this.maxSessions.set(id, typeof parsed.maxSessions === "number" ? parsed.maxSessions : 1)
+      const namedSlot = this.options.egressPool?.find(slot => slot.id === parsed.egressIp)
+      const reportedEgressIp = namedSlot ? { id: namedSlot.id, publicIp: namedSlot.publicIp } : this.options.egressIp
       const responseBody = {
         id,
         template: parsed.template,
         state,
         ports: this.options.publishedPorts ?? [],
-        ...(this.options.egressIp !== undefined ? { egressIp: this.options.egressIp } : {}),
+        ...(reportedEgressIp !== undefined ? { egressIp: reportedEgressIp } : {}),
       }
       assertContract(createComputerResponseSchema, responseBody)
+      if (idempotencyKey !== undefined) this.createdByIdempotencyKey.set(idempotencyKey, responseBody)
       this.options.onCreate?.(id)
       return reply(res, 201, responseBody)
     }
@@ -260,10 +388,57 @@ export class FakeController {
         name,
         state: this.states.get(name) ?? "unknown",
         sessions: this.sessions.get(name) ?? 0,
+        ...this.options.listExtra,
       }))
       const responseBody = { computers }
       assertContract(computerListResponseSchema, responseBody)
       return reply(res, 200, responseBody)
+    }
+
+    if (url.pathname === "/v1/usage" && req.method === "GET") {
+      if (this.options.usageStatus) {
+        const body = { error: this.options.usageError ?? "failed" }
+        assertContract(errorResponseSchema, body)
+        return reply(res, this.options.usageStatus, body)
+      }
+      const from = url.searchParams.get("from") ?? undefined
+      const to = url.searchParams.get("to") ?? undefined
+      const endUser = url.searchParams.get("endUser") ?? undefined
+      this.usageRequests.push({ from, to, endUser })
+      const windows = (this.options.usageWindows ?? []).filter(
+        (window) => endUser === undefined || window.endUser === endUser,
+      )
+      const usageTotals = windows.reduce(
+        (acc, window) => ({
+          activeSec: acc.activeSec + window.activeSec,
+          vcpuSec: acc.vcpuSec + window.vcpuSec,
+          gibSec: acc.gibSec + window.gibSec,
+          costEur:
+            acc.costEur === null || window.costEur === null
+              ? null
+              : acc.costEur + window.costEur,
+        }),
+        { activeSec: 0, vcpuSec: 0, gibSec: 0, costEur: 0 as number | null },
+      )
+      const responseBody = {
+        from: from ?? "",
+        to: to ?? "",
+        windows,
+        totals: { ...usageTotals, ...this.options.usageTotalsExtra },
+        host: { unallocatedEur: this.options.usageUnallocatedEur ?? null },
+      }
+      assertContract(usageResponseSchema, responseBody)
+      return reply(res, 200, responseBody)
+    }
+
+    if (url.pathname === "/v1/egress-pool" && req.method === "GET") {
+      if (this.options.egressPool === undefined) {
+        const refusal = { error: "egress-pool-disabled" }
+        assertContract(errorResponseSchema, refusal)
+        return reply(res, 400, refusal)
+      }
+      assertContract(egressPoolResponseSchema, this.options.egressPool)
+      return reply(res, 200, this.options.egressPool)
     }
 
     if (url.pathname === "/v1/capacity" && req.method === "GET") {
@@ -367,7 +542,18 @@ export class FakeController {
       const parsed = JSON.parse(body) as { argv: string[]; timeoutSec: number }
       assertContract(execRequestSchema, parsed)
       this.execs.push({ id, argv: parsed.argv, timeoutSec: parsed.timeoutSec })
+      if (rejectsArgv(this.registeredSecrets.get(id) ?? [], parsed.argv).length > 0) {
+        return reply(res, 400, { error: "argv contains a registered secret value" })
+      }
       if (this.states.get(id) !== "running") return reply(res, 409, { error: "sandbox not running", state: this.states.get(id) })
+      if (
+        this.options.execTimeoutStatus !== undefined &&
+        parsed.timeoutSec > (this.options.execTimeoutOverSec ?? 100)
+      ) {
+        return reply(res, this.options.execTimeoutStatus, { error: "exec timed out" })
+      }
+      const delayMs = this.options.execDelayMs?.(parsed.argv, parsed) ?? 0
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs))
       const out = this.runExec(id, parsed.argv, parsed)
       assertContract(execResponseSchema, out)
       return reply(res, 200, out)
@@ -398,8 +584,55 @@ export class FakeController {
     return reply(res, 404, { error: "not found" })
   }
 
+  /** Simulate the detached transport's launch: the runner script was written
+   *  via writeFile, so read the command back out of it and materialise the
+   *  stdout/stderr/exit files the poll loop reads. */
+  private runDetachedLaunch(
+    id: string,
+    argv: string[],
+    parsed: { timeoutSec: number },
+  ): { exitCode: number; stdout: string; stderr: string } | undefined {
+    const script = argv[2] ?? ""
+    if (!script.includes("setsid nohup")) return undefined
+    const scriptPath = /setsid\s+nohup\s+bash\s+'([^']*)'/.exec(script)?.[1]
+    if (scriptPath === undefined) return undefined
+    const runner = this.fileSystem.get(scriptPath) ?? ""
+    const command = /# __AP_COMMAND_START__\n([\s\S]*?)\n# __AP_COMMAND_END__/.exec(runner)?.[1] ?? ""
+    const stdoutPath = /<\/dev\/null > '([^']*)'/.exec(script)?.[1]
+    const stderrPath = /2> '([^']*)'/.exec(script)?.[1]
+    const pidPath = /echo \$! > '([^']*)'/.exec(script)?.[1]
+    const exitPath = /mv '[^']*' '([^']*)'/.exec(runner)?.[1]
+
+    // Record the resolved command like a direct exec so existing tests that
+    // look for the script text (npm i -g, a setup command) still see it.
+    this.execs.push({ id, argv: ["/bin/bash", "-lc", command], timeoutSec: parsed.timeoutSec })
+
+    // The backgrounded runner never starts: model what the launch's liveness
+    // probe observes — no exit file, child gone, stderr on the wire, exit 1.
+    if (this.options.detachedLaunchFails !== undefined) {
+      return { exitCode: 1, stdout: "", stderr: this.options.detachedLaunchFails }
+    }
+
+    const outcome =
+      this.options.execOutcome?.(["/bin/bash", "-lc", command], parsed) ??
+      this.options.detachedOutcome?.(command) ?? {
+        exitCode: 0,
+        stdout: `ran-detached:${command.length}`,
+        stderr: "",
+      }
+
+    if (pidPath !== undefined) this.fileSystem.set(pidPath, "4242\n")
+    if (outcome === "pending") return { exitCode: 0, stdout: "started", stderr: "" }
+    if (stdoutPath !== undefined) this.fileSystem.set(stdoutPath, outcome.stdout)
+    if (stderrPath !== undefined) this.fileSystem.set(stderrPath, outcome.stderr)
+    if (exitPath !== undefined) this.fileSystem.set(exitPath, String(outcome.exitCode))
+    return { exitCode: 0, stdout: "started", stderr: "" }
+  }
+
   /** Tiny in-box shell simulation so health probes / file IO flows work. */
   private runExec(id: string, argv: string[], parsed: { timeoutSec: number }): { exitCode: number; stdout: string; stderr: string } {
+    const detached = this.runDetachedLaunch(id, argv, parsed)
+    if (detached !== undefined) return detached
     const custom = this.options.execOutcome?.(argv, parsed)
     if (custom) return custom
     const script = argv[2] ?? ""
@@ -470,6 +703,15 @@ export class FakeController {
         ? { exitCode: 0, stdout: `agentproto ${this.bakedCliVersion} (d7c36672)\n`, stderr: "" }
         : { exitCode: 127, stdout: "", stderr: "agentproto: command not found" }
     }
+    if (script.includes("# agentproto-baked-packages")) {
+      return this.bakedPackagesFail
+        ? { exitCode: 4, stdout: "", stderr: "" }
+        : {
+            exitCode: 0,
+            stdout: Object.entries(this.bakedPackages).map(([name, version]) => `${name}\t${version}\n`).join(""),
+            stderr: "",
+          }
+    }
     if (script.includes("npm i -g")) return { exitCode: 0, stdout: "", stderr: "" }
     // plain scripts (setupCommands, callers) echo their script hash — tests
     // shouldn't depend on real output
@@ -479,6 +721,10 @@ export class FakeController {
   /** Models an image with the agentproto CLI already installed. */
   cliBaked = false
   bakedCliVersion = "1.26.0"
+  /** npm packages baked next to the CLI (name -> version), as the in-box probe reports them. */
+  bakedPackages: Record<string, string> = {}
+  /** Make the in-box package probe fail (tree not found). */
+  bakedPackagesFail = false
   daemonDown = false
   /** The --allow-origin recorded by the last serve command (the marker file). */
   daemonOrigin: string | undefined = undefined

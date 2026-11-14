@@ -9,6 +9,7 @@
  */
 
 import { EventEmitter } from "node:events"
+import type { AgentPromptAnswers, AgentPromptField } from "@agentproto/acp"
 
 import type { ActivityRecord } from "./activity-projection.js"
 import type { SessionConfig } from "./session-config.js"
@@ -46,6 +47,8 @@ export type SessionEventType =
   | "session:message"
   | "session:prompt"
   | "agentproto:session-completed"
+  | "agentproto:context-compacted"
+  | "agentproto:clerk-due"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -71,6 +74,7 @@ export type SessionEventType =
   | "approval:decided"
   | "approval:consumed"
   | "approval:expired"
+  | "reach:undelivered"
 
 /**
  * Fixed severity vocabulary for a judge-gate finding (WP-D). Deliberately
@@ -126,6 +130,27 @@ export interface SessionAwaitingQuestion {
    * classification logic. Absent when the daemon has no recommendation —
    * clients must render nothing rather than guess one. */
   recommended?: string
+  /**
+   * WHAT kind of wait this is, set by the daemon writer that raised it:
+   * `permission` = a driver-reported tool or action permission request;
+   * `context` = the daemon's own context-continuity question; `harness` = a
+   * question the harness or the model itself asked (a driver-reported
+   * prompt that is not a permission, or the heuristic guess from the
+   * transcript tail). Absent = unclassified: a descriptor persisted before
+   * this field existed, or an operator override (`session_flag_status`).
+   * Nothing reads it yet; clients must treat absent as "unknown". */
+  kind?: "permission" | "context" | "harness"
+  /**
+   * Pending-permission id of the harness question behind this wait, when it
+   * is a multi-field question (AIP-45 `question.fields`) parked in the
+   * permission inbox. Answer it with `permissions_respond({ id: requestId,
+   * answers })`. Absent for heuristic and context questions. */
+  requestId?: string
+  /**
+   * The question's fields (AIP-45 `AgentPromptField`), source of truth when
+   * present. `options` then carries the labels of the first `single` field,
+   * for clients that only know `options`. */
+  fields?: AgentPromptField[]
 }
 
 export interface SessionTurnEndEvent {
@@ -156,6 +181,16 @@ export interface SessionTurnEndEvent {
    * a normal, productive turn.
    */
   empty?: boolean
+  /**
+   * True when the agent explicitly acked its wake as a no-op
+   * (`inbox_ack({ noop: true })`) and the turn was otherwise silent: no
+   * assistant text, no tool call beyond those noop acks, completed normally,
+   * not interrupted or awaiting input, no acked `blocker`/`question`, and not
+   * started by a human prompt. The host decides this from recorded ack
+   * metadata, never from the final message text. Absent (not `false`) on
+   * every other turn.
+   */
+  silent?: boolean
   /**
    * The in-band `error` stream event's message text observed during this
    * turn, when one occurred (see `SessionDescriptor.lastTurnErrorMessage`'s
@@ -261,8 +296,13 @@ export interface SessionPermissionRequestEvent {
 export interface SessionAwaitingQuestionAnsweredEvent {
   type: "session:awaiting-question-answered"
   sessionId: string
-  /** The matched option string, verbatim from `question.options`. */
+  /** The matched option string, verbatim from `question.options`. For a
+   *  multi-field question answered through the permission inbox, a readable
+   *  summary of `answers`. */
   answer: string
+  /** The structured answers, set when a multi-field question
+   *  (`question.fields`) was answered with them. */
+  answers?: AgentPromptAnswers
   /** The question that was answered. */
   question: SessionAwaitingQuestion
   label?: string
@@ -339,6 +379,44 @@ export interface SessionCompletedEvent {
   basis: "outcome" | "policy"
   endedAt: string
   label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a session's usage frames show its harness compacted the
+ * context on its own (Claude Code, Codex), a drop the daemon did not cause:
+ * not a `/compact` turn, not the floor rescue. A passive observation from
+ * the usage-drop detector (`native-compaction.ts`): no harness event exists
+ * for it, and nothing acts on it. One drop, one event: the next frames
+ * compare against the new, lower reading.
+ */
+export interface SessionContextCompactedEvent {
+  type: "agentproto:context-compacted"
+  sessionId: string
+  /** `compact:<ISO ts of the detection>`: one drop, one occurrence (AIP-71). */
+  occurrenceId: string
+  usedBefore: number
+  usedAfter: number
+  contextSize?: number
+  /** A checkpoint was written for the session within `NATIVE_COMPACTION_GUARD_WINDOW_MS` (120000) before the drop. */
+  guarded: boolean
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted by the clerk turn-end controller when a debounce timer fires for a
+ * session whose workspace is owned by `defaults.reactions.clerk.workspaces`.
+ * The controller has already applied its ignore rules and debounce; this
+ * event hands that one firing to the durable reaction path. It is not emitted
+ * for legacy-owned workspace slugs and user routines cannot subscribe to it.
+ * The occurrence id is `due:<ISO timestamp>`: one timer per session makes it
+ * unique and the source event is never replayed.
+ */
+export interface SessionClerkDueEvent {
+  type: "agentproto:clerk-due"
+  sessionId: string
+  occurrenceId: string
   ts: string
 }
 
@@ -682,10 +760,18 @@ export interface SessionMessageEvent {
   sessionId: string
   messageId: string
   fromSessionId?: string
-  relation: "child" | "parent" | "sibling" | "peer" | "human" | "system"
+  relation:
+    | "child"
+    | "parent"
+    | "sibling"
+    | "granted"
+    | "human"
+    | "system"
+    /** @deprecated legacy value; the daemon emits `granted` for a stored `peer`. */
+    | "peer"
   kind: "report" | "question" | "blocker" | "done" | "notice"
   urgency: "fyi" | "next-turn" | "steer" | "interrupt"
-  delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "inbox"; at: string; turnSeq?: number }
+  delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "socket" | "inbox"; at: string; turnSeq?: number }
   ts: string
 }
 
@@ -1054,8 +1140,9 @@ export interface SessionTurnRetryEvent {
   type: "session:turn-retry"
   sessionId: string
   phase: "scheduled" | "rotated" | "sent" | "cancelled" | "exhausted" | "skipped" | "migrated" | "migrate-failed"
-  /** The failure class (`rate-limit`, `upstream-5xx`, `no-output-stall`, or
-   *  a never-retried class such as `auth` / `usage-limit` / `other`). */
+  /** The failure class: `rate-limit`, `upstream-5xx`, `no-output-stall`,
+   *  `usage-limit` (opt-in; diverted to rotate / fallback / migrate rather
+   *  than retried, and otherwise skipped), or `auth` / `other` (skipped). */
   errorClass: string
   /** 1-based number of this retry (`scheduled`/`sent`), or attempts already
    *  spent (`exhausted`). */
@@ -1171,7 +1258,8 @@ export type ContextRescueOutcome = "compacted" | "continued" | "hard-stopped"
  * `from` is the replaced session, `to` its successor; `adopted` lists the
  * children whose `parentSessionId` was moved to `to` (their drive rights and
  * their `message_parent` routing follow that pointer). `reason` names what
- * triggered the handover (`continue-fresh`, `succeeds`, `session_adopt`),
+ * triggered the handover (`continue-fresh`, `succeeds`, `session_adopt`,
+ * `restart`),
  * `actor` who asked for it (the operator, or the session id that declared
  * the succession). `skipped` lists the children that were NOT moved
  * (not children of the replaced row, not re-parentable, or dead rows named
@@ -1242,6 +1330,9 @@ export interface ApprovalDecidedEvent {
   approvalId: string
   decision: "approved" | "denied"
   channel: "web_click" | "ui_card" | "telegram"
+  /** The decider's verified Telegram user id, for a decision made through
+   *  an approval link. */
+  telegramUserId?: string
   taskId?: string
   ts: string
 }
@@ -1265,6 +1356,23 @@ export interface ApprovalExpiredEvent {
   ts: string
 }
 
+/**
+ * Emitted by the REACH router (`reach/router.ts`) when no adapter of the
+ * owner's route acknowledged an `ask` (neither `delivered`, `deferred` nor
+ * `deduped`): on the `approval:requested` pass (`trigger: "route"`) or when
+ * the watchdog's floor failed too (`trigger: "watchdog"`). The REACH floor
+ * rule: an ask is never dropped silently. `attempts` carries each adapter's
+ * status and reason, never a URL or a secret.
+ */
+export interface ReachUndeliveredEvent {
+  type: "reach:undelivered"
+  approvalId: string
+  dedupeKey: string
+  trigger: "route" | "watchdog"
+  attempts: Array<{ adapterId: string; status: string; reason?: string }>
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -1275,6 +1383,8 @@ export type SessionEvent =
   | SessionExitedEvent
   | SessionOutcomeRecordedEvent
   | SessionCompletedEvent
+  | SessionContextCompactedEvent
+  | SessionClerkDueEvent
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
@@ -1322,6 +1432,7 @@ export type SessionEvent =
   | ApprovalDecidedEvent
   | ApprovalConsumedEvent
   | ApprovalExpiredEvent
+  | ReachUndeliveredEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

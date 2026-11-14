@@ -4,11 +4,13 @@
 agentproto sandbox list   [--no-probe] [--reconcile] [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
-agentproto sandbox gc     [--apply] [--pause] [--json]
+agentproto sandbox gc     [--apply] [--pause] [--provider <slug>]... [--include-attached] [--json]
 agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]
 agentproto sandbox exec   <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
                           [--file <local>:<boxPath> ...] [--json] -- <command...>
+agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>]
+                                 [--harness <slug>] [--json]
 ```
 
 Browse the daemon's **sandbox ledger** (every box the daemon has booted,
@@ -102,18 +104,39 @@ agentproto sandbox gc --apply --pause   # pause instead of kill (stays reattacha
 agentproto sandbox gc --json       # machine-readable plan / outcomes
 ```
 
-Reaps **orphan** boxes: ledger entries whose origin session ended in a
-failure state (`error` / `killed` / `exited`) — the session can never
-return to its box, so the box is wasted spend. Dry run by default;
-nothing is torn down until `--apply` is passed.
+Reaps two kinds of orphan boxes:
 
-Requires a running daemon to look up origin-session statuses.
+1. **Ledger orphans** — ledger entries whose origin session ended in a
+   failure state (`error` / `killed` / `exited`) — the session can never
+   return to its box, so the box is wasted spend.
+2. **Provider-control-plane orphans** — running/paused boxes the provider
+   still reports that no live ledger row accounts for, once they are older
+   than a grace window (15 minutes by default). The sweep enumerates each provider's
+   control plane (`listBoxes`) and deletes those boxes; a box still attached
+   to a live session is left alone unless `--include-attached` opts it in.
+   Each provider is scanned independently: one provider's failure is reported
+   for that provider and never aborts the others, and a provider that cannot
+   be enumerated (not configured, no control plane, no `listBoxes`) is
+   reported **not scanned** — never as "no orphan found".
+
+Dry run by default; nothing is torn down until `--apply` is passed. The
+daemon runs a separate periodic sweep for **ledger** orphans (1 h cadence by default;
+`AGENTPROTO_SANDBOX_GC_INTERVAL_MS` overrides or disables it). The
+provider-control-plane sweep is invoked by the CLI (`sandbox gc`) and the
+`sandbox_gc` MCP tool, not by that daemon timer.
+
+Requires a running daemon to look up origin-session statuses and to resolve
+provider control planes.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--apply` | `false` | Actually tear down (or pause) the orphan boxes and stamp their ledger rows `stopped`. Without this, the command only prints the plan. |
 | `--pause` | `false` | With `--apply`: pause the boxes instead of killing them, keeping them reattachable via `sandbox attach`. Note: a paused e2b box still bills, so the default kill is usually preferable for orphans. |
+| `--provider <slug>` | `computer` | Restrict the provider sweep to one provider (repeatable, e.g. `--provider computer --provider e2b`). Ledger orphans are unaffected. |
+| `--include-attached` | `false` | Also propose provider-side boxes the provider still counts a session on (attached). |
 | `--json` | `false` | Print the plan / outcomes as JSON instead of the human summary. |
+
+The MCP twin is the `sandbox_gc` tool.
 
 ### `checkpoint-gc`
 
@@ -203,6 +226,39 @@ values) is rejected with an actionable error — upload the script with `--file`
 and run it by path. Provider errors never echo the full command: it is cut to
 ~200 characters with a `…(N chars)` marker.
 
+### `egress-health`
+
+```bash
+agentproto sandbox egress-health                        # the pool + active cooldowns
+agentproto sandbox egress-health --model opencode/big-pickle
+agentproto sandbox egress-health --probe opencode/big-pickle --harness opencode
+```
+
+Shows the provider's **egress address pool** (slot, public IP, boxes in use)
+and the active per-IP model cooldowns, through the running daemon
+(`GET /sandboxes/egress-health`). A free-tier model cap is enforced per source
+IP, so a slot cooling down for a model is skipped when a box boots with
+`egressIp: auto`. Cooldowns are set by a failed preflight or a usage/rate-limit
+turn on a box, and expire on their own.
+
+`--probe <model>` re-probes on demand: it boots one box per pool slot, runs the
+`model-answers` preflight for `<model>` from each address
+(`POST /sandboxes/egress-health/probe`), and clears or sets that address's
+cooldown. There is no automatic schedule — run it when you suspect the pool.
+Requires a running daemon.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--provider <slug>` | `computer` | Provider whose pool to show (or probe). |
+| `--model <id>` | — | Narrow the cooldown list to one model. Mutually exclusive with `--probe`. |
+| `--probe <model>` | off | Re-probe every slot from each address; on demand only. |
+| `--harness <slug>` | `opencode` | Harness the probe runs; only accepted with `--probe`. `--adapter` is a deprecated alias of `--harness`: it still works and prints a deprecation line on stderr. |
+| `--json` | `false` | Print the daemon's response as JSON instead of the human table. |
+
+Exit codes: `0` healthy; `1` when a probe returns a `ko`/`error` verdict;
+`125` for infrastructure failures (no daemon, rejected request — same as
+`exec`); `2` for usage errors.
+
 ### The always-on model (`--keep-alive`)
 
 `--keep-alive` is for a sandbox meant to stay reachable indefinitely rather
@@ -254,6 +310,9 @@ agentproto sandbox attach box bx_abc123 --config-json '{"port":19000}'
 
 # Run a command in a fresh box with a secret taken from an auth profile
 agentproto sandbox exec e2b --env-profile OPENAI_API_KEY=openai-main -- python run.py
+
+# Check the egress pool and its active per-model cooldowns
+agentproto sandbox egress-health --model opencode/big-pickle
 ```
 
 Non-JSON output:

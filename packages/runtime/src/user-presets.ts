@@ -43,9 +43,10 @@ export interface UserPreset extends Partial<SessionConfig> {
   id: string
   /** Human-readable name shown by CLI and editor pickers. */
   label: string
-  /** Adapter harness to use. Omitted means the caller selects one. */
+  /** @deprecated Alias of `harness`, kept as a mirrored duplicate for old
+   *  readers; removed in the next major of @agentproto/runtime. */
   adapter?: string
-  /** Canonical harness slug — alias for `adapter`. */
+  /** Harness to use (canonical). Omitted means the caller selects one. */
   harness?: string
   model?: string
   route?: RouteSpec
@@ -118,8 +119,12 @@ const presetConfigSchema = z.object({
 export const userPresetSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   label: z.string().min(1),
-  adapter: z.string().min(1).optional(),
-  harness: z.string().min(1).optional(),
+  adapter: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
+  harness: z.string().min(1).optional().describe("Harness slug this preset spawns."),
   model: z.string().min(1).optional(),
   route: routeSchema.optional(),
   access: z.object({ profileRef: z.string().min(1).optional() }).optional(),
@@ -165,6 +170,10 @@ export class UserPresetValidationError extends Error {
 /** Flatten the optional nested `config` under the flat fields. The flat field
  *  wins when both name an axis, per the AIP-46 migration note. */
 export function normalizeUserPreset(input: UserPreset): UserPreset {
+  return mirrorPresetHarness(flattenPresetConfig(input))
+}
+
+function flattenPresetConfig(input: UserPreset): UserPreset {
   if (!input.config) return input
   const { config, ...flat } = input
   const options =
@@ -176,6 +185,15 @@ export function normalizeUserPreset(input: UserPreset): UserPreset {
     ...flat,
     ...(options ? { options } : {}),
   } as UserPreset
+}
+
+/** `harness` is canonical: resolved as `harness ?? adapter`, then mirrored
+ *  into the deprecated `adapter` so a reader of either key sees the same
+ *  slug. A preset saved by an older daemon (only `adapter`) loads as such. */
+function mirrorPresetHarness(preset: UserPreset): UserPreset {
+  const harness = preset.harness ?? preset.adapter
+  if (!harness) return preset
+  return { ...preset, harness, adapter: harness }
 }
 
 function validateSessionPresets(presets: readonly UserPreset[]): void {
@@ -292,6 +310,9 @@ export async function touchUserPreset(id: string): Promise<void> {
  *  favorites, so a caller can "save as favorite" something they've spawned
  *  before without retyping it. */
 export interface RecentSpawnConfig {
+  /** Canonical harness slug. */
+  harness?: string
+  /** @deprecated Mirror of `harness`; removed in the next major of @agentproto/runtime. */
   adapter?: string
   model?: string
   profileRef?: string
@@ -319,6 +340,7 @@ export function deriveRecentSpawnConfigs(
     const adapter = desc.harness ?? desc.adapterSlug
     if (!adapter) continue
     const config: Omit<RecentSpawnConfig, "recent"> = {
+      harness: adapter,
       adapter,
       ...(desc.model ? { model: desc.model } : {}),
       ...(desc.accessProfile?.profileRef ? { profileRef: desc.accessProfile.profileRef } : {}),

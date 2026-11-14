@@ -15,7 +15,7 @@
  */
 
 import matter from "gray-matter"
-import { roleFrontmatterSchema, type RoleFrontmatter } from "../schema.js"
+import { roleFrontmatterSchema, type RoleFrontmatter } from "../frontmatter.js"
 import { defineRole } from "../define-role.js"
 import type { RoleDefinition, RoleHandle } from "../types.js"
 

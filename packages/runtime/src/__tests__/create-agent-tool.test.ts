@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 import matter from "gray-matter"
 import { createAgentManifest, DEFAULT_CREATED_AGENT_MODEL } from "../create-agent-tool.js"
@@ -74,5 +75,53 @@ describe("createAgentManifest", () => {
     await writeFile(join(workspace, ".agents", "fresh", "other.txt"), "x", "utf8")
     const created = await createAgentManifest({ workspace, id: "fresh" })
     expect(created.path).toBe(join(workspace, ".agents", "fresh", "AGENT.md"))
+  })
+})
+
+describe("createAgentManifest grants (actions.granted)", () => {
+  async function writeCaller(workspace: string, id: string, granted: string[]): Promise<void> {
+    await mkdir(join(workspace, ".agents", id), { recursive: true })
+    const actions = granted.length > 0 ? `actions:\n  granted:\n${granted.map(g => `    - ${g}`).join("\n")}\n` : ""
+    await writeFile(
+      join(workspace, ".agents", id, "AGENT.md"),
+      `---\nschema: agent/v1\nid: ${id}\ndescription: caller\nmodel: claude-sonnet-5\n${actions}---\n`,
+      "utf8",
+    )
+  }
+
+  it("grants nothing by default", async () => {
+    const workspace = await mktmp()
+    const created = await createAgentManifest({ workspace, id: "plain" })
+    const fm = matter(await readFile(created.path, "utf8")).data as Record<string, unknown>
+    expect(fm.actions).toBeUndefined()
+  })
+
+  it("writes actions.granted: [create_tool] when asked, by a caller that holds that grant", async () => {
+    const workspace = await mktmp()
+    await writeCaller(workspace, "builder", ["create_tool"])
+    const created = await createAgentManifest({
+      workspace,
+      id: "toolsmith",
+      grants: ["create_tool"],
+      callerAgentId: "builder",
+    })
+    const fm = matter(await readFile(created.path, "utf8")).data as { actions?: { granted?: unknown[] } }
+    expect(fm.actions?.granted).toEqual(["create_tool"])
+  })
+
+  it("refuses to hand out a grant the caller does not hold (no escalation)", async () => {
+    const workspace = await mktmp()
+    await writeCaller(workspace, "mallory", [])
+    await expect(
+      createAgentManifest({ workspace, id: "toolsmith", grants: ["create_tool"], callerAgentId: "mallory" }),
+    ).rejects.toThrow(/does not grant 'create_tool'/)
+    expect(existsSync(join(workspace, ".agents", "toolsmith", "AGENT.md"))).toBe(false)
+  })
+
+  it("refuses a grant when the call carries no caller identity", async () => {
+    const workspace = await mktmp()
+    await expect(
+      createAgentManifest({ workspace, id: "toolsmith", grants: ["create_tool"] }),
+    ).rejects.toThrow(/no authenticated caller identity/)
   })
 })

@@ -165,6 +165,63 @@ describe("agentproto sessions switch-profile", () => {
     expect(stderrChunks.join("")).toContain("--to")
   })
 
+  it("moves only ALIVE sessions by default: dead ones on the from-profile are left alone", async () => {
+    httpGetJson.mockResolvedValue({
+      sessions: [
+        agentSession("sess_alive", "old-wallet"),
+        { ...agentSession("sess_starting", "old-wallet"), status: "starting" },
+        { ...agentSession("sess_exited", "old-wallet"), status: "exited" },
+        { ...agentSession("sess_killed", "old-wallet"), status: "killed" },
+        { ...agentSession("sess_error", "old-wallet"), status: "error" },
+      ],
+    })
+    httpPostJson.mockResolvedValue({ id: "sess_new" })
+
+    const code = await runSessions(["switch-profile", "--from", "old-wallet", "--to", "new-wallet", "--json"])
+
+    expect(code).toBe(0)
+    const restarted = httpPostJson.mock.calls.map(c => c[0])
+    expect(restarted).toEqual([
+      "http://127.0.0.1:18790/sessions/sess_alive/restart",
+      "http://127.0.0.1:18790/sessions/sess_starting/restart",
+    ])
+  })
+
+  it("a dry-run lists only the alive sessions", async () => {
+    httpGetJson.mockResolvedValue({
+      sessions: [agentSession("sess_alive", "old-wallet"), { ...agentSession("sess_dead", "old-wallet"), status: "exited" }],
+    })
+
+    const code = await runSessions(["switch-profile", "--from", "old-wallet", "--to", "new-wallet", "--dry-run", "--json"])
+
+    expect(code).toBe(0)
+    expect(httpPostJson).not.toHaveBeenCalled()
+    expect(JSON.parse(stdoutChunks.join("")).wouldMove.map((t: { id: string }) => t.id)).toEqual(["sess_alive"])
+  })
+
+  it("--include-dead restores the old behaviour and moves dead sessions too", async () => {
+    httpGetJson.mockResolvedValue({
+      sessions: [agentSession("sess_alive", "old-wallet"), { ...agentSession("sess_dead", "old-wallet"), status: "exited" }],
+    })
+    httpPostJson.mockResolvedValue({ id: "sess_new" })
+
+    const code = await runSessions([
+      "switch-profile",
+      "--from",
+      "old-wallet",
+      "--to",
+      "new-wallet",
+      "--include-dead",
+      "--json",
+    ])
+
+    expect(code).toBe(0)
+    expect(httpPostJson.mock.calls.map(c => c[0])).toEqual([
+      "http://127.0.0.1:18790/sessions/sess_alive/restart",
+      "http://127.0.0.1:18790/sessions/sess_dead/restart",
+    ])
+  })
+
   it("refuses to switch a profile onto itself", async () => {
     const code = await runSessions(["switch-profile", "--from", "same", "--to", "same"])
     expect(code).toBe(2)

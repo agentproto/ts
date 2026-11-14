@@ -1,5 +1,76 @@
 # @agentproto/adapter-claude-code
 
+## 2.7.2
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [ae6751d]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/harness@3.1.0
+
+## 2.7.1
+
+### Patch Changes
+
+- Updated dependencies [2d5f4b9]
+- Updated dependencies [1b66f60]
+- Updated dependencies [7f8bf00]
+- Updated dependencies [1b66f60]
+  - @agentproto/model-catalog@0.15.0
+  - @agentproto/harness@3.0.1
+
+## 2.7.0
+
+### Minor Changes
+
+- c350f3a: AIP-72 section 9 native-dir projection and native-dir-diff capture for claude-code. `@agentproto/harness` adds `native-memory.ts` (`projectNativeMemory`, `diffNativeMemory`, `nativeToMemoryV1`, `nativeMemoryProposals`, `nativeMemoryUnavailable` and the snapshot helpers) and a `memoryProjection` start option: the claude-code driver pins `autoMemoryDirectory: <configDir>/memory` in the isolated `settings.json`, writes one `agentproto_<slug>.md` topic file per in-force item plus a bounded fenced block at the top of `MEMORY.md`, and persists a `{file: sha}` snapshot in the config dir. When auto memory is off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY`, a repo `autoMemoryEnabled: false`) or the repo pins its own `autoMemoryDirectory`, it projects nothing and appends the digest to the system prompt instead. `@agentproto/runtime` routes a `native-dir` adapter's digest selection into that option and, at each turn end and session exit, diffs the dir and writes new or changed native files to the agent's store as proposals, never commits, once per content. `@agentproto/adapter-claude-code` declares `capabilities.memory { inject: "native-dir", capture: "native-dir-diff" }`. `@agentproto/cli` forwards the projection and the adapter's `capabilities.memory.capture`.
+- c350f3a: AIP-72 section 9 native-dir projection and native-dir-diff capture for claude-code. `@agentproto/harness` adds `native-memory.ts` (project/normalize/diff/snapshot helpers) and a `memoryProjection` start option that pins `autoMemoryDirectory` inside the session config dir, writes one `agentproto_<slug>.md` per in-force item plus a bounded `MEMORY.md` index block, and falls back to the system-prompt digest when auto memory is off or the repo pins its own dir. `@agentproto/runtime` routes a `native-dir` adapter's selection into that option, splits `selectMemoryItems`/`renderMemoryDigest` out of the digest builder, and diffs the projected dir at turn end and exit to write new or changed native files as proposals (never commits, once per content). `@agentproto/adapter-claude-code` declares `capabilities.memory { inject: "native-dir", capture: "native-dir-diff" }`. `@agentproto/cli` forwards the projection and the adapter's capture capability. `@agentproto/memory` documents the native memory behavior.
+
+### Patch Changes
+
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [c53688d]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [dd134f4]
+- Updated dependencies [30961a9]
+  - @agentproto/harness@3.0.0
+  - @agentproto/model-catalog@0.14.1
+
+## 2.6.0
+
+### Minor Changes
+
+- 0fcc582: Declare the native hook capabilities of the Codex and Claude Code harnesses under `capabilities.hooks`.
+
+### Patch Changes
+
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- Updated dependencies [7a90c4b]
+- Updated dependencies [d3ce829]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [8d53429]
+- Updated dependencies [84ac51b]
+- Updated dependencies [8d53429]
+- Updated dependencies [d3ce829]
+  - @agentproto/harness@2.16.0
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/provider-presets@0.7.2
+
 ## 2.5.15
 
 ### Patch Changes

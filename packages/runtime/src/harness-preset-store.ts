@@ -27,6 +27,7 @@
  * to `@agentproto/auth`'s `getAuthProfile`.
  */
 
+import { AccountSlotError, isSlotRef, resolveProfileRef, type AccountSlots } from "./account-slots.js"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
@@ -93,6 +94,8 @@ export class HarnessPresetValidationError extends Error {
  *  hard dependency on the real auth-profile file (tests stub it). */
 export interface HarnessPresetValidationDeps {
   getProfile: (id: string) => Promise<AuthProfile | undefined>
+  /** Account slot map for a `slot:<name>` profileRef. Defaults to config.json. */
+  loadAccountSlots?: () => Promise<AccountSlots>
 }
 
 function defaultValidationDeps(): HarnessPresetValidationDeps {
@@ -171,20 +174,39 @@ async function validateProfileBinding(
   preset: HarnessPreset,
   deps: HarnessPresetValidationDeps,
 ): Promise<void> {
-  const profile = await deps.getProfile(preset.profileRef)
+  // A `slot:<name>` profileRef is stored as the slot (the spawn resolves it
+  // again at use time, so a later swap is followed) and validated here against
+  // the profile it points at now.
+  let profileRef = preset.profileRef
+  if (isSlotRef(preset.profileRef)) {
+    try {
+      profileRef = (
+        await resolveProfileRef(preset.profileRef, {
+          getAuthProfile: deps.getProfile,
+          ...(deps.loadAccountSlots ? { loadAccountSlots: deps.loadAccountSlots } : {}),
+        })
+      ).profileRef
+    } catch (err) {
+      if (err instanceof AccountSlotError) {
+        throw new HarnessPresetValidationError(`profileRef "${preset.profileRef}": ${err.message}`)
+      }
+      throw err
+    }
+  }
+  const profile = await deps.getProfile(profileRef)
   if (!profile) {
     throw new HarnessPresetValidationError(
-      `profileRef "${preset.profileRef}" references no existing auth profile.`,
+      `profileRef "${profileRef}" references no existing auth profile.`,
     )
   }
   if (profile.disabled) {
     throw new HarnessPresetValidationError(
-      `profileRef "${preset.profileRef}" is disabled; a disabled profile cannot back a harness preset.`,
+      `profileRef "${profileRef}" is disabled; a disabled profile cannot back a harness preset.`,
     )
   }
   if (!profileServicesModel(profile, preset.defaultModel)) {
     throw new HarnessPresetValidationError(
-      `defaultModel "${preset.defaultModel}" is not in profile "${preset.profileRef}"'s model allowlist.`,
+      `defaultModel "${preset.defaultModel}" is not in profile "${profileRef}"'s model allowlist.`,
     )
   }
 }

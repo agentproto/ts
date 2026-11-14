@@ -1,5 +1,52 @@
 # @agentproto/catalog-sync
 
+## 0.9.1
+
+### Patch Changes
+
+- 1c3c800: Sync generated catalog data from the pinned provider sources.
+- Updated dependencies [1c3c800]
+  - @agentproto/model-catalog@0.15.1
+
+## 0.9.0
+
+### Minor Changes
+
+- 7f8bf00: Add media price syncing: an OpenRouter image/video generator that records per-token output prices from committed snapshots, a Replicate model-page parser plus sync script covering the hand-written Replicate price table and the Replicate image/video models used by the catalog, and route-keyed `OPENROUTER_*_PRICING` / `REPLICATE_*_PRICING` maps exported from `@agentproto/model-catalog`. `image:replicate` now reads the scraped map and keeps the hand-written table only as a marked fallback. `run-all.mjs` names outputs and changelog sections per modality (`### image:replicate`) while keeping the LLM paths unchanged. Replicate pages that bill several distinct tier prices (per resolution or duration) are no longer collapsed to their first tier: they are left out of the scraped map and `image:replicate` uses its hand-written fallback. `fetchedAt` is now stamped per route/model from an order-independent hash, and `run-all.mjs` logs both the image and video outputs of `sync-replicate.mjs`.
+
+### Patch Changes
+
+- 2d5f4b9: Sync generated catalog data from the pinned provider sources.
+- 1b66f60: Sync generated catalog data from the pinned provider sources.
+- 1b66f60: Sync generated catalog data from the pinned provider sources (LLM pricing/routes, image, voice). Data-only refresh; no hand-written source logic changed.
+- Updated dependencies [2d5f4b9]
+- Updated dependencies [1b66f60]
+- Updated dependencies [7f8bf00]
+- Updated dependencies [1b66f60]
+  - @agentproto/model-catalog@0.15.0
+
+## 0.8.12
+
+### Patch Changes
+
+- 18584b5: Sync generated catalog data from the pinned provider sources.
+- 18584b5: Sync generated catalog data from the pinned provider sources (gpt-6.1-terra additions across OpenAI/Requesty/Azure, new HuggingFace routes, refreshed pricing/route snapshots).
+- Updated dependencies [18584b5]
+- Updated dependencies [18584b5]
+  - @agentproto/model-catalog@0.14.1
+
+## 0.8.11
+
+### Patch Changes
+
+- d3ce829: Sync generated catalog data from the pinned provider sources.
+- d3ce829: Sync generated catalog data from the pinned provider sources: refreshed catalog-sync snapshots/ledgers and regenerated model-catalog pricing, routing and context-window data, plus the dated CATALOG-CHANGELOG entry for 2026-10-26.
+- Updated dependencies [d3ce829]
+- Updated dependencies [8d53429]
+- Updated dependencies [8d53429]
+- Updated dependencies [d3ce829]
+  - @agentproto/model-catalog@0.14.0
+
 ## 0.8.10
 
 ### Patch Changes

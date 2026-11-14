@@ -249,8 +249,8 @@ describe("inbox + inbox_wait", () => {
     // The direct parent: allowed (tree rule).
     expect(await asA1.call("message_send", { to: a.id, text: "hi" })).toMatchObject({ ok: true, relation: "child" })
     // A session of the SAME workspace with no tree edge: allowed (relation
-    // `peer`).
-    expect(await asA1.call("message_send", { to: b.id, text: "hi" })).toMatchObject({ ok: true, relation: "peer" })
+    // `granted`).
+    expect(await asA1.call("message_send", { to: b.id, text: "hi" })).toMatchObject({ ok: true, relation: "granted" })
     const asA = await toolsAs(registry, a.id)
     expect(await asA.call("message_send", { to: b.id, text: "hi" })).toMatchObject({ isError: true, error: "forbidden_recipient" })
     expect(await asA.call("message_send", { to: a1.id, text: "do x", urgency: "fyi" })).toMatchObject({ ok: true, relation: "parent" })

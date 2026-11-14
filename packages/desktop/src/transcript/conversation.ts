@@ -13,6 +13,7 @@
  * idempotent, stable ids from `seq`, defensive dedup of duplicate/unordered seqs.
  */
 
+import { modeChangedLabel, parseAgentPrompt, type TypedAgentPrompt } from "../data/agent-prompt"
 import type { JsonValue, SessionEventRecord } from "../data/types"
 
 /** Bump when the semantic record shape changes incompatibly. */
@@ -25,6 +26,7 @@ export type SegmentKind =
   | "tool"
   | "plan"
   | "agent-question"
+  | "mode-changed"
   | "error"
 
 interface SegmentBase {
@@ -70,6 +72,16 @@ export interface PlanSegment extends SegmentBase {
 export interface QuestionSegment extends SegmentBase {
   kind: "agent-question"
   options: string[]
+  /** AIP-45 typed request; absent for a plain tool permission. */
+  prompt?: TypedAgentPrompt
+}
+
+export interface ModeChangedSegment extends SegmentBase {
+  kind: "mode-changed"
+  modeId: string
+  previousModeId?: string
+  cause?: string
+  reason?: string
 }
 
 export interface ErrorSegment extends SegmentBase {
@@ -82,6 +94,7 @@ export type ConversationSegment =
   | ToolSegment
   | PlanSegment
   | QuestionSegment
+  | ModeChangedSegment
   | ErrorSegment
 
 /** The attested sender of a user-role turn that is a typed inter-session
@@ -314,12 +327,29 @@ export function reduceConversation(
       }
       case "agent-prompt": {
         const turn = openAssistant(rec)
+        const typed = parseAgentPrompt(rec)
         turn.segments.push({
           kind: "agent-question",
           id: `seg-${rec.seq}`,
           seq: rec.seq,
           ts: rec.ts,
           options: normalizeOptions(rec.options),
+          ...(typed ? { prompt: typed } : {}),
+        })
+        break
+      }
+      case "mode-changed": {
+        if (!rec.modeId) break
+        const turn = openAssistant(rec)
+        turn.segments.push({
+          kind: "mode-changed",
+          id: `seg-${rec.seq}`,
+          seq: rec.seq,
+          ts: rec.ts,
+          modeId: rec.modeId,
+          ...(rec.previousModeId ? { previousModeId: rec.previousModeId } : {}),
+          ...(rec.cause ? { cause: rec.cause } : {}),
+          ...(rec.reason ? { reason: rec.reason } : {}),
         })
         break
       }
@@ -463,10 +493,21 @@ export interface PresentedPlanSegment {
   total: number
 }
 
+export type PresentedAgentPrompt =
+  | { request: "question"; text: string; choices: string[]; freeText: boolean }
+  | { request: "plan-approval"; planHtml?: string; planRef?: string; targetModeId?: string }
+
 export interface PresentedQuestionSegment {
   kind: "agent-question"
   id: string
   options: string[]
+  prompt?: PresentedAgentPrompt
+}
+
+export interface PresentedModeChangedSegment {
+  kind: "mode-changed"
+  id: string
+  text: string
 }
 
 export interface PresentedErrorSegment {
@@ -492,6 +533,7 @@ export type PresentedSegment =
   | PresentedToolSegment
   | PresentedPlanSegment
   | PresentedQuestionSegment
+  | PresentedModeChangedSegment
   | PresentedErrorSegment
   | PresentedActivitySegment
 
@@ -649,9 +691,33 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
     case "plan":
       return { kind: "plan", id: seg.id, entries: seg.entries, done: seg.done, total: seg.total }
     case "agent-question":
-      return { kind: "agent-question", id: seg.id, options: seg.options }
+      return {
+        kind: "agent-question",
+        id: seg.id,
+        options: seg.options,
+        ...(seg.prompt ? { prompt: presentPrompt(seg.prompt, r) } : {}),
+      }
+    case "mode-changed":
+      return { kind: "mode-changed", id: seg.id, text: modeChangedLabel(seg) }
     case "error":
       return { kind: "error", id: seg.id, text: r.escapeHtml(seg.message) }
+  }
+}
+
+function presentPrompt(prompt: TypedAgentPrompt, r: Renderers): PresentedAgentPrompt {
+  if (prompt.request === "question") {
+    return {
+      request: "question",
+      text: prompt.prompt,
+      choices: prompt.choices.map((c) => c.label),
+      freeText: prompt.freeTextOptionId !== undefined,
+    }
+  }
+  return {
+    request: "plan-approval",
+    ...(prompt.plan ? { planHtml: r.renderMarkdown(prompt.plan) } : {}),
+    ...(prompt.planRef ? { planRef: prompt.planRef } : {}),
+    ...(prompt.targetModeId ? { targetModeId: prompt.targetModeId } : {}),
   }
 }
 

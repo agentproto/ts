@@ -465,6 +465,118 @@ for hook capability discovery:
 - packages/lifecycle/src/hooks.ts:41 `export const HOOK_CAPABILITY_SURFACES = [`
 - packages/lifecycle/src/hooks.ts:42 `"harness_capabilities",`
 
+## Step 6: do the ACP wrappers pass host-written hook config through?
+
+Checked on 2026-10-27 by reading the published packages that the adapters
+pin, downloaded with `npm pack` and read under `dist/`:
+`@agentclientprotocol/claude-agent-acp@0.81.2` (adapters/claude-code/src/index.ts:94
+`bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.81.2"],`) and
+`@agentclientprotocol/codex-acp@1.13.1` (adapters/codex/src/index.ts:43
+`bin_args: ["-y", "@agentclientprotocol/codex-acp@1.13.1"],`). This is a
+source reading. Nothing here shows that a hook fired in a real session.
+
+### claude-agent-acp@0.81.2
+
+- It loads the user, project and local settings layers of Claude Code, so
+  command hooks written in those files are read by the Claude Code process it
+  starts: npm:@agentclientprotocol/claude-agent-acp@0.81.2 dist/acp-agent.js:6377
+  `settingSources: ["user", "project", "local"],`
+- It forwards the SDK options object that the client sends in ACP
+  `_meta.claudeCode.options`, including `settings` (a path or an object), which
+  is the programmatic settings tier: dist/acp-agent.js:6268
+  `const userProvidedOptions = sessionMeta?.claudeCode?.options` and
+  dist/acp-agent.js:6337 `const configuredSettings = userProvidedOptions?.settings ??`.
+  When a provider route is active the wrapper spreads the supplied object into
+  the settings it passes on (dist/acp-agent.js:6347-6357), so other keys, hooks
+  included, stay.
+- It cannot receive hook callbacks over ACP: the SDK `hooks` option is classified
+  with the "Callbacks and live objects" that "cannot cross JSON-RPC"
+  (dist/acp-agent.js:356 `hooks: false,`). The wrapper registers callbacks of
+  its own for `PostToolUse`, `PostModelSwitch`, `PostCompact`, `TaskCreated` and
+  `TaskCompleted` (dist/acp-agent.js:6423 `hooks: {`); they run next to the hooks
+  of the settings files, they do not replace them.
+- It does not forward hook lifecycle messages to the ACP client:
+  dist/acp-agent.js:3308-3311 `case "hook_started": case "hook_progress": case "hook_response": case "files_persisted": break;`.
+  A hook runs inside Claude Code and its output never reaches the ACP client.
+- A change of `settings` or `settingSources` on `session/load` or resume rebuilds
+  the Claude Code process (`OPTION_REBUILDS_SESSION`, dist/acp-agent.js:328
+  `settings: true,` and :329 `settingSources: true,`). A hook change on a live
+  session therefore costs a process restart.
+
+### codex-acp@1.13.1
+
+- It starts `codex app-server` and reads a JSON config from the environment:
+  npm:@agentclientprotocol/codex-acp@1.13.1 dist/index.js:40564
+  `const configString = process.env["CODEX_CONFIG"];`. That config is merged into
+  the config of each new session together with the session roots, which it marks
+  as trusted: dist/index.js:33983 `...forceGitRootTurnDiffPaths(mergeGatewayConfig(this.config, this.gatewayConfig)),`
+  followed by `projects: Object.fromEntries(sessionRoots.map((root) => [root, {` and
+  `trust_level: "trusted"`.
+- Codex reads `config.toml` from `CODEX_HOME` and from project `.codex`
+  directories itself; the wrapper's own error text names both: dist/index.js:37907
+  ``Check ${configPath} and project .codex directories, especially their config.toml files, or any CODEX_CONFIG override.``
+- It ignores the hook notifications of the app server: dist/index.js:30171-30172
+  `case "hook/started": case "hook/completed":` sit in the "ignored events" list.
+  As for Claude Code, a hook runs inside Codex and its output never reaches the
+  ACP client.
+
+### What this means for a host-written projection (AH-19)
+
+- A channel exists for each harness without touching the user's files. Claude
+  Code: the per-session `CLAUDE_CONFIG_DIR` that the driver already points at a
+  session directory (adapters/claude-code/src/index.ts:293-295 and :493-495), or
+  `_meta.claudeCode.options.settings`. Whether Claude Code reads its user-layer
+  `settings.json` from that directory is Claude Code behavior, not something the
+  wrapper decides, and was not checked here. Codex: the per-session `CODEX_HOME`
+  `config.toml` that the adapter already seeds (adapters/codex/src/index.ts:120-125
+  `seed: { "config.toml": "project_root_markers = []\n" },`), or `CODEX_CONFIG`.
+- Output of a harness-owned hook is invisible to the host through ACP. The host
+  can only learn that a harness-owned binding ran if the hook command reports
+  back itself (for example by calling the daemon), so the receipt for a harness
+  owned binding needs that callback and cannot be inferred from the ACP stream.
+- A change of hook config on a live Claude Code session restarts its process, so
+  a projection should be written at spawn and treated as fixed for the session.
+
+The remaining unknowns are listed under NOT VERIFIED.
+
+## Derived at runtime
+
+`session_capabilities.interception` is the live answer for a session; it is derived, never declared, and reports the declared capability without installing anything.
+
+- Native tool calls, ACP arm with `permissionHold`: `permission-gate`. Without the hold the requests are auto-answered: `observe`.
+- Native tool calls, print arm: `observe`. The `interception` key is absent for every session that is not an agent-cli one (terminals, commands).
+- `intercept` is never produced: no tool proxy exists.
+- Per declared native hook event: `can_block: true` gives `permission-gate`, otherwise `observe`; the strongest entry wins; an undeclared event is `unavailable`.
+- A `can_block: true` plus `async: true` entry reports `permission-gate` as a declared capability: it blocks only when projected in the synchronous form (see the matrix notes above). The field never says that something is installed.
+
+## Projected PreCompact hook
+
+`defaults.nativeHooks.preCompactCheckpoint: "on"` (off by default) makes the
+claude-code driver write, into the isolated `<CLAUDE_CONFIG_DIR>/settings.json`
+it rewrites at every spawn, one synchronous `PreCompact` entry with matcher
+`auto` and timeout 30 running `<defaults.nativeHooks.command> hook pre-compact`
+(`packages/harness/src/define-agent-cli.ts`). When the key is unset the command
+is the CLI that serves the daemon, by absolute path. The command posts a
+`native-pre-compact` checkpoint for `$AGENTPROTO_SESSION_ID` (never with a
+handoff turn, deduped per `occurrenceId`), always exits 0 and is bounded to
+20 s. Local claude-code spawns, restarts and lazy resumes only; sandbox
+sessions and other adapters get nothing. Codex is not covered.
+
+Verified live on 2026-10-28 with a PROJECT-level hook on daemon-spawned
+claude-code sessions: the hook fires for `manual` and `auto`; the payload is
+`{session_id (Claude's own id), transcript_path, cwd, prompt_id,
+hook_event_name: "PreCompact", trigger, custom_instructions}`; the environment
+carries `AGENTPROTO_SESSION_ID` (the daemon session id),
+`AGENTPROTO_WORKSPACE_SLUG` and `CLAUDE_CONFIG_DIR`; the hook is awaited (the
+compaction applies after it exits); exit 2 blocks a manual compaction. The
+environment also carries a harness-internal messaging token, so the hook
+never logs its environment.
+
+Not verified: the USER-level variant this projection writes (the isolated
+`CLAUDE_CONFIG_DIR/settings.json`), `auto` with exit 2, the
+`allowManagedHooksOnly` / `disableAllHooks` policies, how long the checkpoint
+takes on a large transcript against the 20 s budget, and Codex.
+
 ## NOT VERIFIED
 
 - AIP-71's final field optionality and any validator behaviour beyond the
@@ -495,3 +607,11 @@ for hook capability discovery:
 - The exact upstream CLI versions installed in production for gemini and
   copilot-cli. The documentation was read at the pinned commit date, not
   matched to a manifest version pin.
+- Step 6 is a source reading. Not run: that a hook configured through the
+  channels above fires inside a real session of each wrapper; the exact key
+  names Codex accepts for hooks in `CODEX_CONFIG` or `config.toml` in app-server
+  mode; whether Codex app-server mode asks for the same trust approval for
+  project hooks as the CLI (the wrapper marks session roots as trusted, which
+  may or may not cover hooks); whether Claude Code reads its user settings from
+  `$CLAUDE_CONFIG_DIR/settings.json` in the per-session directory the driver
+  creates; and the behavior of newer wrapper versions than the pinned ones.

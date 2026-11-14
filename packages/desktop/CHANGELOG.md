@@ -1,5 +1,14 @@
 # agentproto-desktop
 
+## 0.3.6
+
+### Patch Changes
+
+- eef3d03: Show AIP-45 mode changes and typed agent prompts in the desktop and VS Code conversation views. A `mode-changed` event renders as a quiet "Mode: plan -> execute" row (with "by agent" and the reason when present). A `question` prompt shows its choices as buttons and takes a free-text answer, and a `plan-approval` prompt shows the plan with Approve and Reject (optional reason). Answers go through the existing permission response path, with the text carried as `feedback`. Prompts and events from older servers render as before.
+- 489ae40: Add an optional `SessionAwaitingQuestion.kind` (`permission`, `context`, or `harness`) so every daemon writer of the awaiting question classifies what kind of wait it is; the operator `session_flag_status` override leaves it absent as unclassified.
+
+  The desktop and VS Code client types mirror the new optional field; those packages are private, so the patch bump only tracks the type-level mirror.
+
 ## 0.3.5
 
 ### Patch Changes

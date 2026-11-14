@@ -16,10 +16,10 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
 import {
   deriveDeclaredCapabilities,
@@ -62,7 +62,7 @@ function buildMastracodeModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
-export const mastracode: AgentCliHandle = defineAgentCli({
+export const mastracode: AgentCliHandle = defineHarness({
   name: "mastracode",
   id: "mastracode",
   description:

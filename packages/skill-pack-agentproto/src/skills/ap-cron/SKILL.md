@@ -41,6 +41,21 @@ Three action kinds:
 }
 ```
 
+### Notify mode: quiet successes
+
+By default a successful command run wakes sessions that follow it. Set
+`notify: "onFailure"` when the success needs no attention: it lands in their
+inbox as `fyi` and does not start a turn. A non-zero exit still crashes and
+wakes them.
+
+```json
+{
+  "schedule": "*/30 * * * *",
+  "notify": "onFailure",
+  "action": { "kind": "command", "command": "curl", "args": ["-fsS", "http://localhost:8080/health"] }
+}
+```
+
 - **agent** — spawn a brand-new session on each firing. Use for self-contained periodic work.
 - **prompt-session** — re-ping an EXISTING living session, by id or by agent label.
 

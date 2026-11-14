@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/workspace",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "description": "@agentproto/workspace — AIP-34 WORKSPACE.md reference implementation. A markdown + frontmatter format for declaring a workspace's identity — globally addressable id, owner, storage choice, defaults, publish posture. The root manifest of every AIP-organized workspace; pairs with STORAGE.md (AIP-35) for the storage policy block.",
   "keywords": [
     "agentproto",
@@ -59,7 +59,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "@agentproto/work": "workspace:*",
     "gray-matter": "^4.0.3",
     "yaml": "^2.9.1",

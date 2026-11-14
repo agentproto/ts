@@ -16,6 +16,9 @@ import {
   type DriverHandle,
 } from "@agentproto/driver"
 
+/** AIP-70 registry spec id for this package (`sdk/v1`, AIP-33). */
+export const SPEC_NAME = "sdk/v1" as const
+
 export interface SdkDriverDefinition
   extends Omit<DriverDefinition, "kind" | "execute"> {
   kind?: "sdk"

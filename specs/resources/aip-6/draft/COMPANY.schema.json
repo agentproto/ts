@@ -2,24 +2,35 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-6/COMPANY.schema.json",
   "title": "company/v1 doctype frontmatter (AIP-6)",
-  "description": "Validates the YAML frontmatter portion of any company/v1 doctype file. The `doctype` field discriminates between company / role / objective; each branch enforces the doctype-specific shape. Operator doctype is sketched here but the normative definition lives in AIP-8 — only company / role / objective are normative under AIP-6.",
+  "description": "Validates the YAML frontmatter portion of a company/v1 doctype file. The discriminator is `doctype`, or its alias `kind`; the identifier is `id`, or its alias `slug`. Both aliases are accepted permanently (AIP-6 sets no removal date for them). Three doctypes are defined here: company, objective, and the legacy agent marker. A ROLE.md is an AIP-47 role/v1 document, an OPERATOR.md is AIP-9, an AGENT.md is AIP-42, and seats and reporting lines live in the AIP-22 office: none of these is validated by this schema.",
   "type": "object",
-  "required": ["schema", "doctype", "id"],
+  "required": ["schema"],
   "properties": {
     "schema": {
       "enum": ["company/v1", "agentcompanies/v1"],
-      "description": "Format identifier. MUST be the canonical string `company/v1`. `agentcompanies/v1` is accepted as a legacy alias (AIP-70)."
+      "description": "Format identifier. Writers MUST emit the canonical string `company/v1`. `agentcompanies/v1` is accepted as a legacy alias (AIP-70)."
     },
     "doctype": {
-      "enum": ["company", "role", "objective"],
-      "description": "Discriminator. Selects the doctype-specific branch under `oneOf`."
+      "enum": ["company", "objective", "agent"],
+      "description": "Canonical discriminator. Selects the doctype-specific branch under `oneOf`. `agent` is the legacy AIP-6 agent slot marker (see AIP-42 Backward compatibility); the shape of an agent file is AIP-42's, not this schema's. A file MUST carry `doctype` or its alias `kind`."
+    },
+    "kind": {
+      "enum": ["company", "objective", "agent"],
+      "description": "Alias of `doctype`, accepted permanently with no removal date. When a file carries both, they MUST name the same doctype."
     },
     "id": {
       "type": "string",
       "minLength": 2,
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
-      "description": "Slug identifier. Lowercase, digits, dashes. Stable across renames; references use this, never database IDs."
+      "description": "Canonical slug identifier. Lowercase, digits, dashes. Stable across renames; references use this, never database IDs. A file MUST carry `id` or its alias `slug`."
+    },
+    "slug": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Alias of `id`, accepted permanently with no removal date. When a file carries both, they MUST be equal; a JSON Schema cannot compare two values, so a host reports `alias_conflict` itself (ADAPTER.md)."
     },
     "version": {
       "type": "string",
@@ -32,11 +43,7 @@
       "maxLength": 200,
       "description": "Human-readable display name."
     },
-    "description": {
-      "type": "string",
-      "maxLength": 2000,
-      "description": "One-paragraph purpose."
-    },
+    "description": { "type": "string", "maxLength": 2000, "description": "One-paragraph purpose." },
     "tags": {
       "type": "array",
       "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
@@ -49,17 +56,16 @@
       "description": "Vendor-specific extensions. Authors stash hints under namespaced keys `metadata.<vendor>.…`; other readers MUST tolerate unknown keys."
     }
   },
-  "oneOf": [
-    { "$ref": "#/$defs/company" },
-    { "$ref": "#/$defs/role" },
-    { "$ref": "#/$defs/objective" }
-  ],
+  "oneOf": [{ "$ref": "#/$defs/company" }, { "$ref": "#/$defs/objective" }, { "$ref": "#/$defs/agent" }],
   "$defs": {
     "company": {
       "type": "object",
-      "required": ["doctype", "name", "mission"],
+      "anyOf": [
+        { "required": ["doctype"], "properties": { "doctype": { "const": "company" } } },
+        { "required": ["kind"], "properties": { "kind": { "const": "company" } } }
+      ],
+      "required": ["name", "mission"],
       "properties": {
-        "doctype": { "const": "company" },
         "mission": {
           "type": "string",
           "minLength": 1,
@@ -78,40 +84,30 @@
           "properties": {
             "positions": {
               "type": "array",
-              "items": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
-              },
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
               "default": [],
-              "description": "Slugs of the company's seats — each typically materialized as an operator under `operators/<slug>/OPERATOR.md`. A position is a seat one operator holds; several positions may share one AIP-47 catalog role. See AIP-47 §Role vs Position vs Access role."
+              "description": "DEPRECATED: seats live in the AIP-22 office (AIP-22 An office spans a company tree). Slugs of the company's seats. Readers MUST keep accepting it, with no removal date; when the company has an office, the office is authoritative and this list is only a seed. A position is a seat one operator holds; several positions may share one AIP-47 catalog role.",
+              "deprecated": true
             },
             "roles": {
               "type": "array",
-              "items": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
-              },
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
               "default": [],
               "deprecated": true,
-              "description": "DEPRECATED alias of `positions`. Readers MUST accept both; when both are present, `positions` wins. Historically documented as role slugs but used in practice for seats."
+              "description": "DEPRECATED alias of `positions`, itself deprecated toward the AIP-22 office. Readers MUST accept it, with no removal date; when both are present, `positions` wins. Historically documented as role slugs but used in practice for seats."
             },
             "objectives": {
               "type": "array",
-              "items": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
-              },
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
               "default": [],
               "description": "Slugs of top-level objectives defined under `objectives/<slug>/OBJECTIVE.md`."
             },
             "reports_to": {
               "type": "object",
-              "additionalProperties": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
-              },
+              "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
               "default": {},
-              "description": "Map of position-slug → position-slug expressing the reporting tree. The key reports to the value. Positions not in the map are top-level."
+              "description": "DEPRECATED: reporting lines live in the AIP-22 office (a seat's `reportsTo`). Map of position-slug to position-slug; the key reports to the value. Readers MUST keep accepting it, with no removal date; the office wins when both exist.",
+              "deprecated": true
             }
           }
         },
@@ -119,69 +115,18 @@
           "type": "array",
           "default": [],
           "items": { "$ref": "#/$defs/import" },
-          "description": "External roles or objectives pulled from a registry. Resolved by the adapter at load time."
-        }
-      }
-    },
-    "role": {
-      "type": "object",
-      "required": ["doctype", "name", "mandate"],
-      "properties": {
-        "doctype": { "const": "role" },
-        "mandate": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 2000,
-          "description": "One-paragraph statement of what this role is responsible for. Defines the role's bounded autonomy."
-        },
-        "reports_to": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
-          "description": "Slug of the parent role. Omit for top-level roles."
-        },
-        "scope": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "owns": {
-              "type": "array",
-              "items": { "type": "string", "maxLength": 200 },
-              "default": [],
-              "description": "Free-text list of resource classes this role owns (e.g. `outbound-email`, `q3-pipeline`)."
-            },
-            "capabilities": {
-              "type": "array",
-              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
-              "default": [],
-              "description": "Capability slugs the role grants — referenced by AIP-7 governance and AIP-8 operators."
-            }
-          }
-        },
-        "objectives": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
-          "default": [],
-          "description": "Slugs of objectives this role pursues. Each MUST resolve to an `objectives/<slug>/OBJECTIVE.md`."
-        },
-        "tools": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
-          "default": [],
-          "description": "Slugs of AIP-14 tools the role may call. Adapter resolves against the host's tool catalog."
-        },
-        "workflows": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
-          "default": [],
-          "description": "Slugs of AIP-15 workflows the role may execute."
+          "description": "External roles or objectives pulled from a registry. Resolved by the adapter at load time. An imported role is materialised as an AIP-47 `role/v1` document."
         }
       }
     },
     "objective": {
       "type": "object",
-      "required": ["doctype", "name", "statement"],
+      "anyOf": [
+        { "required": ["doctype"], "properties": { "doctype": { "const": "objective" } } },
+        { "required": ["kind"], "properties": { "kind": { "const": "objective" } } }
+      ],
+      "required": ["name", "statement"],
       "properties": {
-        "doctype": { "const": "objective" },
         "statement": {
           "type": "string",
           "minLength": 1,
@@ -191,17 +136,14 @@
         "owner": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
-          "description": "Slug of the role accountable for this objective."
+          "description": "Slug of the position (an AIP-22 office seat) or of the AIP-47 role accountable for this objective."
         },
         "horizon": {
           "enum": ["sprint", "quarter", "year", "ongoing"],
           "default": "quarter",
           "description": "Time horizon. Adapter MAY use this to surface stale objectives."
         },
-        "status": {
-          "enum": ["proposed", "active", "paused", "achieved", "abandoned"],
-          "default": "active"
-        },
+        "status": { "enum": ["proposed", "active", "paused", "achieved", "abandoned"], "default": "active" },
         "key_results": {
           "type": "array",
           "default": [],
@@ -210,10 +152,7 @@
             "required": ["id", "statement"],
             "additionalProperties": false,
             "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
-              },
+              "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
               "statement": { "type": "string", "maxLength": 500 },
               "target": { "type": "string", "maxLength": 200 },
               "progress": { "type": "number", "minimum": 0, "maximum": 1 }
@@ -239,6 +178,14 @@
         }
       }
     },
+    "agent": {
+      "type": "object",
+      "anyOf": [
+        { "required": ["doctype"], "properties": { "doctype": { "const": "agent" } } },
+        { "required": ["kind"], "properties": { "kind": { "const": "agent" } } }
+      ],
+      "description": "Legacy AIP-6 agent slot (`agents/<id>/AGENT.md` with `schema: company/v1` and `kind: agent`). Only the marker is checked here: the field set of an agent is AIP-42's, and hosts read the file as an AGENT.md (`slug` is its `id`). AIP-42 sets no removal date for this form."
+    },
     "import": {
       "type": "object",
       "required": ["from", "as"],
@@ -250,7 +197,7 @@
         },
         "as": {
           "enum": ["role", "objective"],
-          "description": "Imported doctype."
+          "description": "Imported doctype. A role is materialised as an AIP-47 `role/v1` document, an objective as a company/v1 objective."
         },
         "id": {
           "type": "string",
@@ -264,5 +211,20 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    { "anyOf": [{ "required": ["id"] }, { "required": ["slug"] }] },
+    {
+      "if": { "required": ["doctype"], "properties": { "doctype": { "const": "company" } } },
+      "then": { "properties": { "kind": { "const": "company" } } }
+    },
+    {
+      "if": { "required": ["doctype"], "properties": { "doctype": { "const": "objective" } } },
+      "then": { "properties": { "kind": { "const": "objective" } } }
+    },
+    {
+      "if": { "required": ["doctype"], "properties": { "doctype": { "const": "agent" } } },
+      "then": { "properties": { "kind": { "const": "agent" } } }
+    }
+  ]
 }

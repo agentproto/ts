@@ -1,5 +1,49 @@
 # @agentproto/llm-endpoint
 
+## 1.0.2
+
+### Patch Changes
+
+- @agentproto/providers-store@0.4.4
+
+## 1.0.1
+
+### Patch Changes
+
+- @agentproto/providers-store@0.4.3
+
+## 1.0.0
+
+### Major Changes
+
+- e301b84: Remove the pre-AIP-70 leftovers: deprecated `SPEC_NAME` exports, the `definePack`/`Pack` model-routing aliases, the runtime re-exports of symbols owned by extracted packages, and the `inference-endpoint` compatibility bin. Import those symbols from their owning packages and use `defineRoutingPack`/`RoutingPack` for model-routing packs.
+- e301b84: Remove the pre-AIP-70 aliases (`SPEC_NAME` exports, `definePack`/`Pack`, runtime re-exports, the duplicate `llm-endpoint` bin) and centralize the Anthropic unified rate-limit parser in `@agentproto/quota`. The CLI `review verify` path and the runtime review ledger and compose paths now treat `agentproto-pack-digest/v1` and `review.pack-digest/v1` as the same digest recipe, so attestations written with either tag compare correctly.
+
+### Patch Changes
+
+- @agentproto/providers-store@0.4.2
+
+## 0.12.0
+
+### Minor Changes
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+### Patch Changes
+
+- 8d8c10c: Release and doc hygiene after the AIP-70 renames: fix remaining old package
+  names and dead paths, add the missing harness and doctype READMEs, document
+  the `inference-endpoint` command alongside its `llm-endpoint` alias, and
+  classify the AIP-70 rename shims as archived in STATUS.md.
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/auth@1.4.0
+  - @agentproto/providers-store@0.4.1
+
 ## 0.11.15
 
 ### Patch Changes

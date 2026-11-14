@@ -25,6 +25,7 @@ export type {
  *  an inline `SandboxSpec` (e.g. `@agentproto/runtime`'s `agent_start.sandbox`)
  *  validate against. Same schema `define-sandbox.ts`/`manifest/index.ts` use. */
 export { sandboxFrontmatterSchema as SandboxSpecSchema } from "./schema.js"
+export { INSTALL_ADAPTERS_RENAMED, renamedSandboxKeyError } from "./renamed-keys.js"
 
 export {
   createSandboxAgentSessionHost,
@@ -34,15 +35,24 @@ export {
   isSandboxBoxGoneError,
   SandboxBootCancelledError,
   isSandboxBootCancelledError,
+  SandboxEgressAllCoolingError,
+  isSandboxEgressAllCoolingError,
   SandboxHostBootFailedError,
   type SandboxSpec,
   type BootedSandbox,
   type SandboxBootOpts,
+  type SandboxEgressCooldown,
+  type SandboxEgressCoolingSlot,
+  type SandboxEgressHealthView,
+  type SandboxEgressSlot,
   type SandboxExecOpts,
   type SandboxExecResult,
   type SandboxProvider,
   type SandboxProbeResult,
+  type SandboxProviderChoice,
   type SandboxProviderBox,
+  type SandboxBox,
+  type SandboxUsageWindow,
   type SandboxSecretsConfig,
   type CreateSandboxAgentSessionHostOpts,
   type SandboxAgentSessionHost,

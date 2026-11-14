@@ -15,8 +15,9 @@
  * is reachable only from the HTTP route `POST /approvals/:id/decision`,
  * `decideTelegram` only from `POST /approvals/:id/decision/telegram` (gated
  * by a bot-bridge shared secret instead of an Origin — a webhook callback
- * has no browser Origin to check), `mintCardTicket`/`decideByCard` only
- * from the card resource's HTML / the `approval_card_decide` tool. The MCP
+ * has no browser Origin to check; or by an approval link bound to that one
+ * id and an allow-listed Telegram user), `mintCardTicket`/`decideByCard` only
+ * from the app-only `approval_card_list` / `approval_card_decide` tools. The MCP
  * tools facing an agent (`approvals/tools.ts`) expose only `request` /
  * `get` / `wait` / `consume`.
  *
@@ -37,11 +38,22 @@ import {
   defaultApprovalsHomeDir,
   loadAllApprovals,
   loadAllCardTickets,
+  hasRelayedMarker,
+  loadAllRelayOutbox,
+  loadAllTelegramCards,
   payloadRelativePath,
   readCardTicket,
+  readPayload,
+  removeRelayOutbox,
+  removeTelegramCard,
   writeApprovalRecord,
   writeCardTicket,
   writePayload,
+  writeRelayOutbox,
+  writeRelayedMarker,
+  writeTelegramCard,
+  appendReachReceipt,
+  readReachReceipts,
 } from "./store.js"
 import {
   APPROVAL_CHANNELS,
@@ -51,11 +63,16 @@ import {
   CardTicketError,
   type ApprovalChannel,
   type ApprovalDecision,
+  type ApprovalReachOption,
   type ApprovalRecord,
   type ApprovalRequester,
   type ApprovalStatus,
+  type ApprovalWakeTarget,
   type CardTicketErrorCode,
   type CardTicketRecord,
+  type ReachReceiptEntry,
+  type RelayOutboxEntry,
+  type TelegramCardEntry,
 } from "./types.js"
 
 export interface ApprovalRequestInput {
@@ -69,6 +86,10 @@ export interface ApprovalRequestInput {
    *  channel this daemon has enabled" (see {@link ApprovalsEngineOptions.webOrigins}). */
   channels?: readonly ApprovalChannel[]
   expiresAt?: string
+  /** Re-prompt this session or agent label when a human decides. */
+  wake?: ApprovalWakeTarget
+  /** REACH opt-out or urgency, stored on the record as given. */
+  reach?: ApprovalReachOption
 }
 
 export interface ApprovalsEngineOptions {
@@ -87,6 +108,10 @@ export interface ApprovalsEngineOptions {
    *  check (a Telegram webhook callback has no Origin to verify). Absent ⇒
    *  `telegram` is OFF, same convention as `webOrigins` for `web_click`. */
   telegramBotSecret?: string
+  /** `approvals.telegramApprovalCards`: an in-process Telegram bridge decides
+   *  through `decideTelegram`, so `telegram` joins the enabled channels
+   *  without a bot secret. The HTTP route still needs `telegramBotSecret`. */
+  telegramCards?: boolean
 }
 
 /** Same requester? Used by `consume`'s `not_requester` check — the
@@ -104,13 +129,43 @@ export interface ApprovalListFilter {
 export interface ApprovalDecideEvidence {
   ipAddress: string
   userAgent: string
+  /** The decider's verified Telegram user id (approval link only). Stored
+   *  on the decision record and carried by `approval:decided`. */
+  telegramUserId?: string
 }
 
 export interface ApprovalsEngine {
   enabledChannels: readonly ApprovalChannel[]
   request(input: ApprovalRequestInput, requester: ApprovalRequester): ApprovalRecord
   get(id: string): ApprovalRecord | undefined
+  /** The pinned payload's parsed JSON, read from `<id>/payload.json`. This is
+   *  the restart-safe source for a subscriber that acts on a decision:
+   *  `undefined` when the file is missing or unparsable. */
+  getPayload(id: string): unknown | undefined
   list(filter?: ApprovalListFilter): ApprovalRecord[]
+  /** Persist a decision a subscriber still has to deliver, next to the
+   *  approval record. Overwrites an earlier entry for the same approval. */
+  putRelayOutbox(entry: RelayOutboxEntry): void
+  /** Drop the entry once the decision is delivered or can never be. */
+  removeRelayOutbox(id: string): void
+  /** Every persisted undelivered decision, read from disk. */
+  listRelayOutbox(): RelayOutboxEntry[]
+  /** Record that the decision reached the system that asked for it, so the
+   *  boot sweep does not relay it again. */
+  markRelayed(id: string): void
+  /** Whether {@link markRelayed} was called for this approval. */
+  isRelayed(id: string): boolean
+  /** Persist an open Telegram card next to the approval record, so a tap on it
+   *  still works after a daemon restart. Overwrites an earlier card. */
+  putTelegramCard(card: TelegramCardEntry): void
+  /** Drop the card once its message is closed, whatever the channel. */
+  removeTelegramCard(id: string): void
+  /** Every persisted open Telegram card, read from disk. */
+  listTelegramCards(): TelegramCardEntry[]
+  /** Every REACH attempt for this approval (`<id>/reach.json`), oldest first. */
+  listReachReceipts(id: string): ReachReceiptEntry[]
+  /** Append one REACH attempt next to the approval record. */
+  appendReachReceipt(id: string, entry: ReachReceiptEntry): void
   /** Resolves once the approval leaves `pending` (approved/denied/expired),
    *  or after `timeoutMs` with whatever the current record is (still
    *  pending, most likely). Resolves immediately if already decided. */
@@ -135,7 +190,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
   const telegramBotSecret = opts.telegramBotSecret
   const enabledChannels: ApprovalChannel[] = ["ui_card"]
   if (webOrigins.length > 0) enabledChannels.push("web_click")
-  if (telegramBotSecret) enabledChannels.push("telegram")
+  if (telegramBotSecret || opts.telegramCards) enabledChannels.push("telegram")
 
   const approvals = loadAllApprovals(homeDir)
   const cardTickets = loadAllCardTickets(homeDir)
@@ -163,6 +218,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
         type,
         decision: decision.decision,
         channel: decision.channel,
+        ...(decision.telegramUserId ? { telegramUserId: decision.telegramUserId } : {}),
         ...base,
       })
     } else {
@@ -207,11 +263,13 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
       payloadHash,
       status: "pending",
       requestedBy: requester,
+      ...(input.wake ? { wake: input.wake } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.appId ? { appId: input.appId } : {}),
       channels: requestedChannels,
       requestedAt: now,
       ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+      ...(input.reach !== undefined ? { reach: input.reach } : {}),
     }
     writePayload(homeDir, id, canonicalJson)
     writeApprovalRecord(homeDir, record)
@@ -221,6 +279,8 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
   }
 
   const get = (id: string): ApprovalRecord | undefined => liveGet(id)
+
+  const getPayload = (id: string): unknown | undefined => readPayload(homeDir, id)
 
   const list = (filter?: ApprovalListFilter): ApprovalRecord[] => {
     const all = Array.from(approvals.keys()).map(id => liveGet(id)!)
@@ -252,7 +312,12 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
    *  NO await in this function — see the module doc. Returns the mutated
    *  record (decision.signaturePath still absent for an approve; the
    *  async caller patches it in after `signArtifact` resolves). */
-  const decideCore = (id: string, decision: ApprovalDecision, channel: ApprovalChannel): ApprovalRecord => {
+  const decideCore = (
+    id: string,
+    decision: ApprovalDecision,
+    channel: ApprovalChannel,
+    telegramUserId?: string,
+  ): ApprovalRecord => {
     const existing = liveGet(id)
     if (!existing) throw new ApprovalError("approval_not_found", `no approval ${id}`)
     if (existing.status !== "pending") throw new ApprovalNotPendingError(existing.status)
@@ -266,6 +331,7 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
         decision: decision === "approve" ? "approved" : "denied",
         channel,
         decidedAt: new Date().toISOString(),
+        ...(telegramUserId ? { telegramUserId } : {}),
       },
     }
     approvals.set(id, record)
@@ -331,13 +397,16 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
    *  the shared bot secret the HTTP route checks before this ever runs, not
    *  anything checked here. `evidence` is the (truthful) ip/UA of the
    *  webhook request that carried the human's tap, same convention as
-   *  `decideWeb`'s evidence being the browser request's. */
+   *  `decideWeb`'s evidence being the browser request's. The in-process
+   *  Telegram bridge calls this directly after checking chat and user id.
+   *  An approval link (`approvals/http.ts`) reaches it too, after its own
+   *  checks, and passes the decider's `telegramUserId`. */
   const decideTelegram = async (
     id: string,
     decision: ApprovalDecision,
     evidence: ApprovalDecideEvidence,
   ): Promise<ApprovalRecord> => {
-    const record = decideCore(id, decision, "telegram")
+    const record = decideCore(id, decision, "telegram", evidence.telegramUserId)
     return finishDecide(record, evidence, randomBytes(16).toString("hex"))
   }
 
@@ -417,7 +486,18 @@ export function createApprovalsEngine(opts: ApprovalsEngineOptions): ApprovalsEn
     enabledChannels,
     request,
     get,
+    getPayload,
     list,
+    putRelayOutbox: entry => writeRelayOutbox(homeDir, entry),
+    removeRelayOutbox: id => removeRelayOutbox(homeDir, id),
+    listRelayOutbox: () => loadAllRelayOutbox(homeDir),
+    markRelayed: id => writeRelayedMarker(homeDir, { approvalId: id, relayedAt: new Date().toISOString() }),
+    isRelayed: id => hasRelayedMarker(homeDir, id),
+    putTelegramCard: card => writeTelegramCard(homeDir, card),
+    removeTelegramCard: id => removeTelegramCard(homeDir, id),
+    listTelegramCards: () => loadAllTelegramCards(homeDir),
+    listReachReceipts: id => readReachReceipts(homeDir, id),
+    appendReachReceipt: (id, entry) => appendReachReceipt(homeDir, id, entry),
     wait,
     decideWeb,
     decideTelegram,

@@ -143,6 +143,27 @@ function PlanCard({ seg }: { seg: PresentedPlanSegment }) {
 }
 
 function QuestionCard({ seg }: { seg: PresentedQuestionSegment }) {
+  const prompt = seg.prompt
+  // Typed prompts are answered from the permission banner (it holds the
+  // pending request id); the transcript shows what was asked.
+  if (prompt?.request === "question") {
+    return (
+      <div className="card card--input">
+        <div className="ph">＋ Agent is asking</div>
+        <div className="pd">{prompt.text}</div>
+      </div>
+    )
+  }
+  if (prompt?.request === "plan-approval") {
+    return (
+      <div className="card card--input">
+        <div className="ph">＋ Plan awaiting approval</div>
+        {prompt.planHtml ? <Html className="pd msg" html={prompt.planHtml} /> : null}
+        {prompt.planRef ? <div className="pd">Plan: {prompt.planRef}</div> : null}
+        {prompt.targetModeId ? <div className="pd">Approving switches to {prompt.targetModeId} mode.</div> : null}
+      </div>
+    )
+  }
   return (
     <div className="card card--input">
       <div className="ph">＋ Agent is asking</div>
@@ -203,6 +224,8 @@ function SegmentView({ seg, isLast }: { seg: PresentedSegment; isLast: boolean }
       return <PlanCard seg={seg} />
     case "agent-question":
       return <QuestionCard seg={seg} />
+    case "mode-changed":
+      return <div className="mode-row">{seg.text}</div>
     case "error":
       return (
         <div className="card card--err">

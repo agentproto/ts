@@ -31,23 +31,49 @@
  * events are not silently lost. The follow record is always kept.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
+
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import {
+  computeLevel,
+  createClassifierRegistry,
+  levelFromDecision,
+  shadowDeliveryGrant,
+  type Classifier,
+  type ClassifierRegistry,
+  type Envelope,
+  type Floor,
+  type LedgerLine,
+  type LedgerOutcome,
+  type Level,
+  shouldApplyDelivery,
+  type DeliveryApplyConfig,
+} from "@agentproto/delivery"
 
 import type { ActivityRecord } from "./activity-projection.js"
 import { readTranscriptTail } from "./session-index.js"
 import { createSessionMessage, type SessionMessage } from "./session-message.js"
 import type { SessionEvent, SessionEventBus } from "./session-event-bus.js"
 import type { FollowEvent, FollowUrgency, SessionFollow, SessionFollowStore } from "./session-follow-store.js"
-import { SessionNotAliveError, type SessionDescriptor } from "./sessions.js"
-import { isRetired, resolveSuccessor } from "./session-retirement.js"
+import {
+  SessionNotAliveError,
+  type DigestEntry,
+  type QueuedDigest,
+  type QueuedPrompt,
+  type SessionDescriptor,
+} from "./sessions.js"
+import { isExternalInboxOpen, isRetired, resolveSuccessor } from "./session-retirement.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
 import {
-  classifyFollowEvent,
-  defaultFollowTriageConfig,
-  resolveFollowTriageConfig,
+  createSessionLifecycleClassifier,
+  evaluateFollowEvent,
+  followEnvelopeType,
+  followFloor,
+  triageEventFromEnvelope,
   triageFollowEvent,
+  defaultFollowTriageConfig,
   type FollowTriageConfig,
   type TriageEvent,
   type TriageFacts,
@@ -58,6 +84,8 @@ import {
 export const FOLLOW_EXCERPT_MAX = 300
 /** Max event lines in one digest; the rest collapse into a "+N more" line. */
 export const FOLLOW_DIGEST_MAX_LINES = 40
+/** Cap on retained events when queued digests merge (newest wins). */
+export const FOLLOW_DIGEST_MERGE_MAX_ENTRIES = 50
 const ANCESTOR_WALK_CAP = 32
 const SEEN_PR_CAP = 500
 
@@ -65,7 +93,20 @@ const SEEN_PR_CAP = 500
  *  `SupervisorNotifyRegistry`). */
 export interface SessionFollowRegistry {
   get(id: string): SessionDescriptor | undefined
-  sendMessage(msg: SessionMessage, opts?: { source?: string; origin?: string }): Promise<unknown>
+  sendMessage(
+    msg: SessionMessage,
+    opts?: {
+      source?: string
+      origin?: string
+      coalesceKey?: string
+      digest?: QueuedDigest
+      merge?: (existing: QueuedPrompt) => {
+        message: string
+        envelope?: SessionMessage
+        digest: QueuedDigest
+      }
+    },
+  ): Promise<unknown>
 }
 
 export interface WireSessionFollowOptions {
@@ -89,11 +130,28 @@ export interface WireSessionFollowOptions {
    *  with it off nothing about delivery changes. A FUNCTION is re-read
    *  before every digest (the daemon passes the live config resolver). */
   triage?: FollowTriageConfig | (() => FollowTriageConfig | Promise<FollowTriageConfig>)
-  /** Per-event triage ledger (tests). Default `~/.agentproto/follow-triage.jsonl`. */
-  triagePath?: string
+  /** Daemon-level delivery-apply switch (`config.delivery.apply`). A
+   *  follow's own `triage.enabled` is the per-subscription override; the
+   *  daemon `follow.triage.enabled` still means "apply every type". A
+   *  FUNCTION is re-read before every digest. */
+  apply?: DeliveryApplyConfig | (() => DeliveryApplyConfig | undefined | Promise<DeliveryApplyConfig | undefined>)
+  /** Append-only delivery ledger (tests). Default
+   *  `~/.agentproto/delivery-ledger.jsonl`. */
+  ledgerPath?: string
+  /** Classifier registry used for the observation-only (triage off) level.
+   *  Defaults to one `session-lifecycle` classifier closing over the follow
+   *  facts; tests pass an EMPTY registry to prove a floor alone pins level 3. */
+  classifierRegistry?: ClassifierRegistry
+  /** Classifiers to register instead of the built-in session-lifecycle one.
+   *  `[]` is the same as an empty registry. */
+  classifiers?: readonly Classifier[]
   /** Extra facts the triage rules need but the engine cannot see alone (e.g.
    *  "did this session's cron run finish OK?"). */
   triageFacts?: TriageFacts
+  /** Resolve, at EVENT time, whether a non-crashed exit is informational
+   *  rather than a wake. Called once per exit with the descriptor captured
+   *  then, so a later delete or rename cannot change the outcome. */
+  sourceUrgency?: (desc: SessionDescriptor) => "fyi" | undefined
   log?: (line: string) => void
 }
 
@@ -101,6 +159,11 @@ export interface SessionFollowHandle {
   /** Deliver every pending batch now (or just `followerId`'s). Resolves once
    *  the deliveries settled. */
   flush(followerId?: string): Promise<void>
+  /** Redeliver parked digests whose follower is alive again. With a session
+   *  id: only entries parked for it (call it when that follower respawns).
+   *  Without: every entry whose follower currently accepts delivery. Resolves
+   *  to the number redelivered. */
+  replayParked(followerId?: string): Promise<number>
   /** Unsubscribe and drop pending batches (shutdown). */
   dispose(): void
 }
@@ -114,6 +177,8 @@ interface Signal {
   /** A turn-end that also left the session awaiting input. */
   awaitingInput: boolean
   empty: boolean
+  /** A turn-end the host recorded as an explicit no-op ack. */
+  silent?: boolean
   ts: string
   label?: string
   /** Event-specific excerpt source (error, question, reason, PR title). */
@@ -128,9 +193,53 @@ interface Signal {
   taskId?: string
   /** The turn-end / exit reason (`cancelled`, `error`, `operator-stopped`, …). */
   reason?: string
+  /** The delivery envelope this signal produces, with `floor` pinned. */
+  envelope: Envelope
+}
+
+function followEnvelopeOf(signal: Omit<Signal, "envelope">): Envelope {
+  const type = followEnvelopeType(signal.event)
+  const subject = `session:${signal.sessionId}`
+  const floor = followFloor(signal.event, signal.awaitingInput)
+  return {
+    specversion: "1.0",
+    id: `${signal.sessionId}:${signal.event}:${signal.ts}`,
+    source: "//agentproto.local/session-follow",
+    type,
+    subject,
+    subjects: [subject],
+    time: signal.ts,
+    summary: signal.detail ?? `${signal.sessionId} ${signal.event}`,
+    data: {
+      sessionId: signal.sessionId,
+      ...(signal.label ? { label: signal.label } : {}),
+      ...(signal.detail ? { detail: signal.detail } : {}),
+      ...(signal.key ? { key: signal.key } : {}),
+      ...(signal.boardId ? { boardId: signal.boardId } : {}),
+      ...(signal.taskId ? { taskId: signal.taskId } : {}),
+      ...(signal.awaitingInput ? { awaitingInput: true } : {}),
+      ...(signal.empty ? { empty: true } : {}),
+      ...(signal.reason ? { reason: signal.reason } : {}),
+    },
+    terminal: signal.event === "exited" || signal.event === "crashed",
+    ...(floor !== undefined ? { floor } : {}),
+    about: { sessionId: signal.sessionId },
+  }
 }
 
 function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
+  const signal = rawSignalOf(ev, seenPrs)
+  return signal === undefined ? undefined : { ...signal, envelope: followEnvelopeOf(signal) }
+}
+
+/** The per-entry envelope: a `turn-end` promoted to `awaiting-input` by the
+ *  follow's event filter changes the type (floor and data are unchanged). */
+function followEnvelopeForEntry(signal: Signal, event: FollowEvent): Envelope {
+  const type = followEnvelopeType(event)
+  return signal.envelope.type === type ? signal.envelope : { ...signal.envelope, type }
+}
+
+function rawSignalOf(ev: SessionEvent, seenPrs: Set<string>): Omit<Signal, "envelope"> | undefined {
   switch (ev.type) {
     case "session:turn-end": {
       const detail =
@@ -142,6 +251,7 @@ function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
         event: "turn-end",
         awaitingInput: ev.awaitingInput === true,
         empty: ev.empty === true,
+        silent: ev.silent === true,
         ts: ev.ts,
         ...(ev.label ? { label: ev.label } : {}),
         ...(detail ? { detail } : {}),
@@ -196,7 +306,7 @@ function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
 /** Map a `kind:"pr"` activity to pr-opened (first sighting while open) /
  *  pr-merged (state `done`); cancelled/failed/other are ignored. Defensive
  *  about the payload shape — anything unexpected is simply not a PR signal. */
-function prSignalOf(activity: ActivityRecord | undefined, ts: string, seenPrs: Set<string>): Signal | undefined {
+function prSignalOf(activity: ActivityRecord | undefined, ts: string, seenPrs: Set<string>): Omit<Signal, "envelope"> | undefined {
   if (!activity || activity.kind !== "pr" || typeof activity.id !== "string") return undefined
   const sessionId = activity.sessionId
   if (typeof sessionId !== "string" || !sessionId) return undefined
@@ -296,6 +406,7 @@ function followWants(follow: SessionFollow, signal: Signal): FollowEvent | undef
     if (signal.awaitingInput && wants("awaiting-input")) return "awaiting-input"
     if (!wants("turn-end")) return undefined
     if (signal.empty && follow.skipEmptyTurns && !signal.awaitingInput) return undefined
+    if (signal.silent && follow.skipEmptyTurns && !signal.awaitingInput) return undefined
     return "turn-end"
   }
   return wants(signal.event) ? signal.event : undefined
@@ -316,6 +427,8 @@ interface BatchEntry {
   sessionId: string
   event: FollowEvent
   ts: string
+  /** The delivery envelope for this entry (type, floor, facts). */
+  envelope: Envelope
   label?: string
   cwd?: string
   detail?: string
@@ -328,16 +441,34 @@ interface BatchEntry {
   awaitingInput?: boolean
   /** `turn-end`: the turn produced no output at all. */
   empty?: boolean
+  /** `turn-end`: the host recorded the agent's explicit no-op ack. */
+  silent?: boolean
+  /** `exited`: the source declared this success informational (fyi). */
+  fyi?: boolean
   /** The turn-end / exit reason. */
   reason?: string
+  /** The follow this entry came from, when one is known. */
+  followId?: string
 }
 
 const TURN_FAMILY: ReadonlySet<FollowEvent> = new Set(["turn-end", "awaiting-input"])
 
+/** The always-wake events (`follow-triage.ts` rule `always-wake`): a session
+ *  waiting on the human, a crash, or a turn-end carrying a question. These
+ *  are pinned through both digest caps. */
+function isMustWakeEntry(entry: { event: string; awaitingInput?: boolean; floor?: Floor }): boolean {
+  return entry.floor !== undefined || followFloor(entry.event as FollowEvent, entry.awaitingInput) !== undefined
+}
+
 function sameCollapseGroup(a: BatchEntry, b: BatchEntry): boolean {
   if (a.sessionId !== b.sessionId) return false
   if ((a.key ?? "") !== (b.key ?? "")) return false
-  return a.event === b.event || (TURN_FAMILY.has(a.event) && TURN_FAMILY.has(b.event))
+  if (!(a.event === b.event || (TURN_FAMILY.has(a.event) && TURN_FAMILY.has(b.event)))) return false
+  // A must-wake entry is never replaced by a later event of the same session:
+  // the later event is kept next to it. An identical must-wake event (the
+  // same awaiting-input reported twice) still collapses to one line.
+  if (isMustWakeEntry(a)) return a.event === b.event && isMustWakeEntry(b)
+  return true
 }
 
 /** Squeeze to one line, <= {@link FOLLOW_EXCERPT_MAX} chars. The TAIL is kept
@@ -352,19 +483,41 @@ export function excerptOf(text: string | undefined): string | undefined {
 /** Compose the digest text. Exported for tests. `mode:"fyi"` renders the
  *  header of a digest that must NOT wake the follower. */
 export function formatFollowDigest(
-  entries: readonly BatchEntry[],
-  resolveText: (entry: BatchEntry) => string | undefined,
+  entries: readonly DigestEntry[],
+  resolveText: (entry: DigestEntry) => string | undefined,
   desc: (id: string) => SessionDescriptor | undefined,
   mode: "wake" | "fyi" = "wake",
+  omitted = 0,
+  coalesced = 1,
 ): string {
+  const coalescedNote =
+    coalesced > 1 ? ` Coalesced from ${coalesced} queued digests.` : ""
   const header =
-    mode === "fyi"
+    (mode === "fyi"
       ? `[session-follow] automatic digest (for your information only — no action expected) — ` +
         `${entries.length} event${entries.length === 1 ? "" : "s"} from sessions you follow.`
       : `[session-follow] automatic digest — ${entries.length} event${entries.length === 1 ? "" : "s"} ` +
         `from sessions you follow. Decide whether anything needs the human's attention; ` +
-        `if not, no reply is needed.`
-  const lines = entries.slice(0, FOLLOW_DIGEST_MAX_LINES).map(entry => {
+        `if not, no reply is needed.`) + coalescedNote
+  const omittedLine =
+    omitted > 0
+      ? `[session-follow] ${omitted} earlier event${omitted === 1 ? "" : "s"} omitted`
+      : undefined
+  // Must-wake lines are pinned: when the render cap bites, non-must-wake
+  // lines are dropped first. A digest with no must-wake entry keeps the
+  // original oldest-first prefix, byte-identical to before.
+  const mustWakeCount = entries.reduce((n, entry) => n + (isMustWakeEntry(entry) ? 1 : 0), 0)
+  let nonMustWakeBudget = Math.max(0, FOLLOW_DIGEST_MAX_LINES - mustWakeCount)
+  const rendered =
+    mustWakeCount === 0
+      ? entries.slice(0, FOLLOW_DIGEST_MAX_LINES)
+      : entries.filter(entry => {
+          if (isMustWakeEntry(entry)) return true
+          if (nonMustWakeBudget <= 0) return false
+          nonMustWakeBudget--
+          return true
+        })
+  const lines = rendered.map(entry => {
     if (entry.boardId !== undefined) {
       const parts = [`[session-follow] board ${entry.boardId} task ${entry.taskId ?? "?"} ${entry.event}`]
       const text = excerptOf(entry.detail)
@@ -381,10 +534,40 @@ export function formatFollowDigest(
     if (text) parts.push(text)
     return parts.join(" — ")
   })
-  if (entries.length > FOLLOW_DIGEST_MAX_LINES) {
-    lines.push(`[session-follow] … and ${entries.length - FOLLOW_DIGEST_MAX_LINES} more event(s)`)
+  const hidden = entries.length - rendered.length
+  if (hidden > 0) {
+    lines.push(`[session-follow] … and ${hidden} more event(s)`)
   }
-  return [header, ...lines].join("\n")
+  return [header, ...(omittedLine ? [omittedLine] : []), ...lines].join("\n")
+}
+
+/** Union two queued digest payloads, keeping the newest
+ *  {@link FOLLOW_DIGEST_MERGE_MAX_ENTRIES} events and counting the rest as
+ *  `omitted`. Must-wake events are pinned: they are never dropped by the cap,
+ *  and only non-must-wake events count toward the omitted total. */
+export function mergeQueuedDigests(existing: QueuedDigest | undefined, incoming: QueuedDigest): QueuedDigest {
+  const all = [...(existing?.entries ?? []), ...incoming.entries]
+  const mustWakeCount = all.reduce((n, entry) => n + (isMustWakeEntry(entry) ? 1 : 0), 0)
+  let nonMustWakeBudget = Math.max(0, FOLLOW_DIGEST_MERGE_MAX_ENTRIES - mustWakeCount)
+  let overflow = 0
+  const retained: DigestEntry[] = []
+  // Walk backwards so the newest non-must-wake events win, then emit the kept
+  // entries in their original chronological order.
+  for (let i = all.length - 1; i >= 0; i--) {
+    const entry = all[i]!
+    if (isMustWakeEntry(entry)) {
+      retained.unshift(entry)
+    } else if (nonMustWakeBudget > 0) {
+      nonMustWakeBudget--
+      retained.unshift(entry)
+    } else {
+      overflow++
+    }
+  }
+  return {
+    entries: retained,
+    omitted: (existing?.omitted ?? 0) + incoming.omitted + overflow,
+  }
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────
@@ -415,13 +598,26 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   const clearTimer =
     opts.clearTimer ?? ((h: unknown): void => clearTimeout(h as ReturnType<typeof setTimeout>))
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "follows-parked.jsonl")
-  const triagePath = opts.triagePath ?? resolve(agentprotoHome(), "follow-triage.jsonl")
+  const ledgerPath = opts.ledgerPath ?? resolve(agentprotoHome(), DELIVERY_LEDGER_FILE)
   const daemonTriage: FollowTriageConfig =
     typeof opts.triage === "object" && opts.triage !== null
       ? opts.triage
       : defaultFollowTriageConfig()
   /** Re-read the daemon-level triage default (the daemon passes a resolver
    *  so a `config_set` applies to the next digest). */
+  /** Last `delivery.apply` read at flush time: the synchronous event
+   *  listener uses it when the caller's getter is async. */
+  let cachedApply: DeliveryApplyConfig | undefined
+
+  /** Sync read for the event listener: a plain value or a sync getter is
+   *  current; an async getter falls back to the last flush's value. */
+  function currentApply(): DeliveryApplyConfig | undefined {
+    if (typeof opts.apply !== "function") return opts.apply
+    const value = (opts.apply as () => DeliveryApplyConfig | undefined | Promise<DeliveryApplyConfig | undefined>)()
+    if (value !== undefined && typeof (value as Promise<unknown>).then === "function") return cachedApply
+    return value as DeliveryApplyConfig | undefined
+  }
+
   async function refreshDaemonTriage(): Promise<void> {
     if (typeof opts.triage !== "function") return
     try {
@@ -454,18 +650,94 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   const reports = new Map<string, Map<string, number>>()
   const REPORT_RETENTION_MS = 60 * 60_000
 
-  function park(followerId: string, text: string, reason: string): void {
+  function park(followerId: string, text: string, reason: string, urgency: FollowUrgency): void {
     log(`[session-follow] follower ${followerId}: ${reason} — digest parked`)
     try {
       mkdirSync(dirname(parkedPath), { recursive: true })
       appendFileSync(
         parkedPath,
-        JSON.stringify({ follower: followerId, reason, text, ts: new Date().toISOString() }) + "\n",
+        JSON.stringify({ follower: followerId, reason, text, urgency, ts: new Date().toISOString() }) + "\n",
         { mode: 0o600 },
       )
     } catch (err) {
       log(`[session-follow] failed to park digest for ${followerId}: ${describeError(err)}`)
     }
+  }
+
+  function isDeliverableNow(desc: SessionDescriptor | undefined): boolean {
+    return desc !== undefined && !isRetired(desc) && (isAlive(desc) || isExternalInboxOpen(desc))
+  }
+
+  /** One replay at a time: a spawn/changed burst must not send the same
+   *  parked line twice before the journal has been compacted. */
+  let replayChain: Promise<unknown> = Promise.resolve()
+
+  function replayParked(followerId?: string): Promise<number> {
+    const run = replayChain.then(() => replayParkedNow(followerId))
+    replayChain = run.catch(() => undefined)
+    return run
+  }
+
+  async function replayParkedNow(followerId?: string): Promise<number> {
+    let raw: string
+    try {
+      raw = readFileSync(parkedPath, "utf8")
+    } catch {
+      return 0
+    }
+    const delivered: string[] = []
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue
+      let entry: { follower?: string; text?: string; urgency?: string }
+      try {
+        entry = JSON.parse(line) as typeof entry
+      } catch {
+        continue
+      }
+      if (typeof entry.follower !== "string" || typeof entry.text !== "string") continue
+      if (followerId !== undefined && entry.follower !== followerId) continue
+      // A still-dead or retired follower keeps its entry for a later replay:
+      // parking is a journal, not a queue that ticks forever. If the follow
+      // was re-pointed at a live successor, the line only knows the retired
+      // id, so follow the lineage instead of orphaning it.
+      let target = entry.follower
+      if (!isDeliverableNow(registry.get(target))) {
+        const successor = resolveSuccessor(id => registry.get(id), entry.follower)
+        if (successor === undefined || !isDeliverableNow(registry.get(successor))) continue
+        target = successor
+      }
+      // Legacy journal lines carry no urgency; they predate the field and
+      // were always next-turn, so default to that rather than inventing one.
+      const urgency: FollowUrgency = entry.urgency === "fyi" ? "fyi" : "next-turn"
+      try {
+        const outcome = await sendOnce(target, entry.text, entry.follower, urgency)
+        if (outcome.outcome === "dropped") {
+          // A refused redelivery still has to happen later: keep the line
+          // rather than compacting its only copy.
+          log(`[session-follow] parked replay for ${entry.follower} was refused; keeping it parked`)
+          continue
+        }
+      } catch (err) {
+        log(`[session-follow] parked replay for ${entry.follower} failed: ${describeError(err)}`)
+        continue
+      }
+      delivered.push(line)
+    }
+    if (delivered.length === 0) return 0
+    // Re-read so a digest parked while the sends were in flight survives.
+    try {
+      const remaining = readFileSync(parkedPath, "utf8").split("\n").filter(l => l.trim())
+      for (const line of delivered) {
+        const at = remaining.indexOf(line)
+        if (at >= 0) remaining.splice(at, 1)
+      }
+      const tmp = `${parkedPath}.tmp`
+      writeFileSync(tmp, remaining.length > 0 ? remaining.join("\n") + "\n" : "", { mode: 0o600 })
+      renameSync(tmp, parkedPath)
+    } catch (err) {
+      log(`[session-follow] failed to compact the parked journal: ${describeError(err)}`)
+    }
+    return delivered.length
   }
 
   // ── Triage ──────────────────────────────────────────────────────────
@@ -544,57 +816,80 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   }
 
   function toTriageEvent(followerId: string, entry: BatchEntry): TriageEvent {
-    return {
-      follower: followerId,
-      event: entry.event,
-      sessionId: entry.sessionId,
-      ts: entry.ts,
-      ...(entry.label ? { label: entry.label } : {}),
-      ...(entry.detail ? { detail: entry.detail } : {}),
-      ...(entry.key ? { key: entry.key } : {}),
-      ...(entry.boardId ? { boardId: entry.boardId } : {}),
-      ...(entry.taskId ? { taskId: entry.taskId } : {}),
-      ...(entry.awaitingInput !== undefined ? { awaitingInput: entry.awaitingInput } : {}),
-      ...(entry.empty !== undefined ? { empty: entry.empty } : {}),
-      ...(entry.reason ? { reason: entry.reason } : {}),
-    }
+    return triageEventFromEnvelope(entry.envelope, followerId)
   }
 
-  /** One JSONL line per triaged event — the training data a future
-   *  classifier is fitted on. Never throws: a failed write is logged. */
-  function writeTriageLedger(
+  interface DigestOutcome {
+    target: string
+    outcome: LedgerOutcome
+    messageId?: string
+    routedTo?: string
+  }
+
+  /** What `sendMessage` did. A structural test double that resolves `{}` is
+   *  treated as delivered. */
+  function outcomeOfResult(result: unknown): { outcome: LedgerOutcome; messageId?: string } {
+    const r = (result ?? {}) as {
+      messageId?: unknown
+      queued?: unknown
+      delivered?: { via?: unknown } | null
+      refused?: unknown
+    }
+    const messageId = typeof r.messageId === "string" ? r.messageId : undefined
+    const base = messageId !== undefined ? { messageId } : {}
+    if (r.refused !== undefined) return { outcome: "dropped", ...base }
+    if (r.queued === true) return { outcome: "queued", ...base }
+    if (r.delivered && typeof r.delivered === "object" && r.delivered.via === "inbox") {
+      return { outcome: "inbox", ...base }
+    }
+    return { outcome: "delivered", ...base }
+  }
+
+  function floorOfEntry(entry: BatchEntry): Floor | undefined {
+    return entry.envelope.floor ?? followFloor(entry.event, entry.awaitingInput)
+  }
+
+  /** One line per digest entry, written after the delivery outcome is known.
+   *  The eventId is deterministic from the entry: `<sessionId>:<event>:<ts>`
+   *  (the follow line historically carried no event id). `subscriptionId` is
+   *  the contributing `fol_` id when the entry carries one, else
+   *  `follower:<followerId>`. */
+  function writeLedgerLine(
     followerId: string,
-    entries: readonly BatchEntry[],
-    results: readonly TriageResult[],
+    entry: BatchEntry,
+    result: TriageResult,
     applied: boolean,
+    delivery: DigestOutcome,
   ): void {
-    try {
-      mkdirSync(dirname(triagePath), { recursive: true })
-      const lines = entries
-        .map((entry, i) => {
-          const result = results[i]
-          if (!result) return null
-          return JSON.stringify({
-            ts: new Date().toISOString(),
-            source: "follow",
-            applied,
-            follower: followerId,
-            event: entry.event,
-            sessionId: entry.sessionId,
-            ...(entry.label ? { label: entry.label } : {}),
-            decision: result.decision,
-            rule: result.rule,
-          })
-        })
-        .filter((line): line is string => line !== null)
-      if (lines.length === 0) return
-      appendFileSync(triagePath, lines.join("\n") + "\n", { mode: 0o600 })
-    } catch (err) {
-      log(`[session-follow] failed to write the triage ledger: ${describeError(err)}`)
+    const floor = floorOfEntry(entry)
+    const line: LedgerLine = {
+      ts: new Date().toISOString(),
+      producer: "follow",
+      subscriptionId: entry.followId ?? `follower:${followerId}`,
+      target: { kind: "session", id: delivery.target },
+      eventId: `${entry.sessionId}:${entry.event}:${entry.ts}`,
+      type: entry.event,
+      subject: entry.sessionId,
+      eventTs: entry.ts,
+      ...(entry.key !== undefined ? { repeatKey: entry.key } : {}),
+      ...(floor !== undefined ? { floor } : {}),
+      level: result.level ?? levelFromDecision(result.decision),
+      cap: 3,
+      rule: result.rule,
+      applied,
+      grant: shadowDeliveryGrant({
+        producer: {},
+        subject: entry.sessionId,
+        target: delivery.target,
+      }),
+      outcome: delivery.outcome,
+      ...(delivery.routedTo !== undefined ? { routedTo: delivery.routedTo } : {}),
+      ...(delivery.messageId !== undefined ? { messageId: delivery.messageId } : {}),
     }
+    appendLedgerLine(ledgerPath, line)
   }
 
-  const textFor = (entry: BatchEntry): string | undefined => {
+  const textFor = (entry: DigestEntry): string | undefined => {
     const d = registry.get(entry.sessionId)
     if (entry.event === "pr-opened" || entry.event === "pr-merged") return entry.detail
     if (entry.event === "crashed") {
@@ -609,11 +904,69 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     return d ? readLastOutput(d) : undefined
   }
 
-  async function sendOnce(to: string, text: string, followerId: string, urgency: FollowUrgency): Promise<void> {
-    await registry.sendMessage(
+  /** Capture everything `formatFollowDigest` needs for these events at
+   *  classification time. A later merge re-renders from these plain entries
+   *  only, never from a live session or transcript. */
+  const digestEntriesFor = (entries: readonly BatchEntry[]): DigestEntry[] =>
+    entries.map(entry => {
+      const text = textFor(entry)
+      return {
+        sessionId: entry.sessionId,
+        event: entry.event,
+        ts: entry.ts,
+        ...(entry.label ? { label: entry.label } : {}),
+        ...(entry.cwd ? { cwd: entry.cwd } : {}),
+        ...(entry.detail ? { detail: entry.detail } : {}),
+        ...(entry.key ? { key: entry.key } : {}),
+        ...(entry.boardId ? { boardId: entry.boardId } : {}),
+        ...(entry.taskId ? { taskId: entry.taskId } : {}),
+        ...(entry.awaitingInput !== undefined ? { awaitingInput: entry.awaitingInput } : {}),
+        ...(entry.empty !== undefined ? { empty: entry.empty } : {}),
+        ...(entry.silent !== undefined ? { silent: entry.silent } : {}),
+        ...(entry.fyi ? { fyi: true } : {}),
+        ...(entry.reason ? { reason: entry.reason } : {}),
+        ...(entry.envelope.floor ? { floor: entry.envelope.floor } : {}),
+        ...(text ? { text } : {}),
+      }
+    })
+
+  async function sendOnce(
+    to: string,
+    text: string,
+    followerId: string,
+    urgency: FollowUrgency,
+    digest?: QueuedDigest,
+  ): Promise<DigestOutcome> {
+    // fyi digests only ever land in the inbox, never the prompt queue, so
+    // they carry no merge payload.
+    const queuedDigest = urgency === "fyi" ? undefined : digest
+    const merge = queuedDigest
+      ? (existing: QueuedPrompt): { message: string; digest: QueuedDigest } => {
+          const merged = mergeQueuedDigests(existing.digest, queuedDigest)
+          return {
+            message: formatFollowDigest(
+              merged.entries,
+              entry => entry.text,
+              id => registry.get(id),
+              "wake",
+              merged.omitted,
+              (existing.coalescedCount ?? 1) + 1,
+            ),
+            digest: merged,
+          }
+        }
+      : undefined
+    const result = await registry.sendMessage(
       createSessionMessage({ to, from: { relation: "system" }, text, kind: "notice", urgency }),
-      { source: "session-follow", origin: `follow:${followerId}` },
+      {
+        source: "session-follow",
+        origin: `follow:${followerId}`,
+        ...(queuedDigest
+          ? { coalesceKey: `follow-digest:${followerId}`, digest: queuedDigest, merge: merge! }
+          : {}),
+      },
     )
+    return { target: to, ...outcomeOfResult(result) }
   }
 
   /** A dead follower may already have a live replacement: its follow(s) may
@@ -649,20 +1002,27 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     return started
   }
 
+  function routeTo(delivery: DigestOutcome, followerId: string): DigestOutcome {
+    return delivery.target === followerId
+      ? delivery
+      : { ...delivery, outcome: "retargeted", routedTo: delivery.target }
+  }
+
   async function reviveAndSend(
     followerId: string,
     text: string,
     followIds: ReadonlySet<string>,
     urgency: FollowUrgency,
-  ): Promise<void> {
+    digest?: QueuedDigest,
+  ): Promise<DigestOutcome> {
     const replacement = findLiveReplacement(followerId, followIds)
     if (replacement) {
       try {
-        await sendOnce(replacement, text, replacement, urgency)
+        return routeTo(await sendOnce(replacement, text, replacement, urgency, digest), followerId)
       } catch (err) {
-        park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`)
+        park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`, urgency)
+        return { target: replacement, outcome: "parked", ...(replacement !== followerId ? { routedTo: replacement } : {}) }
       }
-      return
     }
     const desc = registry.get(followerId)
     // The follower was superseded by a successor that is itself dead but not
@@ -674,11 +1034,11 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       try {
         const resumed = await reviveOnce(headId)
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
-        await sendOnce(resumed, text, resumed, urgency)
+        return routeTo(await sendOnce(resumed, text, resumed, urgency, digest), followerId)
       } catch (err) {
-        park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`)
+        park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`, urgency)
+        return { target: headId, outcome: "parked", ...(headId !== followerId ? { routedTo: headId } : {}) }
       }
-      return
     }
     if (desc && isRetired(desc)) {
       // Retired (closed on purpose / archived / superseded) with no live
@@ -690,21 +1050,42 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           : desc.endedReason && DELIBERATE_END_REASONS.has(desc.endedReason)
             ? `closed on purpose (${desc.endedReason})`
             : "retired"
-      park(followerId, text, `follower is retired (${why}); not resuming`)
-      return
+      // A retired follower with no successor but a LIVE parent: forward the
+      // digest there, keeping the digest's level (owner decision), and record
+      // the hop as `routedTo` in the ledger. The follow stays on the retired
+      // row so a later respawn can replay anything parked.
+      const parentId = desc.parentSessionId
+      const parent = parentId ? registry.get(parentId) : undefined
+      if (!desc.continuedTo && parentId && parentId !== followerId && isDeliverableNow(parent)) {
+        try {
+          return routeTo(await sendOnce(parentId, text, parentId, urgency, digest), followerId)
+        } catch (err) {
+          park(
+            followerId,
+            text,
+            `could not forward to live parent ${parentId}: ${describeError(err)}`,
+            urgency,
+          )
+          return { target: parentId, outcome: "parked", routedTo: parentId }
+        }
+      }
+      park(followerId, text, `follower is retired (${why}); not resuming`, urgency)
+      return { target: followerId, outcome: "parked" }
     }
     if (!opts.restartSession) {
-      park(followerId, text, "follower is not alive and no restart hook is wired")
-      return
+      park(followerId, text, "follower is not alive and no restart hook is wired", urgency)
+      return { target: followerId, outcome: "parked" }
     }
     try {
       const resumed = await reviveOnce(followerId)
       if (resumed !== followerId) {
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
       }
-      await sendOnce(resumed, text, resumed, urgency)
+      const delivery = await sendOnce(resumed, text, resumed, urgency, digest)
+      return { ...routeTo(delivery, followerId), outcome: "revived" }
     } catch (err) {
-      park(followerId, text, `could not resume follower: ${describeError(err)}`)
+      park(followerId, text, `could not resume follower: ${describeError(err)}`, urgency)
+      return { target: followerId, outcome: "parked" }
     }
   }
 
@@ -713,24 +1094,27 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     text: string,
     followIds: ReadonlySet<string>,
     urgency: FollowUrgency,
-  ): Promise<void> {
+    digest?: QueuedDigest,
+  ): Promise<DigestOutcome> {
     const desc = registry.get(followerId)
     if (!desc) {
       log(`[session-follow] follower ${followerId} no longer exists — digest dropped (follow kept)`)
-      return
+      return { target: followerId, outcome: "dropped" }
     }
-    if (!isAlive(desc)) {
-      await reviveAndSend(followerId, text, followIds, urgency)
-      return
+    // An external row that lapsed its liveness window has no process to
+    // restart, so its inbox stays deliverable: send first instead of taking
+    // the revive path (which would park the digest for an external row).
+    if (!isAlive(desc) && !isExternalInboxOpen(desc)) {
+      return reviveAndSend(followerId, text, followIds, urgency, digest)
     }
     try {
-      await sendOnce(followerId, text, followerId, urgency)
+      return await sendOnce(followerId, text, followerId, urgency, digest)
     } catch (err) {
       if (err instanceof SessionNotAliveError) {
-        await reviveAndSend(followerId, text, followIds, urgency)
-        return
+        return reviveAndSend(followerId, text, followIds, urgency, digest)
       }
       log(`[session-follow] delivery to ${followerId} failed: ${describeError(err)}`)
+      return { target: followerId, outcome: "dropped" }
     }
   }
 
@@ -747,49 +1131,201 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       .filter((f): f is SessionFollow => f !== undefined)
     const triage = triageConfigFor(follows)
     let text: string
+    let deliveredEntries: BatchEntry[] = entries
     let urgency: FollowUrgency = batch.urgency
-    if (triage.enabled) {
-      // Deterministic triage BEFORE the wake: every event is classified,
-      // every decision is logged, and only the `wake` ones (plus a count of
-      // the informational ones) make it into a digest that may wake.
-      const facts = factsFor(entries)
-      const results: TriageResult[] = []
-      for (const entry of entries) {
-        results.push(await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts))
-      }
-      writeTriageLedger(followerId, entries, results, true)
-      const wakeEntries = entries.filter((_, i) => results[i]!.decision === "wake")
-      const fyiEntries = entries.filter((_, i) => results[i]!.decision === "fyi")
-      if (wakeEntries.length === 0) {
-        if (fyiEntries.length === 0) {
-          // Everything was dropped: nothing to deliver, nothing to wake.
-          log(`[session-follow] follower ${followerId}: digest dropped by triage (${entries.length} event(s))`)
-          return
-        }
-        text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
-        urgency = "fyi"
-      } else {
-        text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id))
-        if (fyiEntries.length > 0) {
-          text += `\n[session-follow] ${fyiEntries.length} other event(s) in info (not shown)`
-        }
-        urgency = batch.urgency === "fyi" ? "fyi" : "next-turn"
-      }
-    } else {
-      // Triage off still records the rules' verdict for every event, marked
-      // as not applied: the ledger is always on, the delivery is unchanged.
+    let results: TriageResult[] | undefined
+    let applyCfg: DeliveryApplyConfig | undefined
+    try {
+      applyCfg = typeof opts.apply === "function" ? await opts.apply() : opts.apply
+      cachedApply = applyCfg
+    } catch (err) {
+      // An unreadable switch must never lose a digest: fall through with
+      // nothing applied, which is the historical behaviour.
+      log(`[session-follow] delivery.apply unavailable for ${followerId}: ${describeError(err)}`)
+    }
+    /** The level each entry computed to. `computeLevel` is the one place a
+     *  floor becomes level 3; everything below reads this, never a separate
+     *  must-wake branch. */
+    const levels = new Map<BatchEntry, Level>()
+    const resultAt = (i: number): TriageResult => results?.[i] ?? { decision: "wake", rule: "default" }
+    // One funnel for the switch: a follow's own `triage.enabled` is the
+    // per-subscription override; the daemon `follow.triage.enabled` still
+    // means "apply every type" (backwards compat); otherwise the
+    // `delivery.apply` globs decide. There is no second switch.
+    const applyEntry = (entry: BatchEntry): boolean => {
+      const follow = batch.followIds.has(entry.followId ?? "")
+        ? follows.find(f => f.id === entry.followId)
+        : undefined
+      const override = follow?.triage?.enabled
+      if (override === true) return true
+      if (override === false) return false
+      if (triage.enabled) return true
+      return shouldApplyDelivery(applyCfg, entry.envelope.type)
+    }
+    const appliedEntries = new Set(entries.filter(applyEntry))
+    if (appliedEntries.size > 0) {
+      // At least one event opted in: every event is still classified, but
+      // only the opted-in ones have their decision APPLIED. A non-opted-in
+      // event keeps today's delivery (a wake), with the verdict recorded.
       try {
         const facts = factsFor(entries)
-        const results = entries.map(entry =>
-          classifyFollowEvent(toTriageEvent(followerId, entry), triage.rules, facts, triage.reportWindowMs),
+        const classifierRegistry =
+          opts.classifierRegistry ??
+          createClassifierRegistry(
+            opts.classifiers ?? [
+              createSessionLifecycleClassifier({
+                rules: triage.rules,
+                facts,
+                reportWindowMs: triage.reportWindowMs,
+              }),
+            ],
+          )
+        const evaluated: TriageResult[] = []
+        for (const entry of entries) {
+          if (!appliedEntries.has(entry)) {
+            const observed = evaluateFollowEvent(
+              toTriageEvent(followerId, entry),
+              triage.rules,
+              facts,
+              triage.reportWindowMs,
+            )
+            const classified = classifierRegistry.classify(entry.envelope, { targetId: followerId })
+            const level = computeLevel(entry.envelope, classified.level, 3)
+            levels.set(entry, level)
+            evaluated.push({ decision: observed.decision, rule: observed.rule, level })
+            continue
+          }
+          const result = await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts)
+          // A source-declared fyi is already an explicit downgrade: triage may
+          // drop it, but never raise it back to a wake.
+          const forced = entry.fyi && result.decision === "wake"
+          const adjusted: TriageResult = forced
+            ? {
+                decision: "fyi",
+                rule: "source-fyi",
+                level: result.level === 3 ? 3 : 1,
+              }
+            : result
+          evaluated.push(adjusted)
+          levels.set(entry, adjusted.level ?? levelFromDecision(adjusted.decision))
+        }
+        results = evaluated
+        const decisionAt = (i: number): TriageResult["decision"] =>
+          appliedEntries.has(entries[i]!) ? evaluated[i]!.decision : "wake"
+        const wakeEntries = entries.filter((_, i) => decisionAt(i) === "wake")
+        const fyiEntries = entries.filter((_, i) => decisionAt(i) === "fyi")
+        if (wakeEntries.length === 0) {
+          if (fyiEntries.length === 0) {
+            // Everything was dropped: nothing to deliver, nothing to wake.
+            log(`[session-follow] follower ${followerId}: digest dropped by apply (${entries.length} event(s))`)
+            entries.forEach((entry, i) =>
+              writeLedgerLine(followerId, entry, resultAt(i), appliedEntries.has(entry), {
+                target: followerId,
+                outcome: "dropped",
+              }),
+            )
+            return
+          }
+          text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
+          deliveredEntries = fyiEntries
+          urgency = "fyi"
+        } else {
+          text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id))
+          deliveredEntries = wakeEntries
+          if (fyiEntries.length > 0) {
+            text += `\n[session-follow] ${fyiEntries.length} other event(s) in info (not shown)`
+          }
+          urgency = batch.urgency === "fyi" ? "fyi" : "next-turn"
+        }
+      } catch (err) {
+        // Fail open: the switch is an optimisation, never a reason to lose the
+        // batch (an awaiting-input or a crash must still reach the follower).
+        log(
+          `[session-follow] ${triage.enabled ? "triage" : "apply"} failed for ${followerId}: ${describeError(err)}`,
         )
-        writeTriageLedger(followerId, entries, results, false)
+        text = formatFollowDigest(entries, textFor, id => registry.get(id))
+        deliveredEntries = entries
+        urgency = batch.urgency
+        try {
+          const facts = factsFor(entries)
+          results = entries.map(entry => {
+            const result = evaluateFollowEvent(
+              toTriageEvent(followerId, entry),
+              triage.rules,
+              facts,
+              triage.reportWindowMs,
+            )
+            levels.set(entry, result.level)
+            return result
+          })
+        } catch {
+          results = undefined
+        }
+      }
+    } else {
+      // Nothing opted in still records the rules' verdict for every event,
+      // marked as not applied: the ledger is always on, the delivery is
+      // unchanged.
+      try {
+        const facts = factsFor(entries)
+        const classifierRegistry =
+          opts.classifierRegistry ??
+          createClassifierRegistry(
+            opts.classifiers ?? [
+              createSessionLifecycleClassifier({
+                rules: triage.rules,
+                facts,
+                reportWindowMs: triage.reportWindowMs,
+              }),
+            ],
+          )
+        results = entries.map(entry => {
+          const evaluated = evaluateFollowEvent(
+            toTriageEvent(followerId, entry),
+            triage.rules,
+            facts,
+            triage.reportWindowMs,
+          )
+          const classified = classifierRegistry.classify(entry.envelope, { targetId: followerId })
+          const level = computeLevel(entry.envelope, classified.level, 3)
+          levels.set(entry, level)
+          return { decision: evaluated.decision, rule: evaluated.rule, level }
+        })
       } catch (err) {
         log(`[session-follow] could not record the triage ledger for ${followerId}: ${describeError(err)}`)
       }
-      text = formatFollowDigest(entries, textFor, id => registry.get(id))
+      if (entries.every(entry => entry.fyi === true)) {
+        // Every event is informational: reuse the all-fyi path (inbox only).
+        text = formatFollowDigest(entries, textFor, id => registry.get(id), "fyi")
+        urgency = "fyi"
+      } else {
+        // A mixed digest keeps today's urgency and lists every line.
+        text = formatFollowDigest(entries, textFor, id => registry.get(id))
+      }
     }
-    const p = deliver(followerId, text, batch.followIds, urgency)
+    // Floor: an entry whose computed level is 3 is never delivered at `fyi`,
+    // even when every contributing follow is `fyi`. `computeLevel` is the
+    // only thing that produces 3, so this replaces the old always-wake pins.
+    if (
+      urgency === "fyi" &&
+      deliveredEntries.some(entry => (levels.get(entry) ?? (isMustWakeEntry(entry) ? 3 : 0)) >= 3)
+    ) {
+      urgency = "next-turn"
+    }
+    const delivered = new Set(deliveredEntries)
+    const digest = { entries: digestEntriesFor(deliveredEntries), omitted: 0 }
+    const p = deliver(followerId, text, batch.followIds, urgency, digest)
+      .then(outcome => {
+        entries.forEach((entry, i) =>
+          writeLedgerLine(
+            followerId,
+            entry,
+            resultAt(i),
+            appliedEntries.has(entry),
+            delivered.has(entry) ? outcome : { target: followerId, outcome: "dropped" },
+          ),
+        )
+      })
       .catch(err => log(`[session-follow] flush for ${followerId} failed: ${describeError(err)}`))
       .finally(() => inFlight.delete(p))
     inFlight.add(p)
@@ -809,6 +1345,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         break
       }
     }
+    entry.followId = follow.id
     batch.entries.push(entry)
     batch.followIds.add(follow.id)
     if (follow.urgency !== "fyi") batch.urgency = "next-turn"
@@ -829,6 +1366,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       const signal = signalOf(ev, seenPrs)
       if (!signal) return
       const desc = registry.get(signal.sessionId)
+      // Resolve the source's declared urgency ONCE, at event time. Only a
+      // non-crashed exit can be an informational success.
+      const sourceFyi =
+        signal.event === "exited" && desc !== undefined && opts.sourceUrgency?.(desc) === "fyi"
       const claimed = new Set<string>()
       for (const follow of follows) {
         const alreadyClaimed = claimed.has(follow.follower)
@@ -837,7 +1378,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         if (alreadyClaimed && follow.urgency === "fyi") continue
         const event = followWants(follow, signal)
         if (!event) continue
-        const triageOn = resolveFollowTriageConfig(daemonTriage, follow.triage).enabled
+        const triageOn =
+          follow.triage?.enabled === true ||
+          (follow.triage?.enabled !== false &&
+            (daemonTriage.enabled || shouldApplyDelivery(currentApply(), signal.envelope.type)))
         // The follower's OWN board write. With triage on it reaches the
         // triage stage (where the `ownTaskChanges` rule drops it — and the
         // decision is logged as training data); with triage off the legacy
@@ -870,6 +1414,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           sessionId: signal.sessionId,
           event,
           ts: signal.ts,
+          envelope: followEnvelopeForEntry(signal, event),
           ...((desc?.label ?? signal.label) ? { label: (desc?.label ?? signal.label)! } : {}),
           ...(desc?.cwd ? { cwd: desc.cwd } : {}),
           ...(signal.detail ? { detail: signal.detail } : {}),
@@ -878,6 +1423,8 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           ...(signal.taskId ? { taskId: signal.taskId } : {}),
           ...(signal.awaitingInput ? { awaitingInput: true } : {}),
           ...(signal.empty ? { empty: true } : {}),
+          ...(signal.silent ? { silent: true } : {}),
+          ...(sourceFyi ? { fyi: true } : {}),
           ...(signal.reason ? { reason: signal.reason } : {}),
         })
       }
@@ -904,6 +1451,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   })
 
   return {
+    replayParked,
     async flush(followerId) {
       if (followerId) await flushFollower(followerId)
       else await Promise.all([...batches.keys()].map(flushFollower))

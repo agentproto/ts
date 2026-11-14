@@ -1,0 +1,171 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { desktopMcpUrl, mergeDesktopSettings, runHookInstall } from "../commands/hook-install.js"
+import { runHook } from "../commands/hook.js"
+
+const inboxEntry = { hooks: [{ type: "command", command: "agentproto hook inbox" }] }
+const prStampEntry = { matcher: "Bash", hooks: [{ type: "command", command: "agentproto hook pr-stamp" }] }
+
+describe("mergeDesktopSettings", () => {
+  it("adds the hooks but not the session env to an empty file", () => {
+    const { settings, sessionId, changed, removedLegacyEnv } = mergeDesktopSettings({})
+    expect(changed).toBe(true)
+    expect(sessionId).toBe("claude-desktop")
+    expect(settings).toEqual({
+      hooks: {
+        UserPromptSubmit: [inboxEntry],
+        PostToolUse: [inboxEntry, prStampEntry],
+        SessionStart: [inboxEntry],
+        Stop: [inboxEntry],
+        Notification: [inboxEntry],
+      },
+    })
+  })
+
+  it("is idempotent", () => {
+    const first = mergeDesktopSettings({}, "desk-1")
+    const second = mergeDesktopSettings(first.settings, "desk-1")
+    expect(second.changed).toBe(false)
+    expect(second.settings).toEqual(first.settings)
+    expect(second.sessionId).toBe("desk-1")
+  })
+
+  it("keeps sibling keys, other hooks and other env vars without adding the session env", () => {
+    const other = { matcher: "Bash", hooks: [{ type: "command", command: "echo hi" }] }
+    const { settings } = mergeDesktopSettings({
+      model: "opus",
+      env: { FOO: "1" },
+      hooks: { PostToolUse: [other], Stop: [other] },
+    })
+    expect(settings).toMatchObject({
+      model: "opus",
+      env: { FOO: "1" },
+      hooks: {
+        PostToolUse: [other, inboxEntry, prStampEntry],
+        Stop: [other, inboxEntry],
+        SessionStart: [inboxEntry],
+        UserPromptSubmit: [inboxEntry],
+      },
+    })
+  })
+
+  it("adds only the missing Stop and SessionStart entries to a file that has the older two", () => {
+    const old = {
+      env: { AGENTPROTO_SESSION_ID: "mine" },
+      hooks: { UserPromptSubmit: [inboxEntry], PostToolUse: [inboxEntry, prStampEntry] },
+    }
+    const { settings, changed } = mergeDesktopSettings(old)
+    expect(changed).toBe(true)
+    expect(settings).toMatchObject({ hooks: { SessionStart: [inboxEntry], Stop: [inboxEntry] } })
+    expect((settings.hooks as Record<string, unknown[]>).PostToolUse).toHaveLength(2)
+    expect(mergeDesktopSettings(settings).changed).toBe(false)
+  })
+
+  it("removes a legacy claude-desktop env value and drops an emptied env", () => {
+    const withSibling = mergeDesktopSettings({ env: { AGENTPROTO_SESSION_ID: "claude-desktop", FOO: "1" } })
+    expect(withSibling.removedLegacyEnv).toBe(true)
+    expect(withSibling.settings.env).toEqual({ FOO: "1" })
+
+    const alone = mergeDesktopSettings({ env: { AGENTPROTO_SESSION_ID: "claude-desktop" } })
+    expect(alone.removedLegacyEnv).toBe(true)
+    expect(alone.settings.env).toBeUndefined()
+  })
+
+  it("leaves a custom existing session id untouched", () => {
+    const base = { env: { AGENTPROTO_SESSION_ID: "mine" } }
+    expect(mergeDesktopSettings(base).sessionId).toBe("mine")
+    const overridden = mergeDesktopSettings(base, "other")
+    expect(overridden.sessionId).toBe("other")
+    expect(overridden.settings).toMatchObject({ env: { AGENTPROTO_SESSION_ID: "mine" } })
+  })
+})
+
+describe("desktopMcpUrl", () => {
+  it("carries the session id and host", () => {
+    expect(desktopMcpUrl("desk-1")).toBe("http://127.0.0.1:18790/mcp?callerSessionId=desk-1&host=claude-desktop")
+    expect(desktopMcpUrl("desk-1", 9000)).toContain(":9000/mcp?")
+  })
+})
+
+describe("hook install --host claude-desktop", () => {
+  let dir: string
+  let path: string
+  let out: string
+  let err: string
+  const run = (args: string[]) =>
+    runHookInstall(["--host", "claude-desktop", "--settings", path, ...args], {
+      out: s => void (out += s),
+      err: s => void (err += s),
+    })
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "hook-install-"))
+    path = join(dir, "settings.json")
+    out = ""
+    err = ""
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it("--dry-run prints the merged JSON and writes nothing", async () => {
+    expect(await run(["--dry-run", "--session", "desk-1"])).toBe(0)
+    expect(JSON.parse(out)).not.toHaveProperty("env")
+    expect(err).toContain("callerSessionId=claude-desktop&host=claude-desktop")
+    expect(err).toContain("--session desk-1 is ignored")
+    expect(existsSync(path)).toBe(false)
+  })
+
+  it("always prints the shared identity URL and does not warn without --session", async () => {
+    expect(await run([])).toBe(0)
+    expect(out).toContain("callerSessionId=claude-desktop&host=claude-desktop")
+    expect(err).not.toContain("is ignored")
+  })
+
+  it("writes the file, then a second run changes nothing", async () => {
+    writeFileSync(path, JSON.stringify({ model: "opus" }))
+    expect(await run(["--session", "desk-1"])).toBe(0)
+    const first = readFileSync(path, "utf8")
+    expect(JSON.parse(first)).toMatchObject({ model: "opus", hooks: { UserPromptSubmit: [inboxEntry] } })
+    expect(JSON.parse(first).hooks).toMatchObject({ SessionStart: [inboxEntry], Stop: [inboxEntry] })
+    expect(JSON.parse(first)).not.toHaveProperty("env")
+    expect(out).toContain("Updated")
+    expect(out).toContain('claude mcp add --transport http --scope user agentproto-desktop "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop"')
+
+    out = ""
+    expect(await run([])).toBe(0)
+    expect(readFileSync(path, "utf8")).toBe(first)
+    expect(out).toContain("Already up to date")
+  })
+
+  it("migrates a legacy claude-desktop env value and keeps a custom one", async () => {
+    writeFileSync(path, JSON.stringify({ env: { AGENTPROTO_SESSION_ID: "claude-desktop", FOO: "1" } }))
+    expect(await run([])).toBe(0)
+    expect(JSON.parse(readFileSync(path, "utf8")).env).toEqual({ FOO: "1" })
+    expect(out).toContain('Removed env.AGENTPROTO_SESSION_ID (was "claude-desktop")')
+    expect(out).toContain("callerSessionId=claude-desktop&host=claude-desktop")
+
+    out = ""
+    writeFileSync(path, JSON.stringify({ env: { AGENTPROTO_SESSION_ID: "mine" } }))
+    expect(await run([])).toBe(0)
+    expect(JSON.parse(readFileSync(path, "utf8")).env).toEqual({ AGENTPROTO_SESSION_ID: "mine" })
+    expect(out).not.toContain("Removed env.AGENTPROTO_SESSION_ID")
+  })
+
+  it("leaves an unparseable file untouched and exits 1", async () => {
+    writeFileSync(path, "{ not json")
+    expect(await run([])).toBe(1)
+    expect(readFileSync(path, "utf8")).toBe("{ not json")
+  })
+
+  it("rejects a missing or unsupported host, bad session id and bad port", async () => {
+    const e = { out: () => undefined, err: () => undefined }
+    expect(await runHookInstall(["--settings", path], e)).toBe(2)
+    expect(await runHookInstall(["--host", "cursor", "--settings", path], e)).toBe(2)
+    expect(await run(["--session", "bad id"])).toBe(2)
+    expect(await run(["--port", "70000"])).toBe(2)
+  })
+
+  it("is reachable through runHook", async () => {
+    expect(await runHook(["install", "--host", "claude-desktop", "--settings", path, "--dry-run"])).toBe(0)
+  })
+})

@@ -3,7 +3,7 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 export default createTsupConfig({
   banner: `/**
  * @agentproto/agencies v0.1.0-alpha
- * agentagencies/v1 — operating layer for entities that exercise agency.
+ * Operating layer for entities that exercise agency.
  * Vendor-neutral. Filesystem-first. Extends agentcompanies/v1 + agentgovernance/v1.
  */`,
   entry: {

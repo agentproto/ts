@@ -10,7 +10,7 @@ export default createTsupConfig({
   splitting: true,
   dts: true,
   external: [
-    "@agentproto/driver-agent-cli",
+    "@agentproto/harness",
     "@agentproto/model-catalog",
     "@agentproto/provider-kit",
   ],

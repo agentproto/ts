@@ -19,9 +19,6 @@ export function defineRoutingPack<const Key extends string, R extends Route = Ro
   return pack
 }
 
-/** @deprecated Use {@link defineRoutingPack}. Kept for `@agentproto/model-routing` consumers still on the old name. */
-export const definePack = defineRoutingPack
-
 /**
  * Layer `patch` on top of `base`, key by key. Only keys `base` already
  * declares may be overridden — an unknown key in `patch` is a compile

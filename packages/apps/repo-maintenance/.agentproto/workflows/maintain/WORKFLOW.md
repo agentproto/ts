@@ -28,8 +28,24 @@ inputs:
     type: boolean
     description: >-
       With `applyMerged`: also reclaim `review`-class branches whose stored
-      verdict agreed (`branch_gc` includeReviewed true). branch_gc refuses an
-      approval below its line-coverage guard (default 95%). Default false.
+      verdict agreed (`branch_gc` includeReviewed true), and remove the
+      worktree (never the branch) of each reviewed held worktree whose verdict
+      agreed: worktree_gc re-checks it first (same tip and index, clean, idle,
+      no open PR, an agreeing stored verdict for the exact tip) and skips it
+      with the reason otherwise. That branch then goes through the same
+      branch_gc rung in the same run. branch_gc refuses an approval below its
+      line-coverage guard (default 95%) unless its verified-pr pass proves
+      it. Default false.
+    default: false
+  requireOperatorBelowGuard:
+    type: boolean
+    description: >-
+      With `applyReviewed`: turn branch_gc's verified-pr pass off, so a
+      verdict under the line-coverage guard is only reclaimed after an
+      operator approval. By default that pass reclaims a superseded verdict
+      whose cited PR the forge confirms merged into base when every file with
+      uncovered lines is touched by that PR, a consumed `.changeset/*.md`, or
+      a path base deleted or moved after that PR merged. Default false.
     default: false
   reviewModelSmall:
     type: string
@@ -56,16 +72,35 @@ inputs:
     description: >-
       Most review candidates to review this run — newest tip first, then the
       larger residual. The rest are reported as not reviewed this run; tips
-      with a stored verdict are never re-reviewed, so daily runs walk the
-      backlog.
+      with a stored verdict are not reviewed again (except the one-time
+      `rereviewUncited` re-reviews, which count against this cap and come
+      after every unreviewed tip), so daily runs walk the backlog.
     default: 40
+  rereviewUncited:
+    type: boolean
+    description: >-
+      Re-review, once per tip, a tip whose stored verdict says superseded
+      (triage and gate), agreed, cites no PR (no `landedIn`, no `#N` in
+      gate.reason/evidence) and sits under branch_gc's line-coverage guard:
+      the verified-pr pass cannot reclaim it without a cited PR. The reviewer
+      is asked to find and cite the merged PR that landed the work, or change
+      the verdict. Re-reviews count against `maxReviews` and are queued after
+      every unreviewed tip (newest first). A tip whose stored verdict already
+      replaced an earlier one (`revision` in the store) is never picked, so a
+      re-review that again cites no PR is not repeated. Off when
+      `requireOperatorBelowGuard` is true.
+    default: true
   reviewHeldWorktrees:
     type: boolean
     description: >-
       Also review branches held only because they're checked out in an idle,
-      clean linked worktree with no open PR (tip at least 3 days old). The
-      report lists each verdict and the removal command when the reviewer
-      agreed; nothing is removed automatically.
+      clean linked worktree with no open PR (tip at least 3 days old). When
+      the reviewer agreed, only the worktree goes, never its branch: with
+      `applyMerged` and `applyReviewed` true, worktree_gc removes it after its
+      apply-time re-check and the report gives each outcome (removed, or
+      skipped with the reason); otherwise the report prints the safe manual
+      command `agentproto worktree rm <path> --keep-branch`. Either way the
+      branch is then judged by branch_gc's line-coverage guard.
     default: true
   notify:
     type: object
@@ -118,6 +153,7 @@ steps:
       workspaceSlug: $input.workspaceSlug
       apply: false
       includeReviewed: false
+      full: true
 
   - id: checkpointGcPlan
     kind: tool
@@ -145,7 +181,9 @@ steps:
       branch and its remote twin review together even when their tips
       diverged — the newest tip is primary, the older ones ride along as
       otherTips), skips names whose every tip already carries a stored
-      verdict, and orders oldest first, then the larger residual.
+      verdict, and orders newest first, then the larger residual. With
+      `rereviewUncited` (default true) it then appends the one-time
+      re-reviews (see "Re-reviewing uncited superseded verdicts" below).
 
   - id: reviewCandidates
     kind: transform
@@ -211,21 +249,61 @@ steps:
       workspaceSlug: $input.workspaceSlug
       apply: false
       includeReviewed: false
+      full: true
 
   - id: gaps
     kind: transform
     name: Review candidates with no recorded verdict
     description: Entry-based — see entry.mjs's computeReviewGaps.
 
+  - id: verdictLookupTips
+    kind: transform
+    name: Tips whose stored verdict the report needs the reason of
+    description: Entry-based - see entry.mjs's verdictLookupTips.
+
+  - id: verdictRecords
+    kind: map
+    name: Read the stored verdict record of each tip (for the report's reasons)
+    description: >-
+      Tolerant (`onError: collect`) `branch_gc_verdict_get` per tip: the plan
+      entry's verdict summary has the triage verdict but not its reason.
+    over: $steps.verdictLookupTips
+    parallelism: 4
+    onError: collect
+    steps:
+      - id: verdictRecordGet
+        kind: tool
+        tool: branch_gc_verdict_get
+        inputs:
+          repoRoot: $steps.branchGcPlan.plan.repoRoot
+          sha: $item.sha
+
+  - id: reviewedWorktreePaths
+    kind: transform
+    name: Agreed held worktrees worktree_gc may remove (applyReviewed only)
+    description: >-
+      Entry-based - see entry.mjs's reviewedWorktreePaths. Empty unless
+      `applyMerged` and `applyReviewed` are both true.
+
   - id: worktreeGcApply
     kind: tool
     name: Apply worktree gc
+    description: >-
+      Applies the plan the review ran against (`expectedPlan`), re-checking
+      every entry. `reviewedPaths` is the reviewed tier: each held worktree
+      listed there is removed WORKTREE ONLY (`removed-keep-branch`) when it is
+      still unchanged, clean, idle, without an open PR, and the verdict store
+      agrees for its exact tip; otherwise `skipped-stale` with the reason.
+      Runs before branchGcApply, so the kept branch is judged by branch_gc's
+      line-coverage guard in the same run.
     tool: worktree_gc
     inputs:
       repoRoot: $input.repoRoot
       workspaceSlug: $input.workspaceSlug
       apply: $input.applyMerged
       salvageDirty: false
+      expectedPlan: $steps.worktreeGcPlan.plan
+      reviewedPaths: $steps.reviewedWorktreePaths
       wait: true
 
   - id: branchGcApply
@@ -235,14 +313,18 @@ steps:
       `apply` is $input.applyMerged — a dry-run plan again when false.
       `includeReviewed` is $input.applyReviewed: only with `applyMerged` and
       `applyReviewed` true does an agreed `review`-class verdict get applied,
-      and branch_gc's line-coverage guard (default 95%) can still refuse it.
+      and branch_gc's line-coverage guard (default 95%) can still refuse it
+      when its verified-pr pass (off with requireOperatorBelowGuard) cannot
+      prove it either.
     tool: branch_gc
     inputs:
       repoRoot: $input.repoRoot
       workspaceSlug: $input.workspaceSlug
       apply: $input.applyMerged
       includeReviewed: $input.applyReviewed
+      requireOperatorBelowGuard: $input.requireOperatorBelowGuard
       scopes: [local, remote, orphan]
+      full: true
 
   - id: checkpointGcApply
     kind: tool
@@ -327,8 +409,11 @@ steps:
 result:
   report: $steps.reportFinal
   gaps: $steps.gaps
+  review: $steps.review
+  verdictRecords: $steps.verdictRecords
   applyMerged: $input.applyMerged
   applyReviewed: $input.applyReviewed
+  requireOperatorBelowGuard: $input.requireOperatorBelowGuard
   branchGcApply: $steps.branchGcApply
   worktreeGcApply: $steps.worktreeGcApply
   checkpointGcApply: $steps.checkpointGcApply
@@ -361,6 +446,32 @@ repo's git dir (`git log/show/diff` read the object store). Both are checked
 against git's own worktree back-pointer first, and both are read-only, so a
 reviewer still cannot stash, checkout or commit in the shared repo.
 
+## Reviewer evidence
+
+Each candidate carries the PR state (`open`, `merged`, `closed-unmerged`,
+`none`, or `unknown` when the forge gave no answer) with its PR number, and
+the `git cherry` summary (commits with no patch-equivalent on base). For a
+worktree-held branch the PR state comes from the matching `worktree_gc` entry
+(`partial` is read as merged with extra commits). For any other branch it is
+the merged PR whose head is the tip (`mergedPr`) when there is one, else
+branch_gc's `headPr`: the PR found for the branch NAME in the forge's bulk
+open, merged and closed-unmerged lists (no per-branch call). A `merged` PR
+found by name is printed `merged #N (by branch name)`: a PR from that name
+merged, not necessarily this tip. `none` needs all three lists read in full;
+a list the forge could not serve, or one that hit the 1000-PR cap (and may be
+cut off), leaves a branch it does not list `unknown`. The cherry summary is read from the branch_gc entry's `cherry: { total, unmatched }`
+and is `unavailable` when branch_gc does not expose it. The report prints one
+line per verdict: branch, PR state, cherry summary and the reviewer's one-line
+reason (stored `gate.reason`, else `triage.reason`). Each "Human decision
+queue" row carries the same evidence: the tip's names and sha, line coverage
+and the guard's refusal, the stored verdict (`superseded`, `obsolete`, ...),
+the PR state and the reviewer's reason, so approving needs no
+cross-referencing. Under the rows the report prints ONE `agentproto branch gc
+approve` command listing every queued sha on its own line with the flags
+last, so deleting the line of a tip you do not approve keeps it valid. The
+"Worktrees" header says `mode: apply` with the apply outcome tally when
+`worktree_gc` applied, else `mode: plan`.
+
 ## Applying agreed verdicts
 
 Recording a verdict via `branch_gc_verdict` never reclaims a branch by
@@ -369,8 +480,51 @@ itself. An opt-in `applyReviewed: true` (only meaningful together with
 `review`-class branch whose stored verdict agreed for the SAME tip can be
 reclaimed. `branch_gc` itself still enforces the deterministic line-coverage
 guard (default 95%): an approval below it is refused (`refused-guard`) and
-the branch stays. The report lists both the reclaimed reviewed branches and
-the approvals the guard refused. Default false — see the app README,
+the branch stays, unless the verified-pr pass proves it deterministically:
+a `superseded` verdict that cites a PR (`landedIn`, else `#N` in the gate's
+reason/evidence) the forge confirms merged into base, with every file of
+uncovered lines touched by that PR, a consumed `.changeset/*.md`, or a path
+base deleted or moved after that PR merged. The report lists those in "Auto-passed by verified-pr"
+(branch, PR, why) and keeps only real refusals in the human decision queue,
+each with the reason the pass refused it. `requireOperatorBelowGuard: true`
+turns the pass off.
+
+## Re-reviewing uncited superseded verdicts
+
+Verdicts recorded before `landedIn` existed often cite no PR, so the
+verified-pr pass refuses them ("no PR cited") and, since a tip with a stored
+verdict is not reviewed again, they would sit in the decision queue forever.
+With `rereviewUncited` (default true) the review queue re-reviews such a tip
+ONCE: its stored verdict says `superseded` in triage and gate, the gate
+agreed, no operator approved it, it cites no PR (the plan entry's
+`verdict.citedPrs`, computed by branch_gc's own `citedPrsOf`), and its line
+coverage is under the plan's `minLineCoverage`. The prompt says why: find
+the merged PR that landed the work and cite it in `landedIn` (and `#<pr>` in
+gate.reason), or change the verdict when no such PR exists. The reviewer
+records through `branch_gc_verdict` as usual, which replaces the stored
+verdict.
+
+Once per tip: the verdict store stamps `revision` on a record that replaced
+an earlier verdict for the same tip, and a verdict with a `revision` is never
+picked, so a re-review that again cites no PR stays in the decision queue
+instead of being re-reviewed every run. The same `revision` is how the
+missing-verdict check (and `gaps`) tell a re-review that recorded nothing
+from one that did. Ordering is the simplest rule that never starves new
+work: every unreviewed tip first, then the re-reviews, both newest first,
+all under one `maxReviews`. A name that still has an unreviewed tip is
+reviewed for that tip only; its re-review waits for a later run. The Review
+section of the report says how many tips were re-reviewed, out of how many
+queued, and why. `requireOperatorBelowGuard: true` turns re-reviews off (a
+cited PR only helps through the verified-pr pass), and so does
+`rereviewUncited: false`.
+
+The same opt-in covers reviewed held worktrees: `worktreeGcApply` removes
+each agreed one's worktree (never its branch) after re-checking it, so the
+branch reaches `branchGcApply` unheld and is judged by the same guard, with
+the same restore log. Without `applyReviewed` the report prints
+`agentproto worktree rm <path> --keep-branch` instead; a bare
+`agentproto worktree rm` would also delete the branch, outside the guard.
+Default false — see the app README,
 "Applying agreed verdicts".
 
 ## Enabling

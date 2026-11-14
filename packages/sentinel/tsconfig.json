@@ -1,0 +1,10 @@
+{
+  "extends": "@agentproto/tooling/typescript/node-library.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": "src",
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

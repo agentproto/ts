@@ -183,6 +183,7 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
     expect(bootSpecs[0]?.config).toEqual({
       installPackages: ["@agentproto/adapter-hermes@latest"],
       sessionHolder: expect.any(String),
+      workspaceSlug: "default",
     })
   })
 
@@ -199,6 +200,7 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
         "@anthropic-ai/claude-code@latest",
       ],
       sessionHolder: expect.any(String),
+      workspaceSlug: "default",
     })
   })
 
@@ -212,6 +214,7 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
     expect(bootSpecs[0]?.config).toEqual({
       installPackages: ["@agentproto/adapter-hermes@0.4.12"],
       sessionHolder: expect.any(String),
+      workspaceSlug: "default",
     })
   })
 
@@ -228,6 +231,7 @@ describe("spawnAgentSession sandbox — adapter installPackages auto-injection",
     expect(bootSpecs[0]?.config).toEqual({
       installPackages: ["@agentproto/adapter-hermes@latest", "left-pad@1.3.0"],
       sessionHolder: expect.any(String),
+      workspaceSlug: "default",
     })
   })
 })

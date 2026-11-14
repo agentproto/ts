@@ -1,5 +1,44 @@
 # @agentproto/mastra
 
+## 0.3.1
+
+### Patch Changes
+
+- b67f58e: AGENT.md `tools` accepts the AIP-42 structured item `{ kind: mcp, server, allow?, deny? }` and refuses a malformed one (missing `server`, a `/` in a name, an extra key, an unknown `kind`); the item is part of the generated agent schema and exported as `McpToolRef` / `ToolRef`. The operator `tools` item is that same schema, taken from the agent package, and still accepts the deprecated scoped form `{ id, source?, scope? }`. `projectAgentToSpawn` maps each structured item to a per-server `allowTools` / `denyTools` (`servers` on the projection) instead of dropping it with a warning; a deny wins over an allow and over any other item admitting the same tool, and a bare string joins the `agentproto` server. The spec generator gains `--inline-ref <def>` and proves disjoint closed-object `oneOf` branches, so the agent package is now covered by `check:spec-drift`. The vendored specs are re-synced, which regenerates the memory frontmatter schema line; the bridge and `refKey` in the app package take the widened `ToolRef` (a server ref keys as `mcp:<server>`).
+
+  Narrowing: a `server` in an operator or agent `tools` item must now match `^[A-Za-z0-9_.-]+$`, so a URL such as `https://mcp.local` is refused; use a host name such as `mcp-local`. The spawn still carries a single `allowTools` list for the daemon gateway, so a filter on any other server, or a `denyTools` with no allowlist, is exposed on `servers` and reported as a harness warning ("not applied") rather than enforced. The corpus validator and the corpus-cli bundle register the AIP-42 AGENT schema they now `$ref`.
+
+- Updated dependencies [b67f58e]
+- Updated dependencies [e301b84]
+- Updated dependencies [152ec6e]
+- Updated dependencies [e47f3cd]
+- Updated dependencies [e301b84]
+- Updated dependencies [152ec6e]
+  - @agentproto/agent@0.6.0
+  - @agentproto/corpus@1.0.0
+
+## 0.3.0
+
+### Minor Changes
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export none.
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export no `SPEC_NAME`/`SPEC_ID` constant (mirrors `.changeset/e33-spec-name-constants.md`).
+
+### Patch Changes
+
+- Updated dependencies [001368d]
+- Updated dependencies [8aa0aeb]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/agent@0.5.0
+  - @agentproto/corpus@0.9.0
+
 ## 0.2.20
 
 ### Patch Changes

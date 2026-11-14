@@ -225,12 +225,13 @@ coding-CLI orchestration:
 | `session_tree` | Session hierarchy (parent → children) |
 | `session_monitor` | Block until one of a set of sessions fires a lifecycle event |
 | `session_events_poll` | Drain runtime events |
-| `adapter_list` | List installed adapter CLIs |
+| `adapter_list` / `harness_list` | List installed agent harnesses; same payload, `harness_list` is the canonical spelling (`adapter_list` stays for older clients and daemons) |
 | `mcp_discovered_list` | MCPs discovered from other CLIs on this machine |
 | `tunnel_create` / `tunnel_list` / `tunnel_revoke` | Manage reverse tunnels (private by default; `tunnel_revoke` invalidates the signed link) |
 | `file_read` / `file_write` / `file_list` | Workspace filesystem |
-| `start_browser` / `stop_browser` | Browser session lifecycle |
+| `browser_navigate` / `browser_extract_text` / `browser_scroll` / … | Browser page tools, forwarded to the Bureau MCP |
 | `session_usage` | Per-session cost + token usage, live |
+| `session_screencast_frame` | One session's own open browser tab as an image (read-only; a caller session may only ask for its own id) |
 | `list_sandbox_providers` | List configured sandbox providers (e.g. e2b) |
 | `setup_sandbox_provider` | Configure a sandbox provider's credentials |
 | `sandbox_exec` | Run one command in a sandbox box (ephemeral, or an existing `sandboxId`) and get back exit code + stdout/stderr |

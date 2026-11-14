@@ -57,8 +57,16 @@ import {
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
-import { makeBranchGcRunner, makeBranchGcVerdictReader, makeBranchGcVerdictRecorder } from "./branch.js"
+import {
+  makeBranchGcOperatorApprover,
+  makeBranchGcRestorer,
+  makeBranchGcRunner,
+  makeBranchGcVerdictReader,
+  makeBranchGcVerdictRecorder,
+} from "./branch.js"
 import { installDaemonLogTimestamps } from "./_log-timestamps.js"
+import { reconcileReactionsAtBoot } from "./serve-boot-reactions.js"
+import { resolveServeFrameAncestors } from "./serve-frame-ancestors.js"
 import { systemPromptCapsFor } from "./system-prompt-caps.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
@@ -82,6 +90,7 @@ import {
   decodePairingReply,
   parseOfferUrl,
   deriveOfferTokens,
+  DEFAULT_PAIR_PAGE,
 } from "@agentproto/secrets/pairing"
 import {
   DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS,
@@ -104,6 +113,8 @@ import {
   defaultBrowserAdapterResolution,
   loadBrowserObserverModule,
   resolveEffectiveLlmEndpointFlag,
+  servingCliCommand,
+  setServingCli,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
   type GatewayHandle,
@@ -115,7 +126,7 @@ import {
 } from "@agentproto/runtime"
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
-import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
+import { buildDaemonTunnelServerOptions, pairingPublicBase } from "../util/tunnel-serve.js"
 import { dialRendezvous } from "@agentproto/pairing-host"
 import { resolveProxyDialOptions } from "../util/proxy-dial.js"
 import { homedir } from "node:os"
@@ -132,7 +143,7 @@ import {
 } from "../util/auth-providers-store.js"
 import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
 import { loadCachedCatalogVoices } from "../provider-catalog.js"
-import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/driver-agent-cli"
+import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/harness"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
 import { registerBuiltinSubaccountProviders } from "../util/subaccount-providers.js"
@@ -167,6 +178,9 @@ interface ServeOpts {
   /** When true, drop the localhost-wildcard default. Only `allowedOrigins`
    *  is honoured. Useful for hardened / shared-host setups. */
   strictOrigins?: boolean
+  /** Validated extra `frame-ancestors` sources for the app page (config
+   *  `daemon.frameAncestors`), added to the built-in VS Code schemes. */
+  frameAncestors?: readonly string[]
   /** Bearer token gating the gateway at boot. When set, the daemon
    *  starts already gated (mode "bearer") instead of the default
    *  open (mode "none") — no `remote_enable` call needed, and the
@@ -378,6 +392,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const merged = [...new Set([...cfgOrigins, ...cliOrigins])]
   const allowedOrigins = merged.length > 0 ? merged : undefined
 
+  const frameAncestors = resolveServeFrameAncestors(
+    cfgDaemon.frameAncestors,
+    line => process.stderr.write(line),
+  )
+
   // Auth token: --auth-token > config.json daemon.authToken. Unset ⇒
   // no `authToken` in ServeOpts ⇒ gateway boots with auth mode "none",
   // identical to today's behaviour. This is independent of `remote_enable`
@@ -395,6 +414,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     label,
     ...(allowedOrigins ? { allowedOrigins } : {}),
     ...(cfgDaemon.strictOrigins === true ? { strictOrigins: true } : {}),
+    ...(frameAncestors ? { frameAncestors } : {}),
     ...(authToken ? { authToken } : {}),
     ...(cfgTunnel.e2e === true ? { e2e: true } : {}),
   }
@@ -501,7 +521,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         process.env,
       )
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, appendSystemPrompt }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, preCompactCommand, appendSystemPrompt, memoryProjection }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -550,11 +570,17 @@ export async function runServe(args: readonly string[]): Promise<number> {
             // passes these to adapters that advertise support below).
             ...(fsZones ? { fsZones } : {}),
             ...(isolateHostContext ? { isolateHostContext: true } : {}),
+            // Projected PreCompact hook (`defaults.nativeHooks`); the driver
+            // writes it for claude-code only.
+            ...(preCompactCommand ? { preCompactCommand } : {}),
             // AGENT.md system-prompt text — only forwarded for adapters that
             // declare a channel (`supportsSystemPrompt` below); the runtime
             // (session-spawn.ts) already fell back to prefix+warning for the
             // ones that don't.
             ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
+            // AIP-72 native-dir inject (items + fallback digest), for an
+            // adapter whose `memoryInject` below is `native-dir`.
+            ...(memoryProjection ? { memoryProjection } : {}),
           })
         },
         // Every agent-cli arm except `proprietary` (which owns its own
@@ -611,6 +637,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.hooks !== undefined &&
         adapter.handle.capabilities.hooks.length > 0
           ? { nativeHooks: adapter.handle.capabilities.hooks }
+          : {}),
+        // AIP-72 `capabilities.memory.inject`: decides whether the spawn
+        // digest rides the system prompt (memory-digest.ts in the runtime).
+        ...(adapter.handle.capabilities?.memory?.inject !== undefined
+          ? { memoryInject: adapter.handle.capabilities.memory.inject }
+          : {}),
+        ...(adapter.handle.capabilities?.memory?.capture !== undefined
+          ? { memoryCapture: adapter.handle.capabilities.memory.capture }
           : {}),
         ...(adapter.handle.capabilities?.nativeToolSearch === true
           ? { nativeToolSearch: true }
@@ -739,6 +773,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const cfgPairing = cfg.pairing ?? {}
   let gateway: GatewayHandle
   const servePairedChannel = (sink: E2eFrameSink, ctx: PairingChannelContext): PairingChannelHandle => {
+    const publicBase = ctx.daemonFingerprint
+      ? pairingPublicBase(cfgPairing.pairPage ?? DEFAULT_PAIR_PAGE, ctx.daemonFingerprint)
+      : undefined
     const server = createTunnelServer({
       sink,
       ...buildDaemonTunnelServerOptions({
@@ -753,7 +790,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // anything the far end's hello claims, only what THIS pairing was
         // actually granted (see PairingChannelContext.scope's doc comment).
         ...(ctx.scope ? { pairingScope: ctx.scope } : {}),
+        // Where the pair page serves this daemon (`<fp>.<domain>/d/<fp>`), so
+        // app pages and links stop pointing at 127.0.0.1.
+        ...(publicBase ? { publicBase } : {}),
       }),
+      // Pairing channels are always E2E. Advertise bucket padding so a newer
+      // peer pads; an older peer ignores the capability and stays unpadded.
+      e2e: true,
+      e2ePadding: true,
     })
     return { close: () => server.close() }
   }
@@ -831,6 +875,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // configured a named endpoint, an upstream link, or an explicit
   // `llm-endpoint` route — see the resolver's docblock.
   const effectiveLlmEndpoint = await resolveEffectiveLlmEndpointFlag(cfgFeatures.llmEndpoint)
+  // The projected native hook must not depend on the PATH of a launchd daemon:
+  // run the CLI that serves this daemon, by absolute path.
+  setServingCli(servingCliCommand(process.execPath, resolveCliEntry(process.argv[1]) ?? undefined))
   const bootOutcome = await bootGatewayIdempotent({
     healthUrl,
     probe: probeHealthyDaemon,
@@ -862,6 +909,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // method short-circuits and only lazy resume-on-prompt applies.
         resumeSessionsOnBoot: cfgDaemon.resumeSessionsOnBoot === true,
         bootResumePolicy: cfgDaemon.bootResumePolicy,
+        // A keepAlive row is exempt from the idle reaper, so without this
+        // cutoff a finished one is revived on every restart forever. Stale
+        // ones stay lazy-resumable instead (default 30 min; 0 disables).
+        bootResumeKeepAliveMaxIdleMinutes: cfgDaemon.bootResumeKeepAliveMaxIdleMinutes,
         // App-service boot re-ensure: OWN knob, default ON — resolved from
         // daemon.resumeServicesOnBoot (only an explicit false disables).
         // Decoupled from resumeSessionsOnBoot (bedrock F-11): installed
@@ -904,6 +955,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // (undefined ⇒ `createGateway` never wraps `withDeferredTools` —
         // today's fully-eager behaviour, unchanged for existing clients).
         deferredTools: resolveDeferredToolsGatewayOption(cfg.defaults?.mcp?.deferredTools),
+        // Gateway-wide MCP surface profile (`defaults.mcp.profile`, see
+        // tool-profiles.ts). Absent ⇒ full, so existing daemons are unchanged.
+        // A per-mount `?profile=` on /mcp wins over this boot-time default.
+        mcpProfile: cfg.defaults?.mcp?.profile,
         llmEndpoint: effectiveLlmEndpoint,
         // Opt-in, no smart-default (unlike `llmEndpoint` above) — exposing
         // this daemon's local inference to a paired host-scoped controller
@@ -939,6 +994,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         runSandboxCheckpointGcSweep: makeSandboxCheckpointGcRunner(),
         recordBranchGcVerdict: makeBranchGcVerdictRecorder(),
         readBranchGcVerdict: makeBranchGcVerdictReader(),
+        // Injected port behind `branch_gc_restore`: re-creates refs from a restore log.
+        restoreBranchGc: makeBranchGcRestorer(),
+        // Injected port behind `POST /branches/gc/approve` (`agentproto branch
+        // gc approve`): copies a stored verdict and adds the operator block.
+        approveBranchGcVerdict: makeBranchGcOperatorApprover(),
         // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim
         // (`SessionDescriptor.worktreeAutoProvisioned`): a policy-provisioned
         // (implicit) session's own worktree is reclaimed the moment it exits,
@@ -995,6 +1055,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           ? { allowedOrigins: opts.allowedOrigins }
           : {}),
         ...(opts.strictOrigins ? { strictOrigins: true } : {}),
+        ...(opts.frameAncestors ? { frameAncestors: opts.frameAncestors } : {}),
         ...(opts.authToken
           ? { auth: { mode: "bearer" as const, token: opts.authToken } }
           : {}),
@@ -1079,10 +1140,18 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // lone-session policy survives the restart. Gated on the daemon actually
   // serving each row's workspace (§5 cross-process bullet): two daemons on
   // different ports share the `~/.agentproto/workspaces/*` buckets, so each
-  // must only resume rows whose home bucket matches the one IT serves — else
-  // both would race to resume the same sessions out of a shared bucket. No-op
+  // must leave rows in a bucket ANOTHER live daemon serves — else both would
+  // race the same sessions. A bucket no live peer serves is ours (see
+  // `makeIsServed`). No-op
   // (enabled:false) unless daemon.resumeSessionsOnBoot is set. Best-effort:
   // a failure here must never gate the daemon being up.
+  let bootBuckets:
+    | {
+        registeredSlugs: ReadonlySet<string>
+        servedBucket: string
+        otherLiveBuckets: ReadonlySet<string> | undefined
+      }
+    | undefined
   try {
     const wsConfig = await loadWorkspacesConfig()
     const registeredSlugs = new Set(wsConfig.workspaces.map(w => w.slug))
@@ -1107,10 +1176,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       resolveBucketSlug(findWorkspaceByPath(wsConfig, workspacePath)?.slug, registeredSlugs),
     )
     const reattached = await gateway.reattachSandboxSessionsOnBoot({
-      isServed: desc => {
-        const bucket = resolveBucketSlug(desc.workspaceSlug, registeredSlugs)
-        return bucket === servedBucket || !otherLiveBuckets.has(bucket)
-      },
+      isServed: makeIsServed({ registeredSlugs, servedBucket, otherLiveBuckets }),
     })
     if (reattached.candidates > 0) {
       const notes = [
@@ -1131,10 +1197,26 @@ export async function runServe(args: readonly string[]): Promise<number> {
         `${color.dim}${reattached.unserved} detached row(s) belong to other workspaces (not served by this daemon)${color.reset}\n`,
       )
     }
-    const eager = await gateway.resumeSessionsOnBoot({
-      isServed: desc =>
-        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
-    })
+    bootBuckets = { registeredSlugs, servedBucket, otherLiveBuckets }
+  } catch (err) {
+    process.stderr.write(
+      `${color.dim}eager resume-on-boot skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }${color.reset}\n`,
+    )
+  }
+
+  // Reaction receipt crash recovery: runs even when the config load above
+  // failed (see serve-boot-reactions.ts).
+  await reconcileReactionsAtBoot(gateway, bootBuckets, line =>
+    process.stderr.write(`${color.dim}${line}${color.reset}\n`),
+  )
+
+  if (bootBuckets !== undefined) try {
+    // Same cross-process gate as the re-attach pass: the served bucket, or a
+    // bucket no other live daemon serves (a stranded app bucket belongs to us).
+    const isServed = makeIsServed(bootBuckets)
+    const eager = await gateway.resumeSessionsOnBoot({ isServed })
     if (eager.enabled && eager.candidates > 0) {
       process.stderr.write(
         `${color.dim}eager-resumed ${eager.resumed}/${eager.candidates} session(s)` +
@@ -1146,11 +1228,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
     // AFTER the eager pass above, so a row whose eager resume failed carries
     // its failed attempt and is skipped instead of lazily retried — and, like
     // it, after the supervisor was re-armed, so a re-armed policy sees the
-    // continue turn end. Same cross-process gate.
-    const cont = await gateway.continueInterruptedOnBoot({
-      isServed: desc =>
-        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
-    })
+    // continue turn end. Same cross-process gate as the eager pass above.
+    const cont = await gateway.continueInterruptedOnBoot({ isServed })
     if (cont.enabled && cont.eligible > 0) {
       process.stderr.write(
         `${color.dim}continued ${cont.sent}/${cont.eligible} interrupted session(s)` +
@@ -1551,7 +1630,7 @@ async function runOneTunnel(
     }),
     // Advertise the encrypted channel in the (now in-box) hello so the host can
     // confirm/display it. Purely informational — the encryption is already live.
-    ...(e2eActive ? { e2e: true } : {}),
+    ...(e2eActive ? { e2e: true, e2ePadding: true } : {}),
     // Graceful drain hook — connect-only. Flip the outer loop's "reconnect
     // immediately" flag and close the WS so the supervisor reconnects without
     // backoff. Host follows up with close(1012) ~2s later as a hard backstop.
@@ -1597,6 +1676,28 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       resolve()
     })
   })
+}
+
+/**
+ * The boot passes' cross-process gate. A row is served by THIS daemon when its
+ * workspace bucket is the served one OR when no OTHER live daemon serves that
+ * bucket. `otherLiveBuckets` comes from `bucketsServedByOtherLiveDaemons`, so a
+ * bucket a live peer serves is left untouched while a stranded app bucket
+ * (nobody else will ever claim it) is ours.
+ *
+ * The same `findWorkspaceByPath → resolveBucketSlug` rule must produce both
+ * `servedBucket` and the mapper handed to `bucketsServedByOtherLiveDaemons`,
+ * otherwise a row could be "rescued" from a daemon that actually serves it.
+ */
+export function makeIsServed(opts: {
+  registeredSlugs: ReadonlySet<string>
+  servedBucket: string
+  otherLiveBuckets: ReadonlySet<string> | undefined
+}): (desc: { workspaceSlug?: string }) => boolean {
+  return desc => {
+    const bucket = resolveBucketSlug(desc.workspaceSlug, opts.registeredSlugs)
+    return bucket === opts.servedBucket || !opts.otherLiveBuckets?.has(bucket)
+  }
 }
 
 /**

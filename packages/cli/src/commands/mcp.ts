@@ -11,7 +11,7 @@
  *                               Mount imported MCPs NATIVELY (a real mcpServers
  *                               entry) in every spawn of <adapter>: creates or
  *                               extends bundle `harness-<adapter>` and lists it
- *                               in defaults.adapters.<adapter>.bundles. Never
+ *                               in defaults.harnesses.<adapter>.bundles. Never
  *                               enabled by default; ids must already be imported.
  *
  *   login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
@@ -35,6 +35,7 @@ import { spawn } from "node:child_process"
 import { KeychainStore } from "@agentproto/auth"
 import { createBundle, getBundle, updateBundle, type Bundle } from "@agentproto/runtime/bundles"
 import { loadConfig, saveConfig, type AgentprotoConfig } from "@agentproto/runtime/config"
+import { harnessDefaultsFor } from "@agentproto/runtime"
 import { openMcpClient } from "@agentproto/runtime/mcp-client-pool"
 import { loginMcpOAuth, mcpOAuthRef, type McpOAuthSecretIO } from "@agentproto/runtime/mcp-oauth"
 import {
@@ -59,7 +60,7 @@ move to the OS keychain (names only; dry-run by default). --apply stores them,
 verifies the read-back, then rewrites the file with secretRefs.
 
 mount-default makes every future <adapter> spawn mount the given imported MCPs
-as native MCP servers (bundle harness-<adapter> in defaults.adapters.<adapter>.
+as native MCP servers (bundle harness-<adapter> in defaults.harnesses.<adapter>.
 bundles). Repeat to add more ids. Opt-in per adapter; nothing is mounted by
 default.
 
@@ -199,15 +200,17 @@ export async function mountDefault(
     bundle = added.length > 0 ? "updated" : "unchanged"
   }
   const config = await deps.loadConfig()
-  const adapters = config.defaults?.adapters ?? {}
-  const current = adapters[adapter]?.bundles ?? []
+  // Written under the canonical `defaults.harnesses`; the current list is
+  // read through the deprecated `defaults.adapters` fallback too.
+  const harnesses = config.defaults?.harnesses ?? {}
+  const current = harnessDefaultsFor(config.defaults, adapter)?.bundles ?? []
   let linked = false
   if (!current.includes(bundleId)) {
     await deps.saveConfig({
       ...config,
       defaults: {
         ...config.defaults,
-        adapters: { ...adapters, [adapter]: { ...adapters[adapter], bundles: [...current, bundleId] } },
+        harnesses: { ...harnesses, [adapter]: { ...harnesses[adapter], bundles: [...current, bundleId] } },
       },
     })
     linked = true
@@ -458,7 +461,7 @@ export async function runMcp(argv: readonly string[]): Promise<number> {
       })
       process.stdout.write(
         `bundle ${r.bundleId}: ${r.bundle}${r.added.length ? ` (+${r.added.join(", ")})` : ""}\n` +
-          `defaults.adapters.${adapter}.bundles: ${r.linked ? "linked" : "already linked"}\n` +
+          `defaults.harnesses.${adapter}.bundles: ${r.linked ? "linked" : "already linked"}\n` +
           "New '" + adapter + "' spawns mount these natively; running sessions are unchanged.\n"
       )
       return 0

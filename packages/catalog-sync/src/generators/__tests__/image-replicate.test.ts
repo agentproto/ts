@@ -4,9 +4,18 @@
 import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
+import type { MediaPricing } from "@agentproto/model-catalog/pricing"
 import { imageReplicate } from "../image-replicate.js"
 import type { GeneratorContext, CatalogSource } from "../../types.js"
+
+// File-scoped stand-in for the scraped map: each test file gets its own module
+// registry, so setting a key here never leaks into another suite.
+const scrapedPricing = vi.hoisted(() => ({}) as Record<string, MediaPricing>)
+vi.mock("@agentproto/model-catalog/image", async importOriginal => ({
+  ...(await importOriginal<typeof import("@agentproto/model-catalog/image")>()),
+  REPLICATE_IMAGE_PRICING: scrapedPricing,
+}))
 
 function createOfflineCtx(refresh: boolean): GeneratorContext {
   return {
@@ -281,5 +290,59 @@ describe("image:replicate generator", () => {
     expect(idCount).toBeGreaterThanOrEqual(1)
     // Verify the curated model was included
     expect(source).toContain("flux-kontext-pro")
+  })
+})
+
+describe("image:replicate pricing source", () => {
+  function payloadWith(owner: string, name: string): GeneratorContext {
+    return {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          results: [
+            {
+              owner,
+              name,
+              description: "pricing source test",
+              visibility: "public",
+              run_count: 1,
+              cover_image_url: null,
+              latest_version: {
+                id: "v1",
+                created_at: "2024-01-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+          next: null,
+          previous: null,
+        }
+      },
+    }
+  }
+
+  it("uses the scraped REPLICATE_IMAGE_PRICING value over the hand-written table", async () => {
+    scrapedPricing["replicate:black-forest-labs/flux-kontext-pro"] = {
+      unit: "per_image",
+      priceUsd: 0.123,
+      source: "replicate",
+      fetchedAt: "2026-01-01",
+    }
+    try {
+      const result = await imageReplicate.generate(payloadWith("black-forest-labs", "flux-kontext-pro"))
+      const source = Object.values(result)[0]!
+      expect(source).toContain("costPerImage: 0.123")
+      expect(source).toContain("costTier: \"high\"")
+      expect(source).not.toContain("fallback: hand-written PRICING")
+    } finally {
+      delete scrapedPricing["replicate:black-forest-labs/flux-kontext-pro"]
+    }
+  })
+
+  it("falls back to the hand-written value, marked as such, when no scraped price exists", async () => {
+    const result = await imageReplicate.generate(payloadWith("unknown-owner", "flux-kontext-pro"))
+    const source = Object.values(result)[0]!
+    expect(source).toContain("// fallback: hand-written PRICING (no scraped Replicate price)")
+    expect(source).toContain("costPerImage: 0.04")
   })
 })

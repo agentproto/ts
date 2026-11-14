@@ -62,6 +62,12 @@ What happens:
    `ses_def34`. The new session records `continuedFrom`, the checkpoint id and
    `handoff: { fromHarness: "claude-code", toHarness: "codex", at }`.
 
+`session_continue_fresh` also keeps the source's agent binding. The successor
+records the source's role and, when the source was bound to a manifest agent,
+its agent name, its frozen delegation list and its memory opt-out; nothing is
+re-read from `AGENT.md` at continuation time. An explicit `agent` or `role` in
+the continuation request wins instead, and nothing is carried.
+
 Attach to the new session as usual:
 
 ```bash
@@ -105,10 +111,10 @@ described in step 2.
 
 ## When does a handoff happen?
 
-Only when you ask for one. The `contextContinuity` policy that watches a
+Only when you ask for one. The `contextSettings` policy that watches a
 session's context window has three modes (set under
-`defaults.contextContinuity.mode` in `~/.agentproto/config.json`, or per
-adapter/session):
+`defaults.contextSettings.mode` in `~/.agentproto/config.json`, or per
+adapter/session; `contextContinuity` is the legacy alias):
 
 | Mode | At `continueFreshAtPct` (default 75%) |
 |------|----------------------------------------|
@@ -184,7 +190,7 @@ or below the threshold it emits the same event with `"reason":
 "quota-threshold"`, once per quota window:
 
 ```bash
-agentproto config set defaults.contextContinuity '{"handoffAtQuotaRemaining": 10}'
+agentproto config set defaults.contextSettings '{"handoffAtQuotaRemaining": 10}'
 ```
 
 The unit is the `remaining` figure Anthropic's rate-limit headers report, the

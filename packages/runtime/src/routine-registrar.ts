@@ -24,6 +24,7 @@ import { isAbsolute, join, resolve } from "node:path"
 import { parseRoutineManifest, type RoutineFrontmatter } from "@agentproto/routine"
 import type { CronScheduler, CronAction } from "./cron-scheduler.js"
 import { toAgentStartCall } from "./agent-start-schema.js"
+import { resolveRoutineEventBinding, type ResolvedEventBinding } from "./action-hooks/event-bindings.js"
 
 const JOB_LABEL_PREFIX = "routine:"
 
@@ -138,13 +139,17 @@ export interface ReconcileResult {
   removed: string[]
   /** Files that failed to parse/validate or register — collected, not fatal to the rest of the scan. */
   errors: Array<{ file: string; error: string }>
+  /** Bindings resolved from enabled event routines; the reaction runner fires them. */
+  eventBindings?: ResolvedEventBinding[]
+  /** What the reaction wiring made live and refused for this pass, when a hook is installed. */
+  reactions?: { active: string[]; refused: Array<{ bindingId: string; error: string }> }
 }
 
 export interface RoutineRegistrar {
   /**
    * Scan, validate, and reconcile cron jobs for every routine found. Safe to
    * call repeatedly. A routine whose job the scheduler refuses (e.g. an
-   * unresolvable `target.agent.adapter`) lands in `errors`, never aborting
+   * unresolvable `target.agent.harness`) lands in `errors`, never aborting
    * the rest of the pass.
    */
   reconcile(): Promise<ReconcileResult>
@@ -156,6 +161,8 @@ export interface RoutineRegistrar {
   trigger(routineId: string): Promise<{ ok: boolean; summary: string }>
   /** Routine frontmatters known from the last `reconcile()` (parse errors excluded). */
   list(): RoutineFrontmatter[]
+  /** Event bindings resolved by the last `reconcile()` (empty before the first call). */
+  eventBindings(): ResolvedEventBinding[]
 }
 
 function scanRoutineFiles(routinesDir: string): Array<{ id: string; file: string }> {
@@ -178,11 +185,19 @@ export function createRoutineRegistrar(opts: {
   workspace: string
   cronScheduler: CronScheduler
   dispatchTool: (name: string, inputs: Record<string, unknown>) => Promise<unknown>
+  /** Called last on every reconcile; its return value is attached as `reactions`. */
+  onReconciled?: (
+    result: ReconcileResult,
+  ) =>
+    | Promise<{ active: string[]; refused: Array<{ bindingId: string; error: string }> } | void>
+    | { active: string[]; refused: Array<{ bindingId: string; error: string }> }
+    | void
 }): RoutineRegistrar {
   const { workspace, cronScheduler, dispatchTool } = opts
   const routinesDir = join(workspace, ".routines")
 
   let lastParsed: ParsedRoutine[] = []
+  let lastEventBindings: ResolvedEventBinding[] = []
 
   const parseAll = (): { parsed: ParsedRoutine[]; errors: ReconcileResult["errors"] } => {
     const parsed: ParsedRoutine[] = []
@@ -207,6 +222,7 @@ export function createRoutineRegistrar(opts: {
       const registered: string[] = []
       const skipped: ReconcileResult["skipped"] = []
       const removed: string[] = []
+      const eventBindings: ResolvedEventBinding[] = []
 
       // routineId → existing job, from cron jobs this registrar owns (label prefix).
       const existingByRoutineId = new Map<string, ReturnType<CronScheduler["list"]>[number]>()
@@ -224,12 +240,36 @@ export function createRoutineRegistrar(opts: {
           skipped.push({ id, reason: "enabled: false" })
           continue
         }
+        if (
+          frontmatter.schedule &&
+          typeof frontmatter.schedule === "object" &&
+          (frontmatter.schedule as { kind?: unknown }).kind === "event"
+        ) {
+          let binding: ResolvedEventBinding
+          try {
+            const resolved = resolveRoutineEventBinding(frontmatter)
+            if (!resolved) {
+              skipped.push({ id, reason: "schedule.kind 'event' did not resolve to a binding" })
+              continue
+            }
+            binding = resolved
+          } catch (err) {
+            errors.push({
+              file,
+              error: `routine '${id}': event binding not resolved: ${err instanceof Error ? err.message : String(err)}`,
+            })
+            continue
+          }
+          eventBindings.push(binding)
+          skipped.push({ id, reason: "schedule.kind 'event' resolved to a reaction binding; fired by the reaction runner" })
+          continue
+        }
         if (!isScheduleCron(frontmatter.schedule)) {
           const kind =
             frontmatter.schedule && typeof frontmatter.schedule === "object"
               ? String((frontmatter.schedule as { kind?: unknown }).kind ?? "unknown")
               : "unknown"
-          skipped.push({ id, reason: `schedule.kind '${kind}' not yet supported by the runtime registrar — only 'cron' fires today` })
+          skipped.push({ id, reason: `schedule.kind '${kind}' not yet supported by the runtime registrar; only 'cron' schedules a job and 'event' resolves a reaction` })
           continue
         }
         desiredIds.add(id)
@@ -272,6 +312,7 @@ export function createRoutineRegistrar(opts: {
             ...(schedule.timezone ? { timezone: schedule.timezone } : {}),
             recurring: true,
             action,
+            createdBy: { kind: "system" },
           })
         } catch (err) {
           errors.push({
@@ -292,7 +333,19 @@ export function createRoutineRegistrar(opts: {
         }
       }
 
-      return { registered, skipped, removed, errors }
+      lastEventBindings = eventBindings.slice()
+      const result: ReconcileResult = { registered, skipped, removed, errors, eventBindings }
+      if (opts.onReconciled) {
+        try {
+          const reactions = await opts.onReconciled(result)
+          if (reactions !== undefined) result.reactions = reactions
+        } catch (err) {
+          console.warn(
+            `[routine-registrar] onReconciled failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+      }
+      return result
     },
 
     async trigger(routineId) {
@@ -317,6 +370,10 @@ export function createRoutineRegistrar(opts: {
 
     list() {
       return lastParsed.map(p => p.frontmatter)
+    },
+
+    eventBindings() {
+      return lastEventBindings.slice()
     },
   }
 }

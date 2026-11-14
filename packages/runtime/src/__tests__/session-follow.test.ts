@@ -256,6 +256,19 @@ describe("session-follow", () => {
       expect(keep.sent).toHaveLength(1)
     })
 
+    it("treats a silent turn-end like an empty one: skipped by default, delivered when off", async () => {
+      const skip = setup([running("chief"), running("a")], { selector: { all: true } })
+      emitTurnEnd(bus, "a", { silent: true })
+      await handle!.flush()
+      expect(skip.sent).toHaveLength(0)
+      handle!.dispose()
+
+      const keep = setup([running("chief"), running("a")], { selector: { all: true }, skipEmptyTurns: false })
+      emitTurnEnd(bus, "a", { silent: true })
+      await handle!.flush()
+      expect(keep.sent).toHaveLength(1)
+    })
+
     it("a turn-end that left the session awaiting input reads as awaiting-input, once", async () => {
       const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
       emitTurnEnd(bus, "a", { awaitingInput: true, question: { text: "Deploy now?", source: "heuristic" } })
@@ -270,6 +283,17 @@ describe("session-follow", () => {
       expect(lines).toHaveLength(1)
       expect(lines[0]).toContain("awaiting-input")
       expect(lines[0]).toContain("Deploy now?")
+    })
+
+    it("keeps an awaiting-input entry when a later turn-end arrives in the same batch", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
+      bus.emit({ type: "session:awaiting-input", sessionId: "a", ts: NOW })
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      const lines = sent[0]!.text.split("\n").filter(l => l.includes("(a)"))
+      expect(lines).toHaveLength(2)
+      expect(lines.some(l => l.includes("awaiting-input"))).toBe(true)
+      expect(lines.some(l => l.includes(" turn-end"))).toBe(true)
     })
 
     it("with only turn-end subscribed, an awaiting turn-end still reads as turn-end", async () => {
@@ -456,7 +480,13 @@ describe("session-follow", () => {
       expect(msg.from).toEqual({ relation: "system" })
       expect(msg.kind).toBe("notice")
       expect(msg.urgency).toBe("next-turn")
-      expect(sendMessage.mock.calls[0]![1]).toEqual({ source: "session-follow", origin: "follow:chief" })
+      expect(sendMessage.mock.calls[0]![1]).toEqual(
+        expect.objectContaining({
+          source: "session-follow",
+          origin: "follow:chief",
+          coalesceKey: "follow-digest:chief",
+        }),
+      )
       const [header, ...lines] = msg.text.split("\n")
       expect(header).toMatch(/^\[session-follow\] automatic digest — 3 events/)
       expect(header).toContain("needs the human's attention")
@@ -604,6 +634,101 @@ describe("session-follow", () => {
       const parked = JSON.parse(readFileSync(parkedPath, "utf8").trim()) as { follower: string; text: string }
       expect(parked.follower).toBe("chief")
       expect(parked.text).toContain("[session-follow]")
+    })
+
+    it("forwards a retired follower's digest to its live parent, keeps the level, and records routedTo", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const parkedPath = join(tmp, "parked-parent.jsonl")
+      const ledgerPath = join(tmp, "delivery-ledger.jsonl")
+      const { sent } = setup(
+        [
+          running("boss"),
+          running("chief", { status: "killed", endedReason: "operator-stopped", parentSessionId: "boss" }),
+          running("a"),
+        ],
+        { selector: { all: true } },
+        { restartSession, parkedPath, ledgerPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent.map(m => m.to)).toEqual(["boss"])
+      // The forward is a re-address, not a downgrade.
+      expect(sent[0]!.urgency).toBe("next-turn")
+      expect(existsSync(parkedPath)).toBe(false)
+      const line = JSON.parse(readFileSync(ledgerPath, "utf8").trim()) as Record<string, unknown>
+      expect(line).toMatchObject({ outcome: "retargeted", routedTo: "boss", level: 2 })
+    })
+
+    it("redelivers a parked digest when its follower respawns, then compacts the journal", async () => {
+      const parkedPath = join(tmp, "parked-respawn.jsonl")
+      const { sent, sessions } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+
+      // The follower respawns under the same id.
+      sessions.set("chief", running("chief") as never)
+      const replayed = await handle!.replayParked("chief")
+      expect(replayed).toBe(1)
+      expect(sent.map(m => m.to)).toEqual(["chief"])
+      expect(sent[0]!.text).toContain("[session-follow]")
+      expect(readFileSync(parkedPath, "utf8").trim()).toBe("")
+    })
+
+    it("does not replay a parked digest for a follower that is still retired", async () => {
+      const parkedPath = join(tmp, "parked-still-retired.jsonl")
+      const { sent } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(await handle!.replayParked("chief")).toBe(0)
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+    })
+
+    it("keeps the parked digest when the respawned follower refuses redelivery", async () => {
+      const parkedPath = join(tmp, "parked-refused.jsonl")
+      const { sendMessage, sessions } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+
+      sessions.set("chief", running("chief") as never)
+      sendMessage.mockResolvedValueOnce({ refused: "inbox-full" })
+      expect(await handle!.replayParked("chief")).toBe(0)
+      // The only copy must survive a refused redelivery.
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+    })
+
+    it("replays a parked digest through the retired follower's live successor", async () => {
+      const parkedPath = join(tmp, "parked-successor.jsonl")
+      const { sent, sessions } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+
+      sessions.set("chief", running("chief", { status: "killed", endedReason: "operator-stopped", continuedTo: "chief-2" }) as never)
+      sessions.set("chief-2", running("chief-2") as never)
+      expect(await handle!.replayParked("chief")).toBe(1)
+      expect(sent.map(m => m.to)).toEqual(["chief-2"])
+      expect(readFileSync(parkedPath, "utf8").trim()).toBe("")
     })
 
     it("an ARCHIVED dead follower is never revived or re-minted; the digest is parked", async () => {
@@ -914,6 +1039,90 @@ describe("session-follow against a real registry", () => {
     expect(second).toContain('from="system" kind="notice">')
     expect(second).toContain("[session-follow] automatic digest")
     chiefSession.finishTurn()
+    handle.dispose()
+    reg.shutdown()
+  })
+
+  it("an expired external follower's digest lands in its inbox instead of being parked", async () => {
+    const WINDOW = 10 * 60_000
+    let clock = Date.parse("2026-01-01T00:00:00.000Z")
+    const bus = createSessionEventBus()
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      sessionEvents: bus,
+      externalSessionLivenessMs: WINDOW,
+      externalNow: () => clock,
+    })
+    const store = createSessionFollowStore({ persist: false })
+    const parkedPath = join(tmp, "parked.jsonl")
+    const restartSession = vi.fn(async (id: string) => {
+      throw new Error(`session "${id}" is an external session (no process the daemon can restart)`)
+    })
+    const handle = wireSessionFollow({
+      registry: reg,
+      sessionEvents: bus,
+      store,
+      parkedPath,
+      restartSession,
+      log: () => {},
+    })
+
+    reg.touchExternal({ id: "desktop-1", host: "claude-desktop" })
+    reg.touchExternal({ id: "desktop-2", host: "claude-desktop" })
+    store.upsert({ follower: "desktop-1", selector: { sessionIds: ["desktop-2"] }, batchMs: 0 })
+
+    clock += WINDOW + 60_000
+    expect(reg.get("desktop-1")?.status).toBe("exited")
+
+    bus.emit({ type: "session:turn-end", sessionId: "desktop-2", awaitingInput: false, ts: NOW })
+    await handle.flush()
+
+    expect(restartSession).not.toHaveBeenCalled()
+    const inbox = reg.listInbox("desktop-1")!
+    expect(inbox).toHaveLength(1)
+    expect(inbox[0]).toMatchObject({ delivered: { via: "inbox" } })
+    expect(existsSync(parkedPath) ? readFileSync(parkedPath, "utf8").trim() : "").toBe("")
+    handle.dispose()
+    reg.shutdown()
+  })
+
+  it("still parks a deliberately ended external follower's digest", async () => {
+    const WINDOW = 10 * 60_000
+    let clock = Date.parse("2026-01-01T00:00:00.000Z")
+    const bus = createSessionEventBus()
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      sessionEvents: bus,
+      externalSessionLivenessMs: WINDOW,
+      externalNow: () => clock,
+    })
+    const store = createSessionFollowStore({ persist: false })
+    const parkedPath = join(tmp, "parked-killed.jsonl")
+    const restartSession = vi.fn(async (id: string) => {
+      throw new Error(`session "${id}" is an external session (no process the daemon can restart)`)
+    })
+    const handle = wireSessionFollow({
+      registry: reg,
+      sessionEvents: bus,
+      store,
+      parkedPath,
+      restartSession,
+      log: () => {},
+    })
+
+    reg.touchExternal({ id: "desktop-1", host: "claude-desktop" })
+    reg.touchExternal({ id: "desktop-2", host: "claude-desktop" })
+    reg.kill("desktop-1")
+    store.upsert({ follower: "desktop-1", selector: { sessionIds: ["desktop-2"] }, batchMs: 0 })
+
+    clock += WINDOW + 60_000
+    bus.emit({ type: "session:turn-end", sessionId: "desktop-2", awaitingInput: false, ts: NOW })
+    await handle.flush()
+
+    expect(reg.listInbox("desktop-1")).toEqual([])
+    expect(readFileSync(parkedPath, "utf8")).toContain("desktop-1")
     handle.dispose()
     reg.shutdown()
   })

@@ -24,6 +24,7 @@ import {
 import {
   decodePairingReply,
   encodePairingMessage,
+  identityFingerprint,
   startClientHandshake,
   type PairingSession,
 } from "@agentproto/secrets/pairing/browser"
@@ -129,6 +130,10 @@ export type Greeting =
 export interface OpenedChannel {
   sink: E2eFrameSink
   session: PairingSession
+  /** Fingerprint of THIS client's first-handshake ephemeral key. The daemon
+   *  records it as the pairing fingerprint; both sides show its short code
+   *  while the pairing waits for the operator's confirmation (AIP-59 §3.7). */
+  clientFingerprint: string
   /** The daemon's first frame, `hello` — or its `pairing_revoked` refusal. */
   greeting: Greeting
   /** Detach the greeting reader and route every later frame to `handler`.
@@ -152,6 +157,7 @@ export async function openChannel(params: OpenChannelParams): Promise<OpenedChan
   )
   let sink: E2eFrameSink
   let session: PairingSession | null = null
+  let clientFingerprint = ""
   try {
     const started = await startClientHandshake({
       daemonX25519Pub: params.daemonX25519Pub,
@@ -159,6 +165,7 @@ export async function openChannel(params: OpenChannelParams): Promise<OpenedChan
       authToken: params.auth,
       clientName: params.clientName,
     })
+    clientFingerprint = await identityFingerprint(started.hello.ePub)
     sink = await clientHandshakeOverSink(
       raw,
       encodePairingMessage(started.hello),
@@ -222,6 +229,7 @@ export async function openChannel(params: OpenChannelParams): Promise<OpenedChan
   return {
     sink,
     session,
+    clientFingerprint,
     greeting,
     route(handler) {
       router = handler

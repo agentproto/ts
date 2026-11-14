@@ -210,7 +210,7 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     expect(result.output?.some(line => line.includes("echo: "))).toBe(true)
   })
 
-  it("reuse defaults to PAUSE (not kill) on close, even with no explicit lifecycle block", async () => {
+  it("reuse alone no longer implies pause-on-kill: an agent_kill tears the box down", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "fake-cli",
       cwd: workspace,
@@ -220,8 +220,10 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     if (!result.ok) return
 
     registry.kill(result.descriptor.id)
-    await vi.waitFor(() => expect(box.pauseSpy).toHaveBeenCalledTimes(1))
-    expect(box.stopSpy).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(box.stopSpy).toHaveBeenCalledTimes(1))
+    expect(box.pauseSpy).not.toHaveBeenCalled()
+    // The descriptor still records the resolved policy (pause_after_idle is
+    // the opt-in that would make a kill pause).
     expect(registry.get(result.descriptor.id)?.sandboxTeardown).toBe("pause")
   })
 

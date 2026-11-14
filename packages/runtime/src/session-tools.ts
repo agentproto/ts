@@ -24,7 +24,10 @@ import type {
   SessionsRegistry,
 } from "./sessions.js"
 import { applyBracketedPasteWrap } from "./sessions.js"
+import { resolveSessionLabels, SessionLabelsInputError, sessionLabelsInputShape } from "./session-labels.js"
 import { getSlug } from "./sessions.js"
+import { launchedByOf, launchedByText } from "./launched-by.js"
+import { canonicalOperatorRef, operatorDigestStale } from "./session-operator.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -32,7 +35,9 @@ import {
   collectSubtree,
   stripAnsi,
 } from "./agent-tools.js"
-import { checkSessionOwnerGate, effectiveCallerSessionId } from "./session-owner.js"
+import { effectiveCallerSessionId } from "./session-owner.js"
+import { SESSION_SCREENCAST_NO_FRAME_MESSAGE, type SessionScreencastReader } from "./session-screencast.js"
+import { checkDrive } from "./drive-gate.js"
 import { registerLineageTools } from "./lineage-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
@@ -72,12 +77,14 @@ import {
   type ImportedSkillEntry,
 } from "./skill-imports.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { loadConfig } from "./config.js"
 import {
   loadBundles,
   createBundle,
   updateBundle,
   deleteBundle,
   danglingImports,
+  effectiveBundles,
   BundleValidationError,
   type Bundle,
 } from "./bundles.js"
@@ -90,6 +97,7 @@ import { buildSessionReportFromRegistry } from "./session-report-service.js"
 import {
   computeContextContinuityStatus,
   computeContextPct,
+  withContextPolicy,
 } from "./context-continuity.js"
 import { buildSessionCapabilities } from "./session-capabilities.js"
 import type { McpObservationStore } from "./mcp-session-observer.js"
@@ -100,7 +108,13 @@ import { createCheckpointSources } from "./checkpoint-extract.js"
 import { readSandboxLedger } from "./sandbox-ledger.js"
 import { liveSessionBoxIds, runSandboxOrphanGcPass } from "./sandbox-orphan-gc.js"
 import type { SandboxGcProviderHandle } from "./sandbox-gc.js"
-import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
+import { collectSandboxInventory } from "./sandbox-inventory.js"
+import {
+  DEFAULT_SANDBOX_GC_PROVIDER_SLUGS,
+  DEFAULT_SANDBOX_PROVIDER_SLUGS,
+  makeSandboxCredsStore,
+  makeSandboxResolver,
+} from "./sandbox-adapters.js"
 import type { TaskLedger } from "./task-ledger.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
@@ -117,6 +131,7 @@ import { outcomeDetailShape } from "./outcome-detail-schema.js"
 import { processTreeRss } from "./process-memory.js"
 import {
   applySessionListFilters,
+  collapseLineageChains,
   isReviewOrWorkflowSession,
   pickSessionListFilters,
   toList,
@@ -196,7 +211,7 @@ import {
   type WorktreeStatusLister,
   type WorktreeStatusView,
 } from "./worktree-status.js"
-import { livingSessionCwds, type WorktreeGcResult, type WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, parseExpectedPlan, type WorktreeGcResult, type WorktreeGcRunner } from "./worktree-gc.js"
 import {
   createBackgroundJobRegistry,
   timedOutWaiting,
@@ -204,15 +219,19 @@ import {
 } from "./background-jobs.js"
 import {
   BRANCH_GC_PAGE_MAX,
+  branchGcReply,
+  decodeBranchGcCursor,
   sliceBranchGcResult,
   summarizeBranchGcApply,
   withBranchGcApplySummary,
+  type BranchGcReplyInput,
   type BranchGcResultSliceInput,
   type BranchGcResult,
   type BranchGcRunInput,
   type BranchGcRunner,
   type BranchGcVerdictRecorder,
   type BranchGcVerdictReader,
+  type BranchGcRestorer,
 } from "./branch-gc.js"
 import {
   summarizeSandboxCheckpointGcApply,
@@ -232,6 +251,8 @@ import {
   loadTerminalGateMode,
 } from "./command-allowlist.js"
 import { archivedInclusiveRegistry, resolveSessionRef, sessionRefSchema } from "./session-ref.js"
+import { adapterDeprecation } from "./harness-alias.js"
+import { publicSessionDescriptor } from "./session-descriptor-public.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -302,7 +323,10 @@ export interface SessionTreeNode {
   secondsSinceLastActivity?: number
   toolCallsThisTurn?: number
   depth: number
+  /** @deprecated Read `harness`; removed in the next major of @agentproto/runtime. */
   adapterSlug?: string
+  /** Canonical harness slug (always set when `adapterSlug` is). */
+  harness?: string
   parentSessionId?: string
   /** Source label this session was spawned from ("claude-code", "vscode",
    *  "cron", …) — the descriptor's `origin`. Present on every node, but it's
@@ -595,6 +619,7 @@ export function buildSessionTree(
     toolCallsThisTurn: s.toolCallsThisTurn,
     depth: s.depth ?? 0,
     ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+    ...((s.harness ?? s.adapterSlug) ? { harness: s.harness ?? s.adapterSlug } : {}),
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
     ...(s.origin ? { origin: s.origin } : {}),
     ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
@@ -651,6 +676,9 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.ensureLlmEndpointRunning`. */
   ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
+  /** Forwarded to `registerAgentTools`, see
+   *  `RegisterAgentToolsOptions.loadCommandAllowlist`. */
+  loadCommandAllowlist?: RegisterAgentToolsOptions["loadCommandAllowlist"]
   /** config.json `defaults` loader — same seam as
    *  `RestartAgentSessionOptions.loadDefaultsConfig` in session-restart-core.ts.
    *  Threaded into `session_restart`'s pty-native billing-auth re-resolution
@@ -708,6 +736,14 @@ export interface RegisterSessionToolsOptions {
    *  this `/mcp` request, used as the implicit auto-parent for attach-by-
    *  default. See `RegisterAgentToolsOptions.callerSessionId`. */
   callerSessionId?: string
+  /** The daemon's single screencast reader (the one behind `GET
+   *  /sessions/:id/screencast.jpg`), backing `session_screencast_frame`.
+   *  Omitted → the tool answers its normal miss message. */
+  sessionScreencast?: SessionScreencastReader
+  /** Forwarded to `registerAgentTools`: the session a valid session token on
+   *  this `/mcp` request was minted for. See
+   *  `RegisterAgentToolsOptions.credentialSessionId`. */
+  credentialSessionId?: string
   /** Forwarded to `registerAgentTools` — the connecting client's source label
    *  from this `/mcp` request's `?origin=` query, used as the default origin
    *  for a spawn that doesn't set its own. See
@@ -758,9 +794,22 @@ export interface RegisterSessionToolsOptions {
   /** `defaults.messaging.peerGroups` - forwarded to
    *  `registerAgentTools`. */
   messagingPeerGroups?: RegisterAgentToolsOptions["messagingPeerGroups"]
+  /** `defaults.messaging.grants` - forwarded to `registerAgentTools`. */
+  messagingGrants?: RegisterAgentToolsOptions["messagingGrants"]
+  /** `defaults.messaging.peerBinding` - forwarded to
+   *  `registerAgentTools`. */
+  messagingPeerBinding?: RegisterAgentToolsOptions["messagingPeerBinding"]
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.agentInterrupt`. */
   messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]
+  /** `delivery.apply` - forwarded to `registerAgentTools`. */
+  deliveryApply?: RegisterAgentToolsOptions["deliveryApply"]
+  /** `defaults.messaging.anonymousSend` - forwarded to `registerAgentTools`. */
+  messagingAnonymousSend?: RegisterAgentToolsOptions["messagingAnonymousSend"]
+  /** `mcp.noCallerIdentity` - forwarded to `registerAgentTools`. */
+  noCallerIdentity?: RegisterAgentToolsOptions["noCallerIdentity"]
+  /** `mcp.noCallerIdentity: "ask"` - forwarded to `registerAgentTools`. */
+  requestAnonymousMessageApproval?: RegisterAgentToolsOptions["requestAnonymousMessageApproval"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join
@@ -795,6 +844,8 @@ export interface RegisterSessionToolsOptions {
   recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional verdict reader powering `branch_gc_verdict_get`. Same injection reason. */
   readBranchGcVerdict?: BranchGcVerdictReader
+  /** Optional restorer powering `branch_gc_restore`. Same injection reason. */
+  restoreBranchGc?: BranchGcRestorer
   /** Directory `branch_gc`'s background jobs write their finished result to
    *  (the file `branch_gc_status`'s `resultPath` points at). Defaults to
    *  `~/.agentproto/branch-gc/jobs`. Injectable so tests can point it at a
@@ -851,6 +902,11 @@ export interface SessionListCompactItem {
   origin?: string
   name?: string
   label?: string
+  /** AIP-46 operator ref this session is bound to (compact form). */
+  operator?: string
+  /** Present only when the caller passed `operatorDigests` and the session
+   *  records an operator digest: true when they differ. */
+  operatorStale?: boolean
   status: SessionDescriptor["status"]
   /** Worktree-provisioning progress of a `starting` row (`queued` with a
    *  1-based `position`, or `running`, plus the `phase`) — see
@@ -864,10 +920,18 @@ export interface SessionListCompactItem {
    *  is a terminal record: no pid, not promptable. */
   cold?: boolean
   pty?: boolean
+  /** Who launched this session, as derived text (`launchedByText`): a parent
+   *  or caller session, the operator, or only the origin channel. No label
+   *  lookup is done here, so a parent is shown by id only. Absent when no
+   *  provenance field is set. Not persisted; the full descriptor is untouched. */
+  launchedBy?: string
   /** What was actually run — quoted joined, same string the full record carries. */
   command: string
   cwd?: string
+  /** @deprecated Read `harness`; removed in the next major of @agentproto/runtime. */
   adapterSlug?: string
+  /** Canonical harness slug (always set when `adapterSlug` is). */
+  harness?: string
   model?: string
   busy?: boolean
   awaitingInput?: boolean
@@ -956,15 +1020,11 @@ export interface SessionListCompactItem {
   hostFingerprint?: SessionDescriptor["hostFingerprint"]
 }
 
-/** Public MCP descriptor projection. Resume environment is required by the
- * registry to reattach native PTYs, but must never cross the tool boundary.
- * The AGENT.md system-prompt text (`appendSystemPrompt`) is kept for restart
- * re-application only and is not echoed either. */
-const publicSessionDescriptor = (
-  session: SessionDescriptor,
-): Omit<SessionDescriptor, "ptyResumeEnv" | "appendSystemPrompt"> => {
-  const { ptyResumeEnv: _privateResumeEnv, appendSystemPrompt: _privateSystemPrompt, ...publicDescriptor } = session
-  return publicDescriptor
+/** The `launchedBy` key of a compact row: present only when some provenance
+ *  field is set, so a plain root row keeps exactly its old shape. */
+const launchedByField = (s: SessionDescriptor): { launchedBy?: string } => {
+  const launchedBy = launchedByText(launchedByOf(s))
+  return launchedBy ? { launchedBy } : {}
 }
 
 export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem => ({
@@ -973,6 +1033,8 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.origin ? { origin: s.origin } : {}),
   name: s.name,
   label: s.label,
+  ...(s.operator ? { operator: s.operator } : {}),
+  ...(s.operatorStale !== undefined ? { operatorStale: s.operatorStale } : {}),
   status: s.status,
   ...(s.provisioning ? { provisioning: { ...s.provisioning } } : {}),
   alive: s.alive,
@@ -981,6 +1043,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   command: s.command,
   cwd: s.cwd,
   adapterSlug: s.adapterSlug,
+  harness: s.harness ?? s.adapterSlug,
   model: s.model,
   busy: s.busy,
   awaitingInput: s.awaitingInput,
@@ -1019,6 +1082,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   // UI can show "host: <id>" straight off the list.
   ...(s.hostSessionId ? { hostSessionId: s.hostSessionId } : {}),
   ...(s.hostFingerprint ? { hostFingerprint: s.hostFingerprint } : {}),
+  ...launchedByField(s),
 })
 
 // ── session_commands rows ────────────────────────────────────────────────
@@ -1423,6 +1487,7 @@ export function registerSessionTools(
     runSandboxCheckpointGcSweep,
     recordBranchGcVerdict,
     readBranchGcVerdict,
+    restoreBranchGc,
     listCatalogModels,
     loadDefaultsConfig,
     reviewRunner,
@@ -1536,9 +1601,24 @@ export function registerSessionTools(
       .describe(
         "Also serve sessions the registry dropped at boot from disk, flagged `cold: true`."
       ),
+    collapseLineage: z
+      .boolean()
+      .optional()
+      .describe(
+        "Hide a row whenever another row in THIS result points back to it via " +
+          "`resumedFrom`/`continuedFrom`/`succeeds` — collapses a restart/continue-fresh/" +
+          "handover chain down to its live tail instead of showing every retired hop under " +
+          "the same label. Default false."
+      ),
     stats: statsParamSchema.describe(
       "Per-live-session RSS, %CPU, process count and top commands under `stats`; `true` = summary, `\"full\"` = every process."
     ),
+    operatorDigests: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe(
+        "Current operator digests keyed by operator ref. Rows whose recorded `operatorDigest` differs get `operatorStale: true`."
+      ),
     ...sessionListFilterShape,
     ...pageParamsShape,
   })
@@ -1589,7 +1669,8 @@ export function registerSessionTools(
           )
         }
         narrowed = applySessionListFilters(narrowed, filters)
-        return sortNewestActivityFirst(narrowed)
+        const sorted = sortNewestActivityFirst(narrowed)
+        return input.collapseLineage ? collapseLineageChains(sorted) : sorted
       }
       // Always pull the FULL list (archived included) — subtree scoping
       // below needs every row to keep the parent→child graph connected
@@ -1651,6 +1732,19 @@ export function registerSessionTools(
           statsDetail,
           opts.processStats,
         )
+      }
+      if (input.operatorDigests) {
+        const currentByOperator = new Map(
+          Object.entries(input.operatorDigests).map(([ref, digest]) => [canonicalOperatorRef(ref) ?? ref, digest]),
+        )
+        rows = rows.map(s => {
+          if (!s.operator) return s
+          const stale = operatorDigestStale(
+            s.operatorDigest,
+            currentByOperator.get(canonicalOperatorRef(s.operator) ?? s.operator),
+          )
+          return stale === undefined ? s : { ...s, operatorStale: stale }
+        })
       }
       return rows.map(publicSessionDescriptor)
     },
@@ -2097,6 +2191,68 @@ export function registerSessionTools(
     },
   )
 
+  // ── session_screencast_frame ────────────────────────────────────
+  // Read-only, risk level 0, idempotent: never starts a recording. The reader
+  // is the daemon's single instance (shared with the HTTP route) so the frame
+  // cache and the 2-capture cap are not split. Not in any agent-scoped
+  // profile; a caller session (`callerSessionId`, or a scoped orchestrator's
+  // owner) may only read its own tab.
+  server.registerTool(
+    "session_screencast_frame",
+    {
+      description:
+        "Return the current frame of one session's own open browser tab as a single " +
+        "MCP image (JPEG), the same frame `GET /sessions/:id/screencast.jpg` serves. " +
+        "Read-only: it never starts a recording. When the session has no open tab " +
+        "(or the browser cannot be reached) the result is an error with one fixed " +
+        "message that does not say which. Frames are cached ~800 ms, so poll no " +
+        "faster than about every 1.5 s. An agent session may only ask for its own " +
+        "`sessionId`.",
+      inputSchema: {
+        sessionId: z.string().min(1).describe("The session whose browser tab to capture."),
+      },
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ sessionId }) => {
+      const miss = {
+        content: [{ type: "text" as const, text: SESSION_SCREENCAST_NO_FRAME_MESSAGE }],
+        isError: true,
+      }
+      const caller = effectiveCallerSessionId(callerScope, callerSessionId)
+      if (caller !== undefined && caller !== sessionId) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "session_screencast_frame: a session can only read its own browser tab.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const outcome = await opts.sessionScreencast?.read(sessionId)
+        if (!outcome?.ok) return miss
+        return {
+          content: [
+            {
+              type: "image" as const,
+              data: outcome.bytes.toString("base64"),
+              mimeType: outcome.mimeType,
+            },
+          ],
+        }
+      } catch {
+        return miss
+      }
+    },
+  )
+
   // ── session_transcript ──────────────────────────────────────────
   server.tool(
     "session_transcript",
@@ -2286,6 +2442,11 @@ export function registerSessionTools(
   ): { desc?: SessionDescriptor; error?: string } => {
     const desc = resolveSessionDesc(registry, input)
     if (desc) return { desc }
+    // A ref that was given but does not resolve is an error, never a silent
+    // fall back on the caller's own session (that would answer a question
+    // about another session with the caller's history).
+    const ref = sessionRefQuery(input)
+    if (ref) return { error: `no session "${ref}" found` }
     const fallback = callerSessionId
       ? registry.get(callerSessionId)
       : undefined
@@ -2371,22 +2532,29 @@ export function registerSessionTools(
       let spent = 0
       let truncated = false
       for (const node of nodes) {
-        if (hits.length >= maxResults) {
+        if (hits.length >= maxResults || spent >= totalChars) {
           truncated = true
           break
         }
-        const remaining = Math.max(200, totalChars - spent)
         const result = await searchTranscriptFile(node.path, node.sessionId, {
           query: input.query,
           maxResults: maxResults - hits.length,
           excerptChars,
-          totalChars: remaining,
+          totalChars: totalChars - spent,
         })
+        // The per-file reader floors its budget at 200 chars, so the total
+        // cap is enforced here too: a hit past it ends the walk.
+        let overBudget = false
         for (const hit of result.hits) {
+          if (spent + hit.excerpt.length > totalChars) {
+            overBudget = true
+            break
+          }
           spent += hit.excerpt.length
           hits.push(hit)
         }
-        if (result.truncated) truncated = true
+        if (result.truncated || overBudget) truncated = true
+        if (overBudget) break
       }
       return {
         content: [
@@ -2423,7 +2591,11 @@ export function registerSessionTools(
         .int()
         .min(0)
         .optional()
-        .describe("Only records with a sequence number above this cursor."),
+        .describe(
+          "Only records with a sequence number above this cursor, in the " +
+            "target session's own transcript (sequence numbers are per file; " +
+            "predecessors are read from their start).",
+        ),
       maxRecords: z
         .number()
         .int()
@@ -2471,23 +2643,32 @@ export function registerSessionTools(
       let spent = 0
       let truncated = false
       for (const node of nodes) {
-        if (excerpts.length >= maxRecords) {
+        if (excerpts.length >= maxRecords || spent >= totalChars) {
           truncated = true
           break
         }
-        const remaining = Math.max(200, totalChars - spent)
+        // `since` is a sequence cursor, and sequence numbers are per
+        // transcript file: it only means something for the target session's
+        // own transcript, never for a predecessor's.
+        const since = node.sessionId === target.desc.id ? input.since : undefined
         const result = await readTranscriptFile(node.path, node.sessionId, {
           ...(input.query !== undefined ? { query: input.query } : {}),
-          ...(input.since !== undefined ? { since: input.since } : {}),
+          ...(since !== undefined ? { since } : {}),
           maxRecords: maxRecords - excerpts.length,
           excerptChars,
-          totalChars: remaining,
+          totalChars: totalChars - spent,
         })
+        let overBudget = false
         for (const excerpt of result.excerpts) {
+          if (spent + excerpt.excerpt.length > totalChars) {
+            overBudget = true
+            break
+          }
           spent += excerpt.excerpt.length
           excerpts.push(excerpt)
         }
-        if (result.truncated) truncated = true
+        if (result.truncated || overBudget) truncated = true
+        if (overBudget) break
       }
       return {
         content: [
@@ -2513,7 +2694,10 @@ export function registerSessionTools(
       "modes/posture (`availableModes`/`posture`/`canonicalPostures`), " +
       "model/effort, mounted MCP servers (name/transport/ref only — never " +
       "headers/env/credentials), resolved skills, and permission-hold state " +
-      "(`permissionHold`/`pendingPermissions`). Same lookup as `session_list` " +
+      "(`permissionHold`/`pendingPermissions`), and the derived `interception` " +
+      "(whether the daemon can block before execution or only observe, for the " +
+      "harness's own tool calls and per declared native hook event; a declared " +
+      "capability, nothing is installed). Same lookup as `session_list` " +
       "/ `session_restart` (by id or name); the REST twin is " +
       "`GET /sessions/:id/capabilities`.",
     {
@@ -2698,22 +2882,10 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      const policy = desc.contextContinuity
-      if (!policy) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: `session "${desc.id}" has no resolved context continuity policy`,
-              }),
-            },
-          ],
-          isError: true,
-        }
-      }
+      // No resolved policy: checkpointed under the defaults, as the HTTP route does.
+      const { source, policy } = withContextPolicy(desc)
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
-      const checkpoint = await buildContextCheckpoint(desc, {
+      const checkpoint = await buildContextCheckpoint(source, {
         contextPct: pct,
         registry,
         sources: checkpointSources,
@@ -2721,6 +2893,7 @@ export function registerSessionTools(
         ...(input.askSource !== undefined ? { askSource: input.askSource } : {}),
       })
       await persistCheckpoint(checkpoint)
+      registry.noteCheckpointWritten(desc.id)
       return {
         content: [
           {
@@ -2749,9 +2922,9 @@ export function registerSessionTools(
     "session_continue_fresh",
     "Spawn a NEW agent session that continues the work of an existing " +
       "session with a structured checkpoint as its initial prompt. By " +
-      "default the new session uses the same adapter, harness, model, " +
-      "route, access profile, posture, effort, and cwd — pass `harness`/" +
-      "`adapter`, `model`, and/or `access.profileRef` to override any of " +
+      "default the new session uses the same harness, model, " +
+      "route, access profile, posture, effort, and cwd: pass `harness` " +
+      "(deprecated alias `adapter`), `model`, and/or `access.profileRef` to override any of " +
       "those three axes, enabling a CROSS-harness handoff (e.g. claude-code " +
       "-> opencode). An overridden axis is validated for model x profile " +
       "eligibility the same way `agent_start` validates it — an ineligible " +
@@ -2767,19 +2940,17 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe(
-          "Override the canonical harness slug for the fresh session — the " +
-            "cross-harness handoff axis (e.g. 'opencode'). Alias of `adapter`; " +
-            "set either or both. Omitted -> carried forward from the prior " +
-            "session, unchanged."
+          "Override the harness slug for the fresh session: the " +
+            "cross-harness handoff axis (e.g. 'opencode'). Omitted -> carried " +
+            "forward from the prior session, unchanged."
         ),
       adapter: z
         .string()
         .min(1)
         .optional()
         .describe(
-          "Override the adapter slug for the fresh session — alias of " +
-            "`harness`. Set either or both. Omitted -> carried forward from " +
-            "the prior session, unchanged."
+          "Deprecated alias of `harness` (`harness` wins when both are set); " +
+            "removed in the next major of @agentproto/runtime. Using it adds a warning."
         ),
       model: z
         .string()
@@ -2856,19 +3027,17 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      // Session-owner gate (session-owner.ts): the fresh-continuation
-      // target may only be driven by its owner (the session that spawned it,
-      // or the operator), itself, or an `allowPromptFrom` grantee.
+      // Drive gate (drive-gate.ts): the fresh-continuation target may only be
+      // driven by its owner (the session that spawned it, or the operator),
+      // itself, an ancestor, or an `allowPromptFrom` grantee. An explicit
+      // `session:control` grant may admit another caller.
       const freshCaller = effectiveCallerSessionId(callerScope, callerSessionId)
-      const freshOwnerGate = checkSessionOwnerGate({
+      const freshOwnerGate = checkDrive({
+        registry,
+        ...(opts.messagingGrants !== undefined ? { grants: opts.messagingGrants } : {}),
         callerSessionId: freshCaller,
         target: desc,
         tool: "session_continue_fresh",
-        // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
-        // (grandparent / orchestrator root) keeps its existing subtree
-        // authority over the target.
-        parentOf: id => registry.get(id)?.parentSessionId,
-        operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })
       if (!freshOwnerGate.ok) {
         return {
@@ -2892,7 +3061,7 @@ export function registerSessionTools(
           : {}),
       }
       try {
-        const result = await continueAgentSessionFresh(spawnDeps, desc, {
+        const result = await continueAgentSessionFresh(spawnDeps, withContextPolicy(desc).source, {
           ...(input.harness !== undefined ? { harness: input.harness } : {}),
           ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
@@ -2912,6 +3081,9 @@ export function registerSessionTools(
                   checkpointId: result.checkpoint.checkpointId,
                   checkpointPath: result.checkpoint.checkpointPath,
                   handoff: result.descriptor.handoff,
+                  ...(input.adapter !== undefined
+                    ? { warnings: [`session_continue_fresh: ${adapterDeprecation("adapter", "harness")}`] }
+                    : {}),
                 },
                 null,
                 2,
@@ -3456,6 +3628,11 @@ export function registerSessionTools(
           getMcpCredentialDeps()
         )
         await saveImportedMcps(added.config)
+        // Re-importing an existing id may leave an unchanged snapshot, so
+        // `ensureCurrent`'s snapshot comparison keeps the old pooled client
+        // and its stale tool cache. Drop it explicitly so the next read
+        // reconnects and re-lists.
+        if (mcpProxy) await mcpProxy.invalidate(added.entry.id)
         const out =
           added.warnings.length > 0
             ? { ...added.entry, warnings: added.warnings }
@@ -3825,10 +4002,12 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      const caller = callerScope?.ownerSessionId ?? callerSessionId
       const out = await mcpProxy.callTool(
         input.alias,
         input.toolName,
-        input.args ?? {}
+        input.args ?? {},
+        caller ? { callerSessionId: caller } : undefined
       )
       if (!out.ok) {
         return {
@@ -3872,9 +4051,17 @@ export function registerSessionTools(
       "this bundle skips those entries with a warning.",
     schema: bundleListSchema,
     body: async () => {
-      const [bundlesFile, importedConfig] = await Promise.all([loadBundles(), loadImportedMcps()])
+      const [bundlesFile, importedConfig, config] = await Promise.all([
+        loadBundles(),
+        loadImportedMcps(),
+        loadConfig(),
+      ])
       const importedIds = new Set(importedConfig.imports.map(e => e.id))
-      return bundlesFile.bundles.map(b => ({ ...b, dangling: danglingImports(b, importedIds) }))
+      return effectiveBundles(
+        bundlesFile.bundles,
+        config.defaults?.browser?.proxyImport,
+        importedConfig,
+      ).map(b => ({ ...b, dangling: danglingImports(b, importedIds) }))
     },
     project: item => item,
     keyOf: b => b.id,
@@ -3986,7 +4173,7 @@ export function registerSessionTools(
     "Return the orchestrator session hierarchy as a nested tree. Each root " +
       "is a session with no parent (or whose parent is outside the visible scope); " +
       "its `children` array holds direct sub-sessions, recursively. Each node " +
-      "carries `id`, `label`, `status`, `depth`, `adapterSlug`, `parentSessionId`, " +
+      "carries `id`, `label`, `status`, `depth`, `harness` (and the deprecated `adapterSlug`), `parentSessionId`, " +
       "`continuedFrom` (set when the node was spawned by `session_continue_fresh` " +
       "— a checkpoint-handoff edge distinct from tree nesting: the node is the " +
       "SOURCE session's sibling, not its child; the full record's `handoff` " +
@@ -4137,6 +4324,7 @@ export function registerSessionTools(
           toolCallsThisTurn: s.toolCallsThisTurn,
           depth: s.depth ?? 0,
           ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+          ...((s.harness ?? s.adapterSlug) ? { harness: s.harness ?? s.adapterSlug } : {}),
           ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
           ...(s.origin ? { origin: s.origin } : {}),
           ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
@@ -4614,9 +4802,10 @@ export function registerSessionTools(
   // ── worktree_gc ──────────────────────────────────────────────────
   // The transport surface over the `gc` engine (`planGc` / `applyGc` in
   // `@agentproto/worktree`). All classification + safety logic lives in the
-  // engine and is untouched here: `reclaim` fires only when integration ∈
-  // {merged, fresh} AND the tree is clean (teardown is merge-gated), an OPEN
-  // PR is always `hold` and never touched, and a dirty-but-integrated
+  // engine and is untouched here: `reclaim` fires when the branch is
+  // integrated AND the tree is clean — or dirty only with dirt a fresh proof
+  // shows carries no work (restored before the non-force remove); an OPEN PR
+  // is always `hold` and never touched, and any other dirty-but-integrated
   // worktree is only ever archived with `salvageDirty`. This tool defaults to
   // a DRY RUN — `apply` is false unless explicitly set — and delegates every
   // fact and mutation to the injected `runWorktreeGc` port.
@@ -4625,9 +4814,11 @@ export function registerSessionTools(
     "worktree_gc",
     "Garbage-collect the linked git worktrees for a repo. DEFAULTS TO A DRY " +
       "RUN: with `apply` false (the default) it returns the plan — each " +
-      "worktree classified as `reclaim` (merged/fresh + clean → safe to " +
-      "remove), `salvage` (integrated but dirty), or `hold` (open PR, live " +
-      "sessions, a recently-touched git index, or anything unresolved) — " +
+      "worktree classified as `reclaim` (merged/fresh + clean, or an " +
+      "integrated idle tree whose dirt provably carries no work → safe to " +
+      "remove), `salvage` (integrated but dirty beyond that), or `hold` " +
+      "(open PR, live sessions, a recently-touched git index, or anything " +
+      "unresolved) — " +
       "and mutates nothing. Pass " +
       "`apply: true` to execute: `reclaim` entries are removed and their " +
       "branch deleted, and `salvage` entries are archived first (only when " +
@@ -4670,9 +4861,10 @@ export function registerSessionTools(
       includeDetached: mcpBool
         .optional()
         .describe(
-          "When true, a clean, idle detached worktree is reclaimed instead " +
-            "of held. Default false. This is the only flag that can promote " +
-            "an entry toward reclaim; no flag ever weakens a hold otherwise."
+          "Accepted for compatibility; it no longer widens anything. A clean, " +
+            "idle detached worktree is reclaimed only when its HEAD is proven " +
+            "in base (ancestor, squash, patch, or a merged PR's head), with or " +
+            "without this flag; otherwise it is held."
         ),
       noisePaths: z
         .array(z.string())
@@ -4690,6 +4882,27 @@ export function registerSessionTools(
             "reason `recent-activity` instead of reclaiming/salvaging (plan " +
             "time and again immediately before apply touches anything). " +
             "Default 60. Pass 0 to disable the guard."
+        ),
+      expectedPlan: z
+        .array(z.record(z.string(), z.unknown()))
+        .optional()
+        .describe(
+          "The `plan` array of an earlier dry run. With `apply: true`, THIS plan " +
+            "is applied instead of planning afresh, and every entry is " +
+            "re-checked (branch, HEAD, git index, live sessions) against it " +
+            "right before it is touched: an entry that changed since is " +
+            "skipped as `skipped-stale` with the reason. Omit to plan and apply in one call."
+        ),
+      reviewedPaths: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Reviewed tier, with `apply: true`: `hold`-class worktrees at these paths are " +
+            "removed WORKTREE ONLY (`removed-keep-branch`, the branch is kept for " +
+            "`branch_gc`'s reviewed rung and line-coverage guard) when, re-checked right " +
+            "before the removal, they are unchanged since the plan, clean, idle, with no " +
+            "open PR, and the branch verdict store holds an agreeing verdict for the exact " +
+            "tip. Otherwise `skipped-stale` with the reason."
         ),
       wait: mcpBool
         .optional()
@@ -4738,6 +4951,7 @@ export function registerSessionTools(
       }
 
       try {
+        const expectedPlan = parseExpectedPlan(input.expectedPlan)
         const { job, promise } = worktreeGcJobs.start(() =>
           runWorktreeGc({
             repoRoot: resolved.repoRoot,
@@ -4749,6 +4963,8 @@ export function registerSessionTools(
             protectedPaths: livingSessionCwds(registry),
             ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
             ...(typeof input.activeMinutes === "number" ? { activeMinutes: input.activeMinutes } : {}),
+            ...(expectedPlan ? { expectedPlan } : {}),
+            ...(input.reviewedPaths?.length ? { reviewedPaths: input.reviewedPaths } : {}),
           })
         )
         if (input.wait === false) {
@@ -4817,7 +5033,19 @@ export function registerSessionTools(
       "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
       "the returned jobId instead of blocking. A `wait: false` (or `waitMs` " +
       "timed-out) response returns a jobId plus a `followUp` block naming the " +
-      "poll tool and cadence — poll `branch_gc_status` with that jobId.",
+      "poll tool and cadence — poll `branch_gc_status` with that jobId. " +
+      "The finished reply is COMPACT by default: the summary (ref counts per " +
+      "kind plus `distinct` branch-name counts), the plan metadata and one " +
+      "page of entries (name, kind, sha, class, status, reclaimReason / " +
+      "mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard / headPr " +
+      "when set), default 100 rows with `page.nextCursor`; pass it back as " +
+      "`cursor` to read the next page of the SAME run (no re-run; the cursor " +
+      "keeps the `section`, `classes`, `limit` and `full` it was created with). An " +
+      "apply pages its outcomes by default (the large plan entries stay on " +
+      "disk; pass `section: \"entries\"` to page those instead) and keeps the " +
+      "restore log and `applySummary`. `fields` keeps only the named keys of " +
+      "each full entry, `classes` filters entries, `full: true` returns whole " +
+      "rows (alone: the whole unpaged result).",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z
@@ -4835,8 +5063,11 @@ export function registerSessionTools(
       includeReviewed: mcpBool
         .optional()
         .describe(
-          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`) — unless its line coverage is under `minLineCoverage`, then it stays `review` with `verdictGuard` (apply reports `refused-guard`). Default false.",
+          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`) — unless its line coverage is under `minLineCoverage`, then it stays `review` with `verdictGuard` (apply reports `refused-guard`). Below the guard, the `verified-pr` pass still reclaims a superseded verdict whose cited PR the forge confirms merged into base and that explains every uncovered file (`verifiedPr` on the entry and outcome; `verifiedPrRefusal` says why it did not). Default false.",
         ),
+      requireOperatorBelowGuard: mcpBool
+        .optional()
+        .describe("Turn the `verified-pr` pass off: below `minLineCoverage` only an operator approval reclaims. Default false."),
       minLineCoverage: mcpNumber
         .optional()
         .describe("Percent (0-100) of a tip's added lines that must already be in base for `includeReviewed` to honour an agreeing verdict. Default 95."),
@@ -4848,8 +5079,57 @@ export function registerSessionTools(
       waitMs: mcpNumber
         .optional()
         .describe("Block at most this many milliseconds, then fall back to background: returns `{ jobId, status: \"running\" }` to poll with `branch_gc_status`. Only meaningful with the default `wait: true`."),
+      full: mcpBool
+        .optional()
+        .describe("Whole rows instead of the compact projection. Alone (no `fields`/`classes`/`section`/`limit`/`cursor`): the whole unpaged result. Default false."),
+      fields: z.array(z.string()).optional().describe("Entries only: keep only these keys of each full entry (e.g. [\"name\", \"sha\", \"residualFiles\"])."),
+      classes: z
+        .array(z.enum(["reclaim", "review", "hold"]))
+        .optional()
+        .describe("Entries only: keep only entries of these classes (e.g. [\"review\"]). Counts in `summary` are unaffected."),
+      section: z
+        .enum(["entries", "outcomes"])
+        .optional()
+        .describe("Which list to page: plan `entries` or apply `outcomes`. Default `entries` for a plan, `outcomes` for an apply."),
+      limit: mcpNumber.optional().describe(`Rows per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
+      cursor: z
+        .string()
+        .optional()
+        .describe("`page.nextCursor` from a previous reply: returns the next page of THAT run and slice without re-running the gc. The cursor's `section`/`classes`/`limit` win over any passed here, and a cursor made with `full: true` keeps whole rows; `fields` still shapes entries."),
     },
     async input => {
+      const reply: BranchGcReplyInput = {
+        ...(input.full !== undefined ? { full: input.full } : {}),
+        ...(input.fields ? { fields: input.fields } : {}),
+        ...(input.classes ? { classes: input.classes } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.section ? { section: input.section } : {}),
+      }
+      if (input.cursor !== undefined) {
+        // Page an earlier run from its stored result, in memory or on disk.
+        try {
+          const { jobId, offset, section, classes, limit, full } = decodeBranchGcCursor(input.cursor)
+          const job = branchGcJobs.get(jobId)
+          const stored = job?.result ?? (await branchGcJobs.readResultFile(jobId))
+          if (!stored) {
+            return {
+              content: [{ type: "text", text: `branch_gc: the run behind this cursor ('${jobId}') is gone; call branch_gc again without \`cursor\`.` }],
+              isError: true,
+            }
+          }
+          const page: BranchGcReplyInput = {
+            ...reply,
+            offset,
+            ...(section !== undefined ? { section } : {}),
+            ...(classes !== undefined ? { classes } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(full ? { full } : {}),
+          }
+          return { content: [{ type: "text", text: JSON.stringify(branchGcReply(stored, page, jobId)) }] }
+        } catch (err) {
+          return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true }
+        }
+      }
       if (!runBranchGc) {
         return {
           content: [
@@ -4885,6 +5165,7 @@ export function registerSessionTools(
           ...(input.scopes?.length ? { scopes: input.scopes } : {}),
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
           ...(input.minLineCoverage !== undefined ? { minLineCoverage: input.minLineCoverage } : {}),
+          ...(input.requireOperatorBelowGuard === true ? { requireOperatorBelowGuard: true } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
         }
         const { job, promise } = branchGcJobs.start(async () => withBranchGcApplySummary(await runBranchGc(runInput)))
@@ -4895,7 +5176,7 @@ export function registerSessionTools(
           return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job)) }] }
         }
         const result = await promise
-        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+        return { content: [{ type: "text", text: JSON.stringify(branchGcReply(result, reply, job.id)) }] }
       } catch (err) {
         return {
           content: [{ type: "text", text: `branch_gc failed: ${err instanceof Error ? err.message : String(err)}` }],
@@ -4939,7 +5220,10 @@ export function registerSessionTools(
         .optional()
         .describe("Outcomes only: keep these outcome results."),
       limit: mcpNumber.optional().describe(`Rows per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
-      cursor: z.string().optional().describe("`page.nextCursor` from the previous page."),
+      cursor: z
+        .string()
+        .optional()
+        .describe("`page.nextCursor` from the previous `branch_gc_status` page (not a `branch_gc` cursor: the two formats are not interchangeable)."),
     },
     async input => {
       const wantsSlice =
@@ -5134,6 +5418,53 @@ export function registerSessionTools(
   )
 
   server.tool(
+    "sandbox_list",
+    "List the boxes every concrete sandbox provider still holds, tagged " +
+      "with their provider and optionally joined with usage windows. " +
+      "Deduplicates on provider + id and merges duplicate rows. Each " +
+      "provider is read independently: one that is unavailable, cannot " +
+      "enumerate its boxes, or throws is reported in `notScanned`/`errors` " +
+      "and never fails the call or hides another provider's rows. `totals` " +
+      "sums active/vcpu/gib seconds and EUR cost; a window with no cost " +
+      "model is excluded and sets `totals.costPartial`. Defaults to every " +
+      "concrete provider (`auto` is never listed) and, with no `from`/`to`, " +
+      "to the last 24 hours of usage.",
+    {
+      providers: z
+        .array(z.string())
+        .optional()
+        .describe("Provider slugs to list. Defaults to every concrete provider."),
+      includeUsage: mcpBool
+        .optional()
+        .describe("Also read usage windows from each provider that has a usage ledger. Default false."),
+      from: z.string().optional().describe("Usage window start (ISO-8601). Defaults to 24h before `to`."),
+      to: z.string().optional().describe("Usage window end (ISO-8601). Defaults to now."),
+    },
+    async input => {
+      try {
+        const resolveProvider =
+          opts.resolveSandboxProvider ??
+          makeSandboxResolver(makeSandboxCredsStore())
+        const result = await collectSandboxInventory({
+          ...(input.providers && input.providers.length > 0 ? { providers: input.providers } : {}),
+          resolveProvider,
+          includeUsage: input.includeUsage === true,
+          ...(input.from !== undefined ? { from: input.from } : {}),
+          ...(input.to !== undefined ? { to: input.to } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `sandbox_list failed: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
     "sandbox_gc",
     "Reap ORPHAN sandbox boxes: boxes a PROVIDER's control plane still " +
       "holds (and still charges RAM for) that the daemon's sandbox registry " +
@@ -5150,7 +5481,12 @@ export function registerSessionTools(
       "forced, because a stale provider-side session slot would otherwise " +
       "make the provider refuse the destroy. One provider failing (a " +
       "controller that is down) is reported as `providerErrors` and never " +
-      "stops the sweep of the others.",
+      "stops the sweep of the others. By default only `computer` is swept: " +
+      "its controller scopes boxes to this daemon's tenant. `e2b` is on a " +
+      "shared account and its provider writes no daemon marker at boot, so " +
+      "it is NEVER swept (even when named explicitly) and is reported in " +
+      "`notScanned`: every other daemon's, machine's or CI's box would " +
+      "otherwise look like an orphan here.",
     {
       apply: mcpBool
         .optional()
@@ -5164,7 +5500,12 @@ export function registerSessionTools(
       providers: z
         .array(z.string())
         .optional()
-        .describe('Provider slugs to sweep. Default ["computer"].'),
+        .describe(
+          "Provider slugs to sweep. Defaults to `computer` only (its " +
+            "controller scopes boxes to this daemon's tenant). `e2b` is " +
+            "refused with a `notScanned` reason because it writes no daemon " +
+            "marker and its account is shared.",
+        ),
     },
     async input => {
       try {
@@ -5185,7 +5526,9 @@ export function registerSessionTools(
             return handle as unknown as SandboxGcProviderHandle
           },
           providerSlugs:
-            input.providers && input.providers.length > 0 ? input.providers : ["computer"],
+            input.providers && input.providers.length > 0
+              ? input.providers
+              : DEFAULT_SANDBOX_GC_PROVIDER_SLUGS,
           registryBoxIds: new Set(readSandboxLedger().map(e => e.sandboxId)),
           liveBoxIds: liveSessionBoxIds(liveSessions),
           includeAttached: input.includeAttached === true,
@@ -5248,6 +5591,17 @@ export function registerSessionTools(
           evidence: z.array(z.string()).describe("Concrete shas/paths. Required non-empty when agree is true."),
         })
         .optional(),
+      landedIn: z
+        .array(
+          z.object({
+            pr: mcpNumber.describe("PR number that landed this tip's work."),
+            commit: z.string().optional().describe("The commit on base it landed as (hex sha, 7+ chars)."),
+          }),
+        )
+        .optional()
+        .describe(
+          "Superseded verdicts only: the merged PR(s) that landed this tip's work. `branch_gc`'s verified-pr pass checks them with the forge and lets the tip past the line-coverage guard when every uncovered file is explained.",
+        ),
       reviewer: z.string().describe("Who reviewed, e.g. `claude-sonnet reviewer`."),
       operator: z
         .object({
@@ -5348,6 +5702,56 @@ export function registerSessionTools(
       } catch (err) {
         return {
           content: [{ type: "text", text: `branch_gc_verdict_get failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "branch_gc_restore",
+    "Re-create refs a `branch_gc` apply deleted, from its restore log " +
+      "(`restoreLog` of the apply, `~/.agentproto/branch-gc/<repo>/restore-*.json`) into " +
+      "the repo named by `repoRoot`/`workspaceSlug`, which must be the log's own repo. " +
+      "Commands are rebuilt from the log's validated fields, never run from it: " +
+      "local refs with `git branch`, remote refs pushed back to their remote " +
+      "(or, `localOnly`, as a local branch), orphan refs with update-ref. A ref " +
+      "that exists at another sha is refused, never overwritten. By default the " +
+      "operator approval of each restored tip's stored verdict is dropped, so the " +
+      "next `includeReviewed` run re-judges it instead of deleting it again.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo the log belongs to. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when both are omitted."),
+      logPath: z.string().describe("Absolute path of the restore log."),
+      shas: z.array(z.string()).optional().describe("Only these tips (full sha or a 7+ char prefix). Default every entry."),
+      localOnly: mcpBool.optional().describe("Re-create remote-kind refs as local branches instead of pushing them back. Default false."),
+      dryRun: mcpBool.optional().describe("Report what would be re-created; touch nothing. Default false."),
+      keepApproval: mcpBool.optional().describe("Keep the operator approval on restored tips. Default false."),
+    },
+    async input => {
+      if (!restoreBranchGc) {
+        return {
+          content: [{ type: "text", text: "branch_gc_restore is not enabled: the host must wire `restoreBranchGc` in createGateway." }],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({ repoRoot: input.repoRoot, workspaceSlug: input.workspaceSlug })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        const result = await restoreBranchGc({
+          logPath: input.logPath,
+          repoRoot: resolved.repoRoot,
+          ...(input.shas?.length ? { shas: input.shas } : {}),
+          ...(input.localOnly === true ? { localOnly: true } : {}),
+          ...(input.dryRun === true ? { dryRun: true } : {}),
+          ...(input.keepApproval === true ? { keepApproval: true } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_restore failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         }
       }
@@ -5614,22 +6018,19 @@ export function registerSessionTools(
         }
       }
 
-      // ── session-owner gate (session-owner.ts) — the same drive rule the
-      // other drive tools enforce: another agent session (neither the target's
-      // owner, the target itself, the operator, nor an `allowPromptFrom`
-      // grantee) may not restart it. Runs after the scoped-orchestrator
-      // subtree gate so orchestrator callers keep their stricter check.
+      // ── drive gate (drive-gate.ts) - the same drive rule the other drive
+      // tools enforce: another agent session (neither the target's owner, the
+      // target itself, an ancestor, the operator, nor an `allowPromptFrom`
+      // grantee) may not restart it, unless an explicit `session:control`
+      // grant admits it. Runs after the scoped-orchestrator subtree gate so
+      // orchestrator callers keep their stricter check.
       const restartCaller = effectiveCallerSessionId(callerScope, callerSessionId)
-      const restartOwnerGate = checkSessionOwnerGate({
+      const restartOwnerGate = checkDrive({
+        registry,
+        ...(opts.messagingGrants !== undefined ? { grants: opts.messagingGrants } : {}),
         callerSessionId: restartCaller,
         target: prev,
         tool: "session_restart",
-        // Ancestor-chain rule (see session-owner.ts): a scoped orchestrator's
-        // subtree authority over transitive descendants is pre-existing
-        // behaviour (the subtree gate below is unchanged) — the owner gate
-        // must not revoke it.
-        parentOf: id => registry.get(id)?.parentSessionId,
-        operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })
       if (!restartOwnerGate.ok) {
         return {
@@ -6122,8 +6523,12 @@ export function registerSessionTools(
       "`reviewMaxAgeDays` (default: daemon.reviewSessionRetentionDays, 7), " +
       "every other session only when `maxAgeDays` (default: " +
       "daemon.sessionRetentionDays, off) is set. Never live, pinned, keepAlive, " +
-      "or an ancestor of a live session. Pair with `dryRun:true` to preview; " +
-      "returns counts + ids.",
+      "or an ancestor of a live session. `adapterCaches:true` instead reclaims " +
+      "the CACHE content of dead sessions' adapter-config dirs " +
+      "(~/.agentproto/adapter-config/<id>: pnpm store, opencode snapshot/" +
+      "tool-output/log) once the lineage is quiet for `maxAgeDays` (default: " +
+      "daemon.adapterCacheRetentionDays, 1); what a resume reads is kept. " +
+      "Pair with `dryRun:true` to preview; returns counts + ids.",
     {
       olderThanDays: z
         .number()
@@ -6146,9 +6551,18 @@ export function registerSessionTools(
           "Run the on-disk retention pass instead of archive/forget: DELETE " +
             "terminal session dirs past their age threshold. Irreversible."
         ),
+      adapterCaches: mcpBool
+        .optional()
+        .describe(
+          "Reclaim dead sessions' adapter-config cache content (pnpm store, " +
+            "opencode snapshot/tool-output/log) instead of archive/forget. " +
+            "Resume data is kept."
+        ),
       dryRun: mcpBool
         .optional()
-        .describe("With `retention:true`: report what would be deleted, delete nothing."),
+        .describe(
+          "With `retention:true` or `adapterCaches:true`: report what would be deleted, delete nothing."
+        ),
       reviewMaxAgeDays: z
         .number()
         .optional()
@@ -6162,13 +6576,23 @@ export function registerSessionTools(
         .optional()
         .describe(
           "With `retention:true`: age (days) after which ANY terminal session " +
-            "dir is deleted. Default: daemon.sessionRetentionDays (off). 0 disables."
+            "dir is deleted. Default: daemon.sessionRetentionDays (off). 0 disables. " +
+            "With `adapterCaches:true`: quiet days before a dead lineage's caches " +
+            "go. Default: daemon.adapterCacheRetentionDays (1)."
         ),
     },
     async input => {
       const onlyIds = callerScope
         ? collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
         : undefined
+      if (input.adapterCaches) {
+        const res = await registry.pruneAdapterConfigCaches({
+          ...(input.dryRun ? { dryRun: true } : {}),
+          ...(input.maxAgeDays !== undefined ? { maxAgeDays: input.maxAgeDays } : {}),
+          ...(onlyIds ? { onlyIds } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(res) }] }
+      }
       if (input.retention) {
         const res = await registry.pruneSessionDirs({
           ...(input.dryRun ? { dryRun: true } : {}),
@@ -6968,6 +7392,26 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_labels ──────────────────────────────────────────────
+  // Narrow read: session ids in, `{id, label?, operatorLabel?, adapter?,
+  // state?}` out. Exists so an app UI can list it in `ui.tools` instead of
+  // `session_list`. See session-labels.ts; details: tool_help {name:"session_labels"}.
+  server.tool(
+    "session_labels",
+    "Look up the display label of 1 to 100 sessions by id. Read-only, cheap, and " +
+      "returns nothing but `{id, label?, operatorLabel?, adapter?, state?}` per id, " +
+      "in input order (an unknown id gives `{id}` alone). Details: tool_help {name:\"session_labels\"}.",
+    sessionLabelsInputShape,
+    async input => {
+      try {
+        return { content: [{ type: "text", text: JSON.stringify(resolveSessionLabels(registry, input.ids)) }] }
+      } catch (err) {
+        if (!(err instanceof SessionLabelsInputError)) throw err
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true }
+      }
+    }
+  )
+
   // ── session_rename ──────────────────────────────────────────────
   // The headless twin of the VS Code rename UX + `PATCH /sessions/:id`.
   // Pure display state (the descriptor's `title`/`label`) — never touches the
@@ -7183,12 +7627,21 @@ export function registerSessionTools(
       "`session_restart` to take effect. Pass `dryRun: true` to see what " +
       "would change without pushing anything. Fails with " +
       "`not_manifest_spawned` for a session that wasn't spawned with " +
-      "`agentId`/`agentPath`.",
+      "`agentId`/`agentPath`. Pass `operatorDigest` (the current digest of " +
+      "the session's AIP-46 operator, from the host that composes the agent) " +
+      "to also get `operatorStale`: true when it differs from the digest " +
+      "recorded at spawn. The daemon has no operator resolver, so it never " +
+      "computes that digest itself.",
     {
       ...sessionRefSchema(z),
       dryRun: mcpBool
         .optional()
         .describe("true to compute the diff without pushing a notice or updating the recorded fingerprint."),
+      operatorDigest: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Current digest of this session's operator; adds `operatorStale` to the answer."),
     },
     async input => {
       const prev = resolveSessionDesc(registry, input)
@@ -7232,7 +7685,19 @@ export function registerSessionTools(
       const outcome = await registry.refreshAgentRole(prev.id, {
         ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
       })
-      return { content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, ...outcome }) }] }
+      const operatorStale = operatorDigestStale(prev.operatorDigest, input.operatorDigest)
+      const operatorReport =
+        prev.operator !== undefined
+          ? {
+              operator: prev.operator,
+              ...(prev.operatorDigest !== undefined ? { recordedOperatorDigest: prev.operatorDigest } : {}),
+              ...(input.operatorDigest !== undefined ? { currentOperatorDigest: input.operatorDigest } : {}),
+              ...(operatorStale !== undefined ? { operatorStale } : {}),
+            }
+          : {}
+      return {
+        content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, ...outcome, ...operatorReport }) }],
+      }
     }
   )
 
@@ -7312,21 +7777,20 @@ export function registerSessionTools(
   )
 
   // ── session_set_pinned ──────────────────────────────────────────
-  // A quiet, structural list-visibility flag — lets an operator favorite a
-  // session so it sorts to the top of the CLI table / VS Code webview list.
+  // A quiet favorite flag — sorts a session to the top of the CLI table / VS
+  // Code webview list, and exempts it from the idle reaper.
   // Modeled EXACTLY on session_set_keepalive (itself modeled on
   // session_rename): resolve + subtree-scope + delegate to the registry,
   // which flips the field and persists. Deliberately does NOT touch
-  // keepAlive, reaper eligibility, or any notification path — see
-  // `SessionDescriptor.pinned`'s doc for why pin is distinct from those.
+  // keepAlive or any notification path — see `SessionDescriptor.pinned`'s doc.
   server.tool(
     "session_set_pinned",
     "Set or clear a session's list-visibility pin. When `pinned` is true, " +
       "the session sorts to the top of `agentproto sessions` and the VS Code " +
       "sessions webview's dedicated Pinned group. Set false to clear it. " +
-      "Persists across daemon restarts. Purely a sort/display flag — does " +
-      "NOT touch the idle-reaper, keepAlive, or emit any notification, and " +
-      "does NOT touch the running agent.",
+      "Persists across daemon restarts. A pinned session is never stopped " +
+      "by the idle reaper (pinned means never stopped); it does not set " +
+      "keepAlive, emit any notification, or touch the running agent.",
     {
       ...sessionRefSchema(z),
       pinned: mcpBool.describe(
@@ -7397,8 +7861,8 @@ export function registerSessionTools(
   // /sessions/pinned/order`. Modeled on session_set_pinned: resolve each id,
   // subtree-scope ALL of them, then delegate to the registry, which assigns
   // positions 0..n-1 in the given order, persists, and emits
-  // `session:pinned-reordered`. Pure sort/display state — never touches the
-  // live agent, keepAlive, or the idle-reaper.
+  // `session:pinned-reordered`. Pure ordering state — never touches the
+  // live agent or keepAlive.
   server.tool(
     "session_reorder_pinned",
     "Manually reorder pinned sessions. `ids` is the desired order — each " +

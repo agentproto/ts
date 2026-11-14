@@ -13,9 +13,9 @@ describe("@agentproto/adapter-pi — manifest", () => {
   it("exposes a validated AIP-45 proprietary handle", () => {
     expect(pi.id).toBe("pi")
     expect(pi.protocol).toBe("proprietary")
-    expect(pi.adapter).toBe("@agentproto/adapter-pi")
+    expect(pi.harness).toBe("@agentproto/adapter-pi")
     expect(pi.bin).toBe("pi")
-    // No throw from defineAgentCli means the manifest is schema-valid.
+    // No throw from defineHarness means the manifest is schema-valid.
     expect(typeof pi.version).toBe("string")
   })
 
@@ -37,6 +37,7 @@ describe("@agentproto/adapter-pi — manifest", () => {
       "GOOGLE_GENERATIVE_AI_API_KEY",
       "MOONSHOT_API_KEY",
       "OPENROUTER_API_KEY",
+      "OPENCODE_API_KEY",
     ])
     expect(pi.continuation?.default).toBe("native-resume")
     expect(pi.continuation?.supported).toContain("native-resume")
@@ -449,11 +450,27 @@ describe("classifyPiLine", () => {
     expect(agentEnd.kind === "event" && agentEnd.event.type === "agent_end" && agentEnd.event.messages?.[1]).toMatchObject(err)
   })
 
-  it("treats malformed JSON, unknown types and extension-UI lines as other", () => {
+  it("treats malformed JSON and unknown types as other", () => {
     expect(classifyPiLine("not json").kind).toBe("other")
     expect(classifyPiLine(JSON.stringify({ type: "queue_update" })).kind).toBe("other")
-    expect(
-      classifyPiLine(JSON.stringify({ type: "extension_ui_request", id: "x", method: "confirm" })).kind,
-    ).toBe("other")
+  })
+
+  it("classifies an extension_ui_request line as a ui-request", () => {
+    const out = classifyPiLine(
+      JSON.stringify({
+        type: "extension_ui_request",
+        id: "x",
+        method: "editor",
+        title: "agentproto.question/v1",
+        prefill: "{}",
+      }),
+    )
+    expect(out.kind).toBe("ui-request")
+    if (out.kind === "ui-request") {
+      expect(out.request.id).toBe("x")
+      expect(out.request.method).toBe("editor")
+      expect(out.request.title).toBe("agentproto.question/v1")
+      expect(out.request.prefill).toBe("{}")
+    }
   })
 })

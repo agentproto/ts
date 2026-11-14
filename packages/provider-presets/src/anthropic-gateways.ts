@@ -175,7 +175,7 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
       "Messages surface at localhost:18090. Auth via LLM_ENDPOINT_ACCESS_TOKENS " +
       "— the SAME shared-secret var the proxy's inbound gate accepts (see " +
       "`parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS)` in " +
-      "@agentproto/llm-endpoint), so one value serves both the server's " +
+      "@agentproto/inference-endpoint), so one value serves both the server's " +
       "allow-list and the client's presented bearer.",
     schemaFlavor: "anthropic",
     baseUrl: "http://localhost:18090",

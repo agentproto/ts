@@ -19,7 +19,7 @@ export default createTsupConfig({
   external: [
     "zod",
     "gray-matter",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
     "@agentclientprotocol/sdk",
   ],
   noExternal: [],

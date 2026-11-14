@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { META_PLAN } from "@agentproto/adapter-mastra-controller"
 import { runPermissions } from "../commands/permissions.js"
 
 vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
@@ -83,6 +84,71 @@ describe("agentproto permissions ls — plan rendering", () => {
     const code = await runPermissions(["ls"])
     expect(code).toBe(0)
     expect(stdoutChunks.join("")).toContain("    plain plan text\n")
+  })
+
+  it("renders a mastra-controller plan approval's plan text", async () => {
+    httpGetJson.mockResolvedValue({
+      permissions: [
+        {
+          ...baseEntry,
+          toolName: "submit_plan",
+          rawInput: { path: "plan.md" },
+          _meta: {
+            "mastra-controller/request": "plan-approval",
+            "mastra-controller/suspendPayload": { path: "plan.md" },
+            [META_PLAN]: "# Plan\n1. Read sources.",
+          },
+        },
+      ],
+    } as never)
+    const code = await runPermissions(["ls"])
+    expect(code).toBe(0)
+    const out = stdoutChunks.join("")
+    expect(out).toContain("PLAN")
+    expect(out).toContain("    # Plan\n")
+    expect(out).toContain("    1. Read sources.\n")
+  })
+
+  it("renders a typed AIP-45 plan-approval's plan, preferred over the _meta alias", async () => {
+    httpGetJson.mockResolvedValue({
+      permissions: [
+        {
+          ...baseEntry,
+          toolName: "submit_plan",
+          request: "plan-approval",
+          planApproval: {
+            plan: "# Typed plan\n1. Read sources.",
+            planRef: "plan.md",
+            approveOptionId: "approve",
+            rejectOptionId: "reject",
+          },
+          _meta: { [META_PLAN]: "stale alias" },
+        },
+      ],
+    } as never)
+    const code = await runPermissions(["ls"])
+    expect(code).toBe(0)
+    const out = stdoutChunks.join("")
+    expect(out).toContain("PLAN")
+    expect(out).toContain("    # Typed plan\n")
+    expect(out).not.toContain("stale alias")
+  })
+
+  it("renders a typed plan-approval that only names a planRef", async () => {
+    httpGetJson.mockResolvedValue({
+      permissions: [
+        {
+          ...baseEntry,
+          request: "plan-approval",
+          planApproval: { planRef: "plans/a.md", approveOptionId: "approve", rejectOptionId: "reject" },
+        },
+      ],
+    } as never)
+    const code = await runPermissions(["ls"])
+    expect(code).toBe(0)
+    const out = stdoutChunks.join("")
+    expect(out).toContain("PLAN")
+    expect(out).toContain("    (plan at plans/a.md)\n")
   })
 
   it("keeps the truncated rawInput preview for entries without a suspendPayload", async () => {

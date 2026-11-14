@@ -68,12 +68,15 @@ What finally worked, in order (CLI 1.8.0, field-verified 2026-10-01):
    `handshake timed out` here = stale offer (>10 min TTL), daemon not
    connected, version mismatch, or blocked wss egress. Fix those and mint a
    FRESH offer.
-4. **Host:** `agentproto devices allow-spawn on` → **restart the daemon**
+4. **Host:** the handshake is held **pending** on the host until you confirm
+   it there — `agentproto pair pending`, then `pair confirm <code>` (compare
+   the short code). Nothing is served until then.
+5. **Host:** `agentproto devices allow-spawn on` → **restart the daemon**
    (see the boot-only flag warning above).
-5. **Controller:** `agent_start({ sandbox: "device:<fp>", cwd: "<abs path on
+6. **Controller:** `agent_start({ sandbox: "device:<fp>", cwd: "<abs path on
    host>" })` — `cwd` is required, see
    [Addressing](#addressing).
-6. **For local models:** LM Studio `lms server start` on the host, the `pi`
+7. **For local models:** LM Studio `lms server start` on the host, the `pi`
    adapter installed, then `agent_start({ adapter: "pi", model:
    "lmstudio/<publisher>/<id>", sandbox: "device:<fp>", cwd: ... })`.
 

@@ -11,10 +11,12 @@
  * same layered `discoverDaemon()` fallback as `agentproto tunnel` /
  * `agentproto sessions`.
  *
- * `--qr` renders `phoneUrl` (PHONE-PLAN.md P1.2) as an in-terminal QR code
- * so a phone can scan it straight into Control Center. Only present when
- * session-chat is installed — see `EnableResult.phoneUrl`'s doc in
- * remote-controller.ts.
+ * `--qr` is the no-service-worker fallback for phones: it asks the daemon
+ * for the opt-in tunnel `phoneUrl` (`phoneLink: true`) and renders it as an
+ * in-terminal QR code. Pairing (`agentproto pair offer --qr`) is the
+ * recommended phone path; this link is plaintext at Cloudflare and only
+ * exists when session-chat is installed. See `EnableResult.phoneUrl`'s doc
+ * in remote-controller.ts.
  */
 import { parseArgs } from "node:util"
 import type { EnableResult, RemoteStatus } from "@agentproto/runtime"
@@ -43,9 +45,11 @@ enable  By default exposes the daemon's own gateway and gates it with a
         mode the daemon does not gate the traffic; the upstream handles its
         own auth). Re-running while a tunnel is already active errors — run
         \`agentproto remote disable\` first to rotate.
---qr    Print the response's \`phoneUrl\` as an in-terminal QR code (gateway
-        mode, with session-chat installed) — scan it to open Control
-        Center straight from a phone.
+--qr    No-service-worker fallback for phones: ask for the opt-in tunnel
+        \`phoneUrl\` and print it as an in-terminal QR code (gateway mode,
+        with session-chat installed). Pairing is the recommended phone
+        path (\`agentproto pair offer --qr\`); this link is readable by
+        Cloudflare.
 
 Examples:
   agentproto remote enable --qr
@@ -112,6 +116,13 @@ async function runEnable(args: readonly string[]): Promise<number> {
     body.targetPort = targetPort
   }
   if (values["target-host"]) body.targetHost = values["target-host"]
+  if (values.qr) {
+    body.phoneLink = true
+    process.stderr.write(
+      "agentproto remote enable: pairing is the recommended phone path " +
+        "(`agentproto pair offer --qr`); this link is readable by Cloudflare.\n",
+    )
+  }
 
   let result: EnableResult
   try {

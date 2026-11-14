@@ -1,5 +1,36 @@
 # @agentproto/governance-engine
 
+## 1.0.0
+
+### Major Changes
+
+- e301b84: Write the canonical AIP-70 `governance/v1` tag into new signature.json files and audit-log rows instead of `agentgovernance/v1`. Breaking for readers: files written by this version need @agentproto/governance-engine >= 0.2.0 and @agentproto/governance >= 0.2.0 to read. Existing legacy-tagged chains keep verifying because verification uses the tag stored in each row.
+
+### Patch Changes
+
+- Updated dependencies [e301b84]
+  - @agentproto/governance@1.0.0
+  - @agentproto/driver@0.4.1
+  - @agentproto/tool@0.6.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 6b78431: Accept the AIP-70 registry spec names on every read path and keep emitting the legacy tags for now. `@agentproto/governance` exports `SPEC_NAME = "governance/v1"` plus `LEGACY_SPEC_NAMES` and `EMITTED_SPEC_NAME`; the signature, audit-event, and policy schemas accept `governance/v1` and `agentgovernance/v1`, while newly signed artifacts, audit rows, and policy handles still carry `agentgovernance/v1` (it flips to the new name at the next major; old verifiers in the field only know the old tag, and the tag is part of the hashed audit-row bytes, so verification always uses the tag stored in the row). `@agentproto/operator` sets `SPEC_NAME = "operator/v1"` and its OPERATOR.md frontmatter enum now accepts `operator/v1` alongside the legacy `agentoperators/v1` and `agentoperator/v1`.
+
+### Patch Changes
+
+- Updated dependencies [6b78431]
+- Updated dependencies [9fbf379]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/governance@0.2.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/ref@0.2.3
+
 ## 0.1.13
 
 ### Patch Changes

@@ -62,9 +62,11 @@ describe("agentprotoConfigSchema", () => {
             options: { model: "sonnet" },
             auth: { mode: "subscription", source: "claude-code-oauth" },
             contextContinuity: { mode: "ask", warnAtPct: 55 },
+            contextSettings: { compactAtPct: 65 },
           },
         },
         contextContinuity: { mode: "auto", warnAtPct: 50, compactAtPct: 60, continueFreshAtPct: 70, hardStopAtPct: 90 },
+        contextSettings: { hardStopAtPct: 95 },
         defaultRoleDepthCutoff: 1,
         maxGrantableDelegation: 2,
         langfuseTracing: false,
@@ -74,7 +76,7 @@ describe("agentprotoConfigSchema", () => {
         messaging: { allowSiblings: false, agentInterrupt: "deny" },
         tasks: { operatorDelegates: ["label:pygmalion-brain-persistent"] },
         mcp: { deferredTools: true },
-        spawn: { browser: "headless" },
+        spawn: { browser: "headless", defaultAgent: { root: "supervisor", nested: "executor" } },
       },
       acpAgents: {
         "my-agent": {
@@ -194,6 +196,7 @@ describe("secret and lockout classification", () => {
       "daemon.port",
       "daemon.bind",
       "daemon.allowedOrigins",
+      "daemon.frameAncestors",
       "daemon.strictOrigins",
       "sessions.eventsDir",
       "profiles",
@@ -204,6 +207,76 @@ describe("secret and lockout classification", () => {
       expect(entry?.writable, `${path} should be locked out`).toBe(false)
       expect(entry?.secret, `${path} should not be marked secret`).toBeUndefined()
     }
+  })
+
+  it("registers approvals.humanTelegramIds as a restart-applied, non-writable list of numeric Telegram ids", () => {
+    expect(findConfigKey("approvals.humanTelegramIds")).toMatchObject({ apply: "restart", writable: false })
+    expect(findConfigKey("approvals.humanTelegramIds")?.secret).toBeUndefined()
+    expect(validateConfigKeyType("approvals.humanTelegramIds", ["4242", "123456789"]).ok).toBe(true)
+    expect(validateConfigKeyType("approvals.humanTelegramIds", []).ok).toBe(true)
+    for (const bad of [["@jeremy"], ["12a"], [" 12"], ["-12"], [""], [12], "4242"]) {
+      expect(validateConfigKeyType("approvals.humanTelegramIds", bad).ok, JSON.stringify(bad)).toBe(false)
+    }
+    expect(validateConfigKeyValue("approvals.humanTelegramIds", ["4242"]).ok).toBe(false)
+    expect(validateConfig({ approvals: { humanTelegramIds: ["4242"] } }).ok).toBe(true)
+    expect(validateConfig({ approvals: { humanTelegramIds: ["nope"] } }).ok).toBe(false)
+  })
+
+  it("registers reach.routes.* as a restart-applied, non-writable route whose webhook secret is redacted", () => {
+    const entry = findConfigKey("reach.routes.owner")
+    expect(entry).toMatchObject({ path: "reach.routes.*", apply: "restart", writable: false, secretFields: ["secret", "accessToken"] })
+    const secret = "whsec_" + Buffer.alloc(32, 1).toString("base64")
+    const ok = [
+      { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret, timeoutMs: 5000 },
+      { id: "floor", kind: "telegram", alias: "default" },
+    ]
+    expect(entry!.schema.safeParse(ok).success).toBe(true)
+    expect(agentprotoConfigSchema.safeParse({ reach: { routes: { owner: ok } } }).success).toBe(true)
+    for (const bad of [
+      [{ id: "x", kind: "webhook", url: "ftp://p.invalid", secret }],
+      [{ id: "x", kind: "webhook", url: "https://p.invalid", secret: "plain" }],
+      [{ id: "x", kind: "pigeon" }],
+      [{ kind: "telegram" }],
+    ]) {
+      expect(entry!.schema.safeParse(bad).success).toBe(false)
+    }
+    expect(redactConfigValue("reach.routes.owner", ok)).toEqual([
+      { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret: { set: true }, timeoutMs: 5000 },
+      { id: "floor", kind: "telegram", alias: "default" },
+    ])
+  })
+
+  it("accepts a chat-sdk whatsapp entry in reach.routes.* and redacts its accessToken", () => {
+    const entry = findConfigKey("reach.routes.owner")!
+    const wa = {
+      id: "wa",
+      kind: "chat-sdk",
+      platform: "whatsapp",
+      to: "33600000000",
+      whatsapp: { phoneNumberId: "100000000000001", accessToken: "FAKE-TOKEN" },
+    }
+    expect(entry.schema.safeParse([wa, { id: "floor", kind: "telegram" }]).success).toBe(true)
+    expect(entry.schema.safeParse([{ ...wa, timeoutMs: 10000 }]).success).toBe(true)
+    for (const bad of [
+      { ...wa, platform: "slack" },
+      { ...wa, to: "+33600000000" },
+      { ...wa, to: undefined },
+      { ...wa, whatsapp: { phoneNumberId: "100000000000001" } },
+      { ...wa, whatsapp: { phoneNumberId: "100000000000001", accessToken: "" } },
+      { ...wa, timeoutMs: 0 },
+    ]) {
+      expect(entry.schema.safeParse([bad]).success).toBe(false)
+    }
+    expect(redactConfigValue("reach.routes.owner", [wa])).toEqual([
+      { ...wa, whatsapp: { phoneNumberId: "100000000000001", accessToken: { set: true } } },
+    ])
+  })
+
+  it("accepts daemon.frameAncestors as a list or one string and refuses other types", () => {
+    expect(validateConfigKeyType("daemon.frameAncestors", ["https://web.telegram.org"]).ok).toBe(true)
+    expect(validateConfigKeyType("daemon.frameAncestors", "https://web.telegram.org").ok).toBe(true)
+    expect(validateConfigKeyType("daemon.frameAncestors", 42).ok).toBe(false)
+    expect(validateConfigKeyType("daemon.frameAncestors", [1]).ok).toBe(false)
   })
 
   it("marks acpAgents.*.env and terminalPresets.*.env secret (for redaction) AND not writable", () => {
@@ -306,6 +379,34 @@ describe("redactConfigValue", () => {
   })
 })
 
+describe("contextSettings config keys (AIP-46 name of contextContinuity)", () => {
+  it("registers defaults.contextSettings and the adapter key hot and writable", () => {
+    for (const path of [
+      "defaults.contextSettings",
+      "defaults.adapters.claude-code.contextSettings",
+    ]) {
+      expect(findConfigKey(path), path).toMatchObject({ apply: "hot", writable: true })
+    }
+  })
+
+  it("accepts the new block at both levels in the whole-config schema", () => {
+    const result = agentprotoConfigSchema.safeParse({
+      defaults: {
+        contextSettings: { mode: "auto", hardStopAtPct: 95 },
+        adapters: { hermes: { contextSettings: { compactAtPct: 65 } } },
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("accepts a valid block through validateConfigKeyValue", () => {
+    expect(validateConfigKeyValue("defaults.contextSettings", { mode: "ask" })).toEqual({ ok: true })
+    expect(
+      validateConfigKeyValue("defaults.adapters.hermes.contextSettings", { warnAtPct: 50 }),
+    ).toEqual({ ok: true })
+  })
+})
+
 describe("drift: every schema leaf is classified", () => {
   it("has no unclassified config paths", () => {
     expect(findUnclassifiedConfigPaths()).toEqual([])
@@ -368,5 +469,250 @@ describe("worktrees.provision* keys", () => {
   it("a config carrying the new fields validates with no issues", () => {
     const r = validateConfig({ worktrees: { provisionConcurrency: 3, provisionConcurrencyByRepo: { a: 1 } } })
     expect(r.issues).toEqual([])
+  })
+})
+
+describe("defaults.apps.exposedTools key", () => {
+  it("is a hot, writable switch defaulting to read, accepting off, read and all only", () => {
+    expect(findConfigKey("defaults.apps.exposedTools")).toMatchObject({ apply: "hot", writable: true, default: "read" })
+    for (const v of ["off", "read", "all"]) {
+      expect(validateConfigKeyValue("defaults.apps.exposedTools", v)).toEqual({ ok: true })
+    }
+    expect(validateConfigKeyValue("defaults.apps.exposedTools", "write").ok).toBe(false)
+    expect(validateConfig({ defaults: { apps: { exposedTools: "maybe" } } }).ok).toBe(false)
+    expect(validateConfig({ defaults: { apps: { exposedTools: "all" } } }).ok).toBe(true)
+  })
+})
+
+describe("defaults.spawn.defaultAgent keys", () => {
+  it("registers root and nested with today's built-in defaults", () => {
+    expect(findConfigKey("defaults.spawn.defaultAgent.root")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "supervisor",
+    })
+    expect(findConfigKey("defaults.spawn.defaultAgent.nested")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "executor",
+    })
+  })
+})
+
+describe("defaults.spawn.profileGate and sharedProfiles keys", () => {
+  it("profileGate is hot, writable and defaults to observe", () => {
+    expect(findConfigKey("defaults.spawn.profileGate")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "observe",
+    })
+  })
+
+  it("profileGate accepts off, observe and enforce but rejects an unknown mode", () => {
+    for (const mode of ["off", "observe", "enforce"] as const) {
+      expect(validateConfigKeyValue("defaults.spawn.profileGate", mode)).toEqual({ ok: true })
+    }
+    expect(validateConfigKeyValue("defaults.spawn.profileGate", "block").ok).toBe(false)
+  })
+
+  it("sharedProfiles is hot, writable and defaults to []", () => {
+    expect(findConfigKey("defaults.spawn.sharedProfiles")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: [],
+    })
+  })
+
+  it("sharedProfiles accepts an array of strings and rejects a non-array", () => {
+    expect(validateConfigKeyValue("defaults.spawn.sharedProfiles", ["p-one", "p-two"])).toEqual({
+      ok: true,
+    })
+    expect(validateConfigKeyValue("defaults.spawn.sharedProfiles", "p-one").ok).toBe(false)
+  })
+
+  it("accepts both keys inside a full config and rejects an unknown value", () => {
+    expect(
+      validateConfig({
+        defaults: {
+          spawn: { profileGate: "enforce", sharedProfiles: ["p-shared"] },
+        },
+      }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ defaults: { spawn: { profileGate: "block" } } }).issues.length,
+    ).toBeGreaterThan(0)
+    expect(
+      validateConfig({ defaults: { spawn: { sharedProfiles: "p-shared" } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})
+
+describe("defaults.spawn.stdioMountGate key", () => {
+  it("is hot, writable and defaults to observe", () => {
+    expect(findConfigKey("defaults.spawn.stdioMountGate")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "observe",
+    })
+  })
+
+  it("accepts off, observe and enforce but rejects an unknown mode", () => {
+    for (const mode of ["off", "observe", "enforce"] as const) {
+      expect(validateConfigKeyValue("defaults.spawn.stdioMountGate", mode)).toEqual({ ok: true })
+    }
+    expect(validateConfigKeyValue("defaults.spawn.stdioMountGate", "block").ok).toBe(false)
+  })
+
+  it("accepts the key inside a full config and rejects an unknown value", () => {
+    expect(
+      validateConfig({ defaults: { spawn: { stdioMountGate: "enforce" } } }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ defaults: { spawn: { stdioMountGate: "block" } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})
+
+describe("defaults.spawn.delegationGate key", () => {
+  it("is hot, writable and defaults to observe", () => {
+    expect(findConfigKey("defaults.spawn.delegationGate")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "observe",
+    })
+  })
+
+  it("accepts off, observe and enforce but rejects an unknown mode", () => {
+    for (const mode of ["off", "observe", "enforce"] as const) {
+      expect(validateConfigKeyValue("defaults.spawn.delegationGate", mode)).toEqual({ ok: true })
+    }
+    expect(validateConfigKeyValue("defaults.spawn.delegationGate", "block").ok).toBe(false)
+  })
+
+  it("accepts the key inside a full config and rejects an unknown value", () => {
+    expect(
+      validateConfig({ defaults: { spawn: { delegationGate: "enforce" } } }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ defaults: { spawn: { delegationGate: "block" } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})
+
+describe("defaults.identity.requireProof key", () => {
+  it("is hot, writable and defaults to an empty list", () => {
+    expect(findConfigKey("defaults.identity.requireProof")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: [],
+    })
+  })
+
+  it("accepts session:spawn and rejects an unknown action or a non-array", () => {
+    expect(validateConfigKeyValue("defaults.identity.requireProof", ["session:spawn"])).toEqual({
+      ok: true,
+    })
+    expect(validateConfigKeyValue("defaults.identity.requireProof", [])).toEqual({ ok: true })
+    expect(validateConfigKeyValue("defaults.identity.requireProof", ["session:control"]).ok).toBe(false)
+    expect(validateConfigKeyValue("defaults.identity.requireProof", "session:spawn").ok).toBe(false)
+  })
+
+  it("accepts the key inside a full config and rejects an unknown action", () => {
+    expect(
+      validateConfig({ defaults: { identity: { requireProof: ["session:spawn"] } } }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ defaults: { identity: { requireProof: ["session:control"] } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})
+
+describe("defaults.messaging.grants key", () => {
+  const valid = {
+    principal: "session-label://pygmalion-brain-persistent",
+    effect: "allow" as const,
+    actions: [{ action: "session:message", scope: "workspace:agentik" }],
+    ttl_seconds: 3600,
+    granted_at: "2026-11-01T00:00:00Z",
+    revoked: false,
+  }
+
+  it("is hot and writable, and defaults to an empty list", () => {
+    expect(findConfigKey("defaults.messaging.grants")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: [],
+    })
+  })
+
+  it("accepts a valid grant in a key value and in a full config", () => {
+    expect(validateConfigKeyValue("defaults.messaging.grants", [valid])).toEqual({ ok: true })
+    expect(validateConfigKeyValue("defaults.messaging.grants", [])).toEqual({ ok: true })
+    expect(
+      validateConfigKeyValue("defaults.messaging.grants", [
+        { principal: "*", actions: [{ action: "session:prompt", scope: "target" }] },
+        { principal: "*", actions: [{ action: "session:control", scope: "workspace:agentik" }] },
+      ]),
+    ).toEqual({ ok: true })
+    expect(
+      validateConfig({ defaults: { messaging: { grants: [valid] } } }).issues,
+    ).toEqual([])
+  })
+
+  it("rejects a non-array, an empty actions list, another action, an object principal and conditions", () => {
+    expect(validateConfigKeyValue("defaults.messaging.grants", valid).ok).toBe(false)
+    expect(
+      validateConfigKeyValue("defaults.messaging.grants", [{ principal: "*", actions: [] }]).ok,
+    ).toBe(false)
+    const got = validateConfigKeyValue("defaults.messaging.grants", [
+      { principal: "*", actions: [{ action: "session:spawn" }] },
+    ])
+    expect(got.ok).toBe(false)
+    expect(got.error).toContain(
+      "only session:message, session:prompt and session:control grants with a string principal are honored here",
+    )
+    expect(
+      validateConfigKeyValue("defaults.messaging.grants", [
+        { principal: { ref: "operator://ops" }, actions: [{ action: "session:message" }] },
+      ]).ok,
+    ).toBe(false)
+    const conditions = validateConfigKeyValue("defaults.messaging.grants", [
+      { principal: "*", actions: [{ action: "session:message" }], conditions: [{ kind: "mfa-recent" }] },
+    ])
+    expect(conditions.ok).toBe(false)
+    expect(conditions.error).toContain(
+      "only session:message, session:prompt and session:control grants with a string principal are honored here",
+    )
+  })
+})
+
+describe("delivery.apply.types key", () => {
+  it("is hot, writable and defaults to no applied types", () => {
+    expect(findConfigKey("delivery.apply.types")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: {},
+    })
+  })
+
+  it("accepts type globs mapped to booleans", () => {
+    expect(
+      validateConfigKeyValue("delivery.apply.types", { "session.*": true, "session.exited": false }),
+    ).toEqual({ ok: true })
+    expect(validateConfigKeyValue("delivery.apply.types", {})).toEqual({ ok: true })
+  })
+
+  it("rejects a non-record and a non-boolean entry", () => {
+    expect(validateConfigKeyValue("delivery.apply.types", ["session.*"]).ok).toBe(false)
+    expect(validateConfigKeyValue("delivery.apply.types", { "session.*": "yes" }).ok).toBe(false)
+  })
+
+  it("accepts the key inside a full config and rejects a non-boolean", () => {
+    expect(
+      validateConfig({ delivery: { apply: { types: { "session.*": true } } } }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ delivery: { apply: { types: { "session.*": "yes" } } } }).issues.length,
+    ).toBeGreaterThan(0)
   })
 })

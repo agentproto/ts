@@ -159,6 +159,24 @@ describe("permissions_list (tool-transformer migration)", () => {
     await c.close()
   })
 
+  it("compact rows keep request and question, the payload of a harness question", async () => {
+    const question = {
+      prompt: "Which database?",
+      choices: [],
+      allowFreeText: false,
+      fields: [{ id: "question_0", input: "single", prompt: "Which?", choices: [{ value: "pg", label: "Postgres" }] }],
+    }
+    const registry = {
+      listPendingPermissions: () => [{ ...PERMISSION, id: "perm-q", request: "question", question }],
+      get: () => ({ adapterSlug: "claude-code" }),
+      list: () => [],
+    } as unknown as SessionsRegistry
+    const c = await client({ registry })
+    const def = parse(await c.callTool({ name: "permissions_list", arguments: {} }))
+    expect(def.permissions[0]).toMatchObject({ id: "perm-q", request: "question", question })
+    await c.close()
+  })
+
   it("fields filters page items; page-walk covers the default list exactly", async () => {
     const c = await client(opts)
     const page = parse(

@@ -5,13 +5,18 @@
  * token / body / secret) reaches a log line or the status.
  */
 
+import "../sentinel-platform.js"
+
 import { describe, expect, it } from "vitest"
 
-import { createSentinelWebhookOutbox } from "../sentinel-webhook-outbox.js"
-import { callbackHost, redactUrls, type DeliveryReplay } from "../webhook-egress/delivery.js"
-import { sentinelViewWithDelivery } from "../sentinel-tools.js"
-import type { Sentinel } from "../sentinel-store.js"
-import { makeFakeEvent } from "../sentinel-providers/fake.js"
+import {
+  createSentinelWebhookOutbox,
+  sentinelViewWithDelivery,
+  type DeliveryReplay,
+  type Sentinel,
+} from "@agentproto/sentinel"
+import { makeFakeEvent } from "@agentproto/sentinel"
+import { callbackHost, redactUrls } from "../webhook-egress/delivery.js"
 
 const SECRET = "whsec_" + Buffer.from(new Uint8Array(32).fill(7)).toString("base64")
 const TOKEN = "tok_SuperSecretPathToken123"

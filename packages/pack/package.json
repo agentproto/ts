@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/pack",
-  "version": "0.2.6",
+  "version": "1.0.0",
   "description": "@agentproto/pack — PACK.md reference implementation (AIP-64, specs/aip-64.mdx). A bundle that assembles a plugin, apps, knowledge, and a playbook into one installable unit.",
   "keywords": [
     "agentproto",
@@ -53,7 +53,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
+    "@agentproto/persona": "workspace:*",
+    "@agentproto/policy": "workspace:*",
+    "@agentproto/role": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.7"
   },

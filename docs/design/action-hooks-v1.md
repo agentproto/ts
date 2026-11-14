@@ -25,7 +25,10 @@ be best-effort, which is wrong for both.
 
 The contract does not build one universal callback. It also does not add a
 second prompt queue. A reaction that needs a model turn must use the existing
-session and prompt path.
+session and prompt path. That path now carries a persisted `dedupeKey` on
+`enqueuePrompt` and `agent_prompt` so a replayed reaction is delivered at most
+once per key; the prompt admission barrier (`holdUntil` / `maxHoldMs`) is
+still pending.
 
 ## Frozen terms
 
@@ -96,9 +99,27 @@ reaction is `delivery: "best-effort"` and `reconciliation: "none"`.
 Compatibility note: `AGENT.schema.json` constrains `on:` values to an
 actionRef or an array of actionRefs, but the generated zod schema currently
 collapses actionRef to `any`. Malformed values can therefore pass manifest
-parsing today. `parseAgentHookMap` is the stricter opt-in contract. No
-runtime path calls it in this PR, and existing AGENT.md loads behave exactly
-as before.
+parsing today. `parseAgentHookMap` is the stricter opt-in contract, and the
+daemon now runs it through `packages/runtime/src/action-hooks/agent-on-scanner.ts`.
+Every routine reconcile rescans `<workspace>/.agents/<id>/AGENT.md`, scopes each
+`on` entry to the sessions whose descriptor `meta.agentId` equals that agent
+id, and refreshes the reaction runner through the same wiring event routines
+use. Example:
+
+```yaml
+on:
+  agentproto:session-completed: session:archive
+```
+
+`agentproto:session-completed` and `agentproto:context-compacted` are supported
+events today, and only actions registered in the daemon registry can be named;
+anything else is reported under `reactions.refused`. An `on` entry has no
+filter and no settings of its own (use a routine for a filter); like every
+reaction, a failing target is retried up to 3 attempts, and there is no cooldown
+on either surface.
+An edit takes effect on the next reconcile (boot, `routine_reconcile`,
+`POST /routine-defs/reconcile`), only the daemon workspace is scanned, and a
+failing target records a failed receipt without failing a turn.
 
 ## AIP-41 event routines are a second configuration surface, not a second system
 
@@ -145,8 +166,10 @@ admission-adjacent, but it is a separate, existing surface.
 
 Do not rename it to `action-hooks/v1`, do not make it the universal reaction
 dispatcher, and do not merge its rule shape into AIP-42 `on:` in PR 1.
-The daemon's `clerk-turn-end` hook documented in `docs/clerk-hook.md` is
-also unchanged.
+The daemon's `clerk-turn-end` hook documented in `docs/clerk-hook.md` keeps
+its controller, gate and debounce. Its pass dispatch can be handed per
+workspace to the durable reaction through `defaults.reactions.clerk.workspaces`;
+the legacy dispatch stays the default.
 
 ## Capability inventory stays on existing surfaces
 
@@ -191,14 +214,14 @@ of scope for this contract.
 | --- | --- | --- |
 | `packages/lifecycle/src/index.ts` | AIP-37 event vocabulary, aliases, templated names | Source of portable event refs |
 | `packages/action/src/schema.ts` | AIP-39 `<target-kind>:<verb>` action ids | Source of action-ref shape |
-| `packages/agent/src/schema.ts` | AIP-42 `on:` map, values currently loose after zod generation | Agent-manifest config layer; opt-in strict parser in this PR |
-| `packages/agent/src/load-agent.ts` | Loads and validates AGENT.md | Unchanged; no dispatcher call added |
+| `packages/agent/src/schema.ts` | AIP-42 `on:` map, values currently loose after zod generation | Agent-manifest config layer; the runtime scanner runs the strict parser before any binding goes live |
+| `packages/agent/src/load-agent.ts` | Loads and validates AGENT.md | Unchanged; the runtime scanner calls `loadAgent` and reads `handle.on` |
 | `packages/routine/src/schema.ts` | AIP-41 schedule and target validation | Event-routine config layer |
-| `packages/runtime/src/routine-registrar.ts` | Registers cron only; event routines and `target.action` skipped | Documented gap, not changed |
+| `packages/runtime/src/routine-registrar.ts` | Registers cron jobs; event routines resolve to reaction bindings; `target.action` is skipped for a cron routine and refused for an event routine until a handler is registered | Event routines now fire through the reaction runner; event `action` arms are listed under `reactions.refused`. The daemon registry contains the builtin `session:clerk-pass` and `session:archive` handlers; every other action id is refused until registered. The runner exposes a health read model through `GET /reactions`. |
 | `packages/runtime/src/session-event-bus.ts` | In-memory `SessionEventType` pub/sub | Transport for lifecycle and reaction paths; not portable config names |
 | `packages/runtime/src/hooks-config.ts` | Existing semantic ACP permission hook engine | Separate surface; not renamed or merged |
 | `packages/runtime/src/capabilities-inventory.ts` | Existing MCP/skill inventory | Future host-level hook capability advertisement would extend existing capabilities surfaces |
-| `packages/runtime/src/sentinel-webhook-outbox.ts` | Existing durable outbox precedent | Future reaction receipts must generalize or reuse this pattern, not introduce a parallel durability system |
+| `packages/sentinel/src/sentinel-webhook-outbox.ts` | Existing durable outbox precedent | Future reaction receipts must generalize or reuse this pattern, not introduce a parallel durability system |
 | `packages/runtime/src/session-capabilities.ts` | Frozen session capability response | Future optional additive hook block; unchanged in PR 1 |
 
 ## Out of scope for PR 1

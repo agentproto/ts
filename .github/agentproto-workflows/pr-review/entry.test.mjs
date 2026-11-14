@@ -1,7 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import workflow from './entry.mjs'
-import { reviewerModelFor, sandboxRefFor, workspaceCwdFor } from '../lib/sandbox-agent.mjs'
+import {
+  reviewerModelFor,
+  reviewerPlacementFor,
+  reviewerTurnRetryFor,
+  sandboxRefFor,
+  workspaceCwdFor,
+} from '../lib/sandbox-agent.mjs'
 
 const prompt = (input) => workflow.steps[0].prompt({ input })
 
@@ -10,7 +16,9 @@ const prompt = (input) => workflow.steps[0].prompt({ input })
 test('default placement (no reviewerSandbox, no repo) reviews via gh CLI', () => {
   const text = prompt({ prNumber: 42 })
   assert.match(text, /Your job: review PR #42 and post a structured GitHub review\./)
-  assert.match(text, /gh pr review 42 --comment/)
+  assert.match(text, /gh pr review 42 --approve/)
+  assert.match(text, /NEVER use `--comment` for a final verdict/)
+  assert.doesNotMatch(text, /gh pr review 42 --comment/)
   assert.doesNotMatch(text, /curl -sS -X POST/)
   assert.doesNotMatch(text, /LOCAL run/)
   assert.match(text, /Write a changeset/)
@@ -38,7 +46,8 @@ test('reviewerSandbox + repo selects sandbox (shared delivery helper) delivery',
 test('reviewerSandbox without repo falls back to host (no clone target)', () => {
   const text = prompt({ prNumber: 7, reviewConfig: { reviewerSandbox: 'e2b' } })
   assert.doesNotMatch(text, /Phase 0: Workspace bootstrap/)
-  assert.match(text, /gh pr review 7 --comment/)
+  assert.match(text, /gh pr review 7 --approve/)
+  assert.doesNotMatch(text, /gh pr review 7 --comment/)
 })
 
 // ── local placement (new) ───────────────────────────────────────────────────
@@ -357,4 +366,479 @@ test('blank/whitespace join metadata vars are treated as absent, same as AGENTPR
     delete process.env.AGENTPROTO_JOIN
     delete process.env.AGENTPROTO_JOIN_NAME
   }
+})
+
+// ── reviewerSandbox provider "auto" (computer fleet first, capped e2b overflow) ──
+
+import { readFileSync } from 'node:fs'
+
+const AUTO_ENV_KEYS = [
+  'COMPUTER_CONTROLLER_URL',
+  'AGENTPROTO_JOIN',
+  'AGENTPROTO_JOIN_NAME',
+  'AGENTPROTO_JOIN_PROVIDER',
+  'AGENTPROTO_JOIN_SANDBOX_ID',
+  'AGENTPROTO_JOIN_LABELS',
+  'OPENCODE_GO_API_KEY',
+  'OPENCODE_CONFIG_CONTENT',
+  'AGENT_ALLOWED_METERED_MODELS',
+]
+
+const withEnv = (vars, fn) => {
+  const saved = Object.fromEntries(AUTO_ENV_KEYS.map(k => [k, process.env[k]]))
+  for (const k of AUTO_ENV_KEYS) delete process.env[k]
+  Object.assign(process.env, vars)
+  try {
+    return fn()
+  } finally {
+    for (const k of AUTO_ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  }
+}
+
+const reviewConfig = JSON.parse(
+  readFileSync(new URL('../../agentic-review.json', import.meta.url), 'utf8'),
+)
+const autoSandbox = {
+  provider: 'auto',
+  lifecycle: { destroy_on: 'workspace-close' },
+  config: {
+    computer: {
+      template: 'agentproto-workstation',
+      cpus: 2,
+      memoryMiB: 4096,
+      fleetCapacityWaitMs: 240000,
+      egress: ['github.com'],
+    },
+    overflow: {
+      enabled: true,
+      maxBoxesPerDay: 20,
+      maxEurPerDay: 5,
+      maxEurPerBox: 0.5,
+      allowSecrets: true,
+      secretAllowlist: [
+        'OPENCODE_API_KEY',
+        'GITHUB_TOKEN',
+        'AGENTPROTO_JOIN',
+        'AGENTPROTO_JOIN_NAME',
+        'AGENTPROTO_JOIN_PROVIDER',
+        'AGENTPROTO_JOIN_SANDBOX_ID',
+        'AGENTPROTO_JOIN_LABELS',
+      ],
+    },
+  },
+}
+const autoConfig = {
+  reviewerSandbox: autoSandbox,
+  reviewerSandboxEnv: ['OPENCODE_API_KEY', 'GITHUB_TOKEN'],
+  cliVersion: '1.31.0',
+}
+const e2bConfig = {
+  reviewerSandbox: { provider: 'e2b', lifecycle: { destroy_on: 'workspace-close' } },
+  reviewerSandboxEnv: ['OPENCODE_API_KEY', 'GITHUB_TOKEN'],
+  cliVersion: '1.31.0',
+}
+
+test('auto without COMPUTER_CONTROLLER_URL degrades to the plain e2b spec, byte for byte', () => {
+  withEnv({}, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(JSON.stringify(spec), JSON.stringify(sandboxRefFor(e2bConfig, 'review')))
+    assert.equal(spec.provider, 'e2b')
+  })
+})
+
+test('auto with a blank COMPUTER_CONTROLLER_URL still degrades to e2b', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: '   ' }, () => {
+    assert.equal(sandboxRefFor(autoConfig, 'review').provider, 'e2b')
+  })
+})
+
+test('auto degraded to e2b keeps join gating and reports e2b as the provider', () => {
+  withEnv({ AGENTPROTO_JOIN: 'https://join.example/token' }, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(spec.provider, 'e2b')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'e2b')
+    assert.deepEqual(spec.env.passthrough, [
+      'OPENCODE_API_KEY',
+      'GITHUB_TOKEN',
+      'AGENTPROTO_JOIN',
+      'AGENTPROTO_JOIN_PROVIDER',
+    ])
+  })
+})
+
+test('auto with COMPUTER_CONTROLLER_URL keeps the auto spec with the computer config and overflow caps', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(spec.provider, 'auto')
+    assert.deepEqual(spec.lifecycle, { destroy_on: 'workspace-close' })
+    assert.deepEqual(spec.config.computer, autoSandbox.config.computer)
+    assert.equal(spec.config.computer.fleetCapacityWaitMs, 240000)
+    assert.equal(spec.config.overflow.enabled, true)
+    assert.equal(spec.config.overflow.maxEurPerBox, 0.5)
+    assert.equal(spec.config.cliVersion, '1.31.0')
+    assert.equal(spec.config.setupCommands.length, 1)
+    assert.deepEqual(spec.env.passthrough, ['OPENCODE_API_KEY', 'GITHUB_TOKEN'])
+    assert.equal(JSON.stringify(spec).includes('fleet.example'), false)
+  })
+})
+
+test('auto narrows the overflow secret allowlist to the names this run actually passes', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    assert.deepEqual(sandboxRefFor(autoConfig, 'review').config.overflow.secretAllowlist, [
+      'OPENCODE_API_KEY',
+      'GITHUB_TOKEN',
+    ])
+  })
+  withEnv(
+    {
+      COMPUTER_CONTROLLER_URL: 'https://fleet.example',
+      AGENTPROTO_JOIN: 'https://join.example/token',
+      AGENTPROTO_JOIN_NAME: 'ci-box',
+    },
+    () => {
+      const spec = sandboxRefFor(autoConfig, 'review')
+      assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'computer')
+      assert.deepEqual(spec.env.passthrough, [
+        'OPENCODE_API_KEY',
+        'GITHUB_TOKEN',
+        'AGENTPROTO_JOIN',
+        'AGENTPROTO_JOIN_NAME',
+        'AGENTPROTO_JOIN_PROVIDER',
+      ])
+      assert.deepEqual(spec.config.overflow.secretAllowlist, spec.env.passthrough)
+    },
+  )
+})
+
+test('auto never allowlists a passthrough name the config did not declare (the overflow then refuses)', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const spec = sandboxRefFor(
+      { ...autoConfig, reviewerSandboxEnv: ['OPENCODE_API_KEY', 'GITHUB_TOKEN', 'SOME_OTHER_SECRET'] },
+      'review',
+    )
+    assert.equal(spec.env.passthrough.includes('SOME_OTHER_SECRET'), true)
+    assert.equal(spec.config.overflow.secretAllowlist.includes('SOME_OTHER_SECRET'), false)
+  })
+})
+
+test('a pre-set AGENTPROTO_JOIN_PROVIDER is not overwritten by the auto default', () => {
+  withEnv(
+    { COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENTPROTO_JOIN: 'x', AGENTPROTO_JOIN_PROVIDER: 'custom' },
+    () => {
+      sandboxRefFor(autoConfig, 'review')
+      assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'custom')
+    },
+  )
+})
+
+test('the join provider default is gated on AGENTPROTO_JOIN: nothing is set or passed without it', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, undefined)
+    assert.equal(spec.env.passthrough.includes('AGENTPROTO_JOIN_PROVIDER'), false)
+  })
+})
+
+test('non-auto providers do not get a join provider default (join gating unchanged)', () => {
+  withEnv({ AGENTPROTO_JOIN: 'https://join.example/token' }, () => {
+    const spec = sandboxRefFor(e2bConfig, 'review')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, undefined)
+    assert.deepEqual(spec.env.passthrough, ['OPENCODE_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  })
+})
+
+// ── reviewerPlacement: the placement ladder + turn-retry (the CI review lane) ──
+
+const FLASH = 'opencode-go/deepseek-v4.1-flash'
+const lifecycle = { destroy_on: 'workspace-close' }
+const mergedPreset = name => ({ ...reviewConfig, ...reviewConfig.agentPresets[name] })
+// Presets inherit the top-level ladder (toReviewConfig spreads the preset over
+// the config), so the opencode presets are the ones that run on it.
+const ladderPresets = Object.entries(reviewConfig.agentPresets ?? {})
+  .filter(([, p]) => p.reviewerAdapter === 'opencode')
+  .map(([name]) => [name, mergedPreset(name)])
+const GO_ENV = { OPENCODE_GO_API_KEY: 'go-key', AGENT_ALLOWED_METERED_MODELS: FLASH }
+
+test('agentic-review.json: one 3-rung ladder at the top level, inherited by every opencode preset', () => {
+  assert.equal(ladderPresets.length, 5)
+  assert.equal(reviewConfig.reviewerSandbox, undefined, 'a ladder is exclusive with reviewerSandbox')
+  for (const [name, preset] of ladderPresets) {
+    assert.equal(reviewConfig.agentPresets[name].reviewerPlacement, undefined, `${name} redeclares the ladder`)
+    assert.equal(preset.reviewerSandbox, undefined, name)
+    assert.deepEqual(preset.reviewerPlacement, reviewConfig.reviewerPlacement, name)
+  }
+  const { ladder } = reviewConfig.reviewerPlacement
+  assert.deepEqual(
+    ladder.map(r => r.sandbox.provider),
+    ['computer', 'e2b', 'computer'],
+  )
+  assert.deepEqual(ladder.map(r => r.preflight), [['model-answers'], ['model-answers'], undefined])
+  for (const rung of ladder) assert.deepEqual(rung.sandbox.lifecycle, lifecycle)
+})
+
+test('agentic-review.json: the only paid model anywhere in the ladders is the FLASH fallback rung', () => {
+  const models = [reviewConfig, ...ladderPresets.map(([, p]) => p)].flatMap(c =>
+    c.reviewerPlacement.ladder.map(r => r.model),
+  )
+  assert.deepEqual([...new Set(models)], [undefined, FLASH])
+  assert.equal(reviewConfig.reviewerPlacement.ladder[2].model, FLASH)
+  for (const [, p] of ladderPresets) assert.match(p.reviewerModel, /-free$/)
+})
+
+test('agentic-review.json: computer rungs ask for a distinct egress IP and the review egress set', () => {
+  const { sandbox } = reviewConfig.reviewerPlacement.ladder[0]
+  assert.equal(sandbox.config.egressIp, 'auto')
+  assert.equal(sandbox.config.template, 'agentproto-workstation')
+  assert.equal(sandbox.config.fleetCapacityWaitMs, 240000)
+  assert.deepEqual(sandbox.config.egress.includes('github.com'), true)
+  assert.deepEqual(reviewConfig.reviewerPlacement.ladder[2].sandbox, sandbox)
+})
+
+const TRANSIENT = ['rate-limit', 'upstream-5xx', 'no-output-stall']
+const FREE_ROTATION = [
+  { model: 'opencode/mimo-v2.6-flash-free' },
+  { model: 'opencode/deepseek-v4.1-flash-free' },
+  { model: 'opencode/glm-5.3-flash-free' },
+]
+const FULL_RETRY = {
+  on: [...TRANSIENT, 'usage-limit'],
+  maxRetries: 6,
+  rotate: FREE_ROTATION,
+  rotateOn: TRANSIENT,
+  fallback: [{ model: FLASH }],
+}
+const { fallback: _paid, ...RETRY_NO_FALLBACK } = FULL_RETRY
+
+test('agentic-review.json: reviewerTurnRetry keeps the box defaults and adds usage-limit with the FLASH fallback', () => {
+  assert.deepEqual(reviewConfig.reviewerTurnRetry, FULL_RETRY)
+  for (const cls of TRANSIENT) assert.equal(reviewConfig.reviewerTurnRetry.on.includes(cls), true, `${cls} kept`)
+  assert.equal(reviewConfig.reviewerTurnRetry.maxRetries, 6)
+  assert.equal(reviewConfig.agentPresets['claude-cloud'].reviewerPlacement, null)
+  assert.equal(reviewConfig.agentPresets['claude-cloud'].reviewerTurnRetry, null)
+})
+
+test('agentic-review.json: every opencode preset with a ladder also keeps the transient classes and the FLASH fallback', () => {
+  for (const [name] of ladderPresets) {
+    const tr = mergedPreset(name).reviewerTurnRetry
+    for (const cls of [...TRANSIENT, 'usage-limit']) assert.equal(tr.on.includes(cls), true, `${name}: ${cls}`)
+    assert.deepEqual(tr.fallback, [{ model: FLASH }], name)
+    assert.equal(tr.maxRetries, 6, name)
+  }
+})
+
+test('ladder without a fleet URL: only the e2b rung survives, byte for byte the old e2b spec', () => {
+  withEnv({}, () => {
+    for (const cfg of [reviewConfig, ...ladderPresets.map(([name]) => mergedPreset(name))]) {
+      const { ladder } = reviewerPlacementFor(cfg, 'review')
+      assert.equal(ladder.length, 1)
+      assert.deepEqual(ladder[0].preflight, ['model-answers'])
+      const legacy = { ...cfg, reviewerPlacement: undefined, reviewerSandbox: { provider: 'e2b', lifecycle } }
+      assert.equal(JSON.stringify(ladder[0].sandbox), JSON.stringify(sandboxRefFor(legacy, 'review')))
+    }
+  })
+})
+
+test('ladder with a fleet URL and the Go key + allowlist: computer, e2b, computer(FLASH)', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', ...GO_ENV }, () => {
+    const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
+    assert.deepEqual(
+      ladder.map(r => [r.sandbox.provider, r.model]),
+      [
+        ['computer', undefined],
+        ['e2b', undefined],
+        ['computer', FLASH],
+      ],
+    )
+    const goPassthrough = ['OPENCODE_API_KEY', 'GITHUB_TOKEN', 'OPENCODE_GO_API_KEY', 'OPENCODE_CONFIG_CONTENT']
+    for (const rung of ladder) {
+      assert.deepEqual(rung.sandbox.env.passthrough, goPassthrough)
+      assert.equal(rung.sandbox.config.cliVersion, '1.31.0')
+      assert.equal(rung.sandbox.config.setupCommands.length, 1)
+      assert.deepEqual(rung.sandbox.lifecycle, lifecycle)
+    }
+    assert.equal(ladder[0].sandbox.config.egressIp, 'auto')
+    assert.equal(ladder[0].sandbox.config.template, 'agentproto-workstation')
+    assert.equal(JSON.stringify(ladder).includes('fleet.example'), false)
+    assert.equal(JSON.stringify(ladder).includes('go-key'), false, 'only env NAMES are placed in the spec')
+  })
+})
+
+test('AGENT_REVIEW_PLACEMENT=e2b moves the e2b rung first and keeps the other rungs after it in order', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: 'e2b', ...GO_ENV }, () => {
+    const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
+    assert.deepEqual(
+      ladder.map(r => [r.sandbox.provider, r.model]),
+      [
+        ['e2b', undefined],
+        ['computer', undefined],
+        ['computer', FLASH],
+      ],
+    )
+  })
+})
+
+test('AGENT_REVIEW_PLACEMENT is ordered, case/space/comma tolerant, and unset or empty keeps the config order', () => {
+  const order = () => reviewerPlacementFor(reviewConfig, 'review').ladder.map(r => r.sandbox.provider)
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: ' E2B , computer ', ...GO_ENV }, () => {
+    assert.deepEqual(order(), ['e2b', 'computer', 'computer'])
+  })
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: '   ', ...GO_ENV }, () => {
+    assert.deepEqual(order(), ['computer', 'e2b', 'computer'])
+  })
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', ...GO_ENV }, () => {
+    assert.deepEqual(order(), ['computer', 'e2b', 'computer'])
+  })
+})
+
+test('AGENT_REVIEW_PLACEMENT never adds a rung: a provider the config has no rung for is ignored, and no fleet still drops the computer rungs', () => {
+  withEnv({ AGENT_REVIEW_PLACEMENT: 'computer,e2b' }, () => {
+    assert.deepEqual(reviewerPlacementFor(reviewConfig, 'review').ladder.map(r => r.sandbox.provider), ['e2b'])
+  })
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: 'modal' }, () => {
+    assert.deepEqual(reviewerPlacementFor(reviewConfig, 'review').ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
+  })
+})
+
+test('ladder with a fleet URL but no allowlist entry: the paid rung and the paid fallback are dropped', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', OPENCODE_GO_API_KEY: 'go-key' }, () => {
+    const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
+    assert.deepEqual(ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
+    for (const rung of ladder) assert.deepEqual(rung.sandbox.env.passthrough, ['OPENCODE_API_KEY', 'GITHUB_TOKEN'])
+    assert.deepEqual(reviewerTurnRetryFor(reviewConfig, 'review'), RETRY_NO_FALLBACK)
+    assert.equal(process.env.OPENCODE_CONFIG_CONTENT, undefined)
+  })
+})
+
+test('the paid rung also needs the Go key, an allowlisted id alone is not enough', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_ALLOWED_METERED_MODELS: FLASH }, () => {
+    const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
+    assert.deepEqual(ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
+    assert.deepEqual(reviewerTurnRetryFor(reviewConfig, 'review'), RETRY_NO_FALLBACK)
+  })
+})
+
+test('the allowlist is split on commas and whitespace and matched exactly', () => {
+  withEnv(
+    { COMPUTER_CONTROLLER_URL: 'https://fleet.example', OPENCODE_GO_API_KEY: 'k', AGENT_ALLOWED_METERED_MODELS: `x/y, ${FLASH}` },
+    () => assert.equal(reviewerPlacementFor(reviewConfig, 'review').ladder.length, 3),
+  )
+  withEnv(
+    { COMPUTER_CONTROLLER_URL: 'https://fleet.example', OPENCODE_GO_API_KEY: 'k', AGENT_ALLOWED_METERED_MODELS: `${FLASH}-x` },
+    () => assert.equal(reviewerPlacementFor(reviewConfig, 'review').ladder.length, 2),
+  )
+})
+
+test('with the Go key, OPENCODE_CONFIG_CONTENT points the Go provider at OPENCODE_GO_API_KEY and keeps existing config', () => {
+  withEnv({ ...GO_ENV, OPENCODE_CONFIG_CONTENT: JSON.stringify({ theme: 'dark', provider: { other: { x: 1 } } }) }, () => {
+    reviewerTurnRetryFor(reviewConfig, 'review')
+    reviewerTurnRetryFor(reviewConfig, 'review')
+    const inline = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT)
+    assert.equal(inline.theme, 'dark')
+    assert.deepEqual(inline.provider.other, { x: 1 })
+    assert.equal(inline.provider['opencode-go'].options.apiKey, '{env:OPENCODE_GO_API_KEY}')
+    assert.equal(process.env.OPENCODE_API_KEY, undefined, 'the Zen key variable is never repointed')
+  })
+})
+
+test('an unparseable inline OPENCODE_CONFIG_CONTENT is left untouched', () => {
+  withEnv({ ...GO_ENV, OPENCODE_CONFIG_CONTENT: '{nope' }, () => {
+    reviewerTurnRetryFor(reviewConfig, 'review')
+    assert.equal(process.env.OPENCODE_CONFIG_CONTENT, '{nope')
+  })
+})
+
+test('a ladder with no usable rung fails loudly instead of degrading to a host spawn', () => {
+  withEnv({}, () => {
+    const computerOnly = {
+      reviewerPlacement: { ladder: [reviewConfig.reviewerPlacement.ladder[0]] },
+      reviewerSandboxEnv: ['OPENCODE_API_KEY', 'GITHUB_TOKEN'],
+    }
+    assert.throws(() => reviewerPlacementFor(computerOnly, 'review'), /no placement rung is usable/)
+  })
+})
+
+test('an opencode-go model is never routed on a non-opencode adapter', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', ...GO_ENV }, () => {
+    const claude = { ...reviewConfig, reviewerAdapter: 'claude-sdk' }
+    assert.deepEqual(reviewerPlacementFor(claude, 'review').ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
+    assert.deepEqual(reviewerTurnRetryFor(claude, 'review'), RETRY_NO_FALLBACK)
+  })
+})
+
+test('join provider defaults to the first surviving rung', () => {
+  withEnv({ AGENTPROTO_JOIN: 'https://join.example/token' }, () => {
+    reviewerPlacementFor(reviewConfig, 'review')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'e2b')
+  })
+  withEnv({ AGENTPROTO_JOIN: 'https://join.example/token', COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'computer')
+    assert.equal(ladder[1].sandbox.env.passthrough.includes('AGENTPROTO_JOIN_PROVIDER'), true)
+  })
+})
+
+test('reviewerTurnRetryFor: absent is undefined, null opts out, claude-cloud preset opts out', () => {
+  assert.equal(reviewerTurnRetryFor({}, 'review'), undefined)
+  assert.equal(reviewerTurnRetryFor({ reviewerTurnRetry: null }, 'review'), null)
+  assert.equal(reviewerTurnRetryFor(mergedPreset('claude-cloud'), 'review'), null)
+  assert.equal(reviewerPlacementFor(mergedPreset('claude-cloud'), 'review'), undefined)
+})
+
+test('reviewerPlacementFor is undefined without a ladder, and other verbs still get a box via sandboxRefFor', () => {
+  assert.equal(reviewerPlacementFor({ reviewerSandbox: 'e2b' }, 'review'), undefined)
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const spec = sandboxRefFor(reviewConfig, 'review')
+    assert.equal(spec.provider, 'e2b')
+    assert.equal(spec.config.computer, undefined)
+  })
+})
+
+// ── the review step wires placement / turnRetry / sandbox / cwd ────────────────
+
+const step = workflow.steps[0]
+const bindings = (input, extra = {}) => ({ input: { prNumber: 7, repo: 'agentproto/ts', ...input }, ...extra })
+
+test('step: a ladder config sets placement + turnRetry, no sandbox, cwd /home/user', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', ...GO_ENV }, () => {
+    const b = bindings({ reviewConfig })
+    assert.equal(step.sandbox(b), undefined)
+    assert.deepEqual(
+      step.placement(b).ladder.map(r => r.sandbox.provider),
+      ['computer', 'e2b', 'computer'],
+    )
+    assert.deepEqual(step.turnRetry(b), FULL_RETRY)
+    assert.equal(step.cwd(b), '/home/user')
+    const text = step.prompt(b)
+    assert.match(text, /Phase 0: Workspace bootstrap/)
+    assert.match(text, /deliver-artifact\.mjs/)
+    assert.doesNotMatch(text, /gh pr review 7 --comment/)
+  })
+})
+
+test('step: a legacy reviewerSandbox config keeps sandbox and no placement', () => {
+  const b = bindings({ reviewConfig: { reviewerSandbox: 'e2b' } })
+  assert.equal(step.sandbox(b).provider, 'e2b')
+  assert.equal(step.placement(b), undefined)
+  assert.equal(step.turnRetry(b), undefined)
+})
+
+test('step: placement "local" is a host spawn with no ladder, sandbox or paid fallback', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', ...GO_ENV }, () => {
+    const b = bindings({ placement: 'local', reviewConfig })
+    assert.equal(step.sandbox(b), undefined)
+    assert.equal(step.placement(b), undefined)
+    assert.equal(step.turnRetry(b), undefined)
+    assert.equal(step.cwd(b), undefined)
+    assert.equal(process.env.OPENCODE_CONFIG_CONTENT, undefined)
+  })
+})
+
+test('step: the ladder does not apply to a config with no reviewConfig (host)', () => {
+  const b = { input: { prNumber: 7 } }
+  assert.equal(step.placement(b), undefined)
+  assert.equal(step.sandbox(b), undefined)
+  assert.equal(step.turnRetry(b), undefined)
 })

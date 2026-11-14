@@ -16,13 +16,15 @@
  */
 
 import { createLivenessTickGuard } from "./liveness-tick-guard.js"
+import { heapLogIntervalFromEnv, startHeapMonitor, writeHeapSnapshotGuarded } from "./heap-diagnostics.js"
+import { eventsIndexCacheSize } from "./events-jsonl-reader.js"
 import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, statSync } from "node:fs"
 import { readFile } from "node:fs/promises"
-import { hostname, tmpdir } from "node:os"
+import { homedir, hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { createMcpServer, registerEventsMethods, registerUiResource } from "@agentproto/mcp-server"
+import { createMcpServer, registerEventsMethods } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
 
 import { writeRuntimeMeta } from "./agentproto-dir.js"
@@ -30,6 +32,7 @@ import { makeCwdAnchor, registerCommandTools } from "./command-tools.js"
 import { isCommandAllowed, loadAllowlistEntries } from "./command-allowlist.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
+import { callerScopes } from "./caller-scope.js"
 import { registerFsTools } from "./fs-tools.js"
 import {
   registerSessionTools,
@@ -43,12 +46,14 @@ import { registerCreateToolTools } from "./create-tool-tool.js"
 import { collectSubtree } from "./agent-tools.js"
 import { registerBrainTools } from "./brain-tools.js"
 import { createWorkspaceBrains } from "./workspace-brains.js"
+import { resolveBrainIngestLimits } from "./brain-ingest-limits.js"
 import { createWorkspaceBrainSubscriber } from "./workspace-brain-subscriber.js"
 import {
   registerBrowserTools,
   type BrowserAdapterResolver,
   type BrowserAdapterLister,
 } from "./browser-tools.js"
+import { resolveBrowserBuiltin } from "./browser-proxy.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
@@ -56,31 +61,8 @@ import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 import { registerDecisionTools } from "./decision-tools.js"
 import { createDaemonEscalationHost } from "./decision-escalation.js"
 import { registerDecisionWorkflowTools } from "./decision-workflow-tools.js"
-export {
-  DECISION_POLICY_SCHEMA_VERSION,
-  decisionPolicyHash,
-  hashStable,
-  parseDecisionPolicy,
-  stableStringify,
-  type DecisionPolicy,
-  type DecisionPolicyFrontmatter,
-  type DecisionPolicyParse,
-  type DecisionWhen,
-} from "./decision-policy.js"
-export {
-  buildEscalationPacket,
-  clearDecisionCache,
-  decide,
-  decisionCacheSize,
-  evaluateWhen,
-  projectTier1Evidence,
-  type ClassifierOutcome,
-  type DecideDeps,
-  type DecisionEscalationHistoryEntry,
-  type DecisionOutcome,
-  type DecisionSource,
-  type EscalationOutcome,
-} from "./decision.js"
+import { withContextPolicy } from "./context-continuity.js"
+export { layerContextSettings, type ContextSettings } from "./context-continuity.js"
 export { makeJevDecisionClassifier } from "./decision-tools.js"
 export {
   DEFAULT_MODEL_ROLES,
@@ -99,30 +81,40 @@ export {
   type ModelRolesConfig,
   type ResolvedModelRole,
 } from "./model-roles.js"
+export { createWorkspaceOfCwd } from "./workspace-binding.js"
 export { loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
+import { registerAccountSlotTools } from "./account-slot-tools.js"
 import { registerUserPresetTools } from "./user-preset-tools.js"
 import { registerModelListTools } from "./model-list-tools.js"
 import { loadModelListSource } from "./model-list-store.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
+import { DEFAULT_BUCKET, resolveBucketSlug } from "./workspace-buckets.js"
 import { makeBuiltinPanelApps } from "./builtin-apps.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
-import { resolvePublicAppOrigins } from "./public-origins.js"
+import { deriveWsBaseUrl, resolvePublicAppOrigins } from "./public-origins.js"
 import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
 import { registerAppPullTools } from "./app-pull-tools.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
+  findWorkspaceByPath,
   getActiveWorkspace,
 } from "./workspaces-config.js"
 import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import type { WorktreeGcRunner } from "./worktree-gc.js"
-import type { BranchGcRunner, BranchGcVerdictRecorder, BranchGcVerdictReader } from "./branch-gc.js"
+import type {
+  BranchGcRunner,
+  BranchGcVerdictRecorder,
+  BranchGcVerdictReader,
+  BranchGcOperatorApprover,
+  BranchGcRestorer,
+} from "./branch-gc.js"
 import type { SandboxCheckpointGcRunner } from "./sandbox-checkpoint-gc.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
@@ -147,7 +139,20 @@ import {
 } from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { sweepWiringLifecycle, wireRetirementCleanup } from "./retirement-cleanup.js"
-import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+import {
+  attachSessionCredentialStore,
+  revokeSessionTokens,
+  sessionCredentialsFile,
+} from "./session-credentials.js"
+import { createIdentityModeReader, resolveIdentityDefaults } from "./identity-defaults.js"
+import { identityObservationsFile } from "./identity-observations.js"
+import { preCompactCommandFor } from "./native-hooks-defaults.js"
+import { withSessionToken } from "./session-spawn.js"
+import {
+  DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS,
+  runEagerResumePass,
+  type EagerResumeSummary,
+} from "./eager-resume.js"
 import {
   DEFAULT_REATTACH_TIMEOUT_MS,
   runSandboxReattachPass,
@@ -164,6 +169,7 @@ import {
 } from "./idle-reaper.js"
 import {
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  parsePausedBoxMaxAge,
   parseSandboxGcInterval,
   startSandboxGcTimer,
   type SandboxGcSessionLineage,
@@ -183,9 +189,15 @@ import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
 import { migrateSandboxSession } from "./session-migrate.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
-import { loadConfig } from "./config.js"
+import { harnessCacheRetentionDays, loadConfig } from "./config.js"
+import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
+import { resolveNoCallerIdentity } from "./mcp-config.js"
+import { registerExposedAppTools } from "./app-exposed-tools.js"
+import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
+import { spawningCallerContext } from "./spawning-caller-context.js"
+import type { AnonymousMessageApprovalDetail } from "./message-tools.js"
 import { resolveTaskDefaults } from "./task-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { backfillSessionIndexesAsync } from "./session-index.js"
@@ -200,18 +212,26 @@ import {
   restartPreferInPlace,
 } from "./session-restart-core.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
-import { cloudMetaOf } from "./cloud-vendors.js"
+import { cloudMetaOf } from "@agentproto/cloud-agent"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
-import { createSentinelStore } from "./sentinel-store.js"
-import { createSentinelRuntime } from "./sentinel-runtime.js"
-import { resolveSentinelProvider, configureSessionSentinelProvider } from "./sentinel-providers/registry.js"
-import { makePublicUrlResolver, setSentinelPublicUrlSource } from "./sentinel-public-url.js"
+import { createSentinelStore } from "@agentproto/sentinel"
+import { createSentinelRuntime } from "@agentproto/sentinel"
+import { resolveSentinelProvider, configureSessionSentinelProvider } from "@agentproto/sentinel"
+import { makePublicUrlResolver, setSentinelPublicUrlSource } from "@agentproto/sentinel"
 import { builtinProviderCapabilities } from "./remote-providers/registry.js"
-import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
-import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
-import { registerSentinelTools, cancelSentinelWatch } from "./sentinel-tools.js"
+import { LOCAL_GH_SLUG } from "@agentproto/sentinel"
+import { AGENTPUSH_SLUG } from "@agentproto/sentinel"
+import { sentinelRoutesConfigFrom, type SentinelRoutingDeps } from "@agentproto/sentinel"
+import {
+  registerSentinelCoalesceRule,
+  registerSentinelClassifier,
+  registerSentinelRepeatKey,
+  registerSentinelTools,
+  cancelSentinelWatch,
+} from "@agentproto/sentinel"
+import { registerGithubDeliveryModule } from "@agentproto/delivery-github"
 import { createSessionFollowStore } from "./session-follow-store.js"
 import { wireSessionFollow } from "./session-follow.js"
 import {
@@ -229,7 +249,7 @@ import {
   type EventsUnsubscribeInput,
 } from "./mcp-events/adapter.js"
 import { daemonBearerPrincipal, sessionPrincipal } from "./mcp-events/events-registry.js"
-import { createSentinelAutoLinker } from "./sentinel-autolink.js"
+import { createSentinelAutoLinker } from "@agentproto/sentinel"
 import { createEventsSurfaceServer } from "./mcp-events-surface.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
@@ -248,37 +268,90 @@ import {
   resolveAppToolsForWorkflow,
   performInstall,
 } from "./app-tools.js"
-import { createAppServiceStore } from "./app-services.js"
-import { registerAppDataTools } from "./app-data.js"
+import { createAppServiceStore, type AppServiceStore } from "./app-services.js"
+import { appDataDir, registerAppDataTools } from "./app-data.js"
 import { APP_STATE_APPEND_TOOL_NAME } from "./app-state.js"
 import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import { createSessionEventBus } from "./session-event-bus.js"
-import { wireSessionCompletion } from "./action-hooks/index.js"
+import {
+  createActionRegistry,
+  createAgentOnScanner,
+  createBrainIngestReaction,
+  createClerkReaction,
+  createSessionArchiveAction,
+  createReactionReceiptStore,
+  createReactionWiring,
+  reactionReceiptsPathForBucket,
+  createReactionRunner,
+  readBrainIngestOwnedWorkspaces,
+  readClerkReactionOwnedWorkspaces,
+  sessionFactsOf,
+  wireSessionCompletion,
+  type ClerkReaction,
+} from "./action-hooks/index.js"
 import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-session-observer.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
+import { createImportedCallGuard } from "./imported-call-gate.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { IMPORTED_MCPS_PATH, loadImportedMcps } from "./mcp-imports.js"
+import { resolveImportConnection } from "./mcp-import-resolve.js"
+import { sessionHoldsApproval } from "./approvals/session-hold.js"
+import { createSubsessionMinter, wireSubsessionLifecycle } from "./subsession-minter.js"
+import { createPermissionTelegramBridge } from "./permission-telegram-bridge.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { createReviewRunner } from "./review-runner.js"
 import { createReviewLedger } from "./review-ledger.js"
 import { createDaemonReviewerHost } from "./review-reviewer-host.js"
 import { registerReviewTools, reviewLedgerView } from "./review-tools.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
-import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
 export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
+import {
+  resolveToolProfileAllowSet,
+  resolveToolProfileSelection,
+  type ToolProfileName,
+} from "./tool-profiles.js"
+export {
+  parseToolProfileList,
+  profilesExposingTool,
+  resolveToolProfileAllowSet,
+  resolveToolProfileSelection,
+  TOOL_PROFILE_NAMES,
+  type ToolProfileName,
+} from "./tool-profiles.js"
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
+import { createSessionScreencastReader } from "./session-screencast.js"
+import { withToolDenyGate } from "./tool-deny-gate.js"
 import { boundaryFromMeta, boundaryRestartOptions } from "./app-boundary.js"
+import { createAppReadGrantResolver } from "./app-read-grants.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
+import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
+import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
+import { approvalAttachmentDir } from "./approvals/telegram-attachments.js"
+import type { ApprovalRecord } from "./approvals/types.js"
+import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
+import {
+  createReachRouter,
+  createReachTeller,
+  resolveReachTellDir,
+  createTelegramReachAdapter,
+  loadChatSdkReachFactory,
+  planReachRoute,
+  registerReachTools,
+  routeNamesChatSdk,
+  type ReachTeller,
+} from "./reach/index.js"
 import { registerApprovalTools } from "./approvals/tools.js"
-import { registerApprovalCardDecideTool } from "./approvals/card-tool.js"
-import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/card.js"
+import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
+import { wireApprovalWake } from "./approvals/wake.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
 import { createSessionTurnObserver } from "./cron-turn-observer.js"
@@ -286,13 +359,15 @@ import { getAuthProfile } from "@agentproto/auth"
 import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
 import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
-import { createClerkTurnEndController } from "./clerk-turn-end.js"
-import { createClerkPassRunner } from "./clerk-pass-runner.js"
+import { createClerkTurnEndController } from "@agentproto/clerk"
+import { createNativeMemoryCapture } from "./memory-capture.js"
+import { createClerkPassRunner } from "@agentproto/clerk"
+import type { ClerkSessionLike } from "@agentproto/clerk"
 import {
   loadDaemonClerkHook,
   loadWorkspaceClerkHook,
   resolveClerkHookConfig,
-} from "./clerk-hook-config.js"
+} from "@agentproto/clerk"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
   WatcherStartInput,
@@ -327,6 +402,7 @@ import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
   createOrchestratorInjector,
+  createOrchestratorScopeHooks,
   reapOrphanedDescendants,
   orchestratorScopesFile,
   adoptLegacyOrchestratorScopes,
@@ -348,6 +424,18 @@ export type {
 // `buildDaemonTunnelServerOptions` (which sets it) and http-server.ts's own
 // `handleDeviceInference` (which checks it) share one literal, not two.
 export { HOST_SCOPE_HEADER } from "./http-server.js"
+// Public-base resolver + the daemon-signed header carrying it on the pairing
+// path / link-guard (packages/cli sets it, http-server.ts reads it).
+export {
+  PUBLIC_BASE_HEADER,
+  deriveWsBaseUrl,
+  resolvePublicBase,
+  signPublicBase,
+} from "./public-origins.js"
+export type { PublicBase, PublicBaseSource } from "./public-origins.js"
+export { startHttpServer } from "./http-server.js"
+export { createSessionsRegistry } from "./sessions.js"
+export { createRuntimeEvents } from "./events.js"
 export type {
   CapabilitiesInventory,
   CapabilitiesInventoryMcp,
@@ -360,6 +448,7 @@ export type {
   WorktreeStatusView,
 } from "./worktree-status.js"
 export { toWorktreeStatusView } from "./worktree-status.js"
+export { APP_INSTALL_WORKTREE_REPOINT_REFUSED } from "./app-tools.js"
 export type {
   WorktreeGcRunner,
   WorktreeGcRunInput,
@@ -389,6 +478,14 @@ export type {
   BranchGcVerdictRecorder,
   BranchGcVerdictLookupInput,
   BranchGcVerdictReader,
+  BranchGcOperatorApprovalInput,
+  BranchGcOperatorApprovalResult,
+  BranchGcOperatorApprover,
+  BranchGcRestorer,
+  BranchGcRestoreInput,
+  BranchGcRestoreOutcomeView,
+  BranchGcRestoreResultView,
+  BranchGcVerifiedPrView,
   BranchGcApplySummary,
   BranchGcApplyScopeCounts,
 } from "./branch-gc.js"
@@ -414,34 +511,6 @@ export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { openPrForSession } from "./pr-open.js"
 export type { OpenPrForSessionInput, OpenPrForSessionOutcome } from "./pr-open.js"
 export { createActivityProjector } from "./activities.js"
-// AIP-68 clerk hook - the turn-end subscriber + its configuration
-// resolution (three levels: agent > workspace > daemon default).
-export {
-  createClerkTurnEndController,
-  type ClerkTurnEndController,
-  type ClerkTurnEndControllerOptions,
-  type ClerkPassInput,
-  type ClerkSessionLike,
-} from "./clerk-turn-end.js"
-export { createClerkPassRunner, spawnClerkCommand } from "./clerk-pass-runner.js"
-export {
-  CLERK_HOOK_DEFAULTS,
-  CLERK_HOOK_DEFAULT_DEBOUNCE_MS,
-  CLERK_HOOK_EVENTS,
-  clerkHookInputSchema,
-  clerkHooksInputSchema,
-  loadDaemonClerkHook,
-  loadWorkspaceClerkHook,
-  mergeClerkHookLevels,
-  parseAgentClerkHook,
-  parseClerkHookLevel,
-  resolveClerkHookConfig,
-  type ClerkHookConfig,
-  type ClerkHookEvent,
-  type ClerkHookRun,
-  type ClerkHookSource,
-  type ResolvedClerkHookConfig,
-} from "./clerk-hook-config.js"
 export type {
   ActivityProjector,
   ActivityProjectorRegistry,
@@ -454,7 +523,7 @@ export type {
 // runner-select), exported so a host — or a local harness that stands in for
 // one, `scripts/dev/display-mode-host-harness.mjs` — can serve an app UI
 // through the exact same path the daemon does instead of re-deriving it.
-export { injectMcpAppBridge, MCP_APP_BRIDGE_SCRIPT } from "./app-ui-apps.js"
+export { injectMcpAppBridge, injectPublicBaseUrl, MCP_APP_BRIDGE_SCRIPT } from "./app-ui-apps.js"
 export { registerBrainTools } from "./brain-tools.js"
 export {
   registerWebSearchTools,
@@ -469,14 +538,21 @@ export type {
   WebSearchResult,
 } from "./web-search-tools.js"
 export type { RegisterBrainToolsOptions } from "./brain-tools.js"
+export { HOST_CALLER, CallerScopes, callerScopes, CallerRefusedError } from "./caller-scope.js"
+export type { CallerScope } from "./caller-scope.js"
 export { createWorkspaceBrains, readSessionForBrain } from "./workspace-brains.js"
 export type { WorkspaceBrains } from "./workspace-brains.js"
+export {
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  resolveBrainIngestLimits,
+  type BrainIngestLimits,
+} from "./brain-ingest-limits.js"
 export {
   createWorkspaceBrainSubscriber,
   type WorkspaceBrainSubscriber,
   type WorkspaceBrainSubscriberOptions,
 } from "./workspace-brain-subscriber.js"
-export type { BrainManager, BrainStats, IngestResult, IngestReport } from "@agentproto/workspace-brain"
 export {
   policyToActivities,
   turnToActivities,
@@ -661,14 +737,6 @@ export {
   defaultBrowserAdapterResolution,
   defaultBrowserAdapterIds,
 } from "./browser-adapters.js"
-export { projectBrowserTools } from "./browser-projection.js"
-export type {
-  ProjectedBrowserTool,
-  ProjectedBrowserTools,
-  ProjectedProvider,
-  ProjectedToolResult,
-  ProjectBrowserToolsOptions,
-} from "./browser-projection.js"
 export type { BrowserAdapterHandle } from "./browser-adapters.js"
 export type {
   SandboxProviderResolver,
@@ -688,6 +756,28 @@ export {
   type SandboxConnectionDescriptor,
 } from "./sandbox-attach.js"
 export {
+  DEFAULT_EGRESS_COOLDOWN_MS,
+  MAX_EGRESS_COOLDOWN_MS,
+  createEgressHealthLedger,
+  egressHealthLedger,
+  egressHealthPath,
+  isEgressHealthErrorClass,
+  type EgressCooldownEntry,
+  type EgressHealthErrorClass,
+  type EgressHealthLedger,
+  type MarkEgressCooldownInput,
+} from "./egress-health.js"
+export {
+  DEFAULT_EGRESS_HEALTH_PROVIDER,
+  probeEgressSlots,
+  readEgressHealth,
+  registerSandboxEgressHealthTool,
+  type EgressHealthReport,
+  type EgressHealthSlotView,
+  type EgressProbeReport,
+  type EgressProbeSlotResult,
+} from "./egress-health-report.js"
+export {
   SANDBOX_EXEC_STREAM_MAX_CHARS,
   SANDBOX_EXEC_MAX_COMMAND_BYTES,
   SANDBOX_EXEC_MAX_ENV_BYTES,
@@ -701,6 +791,8 @@ export {
   type SandboxExecResult,
 } from "./sandbox-exec.js"
 export {
+  DEFAULT_SANDBOX_GC_PROVIDER_SLUGS,
+  DEFAULT_SANDBOX_PROVIDER_SLUGS,
   makeSandboxResolver,
   makeSandboxCredsStore,
 } from "./sandbox-adapters.js"
@@ -747,6 +839,15 @@ export {
   type SandboxOrphanScan,
   type SandboxOrphanScanDeps,
 } from "./sandbox-orphan-gc.js"
+export {
+  collectSandboxInventory,
+  type CollectSandboxInventoryOpts,
+  type SandboxInventory,
+  type SandboxInventoryProvider,
+  type SandboxInventoryProviderInput,
+  type SandboxInventorySource,
+  type SandboxInventoryTotals,
+} from "./sandbox-inventory.js"
 export {
   reconcileSandboxLedger,
   type SandboxReconcileDeps,
@@ -830,6 +931,8 @@ export type {
   RegisterSessionInput,
   PendingPermission,
   PermissionRespondInput,
+  ToolPermissionRequest,
+  ToolPermissionOutcome,
   PermissionRespondResult,
 } from "./sessions.js"
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
@@ -851,6 +954,7 @@ export {
   type SessionRestartErrorPayload,
 } from "./session-restart-core.js"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
+export { launchedByOf, launchedByText, type LaunchedBy } from "./launched-by.js"
 // Session identity env var names injected into every spawned process
 // (assigned last, after caller-supplied env, so they cannot be forged).
 export { SESSION_ID_ENV, WORKSPACE_SLUG_ENV } from "./sessions.js"
@@ -936,13 +1040,23 @@ export {
   type SessionRetentionResult,
 } from "./session-retention.js"
 export {
+  DEFAULT_ADAPTER_CACHE_RETENTION_DAYS,
+  LEGACY_CACHE_PATHS,
+  runAdapterCacheRetentionPass,
+  type AdapterCacheRetentionOptions,
+  type AdapterCacheRetentionRegistry,
+  type AdapterCacheRetentionResult,
+} from "./adapter-config-retention.js"
+export {
   DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS,
   runIdleReapPass,
   type IdleReapSummary,
   type IdleReaperRegistry,
 } from "./idle-reaper.js"
 export {
+  DEFAULT_PAUSED_BOX_MAX_AGE_MS,
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  parsePausedBoxMaxAge,
   startSandboxGcTimer,
   runSandboxGcPass,
   type SandboxGcTimer,
@@ -981,6 +1095,14 @@ export {
   type SessionMessageSentRecord,
 } from "./session-observer.js"
 export * from "./session-message.js"
+export {
+  DEFAULT_ROOT_AGENT,
+  DEFAULT_NESTED_AGENT,
+  unknownDefaultAgents,
+  type DefaultAgentConfig,
+} from "./role.js"
+export type { DelegationGateMode, DelegationVerdict, DelegationReport } from "./delegation-gate.js"
+export type { ProfileGateMode, ProfileVerdict, ProfileReport } from "./profile-gate.js"
 export {
   decide as decidePermission,
   collectMessageRelations,
@@ -1068,10 +1190,16 @@ import { syncDeviceMirror } from "./device-mirror.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { registerCatalogDiffTool } from "./catalog-diff-tool.js"
 import { registerQuotaStatusTool } from "./quota-status-tool.js"
+import { registerMemoryTools, resolveMemoryCaller } from "./memory-tools.js"
+import { defaultMemoryRoot, memoryStoreAt, setDefaultMemoryRoot } from "./memory-stores.js"
+import { respawnMemoryProjection } from "./memory-digest.js"
+import { buildRouteAwareLaunchConfig } from "./launch-config.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
 import { registerAppTunnelTools } from "./app-tunnel-tools.js"
+import { createTunnelRegistryExposer } from "./app-service-expose.js"
+import { stopAllOnDemandServices } from "./app-service-on-demand.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
 import { registerBuiltinRoutes } from "./builtin-routes.js"
@@ -1082,7 +1210,7 @@ import {
 import {
   registerSentinelAdapterTools,
   makeSentinelCredsStore,
-} from "./sentinel-adapters.js"
+} from "@agentproto/sentinel"
 import {
   registerSandboxAdapterTools,
   makeSandboxResolver,
@@ -1092,11 +1220,14 @@ import {
 } from "./sandbox-adapters.js"
 import { registerSandboxAttachTool } from "./sandbox-attach.js"
 import { registerSandboxExecTool } from "./sandbox-exec.js"
+import { registerSandboxEgressHealthTool } from "./egress-health-report.js"
 import type { WorktreeProvisioner, WorktreeAutoReclaimer, SandboxCheckpointReclaimer } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 import { DELEGATION_TOOL_NAMES } from "./role.js"
+
+import "./sentinel-platform.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
 export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./heartbeat.js"
@@ -1107,21 +1238,6 @@ export type { TunnelHealth, TunnelHealthState } from "./remote-providers/types.j
 export { TunnelStartAbortedError } from "./remote-providers/types.js"
 export { buildSessionLink } from "./tunnel-links.js"
 export type { AppTunnelResult } from "./app-tunnel-tools.js"
-export type { SentinelStatus } from "./sentinel-store.js"
-export type {
-  SentinelSpec,
-  SentinelMatchClause,
-  SentinelUntil,
-  SentinelTarget,
-} from "./sentinel-providers/types.js"
-export type { SentinelView } from "./sentinel-tools.js"
-export type {
-  SentinelMalformedItem,
-  SentinelPollResult,
-} from "./sentinel-providers/types.js"
-export { SentinelBackingExpiredError } from "./sentinel-providers/types.js"
-export type { SentinelQuarantine, SentinelQuarantineRecord } from "./sentinel-quarantine.js"
-export type { CancelTombstone, CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
 // Session-follow (wake a session on other sessions' events).
 export {
   createSessionFollowStore,
@@ -1134,16 +1250,23 @@ export { wireSessionFollow, type SessionFollowHandle } from "./session-follow.js
 // Session-follow triage (deterministic pre-wake classification).
 export {
   classifyFollowEvent,
+  createSessionLifecycleClassifier,
   defaultFollowTriageConfig,
+  evaluateFollowEvent,
+  followEnvelopeType,
+  followFloor,
   isTriageDecision,
+  levelOfDecision,
   parseClassifierAnswer,
   resolveFollowTriageConfig,
   runFollowTriageClassifier,
+  triageEventFromEnvelope,
   triageFollowEvent,
   DEFAULT_FOLLOW_TRIAGE_CLASSIFIER_TIMEOUT_MS,
   DEFAULT_FOLLOW_TRIAGE_REPORT_WINDOW_MS,
   DEFAULT_FOLLOW_TRIAGE_RULES,
   FOLLOW_TRIAGE_DECISIONS,
+  SESSION_LIFECYCLE_CLASSIFIER_ID,
   TRIAGE_RULES,
   type FollowTriageClassifier,
   type FollowTriageConfig,
@@ -1151,6 +1274,7 @@ export {
   type FollowTriageRules,
   type TriageDecision,
   type TriageEvent,
+  type SessionLifecycleClassifierOptions,
   type TriageFacts,
   type TriageResult,
 } from "./follow-triage.js"
@@ -1241,18 +1365,6 @@ export {
   type DeliveryOutcome,
   type McpEventEnvelope,
 } from "./webhook-egress/delivery.js"
-// Sentinel webhook fire path (W-B of .plans/sentinel-mcp-events): persisted
-// outbox rows, dispatch + ack-after-terminal, restart resume.
-export {
-  createSentinelWebhookOutbox,
-  toWebhookEnvelope,
-  webhookRequestId,
-  type SentinelWebhookOutbox,
-  type SentinelWebhookOutboxOptions,
-  type SentinelWebhookOutboxRow,
-  type SentinelWebhookOutboxStatus,
-  type PersistedOutboxRow,
-} from "./sentinel-webhook-outbox.js"
 export type {
   LlmEndpointStatusReport,
   LlmEndpointDescriptor,
@@ -1269,6 +1381,10 @@ export {
   DEFAULT_WORKTREE_ISOLATION,
   WORKTREE_PROVISION_CONCURRENCY_ENV,
   DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
+  WORKTREE_PROVISION_STALL_TIMEOUT_ENV,
+  WORKTREE_PROVISION_MAX_ENV,
+  DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS,
+  DEFAULT_WORKTREE_PROVISION_MAX_MS,
 } from "./worktree-isolation.js"
 export type {
   WorktreeField,
@@ -1352,6 +1468,12 @@ export {
 export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
 export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
 export { decomposeMode, composeMode } from "./session-config.js"
+export {
+  ADAPTER_FIELD_DEPRECATION,
+  HARNESS_ALIAS_REMOVAL,
+  adapterDeprecation,
+  resolveHarnessAlias,
+} from "./harness-alias.js"
 export type {
   SessionConfig,
   EffortLevel,
@@ -1373,6 +1495,7 @@ export {
 } from "./canonical-posture.js"
 export type { PostureEnforcement, PostureResolution, SessionMode } from "./canonical-posture.js"
 export { parseDuration } from "./heartbeat.js"
+export { servingCliCommand, setServingCli } from "./native-hooks-defaults.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export {
   BUCKETS_ROOT,
@@ -1405,7 +1528,6 @@ export {
   type LocatedConversationByPath,
   type ResolveNativeLinkInput,
 } from "./conversation-index.js"
-export { createFileStepCache } from "./workflow-step-cache.js"
 export {
   sweepStaleRuntimeMetas,
   unlinkRuntimeMeta,
@@ -1435,6 +1557,8 @@ export {
 export { isAgentCliAuthConfigured } from "./auth-probe.js"
 export {
   resolveSpawnDefaults,
+  harnessDefaultsFor,
+  harnessDefaultsMap,
   normalizeSkillsOption,
   credentialFingerprint,
   resolveAuthSpec,
@@ -1658,6 +1782,14 @@ export interface CreateGatewayOptions {
   resumeSessionsOnBoot?: boolean
   /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
   bootResumePolicy?: "all" | "keepalive"
+  /** Idle cutoff, in minutes, for eagerly resuming a `keepAlive` session after
+   *  a daemon restart. Mirrors the
+   *  `daemon.bootResumeKeepAliveMaxIdleMinutes` config knob; default 30. A
+   *  `keepAlive` row idle longer than this (measured from its last turn-end)
+   *  stays dead-but-lazy-resumable instead of being respawned on every boot.
+   *  Only explicitly pinned rows are always resumed; an operator label does
+   *  not exempt a row. 0 disables the cutoff. */
+  bootResumeKeepAliveMaxIdleMinutes?: number
   /** Boot re-ensure of app-service owners. Mirrors the
    *  `daemon.resumeServicesOnBoot` config knob; DEFAULT ON (services are
    *  deterministic processes, so the agent-adapter spawn-storm concerns
@@ -1794,11 +1926,12 @@ export interface CreateGatewayOptions {
    *  (SPEC §5) so UIs can discover every runnable model + route without
    *  trial-and-error against a spawn. */
   listCatalogModels?: CatalogModelsLister
-  /** Optional browser adapter resolver — when provided, enables the
-   *  `start_browser` MCP tool (launches Camofox / Bureau / Chromium). */
+  /** Optional browser adapter resolver, used by the HTTP
+   *  `POST /sessions/browser` route only (no MCP tool since P4).
+   *  P4b: removed with that route. */
   resolveBrowserAdapter?: BrowserAdapterResolver
-  /** Optional browser adapter lister — when provided, enables the
-   *  `browser_adapter_list` MCP tool. */
+  /** Optional browser adapter lister, used by the HTTP browser routes only
+   *  (no MCP tool since P4). P4b: removed with them. */
   listBrowserAdapters?: BrowserAdapterLister
   /** Optional PTY factory (node-pty wrapper, typically from the cli
    *  layer's `loadNodePtyFactory()`). When provided, enables
@@ -1830,6 +1963,12 @@ export interface CreateGatewayOptions {
    *  `~/.agentproto/sessions.json`. The structured-transcript dir follows
    *  this path's parent, so pinning it isolates transcripts too. */
   persistPath?: string
+  /** Service-owner store shared by `registerAppTools` (app_install/...)
+   *  and the boot re-ensure pass. Tests inject a store to observe/seed the
+   *  owner records both consumers read and write. Default: one store from
+   *  the resolved `persist` switch (`~/.agentproto/app-services.json` in
+   *  the daemon, in memory when persistence is off). */
+  appServiceStore?: AppServiceStore
   /** Override the per-boot bearer token. Default: `randomUUID()`.
    *  Tests can pin a known value; production should always let
    *  the gateway generate fresh. The token is written into
@@ -1843,6 +1982,11 @@ export interface CreateGatewayOptions {
   /** When true, drop the localhost-wildcard defaults — only the
    *  explicit `allowedOrigins` list is honoured. */
   strictOrigins?: boolean
+  /** Extra `frame-ancestors` sources for `GET /apps/:appId/ui`, added to the
+   *  built-in `vscode-webview:` / `vscode-file:` defaults. Passed straight
+   *  through to `startHttpServer`; see `RuntimeHttpServerOptions.frameAncestors`
+   *  (the caller is expected to have validated the entries). */
+  frameAncestors?: readonly string[]
   /**
    * Opt-in deferred/lazy MCP tool loading (harness-parity item 3, see
    * `deferred-tools.ts`). When set, every root-gateway tool outside
@@ -1854,6 +1998,13 @@ export interface CreateGatewayOptions {
    * curated allowlist (`DEFAULT_ORCHESTRATOR_TOOLS`).
    */
   deferredTools?: { alwaysOn?: readonly string[] }
+  /**
+   * Boot-time MCP surface profile (`defaults.mcp.profile`, see
+   * `tool-profiles.ts`): `core`, `orchestrator`, `apps`, `admin`, `full`, or
+   * a comma-composed list. Omitted ⇒ `full` (every tool registered, exactly
+   * the pre-profile behaviour). A per-request `?profile=` wins over this.
+   */
+  mcpProfile?: string
   /**
    * Optional sandbox provider resolver — overrides the sandbox family's
    * default resolver (built-ins + `@agentproto/sandbox-<slug>` dynamic
@@ -1907,6 +2058,11 @@ export interface CreateGatewayOptions {
   recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional verdict reader powering `branch_gc_verdict_get`. */
   readBranchGcVerdict?: BranchGcVerdictReader
+  /** Optional restorer powering `branch_gc_restore`: re-creates refs from a restore log. */
+  restoreBranchGc?: BranchGcRestorer
+  /** Optional operator approver powering `POST /branches/gc/approve` (the
+   *  `agentproto branch gc approve` CLI). HTTP only: no session tool reaches it. */
+  approveBranchGcVerdict?: BranchGcOperatorApprover
   /**
    * Optional best-effort exit-time reclaim of ONE policy-provisioned
    * (implicit) session's own worktree — powers `SessionDescriptor.
@@ -2068,6 +2224,8 @@ export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "quota_status",
 ]
 
+let sentinelGithubDeliveryRulesRegistered = false
+
 export interface GatewayHandle {
   url: string
   workspace: string
@@ -2162,6 +2320,20 @@ export interface GatewayHandle {
   reattachSandboxSessionsOnBoot(opts?: {
     isServed?: (desc: SessionDescriptor) => boolean
   }): Promise<SandboxReattachSummary>
+  /** Run the reaction receipt boot reconciliation pass and return the post-pass
+   *  tally. Never throws: a failure is logged and reported as zeros. */
+  reconcileReactionsOnBoot(): Promise<{
+    total: number
+    pending: number
+    running: number
+    failed: number
+    dead: number
+  }>
+  /** The gateway's approvals engine. Exposed so an embedding host (and a test
+   *  standing in for a human channel) can read a decision's state without
+   *  going through HTTP. Nothing on it is model-reachable; only the declared
+   *  human channels can decide. */
+  approvals: ApprovalsEngine
   stop(): Promise<void>
 }
 
@@ -2386,6 +2558,14 @@ export async function createGateway(
       // restoreOnBoot already logs per-tunnel failures via onLog.
     })
   }
+  // AIP-53 `services[].expose`: one keyed tunnel per exposed app service on
+  // this same registry. Keyed tunnels are not autostart: the services boot
+  // pass (reensureAppServicesOnBoot) re-ensures them, so boot never doubles.
+  const appServiceExposer = createTunnelRegistryExposer({
+    registry: tunnels,
+    readCreds: slug => tunnelCredsStore.read(slug),
+    configuredProvider: async () => (await loadConfig()).defaults?.apps?.exposeProvider,
+  })
 
   // Public origin GitHub calls back into for the `webhook` sentinel provider:
   // AGENTPROTO_PUBLIC_URL, else an active tunnel to this daemon's port
@@ -2502,10 +2682,45 @@ export async function createGateway(
   // sessions exit (debounced, fire-and-forget), and expose them queryably
   // via the workspace_brain_* MCP tools. Same wiring discipline as the
   // webhook notifier — a brain failure never throws into the exit path.
-  const workspaceBrains = createWorkspaceBrains()
+  // Limits come from `defaults.reactions.brainIngest`, read once at boot.
+  const daemonConfig = await loadConfig()
+  // Operator-only read-only grants for apps (`apps.readGrants`); validated and
+  // logged once at boot. Never sourced from an app manifest.
+  const appReadGrants = createAppReadGrantResolver(daemonConfig.apps?.readGrants, { daemonWorkspace: workspace })
+  const workspaceBrains = createWorkspaceBrains({
+    limits: resolveBrainIngestLimits(daemonConfig.defaults?.reactions?.brainIngest),
+  })
+  // Receipts are scoped to the bucket this daemon serves (same rule as the
+  // resume passes in serve.ts), so two daemons on one AGENTPROTO_HOME never
+  // rewrite or replay each other's receipts.
+  const reactionBucket = await loadWorkspacesConfig()
+    .then(cfg =>
+      resolveBucketSlug(
+        findWorkspaceByPath(cfg, opts.workspace)?.slug,
+        new Set(cfg.workspaces.map(w => w.slug)),
+      ),
+    )
+    .catch(() => DEFAULT_BUCKET)
+  const reactionReceiptStore = createReactionReceiptStore({
+    filePath: reactionReceiptsPathForBucket(reactionBucket),
+  })
+  const brainIngestReaction = createBrainIngestReaction({
+    brains: workspaceBrains,
+    ownedWorkspaces: readBrainIngestOwnedWorkspaces,
+  })
+  const actionRegistry = createActionRegistry()
+  const builtinReactionBindings = [brainIngestReaction.binding]
+  const clerkReactionBox: { reaction?: ClerkReaction } = {}
+  const reactionRunner = createReactionRunner({
+    bus: sessionEvents,
+    store: reactionReceiptStore,
+    bindings: builtinReactionBindings,
+  })
+  reactionRunner.start()
   const brainSubscriber = createWorkspaceBrainSubscriber({
     bus: sessionEvents,
     brains: workspaceBrains,
+    skipWorkspace: workspace => brainIngestReaction.owns(workspace),
   })
   brainSubscriber.start()
 
@@ -2514,7 +2729,6 @@ export async function createGateway(
   // writes to. Absent creds ⇒ undefined, and the registry never gates
   // anything on a tracer that doesn't exist — tracing-off behaviour is
   // unchanged from before this existed.
-  const daemonConfig = await loadConfig()
   const configDefaults = daemonConfig.defaults
   // `config_get`/`config_set` (PR-2) need the config the daemon actually
   // BOOTED with, captured exactly once here — never re-read at call time —
@@ -2542,6 +2756,10 @@ export async function createGateway(
   if (daemonConfig.sessions?.eventsDir) {
     setDefaultSessionsBaseDir(daemonConfig.sessions.eventsDir)
   }
+  // Default AIP-72 memory store root from config (`memory.root`), read by
+  // the memory_* tools and the spawn digest. Unset leaves
+  // `~/.agentproto/memory`.
+  setDefaultMemoryRoot(daemonConfig.memory?.root)
   const lfCreds = await makeEvalReporterCredsStore().read("langfuse").catch(() => null)
   const langfuseTracer = lfCreds
     ? langfuseSessionTracer({
@@ -2599,6 +2817,20 @@ export async function createGateway(
       ? (u as MessageUrgency)
       : "next-turn"
   }
+  // Shadow signal routing (`config.sentinel.routes`, read per selection):
+  // decides, logs and stamps `route` on created sentinels, never changes the
+  // provider used. Shared by `sentinel_watch`, `POST /sentinels` and
+  // `sentinel_routes` / `GET /sentinels/routes`.
+  const sentinelRouting: SentinelRoutingDeps = {
+    config: async () => {
+      const cfg = await loadConfig().catch((): { sentinel?: { routes?: unknown; routing?: { mode?: unknown } } } => ({}))
+      return sentinelRoutesConfigFrom(cfg.sentinel)
+    },
+    fromSession: id => {
+      const label = sessionsRef?.get(id)?.operatorLabel
+      return label ? { sessionLabel: label } : undefined
+    },
+  }
   const sentinelAutoLinker = createSentinelAutoLinker({
     store: sentinelStore,
     resolveProvider: resolveSentinelProviderResolved,
@@ -2610,6 +2842,14 @@ export async function createGateway(
     // at retirement time.
     resolveTargetSession: id =>
       (sessionsRef ? resolveSuccessor(sid => sessionsRef?.get(sid), id) : undefined) ?? id,
+    // The recorded session's supervisor also watches the PR (live parents only).
+    resolveParentSession: id => {
+      const parentId = sessionsRef?.get(id)?.parentSessionId
+      const parent = parentId ? sessionsRef?.get(parentId) : undefined
+      return parent && !isRetired(parent) && (parent.status === "running" || parent.status === "starting")
+        ? parent.id
+        : undefined
+    },
   })
 
   // Sessions registry — single instance per gateway, captured by
@@ -2630,6 +2870,11 @@ export async function createGateway(
       ? { maxAgeDays: daemonConfig.daemon.sessionRetentionDays }
       : {}),
   }
+  // Adapter-config cache retention (adapter-config-retention.ts): a dead
+  // lineage's cache content goes after 1 quiet day unless configured.
+  const harnessCacheRetention = harnessCacheRetentionDays(daemonConfig)
+  const adapterCacheRetention =
+    harnessCacheRetention !== undefined ? { maxAgeDays: harnessCacheRetention } : {}
   // "Box is gone" restart hook (restart-scheduler's `sandbox-gone` policy) —
   // the gateway-wired executor behind `registry.triggerSandboxGoneRestart`.
   // Moves a dead box session to a FRESH box via the SAME `restartAgentSession`
@@ -2708,13 +2953,22 @@ export async function createGateway(
     return { ok: true, newSessionId: restarted.desc.id }
   }
 
+  // Filled once the scope-token registry exists (further down); a revival
+  // that runs before that (boot) finds no hooks and leaves scopes as loaded.
+  let orchestratorScopeHooks: ReturnType<typeof createOrchestratorScopeHooks> | undefined
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    orchestratorScopes: {
+      reinstate: id => orchestratorScopeHooks?.reinstate(id) ?? (() => {}),
+      transfer: (from, to) => orchestratorScopeHooks?.transfer(from, to),
+    },
     sessionRetention,
+    adapterCacheRetention,
     ...(typeof externalSessionLivenessMs === "number" && externalSessionLivenessMs > 0
       ? { externalSessionLivenessMs }
       : {}),
+    ...(daemonConfig.daemon?.claudeSocketWake ? { claudeSocketWake: { enabled: true } } : {}),
     onOpenedPr: sentinelAutoLinker.onOpenedPr,
     ...(daemonConfig.sessions?.eventsDir
       ? { transcriptDir: defaultTranscriptBaseDir() }
@@ -2757,6 +3011,7 @@ export async function createGateway(
             resumeSessionId,
             descriptor,
             mcpServers,
+            posture,
             onActivity,
           }) => {
             const adapter = await opts.resolveAgentAdapter!(adapterSlug)
@@ -2783,7 +3038,30 @@ export async function createGateway(
                   : {}),
                 prefix: "resume",
               })
-              const resolvedBaseUrl = authSpec?.baseUrl ?? descriptor.route?.baseUrl
+              // Build the resume's launch config through the SAME builder a
+              // fresh spawn and a restart use. The old inline
+              // `options: { base_url: resolvedBaseUrl }` ignored the manifest's
+              // declared option vocabulary, so an opencode-Go row (route
+              // `opencode-go`, `routeSelection: "derived-from-model"`, no
+              // `base_url` option) was handed an undeclared option and every
+              // eager/lazy resume failed with `unknown_option`. The builder
+              // drops a gateway base_url for a derived-from-model adapter and
+              // only injects it when the manifest declares the option.
+              const launchConfig = buildRouteAwareLaunchConfig({
+                adapter: adapterSlug,
+                ...(descriptor.model ? { model: descriptor.model } : {}),
+                ...(descriptor.route ? { route: descriptor.route } : {}),
+                ...(authSpec ? { authSpec } : {}),
+                ...(adapter.declaredOptions ? { declaredOptions: adapter.declaredOptions } : {}),
+                ...(adapter.routeSelection ? { routeSelection: adapter.routeSelection } : {}),
+                ...(adapter.authDescriptor?.provider
+                  ? { adapterProvider: adapter.authDescriptor.provider }
+                  : {}),
+                ...(adapter.authDescriptor?.modelDerivedApiKey !== undefined
+                  ? { modelDerivedApiKey: adapter.authDescriptor.modelDerivedApiKey }
+                  : {}),
+                prefix: "resume",
+              })
               // A cloud relay re-attaches with the same meta file and (for a
               // declared workspace remote) clone source as `session_restart`;
               // without them it validates the host cwd, which holds no clone.
@@ -2796,9 +3074,36 @@ export async function createGateway(
                   : {}
               // App boundary survives a lazy resume (fs zones + host-context isolation).
               const resumeBoundary = boundaryFromMeta(descriptor.meta)
+              // AIP-72 native-dir inject, recomputed for a lineage whose spawn
+              // projected (`meta.memoryInject`); never fails the resume.
+              const resumeMemoryProjection = await respawnMemoryProjection(descriptor.meta, {
+                sessionId: descriptor.id,
+                memoryStoreAt,
+                ...(descriptor.cwd !== undefined ? { ground: descriptor.cwd } : {}),
+                ...(descriptor.operator !== undefined ? { operator: descriptor.operator } : {}),
+                ...(adapter.supportsSystemPrompt !== undefined
+                  ? { supportsSystemPrompt: adapter.supportsSystemPrompt }
+                  : {}),
+                ...(adapter.systemPromptMaxChars !== undefined
+                  ? { systemPromptMaxChars: adapter.systemPromptMaxChars }
+                  : {}),
+              }).catch(err => {
+                console.warn(
+                  `[resume] native memory not projected for ${descriptor.id}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                )
+                return undefined
+              })
+              const resumePreCompactCommand = preCompactCommandFor(
+                (await loadConfig().catch(() => undefined))?.defaults,
+                { adapter: adapterSlug },
+              )
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
+                // Clamped to the caller's ceiling by the registry.
+                ...(posture !== undefined ? { posture } : {}),
                 ...(resumeBoundary
                   ? boundaryRestartOptions(resumeBoundary, {
                       supportsFsZones: adapter.supportsFsZones === true,
@@ -2818,16 +3123,29 @@ export async function createGateway(
                   : {}),
                 // Re-mount the persisted spawn-time toolset on resume
                 // (orchestrator WP1) — closes the gap where re-spawn
-                // dropped mcpServers.
-                ...(mcpServers ? { mcpServers } : {}),
+                // dropped mcpServers. The persisted list carries no session
+                // token; the revived adapter gets a FRESH one for the same
+                // id (shadow mode, see `withSessionToken`).
+                ...(mcpServers
+                  ? {
+                      mcpServers: withSessionToken(mcpServers, {
+                        mode: (await resolveIdentityDefaults()).sessionTokens,
+                        adapter: adapterSlug,
+                        daemonMcpUrl,
+                        sessionId: descriptor.id,
+                      }),
+                    }
+                  : {}),
                 // Re-deliver the persisted imported-skill folders on resume
                 // (skill imports) — the same set the original spawn delivered,
                 // so a revived session keeps its skills.
                 ...(descriptor.sessionSkills ? { sessionSkills: descriptor.sessionSkills } : {}),
+                ...(resumeMemoryProjection ? { memoryProjection: resumeMemoryProjection } : {}),
+                // Projected PreCompact hook: the resume rewrites the isolated
+                // settings.json whole, so the current config decides here too.
+                ...(resumePreCompactCommand ? { preCompactCommand: resumePreCompactCommand } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
-                ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
-                  ? { options: { base_url: resolvedBaseUrl } }
-                  : {}),
+                ...(launchConfig.options ? { options: launchConfig.options } : {}),
                 ...(onActivity ? { onActivity } : {}),
                 // Lazy in-place resume (daemon restart / crash): unlike
                 // `session_restart` this revives the SAME descriptor row, not
@@ -2863,6 +3181,24 @@ export async function createGateway(
       : {}),
   })
   sessionsRef = sessions
+
+  // SESSION CREDENTIALS (ts#2165 step 5, shadow): the hashes of the
+  // per-session identity tokens persist in `session-credentials.json`, so a
+  // daemon restart keeps live sessions verifiable. The boot prune drops
+  // tokens of sessions this registry no longer knows or that retired. A
+  // retirement revokes the session's tokens. Both are undone by `stop()`.
+  const detachSessionCredentials = persist
+    ? attachSessionCredentialStore({
+        path: sessionCredentialsFile(),
+        keep: id => {
+          const desc = sessions.get(id)
+          return desc !== undefined && desc.retiredAt === undefined
+        },
+      })
+    : undefined
+  const unsubscribeSessionCredentials = sessions.onSessionRetired(ev => {
+    revokeSessionTokens(ev.sessionId)
+  })
 
   // `agentproto:session-completed` host event: derived after `session:exited`
   // from the descriptor outcome or a recorded `policy:passed`. The bus has no
@@ -2974,7 +3310,7 @@ export async function createGateway(
             ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
             ...(orchestratorInjector ? { buildOrchestratorMcp: orchestratorInjector } : {}),
           },
-          prev,
+          withContextPolicy(prev).source,
           {
             adapter: target.harness,
             harness: target.harness,
@@ -3068,6 +3404,9 @@ export async function createGateway(
         ...(configDefaults?.sandbox?.checkpoint?.refPrefix
           ? { checkpointRefPrefix: configDefaults.sandbox.checkpoint.refPrefix }
           : {}),
+        // Read per reconcile, so editing `skipRepos` takes effect without a
+        // daemon restart.
+        skipFooterRepos: loadFooterSkipRepos,
       })
     : undefined
 
@@ -3090,6 +3429,29 @@ export async function createGateway(
     }
     return dispatchToolBox.fn(name, inputs)
   }
+
+  // AIP-41 event routines: the registrar resolves them, the wiring converts
+  // each one to a reaction binding and swaps the runner's live set on every
+  // reconcile. The registrar is created below, so the box breaks the ordering
+  // cycle without module-level state. Builtins stay live from runner creation,
+  // so an event arriving before the first reconcile still reaches them.
+  const routineRegistrarBox: { registrar?: ReturnType<typeof createRoutineRegistrar> } = {}
+  const agentOnScanner = createAgentOnScanner({ workspace })
+  const reactionWiring = createReactionWiring({
+    runner: reactionRunner,
+    builtin: builtinReactionBindings,
+    eventBindings: () => routineRegistrarBox.registrar?.eventBindings() ?? [],
+    agentBindings: () => agentOnScanner.current(),
+    conversion: {
+      registry: actionRegistry,
+      dispatchTool,
+      getSessionFacts: id => {
+        const desc = sessions.get(id)
+        return desc ? sessionFactsOf(desc) : undefined
+      },
+      workspaceRoot: workspace,
+    },
+  })
 
   // Same forward-reference trick as `dispatchToolBox` above, for `app_install`'s
   // WORKFLOW.md tool-step validation (app-tools.ts) — it needs the SET of
@@ -3142,7 +3504,12 @@ export async function createGateway(
     workspace,
     cronScheduler,
     dispatchTool,
+    onReconciled: async () => {
+      await agentOnScanner.rescan()
+      return reactionWiring.refresh()
+    },
   })
+  routineRegistrarBox.registrar = routineRegistrar
 
   // AIP-68 clerk hook - a daemon subscriber that runs ONE clerk pass
   // (steward/secretary) after a session's turn ends, debounced on the
@@ -3150,22 +3517,50 @@ export async function createGateway(
   // fire-and-forget: the pass can never slow a turn down. DISABLED unless
   // configured - the three levels (agent > workspace > daemon default) are
   // resolved per session; see `clerk-hook-config.ts`.
+  //
+  // The controller stays the gate and the debounce. Its firing goes through
+  // `clerkReaction.dispatch`: a workspace listed in
+  // `defaults.reactions.clerk.workspaces` takes the durable reaction path,
+  // every other workspace keeps the legacy pass runner. The runner and the
+  // wiring were created above, so a forward box carries the binding back.
+  const legacyClerkPassRunner = createClerkPassRunner({
+    triggerRoutine: routineId => routineRegistrar.trigger(routineId),
+    // The command arm is default-deny: same allowlist as `command_execute`.
+    allowCommand: async spec =>
+      isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
+    anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
+  })
+  const resolveClerkConfig = (session: ClerkSessionLike) =>
+    resolveClerkHookConfig({
+      daemon: loadDaemonClerkHook(daemonConfig),
+      workspace: loadWorkspaceClerkHook(workspace),
+      agent: session.clerkHook,
+    }).config
+  const clerkReaction = createClerkReaction({
+    sessions,
+    resolveConfig: resolveClerkConfig,
+    runPass: legacyClerkPassRunner,
+    ownedWorkspaces: readClerkReactionOwnedWorkspaces,
+    emit: event => sessionEvents.emit(event),
+  })
+  clerkReactionBox.reaction = clerkReaction
+  builtinReactionBindings.push(clerkReaction.binding)
+  reactionRunner.replaceBindings(builtinReactionBindings)
+  actionRegistry.register(clerkReaction.handler)
+  actionRegistry.register(createSessionArchiveAction({ sessions }))
   const clerkTurnEnd = createClerkTurnEndController({
     registry: sessions,
     sessionEvents,
-    resolveConfig: session =>
-      resolveClerkHookConfig({
-        daemon: loadDaemonClerkHook(daemonConfig),
-        workspace: loadWorkspaceClerkHook(workspace),
-        agent: session.clerkHook,
-      }).config,
-    runPass: createClerkPassRunner({
-      triggerRoutine: routineId => routineRegistrar.trigger(routineId),
-      // The command arm is default-deny: same allowlist as `command_execute`.
-      allowCommand: async spec =>
-        isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
-      anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
-    }),
+    resolveConfig: resolveClerkConfig,
+    runPass: clerkReaction.dispatch,
+  })
+  // AIP-72 native-dir-diff capture: at each turn end and at exit, a
+  // session whose spawn projected its native memory dir gets that dir
+  // diffed and the changes written to its store as proposals.
+  const nativeMemoryCapture = createNativeMemoryCapture({
+    registry: sessions,
+    sessionEvents,
+    memoryStoreAt,
   })
 
   // Installed-app registry — singleton per daemon, shared between
@@ -3175,6 +3570,14 @@ export async function createGateway(
   // Declared here (not inside `registerAppTools`) purely so both consumers
   // share the one instance — same persistence defaults as before this WP.
   const appRegistry = createAppRegistry({ persist })
+
+  // ONE service-owner store per gateway (TS-18). `registerAppTools` upserts
+  // owners on install/reinstall and the boot re-ensure reads + replaces them;
+  // two separate stores meant the boot pass saw none of the persisted records
+  // (leftover children kept their ports) and its own writes never reached
+  // `app-services.json`. `persist` is the RESOLVED switch, so the default
+  // store is the same persisted file/instance `registerAppTools` used.
+  const appServiceStore = opts.appServiceStore ?? createAppServiceStore({ persist })
 
   // BOOTSTRAP P7a/P7b closures — the device mirror + id resolution all
   // route through (BUG-1637's two-halves fix):
@@ -3211,9 +3614,11 @@ export async function createGateway(
   // disabled — auth stays `mode: "none"` until `remote_enable` is
   // called. Tunnel logs flow through the events stream so `/events`
   // subscribers see cloudflared chatter. `isSessionChatInstalled` decides
-  // whether `enable()` emits `EnableResult.phoneUrl`
-  // (PHONE-PLAN.md P1.2) — the same call-time check the builtin-panel mount
-  // and `registerSessionTools` already share, so all three surfaces agree.
+  // whether an opted-in `enable({ phoneLink: true })` emits
+  // `EnableResult.phoneUrl`: the same call-time check the builtin-panel
+  // mount and `registerSessionTools` already share, so all three surfaces
+  // agree. Phones pair through rendezvous by default; `phoneLink` is the
+  // no-service-worker fallback.
   const remote = new RemoteController({
     workspace,
     port,
@@ -3258,6 +3663,7 @@ export async function createGateway(
         daemonMcpUrl,
         // Hidden from app-workflow sessions (app-boundary.ts).
         daemonWorkspace: workspace,
+        appReadGrants,
         // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
         // for `workflow_run_file` / `startFromFile`. `tool` steps resolve
         // through `createDaemonToolRegistry` — a per-handle registry scanning
@@ -3293,6 +3699,7 @@ export async function createGateway(
               handle.id,
               resolveModelRoleId,
               opts.resolveAgentAdapter,
+              { workflowPath: workflowMdPath, steps: handle.steps },
             ),
           })
         },
@@ -3392,8 +3799,17 @@ export async function createGateway(
   const approvalsHomeDir = persist
     ? undefined
     : mkdtempSync(join(tmpdir(), "agentproto-approvals-"))
+  // Telegram approval cards share the permission bridge's chat, user ids and
+  // alias; they exist only when the opt-in flag AND that setup are present.
+  const permissionTelegramCfg = daemonConfig.approvals
+  const telegramApprovalCardsOn =
+    permissionTelegramCfg?.telegramApprovalCards === true &&
+    !!permissionTelegramCfg.permissionTelegramChatId &&
+    (permissionTelegramCfg.permissionTelegramUserIds?.length ?? 0) > 0
+  let reachTeller: ReachTeller | undefined
   const approvalsEngine: ApprovalsEngine = createApprovalsEngine({
     sessionEvents,
+    ...(telegramApprovalCardsOn ? { telegramCards: true } : {}),
     ...(approvalsHomeDir ? { homeDir: approvalsHomeDir } : {}),
     webOrigins: daemonConfig.approvals?.webOrigins ?? [],
     ...(daemonConfig.approvals?.telegramBotSecret
@@ -3406,6 +3822,7 @@ export async function createGateway(
   // crashed child's live parent, without ever interrupting a busy one. See
   // supervisor-notify.ts's header doc for the full contract.
   wireSupervisorNotify({ registry: sessions, sessionEvents })
+  wireApprovalWake({ registry: sessions, sessionEvents, getApproval: id => approvalsEngine.get(id) })
   // `mcp:degraded`: a session that ended a turn without its harness ever
   // loading (or while it failed to load) the daemon's own `/mcp` tools.
   wireMcpDegradedWarnings({
@@ -3438,6 +3855,84 @@ export async function createGateway(
   // captures it so each /mcp request reuses the same upstream
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
+  // AIP-59 section 8: imports that opt in with `subsession: "aip-59"` get a
+  // per-session token minted from the device credential they already carry,
+  // instead of the spoofable `x-agentproto-caller-session` header. Built once
+  // so the cache/revocation state is shared across every gateway caller.
+  // The guard asks on every imported call; re-read the imports file only
+  // when it changed (mtime), not per call.
+  let importsCache: { mtimeMs: number; config: Awaited<ReturnType<typeof loadImportedMcps>> } | undefined
+  const importsSnapshot = async (): Promise<Awaited<ReturnType<typeof loadImportedMcps>>> => {
+    let mtimeMs = -1
+    try {
+      mtimeMs = statSync(IMPORTED_MCPS_PATH()).mtimeMs
+    } catch {
+      // No file yet: loadImportedMcps answers an empty config.
+    }
+    if (importsCache && importsCache.mtimeMs === mtimeMs) return importsCache.config
+    const config = await loadImportedMcps()
+    importsCache = { mtimeMs, config }
+    return config
+  }
+  // The ONE AIP-59 import resolver. Both the sub-session minter and the
+  // Bureau approval bridge use it, so they agree on what "a Bureau import"
+  // is and on its origin/headers (index.ts used to inline this in the
+  // minter only).
+  const resolveAip59Target = async (alias: string) => {
+    const config = await importsSnapshot()
+    // The same import is addressed by alias (`mcp_imported_call`) and by
+    // import id (`/mcp/imported/<id>`); both must reach this AIP-59 target.
+    const entry = config.imports.find(e => e.alias === alias || e.id === alias)
+    if (!entry || entry.subsession !== "aip-59" || entry.snapshot.type !== "http") return undefined
+    const { config: connection } = await resolveImportConnection(entry, getMcpCredentialDeps())
+    if (connection.type !== "http" || typeof connection.url !== "string") return undefined
+    // AIP-59 section 8.6 binds /pair/subsessions at the server root, not
+    // under the MCP path, hence the origin. W2 (`/pair/approvals/<id>`) is
+    // in the same family.
+    let baseUrl: string
+    try {
+      baseUrl = new URL(connection.url).origin
+    } catch {
+      return undefined
+    }
+    return { baseUrl, headers: { ...(connection.headers ?? {}) }, key: entry.alias }
+  }
+  const subsessions = createSubsessionMinter({
+    resolve: resolveAip59Target,
+    // AIP-63 M7: store the recordings LINK on the session, never a copy.
+    onMinted: (sessionId, target) => {
+      // One link per session (its Bureau); rewritten only when it changes, so
+      // an hourly re-mint does not persist the session snapshot again.
+      const url = `${target.baseUrl}/recordings?callerSessionId=${encodeURIComponent(sessionId)}`
+      if (sessions.get(sessionId)?.browserRecordings?.url === url) return
+      sessions.setBrowserRecordings(sessionId, { url })
+    },
+  })
+  // Revoke this session's tokens when it ends, reinstate it when it is revived
+  // in place (`session:resumed`).
+  wireSubsessionLifecycle({
+    sessionEvents,
+    registry: sessions,
+    subsessions,
+    // A session holding an approval keeps its Bureau tabs (the card lives in one).
+    holdsApproval: id => sessionHoldsApproval(approvalsEngine, id),
+    approvalSession: id => {
+      const by = approvalsEngine.get(id)?.requestedBy
+      return by && "sessionId" in by ? by.sessionId : undefined
+    },
+  })
+  // Per-call human approval for imported tools named by a `hold` rule in
+  // `.agentproto/hooks.json` (e.g. agentpush `send_message`). No rule, no change.
+  mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace, subsessions }))
+  // Bureau recipe writes gated at `approve` (CONTRACT.md W3): the imported
+  // result becomes a daemon approval, and the human's decision is relayed
+  // back to Bureau's W2 route. Passes every other result through untouched.
+  const bureauApprovals = createBureauApprovalBridge({
+    engine: approvalsEngine,
+    sessionEvents,
+    resolveImport: resolveAip59Target,
+  })
+  mcpProxy.setResultHook(call => bureauApprovals.handleToolResult(call))
 
   // MCP Apps host (mcp-apps-host.ts) — the daemon fetches app UIs for a
   // session's chat. Its own config-keyed client pool: a harness alias is
@@ -3464,11 +3959,18 @@ export async function createGateway(
     alias: string,
     tool: string,
     args: Record<string, unknown>,
+    callerSessionId?: string,
   ): Promise<unknown> => {
-    const out = await mcpProxy.callTool(alias, tool, args)
+    const out = await mcpProxy.callTool(alias, tool, args, callerSessionId ? { callerSessionId } : undefined)
     if (!out.ok) throw new Error(`app_tool_call: imported "${alias}".${tool}: ${out.error}`)
     return out.result
   }
+
+  // THE screencast reader of this daemon: the HTTP route
+  // (`/sessions/:id/screencast.jpg`) and the `session_screencast_frame` tool
+  // both read through it, so the 800 ms frame cache and the 2-capture cap are
+  // shared rather than doubled.
+  const sessionScreencast = createSessionScreencastReader({ callImportedTool: callImportedAppTool })
 
   // Transmitter binding store — single shared instance mapping an
   // agentpush (alias, source, contactRef) triple to the agentproto
@@ -3533,8 +4035,27 @@ export async function createGateway(
   // allowDeliberateEnd:false: the sentinel is an AUTOMATIC path and never
   // revives a deliberate end in place (its own sessionInfo guard routes
   // those to the parent / parking first anyway).
+  if (!sentinelGithubDeliveryRulesRegistered) {
+    registerGithubDeliveryModule({
+      registerClassifier: registerSentinelClassifier,
+      registerCoalesceRule: registerSentinelCoalesceRule,
+      registerRepeatKey: registerSentinelRepeatKey,
+    })
+    sentinelGithubDeliveryRulesRegistered = true
+  }
+  // The daemon delivery-apply switch, shared by follow + sentinel. Read once
+  // here and refreshed with the follow triage config, which is re-read before
+  // every digest, so a config change is hot.
+  const deliveryApply: { current: DeliveryApplyConfig | undefined } = { current: undefined }
+  const refreshDeliveryApply = async () => {
+    const cfg = await loadConfig().catch(() => undefined)
+    deliveryApply.current = cfg?.delivery?.apply
+    return cfg
+  }
+  void refreshDeliveryApply()
   const sentinelRuntime = createSentinelRuntime({
     store: sentinelStore,
+    apply: () => deliveryApply.current,
     registry: { sendMessage: sessions.sendMessage },
     resolveProvider: resolveSentinelProviderResolved,
     isSessionAlive,
@@ -3554,6 +4075,13 @@ export async function createGateway(
     },
   })
 
+  // A session that registers may be the target of events parked while it was
+  // unreachable; redeliver them once (the runtime's tick covers retargets).
+  sessionEvents.on("session:spawned", ev => {
+    void sentinelRuntime.replayParked(ev.sessionId).catch(() => {})
+    void sessionFollow.replayParked(ev.sessionId).catch(() => {})
+  })
+
   // Session-follow — wakes a follower session (no polling) when sessions
   // matching a selector end a turn / await input / exit / get a PR opened or
   // merged. Delivery never interrupts; a dead follower is resumed through the
@@ -3570,9 +4098,19 @@ export async function createGateway(
     sessionEvents,
     store: sessionFollowStore,
     restartSession: restartSentinelSession,
+    apply: () => deliveryApply.current,
     triage: async () => {
-      const cfg = await loadConfig().catch((): { follow?: { triage?: FollowTriageInput } } => ({}))
-      return resolveFollowTriageConfig(defaultFollowTriageConfig(), cfg.follow?.triage)
+      const cfg = await refreshDeliveryApply()
+      return resolveFollowTriageConfig(defaultFollowTriageConfig(), cfg?.follow?.triage)
+    },
+    // A cron command job's successful exit is informational when the job
+    // declares `notify: "onFailure"`. Resolved at event time from the
+    // descriptor captured then, so a later delete or rename cannot flip it.
+    sourceUrgency: desc => {
+      if (desc.origin !== "cron" || desc.kind !== "command" || !desc.label) return undefined
+      const match = /^cron:(.+)$/.exec(desc.label)
+      if (!match) return undefined
+      return cronScheduler.get(match[1]!)?.notify === "onFailure" ? "fyi" : undefined
     },
     triageFacts: {
       // "A cron run that finished OK already reported itself" — the cron
@@ -3602,6 +4140,7 @@ export async function createGateway(
         },
         id,
       ),
+    replayFollowParked: () => sessionFollow.replayParked(),
   }
   wireRetirementCleanup(wiringCleanupDeps)
 
@@ -3659,7 +4198,11 @@ export async function createGateway(
   // are absent from orchestrator-scopes.json but still baked into live /
   // resumable session descriptors' mcpServers — adopt them so those
   // already-persisted URLs keep authorizing without a session restart.
+  // A no-op once the file exists: an unknown token is then a dead one.
   adoptLegacyOrchestratorScopes(scopeTokens, sessions.list())
+  // Restart support: a revived row gets its revoked scope back, a restarted
+  // row hands its scope to the successor (session-restart-core.ts).
+  orchestratorScopeHooks = createOrchestratorScopeHooks(scopeTokens)
 
   // Orchestrator auto-injection (WP3). Closed over the scope-token
   // registry + the session-event bus + the HTTP port: when
@@ -3721,6 +4264,10 @@ export async function createGateway(
     // can declare `sandbox` and resolve a provider, instead of throwing
     // `sandbox_provider_not_found`.
     resolveSandboxProvider: resolveSandboxProviderResolved,
+    // Same workspace allowlist as the root gateway: a nested supervisor
+    // spawns through this scoped surface, which is the one the stdio mount
+    // gate exists for.
+    loadCommandAllowlist: () => loadAllowlistEntries(workspace),
     // No `defaultAgentPromptInterrupt` / `messagingAllowSiblings` /
     // `messagingAgentInterrupt` override here: the factory's own per-call
     // closure (orchestrator-gateway.ts) reads `defaults.agentPromptInterrupt`
@@ -3738,6 +4285,11 @@ export async function createGateway(
       : {}),
   })
 
+  /** A session the daemon spawned (an `external` row is a label, not one). */
+  const isHostSpawnedSession = (id: string): boolean => {
+    const desc = sessions.get(id)
+    return desc !== undefined && desc.kind !== "external"
+  }
   const mcpServerFactory = async (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
@@ -3745,7 +4297,29 @@ export async function createGateway(
     deferredOverride?: boolean,
     allowTools?: ReadonlySet<string>,
     surface?: string,
+    credentialSessionId?: string,
+    profileOverride?: readonly string[],
+    requestBaseUrl?: string,
   ) => {
+    // Public base of THIS request (tunnel, rendezvous, link-guard), falling
+    // back to the boot-time value for callers with no request (internal tool
+    // server).
+    const panelHttpBaseUrl = requestBaseUrl ?? publicHttpOrigin
+    const panelWsBaseUrl = requestBaseUrl ? deriveWsBaseUrl(requestBaseUrl) : ptyWsBaseUrl
+    // `?surface=approval-cards` (human-facing MCP Apps host, never an agent
+    // session) is a cards-only server: it branches off here, before any root
+    // tool or deferral wrapper exists. See `buildApprovalCardsServer` for the
+    // gate and the security reasoning.
+    const cardsServer = buildApprovalCardsServer(
+      approvalsEngine,
+      { surface, callerSessionId },
+      { name: opts.name ?? "agentproto-runtime", version: opts.version ?? "0.1.0-alpha" },
+    )
+    if (cardsServer) return cardsServer
+    const activeProfiles: ToolProfileName[] | undefined = resolveToolProfileSelection({
+      query: profileOverride,
+      config: opts.mcpProfile,
+    })
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
       workspace,
@@ -3755,7 +4329,28 @@ export async function createGateway(
     // AIP-42 manifest authoring: render a valid `agent/v1` AGENT.md into the
     // caller's workspace `.agents/<id>/AGENT.md` via the shared app
     // renderer (same path `emitApp` and `agentproto agent create` use).
-    registerCreateAgentTool(rawServer, { workspace })
+    // Call-time deny gate for the tool deny grants an AGENT manifest recorded
+    // on the caller's descriptor at spawn (tool-deny-gate.ts). Applied
+    // innermost, ahead of every `register*` pass below, so every built-in
+    // registered through `tool()`/`registerTool()` is covered, including the
+    // two passes right here. No caller, or a caller with no grants: the raw
+    // server, unchanged.
+    // A caller whose driver is still starting has no descriptor yet, but its
+    // spawn staged the same fields (spawning-caller-context.ts): its adapter
+    // lists these tools once, during that start.
+    const callerContext = callerSessionId
+      ? (sessions.get(callerSessionId) ?? spawningCallerContext(callerSessionId))
+      : undefined
+    const callerDenyGrants = callerContext?.toolDenyGrants
+    const gatedServer = callerSessionId && callerDenyGrants?.length
+      ? withToolDenyGate(rawServer, callerDenyGrants, callerSessionId)
+      : rawServer
+    registerCreateAgentTool(gatedServer, {
+      workspace,
+      ...(callerSessionId ? { sessionId: callerSessionId } : {}),
+      ...(callerContext?.meta?.agentId ? { agentId: callerContext.meta.agentId } : {}),
+      ...(callerContext?.meta?.agentManifestPath ? { manifestPath: callerContext.meta.agentManifestPath } : {}),
+    })
     // AIP-14/AIP-30 tool authoring (`create_tool` / `delete_tool`). A NEW
     // primitive, gated by the AUTHENTICATED CALLER'S own AIP-42
     // `actions.granted` (default DENY) and bounded by a minimum lifetime + a
@@ -3764,11 +4359,11 @@ export async function createGateway(
     // descriptor `meta` at spawn — see `session-spawn.ts`), NEVER from a
     // caller-supplied tool argument. A caller with no resolvable manifest
     // fails closed.
-    const createToolCallerSession = callerSessionId ? sessions.get(callerSessionId) : undefined
-    const callerAgentId = createToolCallerSession?.meta?.agentId
-    const callerAgentManifestPath = createToolCallerSession?.meta?.agentManifestPath
-    registerCreateToolTools(rawServer, {
+    const callerAgentId = callerContext?.meta?.agentId
+    const callerAgentManifestPath = callerContext?.meta?.agentManifestPath
+    registerCreateToolTools(gatedServer, {
       workspace,
+      approvals: approvalsEngine,
       ...(callerSessionId ? { sessionId: callerSessionId } : {}),
       ...(callerAgentId ? { agentId: callerAgentId } : {}),
       ...(callerAgentManifestPath ? { manifestPath: callerAgentManifestPath } : {}),
@@ -3780,6 +4375,8 @@ export async function createGateway(
     // takes effect on the very next `agent_prompt` / `message_parent` /
     // `message_send` / `message_reply` call, no daemon restart.
     const messagingDefaults = await resolveMessagingDefaults()
+    // Same fresh-per-request read for `mcp.noCallerIdentity`.
+    const mcpNoCallerIdentity = await resolveNoCallerIdentity()
     // Same fresh-per-request read for the task ledger's operator delegates,
     // so a `config_set` takes effect on the next task_* call.
     const taskDefaults = await resolveTaskDefaults()
@@ -3806,13 +4403,21 @@ export async function createGateway(
     // still loses them — the `denyTools` exclusion below wraps outermost.
     const deferredActive = deferredOverride ?? opts.deferredTools !== undefined
     let server = deferredActive
-      ? withDeferredTools(rawServer, {
+      ? withDeferredTools(gatedServer, {
           alwaysOn: new Set([
             ...(opts.deferredTools?.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS),
             ...DELEGATION_TOOL_NAMES,
           ]),
         })
-      : rawServer
+      : gatedServer
+    // Named surface profiles (`?profile=` / `defaults.mcp.profile`, see
+    // tool-profiles.ts). Applied before the deny/allow gates so `denyTools`
+    // still wins outright and a workflow step's `allowTools` intersects the
+    // profile. `full`/absent leaves the surface unrestricted.
+    const profileTools = resolveToolProfileAllowSet(activeProfiles)
+    if (profileTools) {
+      server = withToolSubset(server, profileTools)
+    }
     // Spawn-role-profiles tool gate (the hard part of the executor/
     // supervisor primitive — see role.ts). Per-request denylist parsed
     // from `?denyTools=a,b` on THIS `/mcp` call (see `handleMcp` in
@@ -3845,6 +4450,10 @@ export async function createGateway(
     const boundary = callerSessionId
       ? boundaryFromMeta(sessions.get(callerSessionId)?.meta)
       : undefined
+    // AIP-34 node scope of THIS request's caller: no id is a host call, an id
+    // the daemon does not know is refused by every scoped read below. Derived
+    // from the session's own ground, never from server config.
+    const callerScope = callerScopes.resolve(callerSessionId, sessions)
     if (boundary) {
       server = withToolExclusion(
         server,
@@ -3855,7 +4464,7 @@ export async function createGateway(
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
     // workspace without each implementing AIP-aware glue. Names match
     // `@modelcontextprotocol/server-filesystem` for drop-in compat.
-    registerFsTools(server, { workspace, ...(boundary ? { boundary } : {}) })
+    registerFsTools(server, { workspace, callerScope, ...(boundary ? { boundary } : {}) })
     // Cheap, read-only liveness probe. Registered early so it is available
     // even when deferred tools hide the rest of the surface.
     registerDaemonHealthTools(server, {
@@ -3871,8 +4480,15 @@ export async function createGateway(
       crashDetectIntervalMs,
       restartSweepIntervalMs,
       turnStallAfterMs,
+      warnings: () => sessions.wakeWarnings(),
       appRegistryIssues: () => appRegistry.listIssues(),
+      appRegistryRepairs: () => appRegistry.listRepairs(),
       modelCooldowns: () => modelCooldowns.list(),
+      pausedCronJobs: () =>
+        cronScheduler
+          .list()
+          .filter(j => !j.active && j.pausedReason)
+          .map(j => ({ id: j.id, ...(j.label ? { label: j.label } : {}), pausedReason: j.pausedReason! })),
       sandboxSessions: () => sessions.sandboxSessionStats(),
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
@@ -3880,7 +4496,7 @@ export async function createGateway(
     // Read-only lookup for a tool's long-form docs (`tool-help.ts`) — the
     // fetch side of the slimmed-description contract every tool's schema
     // now points at. Always-on (see DEFAULT_ALWAYS_ON_TOOLS) and tiny.
-    registerToolHelpTool(server)
+    registerToolHelpTool(server, { activeProfiles })
     // Live provider quota for a named auth profile (AIP-67). Always-on (see
     // DEFAULT_ALWAYS_ON_TOOLS). `currentProfileRef` resolves the CALLING
     // session's own access profile from the trusted `callerSessionId`, the
@@ -3895,6 +4511,21 @@ export async function createGateway(
     // diffs the LLM pricing catalog against the last call's stored baseline
     // and re-records "now" as the new baseline.
     registerCatalogDiffTool(server, {})
+    // AIP-72 memory store tools (memory_search/list/read/write/supersede/
+    // archive/dismiss). The caller is the trusted `callerSessionId` (none =
+    // the operator bearer); a commit needs the operator or a supervisor-role
+    // session, everyone else proposes (memory-tools.ts). The store is the
+    // one the caller's agent binds (`meta.memoryStoreRoot`, set at spawn),
+    // else the daemon default.
+    registerMemoryTools(server, {
+      caller: resolveMemoryCaller(callerSessionId, id => sessions.get(id)?.meta),
+      callerScope,
+      store: () =>
+        memoryStoreAt(
+          (callerSessionId ? sessions.get(callerSessionId)?.meta?.memoryStoreRoot : undefined) ??
+            defaultMemoryRoot(),
+        ),
+    })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at
@@ -3922,37 +4553,18 @@ export async function createGateway(
     // falling back to the operator.
     registerApprovalTools(server, {
       engine: approvalsEngine,
+      workspace,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
-    // SECURITY BOUNDARY: `approval_card_decide` and every
-    // `ui://agentproto/approval/<id>` card resource are mounted ONLY on the
-    // dedicated `?surface=approval-cards` connection, and `handleMcp`
-    // (http-server.ts) already refuses that surface outright when a
-    // `callerSessionId` is present — the `!callerSessionId` check here is
-    // defense in depth for any other caller of this factory. Every other
-    // surface (root `/mcp`, any daemon-spawned session's self-ref
-    // connection) gets NEITHER: an agent CLI's model can typically
-    // `resources/read` and call app-only tools despite
-    // `_meta.ui.visibility: ["app"]` (most hosts don't honour it), so
-    // mounting the card there would let an agent mint its own ticket and
-    // self-approve. Only a human-facing MCP Apps host (Claude Desktop via
-    // `install-mcp --app`, configured to dial `/mcp?surface=approval-cards`)
-    // is meant to ever see this surface. Re-derived from the engine's own
-    // pending set on every build (this factory runs once per stateless
-    // `/mcp` connection — see the module docblock — so a resource
-    // registered inside a tool handler would vanish before the next
-    // connection could `resources/read` it).
-    if (surface === "approval-cards" && !callerSessionId) {
-      registerApprovalCardDecideTool(server, approvalsEngine)
-      for (const pending of approvalsEngine.list({ status: "pending" })) {
-        registerUiResource(server, {
-          name: `approval-${pending.id}`,
-          uri: approvalCardResourceUri(pending.id),
-          html: () => renderApprovalCardHtml(approvalsEngine, pending.id),
-          description: "Human approval card",
-        })
-      }
-    }
+    // reach_send: tell the owner something through the REACH route.
+    registerReachTools(server, {
+      teller: reachTeller,
+      ...(callerSessionId ? { callerSessionId } : {}),
+      callerLabel: () => {
+        const s = callerSessionId ? sessionsRef?.get(callerSessionId) : undefined
+        return s?.operatorLabel ?? s?.label
+      },
+    })
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
@@ -3986,6 +4598,7 @@ export async function createGateway(
       mcpObservations,
       workspace,
       mcpProxy,
+      sessionScreencast,
       // `session_restart` re-arms the cron jobs that targeted the restarted
       // session (the restart continues the conversation under a NEW id).
       cronScheduler,
@@ -4004,6 +4617,9 @@ export async function createGateway(
       // a spawn made by an agent session attaches under it by default (see
       // spawn-attach.ts). Absent on a human/root `/mcp` call → no auto-parent.
       ...(callerSessionId ? { callerSessionId } : {}),
+      // The session a valid session token on this request was minted for:
+      // the spawn proof gate's credential leg (AIP-46 §Session principals).
+      ...(credentialSessionId ? { credentialSessionId } : {}),
       // `?origin=` query (#session-visibility) — the connecting client's source
       // label, used as the default origin for a spawn that doesn't set its own.
       ...(origin ? { mcpBridgeOrigin: origin } : {}),
@@ -4011,14 +4627,41 @@ export async function createGateway(
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
       ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+      // The stdio mount gate reads the SAME workspace allowlist
+      // `command_execute` gates against, so `agent_start` mounts and
+      // `command_execute` cannot drift.
+      loadCommandAllowlist: () => loadAllowlistEntries(workspace),
       // `messagingDefaults` (resolved fresh above, per call) — the
       // unset-defaults for `interrupt` on agent_prompt/message_parent and
       // for message_send/message_reply's sibling/interrupt gates.
       defaultAgentPromptInterrupt: messagingDefaults.agentPromptInterrupt,
       messagingAllowSiblings: messagingDefaults.allowSiblings,
       messagingAllowSameWorkspace: messagingDefaults.allowSameWorkspace,
+      messagingPeerBinding: messagingDefaults.peerBinding,
       messagingPeerGroups: messagingDefaults.peerGroups,
+      messagingGrants: messagingDefaults.grants,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
+      ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
+      messagingAnonymousSend: messagingDefaults.anonymousSend,
+      noCallerIdentity: mcpNoCallerIdentity,
+      // `ask`: park an identity-less send on a human approval. The requester
+      // is the operator (an unidentified client is operator context, the
+      // same rule the approval tools use); the send still goes out as the
+      // anonymous `claude-code`, never as any session.
+      requestAnonymousMessageApproval: async (detail: AnonymousMessageApprovalDetail) => {
+        const record = approvalsEngine.request(
+          {
+            kind: "message_send",
+            title: `Allow anonymous message from claude-code to ${detail.to}?`,
+            preview: { sender: "claude-code", to: detail.to, kind: detail.kind, text: detail.text.slice(0, 2000) },
+            payload: { to: detail.to, kind: detail.kind, urgency: detail.urgency, text: detail.text },
+            expiresAt: new Date(Date.now() + 45_000).toISOString(),
+          },
+          { operator: true },
+        )
+        const settled = await approvalsEngine.wait(record.id, 45_000)
+        return settled?.status === "approved"
+      },
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
@@ -4045,6 +4688,7 @@ export async function createGateway(
         : {}),
       ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
       ...(opts.readBranchGcVerdict ? { readBranchGcVerdict: opts.readBranchGcVerdict } : {}),
+      ...(opts.restoreBranchGc ? { restoreBranchGc: opts.restoreBranchGc } : {}),
       isSessionChatInstalled,
       // `session_tree`'s `reviews` badge (review-session-panel step) —
       // the same gateway-singleton runner `registerReviewTools` uses below.
@@ -4055,6 +4699,7 @@ export async function createGateway(
     registerBrainTools(server, {
       brains: workspaceBrains,
       registry: sessions,
+      callerScope,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // Named auth-profile lifecycle (auth_profile_create/delete/list). No
@@ -4066,8 +4711,14 @@ export async function createGateway(
     // `~/.agentproto/config.json`, over the `config-schema.ts` key
     // registry. Root /mcp only: deliberately NOT added to
     // `DEFAULT_ORCHESTRATOR_TOOLS` (orchestrator-gateway.ts), so a scoped
-    // child orchestrator can never reconfigure the daemon it runs on.
-    registerConfigTools(server, configToolsDeps)
+    // child orchestrator can never reconfigure the daemon it runs on. The
+    // caller lets `config_set` refuse a session an operator-only key
+    // (AIP-46 §Operator-only configuration).
+    registerConfigTools(server, configToolsDeps, {
+      ...(credentialSessionId ? { credentialSessionId } : {}),
+      ...(callerSessionId ? { claimedSessionId: callerSessionId } : {}),
+      isHostSpawned: isHostSpawnedSession,
+    })
     // `model_roles` — read-only role → model listing (model-roles.ts). Same
     // root-only exposure; workflow `tool` steps reach it through dispatchTool.
     registerModelRolesTools(server)
@@ -4110,6 +4761,27 @@ export async function createGateway(
     // the MCP twin of the `/user-presets` HTTP routes. `includeRecent` reads
     // the same session registry as every other session-backed tool here.
     registerUserPresetTools(server, { registry: sessions })
+    // Account slots (accountSlots in config.json): account_slots_list /
+    // account_slots_swap. `moveAlive` restarts alive sessions through the same
+    // restart-with-override path as `session_restart`, cron targets re-armed.
+    registerAccountSlotTools(server, {
+      registry: sessions,
+      ...(opts.resolveAgentAdapter
+        ? {
+            restartSession: async (prev, overrides) => {
+              const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter!, prev, {
+                forceAgentResume: true,
+                overrides,
+                resolveSandboxProvider: resolveSandboxProviderResolved,
+                daemonMcpUrl,
+                ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+              })
+              const rearmedCrons = cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+              return { id: restarted.desc.id, ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}) }
+            },
+          }
+        : {}),
+    })
     // User-owned model lists — model_list_save/list/delete/resolve. Same
     // no-host-wiring stance: the store reads/writes model-lists.json.
     registerModelListTools(server)
@@ -4122,16 +4794,13 @@ export async function createGateway(
     // neither BRAVE_SEARCH_API_KEY nor SERPER_API_KEY is set.
     registerWebSearchTools(server)
     registerBrowserTools(server, {
-      registry: sessions,
-      ...(opts.resolveBrowserAdapter
-        ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
-        : {}),
-      ...(opts.listBrowserAdapters
-        ? { listBrowserAdapters: opts.listBrowserAdapters }
-        : {}),
-      // browser_upload_file may attach files from the agent's own workspace
-      // (merged over the ~/.pygmalion/data default + the env allowlist).
-      uploadAllowDirs: [opts.workspace],
+      mcpProxy,
+      // `defaults.browser.builtin` decides the registered surface. Read once
+      // per `/mcp` session (registration fixes the tool list): a config
+      // change applies on the next MCP session, no daemon restart. Every
+      // browser tool forwards to Bureau; a legacy "on" is read as "proxy".
+      builtin: resolveBrowserBuiltin((await loadConfig()).defaults?.browser),
+      ...(callerSessionId ? { callerSessionId } : {}),
     })
     // MCP Apps host verbs — same root-/mcp-only exposure as mcp_imported_*.
     registerMcpAppHostTools(server, { service: mcpAppsHost })
@@ -4151,6 +4820,7 @@ export async function createGateway(
       endpointStore: inboundEndpointStore,
       telegramCreds: telegramBotCreds,
       ...(callerSessionId ? { callerSessionId } : {}),
+      ...(credentialSessionId ? { credentialSessionId } : {}),
       operatorDelegates: taskDefaults.operatorDelegates,
     })
     // Review primitive (@agentproto/review) — review_run/status/cancel/
@@ -4175,24 +4845,27 @@ export async function createGateway(
       listRegisteredToolIds,
       appRegistry,
       dispatchTool,
-      callImportedTool: callImportedAppTool,
+      callImportedTool: (alias, tool, args) => callImportedAppTool(alias, tool, args, callerSessionId),
       daemonWorkspace: workspace,
+      appReadGrants,
       daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
       persist,
+      serviceExposer: appServiceExposer,
+      serviceStore: appServiceStore,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
     // App-scoped durable data plane (app-data.ts) — app_data_read/write/list/
     // migrate, anchored to each installed app's own dir with traversal guard.
-    registerAppDataTools(server, { appRegistry })
+    registerAppDataTools(server, { appRegistry, callerScope, ...(boundary ? { ownAppId: boundary.appId } : {}) })
     // Read-only external filesystem plane (app-external.ts) —
     // app_external_list/app_external_read, anchored to each installed app's
     // opted-in InstalledApp.externalReadRoots (never the app's own sandbox
     // dir). No write/delete tool exists here by design; binary files are
     // never read into a tool response — see GET /apps/:appId/external-blob
     // in http-server.ts for that.
-    registerAppExternalTools(server, { appRegistry })
+    registerAppExternalTools(server, { appRegistry, callerScope })
     registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
@@ -4240,9 +4913,9 @@ export async function createGateway(
     const builtinPanelApps = [
       ...makeBuiltinPanelApps({
         listSessions: listSessionsFiltered,
-        // httpBaseUrl = this daemon's own origin (SSE stream + bridge
-        // fallback for the live-session widget).
-        httpBaseUrl: publicHttpOrigin,
+        // httpBaseUrl = the public base this request reached the daemon at
+        // (SSE stream + bridge fallback for the live-session widget).
+        httpBaseUrl: panelHttpBaseUrl,
         // The session-chat widget is a thin launcher for the installed
         // `@agentik/session-chat` studio app — same call-time-resolved check
         // `registerSessionTools` above gets, so the mount decision here and
@@ -4286,7 +4959,7 @@ export async function createGateway(
       ...(opts.spawnPty != null
         ? [
             makeTerminalPanelApp({
-              wsBaseUrl: ptyWsBaseUrl,
+              wsBaseUrl: panelWsBaseUrl,
               ...(token ? { token } : {}),
               async spawnOrAttach(input) {
                 if (input.sessionId) {
@@ -4338,20 +5011,45 @@ export async function createGateway(
       appRegistry,
       appUiHtmlCache,
       new Set(builtinPanelApps.map(app => app.id)),
+      panelHttpBaseUrl,
     )
     registerMcpApps(server, [...builtinPanelApps, ...installedAppUiApps])
+    // Installed apps' `exposes.tools` as `<prefix>_<name>`. Registered through
+    // the wrapped `server`, so ?denyTools / ?allowTools / the caller's deny
+    // grants (gatedServer) all apply; the caller's AGENT.md opt-in decides
+    // whether a write/approve tool is offered, and so do the requires.apps
+    // grants of the app whose own agent the caller is. Read fresh per request.
+    await registerExposedAppTools(server, {
+      appRegistry,
+      mode: await resolveExposedToolsMode(),
+      ...(callerSessionId
+        ? {
+            caller: {
+              sessionId: callerSessionId,
+              optIn: callerContext?.exposedToolOptIn,
+              grants: exposedToolGrantsFor(appRegistry, callerContext?.meta),
+            },
+          }
+        : {}),
+      callImportedTool: callImportedAppTool,
+      // Cached by the import registry: a re-list only on first connect or an expired TTL.
+      listImportedTools: async alias => {
+        const out = await mcpProxy.listTools(alias)
+        return out.ok ? out.tools : undefined
+      },
+      readImportedResource: async (alias, uri) => {
+        const out = await mcpProxy.readResource(alias, uri)
+        if (!out.ok) throw new Error(`imported "${alias}" could not read ${uri}: ${out.error}`)
+        return out.result
+      },
+    })
     // Server-side per-session summariser backing the agents-overview panel.
     // Heuristic today (no LLM in @agentproto/runtime) — see summarize-session-tool.ts.
     registerSummarizeSessionTool(server, {
       getSession: (id) => sessions.get(id),
-      tailLines: (id, lastN) => {
-        // Same source as agent_output: attach replays the ring
-        // buffer synchronously, then we unsubscribe immediately.
-        const lines: string[] = []
-        const unsub = sessions.attach(id, (line) => { lines.push(line) })
-        if (unsub) unsub()
-        return lines.slice(-lastN)
-      },
+      // Same source as agent_output — including its terminal-row fallback to
+      // the final text, since a finished row's rings are cleared at exit.
+      tailLines: (id, lastN) => sessions.readOutputTail(id, lastN),
     })
     // Transcript exporter — reads the adapter's native persistence
     // (claude-code JSONL / hermes SQLite) and renders a clean markdown or
@@ -4399,6 +5097,7 @@ export async function createGateway(
       deliveryStatus: id => sentinelRuntime.webhookOutbox.deliveryStatus(id),
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
+      routing: sentinelRouting,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // session_follow / session_unfollow / session_follows — `follower`
@@ -4429,6 +5128,11 @@ export async function createGateway(
     // attached-and-left-as-found when one is). Same shared resolver as
     // attach above; the exec capability itself is optional per provider.
     registerSandboxExecTool(server, {
+      resolveSandboxProvider: resolveSandboxProviderResolved,
+    })
+    // `sandbox egress-health` - the provider's egress address pool with the
+    // per-IP model cooldowns (read-only; the re-probe is CLI/HTTP only).
+    registerSandboxEgressHealthTool(server, {
       resolveSandboxProvider: resolveSandboxProviderResolved,
     })
     // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters
@@ -4586,10 +5290,129 @@ export async function createGateway(
     buildAgent: opts.buildAgent ?? noopBuildAgent,
   })
 
+  // Telegram tap-to-approve for pending permissions. Off unless a chat id and
+  // at least one allowed user id are configured.
+  const permissionTelegram =
+    permissionTelegramCfg?.permissionTelegramChatId && (permissionTelegramCfg.permissionTelegramUserIds?.length ?? 0) > 0
+      ? createPermissionTelegramBridge({
+          events: sessionEvents,
+          registry: sessions,
+          telegramCreds: telegramBotCreds,
+          alias: permissionTelegramCfg.permissionTelegramAlias ?? "default",
+          chatId: permissionTelegramCfg.permissionTelegramChatId,
+          allowedUserIds: permissionTelegramCfg.permissionTelegramUserIds!,
+          ...(permissionTelegramCfg.permissionTelegramTools ? { tools: permissionTelegramCfg.permissionTelegramTools } : {}),
+        })
+      : undefined
+  permissionTelegram?.start()
+  // Digits only, even if a hand edit slipped past the config validation
+  // (an invalid config only warns at load). One source for the approval page
+  // route and the Telegram card bridge.
+  const approvalsHumanTelegramIds = (daemonConfig.approvals?.humanTelegramIds ?? []).filter(
+    id => typeof id === "string" && /^\d+$/.test(id),
+  )
+  // The folder an approval's `preview.attachments` are relative to: only for
+  // an approval opened by an installed app, inside that app's data root. One
+  // resolver for the Telegram bridge and the approval page's files routes.
+  const approvalFolder = (record: ApprovalRecord): Promise<string | undefined> | undefined => {
+    const app = record.appId ? appRegistry.getApp(record.appId) : undefined
+    return app ? approvalAttachmentDir(record.preview, appDataDir(app)) : undefined
+  }
+  // REACH (reach/router.ts): with a `reach.routes.owner` that has at least
+  // one adapter able to deliver, the router decides who announces each
+  // approval and the bridge only posts when the route reaches its `telegram`
+  // entry. Without one, nothing changes: no router, the bridge announces on
+  // its own, no reach.json is written. The route is built once, before the
+  // bridge, and reads the bridge at send time.
+  const reachOwnerEntries: readonly unknown[] = Array.isArray(daemonConfig.reach?.routes?.owner)
+    ? daemonConfig.reach!.routes!.owner!
+    : []
+  // `chat-sdk` entries need the optional @agentproto/reach-chat-sdk package,
+  // imported only when the route names one; absent, those entries are
+  // skipped `chat-sdk-not-installed`.
+  const reachChatSdkFactory = await loadChatSdkReachFactory(reachOwnerEntries)
+  if (routeNamesChatSdk(reachOwnerEntries) && !reachChatSdkFactory) {
+    console.warn("reach: @agentproto/reach-chat-sdk is not installed; chat-sdk route entries are skipped")
+  }
+  const reachPlan = planReachRoute(reachOwnerEntries, {
+    telegramBridge: () => approvalTelegram,
+    ...(reachChatSdkFactory ? { chatSdkFactory: reachChatSdkFactory } : {}),
+    telegramAvailable: telegramApprovalCardsOn,
+    telegramAlias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+    onError: err => {
+      console.warn(`reach: ${err instanceof Error ? err.message : String(err)}`)
+    },
+  })
+  for (const warning of reachPlan.warnings) console.warn(warning)
+  const reachOn = reachPlan.on
+  const approvalTelegram = telegramApprovalCardsOn
+    ? createApprovalTelegramBridge({
+        events: sessionEvents,
+        engine: approvalsEngine,
+        telegramCreds: telegramBotCreds,
+        alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+        chatId: permissionTelegramCfg!.permissionTelegramChatId!,
+        allowedUserIds: permissionTelegramCfg!.permissionTelegramUserIds!,
+        // Same list, same digits-only filter as the approval page route below.
+        ownerUserIds: approvalsHumanTelegramIds,
+        sendAttachments: permissionTelegramCfg?.telegramAttachments === true,
+        // `preview.attachments` is only resolved for an approval opened by an
+        // installed app, inside that app's data root.
+        attachmentDir: approvalFolder,
+        onError: err => {
+          console.warn(`[approval-telegram-bridge] ${err instanceof Error ? err.message : String(err)}`)
+        },
+        ...(reachOn ? { announceOnRequested: false } : {}),
+      })
+    : undefined
+  approvalTelegram?.start()
+  const reachRouter = reachOn
+    ? createReachRouter({ events: sessionEvents, engine: approvalsEngine, route: reachPlan.adapters })
+    : undefined
+  reachRouter?.start()
+  // Tells (reach_send): the owner route when it is on, else the floor alone
+  // when Telegram cards are configured, else nothing (undelivered, no-route).
+  const reachFloorOnly = telegramApprovalCardsOn
+    ? [
+        createTelegramReachAdapter({
+          id: "floor",
+          bridge: () => approvalTelegram,
+          bridgeAlias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+          onError: err => console.warn(`reach: ${err instanceof Error ? err.message : String(err)}`),
+        }),
+      ]
+    : []
+  reachTeller = createReachTeller({
+    route: () => (reachOn ? reachPlan.adapters : reachFloorOnly),
+    dir: persist ? resolveReachTellDir() : join(mkdtempSync(join(tmpdir(), "agentproto-reach-")), "reach"),
+  })
+
+  // E99: one `[heap]` line every few minutes (AGENTPROTO_HEAP_LOG_INTERVAL_MS,
+  // 0 = off) with heapUsed/rss, the floor after the last major GC, live
+  // handles, and the sizes of the long-lived structures below; the same
+  // report backs the operator-only GET /debug/heap.
+  const heapMonitor = startHeapMonitor({
+    intervalMs: heapLogIntervalFromEnv(),
+    probes: {
+      sessions: () => {
+        const all = sessions.list({ includeArchived: true })
+        let live = 0
+        for (const d of all) if (d.status === "running" || d.status === "starting") live++
+        return { total: all.length, live }
+      },
+      policies: () => ({ total: supervisor.list().length }),
+      workflowRuns: () => ({ total: workflowRunner?.list().length ?? 0 }),
+      eventsIndexCache: () => ({ entries: eventsIndexCacheSize() }),
+      ...(opts.hostRegistry?.memoryStats ? { hosts: () => opts.hostRegistry!.memoryStats!() } : {}),
+      ...(opts.pairingRegistry?.memoryStats ? { pairing: () => opts.pairingRegistry!.memoryStats!() } : {}),
+    },
+  })
+
   const http = await startHttpServer({
     port,
     bind: opts.bind,
     mcpObservations,
+    heapDiagnostics: { report: () => heapMonitor.report(), snapshot: () => writeHeapSnapshotGuarded() },
     // Auth is read on every request via this getter. `opts.auth`
     // (when provided) is the startup default and represents the
     // operator's intent — bearer-only deployments stay bearer-only
@@ -4603,6 +5426,7 @@ export async function createGateway(
     },
     mcpServerFactory,
     orchestratorMcpServerFactory,
+    loadCommandAllowlist: () => loadAllowlistEntries(workspace),
     ...(eventsMcp ? { eventsMcp } : {}),
     verifyOrchestratorScope: scopeTokens.verify,
     conversations,
@@ -4624,6 +5448,7 @@ export async function createGateway(
       runtime: sentinelRuntime,
       tombstones: sentinelRuntime.cancelTombstones,
       deliveryStatus: id => sentinelRuntime.webhookOutbox.deliveryStatus(id),
+      routing: sentinelRouting,
     },
     follows: {
       store: sessionFollowStore,
@@ -4646,6 +5471,10 @@ export async function createGateway(
     ...(daemonConfig.approvals?.telegramBotSecret
       ? { approvalsTelegramBotSecret: daemonConfig.approvals.telegramBotSecret }
       : {}),
+    // Digits only, even if a hand edit slipped past the config validation
+    // (an invalid config only warns at load).
+    approvalsHumanTelegramIds,
+    approvalsAttachmentDir: approvalFolder,
     ...(workflowRunner ? { workflowRunner } : {}),
     appRegistry,
     performAppInstall: performInstall,
@@ -4654,6 +5483,7 @@ export async function createGateway(
     // /apps/:appId/tool-call twin must run the exact chain the MCP
     // app_tool_call verb runs.
     appToolCallDeps: { dispatchTool, callImportedTool: callImportedAppTool },
+    sessionScreencast,
     // AIP-53 link-token scoping: backs `POST /apps/:appId/link-auth`
     // (app-link-auth.ts) — the same store `telegram_bot_token_set`/
     // `registerTelegramBotTools` above read/write.
@@ -4670,6 +5500,18 @@ export async function createGateway(
     // this, every slug 404s as "unknown_inbound_endpoint" regardless of
     // what's registered, since the http layer never saw the store at all.
     endpointStore: inboundEndpointStore,
+    ...(permissionTelegram || approvalTelegram
+      ? {
+          permissionCallbacks: {
+            alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+            handleUpdate: async (update: unknown) => {
+              const fromPermissions = await permissionTelegram?.handleUpdate(update)
+              if (fromPermissions?.handled) return fromPermissions
+              return (await approvalTelegram?.handleUpdate(update)) ?? { handled: false }
+            },
+          },
+        }
+      : {}),
     routeInboundMessage: (msg: InboundMessage, mode: InboundRouteMode) =>
       routeInboundMessage(
         {
@@ -4683,6 +5525,9 @@ export async function createGateway(
       ),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
+    ...(opts.frameAncestors && opts.frameAncestors.length > 0
+      ? { frameAncestors: opts.frameAncestors }
+      : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -4722,6 +5567,7 @@ export async function createGateway(
         ? { runSandboxCheckpointGcSweep: opts.runSandboxCheckpointGcSweep }
         : {}),
       ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
+      ...(opts.approveBranchGcVerdict ? { approveBranchGcVerdict: opts.approveBranchGcVerdict } : {}),
     ...(opts.resolveBrowserAdapter
       ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
       : {}),
@@ -4743,12 +5589,31 @@ export async function createGateway(
       crashDetectIntervalMs,
       restartSweepIntervalMs,
       turnStallAfterMs,
+      warnings: () => sessions.wakeWarnings(),
       appRegistryIssues: () => appRegistry.listIssues(),
+      appRegistryRepairs: () => appRegistry.listRepairs(),
       modelCooldowns: () => modelCooldowns.list(),
       sandboxSessions: () => sessions.sandboxSessionStats(),
     },
     cronScheduler,
     routineRegistrar,
+    reactions: {
+      health: () => reactionRunner.health(),
+      wiring: () => reactionWiring.current(),
+    },
+    // Caller identity observation + `GET /identity` (ts#2165 step 5). The
+    // mode is re-read from config at most every few seconds (the observer
+    // runs on every /mcp call), so a `config_set` of
+    // `defaults.identity.sessionTokens` is hot within that window.
+    identity: {
+      mode: createIdentityModeReader(),
+      // Read per request (GET /identity is a read model): the actions that
+      // require a proven caller, `defaults.identity.requireProof`. Empty
+      // unless the operator lists one.
+      resolveRequireProof: async () =>
+        (await loadConfig()).defaults?.identity?.requireProof ?? [],
+      ...(persist ? { observations: { path: identityObservationsFile() } } : {}),
+    },
   })
 
   heartbeat.start()
@@ -4776,6 +5641,7 @@ export async function createGateway(
           registry: sessions,
           idleReapAfterMs,
           sandboxIdleReapAfterMs,
+          holdsApproval: id => sessionHoldsApproval(approvalsEngine, id),
         })
         if (summary.reaped > 0) {
           // One line per sweep that actually reaped something (silent otherwise
@@ -4808,6 +5674,8 @@ export async function createGateway(
   let sandboxGcTimer: { stop(): void } | null = null
   if (sandboxGcIntervalMs > 0) {
     sandboxGcTimer = startSandboxGcTimer({
+      absentSessionsAreDead: true,
+      initialDelayMs: 2 * 60_000,
       fetchSessionStatuses: () => {
         const rows = new Map<string, string>()
         for (const desc of sessions.list({ includeArchived: true })) {
@@ -4831,11 +5699,15 @@ export async function createGateway(
       },
       resolveProvider: (slug: string) =>
         (opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore()))(slug),
+      pausedMaxAgeMs: parsePausedBoxMaxAge(
+        process.env.AGENTPROTO_SANDBOX_GC_PAUSED_MAX_AGE_MS,
+      ),
     })
     console.log(`[sandbox-gc] automatic dead-session box gc every ${sandboxGcIntervalMs}ms`)
   }
 
-  // On-disk session retention sweep (session-retention.ts). Deletes terminal
+  // On-disk session retention sweep (session-retention.ts), followed by the
+  // adapter-config cache sweep. Deletes terminal
   // session dirs past their age threshold — review lanes after 7 days by
   // default, regular sessions only when `daemon.sessionRetentionDays` is set.
   // First run 10 min after boot (never competing with boot work), then every
@@ -4874,6 +5746,22 @@ export async function createGateway(
         .catch(err => {
           console.warn(
             `[session-retention] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+        // Same cadence: the cache content of dead lineages' adapter-config
+        // dirs (pnpm store, opencode snapshot/tool-output/log).
+        .then(() => sessions.pruneAdapterConfigCaches())
+        .then(res => {
+          if (res && (res.count > 0 || res.errors > 0)) {
+            console.log(
+              `[adapter-cache-retention] pruned ${res.paths} cache path(s) in ${res.count} ` +
+                `adapter-config dir(s) (scanned ${res.scanned}, errors ${res.errors})`,
+            )
+          }
+        })
+        .catch(err => {
+          console.warn(
+            `[adapter-cache-retention] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
           )
         })
         .finally(() => {
@@ -5091,6 +5979,7 @@ export async function createGateway(
     ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
     ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
     token,
+    approvals: approvalsEngine,
     mintOrchestratorScope: scopeTokens.mint,
     async resumeSessionsOnBoot(passOpts) {
       // Off by default (§5 "Opt-in vs automatic") — lazy resume-on-prompt
@@ -5102,6 +5991,10 @@ export async function createGateway(
         registry: sessions,
         concurrency: bootResumeConcurrency(),
         policy: opts.bootResumePolicy,
+        keepAliveMaxIdleMs:
+          opts.bootResumeKeepAliveMaxIdleMinutes === undefined
+            ? DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS
+            : Math.max(0, opts.bootResumeKeepAliveMaxIdleMinutes) * 60 * 1000,
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },
@@ -5112,6 +6005,28 @@ export async function createGateway(
         timeoutMs: bootSandboxReattachTimeoutMs(),
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
+    },
+    async reconcileReactionsOnBoot() {
+      try {
+        await reactionRunner.reconcileOnBoot()
+        let pending = 0
+        let running = 0
+        let failed = 0
+        let dead = 0
+        for (const entry of reactionRunner.status()) {
+          pending += entry.pending
+          running += entry.running
+          failed += entry.failed
+          dead += entry.dead
+        }
+        return { total: reactionReceiptStore.rows().length, pending, running, failed, dead }
+      } catch (err) {
+        console.warn(
+          `[reaction-runner] boot reconciliation failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+        return { total: 0, pending: 0, running: 0, failed: 0, dead: 0 }
+      }
     },
     async continueInterruptedOnBoot(passOpts) {
       if (!opts.continueInterruptedOnBoot) {
@@ -5138,10 +6053,9 @@ export async function createGateway(
       }
       const result = await reensureInstalledAppServicesOnBoot({
         appRegistry,
-        serviceStore: createAppServiceStore({
-          ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
-        }),
+        serviceStore: appServiceStore,
         registry: sessions,
+        exposer: appServiceExposer,
         ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
         ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
       })
@@ -5183,19 +6097,31 @@ export async function createGateway(
       if (wiringSweepTimer) clearInterval(wiringSweepTimer)
       // Stop the AIP-58 liveness sweep before sessions shut down (P3b).
       clearInterval(livenessSweepTimer)
+      heapMonitor.stop()
       // Detach the restart-scheduler's session:exited subscription.
       restartScheduler.dispose()
       turnRetryController.dispose()
       // Detach the clerk turn-end subscriber + cancel its pending debounce
       // timers (a pending pass must not fire into a shutting-down daemon).
       clerkTurnEnd.dispose()
+      nativeMemoryCapture.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      permissionTelegram?.stop()
+      approvalTelegram?.stop()
+      reachRouter?.stop()
       // Stop the sentinel poll loop and flush its store before sessions shut
       // down — same ordering reason as inboundWatcher above (delivery reads
       // `sessions`).
       sentinelRuntime.stop()
       sentinelStore.flushSync()
+      // Stop the reaction runner and persist its receipts; a `running` row
+      // lost in the debounce window is a re-drive the target dedupes anyway.
+      reactionRunner.stop()
+      reactionReceiptStore.flushSync()
+      // Stop revoking session tokens and detach their store.
+      unsubscribeSessionCredentials()
+      detachSessionCredentials?.()
       // Flush the orchestrator scope-token registry so a token minted /
       // bound / revoked just before a restart isn't lost inside the
       // debounce window — same reasoning as the sentinel flush above.
@@ -5223,8 +6149,15 @@ export async function createGateway(
       // Detach the task ledger's bus subscription + sync-flush tasks.json
       // (same debounce-then-flush contract as supervisor.shutdown()).
       taskLedger.dispose()
+      // Detach the Bureau approval bridge's bus subscriptions.
+      bureauApprovals.dispose()
       // Clear the approvals engine's pending `approval_wait` timers.
       approvalsEngine.dispose()
+      // On-demand app services: the host's listener dies with this daemon, so
+      // a process it started would be unreachable and never stopped. Close
+      // the listeners and kill the processes (a keep-alive service is left to
+      // the sessions registry below, as before).
+      await stopAllOnDemandServices()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.
@@ -5300,4 +6233,21 @@ async function runBoot(
 // parallel edit in that region.
 export { evaluateCostBudget } from "./cost-budget.js"
 export type { CostBudgetDecision } from "./cost-budget.js"
-export type { CostBudget, CostBudgetScope } from "@agentproto/auth"
+export {
+  ACCOUNT_SLOT_NAME_RE,
+  AccountSlotError,
+  SLOT_REF_PREFIX,
+  isSlotRef,
+  loadAccountSlots,
+  planAccountSlotSwap,
+  resolveProfileRef,
+  sessionsToMoveOnSwap,
+  slotNameOf,
+  slotRef,
+  type AccountSlotErrorCode,
+  type AccountSlotRow,
+  type AccountSlotSwapPlan,
+  type AccountSlots,
+  type ResolvedProfileRef,
+} from "./account-slots.js"
+export { runAccountSlotSwap, type AccountSlotSwapResult } from "./account-slot-tools.js"

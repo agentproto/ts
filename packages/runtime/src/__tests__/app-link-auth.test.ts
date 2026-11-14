@@ -3,15 +3,16 @@
  * token minted by `app_link_mint` is useless on its own — only a matching
  * Telegram `initData` turns it into a usable `"session"` token. Exercises
  * every outcome Jeremy's amendment calls for: match, wrong-bot-token,
- * user-mismatch, stale initData, non-Telegram-gated token, and replay of
- * an already-consumed link token.
+ * user-mismatch, stale initData, non-Telegram-gated token, and reuse of
+ * the same link token (allowed until its own exp, each time with fresh
+ * initData).
  */
 
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { beforeEach, describe, expect, it } from "vitest"
-import { authorizeAppLink, resetAppLinkAuthStateForTests } from "../app-link-auth.js"
+import { describe, expect, it, vi } from "vitest"
+import { authorizeAppLink } from "../app-link-auth.js"
 import { mintAppLinkToken, verifyAppLinkSessionToken } from "../app-link-token.js"
 import type { TelegramBotCredsStore } from "../telegram-bot-creds.js"
 import { FAKE_BOT_TOKEN, signInitData, buildInitDataFields } from "./helpers/telegram-init-data-fixture.js"
@@ -27,10 +28,6 @@ function fakeTelegramCreds(tokensByAlias: Record<string, string>): TelegramBotCr
     exists: async alias => alias in tokensByAlias,
   }
 }
-
-beforeEach(() => {
-  resetAppLinkAuthStateForTests()
-})
 
 describe("authorizeAppLink", () => {
   it("a matching Telegram account exchanges the link for a usable session token", async () => {
@@ -144,7 +141,7 @@ describe("authorizeAppLink", () => {
     if (!result.ok) expect(result.status).toBe(400)
   })
 
-  it("a failed attempt does NOT burn the link — the same legitimate user can retry", async () => {
+  it("a failed attempt does not block the same legitimate user's retry", async () => {
     const keyPath = tmpKeyPath()
     const { token: linkToken } = mintAppLinkToken({
       appId: "@agentik/session-chat",
@@ -163,7 +160,7 @@ describe("authorizeAppLink", () => {
     expect(succeeded.ok).toBe(true)
   })
 
-  it("replaying an ALREADY-CONSUMED link token is refused, even with valid initData", async () => {
+  it("the SAME link token can be exchanged again with fresh valid initData, and the second session token works", async () => {
     const keyPath = tmpKeyPath()
     const { token: linkToken } = mintAppLinkToken({
       appId: "@agentik/session-chat",
@@ -177,14 +174,54 @@ describe("authorizeAppLink", () => {
     const first = await authorizeAppLink({ linkToken, initData, telegramCreds, keyPath })
     expect(first.ok).toBe(true)
 
-    const replay = await authorizeAppLink({
+    const second = await authorizeAppLink({
       linkToken,
       initData: signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN),
       telegramCreds,
       keyPath,
     })
-    expect(replay.ok).toBe(false)
-    if (!replay.ok) expect(replay.error).toMatch(/already been used/)
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("unreachable")
+    const verified = verifyAppLinkSessionToken(second.sessionToken, keyPath)
+    expect(verified.ok).toBe(true)
+    if (verified.ok) expect(verified.payload.claims.sessionId).toBe("sess_abc")
+  })
+
+  it("a reusable link token is still refused once its own exp has passed, even with fresh valid initData", async () => {
+    const keyPath = tmpKeyPath()
+    vi.useFakeTimers()
+    try {
+      const { token: linkToken } = mintAppLinkToken({
+        appId: "@agentik/session-chat",
+        claims: { sessionId: "sess_abc", telegramUserId: "42" },
+        ttlMs: 60_000,
+        pendingTelegramAuth: true,
+        keyPath,
+      })
+      const telegramCreds = fakeTelegramCreds({ default: FAKE_BOT_TOKEN })
+      const first = await authorizeAppLink({
+        linkToken,
+        initData: signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN),
+        telegramCreds,
+        keyPath,
+      })
+      expect(first.ok).toBe(true)
+
+      vi.advanceTimersByTime(61_000)
+      const late = await authorizeAppLink({
+        linkToken,
+        initData: signInitData(buildInitDataFields({ userId: 42 }), FAKE_BOT_TOKEN),
+        telegramCreds,
+        keyPath,
+      })
+      expect(late.ok).toBe(false)
+      if (!late.ok) {
+        expect(late.status).toBe(401)
+        expect(late.error).toMatch(/expired/)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("an invalid/forged link token is refused (401)", async () => {
@@ -226,7 +263,7 @@ describe("authorizeAppLink", () => {
     }
   })
 
-  it("concurrent redemption of the SAME link token: only one wins, even with the same valid initData", async () => {
+  it("concurrent exchanges of the SAME link token with valid initData both succeed", async () => {
     const keyPath = tmpKeyPath()
     const { token: linkToken } = mintAppLinkToken({
       appId: "@agentik/session-chat",
@@ -241,8 +278,8 @@ describe("authorizeAppLink", () => {
       authorizeAppLink({ linkToken, initData, telegramCreds, keyPath }),
       authorizeAppLink({ linkToken, initData, telegramCreds, keyPath }),
     ])
-    const succeeded = [first, second].filter(r => r.ok)
-    expect(succeeded.length).toBe(1)
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
   })
 
   it("honours a custom botAlias claim from app_link_mint", async () => {

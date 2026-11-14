@@ -12,6 +12,8 @@ import type {
   AppRequirement,
   AppRequirements,
   AppService,
+  AppServiceActivation,
+  AppServiceExpose,
   AppSetupCheck,
   AppSetupOption,
   AppSetupPersist,
@@ -21,6 +23,7 @@ import type {
   AppSetupWhen,
 } from "./types.js"
 import { parseVersionRange } from "./version-range.js"
+import { EXPOSED_TOOL_NAME_MAX, parseExposedTools } from "./exposed-tools.js"
 
 export const APP_PLACEMENTS: readonly AppPlacement[] = ["local", "box", "any", "split"]
 
@@ -74,8 +77,13 @@ function bool(v: unknown, key: string, fail: Fail): boolean {
   return v
 }
 
+const REQUIREMENT_KEYS = new Set(["id", "version", "workflows", "tools"])
+const REQUIRES_KEYS = new Set(["browser", "fs", "gpu", "secrets", "apps"])
+// Verbatim `requires.apps[].tools` item pattern from AIP-53 APP.schema.json: `<prefix>_<n>`.
+const REQUIRED_TOOL_NAME_RE = /^[a-z][a-z0-9]{1,15}_[a-zA-Z0-9-](?:[a-zA-Z0-9_-]*[a-zA-Z0-9-])?$/
+
 /** Parse one `requires.apps` entry — a bare id or an
- *  `{ id, version?, workflows? }` object. Shared by the array element check
+ *  `{ id, version?, workflows?, tools? }` object. Shared by the array element check
  *  and the object form's `apps` list so both accept exactly the same shape. */
 function appRequirementEntry(entry: unknown, key: string, fail: Fail): AppRequirement {
   if (typeof entry === "string") {
@@ -106,26 +114,130 @@ function appRequirementEntry(entry: unknown, key: string, fail: Fail): AppRequir
       throw fail(`'${key}.workflows' must be an array of non-empty strings.`)
     }
   }
-  const extra = Object.keys(entry).filter(k => k !== "id" && k !== "version" && k !== "workflows")
+  const tools = entry.tools
+  if (tools !== undefined) {
+    if (!Array.isArray(tools)) {
+      throw fail(`'${key}.tools' must be an array of the provider's tool MCP names (e.g. bureau_navigate).`)
+    }
+    tools.forEach((t, j) => {
+      if (typeof t !== "string" || t.length > EXPOSED_TOOL_NAME_MAX || !REQUIRED_TOOL_NAME_RE.test(t)) {
+        throw fail(
+          `'${key}.tools[${j}]' must be an MCP name '<prefix>_<name>' of at most ${EXPOSED_TOOL_NAME_MAX} characters, ` +
+            `got ${JSON.stringify(t)}; name the provider tool's MCP name, not its exposes.tools id.`,
+        )
+      }
+      if (tools.indexOf(t) !== j) throw fail(`'${key}.tools[${j}]': duplicate tool name '${t}'.`)
+    })
+  }
+  const extra = Object.keys(entry).filter(k => !REQUIREMENT_KEYS.has(k))
   if (extra.length > 0) {
-    throw fail(`'${key}.${extra[0]}' is not a supported requires.apps entry field (expected id, version, workflows).`)
+    throw fail(`'${key}.${extra[0]}' is not a supported requires.apps entry field (expected ${[...REQUIREMENT_KEYS].join(", ")}).`)
   }
   return {
     id,
     ...(version !== undefined ? { version } : {}),
     ...(workflows !== undefined ? { workflows: [...workflows] as string[] } : {}),
+    ...(tools !== undefined ? { tools: [...tools] as string[] } : {}),
   }
 }
 
 function appRequirementList(v: unknown, key: string, fail: Fail): readonly AppRequirement[] {
   if (v === undefined) return []
   if (!Array.isArray(v)) {
-    throw fail(`'${key}' must be an array of non-empty strings or { id, version?, workflows? } objects.`)
+    throw fail(`'${key}' must be an array of non-empty strings or { id, version?, workflows?, tools? } objects.`)
   }
-  return v.map((e, i) => appRequirementEntry(e, `${key}[${i}]`, fail))
+  const entries = v.map((e, i) => appRequirementEntry(e, `${key}[${i}]`, fail))
+  entries.forEach((e, i) => {
+    if (entries.findIndex(o => o.id === e.id) !== i) throw fail(`'${key}[${i}]': duplicate app id '${e.id}'.`)
+  })
+  return entries
 }
 
 const SERVICE_NAME_RE = /^[a-z][a-z0-9-]*$/
+// Verbatim `services[].cwd` pattern from AIP-53 APP.schema.json: relative, no `..` segment.
+const SERVICE_CWD_RE = /^(?!\/)(?!(?:.*\/)?\.\.(?:\/|$)).*\S/
+// Verbatim `services[].expose.hostname` pattern from AIP-53 APP.schema.json:
+// a lowercase DNS label or FQDN.
+const SERVICE_HOSTNAME_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/
+
+/** Validate one `services[i].expose` object (AIP-53 Exposure). Closed
+ *  object: only `auth` (`guard` | `service`) and `hostname`. */
+function serviceExpose(v: unknown, path: string): AppServiceExpose {
+  if (!isRecord(v)) {
+    throw new Error(`'${path}' must be an object { auth?, hostname? }.`)
+  }
+  const extra = Object.keys(v).filter(k => k !== "auth" && k !== "hostname")
+  if (extra.length > 0) {
+    throw new Error(`'${path}.${extra[0]}' is not a supported expose field (expected auth, hostname).`)
+  }
+  const auth = v.auth
+  if (auth !== undefined && auth !== "guard" && auth !== "service") {
+    throw new Error(`'${path}.auth' must be 'guard' or 'service', got ${JSON.stringify(auth)}.`)
+  }
+  const hostname = v.hostname
+  if (hostname !== undefined && (typeof hostname !== "string" || !SERVICE_HOSTNAME_RE.test(hostname))) {
+    throw new Error(
+      `'${path}.hostname' must be a lowercase DNS label or full hostname, got ${JSON.stringify(hostname)}.`,
+    )
+  }
+  return {
+    ...(auth !== undefined ? { auth } : {}),
+    ...(hostname !== undefined ? { hostname: hostname as string } : {}),
+  }
+}
+
+/** AIP-53 `services[].activation` defaults and bounds (`idleStopMs` is
+ *  capped at 24h: a timer past 2^31-1 ms fires immediately). */
+export const DEFAULT_SERVICE_IDLE_STOP_MS = 300_000
+export const DEFAULT_SERVICE_START_TIMEOUT_MS = 30_000
+const SERVICE_IDLE_STOP_MS_RANGE = [1_000, 86_400_000] as const
+const SERVICE_START_TIMEOUT_MS_RANGE = [1_000, 300_000] as const
+
+function boundedInt(v: unknown, path: string, [min, max]: readonly [number, number]): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < min || v > max) {
+    throw new Error(`'${path}' must be an integer between ${min} and ${max}.`)
+  }
+  return v
+}
+
+/** Validate one `services[i].activation` object (AIP-53 Activation). Closed
+ *  object: `mode` (`always` | `on-demand`, required), plus `idleStopMs` and
+ *  `startTimeoutMs`, which only make sense for `on-demand`. */
+function serviceActivation(v: unknown, path: string, hasPort: boolean): AppServiceActivation {
+  if (!isRecord(v)) {
+    throw new Error(`'${path}' must be an object { mode, idleStopMs?, startTimeoutMs? }.`)
+  }
+  const extra = Object.keys(v).filter(k => k !== "mode" && k !== "idleStopMs" && k !== "startTimeoutMs")
+  if (extra.length > 0) {
+    throw new Error(
+      `'${path}.${extra[0]}' is not a supported activation field (expected mode, idleStopMs, startTimeoutMs).`,
+    )
+  }
+  const mode = v.mode
+  if (mode !== "always" && mode !== "on-demand") {
+    throw new Error(`'${path}.mode' must be 'always' or 'on-demand', got ${JSON.stringify(mode)}.`)
+  }
+  if (mode === "always") {
+    for (const k of ["idleStopMs", "startTimeoutMs"] as const) {
+      if (v[k] !== undefined) throw new Error(`'${path}.${k}' is only valid with mode 'on-demand'.`)
+    }
+    return { mode }
+  }
+  if (!hasPort) {
+    throw new Error(`${path}.mode 'on-demand' requires a port`)
+  }
+  const idleStopMs =
+    v.idleStopMs === undefined ? undefined : boundedInt(v.idleStopMs, `${path}.idleStopMs`, SERVICE_IDLE_STOP_MS_RANGE)
+  const startTimeoutMs =
+    v.startTimeoutMs === undefined
+      ? undefined
+      : boundedInt(v.startTimeoutMs, `${path}.startTimeoutMs`, SERVICE_START_TIMEOUT_MS_RANGE)
+  return {
+    mode,
+    ...(idleStopMs !== undefined ? { idleStopMs } : {}),
+    ...(startTimeoutMs !== undefined ? { startTimeoutMs } : {}),
+  }
+}
 
 /**
  * Parse + validate the AIP-53 `services` array (production hosting surface).
@@ -154,10 +266,20 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
       throw new Error(`'${path}' must be an object { name, entry, port? }.`)
     }
     const extra = Object.keys(entry).filter(
-      k => k !== "name" && k !== "entry" && k !== "command" && k !== "args" && k !== "cwd" && k !== "port",
+      k =>
+        k !== "name" &&
+        k !== "entry" &&
+        k !== "command" &&
+        k !== "args" &&
+        k !== "cwd" &&
+        k !== "port" &&
+        k !== "expose" &&
+        k !== "activation",
     )
     if (extra.length > 0) {
-      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, command, args, cwd, port).`)
+      throw new Error(
+        `'${path}.${extra[0]}' is not a supported service field (expected name, entry, command, args, cwd, port, expose, activation).`,
+      )
     }
     const name = entry.name
     if (typeof name !== "string" || !SERVICE_NAME_RE.test(name)) {
@@ -202,12 +324,30 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
     if (cwd !== undefined && (typeof cwd !== "string" || cwd.trim() === "")) {
       throw new Error(`'${path}.cwd' must be a non-empty directory path string.`)
     }
+    if (typeof cwd === "string" && !SERVICE_CWD_RE.test(cwd)) {
+      throw new Error(
+        cwd.startsWith("/")
+          ? `'${path}.cwd' (service '${name}') must be relative to the app directory, got the absolute path ${JSON.stringify(cwd)}.`
+          : `'${path}.cwd' (service '${name}') must not contain a '..' segment, got ${JSON.stringify(cwd)}.`,
+      )
+    }
     const port = entry.port
     if (port !== undefined) {
       if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
         throw new Error(`'${path}.port' must be an integer between 1 and 65535.`)
       }
     }
+    let expose: AppServiceExpose | undefined
+    if (entry.expose !== undefined) {
+      if (port === undefined) {
+        throw new Error(`${path}.expose requires a port`)
+      }
+      expose = serviceExpose(entry.expose, `${path}.expose`)
+    }
+    const activation =
+      entry.activation !== undefined
+        ? serviceActivation(entry.activation, `${path}.activation`, port !== undefined)
+        : undefined
     return hasCommand
       ? {
           name,
@@ -215,12 +355,16 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
           ...(args !== undefined ? { args } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           ...(port !== undefined ? { port } : {}),
+          ...(expose !== undefined ? { expose } : {}),
+          ...(activation !== undefined ? { activation } : {}),
         }
       : {
           name,
           entry: command as string,
           ...(cwd !== undefined ? { cwd } : {}),
           ...(port !== undefined ? { port } : {}),
+          ...(expose !== undefined ? { expose } : {}),
+          ...(activation !== undefined ? { activation } : {}),
         }
   })
 }
@@ -695,6 +839,10 @@ export function normalizeManifestFields(
       requirements = { ...requirements, apps: requires }
       appRequirements = appRequirementList(r, "requires", fail)
     } else if (isRecord(r)) {
+      const extra = Object.keys(r).find(k => !REQUIRES_KEYS.has(k))
+      if (extra !== undefined) {
+        throw fail(`'requires.${extra}' is not a supported requires field (expected ${[...REQUIRES_KEYS].join(", ")}).`)
+      }
       const apps = appRequirementList(r.apps, "requires.apps", fail)
       requirements = {
         browser: bool(r.browser, "requires.browser", fail),
@@ -712,7 +860,7 @@ export function normalizeManifestFields(
 
   let exposes: AppExposes = { agents: [], workflows: [] }
   if (input.exposes !== undefined) {
-    if (!isRecord(input.exposes)) throw fail("'exposes' must be an object { agents, workflows }.")
+    if (!isRecord(input.exposes)) throw fail("'exposes' must be an object { agents, workflows, prefix, tools, resources }.")
     const agents = stringList(input.exposes.agents, "exposes.agents", fail)
     const workflows = stringList(input.exposes.workflows, "exposes.workflows", fail)
     for (const id of agents) {
@@ -729,7 +877,14 @@ export function normalizeManifestFields(
         )
       }
     }
-    exposes = { agents, workflows }
+    const exposed = parseExposedTools(input.exposes.tools, input.exposes.prefix, fail, {}, input.exposes.resources)
+    exposes = {
+      agents,
+      workflows,
+      ...(exposed.prefix !== undefined ? { prefix: exposed.prefix } : {}),
+      ...(exposed.tools.length > 0 ? { tools: exposed.tools } : {}),
+      ...(exposed.resources !== undefined && exposed.resources.length > 0 ? { resources: exposed.resources } : {}),
+    }
   }
 
   let accepts: AppAccepts = { tasks: false }

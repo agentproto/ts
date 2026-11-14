@@ -20,18 +20,23 @@
  * tool calls become a real use case.
  */
 
+import "./sentinel-platform.js"
+
 import { buildLabeledStatsReport } from "./process-stats.js"
+import { loadConfig } from "./config.js"
+import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto"
 import { handleModernRequest } from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import { homedir } from "node:os"
 import { Readable, type Duplex } from "node:stream"
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
-import type { AcpMcpServer } from "@agentproto/acp"
+import type { AcpMcpServer, AgentPromptAnswers } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
@@ -49,34 +54,68 @@ import type { UIMessageChunk } from "ai"
 import type { AgentprotoRawTranscriptRecord } from "@agentproto/transcript-fixtures"
 import type { ConversationStore } from "./conversations.js"
 import { isValidAppEmbedToken } from "./embed-tokens.js"
+import { checkSuccessorDeclaration, handoverLineage } from "./lineage-handover.js"
+import { promptCallerLabel } from "./session-owner.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor, SandboxSessionStats } from "./sessions.js"
 import {
   SessionListFilterError,
+  collapseLineageChains,
   compileSessionListFilters,
   hasSessionListFilters,
   parseSessionListFilterParams,
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
+import {
+  createSessionScreencastReader,
+  serveSessionScreencast,
+  type SessionScreencastReader,
+} from "./session-screencast.js"
+import { classifyAttestation, createAttestationLogGate } from "./claude-session-attest-log.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import { injectProviderKeysIntoEnv } from "./providers-store.js"
 import {
+  CLAUDE_SESSION_HEADER,
+  SHARED_CLAUDE_DESKTOP_ID,
   createSessionMessage,
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
+  replyToUnverifiedSenderPrefix,
+  unverifiedSenderPrefix,
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import { type LedgerLine, type LedgerOutcome, type Level, shadowDeliveryGrant } from "@agentproto/delivery"
+import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
-import { decide, type PermissionContext, type Principal } from "./permissions.js"
+import { buildMessagingPermissionContext } from "./messaging-context.js"
+import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
+import { delegationReport, type DelegationGateMode, DEFAULT_DELEGATION_GATE_MODE } from "./delegation-gate.js"
+import { profileReport, type ProfileGateMode, DEFAULT_PROFILE_GATE_MODE } from "./profile-gate.js"
+import {
+  stdioMountReport,
+  type StdioMountGateMode,
+  DEFAULT_STDIO_MOUNT_GATE_MODE,
+} from "./stdio-mount-gate.js"
+import type { AllowlistEntry } from "./command-allowlist.js"
+import { spawnAdmissionReport } from "./action-hooks/spawn-admission-counters.js"
+import {
+  ANONYMOUS_SEND_RULE,
+  REPLY_RULE,
+  decide,
+  type PermissionContext,
+  type Principal,
+} from "./permissions.js"
+import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import { setupTunnelProvider, tunnelLogin, tunnelLoginState } from "./tunnel-adapters.js"
-import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
+import { mintSentinelId, type SentinelStore } from "@agentproto/sentinel"
 import {
   deliveryPreferenceFor,
   singleMatch,
@@ -85,19 +124,28 @@ import {
   type SentinelTarget,
   type SentinelProviderHandle,
   type SentinelUntil,
-} from "./sentinel-providers/types.js"
-import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
-import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
+} from "@agentproto/sentinel"
+import { GITHUB_DEFAULT_PR_TYPES } from "@agentproto/sentinel"
+import { autoSelectProviderSlug } from "@agentproto/sentinel"
+import {
+  explainSentinelRoute,
+  listSentinelRoutes,
+  SENTINEL_ROUTE_SITES,
+  shadowSentinelRoute,
+  type SentinelPublicUrl,
+  type SentinelRouteSite,
+  type SentinelRoutingDeps,
+} from "@agentproto/sentinel"
 import { parsePrUrl } from "./review-pr.js"
 import { decodeWhsecSecret, encodeWhsecSecret } from "./webhook-egress/signing.js"
-import { handleSentinelInbound, type SentinelInboundDeps } from "./sentinel-inbound.js"
+import { handleSentinelInbound, type SentinelInboundDeps } from "@agentproto/sentinel"
 import {
   createSentinelWatch,
   cancelSentinelWatch,
   sentinelView,
   sentinelViewWithDelivery,
   type SentinelWatchInput,
-} from "./sentinel-tools.js"
+} from "@agentproto/sentinel"
 import {
   followView,
   removeSessionFollow,
@@ -121,9 +169,14 @@ export interface SentinelHttpDeps {
   /** Enables `POST /inbound/sentinel-<hookKey>` (push providers). Without it
    *  that path falls through to the ordinary inbound-endpoint lookup. */
   runtime?: SentinelInboundDeps["runtime"]
+  /** Shadow signal routing: stamps `POST /sentinels` decisions and backs
+   *  `GET /sentinels/routes[/explain]`. Never changes the provider used. */
+  routing?: SentinelRoutingDeps
+  /** Public-URL source, for replaying the legacy choice in `explain`. */
+  publicUrl?: () => SentinelPublicUrl | undefined
 }
-import type { CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
-import type { SentinelDeliveryStatus } from "./sentinel-webhook-outbox.js"
+import type { CancelTombstoneStore } from "@agentproto/sentinel"
+import type { SentinelDeliveryStatus } from "@agentproto/sentinel"
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
@@ -134,7 +187,14 @@ import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
-import { appLinkToolCallAuth, appLinkTunnelBypass, logAppLinkAccess } from "./app-link-gate.js"
+import {
+  appLinkApprovalRequest,
+  appLinkSessionReadAuth,
+  appLinkToolCallAuth,
+  appLinkTunnelBypass,
+  isSameOriginRequest,
+  logAppLinkAccess,
+} from "./app-link-gate.js"
 import { authorizeAppLink } from "./app-link-auth.js"
 import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 import { handleA2aTaskRequest, type A2aTaskHttpConfig } from "./a2a-task-http.js"
@@ -260,6 +320,7 @@ import type {
   DefaultsAdapterAuthConfig,
   AdapterAuthDescriptor,
   ResolvedAuthSpec,
+  SpawnDefaultsConfig,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
 import type { ResolvedSessionSkill } from "./skill-imports.js"
@@ -269,12 +330,14 @@ import {
   persistCheckpoint,
   renderCheckpointPrompt,
 } from "./context-checkpoint.js"
-import { computeContextPct } from "./context-continuity.js"
+import { buildOccurrenceKey } from "./action-hooks/occurrence-key.js"
+import { computeContextPct, layerContextSettings, withContextPolicy } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
-import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { spawnAgentSession, resolveAccessProfileAuth, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
-import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
+import { CREDENTIAL_RELAY_PATH, grantRelayedCredential, parseCredentialRelayRequest } from "./credential-relay.js"
+import { CLOUD_ADAPTER_PLACEHOLDER } from "@agentproto/cloud-agent"
 import { stripAnsi } from "./agent-tools.js"
 import {
   restartAgentSession,
@@ -284,8 +347,10 @@ import {
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
-import { clerkHooksInputSchema } from "./clerk-hook-config.js"
+import { clerkHooksInputSchema } from "@agentproto/clerk"
 import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
+import { ROLE_ALIAS_DEPRECATION } from "./agent-ref.js"
+import { ADAPTER_FIELD_DEPRECATION, adapterDeprecation } from "./harness-alias.js"
 import {
   deleteUserPreset,
   deriveRecentSpawnConfigs,
@@ -300,12 +365,14 @@ import {
   updateBundle,
   deleteBundle,
   danglingImports,
+  effectiveBundles,
   BundleValidationError,
   type Bundle,
 } from "./bundles.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
+import { MAX_PLACEMENT_RUNGS, placementInputSchema } from "./placement-ladder.js"
 import { modelPolicyInputSchema, normalizeModelPolicy } from "./model-policy.js"
 import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
@@ -316,6 +383,7 @@ import {
 } from "./spawn-field-schemas.js"
 import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import { readSandboxLedger, recordSandboxLiveness } from "./sandbox-ledger.js"
+import { probeEgressSlots, readEgressHealth, sandboxEgressProbeInputSchema } from "./egress-health-report.js"
 import {
   execSandboxCommand,
   sandboxExecChoicesFromInput,
@@ -328,8 +396,14 @@ import {
   sessionWorktreeScope,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
-import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
-import { withBranchGcApplySummary, type BranchGcKind, type BranchGcRunner, type BranchGcVerdictRecorder } from "./branch-gc.js"
+import { livingSessionCwds, parseExpectedPlan, type WorktreeGcRunner } from "./worktree-gc.js"
+import {
+  withBranchGcApplySummary,
+  type BranchGcKind,
+  type BranchGcOperatorApprover,
+  type BranchGcRunner,
+  type BranchGcVerdictRecorder,
+} from "./branch-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -338,6 +412,29 @@ import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
 import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
 import { writeSseHead } from "./sse-headers.js"
 import { parseStopOutcome } from "./session-outcome.js"
+import { SESSION_TOKEN_HEADER, verifySessionToken } from "./session-credentials.js"
+import {
+  SESSION_TOKEN_ADAPTERS,
+  type SessionTokenMode,
+} from "./identity-defaults.js"
+import {
+  addIdentityTotals,
+  emptyIdentityCounters,
+  emptyIdentityTotals,
+  loadIdentityObservations,
+  saveIdentityObservations,
+  IDENTITY_BOOTS_MAX,
+  type ClaimOnlyClass,
+  type IdentityBoot,
+  type IdentityCounters,
+  type IdentityKind,
+  type IdentityTotals,
+} from "./identity-observations.js"
+import {
+  claimClassOf,
+  spawnProofReport,
+  type RequireProofAction,
+} from "./proof-gate.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -346,18 +443,11 @@ import {
   AuthProfileValidationError,
   type CostBudget,
 } from "@agentproto/auth"
+import { publicSessionDescriptor } from "./session-descriptor-public.js"
 
-/** HTTP-safe descriptor projection. The registry retains resume env for PTY
- * reattachment; public session responses must not serialize it. Kept local
- * here because session-tools imports this module.
- * The AGENT.md system-prompt text (`appendSystemPrompt`) is kept for restart
- * re-application only and is not echoed either. */
-function sessionDescriptorForHttp(
-  session: SessionDescriptor,
-): Omit<SessionDescriptor, "ptyResumeEnv" | "appendSystemPrompt"> {
-  const { ptyResumeEnv: _privateResumeEnv, appendSystemPrompt: _privateSystemPrompt, ...publicDescriptor } = session
-  return publicDescriptor
-}
+/** HTTP-safe descriptor projection: the shared public projection (no resume
+ * env, no AGENT.md system prompt, mount secrets redacted). */
+const sessionDescriptorForHttp = publicSessionDescriptor
 
 /** `?fields=a,b,c` allowlist for the sessions routes — the HTTP twin of the
  *  `session_list` MCP tool's `fields`. Unknown names are ignored; `id` is
@@ -373,12 +463,26 @@ function parseSessionFields(params: URLSearchParams): ReadonlySet<string> | unde
   return new Set(["id", ...names])
 }
 
+/** Heavy LIVE-only fields omitted from the default `GET /sessions` list
+ *  body. They are not routing/identity data — a list consumer that really
+ *  needs one asks for it with `?fields=`, or reads the per-session
+ *  descriptor. Keeping them out of the list is what stops the registry
+ *  listing from re-serializing every session's whole slash-command table. */
+const SESSION_LIST_OMIT_FIELDS = new Set<string>(["availableCommands"])
+
 function projectSessionForHttp(
   session: SessionDescriptor,
   fields: ReadonlySet<string> | undefined,
+  omit: ReadonlySet<string> = SESSION_LIST_OMIT_FIELDS,
 ): Record<string, unknown> {
   const pub = sessionDescriptorForHttp(session) as unknown as Record<string, unknown>
-  if (!fields) return pub
+  if (!fields) {
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(pub)) {
+      if (!omit.has(key)) out[key] = value
+    }
+    return out
+  }
   const out: Record<string, unknown> = {}
   for (const key of fields) {
     if (key in pub && pub[key] !== undefined) out[key] = pub[key]
@@ -603,11 +707,15 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  `commandSandbox: "off"`) and, on claude-code, registers the writable
      *  zones as `additionalDirectories`. Only passed to adapters whose
      *  resolver entry sets `supportsFsZones`. */
-    fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[] }
+    fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[]; unreadable?: string[] }
     /** Don't load the host repo's CLAUDE.md/AGENTS.md above the session cwd
      *  (claude-code: `claudeMdExcludes`). Only passed to adapters whose
      *  resolver entry sets `supportsHostContextIsolation`. */
     isolateHostContext?: boolean
+    /** Command line of the projected Claude Code PreCompact hook
+     *  (`defaults.nativeHooks`), forwarded to the driver's
+     *  `start({ preCompactCommand })`. Set only for local claude-code spawns. */
+    preCompactCommand?: string
     /** Resolved imported skills to deliver into this session's isolated
      *  config dir — forwarded verbatim to the driver's
      *  `start({ sessionSkills })` (see `AgentCliStartOptions.sessionSkills`).
@@ -627,6 +735,15 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  warning when that flag is absent/false, so the text is never
      *  silently dropped. */
     appendSystemPrompt?: string
+    /** AIP-72 native-dir inject: the session's in-force items plus their
+     *  system-prompt digest as the driver's fallback, forwarded verbatim to
+     *  `start({ memoryProjection })` (see
+     *  `AgentCliStartOptions.memoryProjection`). Set only for an adapter
+     *  whose `memoryInject` is `native-dir`. */
+    memoryProjection?: {
+      items: readonly import("@agentproto/memory").MemoryDocument[]
+      digest?: string
+    }
   }): Promise<AgentSessionLike>
   /** True when `startSession` honours `fsZones` (native tools confined by the
    *  OS sandbox). Omitted/false ⇒ an app-boundary spawn on this adapter gets
@@ -670,6 +787,18 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  ordinary spawn fields instead (`agent-projection.ts`). An option merely
    *  NAMED `agent` (antigravity's `agy` agent name) is not this. */
   agentManifestOption?: string
+  /** Manifest-declared AIP-72 `capabilities.memory.inject` (AIP-45). Read
+   *  by the spawn digest (`memory-digest.ts`): `native-dir` gets the native
+   *  projection (`startSession({ memoryProjection })`, the driver falls back
+   *  to the system prompt); `system-prompt` gets the digest through the
+   *  system-prompt channel when there is one; absent and `none` get no
+   *  digest (AIP-72 section 9, step 3). */
+  memoryInject?: "native-dir" | "system-prompt" | "none"
+  /** Manifest-declared AIP-72 `capabilities.memory.capture`. `native-dir-diff`
+   *  makes the daemon diff the session's projected native memory dir at
+   *  turn end and exit and write what changed as proposals
+   *  (`memory-capture.ts`). */
+  memoryCapture?: "native-dir-diff" | "none"
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes
@@ -921,6 +1050,22 @@ export type CatalogModelsLister = (
   query: CatalogModelsQuery,
 ) => Promise<CatalogModelsResponse>
 
+function agentprotoHome(): string {
+  return process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+}
+
+function urgencyLevel(urgency: MessageUrgency): Level {
+  if (urgency === "fyi") return 1
+  if (urgency === "next-turn") return 2
+  return 3
+}
+
+function messageOutcome(result: { queued: boolean; delivered?: { via: string } | null; refused?: "inbox-full" }): LedgerOutcome {
+  if (result.refused !== undefined) return "dropped"
+  if (result.queued) return "queued"
+  return result.delivered?.via === "inbox" ? "inbox" : "delivered"
+}
+
 export interface AuthOptions {
   mode: "none" | "bearer"
   token?: string
@@ -937,6 +1082,14 @@ export interface RuntimeHttpServerOptions {
   port: number
   bind?: string
   auth?: AuthSource
+  /**
+   * Heap diagnostics (E99), behind the operator-only `GET /debug/heap` and
+   * `POST /debug/heap-snapshot`. Absent ⇒ both routes 404.
+   */
+  heapDiagnostics?: {
+    report(): import("./heap-diagnostics.js").HeapReport
+    snapshot(): import("./heap-diagnostics.js").HeapSnapshotResult
+  }
   /**
    * Per-request McpServer factory.
    *
@@ -998,10 +1151,19 @@ export interface RuntimeHttpServerOptions {
    * `denyTools` (a name on both is excluded).
    */
   /**
+   * `profile`, when present, is parsed from the request's `?profile=core,apps`
+   * query string (see `handleMcp` below): named MCP surface profiles
+   * (tool-profiles.ts). The query wins over the gateway's boot-time
+   * `defaults.mcp.profile`; an absent/unknown query falls through to that
+   * default, and neither naming a profile means `full` (every tool, the
+   * pre-profile behaviour). `denyTools` still wins over a profile.
+   */
+  /**
    * `surface`, when present, is parsed from the request's `?surface=<name>`
    * query string (see `handleMcp` below). Today's only value,
-   * `"approval-cards"`, is the ONLY way `approval_card_decide` and any
-   * `ui://agentproto/approval/<id>` card resource are ever registered — the
+   * `"approval-cards"`, is the ONLY way `approval_card_decide`, `approval_pending` and any
+   * `ui://agentproto/approval/<id>` card resource are ever registered, and it is
+   * a cards-only server (none of the root tools, no deferral wrapper) — the
    * plain root `/mcp` and every `callerSessionId`-carrying request (a
    * daemon-spawned session, including agent-CLI sessions that don't honour
    * `_meta.ui.visibility`) never get them, full stop. `handleMcp` refuses
@@ -1016,6 +1178,15 @@ export interface RuntimeHttpServerOptions {
     deferred?: boolean,
     allowTools?: ReadonlySet<string>,
     surface?: string,
+    /** The session a valid session token on the request was minted for. */
+    credentialSessionId?: string,
+    /** `?profile=` names for this request (tool-profiles.ts). Undefined
+     *  falls through to the gateway's `defaults.mcp.profile`; the query
+     *  wins when it names at least one known profile. */
+    profile?: readonly string[],
+    /** Public base (origin + optional prefix) this request reached the daemon
+     *  at, from `resolvePublicBase`; panel html bakes it in. */
+    requestBaseUrl?: string,
   ) => Promise<McpServer>
   /**
    * Optional — when wired, every `/mcp` request carrying a
@@ -1032,6 +1203,20 @@ export interface RuntimeHttpServerOptions {
    * read per request). A seam for tests.
    */
   resolveMessagingDefaults?: () => Promise<ResolvedMessagingDefaults>
+  /** Append-only delivery ledger for `POST /sessions/:id/messages` (tests).
+   *  Default `<agentprotoHome()>/delivery-ledger.jsonl`. */
+  ledgerPath?: string
+  /** Resolver for `defaults.tasks.operatorDelegates` used by `GET /permissions/grants`. A seam for tests. */
+  resolveOperatorDelegates?: () => Promise<string[]>
+  /** Resolver for `defaults.spawn.delegationGate` used by `GET /permissions/grants`. A seam for tests. */
+  resolveDelegationGateMode?: () => Promise<DelegationGateMode>
+  /** Resolver for `defaults.spawn.profileGate` used by `GET /permissions/grants`. A seam for tests. */
+  resolveProfileGateMode?: () => Promise<ProfileGateMode>
+  /** Resolver for `defaults.spawn.stdioMountGate` used by `GET /permissions/grants`. A seam for tests. */
+  resolveStdioMountGateMode?: () => Promise<StdioMountGateMode>
+  /** Workspace command allowlist loader for the stdio mount gate, wired by
+   *  the host with the SAME workspace `command_execute` gates against. */
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -1215,6 +1400,10 @@ export interface RuntimeHttpServerOptions {
   /** Optional — mirrors `RegisterSessionToolsOptions.recordBranchGcVerdict`.
    *  When wired, enables `POST /branches/gc/verdict` + `branch_gc_verdict`. */
   recordBranchGcVerdict?: BranchGcVerdictRecorder
+  /** Optional — when wired, enables `POST /branches/gc/approve`, the
+   *  operator approval behind `agentproto branch gc approve`. Operator only:
+   *  the route demands the per-boot bearer and refuses any session identity. */
+  approveBranchGcVerdict?: BranchGcOperatorApprover
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
@@ -1335,6 +1524,16 @@ export interface RuntimeHttpServerOptions {
    *  (`approvals.telegramBotSecret` in config). Absent ⇒ the channel is
    *  off — the route always 403s. Only read when `approvals` is wired. */
   approvalsTelegramBotSecret?: string
+  /** Telegram user ids allowed to read and decide one approval through an
+   *  approval link (`approvals.humanTelegramIds` in config, digits only).
+   *  Empty/absent ⇒ approval links are off: `GET /approvals/:id` and
+   *  `POST /approvals/:id/decision/telegram` refuse every link token. */
+  approvalsHumanTelegramIds?: readonly string[]
+  /** The folder an approval's files are relative to, for
+   *  `GET /approvals/:id/attachments[/:name]` (same resolver as the Telegram bridge). */
+  approvalsAttachmentDir?: (
+    record: import("./approvals/types.js").ApprovalRecord,
+  ) => string | undefined | Promise<string | undefined>
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -1348,6 +1547,35 @@ export interface RuntimeHttpServerOptions {
    *  `GET /routines` (routine DEFINITIONS). Without it `/routine-defs/*`
    *  404s and `GET /routines` 404s. */
   routineRegistrar?: import("./routine-registrar.js").RoutineRegistrar
+  /** Optional — when wired, exposes `GET /reactions` with the reaction
+   *  runner's health read model and the wiring's current live/refused set.
+   *  Without it the route 404s. */
+  reactions?: {
+    health(): import("./action-hooks/reaction-runner.js").ReactionHealth
+    wiring?(): { active: string[]; refused: Array<{ bindingId: string; error: string }> }
+  }
+  /** Optional - when wired, every `/mcp` request and every route that reads
+   *  the caller identity is OBSERVED (verified / mismatch / invalid_token /
+   *  claim_only / anonymous, see `observeCallerIdentity`), and `GET /identity`
+   *  serves the counters. `mode` is `defaults.identity.sessionTokens`, read
+   *  per request; `"off"` observes nothing. In `"shadow"` observation never
+   *  changes how a request is handled; `"enforce"` refuses the classes
+   *  `enforceCallerIdentity` lists. Without it the route 404s. `observations`
+   *  persists the totals across restarts, so a restart adds to them and
+   *  `since` stays the first boot recorded. */
+  identity?: {
+    mode(): SessionTokenMode | Promise<SessionTokenMode>
+    /** The actions currently listed in `defaults.identity.requireProof`.
+     *  Defaults to reading config; a test pins it through this seam. */
+    resolveRequireProof?():
+      | readonly RequireProofAction[]
+      | Promise<readonly RequireProofAction[]>
+    /** Persist the counters across restarts to `path` (see identity-observations.ts).
+     *  Omitted ⇒ in-memory only, as before. `flushMs` is the debounce of the
+     *  periodic write (default 30000); the totals are also written once at start
+     *  and on `stop()`. */
+    observations?: { path: string; flushMs?: number }
+  }
   /** Optional — when wired, exposes /workflows/* routes for starting and
    *  managing background workflow runs (stage-barrier parallel steps).
    *  Same service the MCP `workflow_start/status/cancel/
@@ -1380,6 +1608,11 @@ export interface RuntimeHttpServerOptions {
    *  index.ts hands `registerAppTools`; omitted ⇒ tool-call dispatch reports
    *  "not enabled", the UI route still serves. */
   appToolCallDeps?: AppToolCallDeps
+  /** The daemon's single screencast reader, shared with the
+   *  `session_screencast_frame` tool so both draw on one frame cache and one
+   *  capture cap. Omitted → the server builds its own from
+   *  `appToolCallDeps.callImportedTool`. */
+  sessionScreencast?: SessionScreencastReader
   /** Optional — backs `POST /apps/:appId/link-auth` (AIP-53 link-token
    *  scoping, app-link-auth.ts): the Telegram bot credential store a
    *  link's `initData` is verified against. Omitted ⇒ the route reports
@@ -1394,6 +1627,13 @@ export interface RuntimeHttpServerOptions {
    *  manifest loader; defaults suit a real daemon. Needs `appRegistry` and
    *  `appToolCallDeps.dispatchTool` to be wired. */
   a2aTasks?: A2aTaskHttpConfig
+  /** Telegram permission-tap interceptor (see `permission-telegram-bridge.ts`).
+   *  Consulted only on signed (`secret`) telegram inbound endpoints whose
+   *  alias equals `alias`; a handled update never reaches inbound routing. */
+  permissionCallbacks?: {
+    alias: string
+    handleUpdate: (update: unknown) => Promise<{ handled: boolean }>
+  }
   /** Optional — when wired, enables `POST /inbound`, the push-ingress
    *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
    *  (e.g. from agentpush's Telegram webhook) routes into the session
@@ -1470,12 +1710,16 @@ export interface RuntimeHttpServerOptions {
     sandboxSessions?: () => SandboxSessionStats
     /** Installed-app registry records that loaded partial/unusable. Kept in
      *  sync with the `daemon_health` MCP tool's `appRegistryIssues`. */
+    warnings?: () => readonly { kind: string; sessionId: string; message: string }[]
     appRegistryIssues?: () => readonly {
       kind: string
       appId: string | null
       dir: string | null
       problems: readonly string[]
     }[]
+    /** Self-heals the app registry applied. Kept in sync with the
+     *  `daemon_health` MCP tool's `appRegistryRepairs`. */
+    appRegistryRepairs?: () => readonly { kind: string; appId: string; from: string; to: string; at: string }[]
   }
 }
 
@@ -1635,13 +1879,18 @@ export async function startHttpServer(
    * `appLinkTunnelBypass`): a valid Telegram-identity-bound link-SESSION
    * token (minted by `app_link_mint`, exchanged via `POST
    * /apps/:appId/link-auth`) is accepted ONLY for that token's own `POST
-   * /apps/:appId/tool-call` and its own session's three read routes
-   * (`GET /sessions/:id`, `/events`, `/events/stream`). Unlike `?et=`, this
-   * one IS meant to cross the tunnel boundary — it's the whole point of a
-   * link sent over Telegram — but it carries no more than that single
-   * session's read access plus whatever the app's own `ui.toolScope`
-   * grants, enforced again downstream (`dispatchAllowlistedAppTool`'s
-   * scoped mode for tool-call; the sessionId match itself for reads).
+   * /apps/:appId/tool-call` and its own session's read routes
+   * (`GET /sessions/:id`, `/events`, `/events/stream`, `/capabilities`,
+   * `/screencast`, `/screencast.jpg`, `/screencast.mjpg`), and for
+   * `GET /approvals/:id` + `POST /approvals/:id/decision/telegram`, where
+   * the approvals handler enforces the `approvalId` claim and the
+   * `approvals.humanTelegramIds` allow-list itself.
+   * Unlike `?et=`, this one IS meant to cross the tunnel boundary (it's the
+   * whole point of a link sent over Telegram) but it carries no more than
+   * that single session's read access plus whatever the app's own
+   * `ui.toolScope` grants, enforced again downstream
+   * (`dispatchAllowlistedAppTool`'s scoped mode and per-tool ownership
+   * checks for tool-call; the sessionId match itself for reads).
    */
   function tunnelBearerAllowed(
     req: IncomingMessage,
@@ -1663,6 +1912,9 @@ export async function startHttpServer(
     // report up to its host parent. POST-only, and the token gate inside
     // the route refuses anything without a valid token.
     if (method === "POST" && path === PARENT_RELAY_PATH) return true
+    // CREDENTIAL RELAY: same token-authenticated exemption; the route only
+    // answers for a profile the grant's allowlist names.
+    if (method === "POST" && path === CREDENTIAL_RELAY_PATH) return true
     const header = req.headers.authorization
     if (header === `Bearer ${auth.token}`) return true
     const urlStr = req.url ?? ""
@@ -1874,15 +2126,62 @@ export async function startHttpServer(
     )
   }
 
+  // Bureau-backed `.jpg` for a session id that is not a chrome-live browser
+  // descriptor (one cache per server, see session-screencast.ts).
+  const sessionScreencast =
+    opts.sessionScreencast ??
+    createSessionScreencastReader({
+      callImportedTool: opts.appToolCallDeps?.callImportedTool,
+    })
+
   /**
    * Returns true when this `path` + `method` is a mutating /sessions/*
    * route that should require the per-boot token. Kept narrow: GETs
    * (list, get, SSE stream) stay open for read-only telemetry from
    * existing tools that haven't learned about the token yet.
    */
+  function isScreencastSessionsRoute(path: string): boolean {
+    return /^\/sessions\/[^/]+\/screencast(?:\.(?:jpg|mjpg))?$/.test(path)
+  }
+
   function isMutatingSessionsRoute(method: string, path: string): boolean {
     if (!path.startsWith("/sessions")) return false
     if (method === "POST" || method === "DELETE" || method === "PUT" || method === "PATCH") {
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Gate for a non-GET request to a route family outside `/sessions/*`
+   * (`/remote/*`, `/tunnels*`): the same checks the mutating `/sessions/*`
+   * routes get. A foreign browser Origin is refused unless it carries the
+   * bearer, then the per-boot token (or an allowlisted Origin) is required,
+   * and a POST / PUT / PATCH must be JSON so a cross-origin `text/plain`
+   * "simple" request, which needs no preflight, cannot reach the handler.
+   * Returns true when it already wrote a refusal.
+   */
+  function refuseUnlessAuthorizedWrite(
+    req: IncomingMessage,
+    res: ServerResponse,
+    label: string,
+  ): boolean {
+    if ((req.method ?? "GET") === "GET") return false
+    if (guardBrowserOrigin(req, res)) return true
+    const gate = checkSessionsToken(req)
+    if (gate !== "ok") {
+      rejectUnauthorizedSession(req, res, gate)
+      return true
+    }
+    const method = req.method
+    if ((method === "POST" || method === "PUT" || method === "PATCH") && !isJsonContentType(req)) {
+      res.writeHead(415, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "unsupported_media_type",
+          message: `Writes to ${label} must send \`content-type: application/json\`.`,
+        }),
+      )
       return true
     }
     return false
@@ -1940,6 +2239,41 @@ export async function startHttpServer(
   }
 
   /**
+   * The SDK's stateless `StreamableHTTPServerTransport` refuses a POST whose
+   * `Accept` header does not advertise BOTH `application/json` and
+   * `text/event-stream` with a 406, then answers in SSE mode by default. An
+   * MCP Apps host that opens the transport the modern way (Accept:
+   * application/json, no SSE) is bounced before its tool call ever runs, and
+   * a host that reads the SSE envelope as strict JSON-RPC treats the closed
+   * stream as a transport fault (the observed "Transport closed" on a
+   * follow-up `tools/call`). For that JSON-only Accept, `serveMcp` switches
+   * the transport to a plain JSON body (`enableJsonResponse`) and widens the
+   * header here so the SDK's check passes. Legacy clients that already accept
+   * `text/event-stream` keep the SSE path untouched. Rewriting both the
+   * parsed header and the raw pair mirrors
+   * {@link coerceUnsupportedProtocolVersionHeader}; `@hono/node-server`
+   * builds its Headers from `req.rawHeaders`, not `req.headers`.
+   *
+   * Returns true when the Accept was JSON-only and had to be widened, which
+   * is the signal `serveMcp` uses to enable the JSON response mode.
+   */
+  function coerceJsonOnlyAccept(req: IncomingMessage): boolean {
+    const headerValue = req.headers["accept"]
+    const accept = Array.isArray(headerValue) ? headerValue.join(",") : headerValue
+    if (typeof accept !== "string") return false
+    if (!/application\/json/i.test(accept) || /text\/event-stream/i.test(accept)) return false
+    const widened = `${accept}, text/event-stream`
+    req.headers["accept"] = widened
+    const rawHeaders = req.rawHeaders
+    for (let i = 0; i < rawHeaders.length - 1; i += 2) {
+      if (rawHeaders[i]?.toLowerCase() === "accept") {
+        rawHeaders[i + 1] = widened
+      }
+    }
+    return true
+  }
+
+  /**
    * Drive one MCP request over a fresh server+transport pair, per the
    * SDK's stateless pattern. Sharing either across requests breaks after
    * the first one because `Protocol.connect` rejects re-attachment.
@@ -1956,8 +2290,13 @@ export async function startHttpServer(
     const rawVersionHeader = req.headers["mcp-protocol-version"]
     const clientProtocolVersion = Array.isArray(rawVersionHeader) ? rawVersionHeader[0] : rawVersionHeader
     coerceUnsupportedProtocolVersionHeader(req)
+    // JSON-only Accept widening + JSON response mode are POST-only: a GET's
+    // SSE stream is its own negotiation and must keep the SDK's 406 for a
+    // client that doesn't accept `text/event-stream`.
+    const jsonResponse = req.method === "POST" ? coerceJsonOnlyAccept(req) : false
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      ...(jsonResponse ? { enableJsonResponse: true } : {}),
     })
     // `onerror` is an unofficial SDK hook — guard before assigning so
     // a future SDK rename doesn't silently drop transport error logs.
@@ -2036,6 +2375,19 @@ export async function startHttpServer(
     return names.length > 0 ? new Set(names) : undefined
   }
 
+  /** `?profile=core,apps`: named MCP surface profiles (tool-profiles.ts).
+   *  Comma-separated and order-independent; validation/fallback lives in
+   *  `resolveToolProfileSelection` (index.ts), so an unknown name here is
+   *  passed through rather than silently treated as a full surface. */
+  function parseProfileQuery(url: string): string[] | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("profile")
+    if (!raw) return undefined
+    const names = raw.split(",").map(s => s.trim()).filter(Boolean)
+    return names.length > 0 ? names : undefined
+  }
+
   /** Mirrors `parseToolListQuery` for the `callerSessionId` query param
    *  (PR 7 / Gap 7) — see `mcpServerFactory`'s doc for the wire contract. */
   function parseCallerSessionIdQuery(url: string): string | undefined {
@@ -2068,13 +2420,210 @@ export async function startHttpServer(
     return trimmed
   }
 
+  /** `x-agentproto-claude-session`: the real Claude Code session id, set by the
+   *  stdio bridge from `CLAUDE_CODE_SESSION_ID`. Same charset as `cc:` addresses. */
+  function parseClaudeSessionHeader(req: IncomingMessage): string | undefined {
+    const raw = req.headers[CLAUDE_SESSION_HEADER]
+    const value = (Array.isArray(raw) ? raw[0] : raw)?.trim()
+    return value && /^[A-Za-z0-9._-]{1,128}$/.test(value) ? value : undefined
+  }
+
   /** The caller's session id for this request: the trusted query claim, else
    *  the identity header (same trust rules; see `externalClaimTrusted`). */
   function resolveCallerSessionId(req: IncomingMessage): string | undefined {
     const fromQuery = parseCallerSessionIdQuery(req.url ?? "")
+    // The bridge's attested Claude Code session wins over the shared
+    // `claude-desktop` identity (and over no identity): the call is then the
+    // real `cc:<id>` row, the same one the hooks touch. Any other claimed
+    // identity (a daemon session, a different external id) is left alone.
+    if ((fromQuery === undefined || fromQuery === SHARED_CLAUDE_DESKTOP_ID) && externalClaimTrusted(req)) {
+      const attested = parseClaudeSessionHeader(req)
+      if (attested) return `cc:${attested}`
+    }
     if (fromQuery) return fromQuery
     if (!externalClaimTrusted(req)) return undefined
     return parseCallerSessionIdHeader(req)
+  }
+
+  // ── Caller identity observation (ts#2165 step 5) ──────────────────
+  // Counts, per process, how callers identify themselves: a daemon-minted
+  // session token (`SESSION_TOKEN_HEADER`) that backs the claim, one that
+  // contradicts it, an unknown token, a bare claim, or nothing. In shadow
+  // mode NOTHING here changes how a request is handled; in enforce mode
+  // `enforceCallerIdentity` refuses from the same classification, so the
+  // counters and the refusals can never disagree.
+  const identityCounters = emptyIdentityCounters()
+  const identityRefused = emptyIdentityCounters()
+  const identityByRoute: Record<string, IdentityCounters> = {}
+  const claimOnlyByClass: Record<ClaimOnlyClass, number> = { external: 0, delivered: 0, undelivered: 0, unknown: 0 }
+  const identityObservations = opts.identity?.observations
+  const identityBase = identityObservations ? loadIdentityObservations(identityObservations.path) : undefined
+  const identityBootedAt = new Date().toISOString()
+  /** The first boot ever recorded (from the file), else this boot. */
+  const identitySince = identityBase?.since ?? identityBootedAt
+  const identityBoots: IdentityBoot[] = [
+    ...(identityBase?.boots ?? []),
+    { at: identityBootedAt, ...(opts.meta.build?.sha ? { build: opts.meta.build.sha } : {}) },
+  ].slice(-IDENTITY_BOOTS_MAX)
+  let identityDirty = false
+  /** Persisted base plus this process's live counters. */
+  function identityTotals(): IdentityTotals {
+    return addIdentityTotals(identityBase?.totals ?? emptyIdentityTotals(), {
+      counters: identityCounters,
+      refused: identityRefused,
+      byRoute: identityByRoute,
+      claimOnlyByClass,
+    })
+  }
+  function flushIdentityObservations(): void {
+    if (!identityObservations) return
+    saveIdentityObservations(identityObservations.path, {
+      version: 1,
+      since: identitySince,
+      totals: identityTotals(),
+      boots: identityBoots,
+    })
+    identityDirty = false
+  }
+  flushIdentityObservations()
+  const identityFlushTimer = identityObservations
+    ? setInterval(() => {
+        if (identityDirty) flushIdentityObservations()
+      }, identityObservations.flushMs ?? 30_000)
+    : undefined
+  identityFlushTimer?.unref()
+  const identityLogged = new Set<string>()
+  const identityObserved = new WeakMap<IncomingMessage, Promise<IdentityObservation | undefined>>()
+  let identityClassifyFailureLogged = false
+
+  /** What a claim without token names (AIP-46 rules 7 and 8): an external
+   *  label, a host-spawned session the token was delivered to, one it could
+   *  not be delivered to (adapter or placement, or spawned while `off`), or
+   *  an id the registry does not know. */
+  function claimOnlyClassOf(claim: string): ClaimOnlyClass {
+    return claimClassOf(claim, opts.sessions?.get(claim))
+  }
+
+  /** Observe one request's caller identity, at most once per request (a
+   *  second call returns the first classification). Never throws and never
+   *  touches the request or the response; no token is ever logged. */
+  function observeCallerIdentity(req: IncomingMessage, route: string): Promise<IdentityObservation | undefined> {
+    let observed = identityObserved.get(req)
+    if (!observed) {
+      observed = classifyCallerIdentity(req, route)
+      identityObserved.set(req, observed)
+    }
+    return observed
+  }
+
+  async function classifyCallerIdentity(req: IncomingMessage, route: string): Promise<IdentityObservation | undefined> {
+    try {
+      if (!opts.identity) return undefined
+      // The raw claim, whatever its trust: the point is to count claims.
+      const claim = parseCallerSessionIdQuery(req.url ?? "") ?? parseCallerSessionIdHeader(req)
+      const rawHeader = req.headers[SESSION_TOKEN_HEADER]
+      const token = (Array.isArray(rawHeader) ? rawHeader[0] : rawHeader)?.trim() || undefined
+      const mode = await opts.identity.mode()
+      if (mode === "off") return undefined
+      const tokenSession = token ? verifySessionToken(token) : undefined
+      const kind: IdentityKind = token
+        ? tokenSession === undefined
+          ? "invalid_token"
+          : claim === undefined || claim === tokenSession
+            ? "verified"
+            : "mismatch"
+        : claim !== undefined
+          ? "claim_only"
+          : "anonymous"
+      const claimClass = kind === "claim_only" && claim !== undefined ? claimOnlyClassOf(claim) : undefined
+      const routeClass = identityRouteClass(route)
+      identityCounters[kind]++
+      identityDirty = true
+      ;(identityByRoute[routeClass] ??= emptyIdentityCounters())[kind]++
+      if (claimClass) claimOnlyByClass[claimClass]++
+      if (kind === "claim_only" || kind === "mismatch" || kind === "invalid_token") {
+        const key = `${kind}|${claim ?? ""}|${route}`
+        if (!identityLogged.has(key) && identityLogged.size < IDENTITY_LOG_KEYS_MAX) {
+          identityLogged.add(key)
+          console.warn(
+            `[identity] ${kind.replace("_", "-")} caller=${claim ?? "-"}` +
+              (kind === "mismatch" ? ` token-session=${tokenSession}` : "") +
+              ` route=${route}` +
+              (claimClass ? ` class=${claimClass}` : ""),
+          )
+        }
+      }
+      return { mode, kind, ...(claimClass ? { claimClass } : {}) }
+    } catch (err) {
+      // Observation must never fail a request. In enforce mode a failure
+      // here is fail-open, so say so once rather than silently not refusing.
+      if (!identityClassifyFailureLogged) {
+        identityClassifyFailureLogged = true
+        console.warn(
+          `[identity] caller classification failed; requests stay unidentified and enforce mode cannot refuse them: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+      }
+      return undefined
+    }
+  }
+
+  /**
+   * The enforce-mode gate (AIP-46 §Session principals). Observes the request
+   * (once) and, when the mode is `"enforce"`, refuses with 403 before the
+   * handler acts: an invalid token (rule 4) and a claim without token naming
+   * a session the token was delivered to (rules 3 and 8) are
+   * `identity_unverified`, a token whose session differs from the claim is
+   * `identity_mismatch` (rule 3). Never refuses an anonymous or verified
+   * caller, an external label (rule 7), or a claim naming a session the
+   * daemon could not deliver a token to (rule 8). Returns true when it
+   * refused. The body names no token, hash or session id.
+   */
+  async function enforceCallerIdentity(req: IncomingMessage, res: ServerResponse, route: string): Promise<boolean> {
+    if (!opts.identity) return false
+    // Read the (cached) mode before classifying: outside enforce mode the
+    // observation stays fire-and-forget, so shadow costs no awaited work.
+    if ((await opts.identity.mode()) !== "enforce") {
+      void observeCallerIdentity(req, route)
+      return false
+    }
+    const obs = await observeCallerIdentity(req, route)
+    if (!obs || obs.mode !== "enforce") return false
+    const refusal =
+      obs.kind === "mismatch"
+        ? {
+            error: "identity_mismatch",
+            message: "the caller session claim names a session other than the one its session token was minted for",
+          }
+        : obs.kind === "invalid_token"
+          ? { error: "identity_unverified", message: "the session token presented is malformed, unknown or revoked" }
+          : obs.kind === "claim_only" && obs.claimClass === "delivered"
+            ? {
+                error: "identity_unverified",
+                message: "the request claims a daemon-spawned session without that session's token",
+              }
+            : undefined
+    if (!refusal) return false
+    identityRefused[obs.kind]++
+    identityDirty = true
+    res.writeHead(403, { "content-type": "application/json" })
+    res.end(JSON.stringify(refusal))
+    return true
+  }
+
+  /** The session a valid session token on the request was minted for. */
+  function credentialSessionOf(req: IncomingMessage): string | undefined {
+    const raw = req.headers[SESSION_TOKEN_HEADER]
+    const token = (Array.isArray(raw) ? raw[0] : raw)?.trim() || undefined
+    return token ? verifySessionToken(token) : undefined
+  }
+
+  /** The routes that read the caller identity get it through this wrapper,
+   *  which observes the request first (once). Each of them is also behind
+   *  `enforceCallerIdentity`, see `IDENTITY_GATED_SESSION_ROUTES`. */
+  function resolveCallerSessionIdObserved(req: IncomingMessage): string | undefined {
+    void observeCallerIdentity(req, (req.url ?? "/").split("?")[0] ?? "/")
+    return resolveCallerSessionId(req)
   }
 
   /** Mirrors `parseCallerSessionIdQuery` for the `origin` query param
@@ -2125,12 +2674,32 @@ export async function startHttpServer(
     return !!qsToken && qsToken === auth.token
   }
 
+  // console.error on purpose: stderr is the daemon.log file (see above).
+  const attestationLog = createAttestationLogGate(line => console.error(line))
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     {
+      const rawHeader = req.headers[CLAUDE_SESSION_HEADER]
+      attestationLog(
+        classifyAttestation({
+          header: Array.isArray(rawHeader) ? rawHeader[0] : rawHeader,
+          query: parseCallerSessionIdQuery(req.url ?? ""),
+          shared: SHARED_CLAUDE_DESKTOP_ID,
+          trusted: externalClaimTrusted(req),
+        }),
+      )
+    }
+    if (await enforceCallerIdentity(req, res, "/mcp")) return
+    {
       const claimed = resolveCallerSessionId(req)
       if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
-        opts.sessions.touchExternal({ id: claimed, host: parseHostQuery(req.url ?? "") })
+        opts.sessions.touchExternal({
+          id: claimed,
+          // An attested `cc:` row is created like the hook does when it is new;
+          // the host label falls back to `claude-desktop` (the hook's host label) if the URL names none.
+          host: parseHostQuery(req.url ?? "") ?? (claimed.startsWith("cc:") ? "claude-desktop" : undefined),
+        })
       }
     }
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
@@ -2138,11 +2707,12 @@ export async function startHttpServer(
     const callerSessionId = resolveCallerSessionId(req)
     const origin = parseOriginQuery(req.url ?? "")
     const deferred = parseDeferredQuery(req.url ?? "")
+    const profile = parseProfileQuery(req.url ?? "")
     const surface = parseSurfaceQuery(req.url ?? "")
     // Security boundary (approval-cards): a daemon-spawned session's
     // self-ref connection (`callerSessionId`) must NEVER reach the
     // approval-cards surface — that surface exists only for a human-facing
-    // MCP Apps host (Claude Desktop via `install-mcp`), and an agent CLI
+    // MCP Apps host (Claude Desktop via `install-mcp --approvals`), and an agent CLI
     // that can read `ui://` resources and call app-only tools would
     // otherwise mint its own approval ticket and self-approve. Refuse
     // outright rather than silently building a card-less server, so a
@@ -2157,7 +2727,17 @@ export async function startHttpServer(
       )
       return
     }
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools, surface)
+    const server = await opts.mcpServerFactory(
+      denyTools,
+      callerSessionId,
+      origin,
+      deferred,
+      allowTools,
+      surface,
+      credentialSessionOf(req),
+      profile,
+      requestHttpBaseUrl(req),
+    )
     await serveMcp(req, res, server, callerSessionId)
   }
 
@@ -2283,6 +2863,11 @@ export async function startHttpServer(
     importId: string,
   ): Promise<void> {
     if (!authorizeMcp(req, res)) return
+    // Same caller carriers as `/mcp` (trusted query claim, else a trusted
+    // identity header). This route does NOT `touchExternal`: an id the daemon
+    // does not know is refused by the imported-call guard, which is the
+    // existing rule for `mcp_imported_call`. No claim stays a host call.
+    const callerSessionId = resolveCallerSessionId(req)
     if (!opts.mcpProxy) {
       res.writeHead(501, { "content-type": "application/json" })
       res.end(
@@ -2353,7 +2938,12 @@ export async function startHttpServer(
           `tool "${request.params.name}" is not available on this import (denyTools/allowTools filter)`,
         )
       }
-      const out = await proxy.callTool(importId, request.params.name, request.params.arguments ?? {})
+      const out = await proxy.callTool(
+        importId,
+        request.params.name,
+        request.params.arguments ?? {},
+        ...(callerSessionId ? [{ callerSessionId }] : []),
+      )
       if (!out.ok) {
         return { content: [{ type: "text", text: out.error }], isError: true }
       }
@@ -2394,7 +2984,9 @@ export async function startHttpServer(
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
+        warnings: opts.meta.warnings?.() ?? [],
         appRegistryIssues: opts.meta.appRegistryIssues?.() ?? [],
+        appRegistryRepairs: opts.meta.appRegistryRepairs?.() ?? [],
         modelCooldowns: opts.meta.modelCooldowns?.() ?? [],
         ...(opts.meta.sandboxSessions ? { sandboxSessions: opts.meta.sandboxSessions() } : {}),
       }),
@@ -3068,6 +3660,7 @@ export async function startHttpServer(
                 }
               : {}),
             routeInboundMessage: opts.routeInboundMessage,
+            ...(opts.permissionCallbacks ? { permissionCallbacks: opts.permissionCallbacks } : {}),
             endpointStore: opts.endpointStore,
             checkSessionsToken,
             rejectUnauthorizedSession,
@@ -3196,15 +3789,86 @@ export async function startHttpServer(
           return
         }
 
+        // CREDENTIAL RELAY: a box-side nested spawn asks THIS daemon to
+        // resolve an auth profile the host owns (the box holds no profiles).
+        // Same per-session relay token as the parent relay; the grant's
+        // allowlist, never the payload, decides which profiles may be billed.
+        // The answer carries a credential: never cached, never logged.
+        // See `credential-relay.ts`.
+        if (path === CREDENTIAL_RELAY_PATH && req.method === "POST") {
+          const json = (status: number, body: unknown): void => {
+            res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" })
+            res.end(JSON.stringify(body))
+          }
+          if (!opts.resolveAgentAdapter) {
+            json(501, { error: "no_adapter_resolver" })
+            return
+          }
+          const header = req.headers[PARENT_RELAY_TOKEN_HEADER]
+          const relayToken = Array.isArray(header) ? header[0] : header
+          if (!relayToken) {
+            json(401, { error: "relay_token_missing", message: "no relay token presented" })
+            return
+          }
+          if (!resolveParentRelayGrant(relayToken)) {
+            json(401, { error: "relay_token_unknown", message: "the relay token is unknown or expired" })
+            return
+          }
+          const credentialRequest = parseCredentialRelayRequest(await readJsonBody(req))
+          if (!credentialRequest) {
+            json(400, { error: "relay_request_invalid", message: "a credential request names an adapter and at least one profile" })
+            return
+          }
+          const granted = await grantRelayedCredential({
+            token: relayToken,
+            request: credentialRequest,
+            resolveAgentAdapter: opts.resolveAgentAdapter,
+            resolveAccessProfileAuth,
+          })
+          if (!granted.ok) {
+            json(granted.status, { error: granted.code, message: granted.message })
+            return
+          }
+          const { ok: _ok, ...resolved } = granted
+          json(200, { ok: true, ...resolved })
+          return
+        }
+
         // Sessions routes — only registered when the gateway was
         // built with a SessionsRegistry. /sessions, /sessions/:id,
         // /sessions/:id/stream (SSE), POST /sessions/:id/kill,
         // DELETE /sessions/:id (forget after exit).
-        if (opts.sessions && path.startsWith("/sessions")) {
-          if (isMutatingSessionsRoute(req.method ?? "GET", path)) {
+        if (opts.sessions && (path.startsWith("/sessions") || path === "/usage/rollup")) {
+          // chrome-live screencast reads stream the pixels of the agent tab
+          // inside the user's own Chrome. Unlike the other read-only GETs they
+          // are gated like a mutating route (bearer / ?token= / allowlisted
+          // Origin / embed token): CORS answers `*` to an untrusted origin, so
+          // without this any web page could fetch a frame from loopback.
+          // A link-session token reads the screencast of its OWN session or of
+          // the browser session named by its `browserSessionId` claim, and
+          // nothing else (`?token=` for an <img>, which cannot send headers);
+          // The tunnel gate already admitted it through the same
+          // `appLinkSessionReadAuth` predicate; this keeps the bearer check
+          // from refusing it a second time.
+          const linkScreencast =
+            isScreencastSessionsRoute(path) &&
+            appLinkSessionReadAuth(req, path, req.method ?? "GET", opts.appLinkKeyPath) !== undefined
+          if (!linkScreencast && (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path))) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
               rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+          }
+          if (isIdentityGatedSessionRoute(req.method ?? "GET", path) && (await enforceCallerIdentity(req, res, path))) {
+            return
+          }
+          const bureauScreencast =
+            req.method === "GET" ? /^\/sessions\/([^/]+)\/screencast\.jpg$/.exec(path) : null
+          if (bureauScreencast) {
+            const wanted = opts.sessions.get(bureauScreencast[1] as string)
+            if (!wanted || wanted.kind !== "browser" || wanted.browserAdapterId !== "chrome-live") {
+              await serveSessionScreencast(res, sessionScreencast, bureauScreencast[1] as string)
               return
             }
           }
@@ -3227,11 +3891,15 @@ export async function startHttpServer(
             opts.webhookNotifier,
             opts.ensureLlmEndpointRunning,
             opts.listAgentAdapters,
+            opts.loadCommandAllowlist,
             opts.deviceMirrorSync,
             opts.mcpObservations,
             opts.cronScheduler,
-            resolveCallerSessionId,
+            resolveCallerSessionIdObserved,
+            credentialSessionOf,
+            externalClaimTrusted,
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
+            opts.ledgerPath,
           )
           if (handled) return
         }
@@ -3271,7 +3939,7 @@ export async function startHttpServer(
         // `all`: enumerate the SAME workspace list `GET /workspaces`
         // reads (`loadWorkspacesConfig`, plus the implicit `default`
         // bucket every daemon has even unregistered), query each one's
-        // provider in parallel, tag every hit with the bucket it came
+        // provider one at a time, tag every hit with the bucket it came
         // from, merge, sort by score desc, and take `topK` overall. A
         // per-bucket provider throw in federated mode is swallowed and
         // that slug listed in `workspacesErrored` — one bad brain must
@@ -3357,7 +4025,9 @@ export async function startHttpServer(
               const result = await brain.getProvider().query({ query: q, topK })
               const hits = result.hits.map(hit => mapHit(hit, workspace))
               res.writeHead(200, { "content-type": "application/json" })
-              res.end(JSON.stringify({ workspace, hits }))
+              // `partial`: the brain's index is still being built (or capped),
+              // so documents not indexed yet cannot appear.
+              res.end(JSON.stringify({ workspace, hits, ...(result.partial ? { partial: true } : {}) }))
             } catch (err) {
               res.writeHead(500, { "content-type": "application/json" })
               res.end(
@@ -3381,19 +4051,25 @@ export async function startHttpServer(
             slugs = [DEFAULT_BUCKET]
           }
 
+          // One brain at a time, never `Promise.all`: on the in-memory
+          // fallback a cold query builds that brain's whole in-process index,
+          // and building every brain at once stacks their peaks (E96: a
+          // federated cold query needed the sum of all brains' heaps). A brain
+          // answering from an incomplete index is listed in
+          // `workspacesPartial`.
           const workspacesErrored: string[] = []
-          const perBrain = await Promise.all(
-            slugs.map(async slug => {
-              try {
-                const brain = opts.brains!.getBrain(slug)
-                const result = await brain.getProvider().query({ query: q, topK })
-                return result.hits.map(hit => mapHit(hit, slug))
-              } catch {
-                workspacesErrored.push(slug)
-                return []
-              }
-            }),
-          )
+          const workspacesPartial: string[] = []
+          const perBrain: Array<Array<ReturnType<typeof mapHit>>> = []
+          for (const slug of slugs) {
+            try {
+              const brain = opts.brains!.getBrain(slug)
+              const result = await brain.getProvider().query({ query: q, topK })
+              if (result.partial) workspacesPartial.push(slug)
+              perBrain.push(result.hits.map(hit => mapHit(hit, slug)))
+            } catch {
+              workspacesErrored.push(slug)
+            }
+          }
           const hits = perBrain
             .flat()
             .sort((a, b) => b.score - a.score)
@@ -3405,6 +4081,7 @@ export async function startHttpServer(
               workspace: "all",
               hits,
               ...(workspacesErrored.length > 0 ? { workspacesErrored } : {}),
+              ...(workspacesPartial.length > 0 ? { partial: true, workspacesPartial } : {}),
             }),
           )
           return
@@ -3548,6 +4225,19 @@ export async function startHttpServer(
                   Number.isFinite(Number(rawActiveMinutes))
                 ? Number(rawActiveMinutes)
                 : undefined
+          let expectedPlan: ReturnType<typeof parseExpectedPlan>
+          try {
+            expectedPlan = parseExpectedPlan("expectedPlan" in obj ? obj.expectedPlan : undefined)
+          } catch (err) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "invalid_expected_plan",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+            return
+          }
           const resolved = await resolveWorktreeQueryRoot({
             repoRoot,
             workspaceSlug,
@@ -3572,6 +4262,10 @@ export async function startHttpServer(
                 ? { noisePaths: obj.noisePaths.filter((p): p is string => typeof p === "string") }
                 : {}),
               ...(activeMinutes !== undefined ? { activeMinutes } : {}),
+              ...(expectedPlan ? { expectedPlan } : {}),
+              ...("reviewedPaths" in obj && Array.isArray(obj.reviewedPaths)
+                ? { reviewedPaths: obj.reviewedPaths.filter((p): p is string => typeof p === "string") }
+                : {}),
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))
@@ -3641,6 +4335,7 @@ export async function startHttpServer(
                 ...(scopes?.length ? { scopes } : {}),
                 ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
                 ...(minLineCoverage !== undefined && Number.isFinite(minLineCoverage) ? { minLineCoverage } : {}),
+                ...(bool("requireOperatorBelowGuard") ? { requireOperatorBelowGuard: true } : {}),
                 ...(anchor ? { anchor } : {}),
               }),
             )
@@ -3701,6 +4396,91 @@ export async function startHttpServer(
             res.writeHead(400, { "content-type": "application/json" })
             res.end(
               JSON.stringify({ error: "invalid_branch_verdict", message: err instanceof Error ? err.message : String(err) })
+            )
+          }
+          return
+        }
+
+        if (path === "/branches/gc/approve" && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          if (!opts.approveBranchGcVerdict) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "branch_gc_approve_not_configured",
+                message: "POST /branches/gc/approve is not enabled — the host must wire `approveBranchGcVerdict`.",
+              })
+            )
+            return
+          }
+          // The operator trust boundary for a guard override (the session
+          // refusal in `branch_gc_verdict` stays as it is). Two checks:
+          //  1. The per-boot bearer from runtime.json (mode 0600), in the
+          //     Authorization header ONLY: no loopback bypass, no allowlisted
+          //     Origin, no `?token=`, no embed token. That is what the CLI's
+          //     daemon client sends; a browser page cannot.
+          //  2. No session identity at all: a valid session token, or ANY
+          //     caller-session claim (query or header, trusted or not), is
+          //     refused. The CLI forwards `$AGENTPROTO_SESSION_ID` as that
+          //     header, so `agentproto branch gc approve` run from inside a
+          //     daemon-spawned session is refused here, not just by the CLI.
+          if (!opts.token || req.headers.authorization !== `Bearer ${opts.token}`) {
+            res.writeHead(401, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "operator_bearer_required",
+                message: `POST /branches/gc/approve requires \`Authorization: Bearer <token>\`. ${SESSIONS_TOKEN_HINT}`,
+              })
+            )
+            return
+          }
+          if (
+            credentialSessionOf(req) !== undefined ||
+            parseCallerSessionIdQuery(req.url ?? "") !== undefined ||
+            parseCallerSessionIdHeader(req) !== undefined
+          ) {
+            res.writeHead(403, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "operator_requires_operator_surface",
+                message: "operator approval must be recorded by the operator, not by a session",
+              })
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          const obj: Record<string, unknown> =
+            typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+          const target = typeof obj.target === "string" ? obj.target.trim() : ""
+          const by = typeof obj.by === "string" ? obj.by.trim() : ""
+          if (!target || !by) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "invalid_input", message: "`target` (sha or branch) and `by` are required" }))
+            return
+          }
+          const resolved = await resolveWorktreeQueryRoot({
+            repoRoot: typeof obj.repoRoot === "string" ? obj.repoRoot : undefined,
+            workspaceSlug: typeof obj.workspaceSlug === "string" ? obj.workspaceSlug : undefined,
+          })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            const result = await opts.approveBranchGcVerdict({
+              repoRoot: resolved.repoRoot,
+              target,
+              by,
+              ...(typeof obj.note === "string" && obj.note.trim() ? { note: obj.note.trim() } : {}),
+              ...(obj.dryRun === true || obj.dryRun === "true" ? { dryRun: true } : {}),
+            })
+            res.writeHead(result.ok ? 200 : 409, { "content-type": "application/json" })
+            res.end(JSON.stringify(result))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({ error: "branch_gc_approve_failed", message: err instanceof Error ? err.message : String(err) })
             )
           }
           return
@@ -4029,10 +4809,18 @@ export async function startHttpServer(
               ...(typeof body.revision === "string" ? { revision: body.revision } : {}),
             },
             opts.configTools,
+            {
+              credentialSessionId: credentialSessionOf(req),
+              claimedSessionId: resolveCallerSessionId(req),
+              isHostSpawned: id => {
+                const desc = opts.sessions?.get(id)
+                return desc !== undefined && desc.kind !== "external"
+              },
+            },
           )
           if (!result.ok) {
             const status =
-              result.error === "not_writable"
+              result.error === "not_writable" || result.error === "operator_only"
                 ? 403
                 : result.error === "stale_revision"
                   ? 409
@@ -4042,6 +4830,53 @@ export async function startHttpServer(
             return
           }
           res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(result))
+          return
+        }
+
+        // Operator-only heap diagnostics (E99, heap-diagnostics.ts). Stricter
+        // than the session-token gate: the exact daemon bearer, or loopback
+        // with no Origin (no browser page, allowlisted or not, may trigger a
+        // snapshot that blocks the event loop), and never a session
+        // principal (a valid session token, or a claim naming a session the
+        // daemon spawned), same rule as config_set's operator-only keys.
+        // The snapshot takes the bearer alone once a token is configured: a
+        // loopback proxy that drops Origin must not unlock it.
+        if (
+          opts.heapDiagnostics &&
+          ((path === "/debug/heap" && req.method === "GET") ||
+            (path === "/debug/heap-snapshot" && req.method === "POST"))
+        ) {
+          const bearerOk = !!opts.token && req.headers.authorization === `Bearer ${opts.token}`
+          const localOk =
+            isLoopback(req) &&
+            req.headers.origin === undefined &&
+            !(path === "/debug/heap-snapshot" && opts.token)
+          if (!bearerOk && !localOk) {
+            res.writeHead(401, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "unauthorized", message: "the daemon bearer (or a local, non-browser call) is required" }))
+            return
+          }
+          const claimed = resolveCallerSessionId(req)
+          const sessionPrincipal =
+            credentialSessionOf(req) !== undefined ||
+            (claimed !== undefined && (() => {
+              const desc = opts.sessions?.get(claimed)
+              return desc !== undefined && desc.kind !== "external"
+            })())
+          if (sessionPrincipal) {
+            res.writeHead(403, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "operator_only", message: "heap diagnostics are reserved to the operator; this call came from a session" }))
+            return
+          }
+          if (path === "/debug/heap") {
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(opts.heapDiagnostics.report()))
+            return
+          }
+          const result = opts.heapDiagnostics.snapshot()
+          const status = result.ok ? 200 : result.error === "insufficient_memory" ? 507 : 500
+          res.writeHead(status, { "content-type": "application/json" })
           res.end(JSON.stringify(result))
           return
         }
@@ -4247,10 +5082,16 @@ export async function startHttpServer(
             )
             return
           }
+          // Same caller carriers as `/mcp`: a claim the caller is allowed to
+          // make (trusted query, else trusted header), so an imported-call
+          // hold on this route is attributed to the calling session instead
+          // of the `"daemon"` pseudo-session. No claim stays a host call.
+          const callerSessionId = resolveCallerSessionId(req)
           const result = await opts.mcpProxy.callTool(
             body.alias,
             body.toolName,
-            body.args ?? {}
+            body.args ?? {},
+            ...(callerSessionId ? [{ callerSessionId }] : []),
           )
           res.writeHead(result.ok ? 200 : 502, {
             "content-type": "application/json",
@@ -4259,7 +5100,11 @@ export async function startHttpServer(
           return
         }
 
-        if (path === "/adapters" && req.method === "GET") {
+        // `GET /harnesses` is canonical (`{ harnesses }`, plus the same rows
+        // under the deprecated `adapters` key for old readers); `GET
+        // /adapters` is the deprecated spelling and carries a dated warning.
+        if ((path === "/harnesses" || path === "/adapters") && req.method === "GET") {
+          const canonical = path === "/harnesses"
           if (!opts.listAgentAdapters) {
             res.writeHead(501, { "content-type": "application/json" })
             res.end(
@@ -4275,7 +5120,9 @@ export async function startHttpServer(
           try {
             const adapters = await opts.listAgentAdapters()
             res.writeHead(200, { "content-type": "application/json" })
-            res.end(JSON.stringify({ adapters }))
+            res.end(JSON.stringify(canonical
+              ? { harnesses: adapters, adapters }
+              : { adapters, warnings: [adapterDeprecation("GET /adapters", "GET /harnesses")] }))
           } catch (err) {
             res.writeHead(500, { "content-type": "application/json" })
             res.end(
@@ -4311,7 +5158,7 @@ export async function startHttpServer(
         // "bad slug". `POST /adapters/:slug/install`.
         {
           const installMatch = path.match(
-            /^\/adapters\/([^/]+)\/install$/,
+            /^\/(harnesses|adapters)\/([^/]+)\/install$/,
           )
           if (installMatch && req.method === "POST") {
             if (!opts.installAgentAdapter) {
@@ -4326,13 +5173,14 @@ export async function startHttpServer(
               )
               return
             }
-            const slug = decodeURIComponent(installMatch[1]!)
+            const legacyInstall = installMatch[1] === "adapters"
+            const slug = decodeURIComponent(installMatch[2]!)
             if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
               res.writeHead(400, { "content-type": "application/json" })
               res.end(
                 JSON.stringify({
                   error: "invalid_slug",
-                  message: `invalid adapter slug '${slug}' — slugs are lower-kebab.`,
+                  message: `invalid harness slug '${slug}': slugs are lower-kebab.`,
                 }),
               )
               return
@@ -4340,7 +5188,9 @@ export async function startHttpServer(
             try {
               const result = await opts.installAgentAdapter(slug)
               res.writeHead(200, { "content-type": "application/json" })
-              res.end(JSON.stringify(result))
+              res.end(JSON.stringify(legacyInstall
+                ? { ...result, warnings: [adapterDeprecation("POST /adapters/:slug/install", "POST /harnesses/:slug/install")] }
+                : result))
             } catch (err) {
               res.writeHead(500, { "content-type": "application/json" })
               res.end(
@@ -4376,7 +5226,8 @@ export async function startHttpServer(
             )
             const runnableOnlyParam = qs.get("runnableOnly")
             const catalog = await opts.listCatalogModels({
-              ...(qs.get("adapter") ? { adapter: qs.get("adapter")! } : {}),
+              // `?harness=` is canonical, `?adapter=` its deprecated alias.
+              ...((qs.get("harness") || qs.get("adapter")) ? { adapter: (qs.get("harness") || qs.get("adapter"))! } : {}),
               ...(qs.get("vendor") ? { vendor: qs.get("vendor")! } : {}),
               ...(qs.get("route") ? { route: qs.get("route")! } : {}),
               ...(runnableOnlyParam === "true" ? { runnableOnly: true } : {}),
@@ -4400,7 +5251,9 @@ export async function startHttpServer(
         // (VS Code, cloud operator) provisions through these routes rather
         // than writing the files itself. The credential is INPUT-only: the
         // create response returns metadata + a fingerprint, never the secret.
-        // Same auth policy as the peer read routes above (no session gate).
+        // Reads share the policy of the peer read routes above (no session
+        // gate); writes (create / patch / delete) take the per-boot token,
+        // see `refuseUnlessAuthorizedWrite`.
         if (path === "/auth/profiles" && req.method === "GET") {
           try {
             const qs = new URLSearchParams(
@@ -4422,6 +5275,7 @@ export async function startHttpServer(
           return
         }
         if (path === "/auth/profiles" && req.method === "POST") {
+          if (refuseUnlessAuthorizedWrite(req, res, "/auth/profiles")) return
           const body = (await readJsonBody(req)) as {
             id?: unknown
             endpoint?: unknown
@@ -4469,6 +5323,7 @@ export async function startHttpServer(
         }
         const authProfileMatch = path.match(/^\/auth\/profiles\/(.+)$/)
         if (authProfileMatch && req.method === "DELETE") {
+          if (refuseUnlessAuthorizedWrite(req, res, "/auth/profiles")) return
           const id = decodeURIComponent(authProfileMatch[1] ?? "")
           try {
             const result = await deleteAuthProfile(id, defaultProfileProvisionDeps())
@@ -4492,6 +5347,7 @@ export async function startHttpServer(
           return
         }
         if (authProfileMatch && req.method === "PATCH") {
+          if (refuseUnlessAuthorizedWrite(req, res, "/auth/profiles")) return
           const id = decodeURIComponent(authProfileMatch[1] ?? "")
           const body = (await readJsonBody(req)) as {
             label?: unknown
@@ -4565,7 +5421,12 @@ export async function startHttpServer(
             await saveUserPreset((body ?? {}) as UserPreset)
             const saved = await getUserPreset(String(body?.id ?? ""))
             res.writeHead(200, { "content-type": "application/json" })
-            res.end(JSON.stringify({ preset: saved }))
+            res.end(JSON.stringify({
+              preset: saved,
+              ...(body?.adapter !== undefined
+                ? { warnings: [`POST /user-presets: ${ADAPTER_FIELD_DEPRECATION}`] }
+                : {}),
+            }))
           } catch (err) {
             const status = err instanceof ZodError ? 400 : 500
             res.writeHead(status, { "content-type": "application/json" })
@@ -4598,12 +5459,20 @@ export async function startHttpServer(
         // bundle_list/bundle_create/bundle_update/bundle_delete MCP tools.
         // GET /bundles → { bundles: (Bundle & { dangling: string[] })[] }
         if (path === "/bundles" && req.method === "GET") {
-          const [bundlesFile, importedConfig] = await Promise.all([loadBundles(), loadImportedMcps()])
+          const [bundlesFile, importedConfig, config] = await Promise.all([
+            loadBundles(),
+            loadImportedMcps(),
+            loadConfig(),
+          ])
           const importedIds = new Set(importedConfig.imports.map(e => e.id))
           res.writeHead(200, { "content-type": "application/json" })
           res.end(
             JSON.stringify({
-              bundles: bundlesFile.bundles.map(b => ({ ...b, dangling: danglingImports(b, importedIds) })),
+              bundles: effectiveBundles(
+                bundlesFile.bundles,
+                config.defaults?.browser?.proxyImport,
+                importedConfig,
+              ).map(b => ({ ...b, dangling: danglingImports(b, importedIds) })),
             }),
           )
           return
@@ -4696,6 +5565,9 @@ export async function startHttpServer(
         // Tunnel routes — only registered when the gateway was built with
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
+          // Creating / deleting / revoking tunnels and storing provider
+          // credentials are mutating: same gate as mutating /sessions/*.
+          if (refuseUnlessAuthorizedWrite(req, res, "/tunnels")) return
           const handled = await handleTunnels(req, res, path, opts.tunnels)
           if (handled) return
         }
@@ -4786,6 +5658,9 @@ export async function startHttpServer(
         // enable/disable/status`. Only registered when the gateway was
         // built with a RemoteController.
         if (opts.remote && path.startsWith("/remote")) {
+          // enable / disable publish or tear down the public tunnel: same
+          // gate as mutating /sessions/*. /remote/status (GET) stays open.
+          if (refuseUnlessAuthorizedWrite(req, res, "/remote")) return
           const handled = await handleRemoteControl(req, res, path, opts.remote)
           if (handled) return
         }
@@ -4795,6 +5670,58 @@ export async function startHttpServer(
         if (opts.routineRegistrar && path === "/routines") {
           const handled = await handleRoutinesListing(req, res, path, opts.routineRegistrar)
           if (handled) return
+        }
+
+        // GET /reactions — reaction runner health plus the wiring accessor.
+        if (opts.reactions && path === "/reactions") {
+          const handled = await handleReactionsHealth(req, res, path, opts.reactions)
+          if (handled) return
+        }
+
+        // GET /identity - caller identity observation counters. Read-only
+        // and open like `/reactions` and `/routines` above: it serves counts,
+        // a start time and what enforce mode covers (AIP-46 rule 8), never a
+        // token, a hash or a session id. Mutating routes keep their own gate.
+        // `since` is the first boot recorded when the counters persist; the
+        // totals then add up across restarts. `bootedAt` and `boots` say when,
+        // and with what build, the daemon restarted.
+        if (opts.identity && path === "/identity" && req.method === "GET") {
+          const mode = await opts.identity.mode()
+          const totals = identityTotals()
+          const requireProof = opts.identity.resolveRequireProof
+            ? await opts.identity.resolveRequireProof()
+            : ((await loadConfig()).defaults?.identity?.requireProof ?? [])
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(
+            JSON.stringify({
+              mode,
+              counters: totals.counters,
+              refused: totals.refused,
+              byRoute: totals.byRoute,
+              claimOnlyByClass: totals.claimOnlyByClass,
+              spawnProof: spawnProofReport(requireProof),
+              enforces: {
+                mode,
+                surfaces: ["/mcp", ...IDENTITY_GATED_SESSION_ROUTES.map(r => r.label)],
+                adapters: [...SESSION_TOKEN_ADAPTERS],
+                sandboxed: false,
+              },
+              since: identitySince,
+              bootedAt: identityBootedAt,
+              ...(identityObservations ? { boots: identityBoots } : {}),
+            }),
+          )
+          return
+        }
+
+        // GET /spawn-admission - spawn admission observation counters.
+        // Read-only and open like `/identity` above: it serves counts, a
+        // start time and per-stage outcomes, never a label, a session id or
+        // a token. Counters are in memory and reset on a restart.
+        if (path === "/spawn-admission" && req.method === "GET") {
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(spawnAdmissionReport()))
+          return
         }
 
         // Workflow routes — only registered when the gateway was built with
@@ -4849,7 +5776,8 @@ export async function startHttpServer(
         // Approvals routes — HTTP twins over the approvals engine
         // (approvals/engine.ts): POST /approvals, GET /approvals?status=,
         // GET /approvals/:id, GET /approvals/:id/wait, POST
-        // /approvals/:id/consume, plus two decide routes: web_click
+        // /approvals/:id/consume, GET /approvals/:id/attachments and
+        // GET /approvals/:id/attachments/:name (an approval's files), plus two decide routes: web_click
         // (POST /approvals/:id/decision) and telegram
         // (POST /approvals/:id/decision/telegram). HTTP callers are
         // OPERATOR context, same split as /tasks and /policies. Neither
@@ -4860,20 +5788,30 @@ export async function startHttpServer(
         // gates would reject an origin that's correctly listed in one but
         // not the other; telegram has no Origin at all (a webhook callback
         // isn't a browser) and is gated solely by `approvalsTelegramBotSecret`.
+        // An approval link (a link-session token on `GET /approvals/:id`, its
+        // attachments pair, or `POST /approvals/:id/decision/telegram`, `app-link-gate.ts`) is
+        // served in link mode by the handler, never as the operator; like
+        // `link-auth`, the page the link opened may call it same-origin.
         if (
           opts.approvals &&
           (path === "/approvals" || path.startsWith("/approvals/"))
         ) {
+          const approvalLink = appLinkApprovalRequest(req, path, req.method ?? "GET", opts.appLinkKeyPath)
           const isDecisionRoute =
             /^\/approvals\/[^/]+\/decision$/.test(path) ||
             /^\/approvals\/[^/]+\/decision\/telegram$/.test(path)
-          if (!isDecisionRoute && guardBrowserOrigin(req, res)) return
+          if (approvalLink) {
+            if (!isSameOriginRequest(req) && guardBrowserOrigin(req, res)) return
+          } else if (!isDecisionRoute && guardBrowserOrigin(req, res)) return
           const handled = await handleApprovals(req, res, path, opts.approvals, {
             ...(opts.token !== undefined ? { token: opts.token } : {}),
             webOrigins: opts.approvalsWebOrigins ?? [],
             ...(opts.approvalsTelegramBotSecret !== undefined
               ? { telegramBotSecret: opts.approvalsTelegramBotSecret }
               : {}),
+            ...(approvalLink ? { link: approvalLink } : {}),
+            humanTelegramIds: opts.approvalsHumanTelegramIds ?? [],
+            ...(opts.approvalsAttachmentDir ? { attachmentDir: opts.approvalsAttachmentDir } : {}),
           })
           if (handled) return
         }
@@ -4910,7 +5848,17 @@ export async function startHttpServer(
               return
             }
           }
-          const handled = await handlePermissions(req, res, path, opts.sessions)
+          const handled = await handlePermissions(
+            req,
+            res,
+            path,
+            opts.sessions,
+            opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
+            opts.resolveOperatorDelegates ?? resolveOperatorDelegates,
+            opts.resolveDelegationGateMode ?? resolveDelegationGateMode,
+            opts.resolveProfileGateMode ?? resolveProfileGateMode,
+            opts.resolveStdioMountGateMode ?? resolveStdioMountGateMode,
+          )
           if (handled) return
         }
 
@@ -4956,6 +5904,11 @@ export async function startHttpServer(
         // Cron routes — only registered when the gateway was built with
         // a CronScheduler. /cron, /cron/:id, /cron/:id/run.
         if (opts.cronScheduler && path.startsWith("/cron")) {
+          // Non-GET is a mutating action (create / update / delete / fire a
+          // job that can spawn agents or run commands): same gate as the
+          // mutating /sessions/* routes. GET stays open, like the other
+          // read-only routes.
+          if (refuseUnlessAuthorizedWrite(req, res, "/cron")) return
           const handled = await handleCron(req, res, path, opts.cronScheduler)
           if (handled) return
         }
@@ -5075,15 +6028,42 @@ export async function startHttpServer(
               if (guardBrowserOrigin(req, res)) return
               if (!authorize(req, res)) return
             }
+            // The calling session (same trust rules as the /mcp gateway): it
+            // reaches an imported tool, its AGENT.md opt-in and app grants
+            // decide whether a write/approve exposed tool may run, and its
+            // deny grants refuse one like the gateway does.
+            const toolCallerId = linkAuth ? undefined : resolveCallerSessionId(req)
+            const toolCallerDesc = toolCallerId ? opts.sessions?.get(toolCallerId) : undefined
             await handleAppUiToolCall(
               req,
               res,
               routeAppId,
               opts.appRegistry,
-              opts.appToolCallDeps ?? {},
-              linkAuth
-                ? { sessionId: linkAuth.sessionId, ...(linkAuth.telegramUserId ? { telegramUserId: linkAuth.telegramUserId } : {}) }
-                : undefined,
+              {
+                // Scoped `permissions_respond` checks the id against the
+                // same inbox `permissions_list` reads (app-tools.ts,
+                // `LINK_OWNERSHIP_CHECKS`).
+                ...(opts.sessions
+                  ? { findPendingPermission: (id: string) => opts.sessions?.listPendingPermissions().find(p => p.id === id) }
+                  : {}),
+                ...opts.appToolCallDeps,
+                ...(toolCallerId
+                  ? {
+                      caller: {
+                        sessionId: toolCallerId,
+                        optIn: toolCallerDesc?.exposedToolOptIn,
+                        grants: exposedToolGrantsFor(opts.appRegistry, toolCallerDesc?.meta),
+                        denyGrants: toolCallerDesc?.toolDenyGrants,
+                      },
+                    }
+                  : {}),
+                // Same `?denyTools=` / `?allowTools=` wire contract as `/mcp`.
+                toolLists: {
+                  denyTools: parseToolListQuery(req.url ?? "", "denyTools"),
+                  allowTools: parseToolListQuery(req.url ?? "", "allowTools"),
+                },
+              },
+              linkAuth ? linkAuth.claims : undefined,
             )
             return
           }
@@ -5092,11 +6072,13 @@ export async function startHttpServer(
           // `authorizeAppLink` for the whole flow. Same gating as the
           // `/ui` shell above (not `/tool-call`): the opener has nothing
           // but the link yet, so this route can't require the bearer
-          // either; it has its own, narrower, single-use credential
+          // either; it has its own, narrower credential
           // instead (the link token itself, verified inside the handler).
+          // A same-origin browser POST (the page the link opened) skips the
+          // allowlist refusal; any other cross-origin Origin still gets it.
           const linkAuthMatch = path.match(/^\/apps\/(.+)\/link-auth$/)
           if (linkAuthMatch && req.method === "POST") {
-            if (guardBrowserOrigin(req, res)) return
+            if (!isSameOriginRequest(req) && guardBrowserOrigin(req, res)) return
             await handleAppLinkAuth(req, res, decodeURIComponent(linkAuthMatch[1]!), opts.telegramCreds, opts.appLinkKeyPath)
             return
           }
@@ -5123,6 +6105,12 @@ export async function startHttpServer(
           opts.listRegisteredToolIds &&
           (path.startsWith("/apps/") || path.startsWith("/scopes/"))
         ) {
+          // Applying / unapplying installs or removes tools and agents (and
+          // `POST` may install from a `dir`): same gate as the mutating
+          // /sessions/* routes. `GET /scopes/:id/apps` stays open.
+          if (/^\/apps\/[^/]+\/apply$/.test(path) && (req.method === "POST" || req.method === "DELETE")) {
+            if (refuseUnlessAuthorizedWrite(req, res, "/apps/:appId/apply")) return
+          }
           const handled = await handleApps(
             req,
             res,
@@ -5251,6 +6239,8 @@ export async function startHttpServer(
   return {
     url: `http://${bind}:${opts.port}`,
     async stop() {
+      if (identityFlushTimer) clearInterval(identityFlushTimer)
+      flushIdentityObservations()
       // Per-request transports/servers are torn down on `res.close`,
       // so we only need to stop the HTTP listener here. The WSS is
       // bound `noServer:true` so closing the HTTP server also tears
@@ -5680,6 +6670,18 @@ async function sendJsonNegotiated(
   res.end(out)
 }
 
+/** The harness slug of a spawn body: `harness ?? adapter ?? preset.harness
+ *  ?? preset.adapter` (`adapter` is the deprecated alias; the warning for it
+ *  rides `harnessWarnings`, see `buildSpawnSessionHttpArgs`). */
+function httpHarnessOf(
+  b: Record<string, unknown>,
+  preset: { harness?: string; adapter?: string } | undefined,
+): string | undefined {
+  const harness = typeof b.harness === "string" && b.harness.length > 0 ? b.harness : undefined
+  const adapter = typeof b.adapter === "string" && b.adapter.length > 0 ? b.adapter : undefined
+  return harness ?? adapter ?? preset?.harness ?? preset?.adapter
+}
+
 /**
  * Shared body → `spawnAgentSession` input mapper used by BOTH
  * `POST /sessions/agent` and the create-variant `POST /sessions/chat`, so the
@@ -5729,6 +6731,10 @@ export function buildSpawnSessionHttpArgs(
     b.contextContinuity !== undefined
       ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
       : undefined
+  const contextSettings =
+    b.contextSettings !== undefined
+      ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextSettings)
+      : undefined
   const deferredTools = parseBooleanField(b.deferredTools)
   // Agent-level clerk hook — the HTTP twin of `agent_start.hooks`. Without
   // this mapping a Pygmalion spawn through `POST /sessions/agent` silently
@@ -5748,6 +6754,7 @@ export function buildSpawnSessionHttpArgs(
     | "bundles"
     | "daemonMount"
     | "contextContinuity"
+    | "contextSettings"
     | "deferredTools"
     | "hooks"
     | "attach"
@@ -5759,6 +6766,7 @@ export function buildSpawnSessionHttpArgs(
     ...(bundles !== undefined ? { bundles } : {}),
     ...(daemonMount !== undefined ? { daemonMount } : {}),
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
+    ...(contextSettings !== undefined ? { contextSettings } : {}),
     ...(deferredTools !== undefined ? { deferredTools } : {}),
     ...(hooks !== undefined ? { hooks } : {}),
     ...(attach !== undefined ? { attach } : {}),
@@ -5795,21 +6803,43 @@ export function buildSpawnSessionHttpArgs(
   // classes); an invalid value is dropped, never half-applied. Hoisted for the
   // same TS2590 reason as `inferenceField`.
   const turnRetryParsed = b.turnRetry !== undefined ? parseTurnRetryPolicy(b.turnRetry) : undefined
+  // Preflight probe ids: the HTTP twin of `agent_start.preflight`. An array of
+  // non-empty strings (or a JSON-stringified one); anything else is dropped.
+  const preflightIds = b.preflight !== undefined ? parsePreflightField(b.preflight) : undefined
+  const preflightField: Pick<SpawnAgentSessionInput, "preflight"> =
+    preflightIds !== undefined ? { preflight: preflightIds } : {}
   const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
     turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
+  // Placement ladder: the HTTP twin of `agent_start.placement`. A malformed or
+  // sandbox-conflicting value is refused up front by `invalidSpawnHttpField`.
+  const placementParsed =
+    b.placement !== undefined && b.placement !== null
+      ? parseWithJsonTolerance(placementInputSchema, b.placement)
+      : undefined
+  const placementField: Pick<SpawnAgentSessionInput, "placement"> =
+    placementParsed !== undefined ? { placement: placementParsed } : {}
   const modelPolicyParsed =
     b.modelPolicy !== undefined ? normalizeModelPolicy(parseWithJsonTolerance(modelPolicyInputSchema, b.modelPolicy)) : undefined
   const modelPolicyField: Pick<SpawnAgentSessionInput, "modelPolicy"> =
     modelPolicyParsed !== undefined ? { modelPolicy: modelPolicyParsed } : {}
   return {
     adapter,
+    // The ONE resolved slug under both keys (`harness ?? adapter ?? preset`),
+    // so the spawn core's `harness ?? adapter` and `adapter` reads agree.
+    ...(adapter && adapter !== CLOUD_ADAPTER_PLACEHOLDER ? { harness: adapter } : {}),
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
-    ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
-    // AIP-42 manifest defaults — HTTP/CLI-only today (the MCP `agent_start`
-    // schema declares neither field; see session-spawn.ts). `agentId` resolves
-    // to `<cwd>/.agents/<id>/AGENT.md`; `agentPath` is an explicit path.
+    // ONE `agent` reference (AGENT.md path, agent id, or role name) resolved
+    // into `agentId`/`agentPath`/`role` by the spawn core (agent-ref.ts).
+    ...(typeof b.agent === "string" && b.agent.length > 0 ? { agent: b.agent } : {}),
+    // Legacy aliases of `agent`; the MCP schema declares all three too.
     ...(typeof b.agentId === "string" && b.agentId.length > 0 ? { agentId: b.agentId } : {}),
     ...(typeof b.agentPath === "string" && b.agentPath.length > 0 ? { agentPath: b.agentPath } : {}),
+    // AIP-46 operator binding. Validated and canonicalized in the spawn core;
+    // `callerSessionId` is deliberately NOT read from the body (rule 4).
+    ...(typeof b.operator === "string" && b.operator.length > 0 ? { operator: b.operator } : {}),
+    ...(typeof b.operatorDigest === "string" && b.operatorDigest.length > 0
+      ? { operatorDigest: b.operatorDigest }
+      : {}),
     // AIP-66 managed cloud vendor — the HTTP twin of the MCP `agent_start`
     // tool's `cloud` field. Forwarded verbatim; spawnAgentSession's
     // resolveCloudSpawn refuses an unknown vendor or a §4 field by name
@@ -5901,6 +6931,15 @@ export function buildSpawnSessionHttpArgs(
       ? { boardId: b.boardId }
       : {}),
     ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
+    ...((): { harnessWarnings?: string[] } => {
+      const harnessWarnings = [
+        ...(typeof b.role === "string" && b.role.length > 0 && !(typeof b.agent === "string" && b.agent.length > 0)
+          ? [ROLE_ALIAS_DEPRECATION]
+          : []),
+        ...(typeof b.adapter === "string" ? [`POST /sessions/agent: ${ADAPTER_FIELD_DEPRECATION}`] : []),
+      ]
+      return harnessWarnings.length > 0 ? { harnessWarnings } : {}
+    })(),
     ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
     ...browserField,
     ...(b.orchestrator !== undefined
@@ -5961,7 +7000,7 @@ export function buildSpawnSessionHttpArgs(
                 : b.notifyParentOnCrash === "false"
                   ? false
                   : undefined
-          return n ? { notifyParentOnCrash: true } : {}
+          return n !== undefined ? { notifyParentOnCrash: n } : {}
         })()
       : {}),
     ...sentinelField,
@@ -6027,6 +7066,8 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { sandbox: parsed } : {}
         })()
       : {}),
+    ...preflightField,
+    ...placementField,
     // WP3 in-box app serve — the HTTP twin of the MCP `agent_start` tool's
     // `appServe` field. Accepts an object or a JSON-stringified one; requires
     // `dir` (and an integer `port` when given).
@@ -6095,12 +7136,20 @@ export function buildSpawnSessionHttpArgs(
  *                                    session }. 400/409 + `error` code when the
  *                                    session can't be migrated; old session is
  *                                    untouched on failure
+ *   POST   /sessions/:id/reap     → the host guard's idle close: reaps a
+ *                                    running agent-cli row via
+ *                                    `registry.reapIdle`, tagging
+ *                                    `endedReason: "guard-reaped"` (never
+ *                                    `operator-stopped`); body { idleMs? };
+ *                                    returns {ok, sessionId}. 409 when not
+ *                                    reapable.
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
- *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
- *                                    {pinned: boolean}; returns {ok, sessionId,
- *                                    pinned}. Pure sort/display state — the
- *                                    HTTP twin of the `session_set_pinned`
- *                                    MCP verb, never touches keepAlive/reaper.
+ *   POST   /sessions/:id/pin      → set/clear the pin, body {pinned: boolean};
+ *                                    returns {ok, sessionId, pinned}. Sorts the
+ *                                    session to the top and exempts it from the
+ *                                    idle reaper; the HTTP twin of the
+ *                                    `session_set_pinned` MCP verb, never
+ *                                    touches keepAlive.
  *   POST   /sessions/:id/prompt-policy → (re-)grant allowPromptFrom on an
  *                                    ALREADY-LIVE session, body
  *                                    {allowPromptFrom: string[]}; returns
@@ -6151,6 +7200,15 @@ export function buildSpawnSessionHttpArgs(
  *                                      location?, baseUrl?, binPath? }
  *                                    (requires `resolveBrowserAdapter` wired)
  */
+/** AIP-46 rule 4 on the HTTP spawn routes: the caller identity comes from the
+ *  trusted header/query, never the body, and overwrites anything the body set. */
+function withHttpCaller<T extends object>(
+  args: T,
+  callerSessionId: string | undefined,
+): T & { callerSessionId?: string } {
+  return callerSessionId ? { ...args, callerSessionId } : args
+}
+
 /** HTTP status for a `spawnAgentSession` failure code — shared by
  *  `POST /sessions/agent` and `POST /sessions/:id/handoff`. */
 function spawnFailureStatus(code: string): number {
@@ -6159,12 +7217,24 @@ function spawnFailureStatus(code: string): number {
   if (
     code === "orchestrator_max_depth_exceeded" ||
     code === "orchestrator_child_quota_exceeded" ||
-    code === "role_spawn_denied"
+    code === "role_spawn_denied" ||
+    code === "already_continued"
   ) {
     return 409
   }
+  if (code === "delegation_denied") return 403
+  // The box booted but cannot do what the spawn needs from where it sits: not
+  // a caller mistake, and a different placement may work.
+  if (code === "sandbox_preflight_failed" || code === "sandbox_placement_exhausted") return 502
+  // Every egress address is cooling down for the model: nothing to boot right now.
+  if (code === "sandbox_egress_all_cooling") return 503
+  if (code === "auth_profile_denied") return 403
+  if (code === "stdio_mount_denied") return 403
+  if (code === "identity_unverified" || code === "identity_mismatch") return 403
   if (
     code === "invalid_role" ||
+    code === "invalid_agent" ||
+    code === "invalid_context_settings" ||
     code === "browser_unsupported" ||
     code === "worktree_requires_explicit_repo" ||
     code === "device_spawn_requires_repo_identity" ||
@@ -6172,15 +7242,43 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_not_found" ||
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
+    code === "sandbox_preflight_invalid" ||
+    code === "sandbox_spec_invalid" ||
+    code === "placement_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
     code === "cloud_spawn_refused" ||
     code === "model_policy_refused" ||
-    code === "session_preset_invalid"
+    code === "session_preset_invalid" ||
+    code === "operator_unresolvable"
   ) {
     return 400
   }
   return 500
+}
+
+/** `reason` of the projected PreCompact hook's checkpoint request. */
+const NATIVE_PRE_COMPACT_REASON = "native-pre-compact"
+const CHECKPOINT_REASON_MAX = 64
+/** `reason` lands in a transcript notice line: words, digits and ". _ : -"
+ *  only, no control character, no newline, no escape, never empty. */
+const CHECKPOINT_REASON_RE = /^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,63}$/
+const CHECKPOINT_OCCURRENCE_RE = /^[^\s/\u0000-\u001f\u007f-\u009f]{1,128}$/
+/** First response per occurrence key, in this process. Bounded: the oldest
+ *  entry goes first. */
+const CHECKPOINT_OCCURRENCES_MAX = 500
+const checkpointOccurrences = new Map<string, Record<string, unknown>>()
+/** Builds in flight, so a concurrent request with the same key waits for the
+ *  first one instead of building a second checkpoint. */
+const checkpointInflight = new Map<string, Promise<Record<string, unknown>>>()
+
+function rememberCheckpointOccurrence(key: string, response: Record<string, unknown>): void {
+  checkpointOccurrences.set(key, response)
+  while (checkpointOccurrences.size > CHECKPOINT_OCCURRENCES_MAX) {
+    const oldest = checkpointOccurrences.keys().next().value
+    if (oldest === undefined) break
+    checkpointOccurrences.delete(oldest)
+  }
 }
 
 /** Preconditions shared by `POST /sessions/:id/checkpoint` and `.../handoff`. */
@@ -6189,13 +7287,6 @@ function checkpointableSession(
 ): { status: number; error: string; message: string } | undefined {
   if (desc.kind !== "agent-cli") {
     return { status: 400, error: "not_agent_session", message: `session "${desc.id}" is not an agent-cli session` }
-  }
-  if (!desc.contextContinuity) {
-    return {
-      status: 409,
-      error: "no_context_continuity_policy",
-      message: `session "${desc.id}" has no resolved context continuity policy`,
-    }
   }
   return undefined
 }
@@ -6242,10 +7333,16 @@ function parseWorktreeField(raw: unknown): WorktreeField | undefined {
     const slug = typeof obj.slug === "string" ? obj.slug : undefined
     const base = typeof obj.base === "string" ? obj.base : undefined
     const async = typeof obj.async === "boolean" ? obj.async : undefined
+    const ms = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : undefined
+    const stallTimeoutMs = ms(obj.stallTimeoutMs)
+    const maxMs = ms(obj.maxMs)
     return {
       ...(slug !== undefined ? { slug } : {}),
       ...(base !== undefined ? { base } : {}),
       ...(async !== undefined ? { async } : {}),
+      ...(stallTimeoutMs !== undefined ? { stallTimeoutMs } : {}),
+      ...(maxMs !== undefined ? { maxMs } : {}),
     }
   }
   return undefined
@@ -6494,6 +7591,21 @@ function parseSandboxField(raw: unknown): string | SandboxSpecInput | undefined 
   return parsed.data as SandboxSpecInput
 }
 
+/** Parse the `preflight` body field: an array of probe ids, or its JSON string. */
+function parsePreflightField(raw: unknown): string[] | undefined {
+  let value = raw
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return undefined
+    }
+  }
+  if (!Array.isArray(value)) return undefined
+  const ids = value.filter((v): v is string => typeof v === "string" && v.length > 0)
+  return ids.length > 0 ? ids : undefined
+}
+
 /** Parse the `appServe` body field (WP3) — `{ dir, port? }`, tolerant of a
  *  JSON-stringified value (same lenient shape as `parseSandboxField`).
  *  `port` defaults to `DEFAULT_APP_SERVE_PORT`; anything without a non-empty
@@ -6531,6 +7643,22 @@ function invalidSpawnHttpField(
     return {
       error: "invalid_command_sandbox",
       message: `commandSandbox must be one of "off", "workspace", "strict" (got ${JSON.stringify(b.commandSandbox)}).`,
+    }
+  }
+  if (b.placement !== undefined && b.placement !== null) {
+    if (parseWithJsonTolerance(placementInputSchema, b.placement) === undefined) {
+      return {
+        error: "placement_invalid",
+        message:
+          "placement must be { ladder: [{ sandbox, model?, access?, preflight?, turnRetry? }, ...] } with 1 to " +
+          `${MAX_PLACEMENT_RUNGS} rungs; unknown keys are rejected.`,
+      }
+    }
+    if (b.sandbox !== undefined && b.sandbox !== null && b.sandbox !== "") {
+      return {
+        error: "placement_invalid",
+        message: "placement and sandbox are mutually exclusive; put the sandbox on a ladder rung.",
+      }
     }
   }
   if (
@@ -6657,6 +7785,51 @@ async function handleSandboxes(
     json(result.ok ? 200 : 422, result)
     return true
   }
+  // GET /sandboxes/egress-health[?provider&model] - the egress pool with the
+  // per-IP model cooldowns; read-only, boots nothing.
+  if (path === "/sandboxes/egress-health") {
+    if (_req.method !== "GET") return false
+    const query = new URL(_req.url ?? "/", "http://localhost").searchParams
+    const provider = query.get("provider") || undefined
+    const model = query.get("model") || undefined
+    const report = await readEgressHealth(
+      { ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
+      { ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}) },
+    )
+    json(report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502, report)
+    return true
+  }
+  // POST /sandboxes/egress-health/probe - boots one box per pool slot and
+  // re-probes the model from each address (token-gated by the caller).
+  if (path === "/sandboxes/egress-health/probe") {
+    if (_req.method !== "POST") return false
+    const parsed = sandboxEgressProbeInputSchema.safeParse(await readJsonBody(_req))
+    if (!parsed.success) {
+      json(400, {
+        ok: false,
+        code: "egress_probe_invalid_input",
+        message: `sandbox egress-health: invalid request body - ${parsed.error.issues
+          .map(i => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+      })
+      return true
+    }
+    const report = await probeEgressSlots(
+      {
+        model: parsed.data.model,
+        ...(parsed.data.provider ? { provider: parsed.data.provider } : {}),
+        ...((parsed.data.harness ?? parsed.data.adapter) ? { adapter: parsed.data.harness ?? parsed.data.adapter } : {}),
+      },
+      { ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}) },
+    )
+    json(
+      report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502,
+      parsed.data.adapter !== undefined
+        ? { ...report, warnings: [`sandbox egress-health probe: ${ADAPTER_FIELD_DEPRECATION}`] }
+        : report,
+    )
+    return true
+  }
   const match = path.match(/^\/sandboxes\/([^/]+)\/alive$/)
   if (!match || _req.method !== "GET") return false
   const sandboxId = decodeURIComponent(match[1]!)
@@ -6731,6 +7904,9 @@ async function handleSessions(
   // Lets the generic `adapter_not_found` error name the installed adapters
   // (session-spawn.ts) instead of only saying "install it".
   listAgentAdapters?: AgentAdapterLister,
+  // Workspace command allowlist loader for the stdio mount gate: the SAME
+  // list `command_execute` gates against. Absent ⇒ an empty list.
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>,
   // BOOTSTRAP P7b — the device-mirror read-sync hook. Absent ⇒ no sync
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
@@ -6743,11 +7919,30 @@ async function handleSessions(
   // else the trusted `x-agentproto-caller-session-id` header). Absent ⇒
   // the query only.
   resolveCallerSessionIdFor?: (req: IncomingMessage) => string | undefined,
+  // The session a valid session token on the request was minted for: the
+  // spawn proof gate's credential leg (AIP-46 §Session principals). Never
+  // read from the request body.
+  resolveCredentialSessionIdFor?: (req: IncomingMessage) => string | undefined,
+  // The trust test for an external-session touch claim (loopback socket or
+  // daemon bearer). Absent ⇒ `POST /sessions/:id/touch` refuses every claim.
+  externalClaimTrustedFor?: (req: IncomingMessage) => boolean,
   messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
+  ledgerPathOverride?: string,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
     res.end(JSON.stringify(body))
+  }
+
+  // Path ids are percent-encoded by the CLI (`cc%3Achat-1`); decode them so
+  // every /sessions route matches the row the client means.
+  const decodePathId = (rawId: string): string | undefined => {
+    try {
+      return decodeURIComponent(rawId)
+    } catch {
+      json(400, { error: "invalid_session_id", id: rawId })
+      return undefined
+    }
   }
 
   if (path === "/sessions" && req.method === "GET") {
@@ -6759,6 +7954,7 @@ async function handleSessions(
     const includeArchived = params.get("includeArchived") === "true"
     const kindParam = params.get("kind")
     const includeCommands = params.get("includeCommands") === "true"
+    const collapseLineage = params.get("collapseLineage") === "true"
     const sinceParam = params.get("since")
     const fields = parseSessionFields(params)
     const matchesFilter = (s: SessionDescriptor): boolean => {
@@ -6815,6 +8011,7 @@ async function handleSessions(
     // `?includeCommands=true` opts into the union.
     rows = narrow(rows.filter(matchesFilter))
     if (narrowed) rows = sortNewestActivityFirst(rows)
+    if (collapseLineage) rows = collapseLineageChains(rows)
     const total = rows.length
     if (limit !== undefined && sinceParam === null) rows = rows.slice(0, limit)
 
@@ -7031,13 +8228,7 @@ async function handleSessions(
     // placeholder its `adapter: string` type demands is passed instead.
     const cloud = typeof b.cloud === "string" && b.cloud.length > 0 ? b.cloud : undefined
     const adapter =
-      typeof b.adapter === "string"
-        ? b.adapter
-        : typeof b.harness === "string"
-          ? b.harness
-          : (preset?.adapter ??
-            preset?.harness ??
-            (b.inference ? "pi" : cloud ? CLOUD_ADAPTER_PLACEHOLDER : ""))
+      httpHarnessOf(b, preset) ?? (b.inference ? "pi" : cloud ? CLOUD_ADAPTER_PLACEHOLDER : "")
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -7047,7 +8238,33 @@ async function handleSessions(
       json(400, invalidSpawnField)
       return true
     }
+    // The HTTP twin of `agent_start.succeeds` (agent-tools.ts): the new
+    // session takes over the replaced session's live children. Checked BEFORE
+    // the spawn so a refused declaration never creates a session. Pygmalion's
+    // `EngineClient` spawns its brain through this route.
+    const succeedsId = typeof b.succeeds === "string" ? b.succeeds.trim() : ""
+    let succeedsFrom: SessionDescriptor | undefined
+    if (succeedsId) {
+      succeedsFrom = registry.get(succeedsId)
+      if (!succeedsFrom) {
+        json(400, {
+          error: "succeeds_not_found",
+          message: `\`succeeds\` names session "${succeedsId}", which does not exist.`,
+        })
+        return true
+      }
+      const gate = checkSuccessorDeclaration({
+        callerSessionId: resolveCallerSessionIdFor?.(req),
+        from: succeedsFrom,
+      })
+      if (!gate.ok) {
+        json(403, { error: "succeeds_forbidden", message: gate.message })
+        return true
+      }
+    }
     const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset, sessionPresets)
+    // The session a valid session token on THIS request was minted for (header only, never the body).
+    const callerCredentialSessionId = resolveCredentialSessionIdFor?.(req)
     const result = await spawnAgentSession(
       {
         registry,
@@ -7060,8 +8277,10 @@ async function handleSessions(
         ...(webhookNotifier ? { webhookNotifier } : {}),
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
+        ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
+        ...(callerCredentialSessionId ? { callerCredentialSessionId } : {}),
       },
-      spawnArgs,
+      withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )
     if (!result.ok) {
       const status = spawnFailureStatus(result.code)
@@ -7116,14 +8335,29 @@ async function handleSessions(
         allowPromptFromWarning = `allowPromptFrom apply failed: ${err instanceof Error ? err.message : String(err)}`
       }
     }
+    let lineageHandoverWarning: string | undefined
+    if (succeedsFrom && !result.deduped) {
+      try {
+        handoverLineage({
+          registry,
+          from: succeedsFrom.id,
+          to: result.descriptor.id,
+          reason: "succeeds",
+          actor: promptCallerLabel(resolveCallerSessionIdFor?.(req)),
+        })
+      } catch (err) {
+        lineageHandoverWarning = `lineage handover failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
     json(201, {
       ...sessionDescriptorForHttp(result.descriptor),
-      ...(result.warnings || operatorLabelWarning || allowPromptFromWarning
+      ...(result.warnings || operatorLabelWarning || allowPromptFromWarning || lineageHandoverWarning
         ? {
             warnings: [
               ...(result.warnings ?? []),
               ...(operatorLabelWarning ? [operatorLabelWarning] : []),
               ...(allowPromptFromWarning ? [allowPromptFromWarning] : []),
+              ...(lineageHandoverWarning ? [lineageHandoverWarning] : []),
             ],
           }
         : {}),
@@ -7171,12 +8405,7 @@ async function handleSessions(
       json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
       return true
     }
-    const adapter =
-      typeof b.adapter === "string"
-        ? b.adapter
-        : typeof b.harness === "string"
-          ? b.harness
-          : preset?.adapter ?? preset?.harness ?? (b.inference ? "pi" : "")
+    const adapter = httpHarnessOf(b, preset) ?? (b.inference ? "pi" : "")
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -7187,6 +8416,8 @@ async function handleSessions(
       return true
     }
     const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset, sessionPresets)
+    // The session a valid session token on THIS request was minted for (header only, never the body).
+    const callerCredentialSessionId = resolveCredentialSessionIdFor?.(req)
     const result = await spawnAgentSession(
       {
         registry,
@@ -7199,8 +8430,10 @@ async function handleSessions(
         ...(webhookNotifier ? { webhookNotifier } : {}),
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
+        ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
+        ...(callerCredentialSessionId ? { callerCredentialSessionId } : {}),
       },
-      spawnArgs,
+      withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )
     if (!result.ok) {
       const status = spawnFailureStatus(result.code)
@@ -7339,8 +8572,10 @@ async function handleSessions(
   // chrome-live live screencast surfaces — same frames the MCP
   // browser_screencast_* tools read (through the module-scope liveInstances
   // map, so they survive mcpServerFactory's per-request runs). Chrome Live's
-  // agent tab inside the user's Chrome only — never the desktop, and not the
-  // separate Bureau (:8830) browser service.
+  // agent tab inside the user's Chrome only, never the desktop. The chrome-live
+  // path is retired: for any other id, `.jpg` is answered before this handler
+  // from the Bureau recording of a tab the session owns (session-screencast.ts),
+  // and `.mjpg` and the viewer stay 404 here.
   const screencastMatch =
     /^\/sessions\/([^/]+)\/screencast(?:\.(jpg|mjpg))?$/.exec(path)
   if (screencastMatch && req.method === "GET") {
@@ -7435,6 +8670,28 @@ async function handleSessions(
     }
 
     // Extensionless: a minimal same-origin HTML viewer around the MJPEG stream.
+    // The <img> request carries no Origin and no Authorization header, so the
+    // credential that let this page through the gate (?token= or ?et=) is
+    // echoed onto the stream URL. Everything interpolated is HTML-escaped.
+    const escapeHtml = (value: string): string =>
+      value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;")
+    const viewerQuery = new URLSearchParams()
+    const pageQuery = new URLSearchParams((req.url ?? "").split("?")[1] ?? "")
+    for (const key of ["token", "et"]) {
+      const value = pageQuery.get(key)
+      if (value) viewerQuery.set(key, value)
+    }
+    const viewerQueryString = viewerQuery.toString()
+    const streamQuery = viewerQueryString ? `?${viewerQueryString}` : ""
+    const safeId = escapeHtml(browserDescriptor.id)
+    const streamSrc = escapeHtml(
+      `/sessions/${encodeURIComponent(browserDescriptor.id)}/screencast.mjpg${streamQuery}`
+    )
     const html = `<!doctype html>
 <html>
 <head>
@@ -7450,10 +8707,10 @@ code { color: #9ad; }
 </head>
 <body>
 <header>
-  <strong>chrome-live screencast</strong> · session <code>${browserDescriptor.id}</code> ·
+  <strong>chrome-live screencast</strong> · session <code>${safeId}</code> ·
   agent tab inside the user's Chrome (CDP <code>Page.startScreencast</code>; not a desktop capture).
 </header>
-<img alt="chrome-live screencast" src="/sessions/${browserDescriptor.id}/screencast.mjpg"/>
+<img alt="chrome-live screencast" src="${streamSrc}"/>
 </body>
 </html>
 `
@@ -7762,8 +9019,8 @@ code { color: #9ad; }
   // never set the sender.
   const messagesMatch = path.match(/^\/sessions\/([^/]+)\/messages$/)
   if (messagesMatch && req.method === "POST") {
-    const id = messagesMatch[1]
-    if (!id) return false
+    const id = decodePathId(messagesMatch[1] ?? "")
+    if (!id) return true
     const recipient = registry.get(id)
     if (!recipient) {
       json(404, { error: "no_such_session", id })
@@ -7800,20 +9057,58 @@ code { color: #9ad; }
     // Same ACL decision as the `message_send` tool (siblings,
     // same-workspace, peer groups) - read fresh from config per request.
     const messaging = await messagingDefaultsFor()
-    const policy: PermissionContext = {
-      messaging: {
-        allowSiblings: messaging.allowSiblings,
-        allowSameWorkspace: messaging.allowSameWorkspace,
-        peerGroups: messaging.peerGroups,
-        agentInterrupt: messaging.agentInterrupt,
-      },
-    }
+    // The same shared context as `message_send` / `message_reply`, including
+    // any explicit `defaults.messaging.grants`; `operatorLabelOf` is what
+    // makes a sender's `session-label://<label>` principal resolvable.
+    const basePolicy = buildMessagingPermissionContext({
+      defaults: messaging,
+      registry,
+      workspaceOfCwd: createWorkspaceOfCwd(),
+    })
+    // A reply to a message the sender received is admitted whatever the
+    // relation (permissions.ts REPLY_RULE).
+    const policy: PermissionContext =
+      sender && typeof b.replyTo === "string" && b.replyTo.startsWith("msg_")
+        ? {
+            ...basePolicy,
+            reply: {
+              messageId: b.replyTo,
+              originalSenderOf: (sid, mid) => registry.findReceivedMessage(sid, mid)?.from.sessionId,
+            },
+          }
+        : basePolicy
     const principal: Principal = sender
       ? { kind: "session", session: sender }
       : { kind: "operator", via: "anonymous-local" }
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
+    // The message answers one the sender received from this recipient: its
+    // original sender decides whether the reply is labelled (the replier's
+    // own identity does not — parity with the `message_send` tool).
+    const answersReceived =
+      sender !== undefined &&
+      typeof b.replyTo === "string" &&
+      policy.reply?.originalSenderOf(sender.id, policy.reply.messageId) === recipient.id
+    const originalFrom =
+      answersReceived && sender && typeof b.replyTo === "string"
+        ? registry.findReceivedMessage(sender.id, b.replyTo)?.from
+        : undefined
+    const originalUnverified = originalFrom?.unverified === true || originalFrom?.anonymous === true
+    const replyToUnverified = decision.rule === REPLY_RULE && originalUnverified
+    // Admitted only because the sender is an unverified (claimed) identity, or
+    // because the reply answers an unverified original: prefix the text;
+    // `decide("session.message.interrupt")` already caps it.
+    const unverifiedLabel =
+      sender !== undefined && decision.allow && (decision.rule === ANONYMOUS_SEND_RULE || replyToUnverified)
+    if (decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
+      warnPeerUnverified({
+        senderId: sender?.id,
+        recipientId: recipient.id,
+        slug: sender?.workspaceSlug,
+        rule: decision.rule,
+      })
+    }
     if (!decision.allow || !relation) {
       json(403, { error: "forbidden_recipient", id, callerSessionId: callerId, rule: decision.rule, reason: decision.reason })
       return true
@@ -7824,7 +9119,11 @@ code { color: #9ad; }
       msg = createSessionMessage({
         to: id,
         from: messageFrom(sender, relation),
-        text: b.text,
+        text: unverifiedLabel
+          ? (replyToUnverified
+              ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId) + b.text
+              : unverifiedSenderPrefix(sender?.label ?? sender?.id) + b.text)
+          : b.text,
         ...(b.kind !== undefined ? { kind: b.kind as MessageKind } : {}),
         ...(b.urgency !== undefined ? { urgency: b.urgency as MessageUrgency } : {}),
         ...(typeof b.replyTo === "string" ? { replyTo: b.replyTo } : {}),
@@ -7836,18 +9135,65 @@ code { color: #9ad; }
       return true
     }
     const provenance = sender ? `${relation}:${sender.id}` : "user"
+    const ledgerPath = ledgerPathOverride ?? join(agentprotoHome(), DELIVERY_LEDGER_FILE)
+    const writeLedger = (outcome: LedgerOutcome, routed?: { applied: boolean; routedTo?: string }): void => {
+      const line: LedgerLine = {
+        ts: new Date().toISOString(),
+        producer: "message",
+        subscriptionId: "message:http",
+        target: { kind: "session", id },
+        eventId: msg.id,
+        type: `message.${msg.kind ?? "message"}`,
+        subject: sender?.id ?? "user",
+        level: urgencyLevel(msg.urgency),
+        cap: 3,
+        rule: "sender-urgency",
+        applied: routed?.applied === true,
+        grant: shadowDeliveryGrant({
+          producer: {},
+          subject: sender?.id ?? "user",
+          target: id,
+        }),
+        outcome,
+        ...(routed?.routedTo !== undefined ? { routedTo: routed.routedTo } : {}),
+        messageId: msg.id,
+      }
+      appendLedgerLine(ledgerPath, line)
+    }
     try {
-      const r = await registry.sendMessage(msg, {
-        source: sender ? provenance : "user",
-        origin: provenance,
-        decision,
-        // A human operator keeps `interrupt`; session senders follow
-        // `defaults.messaging.agentInterrupt` (AIP-46: hosts SHOULD NOT grant
-        // it to session senders by default — they get `steer` instead).
-        ...(interruptDecision.allow ? { allowInterrupt: true } : {}),
+      const routed = await sendMessageWithDeadRecipientRoute(
+        registry,
+        msg,
+        {
+          source: sender ? provenance : "user",
+          origin: provenance,
+          decision,
+          // A human operator keeps `interrupt`; session senders follow
+          // `defaults.messaging.agentInterrupt` (AIP-46: hosts SHOULD NOT grant
+          // it to session senders by default — they get `steer` instead).
+          ...(interruptDecision.allow && !(sender && policy.reply?.originalSenderOf(sender.id, policy.reply.messageId) === recipient.id)
+            ? { allowInterrupt: true }
+            : {}),
+        },
+        messaging.deliveryApply,
+        parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
+      )
+      const r = routed.result
+      writeLedger(routed.routedTo !== undefined ? "retargeted" : messageOutcome(r), routed)
+      json(200, {
+        ok: true,
+        id: routed.routedTo ?? id,
+        relation,
+        ...r,
+        ...(routed.routedTo ? { routedFrom: id } : {}),
+        ...(unverifiedLabel
+          ? replyToUnverified
+            ? { replyToUnverified: true }
+            : { unverified: true }
+          : {}),
       })
-      json(200, { ok: true, id, relation, ...r })
     } catch (err) {
+      writeLedger("dropped")
       if (err instanceof SessionRetiredError) {
         json(409, retiredErrorWire(err))
         return true
@@ -7860,11 +9206,52 @@ code { color: #9ad; }
     }
     return true
   }
+  // POST /sessions/:id/touch — register or refresh an `external` row before
+  // it reads its inbox. Body `{ host, name?, hostSessionId?, entrypoint?, cwd?, permissionMode? }`. Only
+  // honoured on a trusted request (loopback or daemon bearer, as `/mcp`).
+  const touchMatch = path.match(/^\/sessions\/([^/]+)\/touch$/)
+  if (touchMatch && req.method === "POST") {
+    const id = decodePathId(touchMatch[1] ?? "")
+    if (!id) return true
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(id)) {
+      json(400, { error: "invalid_session_id", id })
+      return true
+    }
+    if (!externalClaimTrustedFor?.(req)) {
+      json(403, { error: "forbidden_external_claim" })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    const host = typeof b.host === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(b.host) ? b.host : undefined
+    if (!host) {
+      json(400, { error: "host_required", message: "host must match [A-Za-z0-9._-]{1,64}" })
+      return true
+    }
+    const desc = registry.touchExternal({
+      id,
+      host,
+      ...(typeof b.name === "string" ? { name: b.name } : {}),
+      ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
+      ...(typeof b.hostSessionId === "string" ? { hostSessionId: b.hostSessionId } : {}),
+      ...(typeof b.entrypoint === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(b.entrypoint)
+        ? { entrypoint: b.entrypoint }
+        : {}),
+      ...(typeof b.permissionMode === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(b.permissionMode)
+        ? { permissionMode: b.permissionMode }
+        : {}),
+    })
+    if (!desc) {
+      json(409, { error: "not_external", id })
+      return true
+    }
+    json(200, { ok: true, session: desc })
+    return true
+  }
   // GET /sessions/:id/inbox — un-consumed messages, oldest first.
   const inboxMatch = path.match(/^\/sessions\/([^/]+)\/inbox$/)
   if (inboxMatch && req.method === "GET") {
-    const id = inboxMatch[1]
-    if (!id) return false
+    const id = decodePathId(inboxMatch[1] ?? "")
+    if (!id) return true
     const inbox = registry.listInbox(id)
     if (inbox === null) {
       json(404, { error: "no_such_session", id })
@@ -7878,8 +9265,8 @@ code { color: #9ad; }
   // POST /sessions/:id/inbox/ack — body `{ ids: string[] | "all" }`.
   const inboxAckMatch = path.match(/^\/sessions\/([^/]+)\/inbox\/ack$/)
   if (inboxAckMatch && req.method === "POST") {
-    const id = inboxAckMatch[1]
-    if (!id) return false
+    const id = decodePathId(inboxAckMatch[1] ?? "")
+    if (!id) return true
     if (!registry.get(id)) {
       json(404, { error: "no_such_session", id })
       return true
@@ -7900,7 +9287,13 @@ code { color: #9ad; }
   }
 
   // POST /sessions/:id/checkpoint — build + persist a context-continuity
-  // checkpoint (the REST twin of `session_checkpoint`). Body `{ notes? }`.
+  // checkpoint (the REST twin of `session_checkpoint`). Body `{ notes?,
+  // reason?, occurrenceId?, trigger? }`. `reason` names what the checkpoint
+  // precedes in its notice line; `reason: "native-pre-compact"` (the
+  // projected PreCompact hook, `agentproto hook pre-compact`) never asks the
+  // source session for a handoff turn: it is busy inside its own compaction.
+  // A repeated `occurrenceId` for the same session answers the first
+  // checkpoint (`deduped: true`) without building another.
   const checkpointMatch = path.match(/^\/sessions\/([^/]+)\/checkpoint$/)
   if (checkpointMatch && req.method === "POST") {
     const id = checkpointMatch[1]
@@ -7915,27 +9308,97 @@ code { color: #9ad; }
       json(400, { error: "invalid_notes", message: "notes must be a string" })
       return true
     }
+    if (b.reason !== undefined && (typeof b.reason !== "string" || !CHECKPOINT_REASON_RE.test(b.reason))) {
+      json(400, {
+        error: "invalid_reason",
+        message: `reason must be 1 to ${CHECKPOINT_REASON_MAX} chars: letters, digits, spaces and . _ : - (starting with a letter or digit)`,
+      })
+      return true
+    }
+    if (b.occurrenceId !== undefined && (typeof b.occurrenceId !== "string" || !CHECKPOINT_OCCURRENCE_RE.test(b.occurrenceId))) {
+      json(400, {
+        error: "invalid_occurrence_id",
+        message: "occurrenceId must be 1 to 128 chars with no whitespace, control character or \"/\"",
+      })
+      return true
+    }
+    if (b.trigger !== undefined && b.trigger !== "auto" && b.trigger !== "manual") {
+      json(400, { error: "invalid_trigger", message: 'trigger must be "auto" or "manual"' })
+      return true
+    }
     const gate = checkpointableSession(desc)
     if (gate) {
       json(gate.status, { error: gate.error, message: gate.message, id: desc.id })
       return true
     }
-    try {
-      const policy = desc.contextContinuity!
+    const reason = b.reason as string | undefined
+    const occurrenceKey =
+      typeof b.occurrenceId === "string"
+        ? buildOccurrenceKey({
+            sessionId: desc.id,
+            event: "compact-start",
+            occurrenceId: b.occurrenceId,
+            bindingId: "builtin:pre-compact-checkpoint",
+          })
+        : undefined
+    const prior = occurrenceKey ? checkpointOccurrences.get(occurrenceKey) : undefined
+    if (prior) {
+      json(200, { ...prior, deduped: true })
+      return true
+    }
+    // A request for the same occurrence that is already building: wait for it
+    // and answer its checkpoint instead of building a second one.
+    const pending = occurrenceKey ? checkpointInflight.get(occurrenceKey) : undefined
+    if (pending) {
+      try {
+        json(200, { ...(await pending), deduped: true })
+      } catch (err) {
+        json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+      }
+      return true
+    }
+    const buildResponse = async (): Promise<Record<string, unknown>> => {
+      const { source, policy } = withContextPolicy(desc)
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
-      const checkpoint = await buildContextCheckpoint(desc, {
+      const checkpoint = await buildContextCheckpoint(source, {
         contextPct: pct,
         ...(b.notes ? { notes: b.notes as string } : {}),
+        ...(reason === NATIVE_PRE_COMPACT_REASON ? { askSource: false } : {}),
       })
       await persistCheckpoint(checkpoint)
-      json(200, {
+      registry.noteCheckpointWritten(
+        desc.id,
+        reason
+          ? {
+              checkpointId: checkpoint.checkpointId,
+              checkpointPath: checkpoint.checkpointPath,
+              // The trigger ("auto" | "manual") rides in the notice line so
+              // the transcript says which kind of compaction it preceded.
+              before: typeof b.trigger === "string" ? `${reason} (${b.trigger})` : reason,
+            }
+          : undefined,
+      )
+      return {
         ok: true,
         checkpointId: checkpoint.checkpointId,
         path: checkpoint.checkpointPath,
         checkpoint,
-      })
-    } catch (err) {
-      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    try {
+      const run = buildResponse()
+      if (occurrenceKey) checkpointInflight.set(occurrenceKey, run)
+      let response: Record<string, unknown>
+      try {
+        response = await run
+      } finally {
+        if (occurrenceKey) checkpointInflight.delete(occurrenceKey)
+      }
+      // Nothing awaits between the delete above and this store, so a request
+      // arriving now finds one of the two maps populated.
+      if (occurrenceKey) rememberCheckpointOccurrence(occurrenceKey, response)
+      json(200, response)
+    } catch (err) {      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
     }
     return true
   }
@@ -7987,10 +9450,10 @@ code { color: #9ad; }
     const notes = b.notes as string | undefined
     if (b.dryRun === true) {
       try {
-        const policy = prev.contextContinuity!
+        const { source, policy } = withContextPolicy(prev)
         const pct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
         // Read-only: never prompt the source session from a dry run.
-        const checkpoint = await buildContextCheckpoint(prev, {
+        const checkpoint = await buildContextCheckpoint(source, {
           contextPct: pct,
           askSource: false,
           ...(notes ? { notes } : {}),
@@ -8032,7 +9495,7 @@ code { color: #9ad; }
           ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
           ...(listAgentAdapters ? { listAgentAdapters } : {}),
         },
-        prev,
+        withContextPolicy(prev).source,
         {
           harness: to,
           ...(typeof b.model === "string" ? { model: b.model } : {}),
@@ -8190,12 +9653,9 @@ code { color: #9ad; }
     const lastNRaw = Number(query.get("lastN") ?? "80")
     const limit = Number.isInteger(lastNRaw) && lastNRaw >= 1 ? Math.min(lastNRaw, 500) : 80
     const clean = ["1", "true"].includes(query.get("clean") ?? "")
-    const lines: string[] = []
-    const unsub = registry.attach(desc.id, (line: string) => {
-      lines.push(line)
-    })
-    if (unsub) unsub()
-    const tail = lines.slice(-limit)
+    // Live ring while the session has one; a terminal row's rings are cleared
+    // at exit, so this recovers its final text instead of returning nothing.
+    const tail = registry.readOutputTail(desc.id, limit)
     let output = clean ? cleanAgentLines(tail) : tail
     let activityFallback = false
     if (clean && output.length === 0 && tail.length > 0) {
@@ -8433,6 +9893,23 @@ code { color: #9ad; }
         return true
       }
     }
+    // `contextSettings` is the AIP-46 name of the block, `contextContinuity`
+    // its legacy alias: both land in the one per-key override the restart core
+    // overlays on the prior policy (the new name wins key by key).
+    let contextContinuityOverride: RestartOverrides["contextContinuity"]
+    for (const field of ["contextContinuity", "contextSettings"] as const) {
+      if (b[field] === undefined) continue
+      const parsed = contextContinuityInputSchema.safeParse(b[field])
+      if (!parsed.success) {
+        const invalid = new RestartOverrideError(
+          `restart ${field} override: ` +
+            parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; "),
+        )
+        json(invalid.status, { ...sessionRestartErrorBody(invalid), sessionId: prev.id })
+        return true
+      }
+      contextContinuityOverride = layerContextSettings(contextContinuityOverride, parsed.data)
+    }
     const overrides: RestartOverrides = {
       ...(str(b.model) !== undefined ? { model: str(b.model)! } : {}),
       ...(str(b.effort) !== undefined ? { effort: str(b.effort) as RestartOverrides["effort"] } : {}),
@@ -8453,6 +9930,7 @@ code { color: #9ad; }
         : {}),
       ...(b.posture !== undefined ? { posture: b.posture as RestartOverrides["posture"] } : {}),
       ...(str(b.contextProfile) !== undefined ? { contextProfile: str(b.contextProfile)! } : {}),
+      ...(contextContinuityOverride !== undefined ? { contextContinuity: contextContinuityOverride } : {}),
       ...(str(b.mode) !== undefined ? { mode: str(b.mode)! } : {}),
       ...(mcpServersOverride !== undefined ? { mcpServers: mcpServersOverride } : {}),
     }
@@ -8622,9 +10100,11 @@ code { color: #9ad; }
   // Bulk garbage-collect terminal-status sessions — the HTTP twin of the
   // `session_gc` MCP verb, powering `agentproto sessions gc`. Body:
   // `{ olderThanDays?: number, forget?: boolean, retention?: boolean,
-  // dryRun?: boolean, reviewMaxAgeDays?: number, maxAgeDays?: number }`.
+  // dryRun?: boolean, reviewMaxAgeDays?: number, maxAgeDays?: number,
+  // adapterCaches?: boolean }`.
   // `retention:true` runs the on-disk retention pass (deletes old terminal
-  // session dirs — see session-retention.ts). Otherwise ARCHIVES by default
+  // session dirs, see session-retention.ts); `adapterCaches:true` reclaims
+  // dead lineages' adapter-config cache content (adapter-config-retention.ts). Otherwise ARCHIVES by default
   // (reversible — hidden from the default list, still readable + importable);
   // `forget:true` DROPS each descriptor to reclaim sessions.json space (the
   // native conversation on disk survives). The registry never touches a live
@@ -8671,6 +10151,16 @@ code { color: #9ad; }
       typeof b.olderThanDays === "number" && b.olderThanDays > 0 ? b.olderThanDays : undefined
     const forget = b.forget === true
     try {
+      if (b.adapterCaches === true) {
+        // Adapter-config cache sweep (adapter-config-retention.ts): deletes
+        // the cache content of dead lineages' config dirs. `dryRun` previews.
+        const res = await registry.pruneAdapterConfigCaches({
+          ...(b.dryRun === true ? { dryRun: true } : {}),
+          ...(typeof b.maxAgeDays === "number" ? { maxAgeDays: b.maxAgeDays } : {}),
+        })
+        json(200, res)
+        return true
+      }
       if (b.retention === true) {
         // On-disk retention pass (session-retention.ts): DELETES terminal
         // session dirs past their age threshold. `dryRun` previews.
@@ -8777,7 +10267,7 @@ code { color: #9ad; }
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/retire|\/pin|\/prompt-policy|\/archive|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/reap|\/kill|\/retire|\/pin|\/prompt-policy|\/archive|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -8837,7 +10327,8 @@ code { color: #9ad; }
       reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
     )
     const fmt = qs.get("format") === "json" ? "json" as const : "markdown" as const
-    const adapterOverride = qs.get("adapter") ?? undefined
+    // `?harness=` is canonical, `?adapter=` its deprecated alias.
+    const adapterOverride = qs.get("harness") || qs.get("adapter") || undefined
     const cwdOverride = qs.get("cwd") ?? undefined
     const sourceParam = qs.get("source")
     const source =
@@ -9205,6 +10696,29 @@ code { color: #9ad; }
     return true
   }
 
+  // Reap (HTTP-only) — the host guard's close path. Reuses
+  // `registry.reapIdle`: an agent-cli row that is running, idle and not busy
+  // is retired with `endedReason: "guard-reaped"`, its binding cleared so a
+  // later explicit prompt resumes it in place, and NO `operator-stopped`
+  // label (it is an automatic teardown, not an operator kill). Body:
+  // `{ idleMs?: number }` (stamped on the `session:reaped` event).
+  // 404 unknown session, 409 when the row is not currently reapable.
+  if (suffix === "/reap" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    if (b.idleMs !== undefined && (typeof b.idleMs !== "number" || !Number.isFinite(b.idleMs) || b.idleMs < 0)) {
+      json(400, { error: "invalid_body", message: "`idleMs` must be a non-negative number" })
+      return true
+    }
+    if (!registry.get(id)) {
+      json(404, { error: "session_not_found", message: `session "${rawIdOrName}" not found`, sessionId: rawIdOrName })
+      return true
+    }
+    const ok = registry.reapIdle(id, typeof b.idleMs === "number" ? b.idleMs : 0, "guard-reaped")
+    json(ok ? 200 : 409, { ok, sessionId: id })
+    return true
+  }
+
   if (suffix === "/kill" && req.method === "POST") {
     // Optional `{ reason: "completed" | "stopped" }` body — an operator's
     // intent for WHY it's stopping this session, not just that it is. Omitted
@@ -9402,7 +10916,14 @@ code { color: #9ad; }
     const qsForFields = reqUrlForFields.includes("?")
       ? reqUrlForFields.slice(reqUrlForFields.indexOf("?") + 1)
       : ""
-    json(200, projectSessionForHttp(resolvedDesc, parseSessionFields(new URLSearchParams(qsForFields))))
+    // The per-session descriptor is the live read surface: it keeps
+    // `availableCommands` (the VS Code transcript panel reads it from here),
+    // unlike the default list projection.
+    json(200, projectSessionForHttp(
+      resolvedDesc,
+      parseSessionFields(new URLSearchParams(qsForFields)),
+      new Set(),
+    ))
     return true
   }
 
@@ -9523,6 +11044,7 @@ async function handleTunnels(
         ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
         ...(b.autostart === true ? { autostart: true } : {}),
         ...(typeof b.hostname === "string" ? { hostname: b.hostname } : {}),
+        ...(typeof b.root === "string" ? { root: b.root } : {}),
         ...(typeof b.tunnelId === "string" ? { tunnelId: b.tunnelId } : {}),
         ...(typeof b.credentialsFile === "string"
           ? { credentialsFile: b.credentialsFile }
@@ -9689,6 +11211,9 @@ async function handleTunnels(
  *
  *   GET    /sentinels        → { sentinels: SentinelView[] }
  *   POST   /sentinels        → SentinelView (creates a new sentinel)
+ *   GET    /sentinels/routes → SentinelRoutesListing (read-only, shadow)
+ *   GET    /sentinels/routes/explain?subject=&types=&site=&provider=
+ *                            → SentinelRouteExplanation
  *   GET    /sentinels/:id    → SentinelView
  *   DELETE /sentinels/:id    → { ok, id }
  */
@@ -9734,6 +11259,7 @@ async function handleSentinels(
       ...(Array.isArray(b.types) ? { types: b.types.filter((t): t is string => typeof t === "string") } : {}),
       ...(typeof b.urgency === "string" ? { urgency: b.urgency as MessageUrgency } : {}),
       ...(until ? { until } : {}),
+      ...(typeof b.batchMs === "number" ? { batchMs: b.batchMs } : {}),
       ...(typeof b.provider === "string" ? { provider: b.provider } : {}),
       ...(typeof b.expiresAt === "string" ? { expiresAt: b.expiresAt } : {}),
     }
@@ -9743,6 +11269,7 @@ async function handleSentinels(
         resolveProvider: deps.resolveProvider,
         isSessionAlive: deps.isSessionAlive,
         ...(deps.activeIntervalMs !== undefined ? { activeIntervalMs: deps.activeIntervalMs } : {}),
+        ...(deps.routing ? { routing: deps.routing, site: "http" as const } : {}),
       },
       input,
     )
@@ -9751,6 +11278,50 @@ async function handleSentinels(
       return true
     }
     json(201, sentinelView(result.sentinel))
+    return true
+  }
+
+  // Read-only routing surfaces (`agentproto sentinel routes`). Matched before
+  // `/sentinels/:id` so "routes" is never read as a sentinel id.
+  if ((path === "/sentinels/routes" || path === "/sentinels/routes/explain") && req.method === "GET") {
+    const config = deps.routing ? await deps.routing.config() : { routes: [] }
+    if (path === "/sentinels/routes") {
+      json(
+        200,
+        await listSentinelRoutes({
+          resolveProvider: deps.resolveProvider,
+          routes: config.routes,
+          ...(config.warnings ? { parseWarnings: config.warnings } : {}),
+          ...(config.mode ? { configuredMode: config.mode } : {}),
+        }),
+      )
+      return true
+    }
+    const q = new URL(req.url ?? "/", "http://localhost").searchParams
+    const subject = q.get("subject")
+    if (!subject) {
+      json(400, { error: "missing_subject", message: "provide ?subject=" })
+      return true
+    }
+    const site = q.get("site") ?? "watch"
+    if (!(SENTINEL_ROUTE_SITES as readonly string[]).includes(site)) {
+      json(400, { error: "invalid_site", message: `site must be one of ${SENTINEL_ROUTE_SITES.join(", ")}` })
+      return true
+    }
+    const types = q.get("types")?.split(",").map(t => t.trim()).filter(Boolean)
+    const provider = q.get("provider")
+    json(
+      200,
+      await explainSentinelRoute(
+        {
+          subject,
+          site: site as SentinelRouteSite,
+          ...(types && types.length > 0 ? { types } : {}),
+          ...(provider ? { provider } : {}),
+        },
+        { resolveProvider: deps.resolveProvider, routes: config.routes, ...(deps.publicUrl ? { publicUrl: deps.publicUrl } : {}) },
+      ),
+    )
     return true
   }
 
@@ -9915,6 +11486,22 @@ async function handleWebhookTargetSentinel(
     return
   }
 
+  // Shadow only: decide, log, stamp. `providerSlug` above stays the one used.
+  const route = deps.routing
+    ? await shadowSentinelRoute(
+        deps.routing,
+        deps.resolveProvider,
+        {
+          subject,
+          site: "http",
+          targetKind: "webhook",
+          ...(types ? { types } : {}),
+          ...(typeof b.provider === "string" && b.provider.length > 0 ? { provider: b.provider } : {}),
+        },
+        providerSlug,
+      )
+    : undefined
+
   const spec: SentinelSpec = {
     match: singleMatch(subject, types),
     until,
@@ -9946,6 +11533,7 @@ async function handleWebhookTargetSentinel(
       provider: providerSlug,
       handle,
       ...(typeof b.expiresAt === "string" ? { expiresAt: b.expiresAt } : {}),
+      ...(route ? { route } : {}),
     })
     json(201, sentinelView(sentinel))
   } catch (err) {
@@ -10404,6 +11992,7 @@ async function handleRemoteControl(
       ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
       ...(typeof b.targetPort === "number" ? { targetPort: b.targetPort } : {}),
       ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
+      ...(typeof b.phoneLink === "boolean" ? { phoneLink: b.phoneLink } : {}),
     }
     try {
       const result = await controller.enable(input)
@@ -10443,6 +12032,56 @@ async function handleRoutinesListing(
   if (path !== "/routines" || req.method !== "GET") return false
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify({ routines: routineRegistrar.list() }))
+  return true
+}
+
+/** One request's caller-identity classification (see `observeCallerIdentity`;
+ *  the kinds and classes live in identity-observations.ts). */
+interface IdentityObservation {
+  mode: SessionTokenMode
+  kind: IdentityKind
+  claimClass?: ClaimOnlyClass
+}
+
+/** The `/sessions` routes that read the caller identity (through
+ *  `resolveCallerSessionIdObserved`), each behind `enforceCallerIdentity`.
+ *  A new route that reads the caller identity belongs here. */
+const IDENTITY_GATED_SESSION_ROUTES: ReadonlyArray<{ method: string; re: RegExp; label: string }> = [
+  { method: "POST", re: /^\/sessions\/agent$/, label: "POST /sessions/agent" },
+  { method: "POST", re: /^\/sessions\/chat$/, label: "POST /sessions/chat" },
+  { method: "POST", re: /^\/sessions\/[^/]+\/messages$/, label: "POST /sessions/:id/messages" },
+]
+
+function isIdentityGatedSessionRoute(method: string, path: string): boolean {
+  return IDENTITY_GATED_SESSION_ROUTES.some(r => r.method === method && r.re.test(path))
+}
+
+/** Distinct (kind, claim, route) log lines kept per process. */
+const IDENTITY_LOG_KEYS_MAX = 1000
+
+/** The `byRoute` bucket of a path: `mcp`, `sessions`, else the path itself. */
+function identityRouteClass(path: string): string {
+  if (path === "/mcp" || path.startsWith("/mcp/")) return "mcp"
+  if (path === "/sessions" || path.startsWith("/sessions/")) return "sessions"
+  return path
+}
+
+/**
+ * GET /reactions → the reaction runner health read model, plus `wiring` when
+ * the wiring accessor is present. Returns `true` when it handled the request
+ * so the dispatcher skips the 404 path.
+ */
+async function handleReactionsHealth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  reactions: NonNullable<RuntimeHttpServerOptions["reactions"]>,
+): Promise<boolean> {
+  if (path !== "/reactions" || req.method !== "GET") return false
+  const health = reactions.health()
+  const wiring = reactions.wiring?.()
+  res.writeHead(200, { "content-type": "application/json" })
+  res.end(JSON.stringify(wiring === undefined ? health : { ...health, wiring }))
   return true
 }
 
@@ -10994,11 +12633,52 @@ async function handleTasks(
   return true
 }
 
+/** `defaults.spawn.delegationGate`, read per call; a missing or malformed config gives observe. */
+async function resolveDelegationGateMode(
+  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
+): Promise<DelegationGateMode> {
+  try {
+    return (await loadCfg()).defaults?.spawn?.delegationGate ?? DEFAULT_DELEGATION_GATE_MODE
+  } catch {
+    return DEFAULT_DELEGATION_GATE_MODE
+  }
+}
+
+/** `defaults.spawn.stdioMountGate`, read per call; a missing or malformed config gives observe. */
+async function resolveStdioMountGateMode(
+  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
+): Promise<StdioMountGateMode> {
+  try {
+    return (await loadCfg()).defaults?.spawn?.stdioMountGate ?? DEFAULT_STDIO_MOUNT_GATE_MODE
+  } catch {
+    return DEFAULT_STDIO_MOUNT_GATE_MODE
+  }
+}
+
+/** `defaults.spawn.profileGate`, read per call; a missing or malformed config gives observe. */
+async function resolveProfileGateMode(
+  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
+): Promise<ProfileGateMode> {
+  try {
+    return (await loadCfg()).defaults?.spawn?.profileGate ?? DEFAULT_PROFILE_GATE_MODE
+  } catch {
+    return DEFAULT_PROFILE_GATE_MODE
+  }
+}
+
 /**
  * /permissions routes — the cross-session permission inbox:
  *   GET  /permissions            → { permissions: [...] } across all sessions
  *                                  (optional ?sessionId=<id> filter)
- *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny
+ *   GET  /permissions/grants     → { grants, unmapped, inputs, delegation, profileUse }:
+ *                                  the effective grants derived from the
+ *                                  messaging switches and allowPromptFrom,
+ *                                  plus the entries no grant expresses, plus
+ *                                  the delegation and auth-profile gates'
+ *                                  modes and counters.
+ *                                  Read-only.
+ *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny,
+ *                                  or { answers } to submit a multi-field question
  *
  * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
  * same SessionsRegistry inbox. Each list entry is enriched with the owning
@@ -11010,6 +12690,11 @@ async function handlePermissions(
   res: ServerResponse,
   path: string,
   registry: SessionsRegistry,
+  messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
+  operatorDelegatesFor: () => Promise<string[]> = resolveOperatorDelegates,
+  delegationGateModeFor: () => Promise<DelegationGateMode> = resolveDelegationGateMode,
+  profileGateModeFor: () => Promise<ProfileGateMode> = resolveProfileGateMode,
+  stdioMountGateModeFor: () => Promise<StdioMountGateMode> = resolveStdioMountGateMode,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -11029,12 +12714,55 @@ async function handlePermissions(
     return true
   }
 
+  if (path === "/permissions/grants" && req.method === "GET") {
+    const [messaging, operatorDelegates, delegationGateMode, profileGateMode, stdioMountGateMode] =
+      await Promise.all([
+        messagingDefaultsFor(),
+        operatorDelegatesFor(),
+        delegationGateModeFor(),
+        profileGateModeFor(),
+        stdioMountGateModeFor(),
+      ])
+    const report = deriveEffectiveGrants({
+      messaging: {
+        allowSiblings: messaging.allowSiblings,
+        allowSameWorkspace: messaging.allowSameWorkspace,
+        peerGroups: messaging.peerGroups.map(g => [...g]),
+        peerBinding: messaging.peerBinding,
+      },
+      operatorDelegates,
+      sessions: registry.list().map(d => ({
+        id: d.id,
+        ...(d.operatorLabel ? { operatorLabel: d.operatorLabel } : {}),
+        ...(d.allowPromptFrom ? { allowPromptFrom: d.allowPromptFrom } : {}),
+      })),
+    })
+    json(200, {
+      ...report,
+      // The explicit grants as the operator wrote them, beside the derived
+      // list above.
+      configured: messaging.grants,
+      delegation: delegationReport(delegationGateMode ?? DEFAULT_DELEGATION_GATE_MODE),
+      profileUse: profileReport(profileGateMode ?? DEFAULT_PROFILE_GATE_MODE),
+      stdioMounts: stdioMountReport(stdioMountGateMode ?? DEFAULT_STDIO_MOUNT_GATE_MODE),
+    })
+    return true
+  }
+
   const idMatch = path.match(/^\/permissions\/([^/]+)$/)
   if (idMatch && req.method === "POST") {
     const id = decodeURIComponent(idMatch[1] ?? "")
     const body = await readJsonBody(req)
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
-    const decision = b.decision
+    const answers =
+      b.answers && typeof b.answers === "object" && !Array.isArray(b.answers)
+        ? (b.answers as AgentPromptAnswers)
+        : undefined
+    if (b.answers !== undefined && !answers) {
+      json(400, { error: "invalid_answers", message: "body.answers must be an object keyed by field id" })
+      return true
+    }
+    const decision = b.decision ?? (answers ? "approve" : undefined)
     if (decision !== "approve" && decision !== "deny") {
       json(400, {
         error: "invalid_decision",
@@ -11047,12 +12775,18 @@ async function handlePermissions(
     const feedback = typeof b.feedback === "string" ? b.feedback : undefined
     const result = await registry.respondPermission(id, {
       decision,
+      ...(answers ? { answers } : {}),
       ...(optionId ? { optionId } : {}),
       ...(scope ? { scope } : {}),
       ...(feedback ? { feedback } : {}),
     })
     if (!result.ok) {
-      const status = result.error === "not_found" || result.error === "session_gone" ? 404 : 409
+      const status =
+        result.error === "not_found" || result.error === "session_gone"
+          ? 404
+          : result.error === "invalid_answers"
+            ? 400
+            : 409
       json(status, { error: result.error, message: result.message })
       return true
     }
@@ -11095,7 +12829,10 @@ function enrichPermission(
  *   POST   /pairings/offer         → { ttlMinutes?, rendezvous? } mint offer
  *                                    → { url, fingerprint, rendezvous,
  *                                        rendezvousIsHostedDefault, expiresAt }
- *   GET    /pairings               → { pairings: [...] }
+ *   GET    /pairings               → { pairings: [...] } (persisted only)
+ *   GET    /pairings/pending       → { pending: [...] } (awaiting confirm)
+ *   POST   /pairings/confirm       → { target } promote a pending pairing
+ *   POST   /pairings/decline       → { target } drop a pending pairing
  *   DELETE /pairings/:fingerprint  → revoke by fingerprint (or name)
  *
  * Mirrors the MCP `pair_offer` / `pair_list` / `pair_revoke` tools over the same
@@ -11155,6 +12892,42 @@ async function handlePairings(
     return true
   }
 
+  if (path === "/pairings/pending" && req.method === "GET") {
+    json(200, { pending: await registry.listPending() })
+    return true
+  }
+
+  if ((path === "/pairings/confirm" || path === "/pairings/decline") && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const target = typeof b.target === "string" ? b.target : ""
+    if (!target) {
+      json(400, {
+        error: "missing_target",
+        message: "pass { target } (short code or full fingerprint; never a client name)",
+      })
+      return true
+    }
+    const result =
+      path === "/pairings/confirm"
+        ? await registry.confirmPending(target)
+        : await registry.declinePending(target)
+    if (!result.ok) {
+      json(
+        result.reason === "ambiguous" ? 409 : 404,
+        { error: result.reason, message: result.message },
+      )
+      return true
+    }
+    json(
+      200,
+      path === "/pairings/confirm"
+        ? { ok: true, confirmed: target }
+        : { ok: true, declined: target },
+    )
+    return true
+  }
+
   const fpMatch = path.match(/^\/pairings\/([^/]+)$/)
   if (fpMatch && req.method === "DELETE") {
     const target = decodeURIComponent(fpMatch[1] ?? "")
@@ -11167,10 +12940,19 @@ async function handlePairings(
     return true
   }
 
-  if (path === "/pairings" || path === "/pairings/offer" || fpMatch) {
+  if (
+    path === "/pairings" ||
+    path === "/pairings/offer" ||
+    path === "/pairings/pending" ||
+    path === "/pairings/confirm" ||
+    path === "/pairings/decline" ||
+    fpMatch
+  ) {
     json(405, {
       error: "method_not_allowed",
-      message: "POST /pairings/offer · GET /pairings · DELETE /pairings/:fingerprint",
+      message:
+        "POST /pairings/offer · GET /pairings · GET /pairings/pending · " +
+        "POST /pairings/confirm · POST /pairings/decline · DELETE /pairings/:fingerprint",
     })
     return true
   }
@@ -11628,6 +13410,10 @@ async function handleCron(
       json(400, { error: "missing_action" })
       return true
     }
+    if (b.notify !== undefined && b.notify !== "always" && b.notify !== "onFailure") {
+      json(400, { error: "invalid_body", message: 'notify must be "always" or "onFailure"' })
+      return true
+    }
     try {
       const job = await scheduler.create({
         label: typeof b.label === "string" ? b.label : undefined,
@@ -11635,6 +13421,14 @@ async function handleCron(
         timezone: typeof b.timezone === "string" ? b.timezone : undefined,
         recurring: typeof b.recurring === "boolean" ? b.recurring : true,
         action: action as import("./cron-scheduler.js").CronAction,
+        ...(b.notify !== undefined
+          ? { notify: b.notify as import("./cron-scheduler.js").CronNotify }
+          : {}),
+        // This route is gated by the operator token (or an allowlisted
+        // Origin) and carries no session identity, so the creator is always
+        // the operator. `agentproto cron add` and other operator clients
+        // create jobs here.
+        createdBy: { kind: "operator" },
       })
       json(201, job)
     } catch (err) {
@@ -11694,13 +13488,14 @@ async function handleCron(
       return true
     }
     const b = body as Record<string, unknown>
-    const allowed = new Set(["schedule", "label", "timezone", "recurring", "active", "action"])
+    const allowed = new Set(["schedule", "label", "timezone", "recurring", "active", "action", "notify"])
     if (Object.keys(b).some(key => !allowed.has(key)) ||
         (b.schedule !== undefined && (typeof b.schedule !== "string" || !b.schedule)) ||
         (b.label !== undefined && b.label !== null && typeof b.label !== "string") ||
         (b.timezone !== undefined && b.timezone !== null && typeof b.timezone !== "string") ||
         (b.recurring !== undefined && typeof b.recurring !== "boolean") ||
         (b.active !== undefined && typeof b.active !== "boolean") ||
+        (b.notify !== undefined && b.notify !== null && b.notify !== "always" && b.notify !== "onFailure") ||
         (b.action !== undefined && (!b.action || typeof b.action !== "object" || Array.isArray(b.action)))) {
       json(400, { error: "invalid_body" })
       return true
@@ -11775,6 +13570,7 @@ interface InboundHandlerDeps {
     req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
   ) => ReturnType<typeof handleSentinelInbound>
   routeInboundMessage?: RuntimeHttpServerOptions["routeInboundMessage"]
+  permissionCallbacks?: RuntimeHttpServerOptions["permissionCallbacks"]
   endpointStore?: InboundEndpointStore
   checkSessionsToken: (req: IncomingMessage) => "ok" | "missing" | "bad"
   rejectUnauthorizedSession: (req: IncomingMessage, res: ServerResponse, reason: "missing" | "bad") => void
@@ -11986,6 +13782,20 @@ async function handleProviderInbound(
     res.writeHead(400, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: "invalid_json" }))
     return
+  }
+
+  if (
+    deps.permissionCallbacks &&
+    endpoint.provider === "telegram" &&
+    endpoint.secret &&
+    endpoint.alias === deps.permissionCallbacks.alias
+  ) {
+    const outcome = await deps.permissionCallbacks.handleUpdate(parsed)
+    if (outcome.handled) {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ action: "permission_callback" }))
+      return
+    }
   }
 
   const normalized = normalizeInbound(endpoint.provider, parsed, {
@@ -12611,8 +14421,13 @@ async function handleAppUiToolCall(
         : {}
   }
   const installed = appRegistry.getApp(appId)
-  const result = installed?.ui
-    ? await performAppToolCall(appRegistry, { appId, tool, args }, deps, linkClaims)
+  const result = installed?.ui || (installed?.exposes?.tools?.length ?? 0) > 0
+    ? await performAppToolCall(
+        appRegistry,
+        { appId, tool, args },
+        { ...deps, exposedToolsMode: await resolveExposedToolsMode() },
+        linkClaims,
+      )
     : await performBuiltinPanelToolCall(
         resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))?.tools,
         { appId, tool, args },
@@ -12630,7 +14445,9 @@ async function handleAppUiToolCall(
  *  route's own auth IS the link token + the Telegram Mini App `initData`
  *  it carries, verified inside `authorizeAppLink` against the daemon's
  *  stored bot token — never the daemon bearer. Replies 200 with
- *  `{ ok: true, token, exp, appId, sessionId }` on success; 400/401/403
+ *  `{ ok: true, token, exp, appId, sessionId?, claims }` on success (`claims`
+ *  is the link's non-reserved claims; `sessionId` only when the link has
+ *  one); 400/401/403
  *  with `{ ok: false, error }` otherwise. 501 when no `telegramCreds` store
  *  was wired (mirrors `appToolCallDeps`'s "not enabled" posture). */
 async function handleAppLinkAuth(
@@ -12674,7 +14491,14 @@ async function handleAppLinkAuth(
     json(401, { ok: false, error: `this link token is scoped to app "${result.appId}", not "${appId}".` })
     return
   }
-  json(200, { ok: true, token: result.sessionToken, exp: result.exp, appId: result.appId, sessionId: result.sessionId })
+  json(200, {
+    ok: true,
+    token: result.sessionToken,
+    exp: result.exp,
+    appId: result.appId,
+    ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+    claims: result.claims,
+  })
 }
 
 async function handleApps(
@@ -12831,6 +14655,15 @@ function parseOperatorKillReason(body: unknown): "operator-completed" | "operato
   const raw =
     body && typeof body === "object" ? (body as Record<string, unknown>).reason : undefined
   return raw === "completed" ? "operator-completed" : "operator-stopped"
+}
+
+/** True when the request's content-type is `application/json` or a `+json`
+ *  type (parameters such as `; charset=utf-8` ignored). */
+function isJsonContentType(req: IncomingMessage): boolean {
+  const raw = req.headers["content-type"]
+  if (typeof raw !== "string") return false
+  const type = (raw.split(";")[0] ?? "").trim().toLowerCase()
+  return type === "application/json" || type.endsWith("+json")
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

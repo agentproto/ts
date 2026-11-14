@@ -14,20 +14,29 @@
  */
 
 import { z } from "zod"
+import type { Grant } from "@agentproto/policy"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
+import { sentinelRoutesSchema, sentinelRoutingModeSchema } from "@agentproto/sentinel"
+import { adapterDeprecation } from "./harness-alias.js"
+import { ACCOUNT_SLOT_NAME_RE, SLOT_REF_PREFIX } from "./account-slot-ref.js"
 // The browser entry: the same pure URL helpers, without pulling node:crypto in.
 import { resolvePairPageUrl, DEFAULT_PAIR_PAGE } from "@agentproto/secrets/pairing/browser"
 import type {
   AgentprotoConfig,
   AcpAgentConfigEntry,
   AgentsMdConfig,
+  MemoryStoreConfig,
   CatalogConfig,
   DaemonConfig,
   FeaturesConfig,
+  McpConfig,
   PairingConfig,
   ProfileConfig,
+  DeliveryConfig,
   ProvenanceConfig,
+  SentinelConfig,
   ApprovalsConfig,
+  ReachConfig,
   SessionsConfig,
   SpawnConfig,
   TerminalPreset,
@@ -55,8 +64,12 @@ import {
 import {
   DEFAULT_WORKTREE_ISOLATION,
   DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
+  DEFAULT_WORKTREE_PROVISION_MAX_MS,
+  DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS,
   WORKTREE_ISOLATION_ENV,
   WORKTREE_PROVISION_CONCURRENCY_ENV,
+  WORKTREE_PROVISION_MAX_ENV,
+  WORKTREE_PROVISION_STALL_TIMEOUT_ENV,
 } from "./worktree-isolation.js"
 import { DEFAULT_SPAWN_ATTACH, SPAWN_ATTACH_ENV } from "./spawn-attach.js"
 import { DEFAULT_SPAWN_DEDUPE, SPAWN_DEDUPE_ENV } from "./spawn-dedupe.js"
@@ -66,7 +79,15 @@ import { DEFAULT_AGENTS_MD_INLINE_MAX_KB } from "./agents-md.js"
 import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
 import { DEFAULT_MODEL_ROLES, MODEL_ROLE_PRESETS, MODEL_ROLE_PRESET_NAMES } from "./model-roles.js"
 import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
-import { DEFAULT_ROLE_DEPTH_CUTOFF } from "./role.js"
+import { DEFAULT_NESTED_AGENT, DEFAULT_ROLE_DEPTH_CUTOFF, DEFAULT_ROOT_AGENT } from "./role.js"
+import { DEFAULT_DELEGATION_GATE_MODE, type DelegationGateMode } from "./delegation-gate.js"
+import { DEFAULT_PROFILE_GATE_MODE, type ProfileGateMode } from "./profile-gate.js"
+import { DEFAULT_STDIO_MOUNT_GATE_MODE, type StdioMountGateMode } from "./stdio-mount-gate.js"
+import {
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  DEFAULT_BRAIN_MAX_INDEX_DOCS,
+} from "./brain-ingest-limits.js"
 
 // ── nested zod schemas, one per `config.ts` / `spawn-defaults.ts` interface ──
 
@@ -105,6 +126,24 @@ const spawnBrowserModeSchema: z.ZodType<SpawnBrowserMode> = z.union([
   z.literal(false),
 ])
 
+const delegationGateModeSchema: z.ZodType<DelegationGateMode> = z.union([
+  z.literal("off"),
+  z.literal("observe"),
+  z.literal("enforce"),
+])
+
+const profileGateModeSchema: z.ZodType<ProfileGateMode> = z.union([
+  z.literal("off"),
+  z.literal("observe"),
+  z.literal("enforce"),
+])
+
+const stdioMountGateModeSchema: z.ZodType<StdioMountGateMode> = z.union([
+  z.literal("off"),
+  z.literal("observe"),
+  z.literal("enforce"),
+])
+
 const sandboxCheckpointConfigSchema: z.ZodType<SandboxCheckpointConfig> = z
   .object(sandboxCheckpointConfigShape)
   .passthrough()
@@ -135,6 +174,7 @@ const defaultsAdapterConfigSchema: z.ZodType<DefaultsAdapterConfig> = z
     options: optionsMapSchema.optional(),
     auth: defaultsAdapterAuthConfigSchema.optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
+    contextSettings: contextContinuityPolicySchema.optional(),
     bundles: z.array(z.string()).optional(),
     daemonMount: z.boolean().optional(),
     contextProfile: z.string().optional(),
@@ -144,16 +184,94 @@ const defaultsAdapterConfigSchema: z.ZodType<DefaultsAdapterConfig> = z
 const mcpDefaultsConfigSchema: z.ZodType<McpDefaultsConfig> = z
   .object({
     deferredTools: deferredToolsConfigSchema.optional(),
+    profile: z.string().optional(),
   })
   .passthrough()
+
+/**
+ * `defaults.messaging.grants` - explicit AIP-38 grants the messaging ACL and
+ * the drive gate honor. The accepted shape is a strict subset of an AIP-38
+ * `Grant`: a string principal, at least one `session:message`,
+ * `session:prompt` or `session:control` action (with an optional scope),
+ * `ttl_seconds`, `granted_at` and `revoked`. Other actions, an object-form
+ * principal and conditions are rejected here. This is the one list of
+ * session-to-session grants: it keeps its `defaults.messaging` name.
+ */
+const unsupportedSessionGrantMessage =
+  "only session:message, session:prompt and session:control grants with a string principal are honored here"
+const sessionGrantActions = ["session:message", "session:prompt", "session:control"] as const
+const configMessageGrantSchema: z.ZodType<Grant> = z
+  .object({
+    principal: z.unknown(),
+    effect: z.unknown().optional(),
+    actions: z.unknown(),
+    conditions: z.unknown().optional(),
+    ttl_seconds: z.unknown().optional(),
+    granted_at: z.unknown().optional(),
+    revoked: z.unknown().optional(),
+  })
+  .strict()
+  .superRefine((g, ctx) => {
+    const issue = (path: (string | number)[], message: string) =>
+      ctx.addIssue({ code: "custom", path, message })
+    if (typeof g.principal !== "string" || g.principal.length === 0) {
+      issue(["principal"], unsupportedSessionGrantMessage)
+    }
+    if (g.effect !== undefined && g.effect !== "allow" && g.effect !== "deny") {
+      issue(["effect"], 'effect must be "allow" or "deny"')
+    }
+    if (!Array.isArray(g.actions) || g.actions.length === 0) {
+      issue(["actions"], unsupportedSessionGrantMessage)
+    } else {
+      g.actions.forEach((a: unknown, i) => {
+        const action =
+          typeof a === "object" && a !== null ? (a as { action?: unknown }).action : undefined
+        if (
+          typeof action !== "string" ||
+          !(sessionGrantActions as readonly string[]).includes(action)
+        ) {
+          issue(["actions", i, "action"], unsupportedSessionGrantMessage)
+          return
+        }
+        const scope = (a as { scope?: unknown }).scope
+        if (scope !== undefined && typeof scope !== "string") issue(["actions", i, "scope"], "scope must be a string")
+      })
+    }
+    if (g.conditions !== undefined) issue(["conditions"], unsupportedSessionGrantMessage)
+    if (
+      g.ttl_seconds !== undefined &&
+      !(typeof g.ttl_seconds === "number" && Number.isFinite(g.ttl_seconds) && g.ttl_seconds > 0)
+    ) {
+      issue(["ttl_seconds"], "ttl_seconds must be a positive number")
+    }
+    if (g.granted_at !== undefined && typeof g.granted_at !== "string") {
+      issue(["granted_at"], "granted_at must be an ISO 8601 string")
+    }
+    if (g.revoked !== undefined && typeof g.revoked !== "boolean") {
+      issue(["revoked"], "revoked must be a boolean")
+    }
+  })
+  .transform(v => v as Grant)
+const messagingGrantsSchema = z.array(configMessageGrantSchema)
 
 const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
   .object({
     skills: z.array(z.string()).optional(),
     options: optionsMapSchema.optional(),
+    harnesses: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
     adapters: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
     bundles: z.array(z.string()).optional(),
+    browser: z
+      .object({
+        // "on" is the retired chrome-live mode, still accepted so an old
+        // config boots; resolveBrowserBuiltin reads it as "proxy".
+        builtin: z.enum(["off", "proxy", "on"]).optional(),
+        proxyImport: z.string().min(1).optional(),
+      })
+      .passthrough()
+      .optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
+    contextSettings: contextContinuityPolicySchema.optional(),
     defaultRoleDepthCutoff: z.number().optional(),
     maxGrantableDelegation: z.number().optional(),
     langfuseTracing: z.boolean().optional(),
@@ -163,13 +281,66 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .optional(),
     traceRedactor: z.string().optional(),
     agentPromptInterrupt: z.boolean().optional(),
+    apps: z
+      .object({
+        exposeProvider: z.string().min(1).optional(),
+        exposedTools: z.enum(["off", "read", "all"]).optional(),
+      })
+      .passthrough()
+      .optional(),
     messaging: z
       .object({
         allowSiblings: z.boolean().optional(),
         allowSameWorkspace: z.boolean().optional(),
         peerGroups: z.array(z.array(z.string().min(1))).optional(),
+        grants: z.array(configMessageGrantSchema).optional(),
+        peerBinding: z.enum(["slug", "verified"]).optional(),
         agentInterrupt: z.enum(["allow", "deny"]).optional(),
         pendingPromptStaleMinutes: z.number().positive().optional(),
+        anonymousSend: z.enum(["block", "label"]).optional(),
+      })
+      .passthrough()
+      .optional(),
+    identity: z
+      .object({
+        sessionTokens: z.enum(["off", "shadow", "enforce"]).optional(),
+        requireProof: z.array(z.literal("session:spawn")).optional(),
+      })
+      .passthrough()
+      .optional(),
+    nativeHooks: z
+      .object({
+        preCompactCheckpoint: z.enum(["off", "on"]).optional(),
+        command: z.string().min(1).optional(),
+      })
+      .passthrough()
+      .optional(),
+    reactions: z
+      .object({
+        brainIngest: z
+          .object({
+            workspaces: z.array(z.string().min(1)).optional(),
+            maxTranscriptBytes: z.number().positive().optional(),
+            maxTranscriptTextBytes: z.number().positive().optional(),
+            maxIndexDocs: z.number().int().positive().optional(),
+          })
+          .passthrough()
+          .optional(),
+        clerk: z
+          .object({
+            workspaces: z.array(z.string().min(1)).optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+    prProvenance: z
+      .object({
+        footer: z
+          .object({ skipRepos: z.array(z.string().min(1)).optional() })
+          .passthrough()
+          .optional(),
       })
       .passthrough()
       .optional(),
@@ -180,8 +351,64 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .passthrough()
       .optional(),
     mcp: mcpDefaultsConfigSchema.optional(),
-    spawn: z.object({ browser: spawnBrowserModeSchema.optional() }).passthrough().optional(),
-    sandbox: z.object({ checkpoint: sandboxCheckpointConfigSchema.optional() }).passthrough().optional(),
+    spawn: z
+      .object({
+        browser: spawnBrowserModeSchema.optional(),
+        defaultAgent: z
+          .object({ root: z.string().min(1).optional(), nested: z.string().min(1).optional() })
+          .passthrough()
+          .optional(),
+        delegationGate: delegationGateModeSchema.optional(),
+        profileGate: profileGateModeSchema.optional(),
+        stdioMountGate: stdioMountGateModeSchema.optional(),
+        sharedProfiles: z.array(z.string()).optional(),
+      })
+      .passthrough()
+      .optional(),
+    sandbox: z
+      .object({
+        checkpoint: sandboxCheckpointConfigSchema.optional(),
+        /** Config-declared preflight probes: one shell command in the box, read as yes/no.
+         *  Reference them by id from `agent_start({ preflight: [...] })` or a placement rung. */
+        preflight: z
+          .object({
+            probes: z
+              .array(
+                z.object({
+                  id: z.string().min(1),
+                  description: z.string().optional(),
+                  command: z.string().min(1),
+                  okExitCode: z.number().int().optional(),
+                  okStdoutMatches: z.string().optional(),
+                  koWhen: z
+                    .array(
+                      z.object({
+                        match: z.string().min(1),
+                        errorClass: z.enum(["usage-limit", "rate-limit", "auth", "other"]).optional(),
+                      }),
+                    )
+                    .optional(),
+                  failAs: z.enum(["ko", "unknown"]).optional(),
+                  timeoutMs: z.number().int().positive().optional(),
+                  /** When the probe can run; defaults to `prelaunch`. */
+                  phase: z.enum(["prelaunch", "postlaunch"]).optional(),
+                  /** @deprecated Use `phase`. `true` => prelaunch, `false` => postlaunch. */
+                  runsWithSpawnAuth: z.boolean().optional(),
+                }),
+              )
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+
+const mcpConfigSchema: z.ZodType<McpConfig> = z
+  .object({
+    noCallerIdentity: z.enum(["block", "ask", "accept"]).optional(),
   })
   .passthrough()
 
@@ -191,11 +418,13 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     port: z.number().optional(),
     bind: z.string().optional(),
     allowedOrigins: z.array(z.string()).optional(),
+    frameAncestors: z.union([z.array(z.string()), z.string()]).optional(),
     strictOrigins: z.boolean().optional(),
     label: z.string().optional(),
     authToken: z.string().optional(),
     resumeSessionsOnBoot: z.boolean().optional(),
     bootResumePolicy: z.enum(["all", "keepalive"]).optional(),
+    bootResumeKeepAliveMaxIdleMinutes: z.number().optional(),
     resumeServicesOnBoot: z.boolean().optional(),
     continueInterruptedOnBoot: z.boolean().optional(),
     idleReapAfterMs: z.number().optional(),
@@ -206,6 +435,9 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     turnStallAfterMs: z.number().optional(),
     reviewSessionRetentionDays: z.number().optional(),
     sessionRetentionDays: z.number().optional(),
+    harnessCacheRetentionDays: z.number().optional(),
+    adapterCacheRetentionDays: z.number().optional(),
+    claudeSocketWake: z.boolean().optional(),
   })
   .passthrough()
 
@@ -244,10 +476,13 @@ const featuresConfigSchema: z.ZodType<FeaturesConfig> = z
 const worktreesConfigSchema: z.ZodType<WorktreesConfig> = z
   .object({
     root: z.string().optional(),
+    extraRoots: z.array(z.string()).optional(),
     isolation: z.enum(["always", "on-request", "never"]).optional(),
     provisionConcurrency: z.number().int().min(0).optional(),
     provisionConcurrencyByRepo: z.record(z.string(), z.number().int().min(0)).optional(),
     provisionLoadFactor: z.number().min(0).optional(),
+    provisionStallTimeoutMs: z.number().int().min(0).optional(),
+    provisionMaxMs: z.number().int().min(0).optional(),
   })
   .passthrough()
 
@@ -262,11 +497,55 @@ const provenanceConfigSchema: z.ZodType<ProvenanceConfig> = z
   .object({ wrapGh: z.boolean().optional() })
   .passthrough()
 
+/** A numeric Telegram user id, digits only (`approvals.humanTelegramIds`). */
+const telegramUserIdString = z.string().regex(/^\d+$/, "a Telegram user id is digits only")
+
 const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
   .object({
     webOrigins: z.array(z.string()).optional(),
     telegramBotSecret: z.string().optional(),
+    permissionTelegramChatId: z.string().optional(),
+    permissionTelegramUserIds: z.array(z.string()).optional(),
+    permissionTelegramAlias: z.string().optional(),
+    permissionTelegramTools: z.array(z.string()).optional(),
+    telegramApprovalCards: z.boolean().optional(),
+    telegramAttachments: z.boolean().optional(),
+    humanTelegramIds: z.array(telegramUserIdString).optional(),
   })
+  .passthrough()
+
+/** One adapter instance of a `reach.routes.<principal>` route, by kind. */
+const reachRouteEntrySchema = z.discriminatedUnion("kind", [
+  z.object({ id: z.string().min(1), kind: z.literal("telegram"), alias: z.string().min(1).optional() }).passthrough(),
+  z
+    .object({
+      id: z.string().min(1),
+      kind: z.literal("webhook"),
+      url: z.url({ protocol: /^https?$/ }),
+      secret: z.string().regex(/^whsec_/, "a webhook secret starts with whsec_"),
+      timeoutMs: z.number().int().positive().optional(),
+    })
+    .passthrough(),
+  z
+    .object({
+      id: z.string().min(1),
+      kind: z.literal("chat-sdk"),
+      platform: z.literal("whatsapp"),
+      to: z.string().regex(/^\d{6,15}$/, "a WhatsApp id is E.164 digits, no +"),
+      whatsapp: z
+        .object({
+          phoneNumberId: z.string().regex(/^\d+$/, "a Cloud API phone number id is digits only"),
+          accessToken: z.string().min(1),
+        })
+        .passthrough(),
+      timeoutMs: z.number().int().positive().optional(),
+    })
+    .passthrough(),
+])
+const reachRouteSchema = z.array(reachRouteEntrySchema)
+
+const reachConfigSchema: z.ZodType<ReachConfig> = z
+  .object({ routes: z.record(z.string(), reachRouteSchema).optional() })
   .passthrough()
 
 const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
@@ -280,6 +559,10 @@ const agentsMdConfigSchema: z.ZodType<AgentsMdConfig> = z
   .object({ inlineMaxKb: z.number().optional() })
   .passthrough()
 
+const memoryConfigSchema: z.ZodType<MemoryStoreConfig> = z
+  .object({ root: z.string().optional() })
+  .passthrough()
+
 /** `pairing.pairPage`: a plain http(s) URL, or a template with `{fp}` in the
  *  hostname — the exact check `pair offer --qr` applies (`resolvePairPageUrl`),
  *  run against a sample fingerprint so a bad template is refused at write
@@ -291,6 +574,31 @@ const pairPageSchema = z.string().superRefine((value, ctx) => {
     ctx.addIssue({ code: "custom", message: err instanceof Error ? err.message : String(err) })
   }
 })
+
+const deliveryConfigSchema: z.ZodType<DeliveryConfig> = z
+  .object({
+    apply: z
+      .object({
+        types: z.record(z.string(), z.boolean()).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+
+const sentinelConfigSchema: z.ZodType<SentinelConfig> = z
+  .object({
+    autoWatchPrs: z.boolean().optional(),
+    autoWatchUrgency: z.enum(["fyi", "next-turn", "steer", "interrupt"]).optional(),
+    routes: sentinelRoutesSchema.optional(),
+    routing: z
+      .object({
+        mode: sentinelRoutingModeSchema.optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
 
 const pairingConfigSchema: z.ZodType<PairingConfig> = z
   .object({
@@ -352,6 +660,25 @@ const terminalPresetSchema: z.ZodType<TerminalPreset> = z
   })
   .passthrough()
 
+const appsConfigSchema = z
+  .object({
+    readGrants: z.record(z.string(), z.array(z.string())).optional(),
+  })
+  .passthrough()
+
+/** `accountSlots` key: a slot name, no dot (config paths are dotted, so a
+ *  dotted name could not be addressed as `accountSlots.<name>`). */
+const accountSlotNameSchema = z
+  .string()
+  .regex(ACCOUNT_SLOT_NAME_RE, 'slot names use letters, digits, "_" and "-" (no dot)')
+/** `accountSlots` value: a real auth-profile id, never another slot. Whether
+ *  the profile exists and is enabled is checked at USE time
+ *  (`resolveProfileRef`), not here. */
+const accountSlotTargetSchema = z
+  .string()
+  .min(1)
+  .refine(v => !v.startsWith(SLOT_REF_PREFIX), "a slot must name a real auth profile id, not another slot")
+
 /**
  * Top-level mirror of `AgentprotoConfig`. `.passthrough()` at every level
  * (including here) means an unknown top-level key round-trips unchanged,
@@ -361,6 +688,7 @@ const terminalPresetSchema: z.ZodType<TerminalPreset> = z
 export const agentprotoConfigSchema = z
   .object({
     version: z.number().optional(),
+    mcp: mcpConfigSchema.optional(),
     daemon: daemonConfigSchema.optional(),
     tunnel: tunnelConfigSchema.optional(),
     features: featuresConfigSchema.optional(),
@@ -370,16 +698,22 @@ export const agentprotoConfigSchema = z
     sessions: sessionsConfigSchema.optional(),
     provenance: provenanceConfigSchema.optional(),
     approvals: approvalsConfigSchema.optional(),
+    reach: reachConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
+    memory: memoryConfigSchema.optional(),
+    delivery: deliveryConfigSchema.optional(),
+    sentinel: sentinelConfigSchema.optional(),
     models: z.record(z.string(), modelRoleValueSchema).optional(),
     modelRolePreset: z.enum(MODEL_ROLE_PRESET_NAMES).optional(),
     titler: titlerConfigSchema.optional(),
     catalog: catalogConfigSchema.optional(),
     profiles: z.record(z.string(), profileConfigSchema).optional(),
     activeProfile: z.string().optional(),
+    accountSlots: z.record(accountSlotNameSchema, accountSlotTargetSchema).optional(),
     defaults: spawnDefaultsConfigSchema.optional(),
     acpAgents: z.record(z.string(), acpAgentConfigEntrySchema).optional(),
     terminalPresets: z.record(z.string(), terminalPresetSchema).optional(),
+    apps: appsConfigSchema.optional(),
   })
   .passthrough()
 
@@ -420,6 +754,7 @@ type AssertTrue<_T extends true> = void
 type ConfigTopLevelKey =
   | "version"
   | "daemon"
+  | "mcp"
   | "tunnel"
   | "features"
   | "pairing"
@@ -429,15 +764,19 @@ type ConfigTopLevelKey =
   | "provenance"
   | "approvals"
   | "agentsMd"
+  | "memory"
+  | "sentinel"
   | "models"
   | "modelRolePreset"
   | "titler"
   | "catalog"
   | "profiles"
   | "activeProfile"
+  | "accountSlots"
   | "defaults"
   | "acpAgents"
   | "terminalPresets"
+  | "apps"
 
 type SchemaOutputMatchesInterfaceByKey = {
   [K in ConfigTopLevelKey]: Extends<NonNullable<ConfigSchemaOutput[K]>, NonNullable<AgentprotoConfig[K]>>
@@ -478,6 +817,11 @@ export interface ConfigKeyEntry {
   /** The value is credential material — never echoed back in full, only
    *  `{ set }` (see `redactConfigValue`). */
   secret?: true
+  /** Field names inside the value (at any depth, arrays included) that hold
+   *  credential material: each is redacted to `{ set }` on read while the
+   *  rest of the value is shown. For a key whose value is a structure with a
+   *  secret inside, like `reach.routes.*` and its webhook `secret`. */
+  secretFields?: readonly string[]
   /** False for a key that a future config_set must refuse (secret
    *  credential fields and daemon-lockout fields) — hand-edit only. */
   writable: boolean
@@ -487,7 +831,10 @@ export interface ConfigKeyEntry {
   /** Effective default when the key is absent. Omitted when there is no
    *  single default (e.g. the default is conditional, or the daemon
    *  requires the operator to set it explicitly). */
-  default?: unknown
+  default?: unknown  /** Set on a key kept only as a deprecated alias: `replacedBy` is the
+   *  canonical path, `message` the dated deprecation line. The key still
+   *  works (read as a fallback of `replacedBy`). */
+  deprecated?: { replacedBy: string; message: string }
 }
 
 const bool = z.boolean()
@@ -499,7 +846,166 @@ const strArray = z.array(z.string())
  *  workspace and only widens the config's surface). */
 const peerGroupsSchema = z.array(z.array(z.string().min(1)))
 
+/** `defaults.reactions.brainIngest.workspaces` - workspace slugs whose
+ *  completed sessions are ingested by the durable brain-ingest reaction. */
+const brainIngestWorkspacesSchema = z.array(z.string().min(1))
+/** `defaults.reactions.clerk.workspaces` - workspace slugs whose clerk passes
+ *  are dispatched by the durable reaction instead of the legacy dispatch. */
+const clerkReactionWorkspacesSchema = z.array(z.string().min(1))
+
+/** `defaults.harnesses.*`: per-harness spawn defaults. Each key is also
+ *  exposed under its deprecated `defaults.adapters.*` spelling (see
+ *  {@link deprecatedAdapterDefaultsKey}). */
+const HARNESS_DEFAULTS_KEYS: readonly ConfigKeyEntry[] = [
+  {
+    path: "defaults.harnesses.*.skills",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness default skills",
+    help: "Skills auto-applied to spawns of this harness (unioned with the global default).",
+  },
+  {
+    path: "defaults.harnesses.*.options",
+    schema: optionsMapSchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness default options",
+    help: "AIP-45 options auto-applied to spawns of this harness.",
+  },
+  {
+    path: "defaults.harnesses.*.bundles",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness default capability bundles",
+    help: "Bundle ids (bundle_list) auto-attached to spawns of this harness (unioned with the global default).",
+  },
+  {
+    path: "defaults.harnesses.*.daemonMount",
+    schema: z.boolean(),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness daemon self-mount opt-in",
+    help: "Explicitly mount the daemon's own scoped /mcp for spawns of this harness, for harnesses outside the default self-mount allowlist (opencode, codex, gemini, …).",
+    default: false,
+  },
+  {
+    path: "defaults.harnesses.*.contextProfile",
+    schema: z.string(),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness context profile",
+    help: "Context profile (full, lean, …) for spawns of this harness that name none. opencode executors default to lean; set full to opt out.",
+  },
+  {
+    path: "defaults.harnesses.*.contextContinuity",
+    schema: contextContinuityPolicySchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness context-continuity policy",
+    help: "Legacy alias of defaults.harnesses.<slug>.contextSettings: per-harness context-settings fragment, layered over the global block. Each setting layers on its own.",
+  },
+  {
+    path: "defaults.harnesses.*.contextSettings",
+    schema: contextContinuityPolicySchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness context settings",
+    help: "AIP-46 name of defaults.harnesses.<slug>.contextContinuity: per-harness context-settings fragment layered over the global block. Each setting layers on its own; a key here wins over the same key in contextContinuity.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.mode",
+    schema: z.enum(["subscription", "api-key"]),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness auth mode",
+    help: "\"subscription\" or \"api-key\". Omitted ⇒ resolver picks by ordered preference.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.token",
+    schema: str,
+    apply: "hot",
+    secret: true,
+    writable: false,
+    section: "harnesses",
+    label: "Harness subscription token",
+    help: "Subscription bearer token. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.source",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness subscription source",
+    help: "Opt-in self-refreshing subscription source, e.g. \"claude-code-oauth\".",
+  },
+  {
+    path: "defaults.harnesses.*.auth.apiKey",
+    schema: str,
+    apply: "hot",
+    secret: true,
+    writable: false,
+    section: "harnesses",
+    label: "Harness API key",
+    help: "Explicit API key for \"api-key\" mode. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.provider",
+    schema: CatalogProviderSchema,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Harness auth provider pin",
+    help: "Per-harness provider pin, overriding the harness's fixed/model-derived provider.",
+  },
+  {
+    path: "defaults.harnesses.*.auth.loginFile",
+    schema: z.boolean(),
+    apply: "hot",
+    writable: false,
+    section: "harnesses",
+    label: "Harness box-login bridge marker",
+    help:
+      "Per-spawn box-login bridge marker (see box-login-bridge.ts): stamped by the host on the auth block it forwards into a sandbox box, never set from config, because a static value would outlive the file it describes. Accepted here so the key is classified and explicitly not writable.",
+  },
+
+]
+
+/** The deprecated `defaults.adapters.*` twin of a `defaults.harnesses.*`
+ *  key: same schema and behaviour, flagged `deprecated`. A field set under
+ *  `defaults.harnesses.<slug>` wins over the same field here. */
+function deprecatedAdapterDefaultsKey(entry: ConfigKeyEntry): ConfigKeyEntry {
+  const replacedBy = entry.path
+  return {
+    ...entry,
+    path: entry.path.replace(/^defaults\.harnesses\./, "defaults.adapters."),
+    label: `${entry.label} (deprecated)`,
+    deprecated: { replacedBy, message: adapterDeprecation("defaults.adapters", "defaults.harnesses") },
+  }
+}
+
 export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
+  // ── mcp ──
+  {
+    path: "mcp.noCallerIdentity",
+    schema: z.enum(["block", "ask", "accept"]),
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP calls without a caller identity",
+    help: "How the MCP gateway handles a tool call that carries no caller identity (Claude Code / Claude Desktop connecting directly). block (default) refuses with no_caller_identity. accept lets an identity-less message_send go out as the anonymous sender claude-code, with no ACL elevation and never as any session. ask parks such a send on a human approval before it is delivered.",
+    default: "block",
+  },
   // ── daemon ──
   {
     path: "daemon.workspace",
@@ -540,6 +1046,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help: "Trusted browser origins for mutating /sessions/* routes, in addition to the hardcoded localhost defaults. Lockout: a bad value can lock a browser UI out.",
   },
   {
+    path: "daemon.frameAncestors",
+    schema: z.union([strArray, str]),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "App page frame ancestors",
+    help: "Extra origins allowed to embed the app page GET /apps/:appId/ui in an iframe, on top of vscode-webview: and vscode-file: (for example https://web.telegram.org to let a browser-based Telegram client frame it). Only exact https://host[:port] origins and custom schemes are honoured; * and wildcards are refused because the page injects the tool-call bridge. Lockout: a bad value can make an embedded page refuse to load.",
+  },
+  {
     path: "approvals.webOrigins",
     schema: strArray,
     apply: "restart",
@@ -558,6 +1073,85 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Approval telegram bot secret",
     help: "Shared bearer secret gating POST /approvals/:id/decision/telegram (telegram channel). A Telegram webhook callback has no browser Origin to check, so this secret IS the credential, held only by the trusted bot-bridge service. Unset (default) turns the channel off entirely.",
+  },
+  {
+    path: "approvals.permissionTelegramChatId",
+    schema: str,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram chat id",
+    help: "Telegram chat that receives a tap-to-approve message for each pending permission on a bridged tool (default send_message). The bridge starts only when this AND approvals.permissionTelegramUserIds are set. Unset (default) = no bridge.",
+  },
+  {
+    path: "approvals.permissionTelegramUserIds",
+    schema: strArray,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram user ids",
+    help: "Telegram user ids allowed to tap Allow/Reject on a permission message. Taps from anyone else, or from another chat, are refused. Empty (default) = no bridge.",
+    default: [],
+  },
+  {
+    path: "approvals.permissionTelegramAlias",
+    schema: str,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram bot alias",
+    help: "Bot credential alias used to send the approval messages, and the alias a signed telegram inbound endpoint must carry for its taps to reach the bridge.",
+    default: "default",
+  },
+  {
+    path: "approvals.permissionTelegramTools",
+    schema: strArray,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram tools",
+    help: "Tool names whose pending permissions are mirrored to Telegram. Which calls are held at all is decided by .agentproto/hooks.json rules.",
+    default: ["send_message"],
+  },
+  {
+    path: "approvals.telegramApprovalCards",
+    schema: bool,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Telegram approval cards",
+    help: "Send each pending approval (for example a Bureau recipe write) to the Telegram chat as an Approve / Refuse card, and let a tap from an allowed user decide it through the telegram channel. Reuses approvals.permissionTelegramChatId, approvals.permissionTelegramUserIds and approvals.permissionTelegramAlias, and does nothing until those are set. Default false.",
+    default: false,
+  },
+  {
+    path: "approvals.telegramAttachments",
+    schema: bool,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Telegram approval files",
+    help: "Send the files named in an approval's preview.attachments to the Telegram chat as documents and photos, before the card. Default false: the card is a short notification that only names the files, which stay on the approval page.",
+    default: false,
+  },
+  {
+    path: "approvals.humanTelegramIds",
+    schema: z.array(telegramUserIdString),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Approval link Telegram user ids",
+    help: "Telegram user ids allowed to read and decide a pending approval through an approval link: a link-session token whose approvalId claim names that one approval, on GET /approvals/:id and POST /approvals/:id/decision/telegram. The id is the one Telegram initData verified when the link was opened. Digits only. Empty (default) turns approval links off: both routes refuse every link token. Owner-only: an agent session cannot widen who may approve.",
+    default: [],
+  },
+  {
+    path: "reach.routes.*",
+    schema: reachRouteSchema,
+    apply: "restart",
+    secretFields: ["secret", "accessToken"],
+    writable: false,
+    section: "daemon",
+    label: "REACH route",
+    help: 'How the daemon reaches a principal (only "owner" is read today) for each pending approval: an ordered list of adapters, tried in turn until one acknowledges (delivered, deferred or deduped). Each entry is { id, kind: "telegram", alias? } (the daemon\'s own approval card, needs approvals.telegramApprovalCards) or { id, kind: "webhook", url, secret, timeoutMs? } (a signed POST of the message, Standard Webhooks with a whsec_ secret, answered by a receipt within timeoutMs, default 5000) or { id, kind: "chat-sdk", platform: "whatsapp", to, whatsapp: { phoneNumberId, accessToken }, timeoutMs? } (one WhatsApp Cloud API text to the wa_id in to, tell only: an approval ask answers undelivered and goes on down the route; needs the optional @agentproto/reach-chat-sdk package, else the entry is skipped; timeoutMs default 10000). Every attempt is kept in the approval\'s reach.json; a pending approval with no acknowledgement after 60 s is logged "reach: MISSING" and sent through the last telegram entry. The webhook secret and the chat-sdk accessToken are never shown by config_get. Unset (default): no router, the Telegram card bridge announces every approval itself, as before.',
   },
   {
     path: "daemon.strictOrigins",
@@ -607,6 +1201,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Boot resume policy",
     help: "When resumeSessionsOnBoot is enabled, restore all eligible sessions or only sessions with keepAlive set. Other sessions remain resumable on their next prompt.",
     default: "all",
+  },
+  {
+    path: "daemon.bootResumeKeepAliveMaxIdleMinutes",
+    schema: num,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "KeepAlive boot-resume idle cutoff (minutes)",
+    help: "When resumeSessionsOnBoot is enabled, do not eagerly resume a keepAlive session that has been idle (since its last turn-end) longer than this many minutes. It stays resumable on its next prompt or session_restart. Only explicitly pinned sessions are always resumed; an operator label does not exempt a row. 0 disables the cutoff. Default 30.",
+    default: 30,
   },
   {
     path: "daemon.resumeServicesOnBoot",
@@ -714,6 +1318,40 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: 0,
   },
   {
+    path: "daemon.harnessCacheRetentionDays",
+    schema: num,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Harness cache retention (days)",
+    help: "Delete the cache content (pnpm store, opencode snapshot/tool-output/log) of dead sessions' ~/.agentproto/adapter-config/<id> dirs after this many quiet days. Resume data is kept. 0/negative disables.",
+    default: 1,
+  },
+  {
+    path: "daemon.adapterCacheRetentionDays",
+    schema: num,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Adapter cache retention (days) (deprecated)",
+    help: "Deprecated name of daemon.harnessCacheRetentionDays, read only when that key is unset.",
+    default: 1,
+    deprecated: {
+      replacedBy: "daemon.harnessCacheRetentionDays",
+      message: adapterDeprecation("daemon.adapterCacheRetentionDays", "daemon.harnessCacheRetentionDays"),
+    },
+  },
+  {
+    path: "daemon.claudeSocketWake",
+    schema: bool,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Claude Code socket wake",
+    help: "Wake an idle external Claude Code session over its per-session unix socket for level 2+ messages (next-turn / steer). fyi messages still use the inbox. A bypassPermissions target is written to as well, but Claude Code holds the message until crossSessionInbound is set to accept in ~/.claude/settings.json (agentproto doctor --fix); until then it is also parked in the inbox. Off by default.",
+    default: false,
+  },
+  {
     path: "sessions.eventsDir",
     schema: str,
     apply: "restart",
@@ -722,6 +1360,74 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Sessions events dir",
     help: "Root directory for per-session transcripts. Lockout: existing transcripts do not move when this changes, and a bad path can break every session reader.",
     default: "~/.agentproto/sessions",
+  },
+  {
+    path: "memory.root",
+    schema: str,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Memory store root",
+    help: "Root directory of the default AIP-72 memory store (items/<type>/<id>.md, proposals/<id>.md), read by the memory_* tools and the spawn digest. An agent's AIP-42 memory.store wins when it names a files root.",
+    default: "~/.agentproto/memory",
+  },
+  {
+    path: "delivery.apply.types",
+    schema: z.record(z.string(), z.boolean()),
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Delivery apply types",
+    help:
+      "Envelope-type glob -> apply the kernel level (fyi / next-turn / steer). " +
+      "Absent or empty applies nothing, so delivery is unchanged by default. " +
+      "An exact type beats a glob; the longest matching prefix wins.",
+    default: {},
+  },
+  {
+    path: "sentinel.autoWatchPrs",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel auto-watch PRs",
+    help:
+      "Create a sentinel automatically when a session opens a PR. Unset: true only when local-gh " +
+      "(gh auth status) or agentpush (API key) is usable. Per-spawn opt-out: agent_start sentinel: false.",
+  },
+  {
+    path: "sentinel.autoWatchUrgency",
+    schema: z.enum(["fyi", "next-turn", "steer", "interrupt"]),
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel auto-watch urgency",
+    help: "Urgency the auto-created PR sentinel delivers at. Read per PR.",
+    default: "next-turn",
+  },
+  {
+    path: "sentinel.routes",
+    schema: sentinelRoutesSchema,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel routes",
+    help:
+      "Signal-routing rules: {id, match: {subject, types?, from?: {site?, sessionLabel?}}, via: [provider...], " +
+      "fallback?: next-ready|refuse, do?: deliver|forward|drop, target?, mode?}. Most specific match wins, then list order; " +
+      "builtin defaults apply when nothing matches. Shadow only: decisions are logged and stamped as route on the " +
+      "sentinel, the provider used does not change. Inspect with sentinel_routes or agentproto sentinel routes.",
+    default: [],
+  },
+  {
+    path: "sentinel.routing.mode",
+    schema: sentinelRoutingModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Sentinel routing mode",
+    help: "shadow: the router decides and logs, never applies. enforce is accepted but not applied in this release.",
+    default: "shadow",
   },
   {
     path: "follow.triage.enabled",
@@ -764,6 +1470,31 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Active profile",
     help: "Profile used when --profile isn't passed. Lockout in v1: edit the file by hand.",
+  },
+  {
+    path: "accountSlots",
+    schema: z.record(accountSlotNameSchema, accountSlotTargetSchema),
+    apply: "hot",
+    writable: true,
+    section: "wallets",
+    label: "Account slots",
+    help:
+      "Slot name (no dot) -> real auth-profile id. A profileRef of slot:<name> (agent_start access, presets, " +
+      "turnRetry.fallback, harness presets, ...) resolves through this map at the moment of use; an unknown slot " +
+      "or a missing/disabled profile is an error, never a silent fallback. Swap a family's primary and secondary " +
+      "with `agentproto accounts swap <family>`.",
+    default: {},
+  },
+  {
+    path: "accountSlots.*",
+    schema: accountSlotTargetSchema,
+    apply: "hot",
+    writable: true,
+    section: "wallets",
+    label: "Account slot",
+    help:
+      "The real auth-profile id this slot points at (e.g. accountSlots.claude-primary = anthropic-sub-hodl). " +
+      "Read at each spawn, restart and turnRetry fallback.",
   },
 
   // ── remote (tunnel + pairing) ──
@@ -935,13 +1666,33 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help: "Bundle ids (bundle_list) auto-attached to every agent_start spawn (unioned with per-adapter bundles).",
   },
   {
+    path: "defaults.browser.builtin",
+    schema: z.enum(["off", "proxy"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Built-in browser tools",
+    default: "proxy",
+    help: "How much of the daemon's built-in browser surface is registered. \"off\": only fetch_page (a plain HTTP read, no browser); every other browser tool is absent. \"proxy\" (default): the daemon browser tools forward to the Bureau MCP named by defaults.browser.proxyImport. A legacy \"on\" (the retired chrome-live path) is still read, as \"proxy\", with a one-line warning in the daemon log; set \"proxy\" or \"off\" to silence it. The tool list is fixed at registration (once per /mcp session), so a change applies on the next MCP session, not mid-session.",
+  },
+  {
+    path: "defaults.browser.proxyImport",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Browser proxy import",
+    default: "bureau",
+    help: "Alias of the imported MCP that is the Bureau server the daemon browser tools forward to. Defaults to `bureau` when unset. When that import is absent, every relayed browser tool answers an error naming Bureau. A set value also makes the built-in `browser` bundle mount that import.",
+  },
+  {
     path: "defaults.defaultRoleDepthCutoff",
     schema: num,
     apply: "hot",
     writable: true,
     section: "defaults",
     label: "Default role depth cutoff",
-    help: "Spawn depth at/after which an agent_start with no explicit role defaults to executor rather than supervisor.",
+    help: "Deprecated (removed in @agentproto/runtime 6.0.0). Spawn depth at/after which an agent_start with no explicit role defaults to executor rather than supervisor; still the boundary between defaults.spawn.defaultAgent.root and .nested.",
     default: DEFAULT_ROLE_DEPTH_CUTOFF,
   },
   {
@@ -964,6 +1715,66 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: false,
   },
   {
+    path: "defaults.spawn.defaultAgent.root",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Default root agent",
+    help: "Agent a root agent_start (below the depth cutoff) with no agent or role binds. A role name. Unknown ⇒ the built-in default, with a warning.",
+    default: DEFAULT_ROOT_AGENT,
+  },
+  {
+    path: "defaults.spawn.defaultAgent.nested",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Default nested agent",
+    help: "Agent a nested agent_start (at or above the depth cutoff) with no agent or role binds. A role name. Unknown ⇒ the built-in default, with a warning.",
+    default: DEFAULT_NESTED_AGENT,
+  },
+  {
+    path: "defaults.spawn.delegationGate",
+    schema: delegationGateModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Delegation gate mode",
+    help: "AIP-46 delegation gate for nested spawns: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a child the caller's agent does not declare in delegatesTo).",
+    default: DEFAULT_DELEGATION_GATE_MODE,
+  },
+  {
+    path: "defaults.spawn.profileGate",
+    schema: profileGateModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Auth-profile gate mode",
+    help: "AIP-46 auth-profile gate for spawns that name an access profile: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a profile outside the caller's set with auth_profile_denied).",
+    default: DEFAULT_PROFILE_GATE_MODE,
+  },
+  {
+    path: "defaults.spawn.stdioMountGate",
+    schema: stdioMountGateModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Stdio mount gate mode",
+    help: "Command-allowlist gate for stdio MCP servers a spawn mounts: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a mount whose command the workspace allowlist does not admit, with stdio_mount_denied).",
+    default: DEFAULT_STDIO_MOUNT_GATE_MODE,
+  },
+  {
+    path: "defaults.spawn.sharedProfiles",
+    schema: z.array(z.string()),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Shared auth profiles",
+    help: "Auth profile ids any session may name at spawn, in addition to its own recorded profile (the operator's grant). The auth-profile gate admits these for every caller. Default [].",
+    default: [],
+  },
+  {
     path: "worktrees.root",
     schema: str,
     apply: "hot",
@@ -973,6 +1784,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Worktrees root",
     help: "Absolute path new `worktree new` worktrees are created under.",
     default: "~/.agentproto/worktrees",
+  },
+  {
+    path: "worktrees.extraRoots",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Extra worktrees roots",
+    help: "Extra directories `maintain --all` scans for worktrees, in addition to `worktrees.root`; `--worktrees-root` adds to this list.",
+    default: [],
   },
   {
     path: "worktrees.isolation",
@@ -1016,6 +1837,28 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: 0,
   },
   {
+    path: "worktrees.provisionStallTimeoutMs",
+    schema: z.number().int().min(0),
+    apply: "hot",
+    env: WORKTREE_PROVISION_STALL_TIMEOUT_ENV,
+    writable: true,
+    section: "defaults",
+    label: "Provisioning stall timeout (ms)",
+    help: "Kill a worktree provisioning and fail the session when its deps/setup process prints nothing for this long. 0 = off.",
+    default: DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS,
+  },
+  {
+    path: "worktrees.provisionMaxMs",
+    schema: z.number().int().min(0),
+    apply: "hot",
+    env: WORKTREE_PROVISION_MAX_ENV,
+    writable: true,
+    section: "defaults",
+    label: "Provisioning hard cap (ms)",
+    help: "Kill a worktree provisioning and fail the session when its heavy segment runs longer than this, output or not. 0 = off.",
+    default: DEFAULT_WORKTREE_PROVISION_MAX_MS,
+  },
+  {
     path: "spawn.attach",
     schema: z.enum(["always", "on-request"]),
     apply: "hot",
@@ -1049,6 +1892,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: DEFAULT_WRAP_GH,
   },
   {
+    path: "defaults.prProvenance.footer.skipRepos",
+    schema: z.array(z.string().min(1)),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Provenance footer skip list",
+    help: "Repos (owner/name) whose pull requests never receive an agentproto provenance footer.",
+    default: [],
+  },
+  {
     path: "agentsMd.inlineMaxKb",
     schema: num,
     apply: "hot",
@@ -1067,7 +1920,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Default context-continuity policy",
-    help: "Global context-continuity policy fragment (mode + thresholds + checkpoint sections). Validated as one cross-field unit.",
+    help: "Legacy alias of defaults.contextSettings: global context-settings fragment (mode + thresholds + checkpoint sections). Each setting layers on its own over the adapter block and the request.",
+  },
+  {
+    path: "defaults.contextSettings",
+    schema: contextContinuityPolicySchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Default context settings",
+    help: "AIP-46 name of defaults.contextContinuity: global context-settings fragment (mode, thresholds, checkpoint sections). Each setting layers on its own over the adapter block and the request; a key here wins over the same key in defaults.contextContinuity.",
   },
 
   // ── defaults: observability ──
@@ -1090,6 +1952,31 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Langfuse tracing default",
     help: "Default per-session Langfuse tracing opt-in when agent_start omits `trace`.",
     default: false,
+  },
+  {
+    path: "defaults.apps.exposeProvider",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "App service expose provider",
+    help:
+      "Tunnel provider slug for an app service that declares `expose` (AIP-53). Unset: " +
+      "cloudflare-provisioned when registered, else cloudflare-managed, else cloudflare-quick (not stable).",
+  },
+  {
+    path: "defaults.apps.exposedTools",
+    schema: z.enum(["off", "read", "all"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "App exposed tools on the MCP gateway",
+    help:
+      "Which `exposes.tools` of installed apps the /mcp gateway registers as `<prefix>_<name>`. " +
+      "\"read\" (default): access: read tools for every caller; write/approve tools only for a caller whose AGENT.md opted in " +
+      "(`tools: [{kind: mcp, server: agentproto, allow: [...]}]`). \"off\": none. \"all\": every declared tool for every caller. " +
+      "A deny always wins. Takes effect on the next /mcp request.",
+    default: "read",
   },
   {
     path: "defaults.traceRedactor",
@@ -1121,6 +2008,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Deferred MCP tools",
     help: "Gateway-wide lazy tools/list loading. false/absent ⇒ eager (today's behaviour).",
     default: false,
+  },
+  {
+    path: "defaults.mcp.profile",
+    schema: z.string(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "MCP surface profile",
+    help: "Default /mcp tool surface: core, orchestrator, apps, admin, full, or a comma-composed list. Absent ⇒ full. A ?profile= query wins.",
+    default: "full",
   },
   {
     path: "defaults.backgroundTaskWake.enabled",
@@ -1246,6 +2143,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: [],
   },
   {
+    path: "defaults.messaging.peerBinding",
+    schema: z.enum(["slug", "verified"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Peer workspace binding",
+    help: "\"slug\" (default): peers by recorded workspace slug; \"verified\": both cwds must resolve to the same registered workspace, whatever slug each session recorded (so it can also link pairs the slug rule does not). Takes effect on the next call.",
+    default: "slug",
+  },
+  {
+    path: "defaults.messaging.grants",
+    schema: messagingGrantsSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Explicit message grants",
+    help: "The one list of session-to-session AIP-38 grants. A matching session:message grant may admit a message pair the tree and the messaging switches refuse (relation \"granted\"); a matching session:prompt grant may admit agent_prompt, and a matching session:control grant may admit agent_interrupt / agent_kill / session_restart / session_continue_fresh, when the legacy owner gate refuses. Each accepted grant has a string principal, at least one { action: \"session:message\" | \"session:prompt\" | \"session:control\", scope? } and optional effect/ttl_seconds/granted_at/revoked. Scope forms that work match the TARGET: <sessionId>, label:<target operator label>, workspace:<target verified workspace slug>. A matching deny wins. Empty (the default) changes nothing. Takes effect on the next call.",
+    default: [],
+  },
+  {
     path: "defaults.messaging.agentInterrupt",
     schema: z.enum(["allow", "deny"]),
     apply: "hot",
@@ -1256,6 +2173,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: "deny",
   },
   {
+    path: "defaults.messaging.anonymousSend",
+    schema: z.enum(["block", "label"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Anonymous / unverified sender messages",
+    help: "What message_send / message_reply (and POST /sessions/:id/messages) do for a sender with no verified session identity (an identity-less MCP client under mcp.noCallerIdentity \"accept\", or a claimed external identity such as the shared claude-desktop Chat tab). \"label\" (default): delivered to any live session, text prefixed \"[unverified sender: <label>] \", capped at steer (never interrupt). \"block\": an unverified session sender outside the tree and workspace relations is refused with forbidden_recipient, as before. Verified senders and agent_prompt are unaffected. Takes effect on the next call.",
+    default: "label",
+  },
+  {
     path: "defaults.messaging.pendingPromptStaleMinutes",
     schema: z.number().positive(),
     apply: "hot",
@@ -1264,6 +2191,101 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Pending prompt staleness (minutes)",
     help: "How long a prompt may sit queued behind a running turn before its sender is notified it is stuck and it is flagged stale in session_list/session_recap pendingPrompts. Takes effect on the next sweep.",
     default: 5,
+  },
+
+  // ── defaults: identity ──
+  {
+    path: "defaults.identity.sessionTokens",
+    schema: z.enum(["off", "shadow", "enforce"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Per-session identity tokens",
+    help: "\"shadow\" (default): each spawned session gets a daemon-minted token on its daemon self-mount, and the daemon counts verified, claim-only, mismatching and anonymous callers (GET /identity) without refusing anything. \"enforce\": the same token, and the daemon refuses (403) a request with an unknown, malformed or revoked token (identity_unverified), a token naming another session than its claim (identity_mismatch), and a claim without token naming a session the token was delivered to (identity_unverified); anonymous callers, external identifiers and sessions on adapters or placements that get no token are never refused. The refusal applies per request; the token is minted at spawn. \"off\": no token, no observation. Minting applies to sessions spawned after the change.",
+    default: "shadow",
+  },
+  {
+    path: "defaults.identity.requireProof",
+    schema: z.array(z.literal("session:spawn")),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Actions that require a proven caller",
+    help: "Actions a caller must be PROVEN to invoke (AIP-46 §Session principals rule 9). Empty (the default): nothing is refused. A listed action refuses a caller that only named a session ('claimed') with identity_unverified, and one whose session token was minted for another session than its claim with identity_mismatch. A scoped orchestrator caller is proven by its scope token; an anonymous loopback caller (CLI, hooks, desktop) is the operator and is never refused. Ignored while defaults.identity.sessionTokens is 'off': no token is minted, so nobody could be proven (rule 8). Only 'session:spawn' is evaluated today. Read GET /identity spawnProof.wouldRefuse and its claimed split before listing it.",
+    default: [],
+  },
+
+  // ── defaults: nativeHooks ──
+  {
+    path: "defaults.nativeHooks.preCompactCheckpoint",
+    schema: z.enum(["off", "on"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Checkpoint before a native compaction",
+    help: "\"on\": a local claude-code session gets a synchronous PreCompact hook (auto compactions only) that runs `<defaults.nativeHooks.command> hook pre-compact`, which writes a daemon checkpoint before the harness compacts its own context. The hook always exits 0, so a missed checkpoint never blocks the compaction. \"off\" (default): no hook. Applies to sessions spawned or restarted after the change.",
+    default: "off",
+  },
+  {
+    path: "defaults.nativeHooks.command",
+    schema: z.string().min(1),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "agentproto CLI for native hooks",
+    help: "The agentproto CLI a projected native hook runs. Unset (the default): the CLI that serves this daemon, by absolute path, so a daemon with a minimal PATH still finds it; set a value to override it. Applies to sessions spawned or restarted after the change.",
+  },
+
+  // ── defaults: reactions ──
+  {
+    path: "defaults.reactions.brainIngest.workspaces",
+    schema: brainIngestWorkspacesSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Brain-ingest reaction workspaces",
+    help: "Workspace slugs whose completed sessions are ingested into the workspace brain by a durable reaction instead of the legacy exit subscriber. Empty (the default) = every workspace stays with the legacy subscriber. Takes effect on the next completion.",
+    default: [],
+  },
+  {
+    path: "defaults.reactions.brainIngest.maxTranscriptBytes",
+    schema: z.number().positive(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "Brain-ingest transcript file ceiling",
+    help: "Maximum events.jsonl size, in bytes, the workspace brain will materialize. A larger session is recorded as a \"too-large\" skip instead of being parsed. Default 32 MB. Read at daemon boot.",
+    default: DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+  },
+  {
+    path: "defaults.reactions.brainIngest.maxTranscriptTextBytes",
+    schema: z.number().positive(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "Brain-ingest transcript text ceiling",
+    help: "Maximum accumulated message text, in bytes, the workspace brain will materialize from one transcript. A smaller file can still expand past this, so it is checked while parsing. Default 8 MB. Read at daemon boot.",
+    default: DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  },
+  {
+    path: "defaults.reactions.brainIngest.maxIndexDocs",
+    schema: z.number().int().positive(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "Brain in-memory index ceiling",
+    help: "Maximum files a workspace brain indexes when search runs on the in-memory fallback index (Node without node:sqlite FTS5, or a knowledge.json files entry with onDiskIndex false). Above it that index holds the most recently modified files and results are flagged partial; search is never refused. The default on-disk index (brain/.index) has no ceiling. A knowledge.json files entry's own maxIndexDocs wins. Default 100,000. Read at daemon boot.",
+    default: DEFAULT_BRAIN_MAX_INDEX_DOCS,
+  },
+  {
+    path: "defaults.reactions.clerk.workspaces",
+    schema: clerkReactionWorkspacesSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Clerk reaction workspaces",
+    help: "Workspace slugs whose clerk passes are dispatched through the durable reaction instead of the legacy dispatch. Empty (the default) = every workspace stays on the legacy dispatch. Takes effect on the next firing.",
+    default: [],
   },
 
   // ── defaults: tasks ──
@@ -1278,119 +2300,10 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: [],
   },
 
-  // ── harnesses: per-adapter defaults ──
-  {
-    path: "defaults.adapters.*.skills",
-    schema: strArray,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter default skills",
-    help: "Skills auto-applied to spawns of this adapter (unioned with the global default).",
-  },
-  {
-    path: "defaults.adapters.*.options",
-    schema: optionsMapSchema,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter default options",
-    help: "AIP-45 options auto-applied to spawns of this adapter.",
-  },
-  {
-    path: "defaults.adapters.*.bundles",
-    schema: strArray,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter default capability bundles",
-    help: "Bundle ids (bundle_list) auto-attached to spawns of this adapter (unioned with the global default).",
-  },
-  {
-    path: "defaults.adapters.*.daemonMount",
-    schema: z.boolean(),
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter daemon self-mount opt-in",
-    help: "Explicitly mount the daemon's own scoped /mcp for spawns of this adapter, for harnesses outside the default self-mount allowlist (opencode, codex, gemini, …).",
-    default: false,
-  },
-  {
-    path: "defaults.adapters.*.contextProfile",
-    schema: z.string(),
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter context profile",
-    help: "Context profile (full, lean, …) for spawns of this adapter that name none. opencode executors default to lean; set full to opt out.",
-  },
-  {
-    path: "defaults.adapters.*.contextContinuity",
-    schema: contextContinuityPolicySchema,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter context-continuity policy",
-    help: "Per-adapter context-continuity policy fragment, overriding the global default. Validated as one cross-field unit.",
-  },
-  {
-    path: "defaults.adapters.*.auth.mode",
-    schema: z.enum(["subscription", "api-key"]),
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter auth mode",
-    help: "\"subscription\" or \"api-key\". Omitted ⇒ resolver picks by ordered preference.",
-  },
-  {
-    path: "defaults.adapters.*.auth.token",
-    schema: str,
-    apply: "hot",
-    secret: true,
-    writable: false,
-    section: "harnesses",
-    label: "Adapter subscription token",
-    help: "Subscription bearer token. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
-  },
-  {
-    path: "defaults.adapters.*.auth.source",
-    schema: str,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter subscription source",
-    help: "Opt-in self-refreshing subscription source, e.g. \"claude-code-oauth\".",
-  },
-  {
-    path: "defaults.adapters.*.auth.apiKey",
-    schema: str,
-    apply: "hot",
-    secret: true,
-    writable: false,
-    section: "harnesses",
-    label: "Adapter API key",
-    help: "Explicit API key for \"api-key\" mode. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
-  },
-  {
-    path: "defaults.adapters.*.auth.provider",
-    schema: CatalogProviderSchema,
-    apply: "hot",
-    writable: true,
-    section: "harnesses",
-    label: "Adapter auth provider pin",
-    help: "Per-adapter provider pin, overriding the adapter's fixed/model-derived provider.",
-  },
-  {
-    path: "defaults.adapters.*.auth.loginFile",
-    schema: z.boolean(),
-    apply: "hot",
-    writable: false,
-    section: "harnesses",
-    label: "Adapter box-login bridge marker",
-    help:
-      "Per-spawn box-login bridge marker (see box-login-bridge.ts): stamped by the host on the auth block it forwards into a sandbox box, never set from config, because a static value would outlive the file it describes. Accepted here so the key is classified and explicitly not writable.",
-  },
+  // ── harnesses: per-harness defaults (canonical), then the deprecated
+  // `defaults.adapters.*` spellings of the same keys ──
+  ...HARNESS_DEFAULTS_KEYS,
+  ...HARNESS_DEFAULTS_KEYS.map(deprecatedAdapterDefaultsKey),
 
   // ── harnesses: user ACP agents ──
   //
@@ -1590,6 +2503,21 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help: "Human-readable label surfaced in session listings. Not writable through config_set.",
   },
 
+  {
+    path: "apps.readGrants.*",
+    schema: z.array(z.string().min(1)),
+    apply: "restart",
+    writable: false,
+    section: "advanced",
+    label: "App read-only grants",
+    help:
+      "Absolute paths outside an installed app's folder that the app may READ (never write), keyed by app id. " +
+      "Operator-only: hand-edit this file, then restart the daemon. Never taken from the app manifest. " +
+      "Refused: /, $HOME, ~/.ssh, ~/.aws, ~/.config, keychains, .env files; secret files inside a granted tree are masked. " +
+      "Each accepted or rejected entry is logged at boot and shown by app_list.",
+    default: [],
+  },
+
   // ── daemon-adjacent (no dedicated UI section yet — features toggles) ──
   {
     path: "features.pty",
@@ -1644,6 +2572,11 @@ export const CONFIG_KEYS_NOT_EXPOSED: readonly ConfigKeyNotExposedEntry[] = [
     path: "version",
     reason:
       "internal schema-version stamp; saveConfig() always overwrites it with CONFIG_VERSION on every write, never a user knob.",
+  },
+  {
+    path: "defaults.sandbox.preflight.probes",
+    reason:
+      "an array of structured probe objects (id, command, koWhen, ...); a single dotted key cannot set one. Edit config.json directly.",
   },
 ]
 
@@ -1804,6 +2737,7 @@ export function validateConfigKeyValue(path: string, value: unknown): ConfigKeyV
  */
 export function redactConfigValue(path: string, value: unknown): unknown {
   const entry = findConfigKey(path)
+  if (entry?.secretFields && !entry.secret) return redactSecretFields(value, entry.secretFields)
   if (!entry?.secret) return value
   if (value === undefined) return { set: false }
   if (typeof value === "string") return { set: value.length > 0 }
@@ -1816,4 +2750,17 @@ export function redactConfigValue(path: string, value: unknown): unknown {
     )
   }
   return { set: true }
+}
+
+/** Redact every field named in `fields` to `{ set }`, at any depth, arrays
+ *  included. Everything else is returned unchanged. */
+export function redactSecretFields(value: unknown, fields: readonly string[]): unknown {
+  if (Array.isArray(value)) return value.map(v => redactSecretFields(v, fields))
+  if (value === null || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, v]) => [
+      key,
+      fields.includes(key) ? { set: typeof v === "string" && v.length > 0 } : redactSecretFields(v, fields),
+    ]),
+  )
 }

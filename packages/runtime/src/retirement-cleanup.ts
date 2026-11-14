@@ -14,7 +14,9 @@
  *     periodically, mirroring the cron scheduler's owner lifecycle.
  */
 
-import type { SentinelStore } from "./sentinel-store.js"
+import "./sentinel-platform.js"
+
+import type { SentinelStore } from "@agentproto/sentinel"
 import type { SessionFollowStore } from "./session-follow-store.js"
 import { isExpiresAtReached } from "./expires-at.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
@@ -26,6 +28,10 @@ export interface RetirementCleanupDeps {
   sentinelStore: SentinelStore
   /** Provider-side cancel + record removal (`cancelSentinelWatch`). */
   cancelSentinel: (sentinelId: string) => Promise<unknown>
+  /** Redeliver follow digests parked for a follower that is alive again.
+   *  The sweep runs this BEFORE removing or re-pointing any wiring, so a
+   *  digest that was only waiting on a respawn is never cancelled with it. */
+  replayFollowParked?: () => Promise<number>
   log?: (line: string) => void
 }
 
@@ -49,7 +55,8 @@ export interface WiringSweepResult {
  * Mirrors cron-scheduler's `ownerRetirement`:
  *   - `expiresAt` passed → remove (the bounded backstop);
  *   - recipient row gone → remove;
- *   - recipient retired → relink to a live successor, else remove.
+ *   - recipient retired → relink to a live successor (sentinels: else the
+ *     live parent), else remove.
  *
  * Archived rows are included here: unlike the event handler above (which
  * deliberately leaves archive reversible), the sweep is the terminal cleanup
@@ -68,12 +75,40 @@ export async function sweepWiringLifecycle(
     sentinelsRelinked: 0,
   }
 
+  // Replay first: a parked digest is a pending delivery, not stale wiring.
+  if (deps.replayFollowParked) {
+    try {
+      const replayed = await deps.replayFollowParked()
+      if (replayed > 0) log(`[retirement-cleanup] replayed ${replayed} parked follow digest(s)`)
+    } catch (err) {
+      log(`[retirement-cleanup] follow parked replay failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   const liveSuccessor = (id: string): string | undefined => {
     const successor = resolveSuccessor(sid => deps.registry.get(sid), id)
     if (!successor) return undefined
     const desc = deps.registry.get(successor)
     return desc && (desc.status === "running" || desc.status === "starting") ? successor : undefined
   }
+
+  const isLive = (id: string | undefined): id is string => {
+    const desc = id ? deps.registry.get(id) : undefined
+    return !!desc && !isRetired(desc) && (desc.status === "running" || desc.status === "starting")
+  }
+
+  /** Another live sentinel already watches one of `subjects` for `targetId`? */
+  const alreadyWatched = (sentinelId: string, targetId: string, subjects: readonly string[]): boolean =>
+    deps.sentinelStore
+      .list()
+      .some(
+        s =>
+          s.id !== sentinelId &&
+          (s.status === "active" || s.status === "orphaned") &&
+          s.spec.target.kind === "session" &&
+          s.spec.target.sessionId === targetId &&
+          s.spec.match.some(m => subjects.includes(m.subject)),
+      )
 
   for (const follow of deps.followStore.list()) {
     const expired = isExpiresAtReached(follow.expiresAt, now)
@@ -101,10 +136,28 @@ export async function sweepWiringLifecycle(
     if (!expired && target.kind === "session") {
       const desc = deps.registry.get(target.sessionId)
       if (desc && !isRetired(desc)) continue
-      const successor = desc ? liveSuccessor(desc.id) : undefined
+      // Same rule as the sentinel runtime's dead-session path: successor
+      // first, else the live parent; cancel only when neither exists.
+      const successor = desc ? (liveSuccessor(desc.id) ?? (isLive(desc.parentSessionId) ? desc.parentSessionId : undefined)) : undefined
       if (successor) {
+        // Auto-link gives the parent its own sentinel for this subject; a
+        // second watch on the same target would double every notice.
+        if (alreadyWatched(sentinel.id, successor, sentinel.spec.match.map(m => m.subject))) {
+          await deps.cancelSentinel(sentinel.id).catch(err => {
+            log(
+              `[retirement-cleanup] failed to cancel duplicate sentinel ${sentinel.id}: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          })
+          result.sentinelsCancelled++
+          log(`[retirement-cleanup] cancelled sentinel ${sentinel.id} (duplicate watch for ${successor} already exists)`)
+          continue
+        }
         deps.sentinelStore.update(sentinel.id, {
-          spec: { ...sentinel.spec, target: { ...target, sessionId: successor } },
+          spec: {
+            ...sentinel.spec,
+            target: { ...target, sessionId: successor },
+            ...(sentinel.spec.group !== undefined ? { group: successor } : {}),
+          },
         })
         result.sentinelsRelinked++
         log(`[retirement-cleanup] sentinel ${sentinel.id} re-pointed at ${successor}`)

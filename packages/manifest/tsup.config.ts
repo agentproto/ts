@@ -11,7 +11,7 @@ export default createTsupConfig({
   dts: true,
   external: [
     "gray-matter",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
     "node:fs",
     "node:fs/promises",
     "node:path",

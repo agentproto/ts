@@ -17,11 +17,14 @@
  * billing, same as an unpinned `agent_start`.
  */
 
-/** The read-only, non-secret discovery tools `mountRunnerSelect` calls.
- *  Every installed app UI gets these for free regardless of its own
- *  `ui.tools` allowlist — see `performAppToolCall`'s effective allowlist
- *  (`installed.ui.tools ∪ APP_UI_DISCOVERY_TOOLS`). */
-export const APP_UI_DISCOVERY_TOOLS = ["adapter_list", "harness_preset_list"] as const
+/** The read-only, non-secret discovery tools every installed app UI gets
+ *  for free regardless of its own `ui.tools` allowlist — see
+ *  `performAppToolCall`'s effective allowlist (`installed.ui.tools ∪
+ *  APP_UI_DISCOVERY_TOOLS`). `harness_list` is the canonical listing;
+ *  `adapter_list` stays here because `mountRunnerSelect` itself still calls
+ *  it (clients migrate in a second delivery, and old daemons only serve the
+ *  legacy name). */
+export const APP_UI_DISCOVERY_TOOLS = ["adapter_list", "harness_list", "harness_preset_list"] as const
 
 /** What `getRunner()` returns — the two fields `agent_start`/`app_run`
  *  accept to pin a spawn's harness + model. `model` is omitted when the

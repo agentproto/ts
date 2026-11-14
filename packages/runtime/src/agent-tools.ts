@@ -39,25 +39,32 @@ import type {
   AdapterModelRow,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
-import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
+import { ROLE_ALIAS_DEPRECATION } from "./agent-ref.js"
+import { adapterDeprecation, conflictingHarnessAlias, patchListResult, resolveHarnessAlias } from "./harness-alias.js"
+import { CLOUD_ADAPTER_PLACEHOLDER } from "@agentproto/cloud-agent"
 import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
 import {
-  checkSessionOwnerGate,
+  checkOperatorLabelStamp,
   checkPromptPolicyEditor,
   effectiveCallerSessionId,
   ownerGateError,
   promptCallerLabel,
 } from "./session-owner.js"
+import { checkDrive } from "./drive-gate.js"
+import { isRetired } from "./session-retirement.js"
 import {
   checkSuccessorDeclaration,
   handoverLineage,
+  isLiveSession,
+  resolveLiveParent,
   type LineageHandoverOutcome,
 } from "./lineage-handover.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
 import { opaqueSchema } from "./tool-schema-opaque.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
+import type { AllowlistEntry } from "./command-allowlist.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import {
   spawnAgentSession,
@@ -82,17 +89,29 @@ import type {
 import { appUiToolId } from "./app-ui-apps.js"
 import {
   createSessionMessage,
+  DECLARED_CC_ADDRESS,
+  SHARED_CLAUDE_DESKTOP_ID,
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
-import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
+import type { Grant } from "@agentproto/policy"
+
+import {
+  defaultUrgencyForKind,
+  registerMessageTools,
+  resolveLiveLabelAddress,
+  type ToolResult,
+  type RegisterMessageToolsOptions,
+} from "./message-tools.js"
 import { registerPermissionsTools } from "./permissions-tools.js"
 import { decide } from "./permissions.js"
+import { createWorkspaceOfCwd } from "./workspace-binding.js"
 import { postParentRelayMessage, relayTokenForSession } from "./parent-relay.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
+import { redactSessionMounts } from "./session-descriptor-public.js"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
  *
@@ -171,6 +190,7 @@ export interface AgentStartCompactDescriptor {
   route?: SessionDescriptor["route"]
   routeSelection?: SessionDescriptor["routeSelection"]
   accessProfile?: SessionDescriptor["accessProfile"]
+  accessSlot?: SessionDescriptor["accessSlot"]
   auth?: SessionDescriptor["auth"]
   capabilities?: SessionDescriptor["capabilities"]
   /** The postures the adapter enforces natively (harness client reads it). */
@@ -196,6 +216,8 @@ export interface AgentStartCompactDescriptor {
   remote?: boolean
   sandboxId?: string
   sandboxProvider?: string
+  /** Requested vs actual backend and reason, for a composite provider. */
+  sandboxProviderChoice?: SessionDescriptor["sandboxProviderChoice"]
   hostSessionId?: string
   hostFingerprint?: string
   externalHost?: string
@@ -259,7 +281,7 @@ export const compactAgentStartDescriptor = (
   command: desc.command,
   pid: desc.pid,
   ...(desc.adapterSlug ? { adapterSlug: desc.adapterSlug } : {}),
-  ...(desc.harness ? { harness: desc.harness } : {}),
+  ...((desc.harness ?? desc.adapterSlug) ? { harness: desc.harness ?? desc.adapterSlug } : {}),
   ...(desc.adapterProvider ? { adapterProvider: desc.adapterProvider } : {}),
   ...(desc.model ? { model: desc.model } : {}),
   ...(desc.activeModel ? { activeModel: desc.activeModel } : {}),
@@ -270,6 +292,7 @@ export const compactAgentStartDescriptor = (
   ...(desc.route ? { route: desc.route } : {}),
   ...(desc.routeSelection ? { routeSelection: desc.routeSelection } : {}),
   ...(desc.accessProfile ? { accessProfile: desc.accessProfile } : {}),
+  ...(desc.accessSlot ? { accessSlot: desc.accessSlot } : {}),
   ...(desc.auth ? { auth: desc.auth } : {}),
   ...(desc.capabilities ? { capabilities: desc.capabilities } : {}),
   ...(desc.spawnEnforcedPostures ? { spawnEnforcedPostures: desc.spawnEnforcedPostures } : {}),
@@ -290,6 +313,7 @@ export const compactAgentStartDescriptor = (
   ...(desc.remote ? { remote: desc.remote } : {}),
   ...(desc.sandboxId ? { sandboxId: desc.sandboxId } : {}),
   ...(desc.sandboxProvider ? { sandboxProvider: desc.sandboxProvider } : {}),
+  ...(desc.sandboxProviderChoice ? { sandboxProviderChoice: desc.sandboxProviderChoice } : {}),
   ...(desc.hostSessionId ? { hostSessionId: desc.hostSessionId } : {}),
   ...(desc.hostFingerprint ? { hostFingerprint: desc.hostFingerprint } : {}),
   ...(desc.externalHost ? { externalHost: desc.externalHost } : {}),
@@ -319,7 +343,8 @@ export const compactAgentStartDescriptor = (
  *
  *  - default (`full` absent, `fields` absent), the COMPACT projection.
  *  - `full: true`, the RAW descriptor, byte for byte the pre-projection
- *    answer (the escape hatch; no field is added, dropped or renamed).
+ *    answer (the escape hatch; no field is added, dropped or renamed),
+ *    except that mount secrets in `mcpServers` are redacted.
  *  - `fields: [...]`, an explicit allowlist over the answer; the named
  *    fields are served from the raw descriptor (so a caller can ask for a
  *    single heavy field on purpose), the compact counters stay available,
@@ -331,7 +356,9 @@ export function buildAgentStartResponseBody(
   opts: { full?: boolean; fields?: readonly string[] } = {},
 ): Record<string, unknown> {
   const compact = compactAgentStartDescriptor(descriptor)
-  const raw = { ...descriptor } as Record<string, unknown>
+  // Mount secrets (`mcpServers[].env` / `.headers`) are redacted even on the
+  // raw paths: this body is a tool result, not the stored descriptor.
+  const raw = redactSessionMounts({ ...descriptor }) as Record<string, unknown>
   const body: Record<string, unknown> = opts.fields
     ? { ...raw, ...compact, ...extras }
     : opts.full
@@ -360,6 +387,15 @@ const sessionIdField = z
   .describe(
     "Session id (as returned by agent_start). Accepts either `sessionId` or " +
       "its alias `id` — pass whichever you have.",
+  )
+const driveSessionIdField = z
+  .string()
+  .optional()
+  .describe(
+    "Session id (as returned by agent_start), or `label:<operatorLabel>` for the one live " +
+      "session carrying that operator label (no live match is no_live_session_for_label, " +
+      "several is ambiguous_label; the owner gate still runs on the resolved session). " +
+      "Accepts either `sessionId` or its alias `id`: pass whichever you have.",
   )
 const sessionIdAliasField = z
   .string()
@@ -425,18 +461,20 @@ export interface RegisterAgentToolsOptions {
    *  sidecar instead of assuming it's already running. Omitted ⇒ unchanged
    *  pre-existing behavior. */
   ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
+  /** Workspace command allowlist loader for the stdio mount gate, wired by
+   *  the host with the SAME workspace `command_execute` gates against.
+   *  Omitted ⇒ the gate treats every session stdio mount as outside the
+   *  allowlist. */
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>
   /** The daemon's own plain `/mcp` gateway URL (e.g.
    *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` with no
    *  caller-supplied `mcpServers` defaults to mounting this gateway for
-   *  the adapters in `shouldInjectDaemonSelfMount` (session-spawn.ts):
-   *  hermes (capability — it has zero built-in tools, so omitting
-   *  `mcpServers` silently produced a chat-only session) and on-host
-   *  claude-code (identity — the injected entry carries
-   *  `callerSessionId=<own id>` and shadows the ambient unstamped
-   *  project/global mount of the same name, so the session's spawns
-   *  auto-attach instead of landing as anonymous orphans). An explicit
+   *  every on-host adapter (see `shouldInjectDaemonSelfMount`). The
+   *  injected entry carries `callerSessionId=<own id>` and makes
+   *  `agent_start` visible to `delegationReachFor`, preventing the
+   *  session from being downgraded to executor at depth 0. An explicit
    *  `mcpServers: []` is still respected as a deliberate opt-out.
-   *  Omitted → no default. */
+   *  Omitted -> no default. */
   daemonMcpUrl?: string
   /** Optional orchestrator-injection builder (WP3). When wired, the
    *  `orchestrator` field on `agent_start` mints a scoped
@@ -482,6 +520,12 @@ export interface RegisterAgentToolsOptions {
    *  instead of orphaning. Absent → no auto-parent (attribution falls back to
    *  an explicit `parentSessionId` hint, if any). */
   callerSessionId?: string
+  /** The session a valid session token on this `/mcp` request was minted for
+   *  (AIP-46 §Session principals). Trusted transport data, never a tool
+   *  argument: `index.ts` forwards the token's verified session. Threaded to
+   *  `spawnAgentSession` as `callerCredentialSessionId` so the spawn proof
+   *  gate can tell a claimed caller from a proven one. */
+  credentialSessionId?: string
   /** The connecting client's source label from this `/mcp` request's `?origin=`
    *  query (#session-visibility) — cowork/vscode/codex/cron. Used as the
    *  DEFAULT `origin` for an `agent_start` that doesn't pass its own, so a
@@ -546,16 +590,36 @@ export interface RegisterAgentToolsOptions {
    *  `message_send` / `message_reply` reach any session of the SAME
    *  workspace, even without a tree edge. Default true. */
   messagingAllowSameWorkspace?: boolean
+  /** config.json `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
+  messagingPeerBinding?: "slug" | "verified"
   /** config.json `defaults.messaging.peerGroups` - groups of workspace
    *  slugs. Lets `message_send` / `message_reply` reach a session whose
    *  workspace slug sits in the same group, even without a tree edge.
    *  Default [] (no cross-workspace link). */
   messagingPeerGroups?: string[][]
+  /** config.json `defaults.messaging.grants` - explicit AIP-38
+   *  `session:message` grants that may ADMIT a pair the tree and the
+   *  switches refuse. Forwarded to `message_send` / `message_reply` and
+   *  `permissions_explain`, never to `message_parent` (tree-only). */
+  messagingGrants?: Grant[]
   /** config.json `defaults.messaging.agentInterrupt` — whether a SESSION
    *  sender's `urgency: "interrupt"` (or `message_parent`'s `interrupt:
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
    *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** `delivery.apply` for the message tools (dead-recipient route). */
+  deliveryApply?: RegisterMessageToolsOptions["deliveryApply"]
+  /** config.json `defaults.messaging.anonymousSend` - "label" (default) or
+   *  "block". Forwarded to `message_send` / `message_reply` and
+   *  `permissions_explain`. */
+  messagingAnonymousSend?: "block" | "label"
+  /** `mcp.noCallerIdentity` — how the MCP gateway treats a call with no
+   *  caller identity: `block` (default) refuses, `accept` allows an
+   *  anonymous `message_send` as `claude-code`, `ask` parks it on a human
+   *  approval. */
+  noCallerIdentity?: "block" | "ask" | "accept"
+  /** `ask` mode: raise a human approval for an identity-less send. */
+  requestAnonymousMessageApproval?: RegisterMessageToolsOptions["requestAnonymousMessageApproval"]
 }
 
 export function registerAgentTools(
@@ -572,6 +636,7 @@ export function registerAgentTools(
     buildOrchestratorMcp,
     callerScope,
     callerSessionId,
+    credentialSessionId,
     mcpBridgeOrigin,
     webhookNotifier,
     daemonMcpUrl,
@@ -584,10 +649,17 @@ export function registerAgentTools(
     isSessionChatInstalled,
     messagingAllowSiblings,
     messagingAllowSameWorkspace,
+    messagingPeerBinding,
     messagingPeerGroups,
+    messagingGrants,
     messagingAgentInterrupt,
+    deliveryApply,
+    messagingAnonymousSend,
+    noCallerIdentity,
+    requestAnonymousMessageApproval,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
+    loadCommandAllowlist,
   } = opts
   // Effective `interrupt` when a call leaves it unset: config default, else
   // false. An explicit boolean on the call always wins (checked at each site).
@@ -605,26 +677,59 @@ export function registerAgentTools(
   // `?callerSessionId=` query. `undefined` = the human operator.
   const effectiveCaller = (): string | undefined =>
     effectiveCallerSessionId(callerScope, callerSessionId)
-  // Session-owner gate for the drive tools (session-owner.ts): a call from
-  // another agent session is refused unless the caller is the target's owner
-  // (the session that spawned it), the session itself, or granted via the
-  // target's `allowPromptFrom` list. The human operator always passes.
+  // Drive gate for the drive tools (drive-gate.ts): a call from another
+  // agent session is refused unless the caller is the target's owner (the
+  // session that spawned it), the session itself, an ancestor, or granted via
+  // the target's `allowPromptFrom` list. The human operator always passes. An
+  // explicit `defaults.messaging.grants` entry for the tool's action may admit
+  // a caller the legacy gate refuses.
   const ownerGateText = (
     target: SessionDescriptor | undefined,
     tool: string,
   ): string | undefined => {
     if (!target) return undefined
-    const gate = checkSessionOwnerGate({
+    const gate = checkDrive({
+      registry,
+      ...(messagingGrants !== undefined ? { grants: messagingGrants } : {}),
       callerSessionId: effectiveCaller(),
       target,
       tool,
-      // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
-      // (grandparent / orchestrator root) keeps its existing subtree
-      // authority over the target — the owner gate must not revoke it.
-      parentOf: id => registry.get(id)?.parentSessionId,
-      operatorLabelOf: id => registry.get(id)?.operatorLabel,
     })
     return gate.ok ? undefined : gate.message
+  }
+
+  // `sessionId` / `id` of a drive tool: a plain session id, or
+  // `label:<operatorLabel>` (the one live session carrying that immutable
+  // operator label). Only picks the target; the owner gate then runs on the
+  // resolved session, so a label never widens who can drive it.
+  const resolveDriveTarget = (
+    tool: string,
+    input: { sessionId?: string; id?: string },
+  ): string | ToolResult => {
+    const arg = resolveSessionIdArg(input)
+    if (!arg) return missingSessionIdError(tool)
+    let subtree: Set<string> | undefined
+    const target = resolveLiveLabelAddress({
+      registry,
+      tool,
+      to: arg,
+      verb: "drive",
+      mayReach: d => {
+        // agent_kill from a scoped orchestrator is also bounded by its subtree.
+        if (tool === "agent_kill" && callerScope) {
+          subtree ??= collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+          if (!subtree.has(d.id)) return false
+        }
+        return checkDrive({
+          registry,
+          ...(messagingGrants !== undefined ? { grants: messagingGrants } : {}),
+          callerSessionId: effectiveCaller(),
+          target: d,
+          tool,
+        }).ok
+      },
+    })
+    return "id" in target ? target.id : target
   }
 
   // ── agent_start ────────────────────────────────────────
@@ -669,14 +774,18 @@ export function registerAgentTools(
       // scope). Any session caller (scoped sub-gateway or the self-ref
       // `?callerSessionId=` query) is refused: a remote parent names the
       // relay URL the session's reports (and its relay token) are sent to.
-      if (input.remoteParent !== undefined && (callerScope !== undefined || effectiveCaller() !== undefined)) {
+      if (
+        (input.remoteParent !== undefined || input.credentialRelay !== undefined) &&
+        (callerScope !== undefined || effectiveCaller() !== undefined)
+      ) {
         return {
           content: [
             {
               type: "text",
               text:
-                "agent_start: `remoteParent` is daemon-internal (the host daemon forwards it into a box " +
-                "at spawn time) and cannot be supplied by a session caller.",
+                `agent_start: \`${input.remoteParent !== undefined ? "remoteParent" : "credentialRelay"}\` is ` +
+                "daemon-internal (the host daemon forwards it into a box at spawn time) and cannot be " +
+                "supplied by a session caller.",
             },
           ],
           isError: true,
@@ -711,8 +820,8 @@ export function registerAgentTools(
       // BINDING item 3) — the lightest-weight harness against a small local
       // model. Lowest precedence: an explicit adapter/harness/preset choice
       // always wins.
-      const adapter =
-        input.adapter ?? input.harness ?? preset?.adapter ?? preset?.harness ?? (input.inference ? "pi" : undefined)
+      const harnessChoice = resolveHarnessAlias(input, preset)
+      const adapter = harnessChoice.harness ?? (input.inference ? "pi" : undefined)
       // AIP-66 `cloud` spawn with no adapter/harness/preset choice: the
       // VENDOR's cloud adapter is resolved inside spawnAgentSession
       // (resolveCloudSpawn) — pass the placeholder its `adapter: string`
@@ -721,11 +830,74 @@ export function registerAgentTools(
       // (`cloud_spawn_refused`, naming the vendor's allowed harnesses).
       if (!adapter && !input.cloud) {
         return {
-          content: [{ type: "text", text: "agent_start: adapter is required unless the selected preset provides one." }],
+          content: [{ type: "text", text: "agent_start: harness is required unless the selected preset provides one." }],
           isError: true,
         }
       }
-      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, full: _full, fields: _fields, ...spawnInput } = input
+      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, full: _full, fields: _fields, parent: declaredParent, ...spawnInput } = input
+      // Declared parent (`agent_start.parent`): for a caller the daemon cannot
+      // identify. A call that already carries an identity attaches under it
+      // automatically, so a declaration there is refused rather than allowed to
+      // re-parent (the caller's own `parentSessionId` hint is the existing path).
+      // The shared, unverified `claude-desktop` identity names a host, not a
+      // session (no hook inbox / socket wake), so it may declare its own
+      // `cc:<session_id>` as parent: the child's follow-ups then reach a row that
+      // can be woken. Declared, not proven; only the `cc:` form is accepted.
+      const sharedDesktopCaller =
+        callerScope === undefined && effectiveCaller() === SHARED_CLAUDE_DESKTOP_ID
+      // A caller the bridge attested as `cc:<id>` (x-agentproto-claude-session)
+      // already attaches under that row. A declaration equal to it is redundant
+      // and accepted (no regression for clients that keep sending it); one that
+      // differs is refused: the attested identity wins, a declaration never
+      // re-parents it.
+      const attestedCc =
+        callerScope === undefined && effectiveCaller() !== undefined && DECLARED_CC_ADDRESS.test(effectiveCaller()!)
+      if (declaredParent !== undefined && attestedCc && declaredParent !== effectiveCaller()) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `agent_start: \`parent\` "${declaredParent}" differs from the Claude Code session this call is ` +
+                `attested as (\`${effectiveCaller()}\`); the call attaches under it automatically. Omit \`parent\`.`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (
+        declaredParent !== undefined &&
+        (callerScope !== undefined || effectiveCaller() !== undefined) &&
+        !sharedDesktopCaller &&
+        !attestedCc
+      ) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "agent_start: `parent` is only for callers without a session identity; " +
+                "this call is attributed to a session and attaches under it automatically.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (declaredParent !== undefined && sharedDesktopCaller && !DECLARED_CC_ADDRESS.test(declaredParent)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "agent_start: from the shared `claude-desktop` identity, `parent` must be your own " +
+                "declared Claude Code address `cc:<session_id>`.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const anonymousCall =
+        callerScope === undefined && effectiveCaller() === undefined && noCallerIdentity === "accept"
       // Lineage handover (`agent_start.succeeds`): the caller declares that
       // THIS new session takes over another session's position in the spawn
       // tree. Authorized to the human operator, the replaced session itself
@@ -769,6 +941,7 @@ export function registerAgentTools(
           buildOrchestratorMcp,
           daemonMcpUrl,
           callerScope,
+          ...(credentialSessionId ? { callerCredentialSessionId: credentialSessionId } : {}),
           webhookNotifier,
           loadRoleRegistry,
           resolveSandboxProvider,
@@ -779,10 +952,21 @@ export function registerAgentTools(
           // Lets the generic `adapter_not_found` error name the installed
           // adapters (session-spawn.ts) instead of only saying "install it".
           ...(listAgentAdapters ? { listAgentAdapters } : {}),
+          ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
         },
         {
           ...spawnInput,
+          ...((): { harnessWarnings?: string[] } => {
+            const harnessWarnings = [
+              ...(input.role !== undefined && input.agent === undefined ? [ROLE_ALIAS_DEPRECATION] : []),
+              ...harnessChoice.warnings.map(w => `agent_start: ${w}`),
+            ]
+            return harnessWarnings.length > 0 ? { harnessWarnings } : {}
+          })(),
           adapter: adapter ?? CLOUD_ADAPTER_PLACEHOLDER,
+          // Both keys carry the ONE resolved slug, so the spawn core's
+          // `harness ?? adapter` reads and its `adapter` reads agree.
+          ...(adapter ? { harness: adapter } : {}),
           // Auto-stamp the source channel (#session-visibility): when the
           // caller didn't pass an explicit `origin`, fall back to the connecting
           // client's `?origin=` label so a bridge-client spawn (cowork/vscode/
@@ -794,6 +978,17 @@ export function registerAgentTools(
           // passing its own id. An explicit `parentSessionId` still outranks
           // it in `decideSpawnAttach`.
           ...(callerSessionId ? { autoParentSessionId: callerSessionId } : {}),
+          // A declared parent is a lineage hint (descriptor-only, same trust as
+          // a declared `replyTo` address); an explicit `parentSessionId` wins.
+          ...(declaredParent !== undefined && spawnInput.parentSessionId === undefined
+            ? { parentSessionId: declaredParent }
+            : {}),
+          // Identity-less call let through by `mcp.noCallerIdentity: accept`:
+          // spawned as a root tagged anonymous, with no elevation.
+          ...(anonymousCall ? { anonymousCaller: true } : {}),
+          // AIP-46 rule 4: who may name an operator is decided from the
+          // daemon-derived caller, overwriting anything the request carried.
+          callerSessionId: effectiveCaller(),
           ...(rawPosture ? { posture: parsePostureInput(rawPosture) } : {}),
           ...(preset ? { preset } : {}),
           ...(sessionPresets.length > 0 ? { sessionPresets } : {}),
@@ -831,9 +1026,23 @@ export function registerAgentTools(
             )
           }
         }
-        if (input.allowPromptFrom?.length) {
+        // The shared `claude-desktop` identity declares `parent: "cc:<id>"`, so
+        // the child's recorded owner is a `cc:` row that no Desktop MCP call can
+        // present (calls arrive as `claude-desktop`). Unless the caller said
+        // otherwise, grant `claude-desktop` so its own supervisor can drive the
+        // child. An explicit list, including `[]` (opt-out), is never touched.
+        const defaultDesktopDriveGrant =
+          sharedDesktopCaller &&
+          declaredParent !== undefined &&
+          input.allowPromptFrom === undefined &&
+          !result.deduped &&
+          result.descriptor.parentSessionId === declaredParent
+        const effectiveAllowPromptFrom = defaultDesktopDriveGrant
+          ? [SHARED_CLAUDE_DESKTOP_ID]
+          : input.allowPromptFrom
+        if (effectiveAllowPromptFrom?.length) {
           try {
-            registry.setPromptPolicy(result.descriptor.id, input.allowPromptFrom)
+            registry.setPromptPolicy(result.descriptor.id, effectiveAllowPromptFrom)
           } catch (err) {
             attachWarnings.push(
               `allowPromptFrom apply failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -913,7 +1122,17 @@ export function registerAgentTools(
         result.code === "orchestrator_max_depth_exceeded" ||
         result.code === "orchestrator_child_quota_exceeded" ||
         result.code === "role_spawn_denied" ||
-        result.code === "cloud_spawn_refused"
+        result.code === "cloud_spawn_refused" ||
+        result.code === "operator_unresolvable" ||
+        result.code === "delegation_denied" ||
+        result.code === "auth_profile_denied" ||
+        result.code === "stdio_mount_denied" ||
+        result.code === "sandbox_preflight_failed" ||
+        result.code === "sandbox_egress_all_cooling" ||
+        result.code === "sandbox_placement_exhausted" ||
+        result.code === "placement_invalid" ||
+        result.code === "identity_unverified" ||
+        result.code === "identity_mismatch"
           ? JSON.stringify(
               { error: result.code, message: result.message, ...result.details },
               null,
@@ -937,7 +1156,7 @@ export function registerAgentTools(
       "the turn ends; `interrupt: true` cancels the in-flight turn and " +
       "redirects the SAME session onto this prompt, keeping its context.",
     {
-      sessionId: sessionIdField,
+      sessionId: driveSessionIdField,
       id: sessionIdAliasField,
       prompt: opaqueSchema(promptInputSchema).describe(
         `The next user turn — plain text, or a content block / block array for a multimodal turn. Details: tool_help {name:"agent_prompt", topic:"prompt"}`
@@ -969,10 +1188,18 @@ export function registerAgentTools(
         .enum(["auto", "steer", "interrupt"])
         .optional()
         .describe("Forcing mode; auto (default) = steer, else interrupt."),
+      dedupeKey: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          "Retry-safe key. A second call with the same key within 24 hours is not delivered again and answers delivery 'duplicate'."
+        ),
     },
     async input => {
-      const sessionId = resolveSessionIdArg(input)
-      if (!sessionId) return missingSessionIdError("agent_prompt")
+      const sessionId = resolveDriveTarget("agent_prompt", input)
+      if (typeof sessionId !== "string") return sessionId
       // Session-owner gate: only the session's owner (the caller that
       // spawned it, per its `parentSessionId`), the session itself, the
       // operator, or a caller named in its `allowPromptFrom` list may drive
@@ -1016,6 +1243,7 @@ export function registerAgentTools(
                 deliverVia: input.deliverWithinVia ?? "auto",
               }
             : {}),
+          ...(input.dedupeKey !== undefined ? { dedupeKey: input.dedupeKey } : {}),
           ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
         // Self-documenting loop: the prompt actually parked behind an
@@ -1024,18 +1252,21 @@ export function registerAgentTools(
         // moment it's missing, so it won't be delivered until the current
         // turn ends.
         const pending = result.pending ?? result.queued
+        const duplicate = result.duplicate === true
         // Session events: record WHO sent this prompt — the calling session
         // id, or the literal `"operator"` for a call with no caller session.
-        registry.noteSessionPrompt(sessionId, promptCallerLabel(caller), pending)
+        // A duplicate sent nothing, so it must not be noted as a prompt.
+        if (!duplicate) registry.noteSessionPrompt(sessionId, promptCallerLabel(caller), pending)
         const delivery = result.delivery ?? (result.queued ? "queued-mid-turn" : "delivered")
-        const hintQueued = pending && input.interrupt === undefined
+        const hintQueued = pending && input.interrupt === undefined && !duplicate
         return {
           content: [
             {
               type: "text",
               // `pending` leads so a truncated read still shows it. `queued`
-              // is legacy ("accepted") and stays true for compatibility —
-              // `pending` / `delivery` are the unambiguous signals.
+              // is legacy ("accepted") and stays true for compatibility, except
+              // for a duplicate, which accepted nothing — `pending` /
+              // `delivery` are the unambiguous signals.
               text: JSON.stringify(
                 {
                   ok: true,
@@ -1043,8 +1274,9 @@ export function registerAgentTools(
                   delivery,
                   ...(result.deliveredAt ? { deliveredAt: result.deliveredAt } : {}),
                   sessionId,
-                  queued: true,
+                  queued: !duplicate,
                   ...(result.queueId ? { queueId: result.queueId } : {}),
+                  ...(duplicate ? { duplicate: true } : {}),
                   ...(hintQueued
                     ? {
                         hint:
@@ -1110,8 +1342,10 @@ export function registerAgentTools(
       "needed: the daemon resolves your recorded parent from your own session " +
       "identity (also the AGENTPROTO_PARENT_SESSION_ID env var). Delivery tier " +
       "follows `urgency`; `interrupt: true` asks to cancel the parent's turn, " +
-      "honoured only when the operator allows it. Errors if this session has " +
-      "no recorded parent or the parent is gone.",
+      "honoured only when the operator allows it. If your parent is dead, the " +
+      "report goes to its live declared successor (else the nearest live " +
+      "ancestor) and you are re-parented onto it. Errors if this session has " +
+      "no recorded parent, or neither the parent nor any successor/ancestor is alive.",
     {
       message: z
         .string()
@@ -1213,22 +1447,52 @@ export function registerAgentTools(
           ],
         }
       }
-      const parentId = self.parentSessionId
+      let parentId = self.parentSessionId
       if (!parentId || parentId === selfId) {
         return fail(
           "message_parent: this session has no recorded parent — it was " +
             "spawned at the root, so there is no one to report up to."
         )
       }
-      const parent = registry.get(parentId)
+      let parent = registry.get(parentId)
       if (!parent) {
         return fail(`message_parent: parent session "${parentId}" no longer exists.`)
       }
-      if (parent.status !== "running" && parent.status !== "starting") {
-        return fail(
-          `message_parent: parent session "${parentId}" is not running ` +
-            `(status: ${parent.status}) — the message cannot be delivered.`
-        )
+      if (!isLiveSession(parent)) {
+        // Dead parent: re-attach to its live declared successor, else the
+        // nearest live ancestor, so the child regains a reachable parent (and
+        // the successor its drive rights). No live target: keep the error.
+        const deadParent = parent
+        const target = resolveLiveParent(registry, deadParent.id)
+        let moved = false
+        if (target && target.id !== selfId) {
+          try {
+            registry.reassignParent(selfId, target.id)
+            moved = true
+          } catch {
+            // A cycle (target inside this session's own subtree): leave the
+            // tree alone and report the original dead parent below.
+          }
+        }
+        if (!target || !moved) {
+          return fail(
+            `message_parent: parent session "${parentId}" is not running ` +
+              `(status: ${deadParent.status}) - the message cannot be delivered` +
+              (target ? "." : "; no live successor or ancestor to report to.")
+          )
+        }
+        registry.emitLineageHandover?.({
+          type: "session:lineage-handover",
+          sessionId: deadParent.id,
+          successorSessionId: target.id,
+          adopted: [selfId],
+          skipped: [],
+          reason: "message_parent",
+          actor: selfId,
+          ts: new Date().toISOString(),
+        })
+        parentId = target.id
+        parent = target
       }
       // The daemon-attested envelope: `from` comes from the verified caller
       // identity + the tree, never from the input. The parent sees it as an
@@ -1251,8 +1515,10 @@ export function registerAgentTools(
           allowSiblings: messagingAllowSiblings === true,
           ...(messagingAllowSameWorkspace !== undefined ? { allowSameWorkspace: messagingAllowSameWorkspace } : {}),
           ...(messagingPeerGroups ? { peerGroups: messagingPeerGroups } : {}),
+          ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
           agentInterrupt: messagingAgentInterrupt ?? "deny",
         },
+        workspaceOfCwd: createWorkspaceOfCwd(),
       }
       const decision = decide(principal, "session.message", resource, messagingPolicy)
       if (!decision.allow || !decision.relation) {
@@ -1309,6 +1575,7 @@ export function registerAgentTools(
       }
       const applied = {
         urgencyApplied: result.urgencyApplied,
+        ...(result.wake ? { wake: result.wake } : {}),
         ...(result.urgencyApplied !== urgency && result.delivered?.via !== "wait"
           ? { note: `requested urgency "${urgency}" was delivered as "${result.urgencyApplied}"` }
           : {}),
@@ -1342,10 +1609,17 @@ export function registerAgentTools(
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
     ...(messagingAllowSameWorkspace === false ? { allowSameWorkspace: false } : {}),
+    ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
+    workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingPeerGroups && messagingPeerGroups.length > 0
       ? { peerGroups: messagingPeerGroups }
       : {}),
+    ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
+    ...(noCallerIdentity ? { noCallerIdentity } : {}),
+    ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
+    ...(deliveryApply ? { deliveryApply } : {}),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
   registerPermissionsTools(server, {
@@ -1359,7 +1633,11 @@ export function registerAgentTools(
     ...(messagingPeerGroups && messagingPeerGroups.length > 0
       ? { peerGroups: messagingPeerGroups }
       : {}),
+    ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
+    ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
+    workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
   })
 
   // ── agent_output ───────────────────────────────────
@@ -1406,15 +1684,11 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      // Best-effort tail — re-attach with a temp listener, capture
-      // backfill (which is the recent ring buffer), unsubscribe.
+      // Best-effort tail — the live ring while the session has one, or the
+      // final text recovered from the row / transcript once it is terminal
+      // (its rings are cleared at exit — see SessionsRegistry.readOutputTail).
       const limit = input.lastN ?? 80
-      const lines: string[] = []
-      const unsub = registry.attach(sessionId, (line, _stream) => {
-        lines.push(line)
-      })
-      if (unsub) unsub()
-      const tail = lines.slice(-limit)
+      const tail = registry.readOutputTail(sessionId, limit)
       let output = input.clean ? cleanAgentLines(tail) : tail
       // Resilience: a tool-busy turn emits `[tool]`/`[tool-result]` lines but
       // little or no assistant text, and clean mode strips those — so an agent
@@ -1489,7 +1763,7 @@ export function registerAgentTools(
       "`reason: \"stopped\"` (or omitted) on an already-ended session stays a " +
       "no-op.",
     {
-      sessionId: sessionIdField,
+      sessionId: driveSessionIdField,
       id: sessionIdAliasField,
       reason: z
         .enum(["completed", "stopped"])
@@ -1508,8 +1782,8 @@ export function registerAgentTools(
         ),
     },
     async input => {
-      const sessionId = resolveSessionIdArg(input)
-      if (!sessionId) return missingSessionIdError("agent_kill")
+      const sessionId = resolveDriveTarget("agent_kill", input)
+      if (typeof sessionId !== "string") return sessionId
       // NOTE: no session-owner gate here — a scoped orchestrator's refusal
       // shape (the structured `orchestrator_session_out_of_scope` error at
       // the subtree check below) and its subtree authority are pre-existing
@@ -1609,12 +1883,12 @@ export function registerAgentTools(
       "stop: they stay queued and run after the next turn that ends on its " +
       "own. No-op (`wasBusy: false`) on an already-idle or terminal session.",
     {
-      sessionId: sessionIdField,
+      sessionId: driveSessionIdField,
       id: sessionIdAliasField,
     },
     async input => {
-      const sessionId = resolveSessionIdArg(input)
-      if (!sessionId) return missingSessionIdError("agent_interrupt")
+      const sessionId = resolveDriveTarget("agent_interrupt", input)
+      if (typeof sessionId !== "string") return sessionId
       const interruptOwnerError = ownerGateText(registry.get(sessionId), "agent_interrupt")
       if (interruptOwnerError) return ownerGateError("agent_interrupt", interruptOwnerError)
       try {
@@ -1708,18 +1982,20 @@ export function registerAgentTools(
   // ── agent_set_operator_label ─────────────────────────────
   server.tool(
     "agent_set_operator_label",
-    "Stamp this session's operator-assigned `operatorLabel` — the identity a " +
-      "`label:<label>` / `label:<prefix>*` entry in another session's " +
-      "`allowPromptFrom` matches against. Normally the daemon stamps this " +
-      "ONLY on a fresh root spawn (no caller session, not a resume) and " +
-      "every later `session_restart` / `session_continue_fresh` of that " +
-      "lineage carries it forward automatically. This tool exists for the " +
-      "one case that carry-forward cannot fix: a lineage that has lived by " +
-      "resume/continue-fresh since before it ever got a label, so there was " +
-      "never a prior label to carry forward. Reserved to the human operator " +
-      "— unlike `allowPromptFrom`, a session may not stamp its own (or any) " +
-      "`operatorLabel`: that would let a compromised session grant itself " +
-      "any `label:` grant it likes. Pass an empty string to clear it.",
+    "Stamp a session's operator-assigned `operatorLabel`: the name " +
+      "`message_send to:\"label:<label>\"` and `agent_prompt` / `agent_interrupt` / " +
+      "`agent_kill` `id:\"label:<label>\"` resolve to the one live session carrying it. " +
+      "The human operator may stamp any session. A session may stamp one on a " +
+      "session it OWNS (a child it spawned, or a descendant of it), so a " +
+      "supervisor can give its children a stable name; the shared `claude-desktop` " +
+      "identity may do so for a child it spawned with `parent: \"cc:<id>\"`. " +
+      "A session may NOT stamp its own label, nor one on a session it does not " +
+      "own. A label carried by any other non-archived session, live or dead, is " +
+      "refused for a session caller. The label on a session with a parent is an address only: " +
+      "`allowPromptFrom` `label:` entries, `operatorDelegates` and label-keyed " +
+      "grants match root sessions only. Also lets the operator label a lineage " +
+      "that has lived by resume/continue-fresh since before it got one. " +
+      "Pass an empty string to clear it. Details: `tool_help {name:\"agent_set_operator_label\"}`.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
@@ -1728,12 +2004,6 @@ export function registerAgentTools(
         .describe("The operator-assigned label to stamp, or \"\" to clear it."),
     },
     async input => {
-      if (effectiveCaller() !== undefined) {
-        return ownerGateError(
-          "agent_set_operator_label",
-          "agent_set_operator_label: reserved to the human operator — a session may not stamp its own (or another session's) operatorLabel. This call came from a session.",
-        )
-      }
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_set_operator_label")
       const target = registry.get(sessionId)
@@ -1745,8 +2015,53 @@ export function registerAgentTools(
           isError: true,
         }
       }
+      const operatorLabel = input.operatorLabel.trim() || undefined
+      const caller = effectiveCaller()
+      if (caller !== undefined) {
+        const stamp = checkOperatorLabelStamp({
+          callerSessionId: caller,
+          target,
+          parentOf: id => registry.get(id)?.parentSessionId,
+        })
+        if (!stamp.ok) return ownerGateError("agent_set_operator_label", stamp.message)
+        if (operatorLabel !== undefined) {
+          // Any non-archived holder counts, dead or retired: a brain that is
+          // down between two restarts still owns its name and takes it back on
+          // rebirth. A predecessor of the target (its restart/continue-fresh
+          // chain ends at the target) is the same lineage, not a rival.
+          const continuesInto = (d: SessionDescriptor, id: string): boolean => {
+            for (let i = 0, cur: SessionDescriptor | undefined = d; i < 256 && cur?.continuedTo; i++) {
+              if (cur.continuedTo === id) return true
+              cur = registry.get(cur.continuedTo)
+            }
+            return false
+          }
+          const holder = registry
+            .list()
+            .find(
+              d =>
+                d.id !== target.id &&
+                d.operatorLabel === operatorLabel &&
+                !continuesInto(d, target.id),
+            )
+          if (holder) {
+            const state = isRetired(holder) ? `${holder.status}, retired` : holder.status
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `agent_set_operator_label: the label "${operatorLabel}" is already carried by session ` +
+                    `"${holder.id}" (status: ${state}). A dead or retired session keeps its label until it ` +
+                    `is archived, so a session that comes back keeps its name. Pick another label.`,
+                },
+              ],
+              isError: true,
+            }
+          }
+        }
+      }
       try {
-        const operatorLabel = input.operatorLabel.trim() || undefined
         const desc = registry.setOperatorLabel(sessionId, operatorLabel)
         return {
           content: [
@@ -1929,6 +2244,7 @@ export function registerAgentTools(
     command: s.command,
     cwd: s.cwd,
     adapterSlug: s.adapterSlug,
+    harness: s.harness ?? s.adapterSlug,
     model: s.model,
     busy: s.busy,
     awaitingInput: s.awaitingInput,
@@ -2013,7 +2329,7 @@ export function registerAgentTools(
       if (statsDetail) {
         rows = await withSessionStats(rows, registry.list({ includeArchived: true }), statsDetail)
       }
-      return rows
+      return rows.map(redactSessionMounts)
     },
     transformers: [
       catchErrors(),
@@ -2066,6 +2382,14 @@ export function registerAgentTools(
     })),
     modelCount: a.models?.length ?? 0,
   })
+  // `adapter_list` (legacy spelling) and `harness_list` (AIP-70 canonical
+  // spelling) are the SAME listing over the SAME lister: one handler, one
+  // projection, one paginated transformer. `adapter_list` keeps its exact
+  // pre-#2313 schema (`adapter` only) for old clients; `harness_list` adds
+  // the canonical `harness` name plus `adapter` as a compatibility alias.
+  // A call naming BOTH with different values is a caller bug, not an
+  // ambiguous preference — it fails closed rather than silently picking one.
+  type AdapterListInput = { harness?: string; adapter?: string }
   const adapterListSchema = z.object({
     adapter: z
       .string()
@@ -2073,11 +2397,70 @@ export function registerAgentTools(
       .describe("Keep only this adapter slug — lets a client fetch ONE adapter's detail."),
     ...pageParamsShape,
   })
-  type AdapterListInput = z.infer<typeof adapterListSchema>
+  const harnessListSchema = z.object({
+    harness: z
+      .string()
+      .optional()
+      .describe("Keep only this harness slug — canonical spelling of `adapter`."),
+    adapter: z
+      .string()
+      .optional()
+      .describe("Legacy alias for `harness`; when both are given they must match."),
+    ...pageParamsShape,
+  })
+  const listSlugFor = (tool: "adapter_list" | "harness_list", input: AdapterListInput): string | undefined => {
+    if (input.harness !== undefined && input.adapter !== undefined && input.harness !== input.adapter) {
+      throw new Error(
+        `${tool}: received both harness="${input.harness}" and adapter="${input.adapter}" — ` +
+          "when both are given they must name the same harness (omit one).",
+      )
+    }
+    return input.harness ?? input.adapter
+  }
+  // `harness_list` wraps its rows under the canonical `harnesses` key and
+  // mirrors them under the deprecated `adapters` key for old readers;
+  // `adapter_list` keeps its `adapters` wrapper. Every old name used (the
+  // tool itself, or an `adapter` argument) adds a dated warning.
+  const registerAdapterListing = (id: "adapter_list" | "harness_list", description: string, inputSchema: z.ZodType<AdapterListInput>): void => {
+    const canonical = id === "harness_list"
+    registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
+      id,
+      description,
+      inputSchema,
+      handler: async input => {
+        if (!listAgentAdapters) {
+          throw new Error(
+            `${id} is not enabled: the daemon was started without ` +
+              "an adapter lister. Wire `@agentproto/cli`'s " +
+              "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+          )
+        }
+        const slug = listSlugFor(id, input)
+        const adapters = await listAgentAdapters()
+        return slug ? adapters.filter(a => a.slug === slug) : adapters
+      },
+      transformers: [
+        catchErrors(),
+        patchListResult<AdapterListInput>({
+          ...(canonical ? { from: "harnesses", alias: "adapters" } : {}),
+          warnings: input => [
+            ...(canonical ? [] : [adapterDeprecation("adapter_list", "harness_list")]),
+            ...(canonical && input.adapter !== undefined ? [adapterDeprecation("adapter", "harness")] : []),
+          ],
+        }),
+        paginated({
+          project: compactAdapterItem,
+          keyOf: a => a.slug,
+          maxLimit: 200,
+          itemKey: canonical ? "harnesses" : "adapters",
+        }),
+      ],
+    })
+  }
 
-  registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
-    id: "adapter_list",
-    description: "Enumerate every agent CLI adapter installed on the host (claude-code, " +
+  registerAdapterListing(
+    "adapter_list",
+    "Enumerate every agent CLI adapter installed on the host (claude-code, " +
       "hermes, aider, …). Returns slug + display name + version + protocol + " +
       "an `installed` flag + a `modelCount` summary so callers can let users " +
       "pick from the installed set instead of guessing. Use before " +
@@ -2088,29 +2471,29 @@ export function registerAgentTools(
       "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
       "KB; page through it with `limit`/`cursor`). Pass `adapter` to scope " +
-      "the listing to one adapter before paging.",
-    inputSchema: adapterListSchema,
-    handler: async ({ adapter }) => {
-      if (!listAgentAdapters) {
-        throw new Error(
-          "adapter_list is not enabled — the daemon was started without " +
-            "an adapter lister. Wire `@agentproto/cli`'s " +
-            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-        )
-      }
-      const adapters = await listAgentAdapters()
-      return adapter ? adapters.filter(a => a.slug === adapter) : adapters
-    },
-    transformers: [
-      catchErrors(),
-      paginated({
-        project: compactAdapterItem,
-        keyOf: a => a.slug,
-        maxLimit: 200,
-        itemKey: "adapters",
-      }),
-    ],
-  })
+      "the listing to one adapter before paging. DEPRECATED: use " +
+      "`harness_list` (rows under `harnesses`); this name is removed in the " +
+      "next major of @agentproto/runtime.",
+    adapterListSchema,
+  )
+  registerAdapterListing(
+    "harness_list",
+    "Enumerate every agent CLI harness installed on the host (claude-code, " +
+      "hermes, aider, …) — the canonical name for `adapter_list`, which it " +
+      "behaves exactly like. Returns slug + display name + version + protocol + " +
+      "an `installed` flag + a `modelCount` summary so callers can let users " +
+      "pick from the installed set instead of guessing. Use before " +
+      "`agent_start` when the model doesn't already know what's available. " +
+      "COMPACT BY DEFAULT (and sized to fit the MCP result budget): each " +
+      "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
+      "`status`, `hint`, `modes`, `modelCount` — pass `full: true` " +
+      "(or `compact: false`) for the full " +
+      "manifest projection (model ids/details, commands/modes — hundreds of " +
+      "KB; page through it with `limit`/`cursor`). Rows come under " +
+      "`harnesses` (`adapters` repeats them, deprecated). Pass `harness` (or " +
+      "its deprecated alias `adapter`) to scope the listing to one harness before paging.",
+    harnessListSchema,
+  )
 
   // ── adapter_models ──────────────────────────────────────────────
   // Per-adapter model paging for clients that need ONE adapter's model list
@@ -2118,44 +2501,83 @@ export function registerAgentTools(
   // with `adapter` + `full: true` returns the same rows, but a runaway model
   // list (opencode is ~700 ids) can still trip the result cap; this tool
   // pages the models themselves.
+  type HarnessModelsInput = { harness?: string; adapter?: string; limit?: number; cursor?: string }
+  const harnessModelsSchema = z.object({
+    harness: z.string().optional().describe("Harness slug whose declared models to list."),
+    adapter: z
+      .string()
+      .optional()
+      .describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
+    ...pageParamsShape,
+  })
   const adapterModelsSchema = z.object({
     adapter: z.string().describe("Adapter slug whose declared models to list."),
     ...pageParamsShape,
   })
-  type AdapterModelsInput = z.infer<typeof adapterModelsSchema>
-
-  registerBuiltinTool<AdapterModelsInput, AdapterModelRow[]>(server, {
-    id: "adapter_models",
-    description: "List the models ONE agent CLI adapter declares, pageable with " +
-      "`limit`/`cursor`. Use this instead of `adapter_list`'s `full: true` when " +
-      "you need a single adapter's model ids but the full manifest could exceed " +
-      "the MCP result cap. Each row carries `id` and, when the manifest states " +
-      "them, `provider`/`mode`.",
-    inputSchema: adapterModelsSchema,
-    handler: async ({ adapter }) => {
-      if (!listAgentAdapters) {
-        throw new Error(
-          "adapter_models is not enabled — the daemon was started without " +
-            "an adapter lister. Wire `@agentproto/cli`'s " +
-            "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-        )
-      }
-      const found = (await listAgentAdapters()).find(a => a.slug === adapter)
-      if (!found) throw new Error(`adapter_models: adapter "${adapter}" was not found.`)
-      const detailed = found.modelDetails
-      if (detailed && detailed.length > 0) return detailed
-      return (found.models ?? []).map(id => ({ id }))
-    },
-    transformers: [
-      catchErrors(),
-      paginated({
-        project: (row: AdapterModelRow) => row,
-        keyOf: (row: AdapterModelRow) => row.id,
-        maxLimit: 500,
-        itemKey: "models",
-      }),
-    ],
-  })
+  const registerModelListing = (id: "adapter_models" | "harness_models", description: string, inputSchema: z.ZodType<HarnessModelsInput>): void => {
+    const canonical = id === "harness_models"
+    registerBuiltinTool<HarnessModelsInput, AdapterModelRow[]>(server, {
+      id,
+      description,
+      inputSchema,
+      handler: async input => {
+        if (!listAgentAdapters) {
+          throw new Error(
+            `${id} is not enabled: the daemon was started without ` +
+              "an adapter lister. Wire `@agentproto/cli`'s " +
+              "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
+          )
+        }
+        if (conflictingHarnessAlias(input)) {
+          throw new Error(
+            `${id}: received both harness="${input.harness}" and adapter="${input.adapter}": ` +
+              "when both are given they must name the same harness (omit one).",
+          )
+        }
+        const slug = input.harness ?? input.adapter
+        if (!slug) throw new Error(`${id}: \`harness\` is required.`)
+        const found = (await listAgentAdapters()).find(a => a.slug === slug)
+        if (!found) {
+          throw new Error(canonical
+            ? `${id}: harness "${slug}" was not found.`
+            : `${id}: adapter "${slug}" was not found.`)
+        }
+        const detailed = found.modelDetails
+        if (detailed && detailed.length > 0) return detailed
+        return (found.models ?? []).map(id => ({ id }))
+      },
+      transformers: [
+        catchErrors(),
+        patchListResult<HarnessModelsInput>({
+          warnings: input => canonical
+            ? (input.adapter !== undefined ? [adapterDeprecation("adapter", "harness")] : [])
+            : [adapterDeprecation("adapter_models", "harness_models")],
+        }),
+        paginated({
+          project: (row: AdapterModelRow) => row,
+          keyOf: (row: AdapterModelRow) => row.id,
+          maxLimit: 500,
+          itemKey: "models",
+        }),
+      ],
+    })
+  }
+  registerModelListing(
+    "adapter_models",
+    "List the models ONE agent CLI adapter declares, pageable with " +
+      "`limit`/`cursor`. DEPRECATED: use `harness_models` (argument " +
+      "`harness`); this name is removed in the next major of @agentproto/runtime.",
+    adapterModelsSchema,
+  )
+  registerModelListing(
+    "harness_models",
+    "List the models ONE harness declares, pageable with `limit`/`cursor`. " +
+      "Use this instead of `harness_list`'s `full: true` when you need a " +
+      "single harness's model ids but the full manifest could exceed the MCP " +
+      "result cap. Each row carries `id` and, when the manifest states them, " +
+      "`provider`/`mode`. Canonical name of the deprecated `adapter_models`.",
+    harnessModelsSchema,
+  )
 
   // ── harness_capabilities ────────────────────────────────────────
   server.tool(
@@ -2209,58 +2631,79 @@ export function registerAgentTools(
     }
   )
 
-  // ── adapter_install ───────────────────────────────────────────
-  server.tool(
+  // ── harness_install / adapter_install ─────────────────────────
+  // One handler, two names: `harness_install` is canonical, `adapter_install`
+  // is the deprecated spelling and its result carries a dated warning.
+  const registerInstall = (id: "adapter_install" | "harness_install", description: string): void => {
+    const canonical = id === "harness_install"
+    server.tool(
+      id,
+      description,
+      {
+        slug: z
+          .string()
+          .describe(canonical
+            ? "Harness slug to install (e.g. `gemini-cli`, `claude-code`)."
+            : "Adapter slug to install (e.g. `gemini-cli`, `claude-code`)."),
+      },
+      async ({ slug }) => {
+        if (!installAgentAdapter) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `${id} is not enabled: the daemon was started without ` +
+                  "an adapter installer. Wire `@agentproto/cli`'s " +
+                  "`installAdapter` via `createGateway({ installAgentAdapter })`.",
+              },
+            ],
+            isError: true,
+          }
+        }
+        try {
+          const result = await installAgentAdapter(slug)
+          // A failed install is a real DOMAIN result the caller must read
+          // (`ok:false` + `message`), NOT an MCP error: deliberately no
+          // `isError` here so the structured result survives the client's
+          // result-unwrapping (an isError result is turned into a thrown
+          // string, discarding the payload). isError is reserved for the
+          // "not enabled" / thrown-exception faults, below.
+          const body = canonical
+            ? result
+            : { ...result, warnings: [adapterDeprecation("adapter_install", "harness_install")] }
+          return {
+            content: [{ type: "text", text: JSON.stringify(body) }],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${id} failed: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+    )
+  }
+  registerInstall(
     "adapter_install",
-    "Install an agent CLI adapter (harness) by slug that `adapter_list` " +
-      "reports as not-yet-`ready` — both acp-catalog CLIs (`npm i -g " +
-      "<package>`, e.g. gemini-cli) and first-party workspace adapters " +
-      "(the manifest install pipeline). Returns the outcome + the adapter's " +
+    "Install an agent CLI adapter (harness) by slug. DEPRECATED: use " +
+      "`harness_install` (same argument, same result); this name is removed " +
+      "in the next major of @agentproto/runtime.",
+  )
+  registerInstall(
+    "harness_install",
+    "Install a harness (agent CLI) by slug that `harness_list` " +
+      "reports as not-yet-`ready`: both acp-catalog CLIs (`npm i -g " +
+      "<package>`, e.g. gemini-cli) and first-party workspace harnesses " +
+      "(the manifest install pipeline). Returns the outcome + the harness's " +
       "re-read status so a UI can refresh a row. Ordinary install failures " +
-      "come back as `ok:false` (not an error), so call it and read the result.",
-    {
-      slug: z
-        .string()
-        .describe("Adapter slug to install (e.g. `gemini-cli`, `claude-code`)."),
-    },
-    async ({ slug }) => {
-      if (!installAgentAdapter) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "adapter_install is not enabled — the daemon was started without " +
-                "an adapter installer. Wire `@agentproto/cli`'s " +
-                "`installAdapter` via `createGateway({ installAgentAdapter })`.",
-            },
-          ],
-          isError: true,
-        }
-      }
-      try {
-        const result = await installAgentAdapter(slug)
-        // A failed install is a real DOMAIN result the caller must read
-        // (`ok:false` + `message`), NOT an MCP error — deliberately no
-        // `isError` here so the structured result survives the client's
-        // result-unwrapping (an isError result is turned into a thrown
-        // string, discarding the payload). isError is reserved for the
-        // "not enabled" / thrown-exception faults, below.
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `adapter_install failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
+      "come back as `ok:false` (not an error), so call it and read the result. " +
+      "Canonical name of the deprecated `adapter_install`.",
   )
 
   // ── catalog_models ────────────────────────────────────────────
@@ -2292,7 +2735,11 @@ export function registerAgentTools(
     adapterModes: e.adapterModes,
   })
   const catalogModelsSchema = z.object({
-    adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
+    harness: z.string().optional().describe("Keep only routes reachable via this harness slug."),
+    adapter: z
+      .string()
+      .optional()
+      .describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
     vendor: z.string().optional().describe("Keep only this vendor's entry."),
     route: z.string().optional().describe("Keep only routes with this route id."),
     runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
@@ -2323,8 +2770,9 @@ export function registerAgentTools(
             "`createGateway({ listCatalogModels })`.",
         )
       }
+      const harness = input.harness ?? input.adapter
       const catalog = await listCatalogModels({
-        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...(harness ? { adapter: harness } : {}),
         ...(input.vendor ? { vendor: input.vendor } : {}),
         ...(input.route ? { route: input.route } : {}),
         ...(input.runnableOnly ? { runnableOnly: true } : {}),
@@ -2340,6 +2788,9 @@ export function registerAgentTools(
     },
     transformers: [
       catchErrors(),
+      patchListResult<CatalogModelsInput>({
+        warnings: input => (input.adapter !== undefined ? [adapterDeprecation("adapter", "harness")] : []),
+      }),
       paginated({
         project: compactCatalogRouteItem,
         maxLimit: 200,
@@ -2411,13 +2862,14 @@ export function registerAgentTools(
   // toMcpTool) with the shared `paginated()` transformer. The handler
   // already projects each role to the compact row this tool exists to
   // surface (name/level/delegation/spawnable — spawnable is the point
-  // of the tool), so the compact projection is that row verbatim and
-  // `full: true` is a no-op.
+  // of the tool, plus the declared `delegatesTo`), so the compact
+  // projection is that row verbatim and `full: true` is a no-op.
   interface RoleListRow {
     name: string
     level: number
     delegation: string
     spawnable: string[]
+    delegatesTo?: string[]
   }
   const compactRoleItem = (r: RoleListRow): RoleListRow => r
   const roleListSchema = z.object({
@@ -2434,7 +2886,9 @@ export function registerAgentTools(
       "this tool never itself grants or denies a spawn. Use before " +
       "`agent_start` with `orchestrator` to discover which roles this " +
       "session may in turn spawn. Each row is already the compact view " +
-      "(name/level/delegation/spawnable).",
+      "(name/level/delegation/spawnable); it also carries `delegatesTo`, " +
+      "the agents the role declares it may spawn, which the delegation " +
+      "gate (`defaults.spawn.delegationGate`) evaluates.",
     inputSchema: roleListSchema,
     handler: async () => {
       const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
@@ -2443,6 +2897,7 @@ export function registerAgentTools(
         level: role.level,
         delegation: role.toolPolicy.delegation,
         spawnable: spawnableRolesFor(role, registry).map(child => child.name),
+        ...(role.delegatesTo !== undefined ? { delegatesTo: [...role.delegatesTo] } : {}),
       }))
     },
     transformers: [
@@ -2495,9 +2950,12 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
             "Accepts either `sessionId` or its alias `id`.",
         ),
       id: sessionIdAliasField,
+      harness: z.string().optional().describe(
+        "Override harness slug (e.g. 'claude-code', 'hermes') when the session " +
+          "is not in the registry. Required when passing a raw harness-native id."
+      ),
       adapter: z.string().optional().describe(
-        "Override adapter slug (e.g. 'claude-code', 'hermes') when the session " +
-          "is not in the registry. Required when passing a raw adapter-native id."
+        "Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."
       ),
       cwd: z.string().optional().describe(
         "Override cwd (absolute path) — required for claude-code when the session " +
@@ -2521,14 +2979,19 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
       const result = await doExport({
         sessionId,
         registry: ops.registry,
-        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...((input.harness ?? input.adapter) ? { adapter: input.harness ?? input.adapter } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.format ? { format: input.format } : {}),
         ...(input.source ? { source: input.source } : {}),
       })
       const isError = result.content.startsWith("Error:")
       return {
-        content: [{ type: "text" as const, text: result.content }],
+        content: [
+          { type: "text" as const, text: result.content },
+          ...(input.adapter !== undefined
+            ? [{ type: "text" as const, text: `warning: agent_export: ${adapterDeprecation("adapter", "harness")}` }]
+            : []),
+        ],
         ...(isError ? { isError: true as const } : {}),
       }
     },

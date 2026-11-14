@@ -1,5 +1,34 @@
 # @agentproto/review
 
+## 1.0.0
+
+### Major Changes
+
+- e301b84: Emit the canonical AIP-70 tags `review.attestation/v1` (attestation `schema`) and `review.pack-digest/v1` (`PackDigest.alg`) instead of `agentproto.review.attestation/v1` and `agentproto-pack-digest/v1`. Breaking for readers: files written by this version need @agentproto/review >= 0.7.0 to read, and the pack digest `alg` is compared strictly by earlier @agentproto/cli (`review verify`) and @agentproto/runtime (review ledger and compose), which need the releases that ship with this change to read it. Readers of this version still accept the legacy tags. Adds `LEGACY_PACK_DIGEST_ALG` and `normalizePackDigestAlg`.
+
+## 0.7.0
+
+### Minor Changes
+
+- 52f8616: Accept the canonical AIP-70 document tags (for example `skill/v1` and `design/v1`) alongside their legacy aliases in every document parser. Writers keep emitting the legacy value until the next major.
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export none.
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export no `SPEC_NAME`/`SPEC_ID` constant (mirrors `.changeset/e33-spec-name-constants.md`).
+
+### Patch Changes
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f18edbc]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+  - @agentproto/workflow@0.8.0
+
 ## 0.6.2
 
 ### Patch Changes

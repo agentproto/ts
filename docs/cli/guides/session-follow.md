@@ -57,7 +57,9 @@ default `urgency: "next-turn"`, an idle follower runs it as a turn and a busy on
 queues it behind the current turn. With `urgency: "fyi"` the digest is parked in
 the follower's inbox and never starts a turn, so a supervisor following many
 sessions is not woken for every digest. If a batch is fed by both an `fyi` and a
-`next-turn` follow, it is delivered as `next-turn`. Same-session duplicates in a
+`next-turn` follow, it is delivered as `next-turn`. The always-wake set (a
+session awaiting input, a crash, or a turn-end carrying a question) is always
+delivered at least at `next-turn`, even on an `fyi` follow. Same-session duplicates in a
 batch collapse (the latest wins). Format:
 
 ```text
@@ -111,9 +113,12 @@ What the decision does:
   follower's inbox as `fyi`;
 - one `wake` is enough to wake - and then the digest carries ONLY the `wake`
   events plus a `[session-follow] N other event(s) in info` counter;
-- every triaged event is appended to `~/.agentproto/follow-triage.jsonl`
-  (`{ ts, follower, event, sessionId, decision, rule }`) - the training data a
-  future classifier is fitted on.
+- every triaged event is appended to the shared delivery ledger
+  (`~/.agentproto/delivery-ledger.jsonl`) with `producer: "follow"` - one line
+  per digest entry, written after the digest's delivery outcome is known. The
+  lines carry the decision's `level`, `rule`, `repeatKey` and `messageId`; see
+  `packages/delivery/LEDGER.md` for the schema. `follow-triage.jsonl` is no
+  longer written (existing files are left in place for history).
 
 The `classifier` block is the documented extension point for a future LLM
 classifier (Jev). It lives ONLY in the daemon config (`follow.triage.classifier`
@@ -129,6 +134,43 @@ The daemon-wide default lives in `~/.agentproto/config.json`:
 ```jsonc
 { "follow": { "triage": { "enabled": true, "rules": { "operatorExit": true } } } }
 ```
+
+## Delivery apply (wake/fyi/drop per event type)
+
+`delivery.apply.types` turns the classifier's decision into the message's
+urgency, per event type. It is **shadow by default**: with no key set, every
+digest is delivered exactly as before and the ledger records the verdict with
+`applied: false`. A type is turned on with a glob key:
+
+```jsonc
+{
+  "delivery": {
+    "apply": {
+      "types": {
+        "session.*": true,           // every session event: apply its level
+        "session.pr_merged": false  // ...except this one
+      }
+    }
+  }
+}
+```
+
+Keys match the envelope `type` (`session.turn_ended`, `session.awaiting_input`,
+`github.check_suite.completed`, ...). A trailing `*` matches a prefix and a bare
+`*` matches everything. An exact key beats every glob; otherwise the longest
+matching prefix wins. The same switch governs sentinel delivery.
+
+Once a type is applied, its classified level becomes the delivery tier: `3`
+and `2` deliver as a wake (`next-turn`), `1` at `fyi`, and `0` is dropped.
+Session follows and sentinels have no tier above `next-turn`, so an applied
+level `3` is a wake too; what it guarantees is that it is never downgraded to
+`fyi` and never dropped. An applied `fyi` never wakes the follower. A level `3`
+floor (awaiting-input, crash) is never downgraded. Events whose type is not opted in still deliver as
+today (a wake) and keep `applied: false` in the ledger.
+
+There is no second switch: a follow's own `triage.enabled: true` (or the daemon
+`follow.triage.enabled: true`) applies every type, and `triage.enabled: false`
+applies none, taking precedence over these globs.
 
 A follow's own `triage` block overrides the daemon default, per field: a rule a
 follow sets explicitly (`true` or `false`) beats the daemon value, and a rule it

@@ -37,7 +37,7 @@ import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { WorkflowRun } from "./workflow-runner.js"
-import type { RoutineStepState } from "./step-run-types.js"
+import type { RoutineStepState } from "@agentproto/run"
 import type { ActivityRecord } from "./activity-projection.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
@@ -57,12 +57,14 @@ import {
 import { randomBytes } from "node:crypto"
 import type { CronScheduler } from "./cron-scheduler.js"
 import { isSelfSchedulingTool } from "./cron-scheduler.js"
+import { cronCreatorOf } from "./cron-creator.js"
 import { detachedAgentStartSchema } from "./agent-start-schema.js"
 import type { RoutineRegistrar } from "./routine-registrar.js"
 import type { ActivityProjector } from "./activities.js"
 import { registerTaskTools } from "./task-tools.js"
 import type { TaskLedger } from "./task-ledger.js"
 import { matchesSessionGrant } from "./session-owner.js"
+import { ADAPTER_FIELD_DEPRECATION, judgeGateAdapterWarnings } from "./harness-alias.js"
 import {
   activityCounts,
   ACTIVITY_KINDS,
@@ -115,6 +117,10 @@ const compactPermissionItem = (p: Record<string, unknown>) => ({
   ...(p.sessionTitle !== undefined ? { sessionTitle: p.sessionTitle } : {}),
   ...(p.toolName !== undefined ? { toolName: p.toolName } : {}),
   ...(p.rawInput !== undefined ? { rawInput: p.rawInput } : {}),
+  // AIP-45 request kind (absent = tool-permission) and, for a question, the
+  // question itself: it is the payload an answerer needs to call `permissions_respond`.
+  ...(p.request !== undefined ? { request: p.request } : {}),
+  ...(p.question !== undefined ? { question: p.question } : {}),
   options: p.options,
   ageMs: p.ageMs,
 })
@@ -170,7 +176,8 @@ const compactActivityRecord = (a: ActivityRecord) => ({
  *
  * Union of three variants:
  *   • shell  — `{ command, args?, cwd?, timeoutMs? }`
- *   • judge  — `{ judge: { adapter, model?, prompt, timeoutMs? } }` (WP7)
+ *   • judge : `{ judge: { harness, model?, prompt, timeoutMs? } }` (WP7;
+ *     `adapter` is the deprecated alias of `harness`)
  *   • cost   — `{ costBudget: { maxCostUsd, window, scope }, sessionId? }` (phase 4)
  */
 export const gateInputSchema = z.union([
@@ -182,7 +189,8 @@ export const gateInputSchema = z.union([
   }),
   z.object({
     judge: z.object({
-      adapter: z.string().min(1).describe("Agent adapter slug to spawn (e.g. \"claude-code\")."),
+      harness: z.string().min(1).optional().describe("Harness slug to spawn the judge with (e.g. \"claude-code\"). Required unless the deprecated `adapter` is given."),
+      adapter: z.string().min(1).optional().describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
       model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
       prompt: z.string().min(1).describe("Rubric / instructions for the judge. The supervisor appends a VERDICT instruction."),
       timeoutMs: z.number().int().positive().optional().describe("Max wall-clock for the judge before kill + FAIL. Default 120 000."),
@@ -636,6 +644,11 @@ export interface RegisterOrchestrationToolsOptions {
    */
   cronScheduler?: CronScheduler
   /**
+   * Session id of a valid session token presented on this request, used to
+   * prove the caller of cron_create (passed to decideSpawnProof).
+   */
+  credentialSessionId?: string
+  /**
    * When wired, exposes `routine_trigger` and `routine_reconcile` — fires
    * an AIP-41 `.routines/<id>/ROUTINE.md` routine's target immediately,
    * bypassing its schedule (mirrors `cron_run`), and re-scans
@@ -827,7 +840,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds, callerSessionId } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds, callerSessionId, credentialSessionId } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -963,7 +976,7 @@ export function registerOrchestrationTools(
       "and age. Resolve one with `permissions_respond`. Optionally filter by " +
       "`sessionId`. Empty list = nothing is waiting on a decision. COMPACT " +
       "BY DEFAULT: each entry is a slim projection (id/sessionId/adapter/" +
-      "sessionLabel/sessionTitle/toolName/rawInput/options/ageMs) — the ACP " +
+      "sessionLabel/sessionTitle/toolName/rawInput/request/question/options/ageMs) — the ACP " +
       "`text` line, `_meta` payload, and `toolCallId` echo are behind " +
       "`full: true` / `compact: false`.",
     inputSchema: permissionsListSchema,
@@ -990,12 +1003,33 @@ export function registerOrchestrationTools(
       "allow-once); `decision:\"deny\"` selects a reject option (or cancels " +
       "the request when none is offered). An explicit `optionId` overrides " +
       "the decision→option mapping. Errors clearly on an unknown/already-" +
-      "resolved id. The agent's turn unblocks with the chosen outcome.",
+      "resolved id. The agent's turn unblocks with the chosen outcome. " +
+      "A harness question with `question.fields` (radio/checkbox/free text, " +
+      "possibly several questions) is answered with `answers` instead, keyed " +
+      "by field id: `{selected:[value...]}` for single/multi choice (plus " +
+      "`text` for the free-text \"Other\"), `{text}` for a text field, " +
+      "`{value}` for boolean/number. `decision:\"deny\"` skips it.",
     {
       id: z.string().describe("Pending permission id from `permissions_list`."),
       decision: z
         .enum(["approve", "deny"])
-        .describe("approve → an allow option; deny → a reject option / cancel."),
+        .optional()
+        .describe(
+          "approve → an allow option; deny → a reject option / cancel. Required unless `answers` is given.",
+        ),
+      answers: z
+        .record(
+          z.string(),
+          z.object({
+            selected: z.array(z.string()).optional(),
+            text: z.string().optional(),
+            value: z.union([z.boolean(), z.number()]).optional(),
+          }),
+        )
+        .optional()
+        .describe(
+          "Answers to a multi-field question (`question.fields`), keyed by field id. Submits the question.",
+        ),
       optionId: z
         .string()
         .optional()
@@ -1029,8 +1063,20 @@ export function registerOrchestrationTools(
           isError: true,
         }
       }
+      if (!input.decision && !input.answers) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "invalid_input", message: "pass `decision` or `answers`" }),
+            },
+          ],
+          isError: true,
+        }
+      }
       const result = await registry.respondPermission(input.id, {
-        decision: input.decision,
+        decision: input.decision ?? "approve",
+        ...(input.answers ? { answers: input.answers } : {}),
         ...(input.optionId ? { optionId: input.optionId } : {}),
         ...(input.scope ? { scope: input.scope } : {}),
         ...(input.feedback ? { feedback: input.feedback } : {}),
@@ -1070,14 +1116,15 @@ export function registerOrchestrationTools(
   if (workflowRunner) {
     const workflowStepSchema = z.object({
       label: z.string(),
-      adapter: z.string().optional().describe("Agent adapter slug to spawn a NEW session for this step."),
+      harness: z.string().optional().describe("Harness slug to spawn a NEW session for this step."),
+      adapter: z.string().optional().describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
       prompt: z.string().optional().describe("Prompt to send after spawning/reusing a session."),
       sessionRef: z
         .string()
         .optional()
         .describe(
           "Reuse the session spawned by an earlier step (any prior stage), by that step's `label`. " +
-            "Ignored if `adapter` is set. Lets a later-stage step act on an earlier stage's output " +
+            "Ignored if `harness` is set. Lets a later-stage step act on an earlier stage's output " +
             "(e.g. a 'verify' step reusing a 'produce' step's session).",
         ),
       cacheable: z.boolean().optional().describe("Cache this step's output under the run's cacheKey (opt-in; for idempotent/pure steps only)."),
@@ -1095,7 +1142,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe(
           "Run this step's session inside a sandbox instead of on the host — " +
-            "same semantics as `agent_start.sandbox`. Only meaningful with `adapter`.",
+            "same semantics as `agent_start.sandbox`. Only meaningful with `harness`.",
         ),
       policy: z
         .discriminatedUnion("awaiting", [
@@ -1136,12 +1183,39 @@ export function registerOrchestrationTools(
         cacheKey: z.string().optional().describe("Enable journal caching for this run. On a re-invocation with the same cacheKey, cacheable steps whose inputs are unchanged replay their cached output instead of re-spawning."),
         appId: z.string().optional().describe("App provenance — the installed app this run belongs to. Omit to let the runner resolve it from the app registry when the workflow id is owned by exactly one installed app."),
         appRunId: z.string().optional().describe("The app_run this run belongs to, when started through an app."),
-        item: z.string().optional().describe("Optional ledger item — stamped as `item` on every app-ledger event this run appends, scoping them to one sub-key inside each stage."),
+        item: z.string().optional().describe("Optional ledger item - stamped as `item` on every app-ledger event this run appends, scoping them to one sub-key inside each stage."),
+        supervisorSessionId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Supervising session every spawned step session nests under " +
+              "(`parentSessionId`). Descriptor-only lineage: it never relaxes a " +
+              "depth/role guard. Omit for anonymous root step sessions.",
+          ),
       },
       async input => {
-        const run = await workflowRunner.start({ ...input, ...(callerSessionId ? { callerSessionId } : {}) })
+        // `harness` is canonical; the runner still reads `adapter`, so the
+        // ONE resolved slug is handed over under that key.
+        let usedAdapterAlias = false
+        const stages = input.stages.map(stage => ({
+          ...stage,
+          steps: stage.steps.map(({ harness, ...step }) => {
+            if (step.adapter !== undefined) usedAdapterAlias = true
+            const slug = harness ?? step.adapter
+            return { ...step, ...(slug !== undefined ? { adapter: slug } : {}) }
+          }),
+        }))
+        const run = await workflowRunner.start({ ...input, stages, ...(callerSessionId ? { callerSessionId } : {}) })
         return {
-          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              runId: run.runId,
+              status: run.status,
+              ...(usedAdapterAlias ? { warnings: [`workflow_start: ${ADAPTER_FIELD_DEPRECATION}`] } : {}),
+            }),
+          }],
         }
       },
     )
@@ -1158,6 +1232,15 @@ export function registerOrchestrationTools(
         cwd: z.string().optional().describe("Working directory for spawned sessions."),
         workspaceSlug: z.string().optional().describe("Workspace slug passed to each spawned session."),
         cacheKey: z.string().optional().describe("Enable journal caching for this run. Cacheable steps replay unchanged outputs on re-invocation with the same key."),
+        supervisorSessionId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Supervising session every spawned step session nests under " +
+              "(`parentSessionId`) - the parent of the reviewer/fixer children. " +
+              "Descriptor-only lineage; omit for anonymous root step sessions.",
+          ),
       },
       async input => {
         try {
@@ -1813,8 +1896,16 @@ export function registerOrchestrationTools(
             onFail: input.onFail,
             next: input.next as AttachPolicyInput["next"],
           })
+          const warnings = judgeGateAdapterWarnings(input, "policy_attach")
           return {
-            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }) }],
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                policyId: state.policyId,
+                status: state.status,
+                ...(warnings.length > 0 ? { warnings } : {}),
+              }),
+            }],
           }
         } catch (err) {
           return {
@@ -2025,7 +2116,12 @@ export function registerOrchestrationTools(
     ...(callerSessionId
       ? {
           isOperatorDelegate: (sessionId: string) =>
-            matchesSessionGrant(operatorDelegates, sessionId, id => registry.get(id)?.operatorLabel),
+            matchesSessionGrant(
+              operatorDelegates,
+              sessionId,
+              id => registry.get(id)?.operatorLabel,
+              id => registry.get(id)?.parentSessionId,
+            ),
         }
       : {}),
   })
@@ -2294,12 +2390,19 @@ export function registerOrchestrationTools(
             "Contact ref / channel to poll — forwarded as `source` to poll_inbound " +
               "(e.g. a phone number '+33612345678' or a webhook channel name).",
           ),
+        harness: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Harness slug to spawn when new messages arrive (e.g. 'claude-code'). " +
+              "Required unless the deprecated `adapter` is given.",
+          ),
         adapter: z
           .string()
           .min(1)
-          .describe(
-            "Agent adapter slug to spawn when new messages arrive (e.g. 'claude-code').",
-          ),
+          .optional()
+          .describe("Deprecated alias of `harness`; removed in the next major of @agentproto/runtime."),
         promptTemplate: z
           .string()
           .min(1)
@@ -2351,8 +2454,23 @@ export function registerOrchestrationTools(
           ),
       },
       async input => {
-        const desc = inboundWatcher.start(input)
-        return { content: [{ type: "text", text: JSON.stringify(desc) }] }
+        const { harness, adapter, ...rest } = input
+        const slug = harness ?? adapter
+        if (!slug) {
+          return {
+            content: [{ type: "text", text: "inbound_watcher_start: `harness` is required." }],
+            isError: true,
+          }
+        }
+        const desc = inboundWatcher.start({ ...rest, adapter: slug })
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(adapter !== undefined
+              ? { ...desc, warnings: [`inbound_watcher_start: ${ADAPTER_FIELD_DEPRECATION}`] }
+              : desc),
+          }],
+        }
       },
     )
 
@@ -2527,6 +2645,7 @@ export function registerOrchestrationTools(
           }
         }
 
+        const caller = callerScope?.ownerSessionId ?? callerSessionId
         const out = await sendOutbound(
           provider,
           {
@@ -2536,7 +2655,7 @@ export function registerOrchestrationTools(
             text,
             attachments: input.attachments,
           },
-          { mcpProxy, telegramCreds },
+          { mcpProxy, telegramCreds, ...(caller ? { callerSessionId: caller } : {}) },
         )
 
         if (!out.ok) {
@@ -2797,6 +2916,11 @@ export function registerOrchestrationTools(
           "under a new id; " +
           "'tool' calls a registered daemon MCP tool in-process (cron_* refused).",
         ),
+        notify: z.enum(["always", "onFailure"]).optional().describe(
+          "How loudly a successful `kind:\"command\"` run is heard by followers. " +
+            "`always` (default) wakes them; `onFailure` lands the success in the inbox as fyi and only " +
+            "a non-zero exit wakes them.",
+        ),
         maxConsecutiveFailures: z.number().int().min(1).optional().describe(
           "Health threshold: pause the job after this many consecutive non-productive runs. Default 2.",
         ),
@@ -2819,12 +2943,19 @@ export function registerOrchestrationTools(
               `cron action kind "tool" cannot dispatch '${input.action.tool}': not in this server's tool subset`,
             )
           }
+          const createdBy = cronCreatorOf({
+            callerSessionId: opts.callerSessionId,
+            callerScopeOwnerId: callerScope?.ownerSessionId,
+            credentialSessionId,
+            registry,
+          })
           const job = await cronScheduler.create({
             label: input.label,
             schedule: input.schedule,
             timezone: input.timezone,
             recurring: input.recurring ?? true,
             action: input.action,
+            ...(input.notify !== undefined ? { notify: input.notify } : {}),
             ...(input.maxConsecutiveFailures !== undefined
               ? { maxConsecutiveFailures: input.maxConsecutiveFailures }
               : {}),
@@ -2834,6 +2965,7 @@ export function registerOrchestrationTools(
             // human/root call, whose jobs live until deleted or expired.
             ...(opts.callerSessionId ? { ownedBy: opts.callerSessionId } : {}),
             ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+            createdBy,
           })
           return {
             content: [
@@ -2847,6 +2979,7 @@ export function registerOrchestrationTools(
                   active: job.active,
                   ownedBy: job.ownedBy,
                   expiresAt: job.expiresAt,
+                  createdBy: job.createdBy,
                 }),
               },
             ],
@@ -2876,6 +3009,7 @@ export function registerOrchestrationTools(
       schedule: j.schedule,
       recurring: j.recurring,
       active: j.active,
+      notify: j.notify ?? "always",
       finished: j.finished ?? false,
       nextRunAt: j.nextRunAt,
       lastRunAt: j.lastRunAt,
@@ -2883,6 +3017,7 @@ export function registerOrchestrationTools(
       // without `full: true` (a job that silently expired must not look live).
       ownedBy: j.ownedBy,
       expiresAt: j.expiresAt,
+      createdBy: j.createdBy,
       // A failed last run must be visible without `full: true`.
       lastOk: j.lastResult?.ok,
       // Real-run health: last outcome, consecutive non-productive count, and
@@ -2922,6 +3057,9 @@ export function registerOrchestrationTools(
         recurring: z.boolean().optional(),
         active: z.boolean().optional(),
         action: cronActionSchema.optional(),
+        notify: z.enum(["always", "onFailure"]).nullable().optional().describe(
+          "How loudly a successful command run is heard: `always`, `onFailure`, or `null` to clear it.",
+        ),
         maxConsecutiveFailures: z.number().int().min(1).optional().describe(
           "Health threshold: pause after this many consecutive non-productive runs. Default 2.",
         ),

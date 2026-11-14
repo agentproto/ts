@@ -5,7 +5,7 @@
  * writable — and a workflow with no owning app is unaffected.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
@@ -204,6 +204,55 @@ describe("workflow agent step of an installed app", () => {
     const b = boundaryFromMeta(spawned[0]!.meta)
     expect(b?.appId).toBe("@test/yt")
     expect(b?.writable).toEqual([dataDir, run.workspace])
+  })
+
+  it("adds the operator's read grant for that app id only, read-only; no resolver = no grant", async () => {
+    mkdirSync(join(tmp, "shared-facts"), { recursive: true })
+    const grantDir = realpathSync(join(tmp, "shared-facts"))
+    writeFileSync(join(grantDir, ".env"), "TOKEN=1")
+    const grantedOf = async (appReadGrants: ((id: string) => readonly string[]) | undefined, appId: string) => {
+      const { bus, registry, startSession, resolveAgentAdapter, spawned } = fixture({ supportsFsZones: true })
+      const appDir = join(tmp, "apps", appId.replace("/", "_"))
+      const path = writeApp(appDir, "transcribe")
+      const appRegistry = createAppRegistry()
+      appRegistry.upsertApp({
+        appId,
+        dir: appDir,
+        dataDir: join(appDir, "data"),
+        agents: [],
+        workflows: [{ id: "transcribe", path }],
+        unvalidatedAgentTools: [],
+      })
+      const runner = createWorkflowRunner({
+        registry,
+        sessionEvents: bus,
+        resolveAgentAdapter,
+        compileWorkflow: handle => compileWorkflow(handle, { tools: {}, candidates: [] }),
+        appRegistry,
+        persist: true,
+        persistPath: join(tmp, `runs-${appId.replace("/", "_")}.json`),
+        runsRoot: join(tmp, "runs"),
+        ...(appReadGrants ? { appReadGrants } : {}),
+      })
+      const run = await runner.startFromFile({ path })
+      await runToEnd(runner, run.runId)
+      return { b: boundaryFromMeta(spawned[0]!.meta), startSession }
+    }
+    const resolver = (id: string) => (id === "@test/yt" ? [grantDir] : [])
+
+    const withGrant = await grantedOf(resolver, "@test/yt")
+    expect(withGrant.b?.readOnly).toContain(grantDir)
+    expect(withGrant.b?.writable).not.toContain(grantDir)
+    expect(withGrant.b?.readGrants).toEqual([grantDir])
+    expect(withGrant.b?.unreadable).toEqual([join(grantDir, ".env")])
+
+    const other = await grantedOf(resolver, "@test/other")
+    expect(other.b?.readOnly).not.toContain(grantDir)
+    expect(other.b?.readGrants).toBeUndefined()
+
+    const none = await grantedOf(undefined, "@test/yt")
+    expect(none.b?.readOnly).not.toContain(grantDir)
+    expect(none.b?.unreadable).toBeUndefined()
   })
 
   it("a workflow no installed app owns gets no boundary", async () => {

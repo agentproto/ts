@@ -297,6 +297,60 @@ describe("sendOutbound", () => {
     })
   })
 
+  it("agentpush carries the caller session on both upload_media and send_message", async () => {
+    vi.mocked(readFile).mockResolvedValue(Buffer.from("fake-image-bytes"))
+
+    const callTool = vi.fn(
+      async (_alias: string, tool: string): Promise<ProxyCallOutcome> => {
+        if (tool === "upload_media") {
+          return mcpTextResult({ media_id: "media-ctx" })
+        }
+        return mcpTextResult({ status: "sent", message_id: "msg-ctx" })
+      },
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+
+    await sendOutbound(
+      "agentpush",
+      {
+        alias: "agentpush",
+        source: "telegram",
+        contactRef: "alice",
+        text: "see attached",
+        attachments: [{ type: "photo", path: "/tmp/photo.jpg" }],
+      },
+      { mcpProxy, callerSessionId: "sess_outbound" },
+    )
+
+    expect(callTool).toHaveBeenCalledWith(
+      "agentpush",
+      "upload_media",
+      expect.anything(),
+      { callerSessionId: "sess_outbound" },
+    )
+    expect(callTool).toHaveBeenCalledWith(
+      "agentpush",
+      "send_message",
+      expect.anything(),
+      { callerSessionId: "sess_outbound" },
+    )
+  })
+
+  it("agentpush sends no call context when no caller session is known", async () => {
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "m" }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+
+    await sendOutbound(
+      "agentpush",
+      { alias: "agentpush", source: "telegram", contactRef: "alice", text: "hi" },
+      { mcpProxy },
+    )
+
+    expect(callTool.mock.calls[0]).toHaveLength(3)
+  })
+
   it("telegram sends a local photo via sendPhoto multipart", async () => {
     const mockedReadFile = vi.mocked(readFile)
     mockedReadFile.mockResolvedValue(Buffer.from("fake-image-bytes"))

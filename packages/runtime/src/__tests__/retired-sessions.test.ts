@@ -11,6 +11,8 @@
  * notices.
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -36,7 +38,7 @@ import { makeRestartForRouting } from "../index.js"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createSessionFollowStore } from "../session-follow-store.js"
-import { createSentinelStore } from "../sentinel-store.js"
+import { createSentinelStore } from "@agentproto/sentinel"
 import { wireRetirementCleanup, sweepWiringLifecycle } from "../retirement-cleanup.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -854,6 +856,86 @@ describe("sweepWiringLifecycle", () => {
     expect(result.sentinelsCancelled).toBe(1)
     expect(followStore.get(follow.id)).toBeUndefined()
     expect(sentinelStore.get(sentinel.id)).toBeUndefined()
+  })
+
+  it("relinks a sentinel to the live parent when the recipient is retired with no successor", async () => {
+    const { reg, sentinelStore, followStore, cancelSentinel, ids } = setup(["parent"])
+    const [parentId] = ids as [string]
+    const child = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      adapterSlug: "fake",
+      label: "child",
+      parentSessionId: parentId,
+      agentSession: { sessionId: "acp_child", async *send() {}, async cancel() {}, async close() {} },
+    })
+    const sentinel = watch(sentinelStore, child.id)
+
+    reg.kill(child.id)
+    reg.archiveSession(child.id)
+    const result = await sweepWiringLifecycle({ registry: reg, followStore, sentinelStore, cancelSentinel, log: () => {} })
+
+    expect(result.sentinelsCancelled).toBe(0)
+    expect(result.sentinelsRelinked).toBe(1)
+    const target = sentinelStore.get(sentinel.id)!.spec.target
+    expect(target.kind === "session" && target.sessionId).toBe(parentId)
+  })
+
+  it("cancels the child's sentinel instead of duplicating the parent's existing watch", async () => {
+    const { reg, sentinelStore, followStore, cancelSentinel, ids } = setup(["parent"])
+    const [parentId] = ids as [string]
+    const child = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      adapterSlug: "fake",
+      label: "child",
+      parentSessionId: parentId,
+      agentSession: { sessionId: "acp_child", async *send() {}, async cancel() {}, async close() {} },
+    })
+    const parentSentinel = watch(sentinelStore, parentId)
+    const childSentinel = watch(sentinelStore, child.id)
+
+    reg.kill(child.id)
+    reg.archiveSession(child.id)
+    const result = await sweepWiringLifecycle({ registry: reg, followStore, sentinelStore, cancelSentinel, log: () => {} })
+
+    expect(result.sentinelsCancelled).toBe(1)
+    expect(result.sentinelsRelinked).toBe(0)
+    expect(cancelSentinel).toHaveBeenCalledWith(childSentinel.id)
+    expect(sentinelStore.get(childSentinel.id)).toBeUndefined()
+    expect(sentinelStore.get(parentSentinel.id)).toBeDefined()
+  })
+
+  it("replays parked follow digests before cancelling any wiring", async () => {
+    const { reg, followStore, sentinelStore, ids } = setup(["old"])
+    const [oldId] = ids as [string]
+    const follow = followStore.upsert({ follower: oldId, selector: { all: true } }).follow
+    const sentinel = watch(sentinelStore, oldId)
+    const order: string[] = []
+    const replayFollowParked = vi.fn(async () => {
+      order.push("replay")
+      return 1
+    })
+    const cancelSentinel = vi.fn(async (id: string) => {
+      order.push(`cancel:${id}`)
+      sentinelStore.remove(id)
+    })
+
+    reg.kill(oldId)
+    reg.archiveSession(oldId)
+    await sweepWiringLifecycle({
+      registry: reg,
+      followStore,
+      sentinelStore,
+      cancelSentinel,
+      replayFollowParked,
+      log: () => {},
+    })
+
+    expect(replayFollowParked).toHaveBeenCalledTimes(1)
+    expect(order[0]).toBe("replay")
+    expect(order).toContain(`cancel:${sentinel.id}`)
+    expect(followStore.get(follow.id)).toBeUndefined()
   })
 
   it("relinks wiring to a live successor instead of removing it", async () => {

@@ -128,27 +128,44 @@ export interface ClaudeSdkConfig {
  * into the harness exactly like any other arm. Env pairs / headers arrive as
  * `{ name, value }` lists on the wire; flatten them to the record shape the
  * SDK expects.
+ *
+ * A session can legitimately carry two servers under one name: the daemon
+ * injects BOTH the full self-mount (`/mcp`) and, for an orchestrator spawn,
+ * the scoped orchestrator gateway (`/mcp/orchestrator`) under the name
+ * `agentproto`. The SDK's `mcpServers` record is keyed by name, so a naive
+ * overwrite drops the full gateway (and with it every app UI tool such as
+ * `agentproto_work_board` / `app_ui_*`) in favour of the curated orchestrator
+ * subset. Disambiguate later same-named servers with a numeric suffix instead
+ * of overwriting, so both surfaces stay mounted.
  */
 export function mapAcpMcpServers(
   servers: McpServer[] | undefined,
 ): Record<string, McpServerConfig> {
   const out: Record<string, McpServerConfig> = {}
+  const seen = new Set<string>()
   for (const server of servers ?? []) {
+    let name = server.name
+    if (seen.has(name)) {
+      let suffix = 2
+      while (seen.has(`${name}-${suffix}`)) suffix++
+      name = `${name}-${suffix}`
+    }
+    seen.add(name)
     if ("type" in server && server.type === "http") {
-      out[server.name] = {
+      out[name] = {
         type: "http",
         url: server.url,
         headers: flattenPairs(server.headers),
       }
     } else if ("type" in server && server.type === "sse") {
-      out[server.name] = {
+      out[name] = {
         type: "sse",
         url: server.url,
         headers: flattenPairs(server.headers),
       }
     } else {
       // Stdio is the default (untagged) ACP MCP variant.
-      out[server.name] = {
+      out[name] = {
         type: "stdio",
         command: server.command,
         args: server.args,

@@ -6,7 +6,9 @@ import {
   createForgeClient,
   GhCliForgeClient,
   UnreachableForgeClient,
+  withUnavailableNotice,
 } from "../forge.js"
+import { tmpdir } from "node:os"
 import { execArgv } from "../exec.js"
 import type { ExecResult } from "../exec.js"
 
@@ -37,6 +39,26 @@ describe("parseGithubOwnerRepo", () => {
       repo: "agentik-studio",
     })
   })
+  it("normalizes every ssh-alias form of github.com-<alias> to the same slug", () => {
+    const want = { owner: "agentik-studio", repo: "agentik-studio" }
+    for (const url of [
+      "git@github.com-agentik:agentik-studio/agentik-studio",
+      "git@github.com-agentik:agentik-studio/agentik-studio.git",
+      "git@github.com-agentik:agentik-studio/agentik-studio/",
+      "git@github.com-agentik:agentik-studio/agentik-studio.git/",
+      "ssh://git@github.com-agentik/agentik-studio/agentik-studio",
+      "ssh://git@github.com-agentik/agentik-studio/agentik-studio.git",
+      "ssh://git@github.com-agentik/agentik-studio/agentik-studio.git/",
+      "ssh://git@github.com-agentik:22/agentik-studio/agentik-studio.git",
+      "ssh://git@github.com/agentik-studio/agentik-studio.git",
+      "https://github.com-agentik/agentik-studio/agentik-studio",
+      "https://github.com-agentik/agentik-studio/agentik-studio.git",
+      "https://github.com-agentik/agentik-studio/agentik-studio.git/",
+      "https://user@github.com/agentik-studio/agentik-studio.git/",
+    ]) {
+      expect(parseGithubOwnerRepo(url), url).toEqual(want)
+    }
+  })
   it("returns null for a non-GitHub remote", () => {
     expect(parseGithubOwnerRepo("git@gitlab.com:agentproto/ts.git")).toBeNull()
     // A lookalike host is not an alias of github.com.
@@ -59,6 +81,40 @@ describe("RestForgeClient (GITHUB_TOKEN REST fallback)", () => {
     expect(result).toEqual([
       { number: 1, state: "closed", merged: true, mergedAt: "2026-01-01T00:00:00.000Z", headRefName: "feat/x", headRefOid: "abc" },
     ])
+  })
+
+  it("splits the closed PR list into merged and closed-unmerged", async () => {
+    const urls: string[] = []
+    const fetchFn = async (url: string | URL | Request): Promise<Response> => {
+      urls.push(String(url))
+      return jsonResponse(200, [
+        { number: 1, state: "closed", merged_at: "2026-01-01T00:00:00.000Z", head: { ref: "feat/merged", sha: "abc" } },
+        { number: 2, state: "closed", merged_at: null, head: { ref: "feat/abandoned", sha: "def" } },
+      ])
+    }
+    const client = new RestForgeClient("agentproto", "ts", "/repo", "tok", fetchFn as typeof fetch)
+    expect((await client.listMergedPullRequests()).map((pr) => pr.number)).toEqual([1])
+    expect((await client.listClosedUnmergedPullRequests()).map((pr) => pr.number)).toEqual([2])
+    for (const u of urls) expect(u).toContain("/pulls?state=closed&")
+  })
+
+  it("serves concurrent merged and closed-unmerged reads from ONE closed-list fetch", async () => {
+    let fetches = 0
+    const fetchFn = async (): Promise<Response> => {
+      fetches++
+      return jsonResponse(200, [
+        { number: 1, state: "closed", merged_at: "2026-01-01T00:00:00.000Z", head: { ref: "feat/merged", sha: "abc" } },
+        { number: 2, state: "closed", merged_at: null, head: { ref: "feat/abandoned", sha: "def" } },
+      ])
+    }
+    const client = new RestForgeClient("agentproto", "ts", "/repo", "tok", fetchFn as typeof fetch)
+    const [merged, closed] = await Promise.all([client.listMergedPullRequests(), client.listClosedUnmergedPullRequests()])
+    expect(merged.map((pr) => pr.number)).toEqual([1])
+    expect(closed.map((pr) => pr.number)).toEqual([2])
+    expect(fetches).toBe(1)
+    // Settled: the next plan reads fresh data.
+    await client.listMergedPullRequests()
+    expect(fetches).toBe(2)
   })
 
   it("treats a 404 on commits/:sha/pulls as a legitimate empty result, not an error", async () => {
@@ -111,7 +167,7 @@ describe("createForgeClient — the `gh` usability probe", () => {
     execArgvMock.mockResolvedValue(ok("gho_sometoken"))
     await createForgeClient("/repo")
     const probes = execArgvMock.mock.calls.map(([cmd, args]) => `${cmd} ${args.join(" ")}`)
-    expect(probes).toContain("gh auth token")
+    expect(probes).toContain("gh auth token --hostname github.com")
     expect(probes).not.toContain("gh auth status")
   })
 
@@ -144,5 +200,194 @@ describe("createForgeClient — the `gh` usability probe", () => {
   it("treats an empty token as unusable rather than a valid credential", async () => {
     execArgvMock.mockResolvedValue(ok("   \n"))
     expect(await createForgeClient("/repo")).toBeInstanceOf(UnreachableForgeClient)
+  })
+})
+
+const ALIAS_ORIGIN = "git@github.com-agentik:agentik-studio/agentik-studio.git"
+
+function aliasRepoExec(record: Array<{ cmd: string; args: readonly string[]; cwd: string; env?: Record<string, string> }>) {
+  return async (
+    cmd: string,
+    args: readonly string[],
+    cwd: string,
+    opts?: { env?: Record<string, string> },
+  ): Promise<ExecResult> => {
+    record.push({ cmd, args, cwd, ...(opts?.env ? { env: opts.env } : {}) })
+    if (cmd === "git" && args.includes("get-url")) return ok(`${ALIAS_ORIGIN}\n`)
+    if (cmd === "gh" && args[0] === "auth") return ok("gho_sometoken")
+    if (cmd === "gh" && args[0] === "pr") return ok("[]")
+    if (cmd === "gh" && args[0] === "api") return ok("[]")
+    return ok()
+  }
+}
+
+describe("GhCliForgeClient: independent of cwd-based host detection", () => {
+  beforeEach(() => execArgvMock.mockReset())
+
+  it("passes an explicit -R owner/repo resolved from origin to every `gh pr list`", async () => {
+    const calls: Array<{ cmd: string; args: readonly string[]; cwd: string; env?: Record<string, string> }> = []
+    execArgvMock.mockImplementation(aliasRepoExec(calls))
+    const client = new GhCliForgeClient("/repo")
+    await client.pullRequestsForBranch("feat/x")
+    await client.listOpenPullRequests()
+    await client.listMergedPullRequests()
+    await client.listClosedUnmergedPullRequests()
+    const prLists = calls.filter((c) => c.cmd === "gh" && c.args[0] === "pr")
+    expect(prLists).toHaveLength(4)
+    for (const c of prLists) {
+      const i = c.args.indexOf("-R")
+      expect(c.args[i + 1]).toBe("agentik-studio/agentik-studio")
+      expect(c.env?.GH_HOST).toBe("github.com")
+    }
+  })
+
+  it("never leaves {owner}/{repo} placeholders in `gh api` calls", async () => {
+    const calls: Array<{ cmd: string; args: readonly string[]; cwd: string; env?: Record<string, string> }> = []
+    execArgvMock.mockImplementation(aliasRepoExec(calls))
+    await new GhCliForgeClient("/repo").pullRequestsForCommit("deadbeef")
+    const api = calls.find((c) => c.cmd === "gh" && c.args[0] === "api")
+    expect(api?.args[1]).toBe("repos/agentik-studio/agentik-studio/commits/deadbeef/pulls")
+    expect(api?.env?.GH_HOST).toBe("github.com")
+  })
+
+  it("resolves the slug once, not per call", async () => {
+    const calls: Array<{ cmd: string; args: readonly string[]; cwd: string }> = []
+    execArgvMock.mockImplementation(aliasRepoExec(calls))
+    const client = new GhCliForgeClient("/repo")
+    await client.pullRequestsForBranch("a")
+    await client.pullRequestsForBranch("b")
+    expect(calls.filter((c) => c.cmd === "git" && c.args.includes("get-url"))).toHaveLength(1)
+  })
+})
+
+describe("createForgeClient: alias origins", () => {
+  const savedToken = process.env.GITHUB_TOKEN
+  beforeEach(() => {
+    execArgvMock.mockReset()
+    delete process.env.GITHUB_TOKEN
+  })
+  afterEach(() => {
+    if (savedToken === undefined) delete process.env.GITHUB_TOKEN
+    else process.env.GITHUB_TOKEN = savedToken
+  })
+
+  it("resolves the gh token from a neutral cwd for github.com, not from the repo", async () => {
+    const calls: Array<{ cmd: string; args: readonly string[]; cwd: string }> = []
+    execArgvMock.mockImplementation(aliasRepoExec(calls))
+    expect(await createForgeClient("/repo")).toBeInstanceOf(GhCliForgeClient)
+    const probe = calls.find((c) => c.cmd === "gh" && c.args[0] === "auth")
+    expect(probe?.args).toEqual(["auth", "token", "--hostname", "github.com"])
+    expect(probe?.cwd).toBe(tmpdir())
+  })
+
+  it("falls back to REST with the normalized slug when gh is unusable and origin is an ssh:// alias", async () => {
+    process.env.GITHUB_TOKEN = "tok"
+    execArgvMock.mockImplementation(async (cmd, args) => {
+      if (cmd === "gh") return fail("no host")
+      if (cmd === "git" && args.includes("get-url")) return ok("ssh://git@github.com-agentik/agentik-studio/agentik-studio.git\n")
+      return ok()
+    })
+    expect(await createForgeClient("/repo")).toBeInstanceOf(RestForgeClient)
+  })
+
+  it("says why when it falls back to unreachable", async () => {
+    execArgvMock.mockResolvedValue(fail("not logged in"))
+    const client = await createForgeClient("/repo")
+    expect(client).toBeInstanceOf(UnreachableForgeClient)
+    expect((client as UnreachableForgeClient).reason).toMatch(/gh/)
+  })
+})
+
+describe("withUnavailableNotice: no silent empty status", () => {
+  it("notifies once with the reason when the forge is unavailable, and rethrows", async () => {
+    const notices: string[] = []
+    const client = withUnavailableNotice(new UnreachableForgeClient("gh not authenticated"), (m) => notices.push(m))
+    await expect(client.pullRequestsForBranch("a")).rejects.toBeInstanceOf(ForgeUnavailableError)
+    await expect(client.pullRequestsForCommit("sha")).rejects.toBeInstanceOf(ForgeUnavailableError)
+    expect(notices).toEqual(["forge unavailable: gh not authenticated; PR/merge status shown as unknown(offline)"])
+  })
+
+  it("stays silent when the forge answers, including a legitimate empty result", async () => {
+    const notices: string[] = []
+    const inner = new RestForgeClient("o", "r", "/repo", "tok", async () => jsonResponse(200, []))
+    const client = withUnavailableNotice(inner, (m) => notices.push(m))
+    expect(await client.pullRequestsForBranch("a")).toEqual([])
+    expect(notices).toEqual([])
+  })
+})
+
+describe("pullRequestFacts: one PR with every path it touched", () => {
+  const pr = { number: 12, state: "closed", merged_at: "2026-01-01T00:00:00Z", merge_commit_sha: "a".repeat(40), base: { ref: "main" } }
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ filename: `src/f${i}.ts` }))
+  const page2 = [{ filename: "packages/harness/run.ts", previous_filename: "driver/agent-cli/run.ts" }, { filename: ".changeset/x.md" }]
+  const expected = {
+    number: 12,
+    state: "closed",
+    merged: true,
+    baseRefName: "main",
+    mergeCommitOid: "a".repeat(40),
+    files: [...page1.map((f) => f.filename), "packages/harness/run.ts", "driver/agent-cli/run.ts", ".changeset/x.md"],
+  }
+
+  describe("RestForgeClient", () => {
+    const client = (routes: (url: string) => Response) => new RestForgeClient("o", "r", "/repo", "tok", async (url) => routes(String(url)))
+
+    it("pages the files (100 per page) and counts both names of a rename", async () => {
+      const seen: string[] = []
+      const c = client((url) => {
+        seen.push(url)
+        if (url.endsWith("/pulls/12")) return jsonResponse(200, pr)
+        if (url.includes("/pulls/12/files") && url.endsWith("page=1")) return jsonResponse(200, page1)
+        if (url.includes("/pulls/12/files") && url.endsWith("page=2")) return jsonResponse(200, page2)
+        return new Response("unexpected", { status: 500 })
+      })
+      expect(await c.pullRequestFacts(12)).toEqual(expected)
+      expect(seen).toHaveLength(3)
+    })
+
+    it("404 is no such PR; unmerged has no merge commit; other failures and bad shapes are unavailable", async () => {
+      expect(await client(() => new Response("nf", { status: 404 })).pullRequestFacts(12)).toBeNull()
+      const open = client((url) => (url.endsWith("/pulls/12") ? jsonResponse(200, { ...pr, state: "open", merged_at: null }) : jsonResponse(200, [])))
+      expect(await open.pullRequestFacts(12)).toMatchObject({ state: "open", merged: false, mergeCommitOid: null, files: [] })
+      await expect(client(() => new Response("x", { status: 502 })).pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+      await expect(client(() => jsonResponse(200, { nope: true })).pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+      const badFiles = client((url) => (url.endsWith("/pulls/12") ? jsonResponse(200, pr) : jsonResponse(200, { not: "a list" })))
+      await expect(badFiles.pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+    })
+  })
+
+  describe("GhCliForgeClient", () => {
+    beforeEach(() => execArgvMock.mockReset())
+    function ghExec(api: (path: string) => ExecResult) {
+      return async (cmd: string, args: readonly string[]): Promise<ExecResult> => {
+        if (cmd === "git" && args.includes("get-url")) return ok("git@github.com:o/r.git\n")
+        if (cmd === "gh" && args[0] === "api") return api(String(args[1]))
+        return fail("unexpected")
+      }
+    }
+
+    it("reads the PR and pages its files through `gh api`, slug resolved from origin", async () => {
+      const paths: string[] = []
+      execArgvMock.mockImplementation(
+        ghExec((path) => {
+          paths.push(path)
+          if (path === "repos/o/r/pulls/12") return ok(JSON.stringify(pr))
+          if (path.endsWith("page=1")) return ok(JSON.stringify(page1))
+          if (path.endsWith("page=2")) return ok(JSON.stringify(page2))
+          return fail("unexpected")
+        }),
+      )
+      expect(await new GhCliForgeClient("/repo").pullRequestFacts(12)).toEqual(expected)
+      expect(paths).toEqual(["repos/o/r/pulls/12", "repos/o/r/pulls/12/files?per_page=100&page=1", "repos/o/r/pulls/12/files?per_page=100&page=2"])
+    })
+
+    it("HTTP 404 is no such PR; any other failure or non-JSON output is unavailable", async () => {
+      execArgvMock.mockImplementation(ghExec(() => fail("gh: Not Found (HTTP 404)")))
+      expect(await new GhCliForgeClient("/repo").pullRequestFacts(12)).toBeNull()
+      execArgvMock.mockImplementation(ghExec(() => fail("gh: Bad Gateway (HTTP 502)")))
+      await expect(new GhCliForgeClient("/repo").pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+      execArgvMock.mockImplementation(ghExec((path) => (path === "repos/o/r/pulls/12" ? ok(JSON.stringify(pr)) : ok("<html>"))))
+      await expect(new GhCliForgeClient("/repo").pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+    })
   })
 })

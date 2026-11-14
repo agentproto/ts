@@ -8,10 +8,9 @@ import { signArtifact } from "./sign-artifact.js"
 import type { GovernanceConfig } from "./workspace-config.js"
 
 /**
- * The engine keeps EMITTING the pre-AIP-70 tag ("agentgovernance/v1") in
- * new signature.json files and audit-log rows: verifiers in the field only
- * know the old tag, and the tag is part of the hashed bytes of every audit
- * row. These tests pin that write behavior.
+ * The engine WRITES the canonical AIP-70 tag ("governance/v1") in new
+ * signature.json files and audit-log rows. Readers keep accepting the
+ * pre-AIP-70 "agentgovernance/v1" alias. These tests pin that write behavior.
  */
 
 const GENESIS = "0".repeat(64)
@@ -34,7 +33,7 @@ afterEach(async () => {
 })
 
 describe("emitted spec name", () => {
-  it("signArtifact writes signatures with the legacy agentgovernance/v1 tag", async () => {
+  it("signArtifact writes signatures with the canonical governance/v1 tag", async () => {
     const artifactAbs = path.join(tmpRoot, "AGREEMENT.md")
     await fs.writeFile(artifactAbs, "# Agreement\n", "utf8")
 
@@ -52,17 +51,17 @@ describe("emitted spec name", () => {
       },
     })
 
-    expect(result.signature.schema).toBe("agentgovernance/v1")
+    expect(result.signature.schema).toBe("governance/v1")
     const onDisk = JSON.parse(
       await fs.readFile(
         path.join(tmpRoot, result.signaturePath),
         "utf8",
       ),
     ) as { schema: string }
-    expect(onDisk.schema).toBe("agentgovernance/v1")
+    expect(onDisk.schema).toBe("governance/v1")
   })
 
-  it("recordAuditEvent writes rows with the legacy agentgovernance/v1 tag", async () => {
+  it("recordAuditEvent writes rows with the canonical governance/v1 tag", async () => {
     const r = await recordAuditEvent(config, {
       actorKind: "system",
       actorId: null,
@@ -70,11 +69,11 @@ describe("emitted spec name", () => {
       entityId: "test:genesis",
       action: "log.initialized",
     })
-    expect(r.event.schema).toBe("agentgovernance/v1")
+    expect(r.event.schema).toBe("governance/v1")
 
     const onDisk = JSON.parse(
       await fs.readFile(path.join(tmpRoot, r.logPath), "utf8"),
     ) as { schema: string }
-    expect(onDisk.schema).toBe("agentgovernance/v1")
+    expect(onDisk.schema).toBe("governance/v1")
   })
 })

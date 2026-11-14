@@ -1,0 +1,368 @@
+import { describe, it, expect } from "vitest"
+import { defineHarness } from "../define-agent-cli.js"
+import { parseAgentCliManifest } from "../manifest/index.js"
+import type { AgentCliAuthSubscription, AgentCliDefinition } from "../types.js"
+
+// These tests construct single-surface `authSubscription` fixtures, so a
+// direct read narrows the single-or-array type back down for the assertion.
+const singleSurface = (
+  sub: AgentCliAuthSubscription | AgentCliAuthSubscription[] | undefined,
+): AgentCliAuthSubscription | undefined =>
+  Array.isArray(sub) ? sub[0] : sub
+
+const minimal = (overrides: Partial<AgentCliDefinition> = {}): AgentCliDefinition => ({
+  name: "hermes",
+  id: "hermes",
+  description: "Nous Research Hermes Agent — autonomous CLI agent.",
+  version: "0.1.0",
+  bin: "hermes",
+  bin_args: ["acp"],
+  install: [{ method: "brew", package: "hermes" }],
+  version_check: {
+    cmd: "hermes --version",
+    parse: "(\\d+\\.\\d+\\.\\d+)",
+    range: ">=0.13.0",
+    timeout_ms: 5000,
+  },
+  sandbox: "./SANDBOX.md",
+  protocol: "acp",
+  acp: "./hermes-acp.ACP.md",
+  ...overrides,
+})
+
+describe("defineHarness (AIP-45)", () => {
+  it("imports cleanly", () => {
+    expect(typeof defineHarness).toBe("function")
+  })
+
+  describe("baseline frontmatter", () => {
+    it("accepts a minimal acp-arm manifest", () => {
+      const handle = defineHarness(minimal())
+      expect(handle.protocol).toBe("acp")
+      expect(handle.acp).toBe("./hermes-acp.ACP.md")
+    })
+
+    it("accepts an inline sandbox block", () => {
+      const handle = defineHarness(
+        minimal({ sandbox: { provider: "local" } }),
+      )
+      expect(typeof handle.sandbox).toBe("object")
+    })
+
+    it("rejects non-kebab id", () => {
+      expect(() => defineHarness(minimal({ id: "Hermes_Agent" }))).toThrow(
+        /AIP-45/,
+      )
+    })
+
+    it("rejects malformed semver in version", () => {
+      expect(() => defineHarness(minimal({ version: "v1" }))).toThrow(
+        /AIP-45/,
+      )
+    })
+
+    it("rejects empty install array", () => {
+      expect(() => defineHarness(minimal({ install: [] }))).toThrow(
+        /AIP-45/,
+      )
+    })
+
+    it("requires version_check.range", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            version_check: {
+              cmd: "hermes --version",
+              parse: "(\\d+\\.\\d+\\.\\d+)",
+              range: "",
+            },
+          }),
+        ),
+      ).toThrow(/AIP-45/)
+    })
+  })
+
+  describe("protocol cross-field rules", () => {
+    it("requires `acp` when protocol=acp", () => {
+      expect(() =>
+        defineHarness(minimal({ protocol: "acp", acp: undefined })),
+      ).toThrow(/`acp` ref is required when protocol=acp/)
+    })
+
+    it("requires `mcp` when protocol=mcp", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            protocol: "mcp",
+            acp: undefined,
+            mcp: undefined,
+          }),
+        ),
+      ).toThrow(/`mcp` block is required when protocol=mcp/)
+    })
+
+    it("accepts protocol=mcp with mcp block", () => {
+      const handle = defineHarness(
+        minimal({
+          protocol: "mcp",
+          acp: undefined,
+          mcp: { command: "goose", args: ["serve"], transport: "stdio" },
+        }),
+      )
+      expect(handle.protocol).toBe("mcp")
+      expect(handle.mcp?.command).toBe("goose")
+    })
+
+    it("requires `harness` when protocol=proprietary", () => {
+      expect(() =>
+        defineHarness(
+          minimal({ protocol: "proprietary", acp: undefined }),
+        ),
+      ).toThrow(/`harness` package is required when protocol=proprietary/)
+    })
+
+    it("accepts protocol=proprietary with the canonical harness field", () => {
+      const handle = defineHarness(
+        minimal({
+          protocol: "proprietary",
+          acp: undefined,
+          harness: "@agentproto/harness-gemini-cli",
+        }),
+      )
+      expect(handle.harness).toBe("@agentproto/harness-gemini-cli")
+    })
+
+    it("rejects the pre-rename root adapter, naming harness", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            protocol: "proprietary",
+            acp: undefined,
+            adapter: "@agentproto/adapter-gemini-cli",
+          } as unknown as Partial<AgentCliDefinition>),
+        ),
+      ).toThrow(/adapter: `adapter` was renamed to `harness` \(AIP-45\)/)
+    })
+  })
+
+  describe("session resumable cross-field rule", () => {
+    it("requires capabilities.resumable when session.mode=resumable", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            session: { mode: "resumable" },
+            capabilities: { resumable: false },
+          }),
+        ),
+      ).toThrow(/session.mode=resumable requires capabilities.resumable: true/)
+    })
+
+    it("accepts session.mode=resumable with capabilities.resumable=true", () => {
+      const handle = defineHarness(
+        minimal({
+          session: { mode: "resumable", idle_timeout_ms: 86_400_000 },
+          capabilities: { resumable: true, streaming: true },
+        }),
+      )
+      expect(handle.session?.mode).toBe("resumable")
+    })
+  })
+
+  describe("models.apply=\"arg\" cross-field rule", () => {
+    it("requires models.bin_args_template when models.apply=\"arg\"", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            models: { default: "o3", apply: "arg" },
+          }),
+        ),
+      ).toThrow(/models.apply="arg" requires models.bin_args_template/)
+    })
+
+    it("accepts models.apply=\"arg\" with bin_args_template", () => {
+      const handle = defineHarness(
+        minimal({
+          models: {
+            default: "o3",
+            apply: "arg",
+            bin_args_template: ["-c", 'model="{model}"'],
+          },
+        }),
+      )
+      expect(handle.models?.apply).toBe("arg")
+      expect(handle.models?.bin_args_template).toEqual(["-c", 'model="{model}"'])
+    })
+  })
+
+  describe("mode.kind narrowed to \"context\" (SPEC §3.4a route/posture extraction)", () => {
+    // `AgentCliMode.kind` no longer accepts "posture" or "route": route is
+    // derived from the model catalog (@route) and posture from the harness's
+    // ACP mode registry — neither is a manifest mode anymore. Only "context"
+    // (an env toggle with no ACP-protocol home) survives as a declarable kind.
+    // The casts bypass the compile-time narrowing so the runtime schema's own
+    // rejection is what's under test.
+    type LegacyMode = { id: string; kind: string; env?: Record<string, string> }
+    const withModes = (modes: LegacyMode[]) =>
+      minimal({ modes: modes as unknown as AgentCliDefinition["modes"] })
+
+    it("accepts kind: \"context\"", () => {
+      const handle = defineHarness(
+        withModes([{ id: "lean", kind: "context", env: { X: "1" } }]),
+      )
+      expect(handle.modes?.[0]?.kind).toBe("context")
+    })
+
+    it("rejects a legacy kind: \"posture\" mode", () => {
+      expect(() =>
+        defineHarness(withModes([{ id: "plan", kind: "posture" }])),
+      ).toThrow(/AIP-45/)
+    })
+
+    it("rejects a legacy kind: \"route\" mode", () => {
+      expect(() =>
+        defineHarness(withModes([{ id: "moonshot", kind: "route" }])),
+      ).toThrow(/AIP-45/)
+    })
+
+    it("still accepts a mode that omits kind (id-inferred by the daemon shim)", () => {
+      const handle = defineHarness(
+        minimal({ modes: [{ id: "default", description: "Standard." }] }),
+      )
+      expect(handle.modes?.[0]?.kind).toBeUndefined()
+    })
+  })
+
+  describe("parseAgentCliManifest", () => {
+    it("parses a minimal AGENT-CLI.md", () => {
+      const md = `---
+name: hermes
+id: hermes
+description: Hermes Agent.
+version: 0.1.0
+bin: hermes
+bin_args: [acp]
+install:
+  - method: brew
+    package: hermes
+version_check:
+  cmd: hermes --version
+  parse: "(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)"
+  range: ">=0.13.0"
+sandbox: ./SANDBOX.md
+protocol: acp
+acp: ./hermes-acp.ACP.md
+---
+
+# hermes
+
+body
+`
+      const { frontmatter, body } = parseAgentCliManifest(md)
+      expect(frontmatter.id).toBe("hermes")
+      expect(frontmatter.protocol).toBe("acp")
+      expect(body).toMatch(/body/)
+    })
+
+    const proprietaryMd = (key: string) => `---
+name: pi
+id: pi
+description: Pi.
+version: 0.1.0
+bin: pi
+install:
+  - method: npm
+    package: pi
+version_check:
+  cmd: pi --version
+  parse: "(\\\\d+)"
+  range: ">=0.1.0"
+sandbox: ./SANDBOX.md
+protocol: proprietary
+${key}: "@agentproto/harness-pi"
+---
+`
+
+    it("accepts a HARNESS.md with a root harness field under the strict schema", () => {
+      const { frontmatter } = parseAgentCliManifest(proprietaryMd("harness"))
+      expect(frontmatter.harness).toBe("@agentproto/harness-pi")
+    })
+
+    it("rejects a HARNESS.md with the pre-rename root adapter, naming harness", () => {
+      expect(() => parseAgentCliManifest(proprietaryMd("adapter"))).toThrow(
+        /adapter: `adapter` was renamed to `harness` \(AIP-45\)/,
+      )
+    })
+
+    it("rejects empty frontmatter", () => {
+      expect(() => parseAgentCliManifest("# no frontmatter")).toThrow(
+        /missing or empty frontmatter/,
+      )
+    })
+  })
+
+  describe("routeSelection (AIP-45 launch-menu drill-down, WP1)", () => {
+    it("defaults to undefined (back-compat: absent ⇒ free)", () => {
+      expect(defineHarness(minimal()).routeSelection).toBeUndefined()
+    })
+
+    it("accepts \"free\"", () => {
+      expect(defineHarness(minimal({ routeSelection: "free" })).routeSelection).toBe("free")
+    })
+
+    it("accepts \"derived-from-model\"", () => {
+      expect(
+        defineHarness(minimal({ routeSelection: "derived-from-model" })).routeSelection,
+      ).toBe("derived-from-model")
+    })
+
+    it("rejects an unrecognized route-selection value", () => {
+      expect(() =>
+        defineHarness(
+          minimal({ routeSelection: "sometimes" } as unknown as Partial<AgentCliDefinition>),
+        ),
+      ).toThrow(/AIP-45/)
+    })
+  })
+
+  describe("authSubscription — bearer vs external (file-based)", () => {
+    it("accepts a bearer subscription (setEnv, no external)", () => {
+      const handle = defineHarness(
+        minimal({ provider: "anthropic", authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" } }),
+      )
+      expect(singleSurface(handle.authSubscription)?.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
+    })
+
+    it("accepts an external subscription (external:true, no setEnv, conflictEnv scrub)", () => {
+      const handle = defineHarness(
+        minimal({
+          provider: "openai",
+          authSubscription: { external: true, conflictEnv: ["CODEX_API_KEY"] },
+        }),
+      )
+      expect(singleSurface(handle.authSubscription)?.external).toBe(true)
+      expect(singleSurface(handle.authSubscription)?.setEnv).toBeUndefined()
+    })
+
+    it("rejects external:true WITH setEnv (an external subscription injects nothing)", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            provider: "openai",
+            authSubscription: { external: true, setEnv: "OPENAI_API_KEY" },
+          }),
+        ),
+      ).toThrow(/external/)
+    })
+
+    it("rejects a non-external authSubscription with NO setEnv (the bearer needs a var)", () => {
+      expect(() =>
+        defineHarness(
+          minimal({
+            provider: "anthropic",
+            authSubscription: {} as unknown as { setEnv: string },
+          }),
+        ),
+      ).toThrow(/setEnv/)
+    })
+  })
+})

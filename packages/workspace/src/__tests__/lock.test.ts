@@ -7,7 +7,7 @@ describe("agentproto.lock round-trip", () => {
       lockfile: "agentproto-lock/v1",
       generated: "2026-10-17T18:00:00Z",
     })
-    expect(yaml).toContain("lockfile: agentproto-lock/v1")
+    expect(yaml).toContain("lockfile: workspace.lock/v1")
     const parsed = parseLock(yaml)
     expect(parsed.apps).toEqual([])
     expect(parsed.packs).toEqual([])
@@ -39,7 +39,7 @@ describe("agentproto.lock round-trip", () => {
     const parsed = parseLock(yaml)
     expect(parsed.apps).toHaveLength(1)
     expect(parsed.apps[0]?.attach).toBe("@jeremy/chatcommerce")
-    expect(parsed.packs[0]?.digest).toBe("agentproto-pack-digest/v1:deadbeef")
+    expect(parsed.packs[0]?.digest).toBe("review.pack-digest/v1:deadbeef")
   })
 
   it("parses the canonical workspace.lock/v1 and review.pack-digest/v1 tags", () => {
@@ -57,18 +57,27 @@ packs:
   })
 
   it("still parses the legacy tags", () => {
-    const yaml = writeLock({ lockfile: "agentproto-lock/v1", generated: "2026-10-17T18:00:00Z" })
-    expect(parseLock(yaml).lockfile).toBe("agentproto-lock/v1")
+    const yaml = `lockfile: agentproto-lock/v1
+generated: 2026-10-17T18:00:00Z
+packs:
+  - name: "@p/p"
+    version: 0.1.0
+    digest: "agentproto-pack-digest/v1:deadbeef"
+    attach: "@p/root"
+`
+    const parsed = parseLock(yaml)
+    expect(parsed.lockfile).toBe("agentproto-lock/v1")
+    expect(parsed.packs[0]?.digest).toBe("agentproto-pack-digest/v1:deadbeef")
   })
 
-  it("keeps writing the legacy tags when handed the canonical ones", () => {
+  it("writes the canonical tags even when handed the legacy ones", () => {
     const yaml = writeLock({
-      lockfile: "workspace.lock/v1",
+      lockfile: "agentproto-lock/v1",
       generated: "2026-10-17T18:00:00Z",
-      packs: [{ name: "@p/p", version: "0.1.0", digest: "review.pack-digest/v1:deadbeef", attach: "@p/root" }],
+      packs: [{ name: "@p/p", version: "0.1.0", digest: "agentproto-pack-digest/v1:deadbeef", attach: "@p/root" }],
     })
-    expect(yaml).toContain("lockfile: agentproto-lock/v1")
-    expect(yaml).toContain("digest: agentproto-pack-digest/v1:deadbeef")
+    expect(yaml).toContain("lockfile: workspace.lock/v1")
+    expect(yaml).toContain("digest: review.pack-digest/v1:deadbeef")
   })
 
   it("rejects a malformed sha256", () => {

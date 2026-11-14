@@ -45,6 +45,7 @@ function registerExternalSchemas() {
   const externals: Array<[number, string]> = [
     [16, "IO"],
     [17, "RUNNER"],
+    [42, "AGENT"],
   ]
   for (const [aip, doctype] of externals) {
     const file = path.join(SPECS_ROOT, `aip-${aip}`, "draft", `${doctype}.schema.json`)

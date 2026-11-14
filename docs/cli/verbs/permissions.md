@@ -4,6 +4,8 @@
 agentproto permissions ls        [--json] [--session <id>]
 agentproto permissions approve   <id> [--always] [--option-id <id>] [--feedback <text>] [--json]
 agentproto permissions deny      <id> [--option-id <id>] [--feedback <text>] [--json]
+agentproto permissions answer    <id> [--select <field>=<value>]...
+                                 [--text <field>=<text>]... [--answers <json|@file>] [--json]
 agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
                                  [--session <id>] [--rules-json <json|@file>]
                                  [--always] [--interval <dur>] [--timeout <dur>]
@@ -13,7 +15,8 @@ agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
 The human side of the **cross-session permission inbox**. A session started
 in *permission-hold mode* parks each tool-permission request the agent raises
 (Write, Bash, …) instead of auto-answering it; this verb lists every parked
-request across all sessions and approves or denies one, unblocking the agent.
+request across all sessions and approves, denies, or answers one, unblocking
+the agent.
 
 Requires a running daemon ([`serve.md`](./serve.md) or [`daemon.md`](./daemon.md)).
 
@@ -41,7 +44,7 @@ ignore the flag.
 
 Discovers the daemon via `<workspace>/.agentproto/runtime.json` (same as
 [`sessions.md`](./sessions.md)). The token there is sent as Bearer on the
-mutating `approve`/`deny` routes; `ls` is read-only. Override with
+mutating `approve`/`deny`/`answer` routes; `ls` is read-only. Override with
 `AGENTPROTO_DAEMON_URL` / `AGENTPROTO_DAEMON_TOKEN`.
 
 ## Subverbs
@@ -63,9 +66,17 @@ perm_2      ses_def456      Bash                3s     Allow "Bash"?
 ```
 
 `--json` emits the full records (id, sessionId, toolCallId, toolName, text,
-options, requestedAt, plus the owning session's adapter/title and age).
+options, requestedAt, plus the AIP-45 typed fields `request`
+(`tool-permission` \| `question` \| `plan-approval`), `question` and
+`planApproval` when present, the owning session's adapter/title and age).
 The tool's raw input (e.g. the Bash command string) is included as `rawInput`
 and rendered as a truncated preview in the text table. `--session <id>` filters to one session.
+
+When the row is a multi-field harness question (`request: "question"`), each
+field is listed under the row — its id, input kind (`radio`/`checkbox`/`text`,
+plus `+text` when free text is allowed, and `required`), header and prompt,
+then every choice value (and label). That listing is exactly what
+[`answer`](#answer-id) takes.
 
 ### `approve <id>`
 
@@ -94,6 +105,31 @@ reject-flavored option, or cancels the request outright when none is offered.
 `--feedback <text>` attaches free-text context (e.g. "reject, but do X
 instead") for adapters that support it. The tool call fails cleanly and the
 agent keeps reasoning.
+
+### `answer <id>`
+
+```bash
+agentproto permissions answer perm_3 --select color=blue --select size=large
+agentproto permissions answer perm_3 --text comment="ship it"
+agentproto permissions answer perm_3 --answers @answers.json
+```
+
+Submits the answers to a parked **harness question** — the AIP-45 multi-field
+form a permission-hold session raises (single or multiple choice, free-text
+"Other", several questions at once). POSTs `/permissions/:id` with
+`{ answers }`; the agent's turn resumes with the elicitation content.
+
+`--select <field>=<value>` picks a choice value — repeat it for the several
+values of a multi-choice field. `--text <field>=<text>` sets a field's typed
+answer (the "Other" box of a choice field, or a text/number field).
+`--answers <json|@file>` takes the whole
+`{ "<field>": { "selected": [...], "text": "...", "value": ... } }` object
+instead and is mutually exclusive with `--select`/`--text`. Fields left out
+are skipped — but a **bare submit** (no answers at all: the `submit` option,
+or an `approve` that would pick it) on a fields question is refused with
+`invalid_answers` and the question stays parked; use `deny` (or option
+`skip`) to skip it. `ls` lists each field's id and choices (see above); `--json`
+prints the daemon's response. A question is skipped by `deny`, not answered.
 
 ### `watch`
 
@@ -148,6 +184,9 @@ the daemon verbatim.
 - An `approve` on a request that offers no allow-flavored option (and no
   `--option-id`) → `HTTP 409` — pass an explicit `--option-id` from
   `ls --json`.
+- An `answer` combining `--answers` with `--select`/`--text` → exit `2`
+  (mutually exclusive); a missing `<id>` or a malformed `--select`/`--text`
+  value also exits `2`.
 
 ## Equivalent surfaces
 
@@ -155,9 +194,28 @@ The inbox is one shared registry behind three transports:
 
 | | List | Respond |
 |--|--|--|
-| CLI | `permissions ls` | `permissions approve\|deny` |
+| CLI | `permissions ls` | `permissions approve\|deny\|answer` |
 | MCP | `permissions_list` | `permissions_respond` |
 | HTTP | `GET /permissions` | `POST /permissions/:id` |
+
+`GET /permissions/grants` is not part of the inbox: it reports the effective
+AIP-38 grants derived from the messaging switches (`defaults.messaging`) and
+each session's `allowPromptFrom`, plus the configured entries no grant
+expresses. Its `delegation` field reports the AIP-46 delegation gate's
+current mode (`off`, `observe` or `enforce`, from
+`defaults.spawn.delegationGate`) and its in-memory counters: every verdict,
+the `would_deny` caller/child pairs most frequent first, and the
+`unbound`/`undeclared` callers. Its `profileUse` field reports the AIP-46
+auth-profile gate the same way (`defaults.spawn.profileGate`, the verdict
+counts, and the `would_deny` caller-profile/requested-profile pairs). Its
+`stdioMounts` field reports the stdio mount gate (`defaults.spawn.stdioMountGate`,
+the verdict counts, and the `would_deny` command basenames most frequent
+first). It is read-only; the counters reset when the daemon restarts.
+
+The read-only `permissions_explain` tool takes an optional `profile` (a
+profile ref). It then builds an `auth.profile.use` decision for that ref,
+with the caller's set computed exactly as the spawn gate does: its own
+recorded profile plus `defaults.spawn.sharedProfiles`.
 
 The bus also emits `session:permission-request` / `session:permission-resolved`
 events, visible through `session_events_poll` / `session_monitor` and

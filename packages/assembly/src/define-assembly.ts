@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { assemblyFrontmatterSchema } from "./schema.js"
 import type { AssemblyDefinition, AssemblyHandle } from "./types.js"
 

@@ -14,11 +14,21 @@ key. Two entry surfaces share one core.
 2. `changeset-check` — fast check that a changeset exists.
 3. `hygiene-check` — fast check that no root-level scratch docs (`PLAN.md`,
    `BRIEF.md`, `MERGE-CONFLICT-BRIEF*.md`) or AI-attribution trailers rode in.
-4. `pr-review` — agent reads the diff, writes an accurate changeset, posts a
-   structured review (`APPROVE` / `REQUEST_CHANGES` / `COMMENT`).
-5. `pr-fix` — if the review requested changes, the agent applies them and pushes
-   to the PR branch. Bounded by `maxFixIterations`, then escalates to a human.
-   Runs on the same free OpenCode Zen model through
+4. `pr-review` - ONE supervised run
+   (`.github/agentproto-workflows/pr-review-supervised/WORKFLOW.md`): the
+   reviewer posts a structured review, then (only on `request_changes`) a
+   fixer applies the findings to the working tree and the reviewer re-reviews,
+   bounded by `maxFixIterations`. Reviewer and fixer are children of the
+   supervisor session the runner passes in. The job commits and pushes the
+   fixer's working tree (`fixDelivery: "commit"`) once the build gate is green,
+   and posts a check run titled with the final verdict whose summary lists
+   every review/fix stage. The single-shot
+   `.github/agentproto-workflows/pr-review/WORKFLOW.md` remains the fallback
+   tier if the supervised run cannot post.
+5. `pr-fix` - the cross-run fallback: if the supervised loop could not run (or
+   was exhausted) and the live review still says `CHANGES_REQUESTED`, this job
+   applies the fixes and pushes them. Same `maxFixIterations` budget and
+   escalation; free OpenCode Zen model through
    `.github/agentproto-workflows/review-fix/WORKFLOW.md`, on the CI checkout.
 
 ### Automatic (on issue open) — `.github/workflows/issue-triage.yml`
@@ -143,9 +153,14 @@ a capability by adding a tool in `tools.mjs` and referencing it (or a `@group`)
 from a flow.
 
 ## Secrets / vars (configure these)
-- `secrets.OPENCODE_API_KEY`, `secrets.OPENCODE_API_KEY_WS02`,
-  `secrets.OPENCODE_API_KEY_WS03`: Zen keys for the free review and auto-fix
-  lanes. Any one of them funds the default free route; no Go key is required.
+- `secrets.OPENCODE_API_KEY_HODL`, `secrets.OPENCODE_API_KEY_WS03`,
+  `secrets.OPENCODE_API_KEY`: Zen keys for the review and auto-fix lanes. Each
+  lane takes the first key set: primary lanes read HODL, then WS03, then the
+  base key; fallback lanes start from WS03, so the two lanes do not share a
+  key. `OPENCODE_API_KEY_WS02` is no longer read. To change keys, update these
+  secrets; no code change.
+- `secrets.OPENCODE_GO_API_KEY_HODL` (optional): Go workspace key, read before
+  `OPENCODE_GO_API_KEY` when a lane's model is `opencode-go/*`.
 - `secrets.OPENCODE_GO_API_KEY`: Go subscription key used by the other agent
   workflows (release notes, docs check, manual review). Not read by pr-review
   or pr-fix. The `opencode-developerws003` (ws03) profile is not used by CI.

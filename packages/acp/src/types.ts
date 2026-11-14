@@ -20,6 +20,7 @@
  */
 export type AcpPermissionResolution =
   | { optionId: string; feedback?: string }
+  | { answers: AgentPromptAnswers }
   | { cancelled: true }
 
 /**
@@ -157,6 +158,86 @@ export interface BackgroundTaskInfo {
 }
 
 /**
+ * What an `agent-prompt` asks for (AIP-45 § `agent-prompt` requests).
+ * Absent on the event reads as `"tool-permission"`.
+ */
+export type AgentPromptRequestKind = "tool-permission" | "question" | "plan-approval"
+
+/** How one {@link AgentPromptField} is answered. */
+export type AgentPromptFieldInput = "single" | "multi" | "text" | "boolean" | "number"
+
+/**
+ * One question of a multi-field `request: "question"` prompt (AIP-45,
+ * "Multi-field questions"). An ACP form elicitation maps one schema property
+ * to one field.
+ */
+export interface AgentPromptField {
+  /** Stable key, unique in the prompt. For an ACP elicitation: the schema property key. */
+  id: string
+  input: AgentPromptFieldInput
+  /** Short chip label (AskUserQuestion `header`). */
+  header?: string
+  /** The question text for this field. */
+  prompt: string
+  /** `single` / `multi` only. `value` is what goes back to the harness. */
+  choices?: Array<{ value: string; label: string; description?: string; preview?: string }>
+  /** `single` / `multi`: the user may type an answer instead of, or in addition to, a choice. */
+  allowFreeText?: boolean
+  required?: boolean
+  /** Daemon recommendation, a `choices[].value`. Never guessed by a client. */
+  recommended?: string
+}
+
+/**
+ * Answer to a prompt with `fields`, keyed by field id. An absent field is
+ * skipped. `selected` holds `choices[].value`s (0 or 1 for `single`), `text`
+ * the typed answer (free text, a `text` input, or `String(number)`), `value`
+ * a `boolean` / `number` input.
+ */
+export type AgentPromptAnswers = Record<
+  string,
+  { selected?: string[]; text?: string; value?: boolean | number }
+>
+
+/**
+ * Payload of a `request: "question"` prompt. Every `optionId` it names is
+ * one of the event's `options`; a free-text answer selects
+ * `freeTextOptionId` and carries the text in the resolution's `feedback`.
+ *
+ * When `fields` is present it is the source of truth: the host answers with
+ * `{ answers }` (see {@link AgentPromptAnswers}), and the legacy members are
+ * a best-effort projection for consumers that predate it (filled from the
+ * only field when the prompt is exactly one `single` field, empty otherwise).
+ */
+export interface AgentPromptQuestion {
+  /** The question text (the overall message when `fields` is present). */
+  prompt: string
+  choices: Array<{ optionId: string; label: string; description?: string }>
+  allowFreeText: boolean
+  /** Required when `allowFreeText` is true. */
+  freeTextOptionId?: string
+  /** Multi-field form. When present, answer with `{ answers }`. */
+  fields?: AgentPromptField[]
+}
+
+/**
+ * Payload of a `request: "plan-approval"` prompt. Carries `plan`, `planRef`
+ * or both. `approveOptionId` is an `allow_once` option and
+ * `rejectOptionId` a `reject_once` one; the resolution's `feedback` on
+ * reject is the reason handed to the agent.
+ */
+export interface AgentPromptPlanApproval {
+  /** The plan text. */
+  plan?: string
+  /** A reference to the plan (a path inside the session's sandbox, or a URI). */
+  planRef?: string
+  /** The session mode the harness enters if the plan is approved. */
+  targetModeId?: string
+  approveOptionId: string
+  rejectOptionId: string
+}
+
+/**
  * Canonical stream-event taxonomy emitted from `createAcpClient`. The
  * client maps upstream ACP `session/update` notifications and
  * `requestPermission` callbacks into this closed set so consumers
@@ -219,6 +300,34 @@ export type StreamEvent =
        * carried through unmodified. Harness-shaped and untyped — normalize
        * defensively per-adapter rather than assuming a stable schema.
        */
+      _meta?: unknown
+      /**
+       * What the agent asks for (AIP-45). Absent reads as
+       * `"tool-permission"`, so a consumer that ignores it still answers a
+       * plain permission prompt from `options`.
+       */
+      request?: AgentPromptRequestKind
+      /** Set when `request` is `"question"`, absent otherwise. */
+      question?: AgentPromptQuestion
+      /** Set when `request` is `"plan-approval"`, absent otherwise. */
+      planApproval?: AgentPromptPlanApproval
+    }
+  | {
+      /**
+       * The session's current mode changed (AIP-45 `mode-changed`, the
+       * ACP `current_mode_update` plus `previousModeId` and `cause`).
+       * `cause: "agent"` for every change the caller did not make itself
+       * (a switch after an approved plan included); `"caller"` once the
+       * caller's own `setSessionMode` is applied. Never emitted for a
+       * no-op or for the initial mode.
+       */
+      kind: "mode-changed"
+      sessionId: string
+      modeId: string
+      previousModeId: string
+      cause: "caller" | "agent"
+      /** Human-readable reason, e.g. "plan approved". */
+      reason?: string
       _meta?: unknown
     }
   | {

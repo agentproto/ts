@@ -1,5 +1,51 @@
 # @agentproto/worktree-agent-example
 
+## 0.0.41
+
+### Patch Changes
+
+- Updated dependencies [057c438]
+  - @agentproto/worktree@0.21.1
+
+## 0.0.40
+
+### Patch Changes
+
+- Updated dependencies [8d3a80e]
+- Updated dependencies [29a0599]
+- Updated dependencies [f12741f]
+- Updated dependencies [440acad]
+- Updated dependencies [0d39c7f]
+- Updated dependencies [7b7e06b]
+- Updated dependencies [35a339d]
+- Updated dependencies [457da84]
+- Updated dependencies [e65057d]
+- Updated dependencies [6c86b8c]
+- Updated dependencies [650fa3a]
+- Updated dependencies [0bc7927]
+- Updated dependencies [9a31444]
+  - @agentproto/worktree@0.21.0
+
+## 0.0.39
+
+### Patch Changes
+
+- Updated dependencies [ac14e7d]
+- Updated dependencies [467af3b]
+- Updated dependencies [ac14e7d]
+- Updated dependencies [a255a13]
+- Updated dependencies [467af3b]
+  - @agentproto/worktree@0.20.0
+
+## 0.0.38
+
+### Patch Changes
+
+- Updated dependencies [e1fa90e]
+- Updated dependencies [84ac51b]
+- Updated dependencies [e1fa90e]
+  - @agentproto/worktree@0.19.1
+
 ## 0.0.37
 
 ### Patch Changes

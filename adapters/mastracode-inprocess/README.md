@@ -21,7 +21,7 @@ await session.close()
 const resumed = await runtime.start({ resumeSessionId: session.sessionId })
 ```
 
-See `@agentproto/driver-agent-cli`'s `createAgentCliRuntime` for the generic
+See `@agentproto/harness`'s `createAgentCliRuntime` for the generic
 `AgentCliRuntime`/`AgentCliClient` contract this package implements.
 
 ## How it works
@@ -36,7 +36,7 @@ createProprietaryProtocolArm  ──dynamic import──▶  this package
         ▼                                                ▼
    AgentCliClient  ◀── src/client.ts ── createMastraCode() + runMC()
         │
-        │ mapMastraEvent (reused from @agentproto/driver-agent-cli's print arm)
+        │ mapMastraEvent (reused from @agentproto/harness's print arm)
         ▼
     StreamEvent
 ```

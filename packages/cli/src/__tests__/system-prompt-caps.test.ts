@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import type { AgentCliDefinition } from "@agentproto/driver-agent-cli"
+import type { AgentCliDefinition } from "@agentproto/harness"
 import {
   HERMES_SYSTEM_PROMPT_UNAVAILABLE,
   systemPromptCapsFor,

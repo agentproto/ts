@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { EDGE_CONNECTING } from "../remote-providers/cloudflared-runner.js"
 import { TunnelRegistry } from "../tunnel-registry.js"
 import type {
   ProviderStartOptions,
@@ -22,7 +23,7 @@ function managedMock(rec: Recorder): RemoteProvider {
     async start(opts) {
       rec.starts.push(opts)
       rec.calls.push(`start ${opts.tunnel?.hostnames.join(",")}`)
-      opts.onHealth?.({ state: "degraded", reason: "awaiting first health probe", checkedAt: "t0" })
+      opts.onHealth?.({ state: "degraded", reason: EDGE_CONNECTING, checkedAt: "t0" })
       return { publicUrl: `https://${opts.tunnel!.hostnames[0]}`, pid: 42, tunnelId: "cf-tunnel-1" }
     },
     async stop() {
@@ -189,6 +190,89 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     expect(desc.hostnames).toEqual(["user-42.pygmalion.sh"])
     expect(await reg.delete(desc.id)).toBe(true)
     expect(rec.calls.at(-1)).toBe(`destroy ${desc.id} user-42.pygmalion.sh`)
+  })
+
+  describe("cloudflare-provisioned root", () => {
+    /** Provisioner mock that assigns `<n>.<root ?? default>` for an empty request. */
+    function provisionedRegistry(rec: Recorder) {
+      let n = 0
+      const reg = new (class extends TunnelRegistry {
+        protected override async pickProviderForTest(): Promise<RemoteProvider> {
+          const base = managedMock(rec)
+          return {
+            ...base,
+            async start(opts) {
+              rec.starts.push(opts)
+              const t = opts.tunnel!
+              const hostnames =
+                t.hostnames.length > 0 ? t.hostnames : [`h${++n}.${t.root ?? "tunnel.agentik.net"}`]
+              return { publicUrl: `https://${hostnames[0]}`, pid: 7, tunnelId: "tun-1", hostnames }
+            },
+          }
+        }
+      })({ persistPath: join(tmp, "tunnels.json"), workspace: tmp })
+      live.push(reg)
+      return reg
+    }
+
+    it("stores the normalized root, hands it to the provider, and keeps it across a restore", async () => {
+      const rec: Recorder = { calls: [], starts: [] }
+      const reg = provisionedRegistry(rec)
+      const desc = await reg.create({
+        provider: "cloudflare-provisioned",
+        targetPort: 4870,
+        public: true,
+        autostart: true,
+        root: " AgentProto.Cloud. ",
+      })
+      expect(desc.root).toBe("agentproto.cloud")
+      expect(rec.starts[0]!.tunnel).toMatchObject({ hostnames: [], root: "agentproto.cloud" })
+      expect(desc.hostname).toBe("h1.agentproto.cloud")
+      await reg.shutdown()
+
+      const reg2 = provisionedRegistry(rec)
+      expect(reg2.get(desc.id)?.root).toBe("agentproto.cloud")
+      await reg2.restoreOnBoot()
+      expect(rec.starts.at(-1)!.tunnel).toMatchObject({
+        hostnames: ["h1.agentproto.cloud"],
+        root: "agentproto.cloud",
+      })
+    })
+
+    it("refuses a root on any other provider, and an empty one", async () => {
+      const rec: Recorder = { calls: [], starts: [] }
+      const reg = makeRegistry(rec)
+      await expect(
+        reg.create({
+          provider: "cloudflare-managed",
+          targetPort: 8081,
+          hostname: "wa.example.com",
+          public: true,
+          root: "agentproto.cloud",
+        }),
+      ).rejects.toThrow(/only supported by cloudflare-provisioned/)
+      await expect(
+        reg.create({ provider: "cloudflare-provisioned", targetPort: 8081, public: true, root: "  " }),
+      ).rejects.toThrow(/non-empty domain/)
+      expect(rec.starts).toHaveLength(0)
+      expect(reg.list()).toHaveLength(0)
+    })
+
+    it("ensureKeyed: a new root restarts the tunnel and lets the service assign a name under it", async () => {
+      const rec: Recorder = { calls: [], starts: [] }
+      const reg = provisionedRegistry(rec)
+      const input = { key: "chat", provider: "cloudflare-provisioned", targetPort: 4870, public: true }
+      const first = await reg.ensureKeyed(input)
+      expect(first.hostname).toBe("h1.tunnel.agentik.net")
+      expect(await reg.ensureKeyed(input)).toMatchObject({ id: first.id, hostname: "h1.tunnel.agentik.net" })
+      expect(rec.starts).toHaveLength(1)
+
+      const moved = await reg.ensureKeyed({ ...input, root: "agentproto.cloud" })
+      expect(moved.id).toBe(first.id)
+      expect(rec.starts).toHaveLength(2)
+      expect(rec.starts[1]!.tunnel).toMatchObject({ key: "chat", hostnames: [], root: "agentproto.cloud" })
+      expect(moved).toMatchObject({ root: "agentproto.cloud", hostname: "h2.agentproto.cloud" })
+    })
   })
 
   it("restored (stopped) entries can still be swapped and deleted", async () => {

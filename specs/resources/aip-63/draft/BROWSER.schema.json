@@ -86,7 +86,7 @@
     },
     "conformanceLevel": {
       "type": "string",
-      "enum": ["core", "interaction", "network", "download", "profile", "recording"]
+      "enum": ["core", "interaction", "network", "download", "profile", "recording", "recipes"]
     },
     "capabilities": {
       "type": "object",
@@ -208,7 +208,7 @@
               "type": "array",
               "minItems": 1,
               "uniqueItems": true,
-              "items": { "type": "string", "enum": ["ephemeral", "persistent", "import", "native-login", "clone"] }
+              "items": { "type": "string", "enum": ["ephemeral", "persistent", "import", "native-login", "clone", "attach"] }
             },
             "storedBy": { "type": "string", "enum": ["host", "provider"], "description": "Who persists session material between instance runs. provider means the provider keeps its own jar, outside the host store and outside the host's at-rest protections." }
           }
@@ -315,11 +315,12 @@
     "grant": {
       "type": "object",
       "additionalProperties": false,
-      "description": "A consent grant. The only way session material enters a store or a remote instance (C1). The scope is EITHER an explicit domain list OR fullProfile true: a wildcard is not a value of domains.",
-      "required": ["id", "sessionId", "source", "sinks", "grantedAt", "grantedVia", "cookieCount"],
+      "description": "A consent grant. The only way session material enters a store or a remote instance (C1), and the authority to attach to a browser the user already runs (attach true, C14). The scope is EITHER an explicit domain list, OR fullProfile true, OR attach true with a profileRef: a wildcard is not a value of domains.",
+      "required": ["id", "sessionId", "sinks", "grantedAt", "grantedVia"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "sessionId": { "type": "string", "minLength": 1 },
+        "profileRef": { "type": "string", "minLength": 1, "description": "Profile the grant applies to, as <instance>/<profile> (for example chrome-user/perso). Optional next to sessionId, which keeps its meaning (C17); required with attach." },
         "deviceId": { "type": "string", "minLength": 1, "description": "Paired device (AIP-59) this grant is scoped to. Absent = usable by any device the host serves (C12)." },
         "source": {
           "type": "object",
@@ -332,6 +333,7 @@
         },
         "domains": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/domain" } },
         "fullProfile": { "const": true, "description": "The recorded full-profile grant (C3). Not a wildcard domain." },
+        "attach": { "const": true, "description": "An attach grant (C14): the host may attach to the browser instance and profile named by profileRef. Copies nothing; local sinks only (C16)." },
         "sinks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/grantSink" } },
         "grantedAt": { "type": "string", "format": "date-time" },
         "grantedVia": { "type": "string", "enum": ["interactive", "flag"] },
@@ -340,11 +342,41 @@
         "revokedAt": { "type": "string", "format": "date-time" }
       },
       "oneOf": [
-        { "required": ["domains"], "not": { "required": ["fullProfile"] } },
-        { "required": ["fullProfile"], "not": { "required": ["domains"] } }
+        { "required": ["domains", "source", "cookieCount"], "not": { "anyOf": [{ "required": ["fullProfile"] }, { "required": ["attach"] }] } },
+        { "required": ["fullProfile", "source", "cookieCount"], "not": { "anyOf": [{ "required": ["domains"] }, { "required": ["attach"] }] } },
+        { "required": ["attach", "profileRef"], "not": { "anyOf": [{ "required": ["domains"] }, { "required": ["fullProfile"] }] } }
       ],
-      "if": { "required": ["fullProfile"] },
-      "then": { "properties": { "sinks": { "items": { "properties": { "kind": { "const": "local" } } } } } }
+      "allOf": [
+        {
+          "if": { "required": ["fullProfile"] },
+          "then": { "properties": { "sinks": { "items": { "properties": { "kind": { "const": "local" } } } } } }
+        },
+        {
+          "description": "C16: an attached profile never goes to a remote sink.",
+          "if": { "required": ["attach"] },
+          "then": { "properties": { "sinks": { "items": { "properties": { "kind": { "const": "local" } } } } } }
+        }
+      ]
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A host record of one account on one site in one profile (C17). It authorizes nothing: only grants do. It never holds a cookie, token or storage value (C9).",
+      "required": ["id", "site", "profileRef", "session", "source", "grantIds"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Stable name, for example linkedin-jeremy." },
+        "site": { "$ref": "#/$defs/domain" },
+        "account": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Display name or address on the site. Personal data, not a secret." },
+        "profileRef": { "type": "string", "minLength": 1, "description": "<instance>/<profile> the account lives in." },
+        "session": { "type": "string", "enum": ["valid", "expired", "unknown"], "description": "Observed login state. Indicative; this AIP does not require a probe." },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "source": { "type": "string", "enum": ["native", "synced"], "description": "native: the user logged in in this profile. synced: material copied in under a grant." },
+        "syncedFrom": { "type": "string", "minLength": 1, "description": "profileRef the material came from (source synced)." },
+        "syncedAt": { "type": "string", "format": "date-time" },
+        "grantIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "if": { "properties": { "source": { "const": "synced" } }, "required": ["source"] },
+      "then": { "required": ["syncedFrom"] }
     },
     "ledgerRecord": {
       "type": "object",
@@ -354,7 +386,7 @@
       "properties": {
         "seq": { "type": "integer", "minimum": 0 },
         "at": { "type": "string", "format": "date-time" },
-        "event": { "type": "string", "enum": ["grant", "refresh", "revoke", "sink-ack", "deny"] },
+        "event": { "type": "string", "enum": ["grant", "refresh", "revoke", "sink-ack", "deny", "attach-ack"] },
         "actor": {
           "type": "object",
           "additionalProperties": false,
@@ -367,8 +399,12 @@
         },
         "grantId": { "type": "string", "minLength": 1 },
         "sessionId": { "type": "string", "minLength": 1 },
+        "profileRef": { "type": "string", "minLength": 1, "description": "Profile an attach grant or attach-ack applies to (C14)." },
+        "instance": { "type": "string", "minLength": 1, "description": "Browser instance an attach-ack applies to (C14)." },
+        "purpose": { "type": "string", "maxLength": 500, "description": "What the human attached the browser for (C14)." },
         "domains": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/domain" } },
         "fullProfile": { "const": true },
+        "attach": { "const": true },
         "cookieCount": { "type": "integer", "minimum": 0 },
         "nameHashes": {
           "type": "array",
@@ -397,10 +433,11 @@
         {
           "if": { "properties": { "event": { "const": "grant" } } },
           "then": {
-            "required": ["grantId", "sessionId", "cookieCount"],
+            "required": ["grantId", "sessionId"],
             "oneOf": [
-              { "required": ["domains"], "not": { "required": ["fullProfile"] } },
-              { "required": ["fullProfile"], "not": { "required": ["domains"] } }
+              { "required": ["domains", "cookieCount"], "not": { "anyOf": [{ "required": ["fullProfile"] }, { "required": ["attach"] }] } },
+              { "required": ["fullProfile", "cookieCount"], "not": { "anyOf": [{ "required": ["domains"] }, { "required": ["attach"] }] } },
+              { "required": ["attach", "profileRef"], "not": { "anyOf": [{ "required": ["domains"] }, { "required": ["fullProfile"] }] } }
             ],
             "properties": { "domains": { "minItems": 1 } }
           }
@@ -416,6 +453,11 @@
         {
           "if": { "properties": { "event": { "const": "sink-ack" } } },
           "then": { "required": ["grantId", "sinkId"], "properties": { "actor": { "properties": { "kind": { "const": "human" } } } } }
+        },
+        {
+          "description": "C14: an attach-ack is a human record naming the grant, the instance, the profile and the purpose.",
+          "if": { "properties": { "event": { "const": "attach-ack" } } },
+          "then": { "required": ["grantId", "instance", "profileRef", "purpose"], "properties": { "actor": { "properties": { "kind": { "const": "human" } } } } }
         },
         {
           "if": { "properties": { "event": { "const": "deny" } } },

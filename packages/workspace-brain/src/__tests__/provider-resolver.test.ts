@@ -8,12 +8,13 @@
  * against the exported PURE `*OptionsFromEntry` helpers instead.
  */
 
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   KNOWLEDGE_PROVIDER_ADAPTERS,
+  filesIndexPath,
   gbrainDocOptionsFromEntry,
   knowledgeConfigSchema,
   parseKnowledgeConfig,
@@ -117,6 +118,24 @@ describe("files adapter", () => {
       "utf8",
     )
     expect(written).toBe("index me")
+  })
+
+  it("keeps an on-disk index per entry under <brain>/.index, unless onDiskIndex is false", async () => {
+    expect(filesIndexPath("/b", "local")).toBe(path.join("/b", ".index", "fts-local.sqlite"))
+    expect(filesIndexPath("/b", "my kb/../x")).toBe(path.join("/b", ".index", "fts-my_kb_x.sqlite"))
+
+    const onDisk = resolveKnowledgeProvider({ id: "local", adapter: "files" }, { brainDir })
+    await onDisk.provider.ingest({ kind: "text", uri: "sess-a", content: "disk backed words" })
+    expect((await onDisk.provider.query({ query: "disk" })).hits).toHaveLength(1)
+    expect((await stat(filesIndexPath(brainDir, "local"))).isFile()).toBe(true)
+    await onDisk.provider.dispose()
+
+    const inMemory = resolveKnowledgeProvider(
+      { id: "mem", adapter: "files", onDiskIndex: false },
+      { brainDir },
+    )
+    expect((await inMemory.provider.query({ query: "disk" })).hits).toHaveLength(1)
+    await expect(stat(filesIndexPath(brainDir, "mem"))).rejects.toThrow()
   })
 })
 

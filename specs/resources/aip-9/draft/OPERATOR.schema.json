@@ -2,11 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-9/OPERATOR.schema.json",
   "title": "OPERATOR.md frontmatter (AIP-9)",
-  "description": "Validates the YAML frontmatter portion of an AIP-9 OPERATOR.md manifest.",
+  "description": "Validates the YAML frontmatter portion of an AIP-9 OPERATOR.md manifest: an agent holding a role in an organization. Every field it shares with an AIP-42 AGENT.md is a $ref into AGENT.schema.json (never a copy, never allOf over two closed schemas), so a change to the AGENT field reaches the operator unchanged. The operator-owned fields are role, home, reports_to, participation, capabilities, runtime and profile. Fields marked deprecated are accepted for one minor version and read as their replacement.",
   "type": "object",
-  "required": ["name", "id", "persona_summary", "version", "profile"],
+  "required": ["name", "id", "persona_summary"],
   "additionalProperties": false,
   "properties": {
+    "schema": {
+      "const": "operator/v1"
+    },
     "name": {
       "type": "string",
       "minLength": 1,
@@ -18,7 +21,7 @@
       "minLength": 2,
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
-      "description": "Machine identifier and dispatch slug. Lowercase, digits, dashes."
+      "description": "The operator slug: machine identifier, dispatch slug and the body of its `operator:<slug>` compact ref. Lowercase, digits, dashes. The effective AGENT it resolves into takes this id."
     },
     "persona_summary": {
       "type": "string",
@@ -26,113 +29,127 @@
       "maxLength": 280,
       "description": "One-sentence role description, written for a teammate to read at a glance."
     },
-    "version": {
-      "type": "string",
-      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
-      "description": "Spec version of THIS file. Bump on breaking change."
-    },
     "entry": {
       "type": "string",
       "description": "Relative path to the implementation file (e.g. operator.ts)."
     },
-    "profile": {
-      "type": "object",
-      "required": ["role", "voice", "boundaries"],
-      "additionalProperties": false,
-      "properties": {
-        "role": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1000,
-          "description": "Job title and primary responsibility."
-        },
-        "voice": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1000,
-          "description": "Tone, register, and pronoun stance."
-        },
-        "boundaries": {
-          "type": "array",
-          "minItems": 0,
-          "items": { "type": "string", "maxLength": 500 },
-          "description": "Imperative MUST-NOT rules. Surface in every system-prompt synthesis."
-        }
-      }
+
+    "version": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/version" },
+    "description": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/description" },
+    "extends": {
+      "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/extends",
+      "description": "The base AGENT this operator builds on (merge step 1). It resolves to an AGENT only, never to another operator."
     },
-    "skills": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/skillRef" },
-      "default": [],
-      "description": "AIP-3 skill references the operator loads."
-    },
+    "model": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/model" },
+    "identity": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/identity" },
+    "persona": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/persona" },
+    "runner": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/runner" },
     "tools": {
       "type": "array",
-      "items": { "$ref": "#/$defs/toolRef" },
+      "items": {
+        "anyOf": [
+          { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/tools/items" },
+          { "$ref": "#/$defs/legacyScopedToolRef" }
+        ]
+      },
       "default": [],
-      "description": "AIP-14 tool refs and MCP server bindings the operator may invoke."
+      "description": "The AGENT `tools` items, plus the deprecated scoped form `{id, source?, scope?}`."
+    },
+    "actions": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/actions" },
+    "skills": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/skills/items" },
+          { "$ref": "#/$defs/legacySkillRef" }
+        ]
+      },
+      "default": [],
+      "description": "The AGENT `skills` items, plus the deprecated pinned form `{id, source?, version?, allow?}`."
+    },
+    "workflows": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/workflows" },
+    "routines": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/routines" },
+    "delegates_to": {
+      "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/delegates_to",
+      "description": "Agents or operators this operator may spawn or dispatch to. Never roles."
     },
     "memory": {
-      "type": "object",
-      "required": ["kind"],
-      "additionalProperties": false,
-      "properties": {
-        "kind": {
-          "enum": ["none", "thread", "operator-context", "external"],
-          "description": "Memory scope. Default 'thread' for stateless workflows; 'operator-context' for long-running roles."
-        },
-        "policy": {
-          "enum": ["append-only", "redactable", "summarising"],
-          "default": "summarising"
-        },
-        "share_with": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
-          "default": [],
-          "description": "Operator ids granted READ access to this operator's memory."
-        },
-        "external": {
-          "type": "object",
-          "required": ["uri"],
-          "additionalProperties": false,
-          "properties": {
-            "uri": { "type": "string" },
-            "namespace": { "type": "string" }
-          }
-        }
-      }
+      "anyOf": [
+        { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/memory" },
+        { "$ref": "#/$defs/legacyMemory" }
+      ],
+      "description": "The AGENT `memory` config. The items are owned by the operator, not by a session (AIP-72 `operator` anchor). The legacy `{kind, policy, share_with, external}` form is deprecated."
     },
     "governance": {
-      "type": "object",
-      "required": ["audit_log", "autonomy"],
-      "additionalProperties": false,
-      "properties": {
-        "policies": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^policy:[A-Za-z0-9_./-]+$" },
-          "default": [],
-          "description": "AIP-7 policy refs the operator MUST consult before privileged actions."
-        },
-        "audit_log": {
-          "type": "string",
-          "pattern": "^audit:[A-Za-z0-9_./-]+$",
-          "description": "Audit channel for state transitions, tool calls, memory writes."
-        },
-        "autonomy": {
-          "enum": ["autonomous", "supervised", "gated"],
-          "description": "Per-turn autonomy class. Default 'supervised'."
-        }
-      }
+      "anyOf": [
+        { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/governance" },
+        { "$ref": "#/$defs/legacyGovernance" }
+      ],
+      "description": "The AIP-7 governance binding of the AGENT. The legacy inline `{policies, audit_log, autonomy}` object is deprecated: policies go to `policy`, autonomy to `autonomy`."
     },
-    "capabilities": {
-      "type": "array",
-      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
-      "default": [],
-      "description": "Capability surface the operator declares. Negotiated against runtime offer at registration."
+    "policy": {
+      "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/policy",
+      "description": "The AIP-38 policy bound on THIS operator. A role never changes it (AIP-47); a node chain composes with it."
+    },
+    "traits": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/traits" },
+    "autonomy": {
+      "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/autonomy",
+      "description": "0 (always asks) to 10. 0 is the former `gated`, 5 `supervised`, 10 `autonomous`. At 0 the operator is not proactive."
+    },
+    "boundaries": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/boundaries" },
+    "on": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/on" },
+    "publish": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/publish" },
+    "tags": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/tags" },
+    "metadata": { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/metadata" },
+
+    "role": {
+      "description": "The AIP-47 role this operator holds. A bare string is `{ref}`. Optional for one minor version: a reader without `role` falls back to `metadata.roleSlug`, then to `profile.role` when that value is a role slug that resolves, and emits a warning (`role_fallback`). Required after the alias period.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AIP-54 ref to the ROLE: a slug, `ws://roles/<slug>` or a path to a ROLE.md."
+            },
+            "bind": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/slotValue" },
+              "description": "Slot name -> value. A key MUST name a slot the role declares, and the value MUST match the slot's declared type (checked against the role, not by this schema)."
+            },
+            "with": {
+              "type": "object",
+              "additionalProperties": { "type": ["string", "number", "boolean"] },
+              "description": "Rare scalar parameters the role declares. Never refs, never prose."
+            }
+          }
+        }
+      ]
+    },
+    "home": {
+      "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/$defs/anyRef",
+      "description": "AIP-54 ref to the AIP-34 workspace node that is the operator's home: the root of its memory and of its default policy. A company node, a guild node, a user root. Not the node of a session: that is the session's `ground`."
+    },
+    "reports_to": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Slug of the operator this one reports to. Used only when no AIP-22 office seat gives the reporting line; a seat wins."
+    },
+    "company": {
+      "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/$defs/anyRef",
+      "deprecated": true,
+      "description": "Deprecated: `home`. A ref to an AIP-6 COMPANY.md is read as the company node it sits in."
     },
     "participation": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Conversation participation. Optional: an operator that never joins a shared thread omits it.",
       "properties": {
         "mode": {
           "enum": ["mention-only", "proactive", "silent"],
@@ -145,11 +162,17 @@
         "reactions": { "type": "boolean", "default": false }
       }
     },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": [],
+      "description": "Capability surface the operator declares. Negotiated against runtime offer at registration."
+    },
     "runtime": {
       "type": "object",
       "required": ["kind"],
       "additionalProperties": false,
-      "description": "Runtime binding. When kind=in-process (default), the operator runs in the host's in-process agent runtime. When kind=agent-cli, turns are dispatched to a spawned AIP-45 harness subprocess (Hermes, Claude Code, OpenCode, ...).",
+      "description": "Portable runtime binding only: kind, harness ref and AIP-45-validated config. The session preset, the posture and the auth profile are host configuration (AIP-46) and are never written here. When kind=in-process (default), the operator runs as a per-request persona in the host's shared in-process shell. When kind=agent-cli, turns go to a spawned AIP-45 harness session.",
       "properties": {
         "kind": {
           "enum": ["in-process", "agent-cli"],
@@ -162,6 +185,8 @@
         "session": {
           "type": "object",
           "additionalProperties": false,
+          "deprecated": true,
+          "description": "Deprecated: session lifetime and idle policy are owned by AIP-46 and the host. A host MAY read this as a hint during the alias period.",
           "properties": {
             "mode": { "enum": ["ephemeral", "persistent", "resumable"] },
             "idle_timeout_ms": { "type": "integer", "minimum": 1000 }
@@ -170,7 +195,7 @@
         "config": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Per-runtime configuration that the host applies when spawning / dispatching to the bound AIP-45 manifest. The host MUST validate every entry against the manifest's declared `modes` / `options` / `continuation.supported`; unknown ids are a hard load-time error.",
+          "description": "Per-runtime configuration that the host applies when spawning / dispatching to the bound AIP-45 manifest (layer 3 of the AIP-46 session config). The host MUST validate every entry against the manifest's declared `modes` / `options` / `continuation.supported`; unknown ids are a hard load-time error.",
           "properties": {
             "mode": {
               "type": "string",
@@ -179,7 +204,7 @@
             "options": {
               "type": "object",
               "additionalProperties": true,
-              "description": "Map of manifest-declared option id → value. Each value MUST satisfy the option's declared type / enum / min / max. Unknown ids are rejected at load time."
+              "description": "Map of manifest-declared option id -> value. Each value MUST satisfy the option's declared type / enum / min / max. Unknown ids are rejected at load time."
             },
             "continuation": {
               "type": "string",
@@ -190,27 +215,53 @@
         }
       }
     },
-    "tags": {
-      "type": "array",
-      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
-      "default": []
-    },
-    "metadata": {
+    "profile": {
       "type": "object",
-      "additionalProperties": true,
-      "default": {}
+      "additionalProperties": false,
+      "description": "Position prose. `role` is the job title and responsibility as a person would write it on a door plate; it is not a role ref (that is the top-level `role`).",
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Position / title prose."
+        },
+        "voice": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "deprecated": true,
+          "description": "Deprecated: tone and register belong to the AIP-25 persona (`persona`). A reader folds it into an inline persona and warns."
+        },
+        "boundaries": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 500 },
+          "deprecated": true,
+          "description": "Deprecated: dropped from the shape; use the top-level `boundaries`. A reader folds the entries into `boundaries` (union, dedupe) and warns."
+        }
+      }
     }
   },
   "allOf": [
     {
+      "description": "A gated operator (autonomy 0, or the deprecated governance.autonomy: gated) is never proactive.",
       "if": {
-        "properties": {
-          "governance": {
-            "properties": { "autonomy": { "const": "gated" } },
+        "anyOf": [
+          {
+            "properties": { "autonomy": { "const": 0 } },
             "required": ["autonomy"]
+          },
+          {
+            "properties": {
+              "governance": {
+                "type": "object",
+                "properties": { "autonomy": { "const": "gated" } },
+                "required": ["autonomy"]
+              }
+            },
+            "required": ["governance"]
           }
-        },
-        "required": ["governance"]
+        ]
       },
       "then": {
         "properties": {
@@ -244,54 +295,94 @@
     }
   ],
   "$defs": {
-    "skillRef": {
+    "slotValue": {
       "anyOf": [
-        { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
-        {
-          "type": "object",
-          "required": ["id"],
-          "additionalProperties": false,
-          "properties": {
-            "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
-            "source": { "type": "string" },
-            "version": { "type": "string" },
-            "allow": { "type": "array", "items": { "type": "string" } }
-          }
-        }
-      ]
+        { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/$defs/anyRef" },
+        { "$ref": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json#/properties/tools/items" }
+      ],
+      "description": "A value bound to a role slot: an AIP-54 ref, or a tool ref (the AIP-42 `tools` item form)."
     },
-    "toolRef": {
-      "anyOf": [
-        { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
-        {
+    "legacyScopedToolRef": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "description": "Deprecated: an AIP-14 tool narrowed for this operator.",
+      "properties": {
+        "id": { "type": "string" },
+        "source": { "type": "string" },
+        "scope": {
           "type": "object",
-          "required": ["id"],
           "additionalProperties": false,
           "properties": {
-            "id": { "type": "string" },
-            "source": { "type": "string" },
-            "scope": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "workspace": { "type": "string" },
-                "network": { "type": "array", "items": { "type": "string" } },
-                "secrets": { "type": "array", "items": { "type": "string" } }
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "required": ["kind", "server"],
-          "additionalProperties": false,
-          "properties": {
-            "kind": { "const": "mcp" },
-            "server": { "type": "string" },
-            "allow": { "type": "array", "items": { "type": "string" } }
+            "workspace": { "type": "string" },
+            "network": { "type": "array", "items": { "type": "string" } },
+            "secrets": { "type": "array", "items": { "type": "string" } }
           }
         }
-      ]
+      }
+    },
+    "legacySkillRef": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "description": "Deprecated: an AIP-3 skill pinned for this operator.",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+        "source": { "type": "string" },
+        "version": { "type": "string" },
+        "allow": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "legacyMemory": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "description": "Deprecated memory form. `kind` maps onto the AGENT memory config (AIP-9 section Memory); `share_with` becomes AIP-38 read grants on the memory store.",
+      "properties": {
+        "kind": {
+          "enum": ["none", "thread", "operator-context", "external"]
+        },
+        "policy": {
+          "enum": ["append-only", "redactable", "summarising"],
+          "default": "summarising"
+        },
+        "share_with": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "default": [],
+          "deprecated": true,
+          "description": "Operator ids granted READ access to this operator's memory. Deprecated toward AIP-38 read grants."
+        },
+        "external": {
+          "type": "object",
+          "required": ["uri"],
+          "additionalProperties": false,
+          "properties": {
+            "uri": { "type": "string" },
+            "namespace": { "type": "string" }
+          }
+        }
+      }
+    },
+    "legacyGovernance": {
+      "type": "object",
+      "required": ["audit_log", "autonomy"],
+      "additionalProperties": false,
+      "description": "Deprecated inline governance object.",
+      "properties": {
+        "policies": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^policy:[A-Za-z0-9_./-]+$" },
+          "default": []
+        },
+        "audit_log": {
+          "type": "string",
+          "pattern": "^audit:[A-Za-z0-9_./-]+$"
+        },
+        "autonomy": {
+          "enum": ["autonomous", "supervised", "gated"]
+        }
+      }
     }
   }
 }

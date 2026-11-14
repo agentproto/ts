@@ -112,6 +112,59 @@ describe("autocompact at the turn boundary", () => {
     expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(false)
   })
 
+  /** A harness that advertises compaction the way the real ACP adapters do:
+   *  as a slash COMMAND in an `available-commands` update, with only
+   *  permission postures in `availableModes` (claude-code's real list). */
+  function commandHarness(used: number, size: number, commandName: string): Harness {
+    const h = harness(used, size)
+    ;(h as { availableModes?: unknown }).availableModes = [
+      { id: "default", name: "Manual" },
+      { id: "acceptEdits", name: "Accept edits" },
+      { id: "plan", name: "Plan" },
+      { id: "bypassPermissions", name: "Bypass permissions" },
+    ]
+    const original = h.send.bind(h)
+    let advertised = false
+    h.send = async function* (message) {
+      if (!advertised) {
+        advertised = true
+        yield {
+          kind: "available-commands",
+          commands: [
+            { name: "review", description: "Review a diff" },
+            { name: commandName, description: "Clear conversation history but keep a summary" },
+          ],
+        }
+      }
+      yield* original(message)
+    }
+    return h
+  }
+
+  it("compacts a claude-code session that advertises /compact as a command, not a mode", async () => {
+    const h = commandHarness(200_000, 1_000_000, "compact")
+    const id = spawn(h, 150_000, "claude-code")
+    await reg.sendPrompt(id, "do the thing")
+    await vi.waitFor(() => expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(true))
+  })
+
+  it("compacts a hermes session that advertises /compress as a command", async () => {
+    const h = commandHarness(200_000, 1_000_000, "compress")
+    const id = spawn(h, 150_000, "hermes")
+    await reg.sendPrompt(id, "do the thing")
+    await vi.waitFor(() => expect(h.prompts.some(p => p.startsWith("/compress"))).toBe(true))
+  })
+
+  it("does not send /compact when the advertised commands lack the harness's compact command", async () => {
+    // hermes compacts with /compress: a `compact` entry in its list is not
+    // the command the runtime would send.
+    const h = commandHarness(200_000, 1_000_000, "compact")
+    const id = spawn(h, 150_000, "hermes")
+    await reg.sendPrompt(id, "do the thing")
+    await new Promise(r => setTimeout(r, 200))
+    expect(h.prompts.some(p => p.startsWith("/compress") || p.startsWith("/compact"))).toBe(false)
+  })
+
   it("idle, nothing in progress: no prompt after compaction", async () => {
     // The session finished its work and went idle: the compaction is the
     // LAST thing this session receives. No resume prompt, no extra turn, no

@@ -1,9 +1,12 @@
 # `agentproto pair`
 
 ```text
-agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json] [--host]
+agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr | --url [--pair-page <url|template>]] [--json] [--host]
 agentproto pair accept "<offer-url>" [--name <label>]
 agentproto pair ls     [--json]
+agentproto pair pending [--json]
+agentproto pair confirm <code|fingerprint>
+agentproto pair decline <code|fingerprint>
 agentproto pair revoke <fingerprint|name>
 agentproto pair exec   <fingerprint|name> -- <verb> [args…]
 ```
@@ -57,6 +60,9 @@ The daemon is now relaying through wss://rdv.agentproto.sh/v1
    Self-host with `agentproto rendezvous serve` and set pairing.rendezvous,
    or pass --rendezvous, to route elsewhere.)
 This window can close.
+When the client connects, run `agentproto pair pending` to see its
+short code, compare it with the code on the client's screen, then run
+`agentproto pair confirm <code>` (or `agentproto pair decline <code>`).
 ```
 
 - `--ttl` accepts `10m`, `30s`, `2h`, or a bare number of minutes (default 10m).
@@ -73,8 +79,16 @@ This window can close.
   runs the same handshake in the browser (`@agentproto/pairing`) and shows
   the daemon's name and fingerprint to confirm. The `agentproto://` URL is still
   printed for `pair accept`, and either form is accepted by both clients.
-- `--pair-page <url|template>` (with `--qr`) picks the pair page for this
-  offer. It overrides `pairing.pairPage` in config, and the default is
+- `--url` prints the same web pair page link as `--qr`, with no QR at all, for
+  a desktop browser that cannot scan one. It keeps the `agentproto://` CLI link
+  out of the main output (it is for another CLI, not a browser) and prints the
+  confirmation and pending instructions instead. `--url --json` returns the
+  same JSON as `--qr --json`. `--qr`, `--url` and `--no-qr` are mutually
+  exclusive. `--url` cannot be combined with `--host`: a HOST-scoped offer is
+  only accepted by `agentproto pair accept` on another machine, which needs the
+  `agentproto://` link that `--url` omits.
+- `--pair-page <url|template>` (with `--qr` or `--url`) picks the pair page for
+  this offer. It overrides `pairing.pairPage` in config, and the default is
   `https://{fp}.agentproto.cloud/pair`. It accepts two forms:
   - A **template** with `{fp}` in the **hostname**, filled with the daemon's
     identity fingerprint (lowercase hex), e.g. a self-hosted page:
@@ -100,7 +114,7 @@ This window can close.
     other `{…}`. The page setting is checked before the offer is minted.
 - `--json` emits `{ url, fingerprint, rendezvous, rendezvousIsHostedDefault,
   expiresAt }` for scripting, plus `webUrl` (the resolved pair-page link) with
-  `--qr`.
+  `--qr` or `--url`.
 
 ```bash
 agentproto pair offer --qr
@@ -118,7 +132,13 @@ Scan with a phone (opens the pair page in the browser):
   █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the pair-page link)
   …
 
+No camera? Run `agentproto pair offer --url` for a link to open in any browser.
+
 Confirm the page shows daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d before you accept.
+When the client connects, run `agentproto pair pending` to see its
+short code, compare it with the code on the client's screen, then run
+`agentproto pair confirm <code>` (or `agentproto pair decline <code>`).
+```
 
 **Routing precedence:** `--rendezvous` → `pairing.rendezvous` in config → the
 hosted default. To point elsewhere, self-host the broker
@@ -128,8 +148,11 @@ endpoint is named — set `pairing.rendezvous: ""` in config; `pair offer` then
 requires an explicit `--rendezvous`.
 
 The daemon dials the broker outbound and parks until the client arrives, then
-runs the `pair/v2` handshake and persists the pairing to
-`~/.agentproto/pairings.json` (mode `0600`).
+runs the `pair/v2` handshake. The completed handshake is **held pending** until
+you confirm it (see [`pending` / `confirm` / `decline`](#pending--confirm--decline--daemon-side)):
+it drives nothing, is not listed by `pair ls`, and is never written to
+`~/.agentproto/pairings.json` until `pair confirm` promotes it (mode `0600`).
+A pending pairing expires with the offer TTL if you never decide.
 
 ## `accept` — client side
 
@@ -152,9 +175,41 @@ Run a verb over the pairing with:
   agentproto pair exec my-laptop -- sessions ls
 ```
 
+(That last line is premature until the daemon operator runs
+[`pair confirm`](#pending--confirm--decline--daemon-side) — see below.)
+
 `--name` labels the pairing locally (also sent as the client name the daemon
 records); it defaults to `<user>@<host>`. **Confirm the fingerprint** against
 what the daemon printed — that is the human check that defeats a swapped QR.
+
+The daemon side is **not** finished yet: until the operator runs
+[`pair confirm`](#pending--confirm--decline--daemon-side) on the daemon, the
+pairing is pending — it drives nothing, so `pair exec` and a phone's Control
+Center wait. Compare the short code the client shows with `pair pending` on
+the daemon, then confirm (or decline) it.
+
+## `pending` / `confirm` / `decline` — daemon side
+
+A completed handshake is held in memory only, pending operator confirmation
+(AIP-59 §3.7). Nothing is persisted, listed, or served until you confirm; an
+unconfirmed pending pairing is dropped when the offer TTL passes or the
+daemon restarts.
+
+```bash
+agentproto pair pending            # list pending handshakes (code, name, fingerprint, expiry)
+agentproto pair pending --json
+agentproto pair confirm <code|fingerprint>
+agentproto pair decline <code|fingerprint>
+```
+
+`pending` prints a short **code** per row. Compare it with the code on the
+client's screen (the phone pair page shows the same code under "waiting for
+confirmation"), then `confirm` promotes the pairing into
+`pairings.json` and starts serving it, or `decline` drops it without saving.
+Both take the short code or the full fingerprint — never the client-supplied
+name, and a code that matches more than one pending pairing is refused as
+ambiguous. The `pair offer` output ends with the same instructions once the
+client connects.
 
 ## `ls` — both sides
 

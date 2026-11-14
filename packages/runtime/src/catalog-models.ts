@@ -52,6 +52,7 @@ import { subscriptionSurfaceFor, type AdapterAuthDescriptor } from "./spawn-defa
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
 import type { RouteSpec } from "./session-config.js"
 import { WIDENING_ROUTES, normalizeRouterPrefixedId } from "./router-routes.js"
+import { profileAllowsModelId } from "./auth-profile-model-allowlist.js"
 
 export type { RouteSpec } from "./session-config.js"
 export { WIDENING_ROUTES } from "./router-routes.js"
@@ -562,24 +563,11 @@ function billedVendor(vendor: string, route: string): string {
  * gate): a curated profile stays endpoint-eligible but services only its
  * chosen model refs.
  */
-function profileAllowsModel(profile: AuthProfile, ref: string, vendorProduct: string): boolean {
-  const curation = profile.models
-  if (!curation || curation.mode === "all") return true
-  // The bare product is everything after the FIRST `/` (the vendor is always
-  // the first segment; the product may itself contain `/`). No slash → treat
-  // the whole string as the product.
-  const slash = vendorProduct.indexOf("/")
-  const product = slash === -1 ? vendorProduct : vendorProduct.slice(slash + 1)
-  // A gateway/router route carries an `@route` suffix in its ref
-  // (`z-ai/glm-5.2@openrouter`); a direct route ref is bare `vendor/product`.
-  // Bare-product tolerance is DIRECT-only — on a multi-vendor gateway a bare id
-  // would admit every sibling vendor's same-named product.
-  const isDirect = !ref.includes("@")
-  return (
-    curation.ids.includes(ref) ||
-    curation.ids.includes(vendorProduct) ||
-    (isDirect && curation.ids.includes(product))
-  )
+function profileAllowsModel(profile: AuthProfile, ref: string, _vendorProduct: string): boolean {
+  // Delegates to the shared enforcement predicate (also used by spawn and
+  // live `set_model`) so the catalog's read-side decision and every write path
+  // cannot drift. `ref` alone carries vendor/product and the `@route` split.
+  return profileAllowsModelId(profile, ref, { direct: !ref.includes("@") })
 }
 
 /** The pure join (SPEC §5): adapter-declared models + router widening +

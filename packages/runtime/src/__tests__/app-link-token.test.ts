@@ -13,7 +13,6 @@ import {
   verifyAppLinkToken,
   mintAppLinkSessionToken,
   verifyAppLinkSessionToken,
-  appLinkTokenSignature,
   extractAppLinkBearer,
 } from "../app-link-token.js"
 
@@ -107,13 +106,7 @@ describe("mintAppLinkToken / verifyAppLinkToken", () => {
   })
 })
 
-describe("appLinkTokenSignature / extractAppLinkBearer", () => {
-  it("signature is the part after the dot", () => {
-    const keyPath = tmpKeyPath()
-    const { token } = mintAppLinkToken({ appId: "x", claims: { sessionId: "s" }, ttlMs: 60_000, keyPath })
-    expect(appLinkTokenSignature(token)).toBe(token.split(".")[1])
-  })
-
+describe("extractAppLinkBearer", () => {
   it("extracts a bearer header over a query token", () => {
     const req = { headers: { authorization: "Bearer HEADER_TOKEN" }, url: "/x?token=QUERY_TOKEN" }
     expect(extractAppLinkBearer(req)).toBe("HEADER_TOKEN")

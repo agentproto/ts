@@ -127,12 +127,21 @@ describe("CLI pairing transport (accept → reconnect → bridge)", () => {
     })
   }
 
+  /** First contact is pending until the operator confirms (AIP-59 §3.7).
+   *  These transport tests stand in for that operator. */
+  async function confirmPending(reg: PairingRegistry): Promise<void> {
+    await vi.waitFor(async () => expect((await reg.listPending()).length).toBe(1))
+    const [pending] = await reg.listPending()
+    expect(await reg.confirmPending(pending!.code)).toMatchObject({ ok: true })
+  }
+
   it("acceptOffer persists a client pairing pinned to the daemon fingerprint", async () => {
     registry = startDaemon()
     const offer = await registry.createOffer({ ttlMs: 60_000 })
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
 
     const result = await acceptOffer(offer.url, "my-laptop")
+    await confirmPending(registry)
     expect(result.fingerprint).toBe(offer.fingerprint)
     expect(result.name).toBe("my-laptop")
 
@@ -149,6 +158,7 @@ describe("CLI pairing transport (accept → reconnect → bridge)", () => {
     const offer = await registry.createOffer({ ttlMs: 60_000 })
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
     await acceptOffer(offer.url, "my-laptop")
+    await confirmPending(registry)
     await vi.waitFor(async () => expect((await registry!.list()).length).toBe(1))
 
     const pairing = await findClientPairing("my-laptop")
@@ -175,6 +185,7 @@ describe("CLI pairing transport (accept → reconnect → bridge)", () => {
     const offer = await registry.createOffer({ ttlMs: 60_000 })
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
     await acceptOffer(offer.url, "doomed")
+    await confirmPending(registry)
     await vi.waitFor(async () => expect((await registry!.list()).length).toBe(1))
 
     const pairing = await findClientPairing("doomed")

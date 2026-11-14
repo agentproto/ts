@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { agentCliFrontmatterSchema } from "@agentproto/driver-agent-cli"
+import { agentCliFrontmatterSchema } from "@agentproto/harness"
 import { antigravity } from "../index.js"
 
 describe("antigravity adapter manifest", () => {

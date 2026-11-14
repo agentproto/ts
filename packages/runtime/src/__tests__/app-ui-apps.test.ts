@@ -86,6 +86,28 @@ describe("makeInstalledAppUiApps", () => {
     expect(initData).toEqual({ appId: "@test/ui-app", tools: ["read_file"] })
   })
 
+  it("bakes the request's public base (prefix included) into each panel's html, per call", async () => {
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "<html><head></head><body>Panel</body></html>", "utf8")
+    appRegistry.upsertApp({
+      appId: "@test/ui-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath, tools: [] },
+    })
+    const cache = createUiHtmlCache()
+    const base = "https://fp.agentproto.cloud/d/fp"
+    const withBase = await makeInstalledAppUiApps(appRegistry, cache, new Set(), base)
+    const other = await makeInstalledAppUiApps(appRegistry, cache, new Set(), "https://abc.trycloudflare.com")
+    const without = await makeInstalledAppUiApps(appRegistry, cache, new Set())
+    expect(withBase[0]!.html).toContain(`window.__AGENTPROTO_BASEURL__=${JSON.stringify(base)}`)
+    expect(other[0]!.html).toContain('window.__AGENTPROTO_BASEURL__="https://abc.trycloudflare.com"')
+    expect(other[0]!.html).not.toContain("fp.agentproto.cloud")
+    expect(without[0]!.html).not.toContain("__AGENTPROTO_BASEURL__")
+  })
+
   it("skips an app whose derived tool id collides with an existing tool, with a console.warn", async () => {
     const uiPath = join(dir, "index.html")
     await writeFile(uiPath, "<html></html>", "utf8")
@@ -267,6 +289,61 @@ describe("makeInstalledAppUiApps", () => {
     expect(readFileMock).toHaveBeenCalledTimes(2)
   })
 
+  it("injects the public base once per (file, base) and shares that html across server builds", async () => {
+    // The bug this guards: every McpServer build (one per /mcp connection)
+    // ran injectPublicBaseUrl on the cached html, so each server held its
+    // own full copy of every installed panel. On a live daemon that was
+    // ~110 MB of duplicated html (the 0.93 MB Bureau page 44 times).
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "<html><head></head><body>Panel</body></html>", "utf8")
+    appRegistry.upsertApp({
+      appId: "@test/ui-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath, tools: [] },
+    })
+    const injectBase = vi.fn((html: string, base: string) => `${html}<!--${base}-->`)
+    const cache = createUiHtmlCache({ injectBase })
+    const base = "https://fp.agentproto.cloud/d/fp"
+
+    const builds = await Promise.all(
+      [1, 2, 3].map(() => makeInstalledAppUiApps(appRegistry, cache, new Set(), base)),
+    )
+    for (const apps of builds) expect(apps[0]!.html).toContain(`<!--${base}-->`)
+    expect(injectBase).toHaveBeenCalledTimes(1)
+
+    await makeInstalledAppUiApps(appRegistry, cache, new Set(), "https://abc.trycloudflare.com")
+    expect(injectBase).toHaveBeenCalledTimes(2)
+    await makeInstalledAppUiApps(appRegistry, cache, new Set())
+    expect(injectBase).toHaveBeenCalledTimes(2)
+
+    // An in-place rebuild drops the per-base variants with the old bytes.
+    await writeFile(uiPath, "<html><head></head><body>Panel v2 rebuilt</body></html>", "utf8")
+    const rebuilt = await makeInstalledAppUiApps(appRegistry, cache, new Set(), base)
+    expect(rebuilt[0]!.html).toContain("Panel v2 rebuilt")
+    expect(injectBase).toHaveBeenCalledTimes(3)
+  })
+
+  it("keeps a bounded number of per-base variants per file", async () => {
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "<html><head></head><body>Panel</body></html>", "utf8")
+    const injectBase = vi.fn((html: string, base: string) => `${html}<!--${base}-->`)
+    const cache = createUiHtmlCache({ injectBase, maxBaseVariants: 2 })
+    const version = "2026-01-01T00:00:00.000Z"
+
+    await cache.get(uiPath, version, "https://a.example")
+    await cache.get(uiPath, version, "https://b.example")
+    await cache.get(uiPath, version, "https://a.example") // hit, refreshes a
+    expect(injectBase).toHaveBeenCalledTimes(2)
+    await cache.get(uiPath, version, "https://c.example") // evicts b, the least recently used
+    await cache.get(uiPath, version, "https://a.example")
+    expect(injectBase).toHaveBeenCalledTimes(3)
+    expect(await cache.get(uiPath, version, "https://b.example")).toContain("<!--https://b.example-->")
+    expect(injectBase).toHaveBeenCalledTimes(4)
+  })
+
   it("accepts an optional view up to 200 chars, rejects longer, and echoes it from execute", async () => {
     const uiPath = join(dir, "index.html")
     await writeFile(uiPath, "<html><body>Panel</body></html>", "utf8")
@@ -303,6 +380,19 @@ describe("makeInstalledAppUiApps", () => {
 })
 
 describe("injectMcpAppBridge", () => {
+  it("injects the public base before the bridge when given one, and only once", () => {
+    const html = "<html><head></head><body>Panel</body></html>"
+    const out = injectMcpAppBridge(html, "https://fp.agentproto.cloud/d/fp")
+    expect(out).toContain('window.__AGENTPROTO_BASEURL__="https://fp.agentproto.cloud/d/fp"')
+    expect(out.indexOf("__AGENTPROTO_BASEURL__")).toBeLessThan(out.indexOf("window.McpApp"))
+    expect(injectMcpAppBridge(out, "https://fp.agentproto.cloud/d/fp")).toBe(out)
+  })
+
+  it("escapes a base that would close the script tag", () => {
+    const out = injectMcpAppBridge("<html><head></head></html>", "https://a.test/</script><b>")
+    expect(out).not.toContain("</script><b>")
+  })
+
   it("injects the bridge right after <head> when present", () => {
     const html = "<html><head><title>t</title></head><body>Panel</body></html>"
     const out = injectMcpAppBridge(html)
@@ -573,17 +663,18 @@ interface BridgeHarness {
     displayMode?: Record<string, unknown>
   }
   posted: Array<Record<string, unknown>>
-  deliver: (msg: unknown) => void
+  /** Deliver a window message. `source` defaults to the host (`window.parent`). */
+  deliver: (msg: unknown, source?: unknown) => void
 }
 
 function loadPostMessageBridge(agentprotoUI?: unknown): BridgeHarness {
   const posted: Array<Record<string, unknown>> = []
-  const listeners: Array<(e: { data: unknown }) => void> = []
+  const listeners: Array<(e: { data: unknown; source: unknown }) => void> = []
   const windowObj: Record<string, unknown> = {
     // A distinct object from `window` — the script's standalone check is
     // `window.parent === window`, and this harness is the HOSTED path.
     parent: { postMessage: (m: Record<string, unknown>) => posted.push(m) },
-    addEventListener: (_type: string, cb: (e: { data: unknown }) => void) => listeners.push(cb),
+    addEventListener: (_type: string, cb: (e: { data: unknown; source: unknown }) => void) => listeners.push(cb),
   }
   if (agentprotoUI) windowObj.AgentprotoUI = agentprotoUI
   const sandbox: Record<string, unknown> = {
@@ -599,8 +690,8 @@ function loadPostMessageBridge(agentprotoUI?: unknown): BridgeHarness {
   return {
     mcpApp: windowObj.McpApp as BridgeHarness["mcpApp"],
     posted,
-    deliver: (msg) => {
-      for (const cb of listeners) cb({ data: msg })
+    deliver: (msg, source = windowObj.parent) => {
+      for (const cb of listeners) cb({ data: msg, source })
     },
   }
 }
@@ -620,6 +711,47 @@ async function connectWith(
   })
   return pending
 }
+
+describe("MCP_APP_BRIDGE_SCRIPT sender check", () => {
+  it("ignores a message from a window that is not the host and handles one from the host", async () => {
+    const bridge = loadPostMessageBridge()
+    const pending = bridge.mcpApp.connect()
+    const init = bridge.posted.find(m => m.method === "ui/initialize")
+    const reply = { jsonrpc: "2.0", id: init?.id, result: { hostContext: { displayMode: "inline" } } }
+
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
+    // A foreign window answers the app's JSON-RPC call: it must be dropped.
+    bridge.deliver(reply, { postMessage: () => {} })
+    bridge.deliver(reply, null)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    // The host's answer to the same call is handled.
+    bridge.deliver(reply)
+    const conn = await pending
+    expect((conn.getHostContext as () => Record<string, unknown>)()).toEqual({ displayMode: "inline" })
+  })
+
+  it("does not let a foreign window change the host context or tool input", async () => {
+    const bridge = loadPostMessageBridge()
+    const conn = await connectWith(bridge, { displayMode: "inline" })
+    const foreign = { postMessage: () => {} }
+    bridge.deliver(
+      { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: "fullscreen" } },
+      foreign,
+    )
+    bridge.deliver(
+      { jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: { evil: true } } },
+      foreign,
+    )
+    expect((conn.getHostContext as () => Record<string, unknown>)()).toEqual({ displayMode: "inline" })
+    expect((conn.getToolInput as () => unknown)()).toBeNull()
+  })
+})
 
 describe("MCP_APP_BRIDGE_SCRIPT display mode", () => {
   it("captures the hostContext carried by the ui/initialize result", async () => {

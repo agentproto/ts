@@ -40,7 +40,7 @@ function fakeSession() {
 
 const startSpy = vi.fn()
 
-vi.mock("@agentproto/driver-agent-cli", () => ({
+vi.mock("@agentproto/harness", () => ({
   createAgentCliRuntime: () => ({
     definition: { id: "fake" },
     start: () => startSpy(),

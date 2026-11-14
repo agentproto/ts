@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver-browser",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "description": "Browser provider kit: defineBrowser (manifest + launch), the BrowserInstance and BrowserDriver ports, a provider registry, a provider-kit lister, and a typed capability gate (browser:unsupported).",
   "keywords": [
     "agentproto",
@@ -50,7 +50,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "zod": "^4.6.7"

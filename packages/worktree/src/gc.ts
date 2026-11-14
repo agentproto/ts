@@ -51,17 +51,23 @@
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { readFile, readdir, realpath, rm, stat } from "node:fs/promises"
 import { runTool } from "@agentproto/driver"
-import { classifyTipAgainstBase } from "./branch-gc.js"
+import { classifyTipAgainstBase, type BranchVerdictStore } from "./branch-gc.js"
 import { execArgv, execGit } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
 import { salvageWorktree } from "./salvage.js"
+import { discardProvenDirt, proveDirtCarriesNoWork, type DirtyNoWorkCase, type DirtyNoWorkProof } from "./dirty-no-work.js"
 import { sweepWorktreeTrash } from "./fast-remove.js"
 import type { ForgeClient } from "./forge.js"
+import { mapWithConcurrency } from "./concurrency.js"
+import { readSessionsRegistry } from "./provenance.js"
 import {
   classify,
+  DEFAULT_STATUS_CONCURRENCY,
   listGitWorktrees,
   computeWorktreeStatus,
+  livenessSessionCount,
+  RECENT_WRITE_HOLD_WINDOW_MS,
   type GitWorktreeRef,
   type IntegrationState,
   type LivenessState,
@@ -77,13 +83,21 @@ export type GcClass = "reclaim" | "salvage" | "hold"
 
 export interface ClassifyForGcOptions {
   /**
-   * A clean, idle/daemon-unreachable DETACHED worktree moves from `hold` to
-   * `reclaim` (PLAN.md §5.1). This is the only reclassification power any
-   * flag has: every other hold reason — partial, open, unknown(offline),
-   * gone-unexplained, diverged — is untouched by any flag, ever. Default
-   * false.
+   * Kept so `--include-detached` keeps working. It no longer grants any
+   * reclaim power: a detached HEAD is an anonymous branch and is reclaimed
+   * only when `detachedInBase` proves its sha is contained in base, with or
+   * without this flag. Every other hold reason — partial, open,
+   * unknown(offline), gone-unexplained, diverged — is untouched by any flag.
    */
   includeDetached?: boolean
+  /**
+   * Proof, computed by `resolveGcClass` (`provenDetachedInBase`), that a
+   * detached HEAD's sha is contained in base (ancestor, squash, patch, or the
+   * head of a merged PR). Absent/false ⇒ a detached worktree is never
+   * `reclaim` and never `salvage`: its commits may be reachable from nowhere
+   * else.
+   */
+  detachedInBase?: boolean
   /** Threaded straight through to `classify`'s `RECENT_WRITE_HOLD_WINDOW_MS` guard. Defaults to `Date.now()`. */
   nowMs?: number
 }
@@ -95,11 +109,11 @@ export interface ClassifyForGcOptions {
  * invariant is load-bearing for `ls --status` and every other caller (see
  * its 2026-07-15 note) and stays untouched here. What `classify` cannot know
  * is gc-specific archival policy; two overrides live here instead:
- *   - `--include-detached`: a clean, idle DETACHED worktree moves `hold` →
- *     `reclaim`.
+ *   - a clean, idle DETACHED worktree whose sha is proven in base
+ *     (`detachedInBase`) moves `hold` → `reclaim`; unproven stays `hold`.
  *   - the "plans-only" rule below: a no-commit worktree (`fresh`, or
- *     `detached` when `includeDetached` is set — same gate, since a detached
- *     HEAD's commit safety is exactly as unproven either way) whose ONLY
+ *     `detached` with `detachedInBase` — same gate, since a detached HEAD
+ *     only has no commits of its own once it is proven in base) whose ONLY
  *     dirt is untracked files under `.plans/` moves `hold` → `salvage`, so
  *     `--salvage-dirty` archives the plan files (never discards them) instead
  *     of holding the worktree forever. Narrow on purpose: any OTHER dirt
@@ -113,11 +127,9 @@ export function classifyForGc(
   options: ClassifyForGcOptions = {},
 ): GcClass {
   const idleOrUnreachable = liveness.state === "idle" || liveness.state === "daemon-unreachable"
-  if (options.includeDetached && integration.state === "detached") {
-    if (tree.state === "clean" && idleOrUnreachable) return "reclaim"
-  }
-  const noCommitsOfItsOwn =
-    integration.state === "fresh" || (Boolean(options.includeDetached) && integration.state === "detached")
+  const detachedProven = integration.state === "detached" && options.detachedInBase === true
+  if (detachedProven && tree.state === "clean" && idleOrUnreachable) return "reclaim"
+  const noCommitsOfItsOwn = integration.state === "fresh" || detachedProven
   if (
     noCommitsOfItsOwn &&
     idleOrUnreachable &&
@@ -163,7 +175,7 @@ export function classifyForGc(
  *     only irreversible thing history nearly did to it (deleting the branch)
  *     must not happen either. See "prunable reclaim" below.
  */
-export type GcReclaimReason = "dep-bump" | "orphan" | "prunable" | InBaseReclaimReason
+export type GcReclaimReason = "dep-bump" | "orphan" | "prunable" | "dirty-no-work" | InBaseReclaimReason
 
 /**
  * `branch gc`'s proof tiers (`classifyTip`, branch-gc.ts) that promote a
@@ -183,19 +195,40 @@ export type InBaseReclaimReason = "squash-merged" | "patch-merged" | "content-me
 // `git worktree remove` — if anything else turned dirty in between, git still
 // refuses. Every path here is safe to lose in a worktree that is merged or
 // has no commits of its own:
-//   - `pnpm-lock.yaml` / `package-lock.json` / `.opencode/package-lock.json`:
+//   - `package-lock.json` / `.opencode/package-lock.json`:
 //     install churn — regenerated byte-for-byte by re-running the package
 //     manager; agents on a fresh worktree trip over them constantly and the
 //     churn is what pinned 20 no-commit worktrees as permanent `hold`s.
 //   - `.claude/launch.json`: local dev launcher config, never shipped work.
+//   - `pnpm-lock.yaml`, CONDITIONALLY: it is install churn only while no
+//     `package.json` changed in the worktree. A lockfile edited next to a
+//     `package.json` edit is a real dependency change, so the lockfile (and
+//     the manifest) then stays ordinary dirt. See `conditionalNoisePaths` in
+//     `computeTreeState`.
 
-/** gc's default noise allowlist — overridable per call via `noisePaths` (`[]` disables it). */
+/** gc's default unconditional noise allowlist — overridable per call via `noisePaths` (`[]` disables it). */
 export const DEFAULT_GC_NOISE_PATHS: readonly string[] = [
-  "pnpm-lock.yaml",
   "package-lock.json",
   ".opencode/package-lock.json",
   ".claude/launch.json",
 ]
+
+/** Default noise that only counts while every `package.json` is unchanged (an install rewrite). */
+export const DEFAULT_GC_CONDITIONAL_NOISE_PATHS: readonly string[] = ["pnpm-lock.yaml"]
+
+/**
+ * The noise inputs `computeWorktreeStatus` takes, from the caller's
+ * `noisePaths`. Omitted ⇒ both defaults. An explicit list (the `--noise`
+ * override, `[]` included) is taken literally and unconditionally: the
+ * operator named those paths, so the conditional default steps aside.
+ */
+export function resolveGcNoise(noisePaths: readonly string[] | undefined): {
+  noisePaths: readonly string[]
+  conditionalNoisePaths: readonly string[]
+} {
+  if (noisePaths !== undefined) return { noisePaths, conditionalNoisePaths: [] }
+  return { noisePaths: DEFAULT_GC_NOISE_PATHS, conditionalNoisePaths: DEFAULT_GC_CONDITIONAL_NOISE_PATHS }
+}
 
 // ── live-session-cwd protection ─────────────────────────────────────────
 //
@@ -296,18 +329,39 @@ async function worktreeIndexMtimeMs(repoRoot: string, worktreePath: string): Pro
  * An mtime in the future (clock skew) reads as "just now", i.e. holds — the
  * conservative direction for a guard whose failure mode is a delayed gc.
  */
-async function isRecentlyActive(
+function activeWindowMs(activeMinutes: number | undefined): number {
+  return (activeMinutes ?? DEFAULT_GC_ACTIVE_MINUTES) * 60_000
+}
+
+/** The index mtime read plus the guard's verdict on it — the mtime is kept so a plan can record it for the apply-time staleness check. */
+interface IndexActivity {
+  mtimeMs: number | null
+  active: boolean
+}
+
+async function readIndexActivity(
   repoRoot: string,
   worktreePath: string,
   activeMinutes: number | undefined,
   nowMs: number,
-): Promise<boolean> {
-  const windowMs = (activeMinutes ?? DEFAULT_GC_ACTIVE_MINUTES) * 60_000
-  if (!(windowMs > 0)) return false
+): Promise<IndexActivity> {
   const mtimeMs = await worktreeIndexMtimeMs(repoRoot, worktreePath)
-  if (mtimeMs === null) return false
-  return nowMs - mtimeMs < windowMs
+  const windowMs = activeWindowMs(activeMinutes)
+  return { mtimeMs, active: windowMs > 0 && mtimeMs !== null && nowMs - mtimeMs < windowMs }
 }
+
+/**
+ * `true` iff the newest mtime among the worktree's modified/staged/untracked
+ * files (`TreeState.newestMtimeMs`) is inside the window. The index only moves
+ * on git operations; an editor saving a file moves none of them, so a
+ * worktree being edited right now can have an index that is hours old.
+ */
+function isDirtyTreeRecentlyWritten(tree: TreeState, activeMinutes: number | undefined, nowMs: number): boolean {
+  const windowMs = activeWindowMs(activeMinutes)
+  if (!(windowMs > 0) || tree.state !== "dirty" || typeof tree.newestMtimeMs !== "number") return false
+  return nowMs - tree.newestMtimeMs < windowMs
+}
+
 
 /**
  * Mechanical dep-bump commit subjects: `chore(deps)` / `fix(deps)`, with or
@@ -367,6 +421,13 @@ export interface ResolveGcClassOptions extends ClassifyForGcOptions {
   inBaseCheck?: boolean
   /** The tip commit of the worktree being classified — `worktree.head`. */
   tipSha: string
+  /**
+   * The worktree's own path. Needed only for the dirty-no-work proof (see
+   * "dirty, but no work" below); omitted ⇒ a dirty tree is never promoted.
+   */
+  worktreePath?: string
+  /** Forge handle for the merged-PR-head tier of the detached proof. Omitted ⇒ that tier is skipped (never read as "no merged PR"). */
+  forge?: ForgeClient
   /** Default `"origin/main"` — matches `reconcileIntegration`'s own default. */
   defaultBranchRef?: string
 }
@@ -375,6 +436,8 @@ export interface ResolvedGcClass {
   class: GcClass
   /** Set only when `class === "reclaim"` via the dep-bump exemption rather than the ordinary merged/fresh path. */
   reclaimReason?: GcReclaimReason
+  /** Set only with `reclaimReason: "dirty-no-work"`: the fresh proof, including the exact paths a removal must put back. */
+  dirtyNoWork?: DirtyNoWorkProof
 }
 
 /**
@@ -391,11 +454,22 @@ export async function resolveGcClass(
   liveness: LivenessState,
   options: ResolveGcClassOptions,
 ): Promise<ResolvedGcClass> {
-  const baseClass = classifyForGc(tree, integration, liveness, options)
-  if (baseClass !== "hold") return { class: baseClass }
+  const baseRef = options.defaultBranchRef ?? "origin/main"
+  let detachedProof: DetachedProof | null = null
+  if (integration.state === "detached" && detachedProofApplies(tree, liveness)) {
+    detachedProof = await provenDetachedInBase(options.repoRoot, baseRef, options.tipSha, options.forge)
+  }
+  const baseClass = classifyForGc(tree, integration, liveness, { ...options, detachedInBase: detachedProof !== null })
+  if (tree.state === "dirty" && baseClass !== "reclaim") {
+    const dirtyNoWork = await provenDirtyNoWork(tree, integration, liveness, options, baseRef, detachedProof !== null)
+    if (dirtyNoWork) return { class: "reclaim", reclaimReason: "dirty-no-work", dirtyNoWork }
+  }
+  if (baseClass !== "hold") {
+    const reason = detachedProof === "squash-merged" || detachedProof === "patch-merged" ? detachedProof : undefined
+    return reason ? { class: baseClass, reclaimReason: reason } : { class: baseClass }
+  }
   if (tree.state !== "clean") return { class: "hold" }
 
-  const baseRef = options.defaultBranchRef ?? "origin/main"
   if (integration.state === "unpushed" && (await isMechanicalDepBumpRange(options.repoRoot, baseRef, options.tipSha))) {
     return { class: "reclaim", reclaimReason: "dep-bump" }
   }
@@ -404,6 +478,45 @@ export async function resolveGcClass(
     if (inBase) return { class: "reclaim", reclaimReason: inBase }
   }
   return { class: "hold" }
+}
+
+// ── dirty, but no work ──────────────────────────────────────────────────
+//
+// A dirty tree used to end the road to `reclaim` outright: `classify` only
+// reclaims `tree = clean`, a `merged` dirty tree goes to `salvage` (skipped
+// without `--salvage-dirty`), and every promotion in `resolveGcClass` above
+// bails on `tree.state !== "clean"`. Some dirt carries no work, though, and
+// the operator was left force-removing it by hand: an emptied checkout,
+// turbo's self-written `AGENTS.md` block, changes that already landed on
+// base through another PR. `proveDirtCarriesNoWork` (dirty-no-work.ts)
+// proves those from content; this gate decides when it is worth asking:
+//   - the branch's own commits are integrated: `merged`, `fresh`, a detached
+//     HEAD proven in base, or `branch gc`'s in-base ladder;
+//   - idle/daemon-unreachable liveness, and no dirty path written inside
+//     `RECENT_WRITE_HOLD_WINDOW_MS` (same backstop as `classify`'s).
+// Anything unproven keeps the class it already had.
+
+async function provenDirtyNoWork(
+  tree: TreeState,
+  integration: IntegrationState,
+  liveness: LivenessState,
+  options: ResolveGcClassOptions,
+  baseRef: string,
+  detachedInBase: boolean,
+): Promise<DirtyNoWorkProof | null> {
+  if (!options.worktreePath || tree.state !== "dirty") return null
+  if (liveness.state !== "idle" && liveness.state !== "daemon-unreachable") return null
+  const nowMs = options.nowMs ?? Date.now()
+  if (typeof tree.newestMtimeMs === "number" && nowMs - tree.newestMtimeMs < RECENT_WRITE_HOLD_WINDOW_MS) return null
+  const proof = await proveDirtCarriesNoWork(options.repoRoot, options.worktreePath, baseRef)
+  if (!proof) return null
+  if (integration.state === "merged" || integration.state === "fresh") return proof
+  if (integration.state === "detached") {
+    if (detachedInBase) return proof
+    return (await provenDetachedInBase(options.repoRoot, baseRef, options.tipSha, options.forge)) ? proof : null
+  }
+  if (options.inBaseCheck === false) return null
+  return (await provenInBase(integration, liveness, options.repoRoot, baseRef, options.tipSha)) ? proof : null
 }
 
 // ── in-base promotion ───────────────────────────────────────────────────
@@ -423,6 +536,7 @@ export async function resolveGcClass(
 
 const IN_BASE_PROMOTABLE: ReadonlySet<IntegrationState["state"]> = new Set([
   "partial",
+  "closed-unmerged",
   "diverged",
   "pushed-no-pr",
   "unpushed",
@@ -449,6 +563,47 @@ async function provenInBase(
   }
 }
 
+// ── detached HEAD proof ─────────────────────────────────────────────────
+//
+// A detached HEAD is an anonymous branch: `git worktree remove` drops the
+// only local ref to its commits, so reclaiming one whose sha is not in base
+// can lose work (a worktree sitting on a remote branch's unmerged commits is
+// the observed case). Same ladder as a branch tip, minus the content-coverage
+// tier: ancestor, squash (`merge-tree --write-tree` == base tree), patch
+// (`git cherry` all `-`), then a merged PR whose head IS the sha when the
+// forge answers. Anything else, including a forge error, is "not proven".
+
+type DetachedProof = "merged" | "squash-merged" | "patch-merged" | "merged-pr-head"
+
+/** Cheap pre-gate so the ladder's git spawns are only paid for a detached worktree that could actually leave. */
+function detachedProofApplies(tree: TreeState, liveness: LivenessState): boolean {
+  if (liveness.state !== "idle" && liveness.state !== "daemon-unreachable") return false
+  if (tree.state === "clean") return true
+  return tree.state === "dirty" && tree.modified === 0 && tree.staged === 0 && tree.untracked > 0 && tree.onlyUnder === ".plans/"
+}
+
+async function provenDetachedInBase(
+  repoRoot: string,
+  baseRef: string,
+  sha: string,
+  forge: ForgeClient | undefined,
+): Promise<DetachedProof | null> {
+  try {
+    const tip = await classifyTipAgainstBase(repoRoot, baseRef, sha)
+    if (tip.status === "merged" || tip.status === "squash-merged" || tip.status === "patch-merged") return tip.status
+  } catch {
+    // A git error proves nothing; the forge tier below may still prove it.
+  }
+  if (!forge) return null
+  try {
+    const prs = await forge.pullRequestsForCommit(sha)
+    if (prs.some((pr) => pr.merged && pr.headRefOid === sha)) return "merged-pr-head"
+  } catch {
+    // Forge unreachable proves nothing — keep holding.
+  }
+  return null
+}
+
 // ── plan ─────────────────────────────────────────────────────────────
 
 export interface GcPlanEntry {
@@ -472,6 +627,20 @@ export interface GcPlanEntry {
   reclaimReason?: GcReclaimReason
   /** Set only when `class === "hold"` via `protectedPaths` (`isProtectedPath`) or the recent-activity guard (`activeMinutes`) — distinguishes this from an ordinary snapshot-based hold. */
   holdReason?: GcHoldReason
+  /**
+   * Set only with `reclaimReason: "dirty-no-work"`: which sub-cases explained
+   * the dirt and how many paths a removal will put back first, so a dry run
+   * shows why a dirty worktree is leaving.
+   */
+  dirtyNoWork?: { cases: DirtyNoWorkCase[]; paths: number }
+  /**
+   * mtime (epoch ms) of the worktree's git index when the plan read it. `applyGc`
+   * compares it with the index as it is at apply time and skips the entry as
+   * stale when it moved: someone ran a git command in the worktree after the
+   * plan was made, so the plan no longer describes it. Absent when the index
+   * could not be read, and for orphan/prunable entries.
+   */
+  indexMtimeMs?: number
   /**
    * `true` only for a directory the orphan scan found: physically present
    * under the repo's worktree pool, but absent from `git worktree list`
@@ -529,6 +698,17 @@ export interface PlanGcInput {
    * `0` disables the guard entirely.
    */
   activeMinutes?: number
+  /**
+   * cwds of the sessions the daemon's registry reports alive right now. Fills
+   * the liveness axis (`liveness.daemonSessions`, so `sessionCount` reflects
+   * the registry rather than only the on-disk snapshot) and makes a worktree
+   * with a live session `hold`. Omitted ⇒ the daemon was not consulted.
+   */
+  liveSessionCwds?: readonly string[]
+  /** Worktrees classified at once. Default `DEFAULT_STATUS_CONCURRENCY` (status.ts); `1` is serial. */
+  concurrency?: number
+  /** Called as each worktree finishes, so a long sweep can report progress. */
+  onProgress?: (done: number, total: number, path: string) => void
 }
 
 /** Every linked worktree of `repoRoot` except the main checkout itself — see the module docblock. */
@@ -812,58 +992,50 @@ async function reclaimPrunable(entry: GcPlanEntry, options: ApplyGcOptions): Pro
 
 async function toPlanEntry(
   repoRoot: string,
+  forge: ForgeClient,
   defaultBranchRef: string | undefined,
   worktree: GitWorktreeRef,
   status: { tree: TreeState; integration: IntegrationState; liveness: LivenessState },
   includeDetached: boolean,
   nowMs: number,
-  recentlyActive: boolean,
+  activity: { indexMtimeMs: number | null; recentlyActive: boolean },
   protectedPaths?: readonly string[],
 ): Promise<GcPlanEntry> {
-  if (isProtectedPath(worktree.path, protectedPaths)) {
-    return {
-      path: worktree.path,
-      branch: worktree.branch,
-      head: worktree.head,
-      tree: status.tree,
-      integration: status.integration,
-      liveness: status.liveness,
-      class: "hold",
-      holdReason: "live-session-cwd",
-    }
-  }
-  // Recent activity wins before classification even runs — it can only ever
-  // hold, so there is no point paying the dep-bump/in-base git spawns for a
-  // worktree that isn't leaving either way (same shape as the protectedPaths
-  // check above it).
-  if (recentlyActive) {
-    return {
-      path: worktree.path,
-      branch: worktree.branch,
-      head: worktree.head,
-      tree: status.tree,
-      integration: status.integration,
-      liveness: status.liveness,
-      class: "hold",
-      holdReason: "recent-activity",
-    }
-  }
-  const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
-    repoRoot,
-    tipSha: worktree.head,
-    defaultBranchRef,
-    includeDetached,
-    nowMs,
-  })
-  return {
+  const entry = {
     path: worktree.path,
     branch: worktree.branch,
     head: worktree.head,
     tree: status.tree,
     integration: status.integration,
     liveness: status.liveness,
+    ...(activity.indexMtimeMs !== null ? { indexMtimeMs: activity.indexMtimeMs } : {}),
+  }
+  if (isProtectedPath(worktree.path, protectedPaths)) {
+    return { ...entry, class: "hold", holdReason: "live-session-cwd" }
+  }
+  // Recent activity wins before classification even runs — it can only ever
+  // hold, so there is no point paying the dep-bump/in-base git spawns for a
+  // worktree that isn't leaving either way (same shape as the protectedPaths
+  // check above it).
+  if (activity.recentlyActive) {
+    return { ...entry, class: "hold", holdReason: "recent-activity" }
+  }
+  const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
+    repoRoot,
+    tipSha: worktree.head,
+    worktreePath: worktree.path,
+    forge,
+    defaultBranchRef,
+    includeDetached,
+    nowMs,
+  })
+  return {
+    ...entry,
     class: resolved.class,
     ...(resolved.reclaimReason ? { reclaimReason: resolved.reclaimReason } : {}),
+    ...(resolved.dirtyNoWork
+      ? { dirtyNoWork: { cases: resolved.dirtyNoWork.cases, paths: resolved.dirtyNoWork.paths.length } }
+      : {}),
   }
 }
 
@@ -877,48 +1049,61 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
   // One frozen instant for the whole plan's recent-write checks.
   const nowMs = input.nowMs ?? Date.now()
   const worktrees = await linkedWorktreesOf(input.repoRoot)
-  const entries: GcPlanEntry[] = []
-  for (const worktree of worktrees) {
-    // git already told us this one is dead — classify it from that signal
-    // alone, without spawning a single git command against its (nonexistent)
-    // path. See the "prunable reclaim" section above `toPlanEntry`.
-    if (worktree.prunable) {
-      entries.push(makePrunablePlanEntry(worktree, input.protectedPaths))
-      continue
-    }
-    // Index mtime FIRST: `computeWorktreeStatus`'s `git status` rewrites the
-    // index, so reading it after would report this sweep's own read as
-    // recent activity. See the "recent-activity guard" section.
-    const recentlyActive = await isRecentlyActive(
-      input.repoRoot,
-      worktree.path,
-      input.activeMinutes,
-      nowMs,
-    )
-    const status = await computeWorktreeStatus({
-      repoRoot: input.repoRoot,
-      repoName: input.repoName,
-      worktree,
-      forge: input.forge,
-      memo: input.memo,
-      defaultBranchRef: input.defaultBranchRef,
-      sessionsPath: input.sessionsPath,
-      now: input.now,
-      noisePaths: input.noisePaths ?? DEFAULT_GC_NOISE_PATHS,
-    })
-    entries.push(
-      await toPlanEntry(
+  const noise = resolveGcNoise(input.noisePaths)
+  // One registry read for the whole sweep: liveness and provenance each used
+  // to re-parse every sessions.json for every worktree.
+  const sessionsRegistry = worktrees.length > 1 ? await readSessionsRegistry(input.sessionsPath) : undefined
+  let done = 0
+  const entries = await mapWithConcurrency(
+    worktrees,
+    input.concurrency ?? DEFAULT_STATUS_CONCURRENCY,
+    async (worktree): Promise<GcPlanEntry> => {
+      // git already told us this one is dead — classify it from that signal
+      // alone, without spawning a single git command against its (nonexistent)
+      // path. See the "prunable reclaim" section above `toPlanEntry`.
+      if (worktree.prunable) {
+        const entry = makePrunablePlanEntry(worktree, input.protectedPaths)
+        input.onProgress?.(++done, worktrees.length, worktree.path)
+        return entry
+      }
+      // Index mtime FIRST: `computeWorktreeStatus`'s `git status` rewrites the
+      // index, so reading it after would report this sweep's own read as
+      // recent activity. See the "recent-activity guard" section.
+      const indexActivity = await readIndexActivity(input.repoRoot, worktree.path, input.activeMinutes, nowMs)
+      const status = await computeWorktreeStatus({
+        repoRoot: input.repoRoot,
+        repoName: input.repoName,
+        worktree,
+        forge: input.forge,
+        memo: input.memo,
+        defaultBranchRef: input.defaultBranchRef,
+        sessionsPath: input.sessionsPath,
+        now: input.now,
+        nowMs,
+        noisePaths: noise.noisePaths,
+        conditionalNoisePaths: noise.conditionalNoisePaths,
+        ...(input.liveSessionCwds ? { liveSessionCwds: input.liveSessionCwds } : {}),
+        ...(sessionsRegistry !== undefined ? { sessionsRegistry } : {}),
+      })
+      const entry = await toPlanEntry(
         input.repoRoot,
+        input.forge,
         input.defaultBranchRef,
         worktree,
         status,
         includeDetached,
         nowMs,
-        recentlyActive,
+        {
+          indexMtimeMs: indexActivity.mtimeMs,
+          recentlyActive:
+            indexActivity.active || isDirtyTreeRecentlyWritten(status.tree, input.activeMinutes, nowMs),
+        },
         input.protectedPaths,
-      ),
-    )
-  }
+      )
+      input.onProgress?.(++done, worktrees.length, worktree.path)
+      return entry
+    },
+  )
   if (input.worktreesRoot) {
     const orphanPaths = await scanOrphanWorktreePaths(input.repoRoot, input.worktreesRoot)
     for (const path of orphanPaths) entries.push(makeOrphanPlanEntry(path, input.protectedPaths))
@@ -954,6 +1139,8 @@ export interface ApplyGcOptions {
    * Default `DEFAULT_GC_ACTIVE_MINUTES` (60); `0` disables the guard.
    */
   activeMinutes?: number
+  /** See `PlanGcInput.liveSessionCwds` — re-read at apply time (layer 2) so a session that started after the plan holds the worktree. */
+  liveSessionCwds?: readonly string[]
   /**
    * The bucket directory this repo's worktrees are provisioned under — the
    * same value `planGc` takes. When passed, apply first fires
@@ -964,6 +1151,16 @@ export interface ApplyGcOptions {
    * apply time are harmless, and the sweep never blocks on the deletes.
    */
   worktreesRoot?: string
+  /**
+   * The reviewed tier: `hold`-class plan entries at `paths` are removed
+   * WORKTREE ONLY (the branch is kept) when, re-checked at apply time, the
+   * worktree is unchanged since the plan, clean, idle, has no open PR, and
+   * the branch verdict store holds an agreeing verdict (`gate.agree`) for its
+   * exact tip. Nothing about the branch is decided here: it is left for
+   * `branch gc`'s reviewed rung and its line-coverage guard. Any check that
+   * fails leaves the worktree untouched as `skipped-stale` with the reason.
+   */
+  reviewed?: { paths: readonly string[]; verdicts: BranchVerdictStore }
 }
 
 export type GcApplyOutcome =
@@ -976,6 +1173,14 @@ export type GcApplyOutcome =
   | { path: string; branch: string | null; result: "aborted-reclassified"; from: GcClass; to: GcClass; holdReason?: GcHoldReason }
   /** The worktree named in the plan no longer exists (already removed by something else since the plan was made). */
   | { path: string; branch: string | null; result: "aborted-vanished" }
+  /**
+   * The worktree is still there and classifies the same, but its branch, HEAD
+   * or git index changed since the plan was made, so the plan's verdict was
+   * about a different state. Left untouched; `reason` says which check fired.
+   */
+  | { path: string; branch: string | null; result: "skipped-stale"; reason: string }
+  /** Reviewed tier (`ApplyGcOptions.reviewed`): the worktree was removed, its branch kept for `branch gc` to judge. */
+  | { path: string; branch: string | null; result: "removed-keep-branch" }
   /** git itself (or the salvage snapshot) refused — the TOCTOU backstop actually firing, or a real I/O failure. */
   | { path: string; branch: string | null; result: "failed"; message: string }
 
@@ -1005,9 +1210,13 @@ async function reclaimOne(
   worktree: GitWorktreeRef,
   reclaimReason?: GcReclaimReason,
   tree?: TreeState,
+  dirtyNoWork?: DirtyNoWorkProof,
 ): Promise<GcApplyOutcome> {
   try {
     if (tree?.state === "clean" && tree.noise?.length) await discardNoise(options.repoRoot, worktree.path, tree.noise)
+    // Same posture as the noise discard: only the exact paths the fresh
+    // proof just listed, then the plain non-force removal below.
+    if (dirtyNoWork) await discardProvenDirt(options.repoRoot, worktree.path, dirtyNoWork.paths)
     await runTool({
       tool: cleanupWorktreeTool,
       candidates,
@@ -1017,8 +1226,9 @@ async function reclaimOne(
         ...(worktree.branch ? { branch: worktree.branch } : {}),
         // Branch deletion only ever runs for a `reclaim`-class entry, which by
         // construction requires `integration ∈ {merged(*), fresh}` and
-        // `tree = clean` (PLAN.md's invariant: branch -D only when there's
-        // nothing uncommitted to lose, never a hold class).
+        // `tree = clean`, or dirt just proven to carry no work and put back
+        // above (PLAN.md's invariant: branch -D only when there's nothing
+        // uncommitted to lose, never a hold class).
         deleteBranch: true,
         // No discardUntracked/discardModified, ever, on this path (PLAN.md
         // §5.2 layer 3): `reclaim` means `tree = clean`, so plain `git
@@ -1096,6 +1306,20 @@ async function salvageOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Pr
   return { path: worktree.path, branch: worktree.branch, result: "salvaged", salvageDir }
 }
 
+/** Why `entry` (a plan-time snapshot) no longer describes `fresh`, or `null` when nothing the plan recorded has moved. */
+function staleSincePlan(entry: GcPlanEntry, fresh: GitWorktreeRef, indexMtimeMs: number | null): string | null {
+  if (entry.branch !== fresh.branch) {
+    return `branch changed since the plan (${entry.branch ?? "detached"} -> ${fresh.branch ?? "detached"})`
+  }
+  if (entry.head !== fresh.head) {
+    return `HEAD moved since the plan (${entry.head.slice(0, 9)} -> ${fresh.head.slice(0, 9)})`
+  }
+  if (entry.indexMtimeMs !== undefined && indexMtimeMs !== null && entry.indexMtimeMs !== indexMtimeMs) {
+    return "git index changed since the plan (a git command ran in the worktree)"
+  }
+  return null
+}
+
 async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<GcApplyOutcome> {
   // Layer 2's own layer 2: re-checked first, ahead of every other branch
   // below (orphan or linked, whatever the plan's stale `class` says) — a
@@ -1129,6 +1353,9 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   if (entry.prunable) {
     return reclaimPrunable(entry, options)
   }
+  if (entry.class === "hold" && options.reviewed?.paths.includes(entry.path)) {
+    return removeReviewedHold(entry, options, options.reviewed.verdicts)
+  }
   if (entry.class === "hold") {
     // Already held by the plan — nothing to re-check (a hold never removes
     // anything), but carry the plan's reason through to the outcome so a
@@ -1144,12 +1371,8 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   // rewrite the index and report this sweep's own read as fresh activity.
   // The verdict is applied after `resolveGcClass`, so an entry that
   // reclassified for its own reason still reports that reason first.
-  const recentlyActive = await isRecentlyActive(
-    options.repoRoot,
-    entry.path,
-    options.activeMinutes,
-    options.nowMs ?? Date.now(),
-  )
+  const applyNowMs = options.nowMs ?? Date.now()
+  const indexActivity = await readIndexActivity(options.repoRoot, entry.path, options.activeMinutes, applyNowMs)
   // Layer 2 (PLAN.md §5.2): re-check immediately before touching anything.
   // Re-derive the worktree ref itself, not just its status — a branch can
   // flip between plan and apply (the rendezvous-deploy branch-flip mid-
@@ -1169,7 +1392,8 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
     defaultBranchRef: options.defaultBranchRef,
     sessionsPath: options.sessionsPath,
     now: options.now,
-    noisePaths: options.noisePaths ?? DEFAULT_GC_NOISE_PATHS,
+    ...resolveGcNoise(options.noisePaths),
+    ...(options.liveSessionCwds ? { liveSessionCwds: options.liveSessionCwds } : {}),
   })
   // Re-resolved from scratch — including the dep-bump exemption, not just
   // `entry`'s stale plan-time verdict, so a worktree that picked up a real
@@ -1178,6 +1402,8 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
     repoRoot: options.repoRoot,
     tipSha: fresh.head,
+    worktreePath: fresh.path,
+    forge: options.forge,
     defaultBranchRef: options.defaultBranchRef,
     includeDetached: Boolean(options.includeDetached),
     nowMs: options.nowMs,
@@ -1185,6 +1411,7 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   // Recent activity beats everything but an already-`hold` verdict: a
   // worktree someone is in right now is never reclaimed OR salvaged, however
   // fresh the plan was when it said otherwise.
+  const recentlyActive = indexActivity.active || isDirtyTreeRecentlyWritten(status.tree, options.activeMinutes, applyNowMs)
   if (recentlyActive && resolved.class !== "hold") {
     return {
       path: entry.path,
@@ -1204,12 +1431,78 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
       to: resolved.class,
     }
   }
+  // Same class is not the same worktree: a branch flip between two merged
+  // branches, a new commit on a still-merged branch, or any git write since
+  // the plan all keep the class and would otherwise delete state the plan
+  // never looked at.
+  const stale = staleSincePlan(entry, fresh, indexActivity.mtimeMs)
+  if (stale) return { path: entry.path, branch: fresh.branch, result: "skipped-stale", reason: stale }
 
-  if (resolved.class === "reclaim") return reclaimOne(options, fresh, resolved.reclaimReason, status.tree)
+  if (resolved.class === "reclaim") return reclaimOne(options, fresh, resolved.reclaimReason, status.tree, resolved.dirtyNoWork)
   // The only other class that reaches this point is "salvage" with
   // `options.salvageDirty` true (both earlier guards above already returned
   // for "hold" and for "salvage" without the flag).
   return salvageOne(options, fresh)
+}
+
+/**
+ * The reviewed tier (`ApplyGcOptions.reviewed`): remove a held worktree whose
+ * branch a reviewer agreed carries nothing of value, keeping the branch. Every
+ * fact the decision rests on is re-read here, immediately before the removal,
+ * never taken from the plan: the worktree ref (branch, HEAD, index), its tree,
+ * liveness and PR state, and the stored verdict for the tip as it is NOW.
+ */
+async function removeReviewedHold(entry: GcPlanEntry, options: ApplyGcOptions, verdicts: BranchVerdictStore): Promise<GcApplyOutcome> {
+  const skip = (reason: string, branch: string | null = entry.branch): GcApplyOutcome => ({
+    path: entry.path,
+    branch,
+    result: "skipped-stale",
+    reason,
+  })
+  if (entry.holdReason) return skip(`held at plan time (${entry.holdReason})`)
+  if (!entry.branch) return skip("detached HEAD: no branch for branch gc to judge")
+  const nowMs = options.nowMs ?? Date.now()
+  // Index mtime before the status read, as in `applyOne`.
+  const indexActivity = await readIndexActivity(options.repoRoot, entry.path, options.activeMinutes, nowMs)
+  const fresh = await findWorktree(options.repoRoot, entry.path)
+  if (!fresh) return { path: entry.path, branch: entry.branch, result: "aborted-vanished" }
+  const stale = staleSincePlan(entry, fresh, indexActivity.mtimeMs)
+  if (stale) return skip(stale, fresh.branch)
+  const status = await computeWorktreeStatus({
+    repoRoot: options.repoRoot,
+    repoName: options.repoName,
+    worktree: fresh,
+    forge: options.forge,
+    memo: options.memo,
+    defaultBranchRef: options.defaultBranchRef,
+    sessionsPath: options.sessionsPath,
+    now: options.now,
+    ...resolveGcNoise(options.noisePaths),
+    ...(options.liveSessionCwds ? { liveSessionCwds: options.liveSessionCwds } : {}),
+  })
+  if (status.tree.state !== "clean") return skip(`tree is ${status.tree.state}`, fresh.branch)
+  if (status.liveness.state !== "idle" || livenessSessionCount(status.liveness) > 0) {
+    return skip(`not idle (liveness ${status.liveness.state})`, fresh.branch)
+  }
+  if (status.integration.state === "open") return skip(`open PR #${status.integration.pr}`, fresh.branch)
+  if (indexActivity.active) return skip("recent activity in the worktree", fresh.branch)
+  const verdict = await verdicts.get(options.repoName, fresh.head)
+  if (!verdict) return skip(`no stored verdict for tip ${fresh.head.slice(0, 9)}`, fresh.branch)
+  if (verdict.gate?.agree !== true) return skip(`stored verdict for tip ${fresh.head.slice(0, 9)} does not agree`, fresh.branch)
+  try {
+    if (status.tree.noise?.length) await discardNoise(options.repoRoot, fresh.path, status.tree.noise)
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      // Worktree only, never `deleteBranch`: the branch is judged by `branch gc`
+      // (reviewed rung + line-coverage guard + restore log), not by this path.
+      // No discard flags: a tree that got dirty since the re-check makes git refuse.
+      input: { repoRoot: options.repoRoot, cwd: fresh.path, deleteBranch: false },
+    })
+  } catch (err) {
+    return { path: fresh.path, branch: fresh.branch, result: "failed", message: err instanceof Error ? err.message : String(err) }
+  }
+  return { path: fresh.path, branch: fresh.branch, result: "removed-keep-branch" }
 }
 
 /**
@@ -1266,12 +1559,8 @@ export async function reclaimOneWorktree(
     return applyOne(makePrunablePlanEntry(worktree, options.protectedPaths), options)
   }
   // Index mtime before the status read below — see "recent-activity guard".
-  const recentlyActive = await isRecentlyActive(
-    options.repoRoot,
-    worktree.path,
-    options.activeMinutes,
-    options.nowMs ?? Date.now(),
-  )
+  const reclaimNowMs = options.nowMs ?? Date.now()
+  const indexActivity = await readIndexActivity(options.repoRoot, worktree.path, options.activeMinutes, reclaimNowMs)
   const status = await computeWorktreeStatus({
     repoRoot: options.repoRoot,
     repoName: options.repoName,
@@ -1281,16 +1570,21 @@ export async function reclaimOneWorktree(
     defaultBranchRef: options.defaultBranchRef,
     sessionsPath: options.sessionsPath,
     now: options.now,
-    noisePaths: options.noisePaths ?? DEFAULT_GC_NOISE_PATHS,
+    ...resolveGcNoise(options.noisePaths),
+    ...(options.liveSessionCwds ? { liveSessionCwds: options.liveSessionCwds } : {}),
   })
   const entry = await toPlanEntry(
     options.repoRoot,
+    options.forge,
     options.defaultBranchRef,
     worktree,
     status,
     Boolean(options.includeDetached),
-    options.nowMs ?? Date.now(),
-    recentlyActive,
+    reclaimNowMs,
+    {
+      indexMtimeMs: indexActivity.mtimeMs,
+      recentlyActive: indexActivity.active || isDirtyTreeRecentlyWritten(status.tree, options.activeMinutes, reclaimNowMs),
+    },
     options.protectedPaths,
   )
   return applyOne(entry, options)

@@ -9,12 +9,14 @@
  *       entry: node server.js   # the shell command to run
  *       port: 4321          # optional 1..65535 bookkeeping/health touchpoint
  *
- * One managed process per entry (see `app-service-process.ts` — a
+ * One managed process per entry, kept alive (see `app-service-process.ts` — a
  * deterministic, non-PTY child spawned detached and adopted into the
  * `sessions` REGISTRY, no LLM adapter involved) with its ownership
  * bookkeeping (label, origin, store record) here. The runner restarts the
  * child with backoff on an unexpected exit, capped; there is deliberately
- * NO scheduler here — no cron, no k8s, no queue.
+ * NO scheduler here — no cron, no k8s, no queue. An entry with
+ * `activation: { mode: "on-demand" }` is not kept alive: the host holds its
+ * port and runs the process only while it is used (`app-service-on-demand.ts`).
  *
  * Ownership is persisted (appId + name + entry + the live process's
  * `sessionId` + its process-group-leader `pid`, in a JSON store next to the
@@ -34,6 +36,14 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { parseServiceList, type AppService } from "@agentproto/app"
+
+import {
+  APP_SERVICE_PUBLIC_URL_ENV,
+  exposureEnv,
+  isExposedService,
+  type AppServiceExposer,
+  type AppServiceExposure,
+} from "./app-service-expose.js"
 
 export type { AppService }
 
@@ -81,7 +91,23 @@ export interface AppServiceOwner {
   startTicks?: number
   /** Mirrors the declared `port` for bookkeeping. */
   port?: number
+  /** Set for an `activation: on-demand` service (AIP-53 Activation); absent =
+   *  keep-alive. `sessionId`/`pid`/`startTicks` then name the LIVE process,
+   *  or the last one while the service is idle (no `pid`). A kept owner
+   *  whose mode no longer matches the manifest is replaced. */
+  activation?: "on-demand"
+  /** The `AGENTPROTO_PUBLIC_URL` origin the live process was spawned with
+   *  (AIP-53 Exposure rule 3). Unset: spawned without one. A kept owner
+   *  whose origin is no longer the current one is respawned. */
+  publicUrl?: string
   startedAt: string
+}
+
+/** How the manifest wants this service run: only `on-demand` is recorded on
+ *  an owner, so a record without it (and every pre-activation record) is
+ *  keep-alive. */
+export function serviceActivationMode(service: AppService): "always" | "on-demand" {
+  return service.activation?.mode === "on-demand" ? "on-demand" : "always"
 }
 
 /** The descriptor label a service owner is spawned under. */
@@ -264,6 +290,8 @@ export type SpawnServiceOwner = (input: {
   dir: string
   service: AppService
   workspaceSlug?: string
+  /** Extra process env, e.g. `AGENTPROTO_PUBLIC_URL` of an exposed service. */
+  env?: Record<string, string>
 }) => Promise<SpawnServiceOwnerResult>
 
 export interface EnsureAppServiceOwnersDeps {
@@ -275,12 +303,15 @@ export interface EnsureAppServiceOwnersDeps {
   isOwnerAlive: (owner: AppServiceOwner) => boolean
   /** Spawn one owner. The caller binds app/dir/workspace — this module only
    *  knows the service entries and the ownership bookkeeping. */
-  spawn: (service: AppService) => Promise<SpawnServiceOwnerResult>
+  spawn: (service: AppService, extra?: { env?: Record<string, string> }) => Promise<SpawnServiceOwnerResult>
   /** Kill ONE owner: the owner session + its recorded pid. Best-effort, may
    *  be async. */
   killOwner: (owner: AppServiceOwner) => void | Promise<void>
   /** Clock seam for `startedAt` (tests). */
   now?: () => Date
+  /** AIP-53 `expose`: tunnels for exposed services, ensured BEFORE their
+   *  process spawns. Omitted: `expose` is ignored (nothing published). */
+  exposer?: AppServiceExposer
 }
 
 export interface EnsureAppServiceOwnersResult {
@@ -295,6 +326,13 @@ export interface EnsureAppServiceOwnersResult {
    *  dropped by THIS call (full reconciliation; audit F-7: a purged
    *  manifest entry must not keep a live process across a reinstall). */
   removed: string[]
+  /** Per exposed service: its tunnel, or why it failed (a failed tunnel
+   *  never blocks the process). Present when an exposer is wired and the
+   *  manifest exposes a service. */
+  exposures?: AppServiceExposure[]
+  /** Services whose tunnel THIS call deleted (service removed from the
+   *  manifest, or its `expose` dropped). */
+  unexposed?: string[]
 }
 
 /**
@@ -326,9 +364,43 @@ export async function ensureAppServiceOwners(
     const errors: Array<{ name: string; error: string }> = []
     const removed: string[] = []
 
+    // AIP-53 Exposure rule 3: tunnel before process. A running process
+    // started with another origin than the current one (`expose` added, or
+    // a provider that handed out a new URL) is restarted with the new env.
+    // Only judged when an exposer is wired; a tunnel in error keeps the
+    // process as is (a transient failure must not take a working service
+    // down).
+    const originIsStale = (owner: AppServiceOwner, exposure: AppServiceExposure | undefined): boolean => {
+      if (deps.exposer === undefined) return false
+      if (exposure?.state === "error") return false
+      return owner.publicUrl !== exposure?.publicUrl
+    }
+    // A running owner of the other activation mode is replaced (a keep-alive
+    // process would keep holding the port an on-demand host must own, and an
+    // idle on-demand host has nothing to serve a keep-alive manifest).
+    const activationIsStale = (owner: AppServiceOwner, service: AppService): boolean =>
+      (owner.activation ?? "always") !== serviceActivationMode(service)
+    // Tunnels are ensured for kept owners too (idempotent on the key: same
+    // tunnel back, restarted if it is down).
+    const exposures: AppServiceExposure[] = []
+    const exposureByName = new Map<string, AppServiceExposure>()
+    if (deps.exposer !== undefined) {
+      for (const service of deps.services) {
+        if (!isExposedService(service)) continue
+        const exposure = await deps.exposer.ensure(deps.appId, service)
+        exposures.push(exposure)
+        exposureByName.set(service.name, exposure)
+      }
+    }
+
     for (const service of deps.services) {
       const prev = byName.get(service.name)
-      if (prev !== undefined && deps.isOwnerAlive(prev)) {
+      if (
+        prev !== undefined &&
+        deps.isOwnerAlive(prev) &&
+        !originIsStale(prev, exposureByName.get(service.name)) &&
+        !activationIsStale(prev, service)
+      ) {
         kept.push(prev)
         continue
       }
@@ -340,7 +412,8 @@ export async function ensureAppServiceOwners(
         }
         deps.store.remove(deps.appId, service.name)
       }
-      const res = await deps.spawn(service)
+      const env = exposureEnv(exposureByName.get(service.name))
+      const res = await deps.spawn(service, Object.keys(env).length > 0 ? { env } : undefined)
       if (!res.ok) {
         errors.push({ name: service.name, error: res.error })
         continue
@@ -353,6 +426,8 @@ export async function ensureAppServiceOwners(
         ...(res.pid !== undefined ? { pid: res.pid } : {}),
         ...(res.startTicks !== undefined ? { startTicks: res.startTicks } : {}),
         ...(service.port !== undefined ? { port: service.port } : {}),
+        ...(serviceActivationMode(service) === "on-demand" ? { activation: "on-demand" as const } : {}),
+        ...(env[APP_SERVICE_PUBLIC_URL_ENV] !== undefined ? { publicUrl: env[APP_SERVICE_PUBLIC_URL_ENV] } : {}),
         startedAt: now().toISOString(),
       }
       deps.store.upsert(owner)
@@ -373,7 +448,33 @@ export async function ensureAppServiceOwners(
       removed.push(orphan.name)
     }
 
-    return { spawned, kept, errors, removed }
+    // AIP-53 Exposure rule 7: a service removed from the manifest, or one
+    // that dropped `expose`, loses its tunnel (connector stopped, deleted).
+    const unexposed: string[] = []
+    if (deps.exposer !== undefined) {
+      const exposed = new Set(deps.services.filter(isExposedService).map(s => s.name))
+      for (const name of deps.exposer.list(deps.appId)) {
+        if (exposed.has(name)) continue
+        try {
+          await deps.exposer.remove(deps.appId, name)
+          unexposed.push(name)
+        } catch (err) {
+          // The registry keeps the descriptor with `lastError` for a retry.
+          console.warn(
+            `[app-services] tunnel of "${deps.appId}:${name}" not deleted: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+      }
+    }
+
+    return {
+      spawned,
+      kept,
+      errors,
+      removed,
+      ...(exposures.length > 0 ? { exposures } : {}),
+      ...(unexposed.length > 0 ? { unexposed } : {}),
+    }
   })
 }
 
@@ -399,6 +500,7 @@ export async function reensureAppServiceOwners(
     spawn: deps.spawn,
     killOwner: deps.killOwner,
     ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.exposer ? { exposer: deps.exposer } : {}),
   })
 }
 
@@ -414,6 +516,8 @@ export async function removeAppServiceOwners(deps: {
   store: AppServiceStore
   appId: string
   killOwner: (owner: AppServiceOwner) => void | Promise<void>
+  /** AIP-53 Exposure rule 7: every tunnel of the app is deleted too. */
+  exposer?: AppServiceExposer
 }): Promise<string[]> {
   return withAppServiceLock(deps.appId, async () => {
     const owners = deps.store.listForApp(deps.appId)
@@ -426,6 +530,18 @@ export async function removeAppServiceOwners(deps: {
       }
       deps.store.remove(deps.appId, owner.name)
       removed.push(owner.name)
+    }
+    if (deps.exposer !== undefined) {
+      for (const name of deps.exposer.list(deps.appId)) {
+        try {
+          await deps.exposer.remove(deps.appId, name)
+        } catch (err) {
+          // The registry keeps the descriptor with `lastError` for a retry.
+          console.warn(
+            `[app-services] tunnel of "${deps.appId}:${name}" not deleted: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+      }
     }
     return removed
   })

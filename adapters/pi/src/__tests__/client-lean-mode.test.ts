@@ -6,7 +6,7 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }))
 
 import { createAgentCliClient } from "../client.js"
 import { pi } from "../index.js"
-import type { AgentCliConnectOptions } from "@agentproto/driver-agent-cli"
+import type { AgentCliConnectOptions } from "@agentproto/harness"
 
 /** A minimal fake `pi --mode rpc` child: answers `get_state` immediately so
  *  `connect()`'s readiness probe resolves without a real pi binary. */

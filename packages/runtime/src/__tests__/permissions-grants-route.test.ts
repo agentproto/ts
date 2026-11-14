@@ -1,0 +1,298 @@
+import { describe, it, expect, vi } from "vitest"
+import { createServer } from "node:http"
+import { AddressInfo } from "node:net"
+
+import { createMcpServer } from "@agentproto/mcp-server"
+import type { Grant } from "@agentproto/policy"
+
+import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
+import { createRuntimeEvents } from "../events.js"
+import type { ConversationStore } from "../conversations.js"
+import type { HeartbeatRunner } from "../heartbeat.js"
+import { DEFAULT_MESSAGING_DEFAULTS } from "../messaging-defaults.js"
+import { recordDelegation, resetDelegationObservations } from "../delegation-gate.js"
+import { recordProfileUse, resetProfileObservations } from "../profile-gate.js"
+import { recordStdioMount, resetStdioMountObservations } from "../stdio-mount-gate.js"
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once("error", reject)
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as AddressInfo).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+const conversations: ConversationStore = {
+  async open() {},
+  async appendTurn() {},
+  async read() {
+    return { meta: {} as never, turns: [] }
+  },
+  async list() {
+    return []
+  },
+  pathFor: (id: string) => id,
+}
+const heartbeat: HeartbeatRunner = { start() {}, stop() {}, async fireNow() {} }
+
+function idle(sessionId: string): AgentSessionLike {
+  return {
+    sessionId,
+    // eslint-disable-next-line require-yield
+    async *send() {
+      return
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
+describe("GET /permissions/grants", () => {
+  it("reports the grants derived from the messaging switches and allowPromptFrom", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const s1 = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: "/tmp",
+      agentSession: idle("s1"),
+      adapterSlug: "fake",
+    })
+    registry.setOperatorLabel(s1.id, "brain")
+    registry.setPromptPolicy(s1.id, ["label:pygmalion-brain-persistent"])
+
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(),
+      commandPreview: "x",
+    })
+    const resolveMessagingDefaults = vi.fn(async () => ({
+      ...DEFAULT_MESSAGING_DEFAULTS,
+      allowSiblings: false,
+      allowSameWorkspace: true,
+      peerGroups: [] as string[][],
+    }))
+    const resolveOperatorDelegates = vi.fn(async () => ["label:ops"])
+
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      sessions: registry,
+      resolveAgentAdapter,
+      resolveMessagingDefaults,
+      resolveOperatorDelegates,
+      resolveDelegationGateMode: async () => "observe",
+      resolveProfileGateMode: async () => "observe",
+      resolveStdioMountGateMode: async () => "observe",
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    const base = `http://127.0.0.1:${port}`
+    resetDelegationObservations()
+    resetProfileObservations()
+    resetStdioMountObservations()
+    try {
+      const res = await fetch(`${base}/permissions/grants`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        grants: Array<{
+          source: string
+          grant: { principal: string; actions: Array<{ action: string; scope?: string }> }
+          sessionId?: string
+        }>
+        unmapped: Array<{ source: string; entry: string }>
+        configured: unknown[]
+        inputs: { allowSameWorkspace: boolean; peerBinding: string }
+        delegation: {
+          mode: string
+          since: string
+          counts: Record<string, number>
+          wouldDeny: Array<{ callerAgent: string; childAgent: string; count: number }>
+          undeclaredAgents: Array<{ agent: string; count: number }>
+        }
+        profileUse: {
+          mode: string
+          since: string
+          counts: Record<string, number>
+          wouldDeny: Array<{ callerProfile: string; requestedProfile: string; count: number }>
+        }
+        stdioMounts: {
+          mode: string
+          since: string
+          counts: Record<string, number>
+          wouldDeny: Array<{ command: string; count: number; lastAt: string }>
+        }
+      }
+      expect(body.inputs).toMatchObject({ allowSameWorkspace: true, peerBinding: "slug" })
+      expect(body.configured).toEqual([])
+      expect(body.grants.map(g => g.source)).toEqual([
+        "defaults.messaging.allowSameWorkspace",
+        "session.allowPromptFrom",
+      ])
+      expect(body.grants[1]).toMatchObject({
+        sessionId: s1.id,
+        grant: {
+          principal: "session-label://pygmalion-brain-persistent",
+          actions: [
+            { action: "session:prompt", scope: "label:brain" },
+            { action: "session:control", scope: "label:brain" },
+          ],
+        },
+      })
+      expect(body.unmapped).toEqual([
+        expect.objectContaining({
+          source: "defaults.tasks.operatorDelegates",
+          entry: "label:ops",
+        }),
+      ])
+      expect(resolveMessagingDefaults).toHaveBeenCalled()
+      expect(resolveOperatorDelegates).toHaveBeenCalled()
+      expect(body.delegation.mode).toBe("observe")
+      expect(body.delegation.counts).toEqual({
+        allowed: 0,
+        would_deny: 0,
+        undeclared: 0,
+        unbound: 0,
+        no_caller: 0,
+      })
+      expect(body.profileUse.mode).toBe("observe")
+      expect(body.profileUse.counts).toEqual({
+        allowed: 0,
+        would_deny: 0,
+        unnamed: 0,
+        no_caller: 0,
+        caller_unknown: 0,
+        external: 0,
+      })
+      expect(body.stdioMounts.mode).toBe("observe")
+      expect(body.stdioMounts.counts).toEqual({
+        allowed: 0,
+        would_deny: 0,
+        none: 0,
+        no_caller: 0,
+        caller_unknown: 0,
+        external: 0,
+        sandboxed: 0,
+      })
+
+      recordDelegation("would_deny", {
+        mode: "observe",
+        callerAgent: "executor",
+        childAgent: "supervisor",
+        surface: "mcp",
+      })
+      recordProfileUse("would_deny", {
+        mode: "observe",
+        callerProfiles: ["p-own"],
+        denied: ["p-other"],
+        surface: "mcp",
+      })
+      recordStdioMount("would_deny", {
+        mode: "observe",
+        denied: [{ name: "x", command: "evil", args: [] }],
+        surface: "mcp",
+      })
+      const after = (await (await fetch(`${base}/permissions/grants`)).json()) as typeof body
+      expect(after.delegation.counts.would_deny).toBe(1)
+      expect(after.delegation.wouldDeny).toEqual([
+        expect.objectContaining({ callerAgent: "executor", childAgent: "supervisor", count: 1 }),
+      ])
+      expect(after.profileUse.counts.would_deny).toBe(1)
+      expect(after.profileUse.wouldDeny).toEqual([
+        expect.objectContaining({ callerProfile: "p-own", requestedProfile: "p-other", count: 1 }),
+      ])
+      expect(after.stdioMounts.counts.would_deny).toBe(1)
+      expect(after.stdioMounts.wouldDeny).toEqual([
+        expect.objectContaining({ command: "evil", count: 1 }),
+      ])
+    } finally {
+      await http.stop()
+      resetDelegationObservations()
+      resetProfileObservations()
+      resetStdioMountObservations()
+    }
+  })
+
+  it("does not treat POST /permissions/grants as an approval", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(),
+      commandPreview: "x",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const res = await fetch(`${base}/permissions/grants`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approve" }),
+      })
+      expect(res.status).not.toBe(200)
+      expect(res.status).toBe(404)
+      const body = (await res.json()) as { error?: string }
+      expect(body.error).toBe("not_found")
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("reports the explicit configured grants beside the derived ones", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const grants: Grant[] = [
+      {
+        principal: "session-label://pygmalion-brain-persistent",
+        effect: "allow" as const,
+        actions: [{ action: "session:message", scope: "workspace:agentik-studio" }],
+      },
+    ]
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(),
+      commandPreview: "x",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      sessions: registry,
+      resolveAgentAdapter,
+      resolveMessagingDefaults: async () => ({ ...DEFAULT_MESSAGING_DEFAULTS, grants }),
+      resolveOperatorDelegates: async () => [],
+      resolveDelegationGateMode: async () => "observe",
+      resolveProfileGateMode: async () => "observe",
+      resolveStdioMountGateMode: async () => "observe",
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const body = (await (await fetch(`http://127.0.0.1:${port}/permissions/grants`)).json()) as {
+        configured: unknown[]
+        grants: Array<{ source: string }>
+      }
+      expect(body.configured).toEqual(grants)
+      // The derived list is unchanged: only the default same-workspace link.
+      expect(body.grants.map(g => g.source)).toEqual(["defaults.messaging.allowSameWorkspace"])
+    } finally {
+      await http.stop()
+      registry.shutdown()
+    }
+  })
+})

@@ -1,5 +1,67 @@
 # @agentproto/sandbox-computer
 
+## 0.7.1
+
+### Patch Changes
+
+- d7b0174: Stop a dead or dropped session from pinning a computer box. `sandbox_attach` rendezvous connects no longer take a session slot nobody can release, a failed `boot`/`connect` releases the slots it took, a throwing MCP `close()` can no longer skip the provider release, and the sandbox gc pass releases dead attachés' slots on boxes that stay in use (`releaseSession`), treats registry-absent sessions as dead (daemon opt-in, grace-limited) and runs its first pass two minutes after daemon start.
+- e77be01: With `egressIp: "auto"` and an egress health view, a create that names a pool slot and is refused for capacity on that slot's host now moves to a slot on a different host, then to plain `auto`, instead of sleeping the whole fleet-capacity window on the full host. `ComputerApiError` exposes the fleet's refusal `reason`.
+- 0fcf3f4: A placement-ladder rung that has a next rung no longer sits out the computer fleet's 12 minute `503 fleet-capacity` wait. The runtime passes the new `SandboxBootOpts.capacityWaitBudgetMs` (the rung's `agentStartTimeoutMs`, default 5 minutes) to every non-final rung; the computer provider then fails the rung at once when the refusal has no `Retry-After`, or waits once, capped by that budget, when it has one. The refusal reason (for example `no-active-host`) stays in the failure message and in the `[placement]` log line. A plain `sandbox` spawn and the last rung keep the existing wait.
+- Updated dependencies [d7b0174]
+- Updated dependencies [0fcf3f4]
+  - @agentproto/sandbox@0.16.1
+
+## 0.7.0
+
+### Minor Changes
+
+- c0dc0c8: Add egress IP health ledger and cooldown-aware slot selection
+
+### Patch Changes
+
+- f3511ad: Send the descriptive join metadata (`AGENTPROTO_JOIN_NAME`, `_PROVIDER`, `_SANDBOX_ID`, `_LABELS`) to the box daemon through its start command instead of the create env, so the controller's argv check no longer refuses the daemon start exec when a short value such as `computer` appears in the box origin.
+- Updated dependencies [c0dc0c8]
+- Updated dependencies [9fcc8aa]
+  - @agentproto/sandbox@0.16.0
+
+## 0.6.0
+
+### Minor Changes
+
+- 3b505bf: A computer `create` answered `503 fleet-capacity` is now retried for up to `fleetCapacityWaitMs` (default 12 minutes) instead of failing the spawn at once, honouring `Retry-After`/`fleetCapacityRetryMs`, stopping on cancellation, not counting the wait against `bootDeadlineMs`, and reusing one `Idempotency-Key` per boot. The `auto` provider disables this wait for its computer leg when e2b overflow is enabled so a capacity refusal still overflows immediately.
+- 3b505bf: A computer create answered `503 fleet-capacity` is now retried instead of failing the spawn at once: the provider waits while the fleet frees or wakes a shelved host, for up to `fleetCapacityWaitMs` (default 12 minutes, `0` restores the old behaviour). Each wait honours `Retry-After`, else `fleetCapacityRetryMs` (default 30 s), is logged on the boot log, stops on cancellation, and does not count against `bootDeadlineMs`. Every attempt of one boot carries the same `Idempotency-Key`, so a replayed create never makes a second box. The `auto` provider turns the wait off for its computer leg when overflow to e2b is enabled, so a capacity refusal still overflows at once.
+
+### Patch Changes
+
+- 01796b2: Size the box Node heap from its memory and document the template contract
+- 8a28a15: Reap stale paused boxes, kill reused boxes on kill, bound create
+- 8a28a15: Sandbox lifecycle leak fixes: an explicit `agent_kill` now tears down a reuse-only box instead of leaving it paused, the periodic sandbox GC reaps paused dead-session rows past a configurable age bound (`AGENTPROTO_SANDBOX_GC_PAUSED_MAX_AGE_MS`), and gone-box reconnect failures are recognised via the shared sentinel. `@agentproto/runtime` also exports `DEFAULT_PAUSED_BOX_MAX_AGE_MS` and `parsePausedBoxMaxAge`. `@agentproto/sandbox-computer` logs the create deadline phase and controller rejection reason so a stuck spawn no longer fails silently.
+- Updated dependencies [e395b66]
+  - @agentproto/sandbox@0.15.0
+
+## 0.5.0
+
+### Minor Changes
+
+- 61e6068: Add common sandbox list and usage surface with W0b fields
+- 89012c2: Add typed capacity refusal codes and an isCapacityRefusal predicate
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+- 61e6068: Add the common sandbox list and usage surface. `@agentproto/sandbox` gains the `SandboxBox` and `SandboxUsageWindow` types plus optional `list()`/`usage()` methods on `SandboxProvider`; `@agentproto/computer-api` gains the `GET /v1/usage` schemas/types and additive W0b list fields; `@agentproto/sandbox-computer` implements `list()`/`usage()` and `ComputerControllerClient.getUsage()`, keeping absent controller fields absent.
+- 89012c2: Add typed capacity-refusal handling: new `sandbox_fleet_capacity`, `sandbox_tenant_running_cap`, `sandbox_end_user_cap`, and `sandbox_fleet_tenant_cap` error codes, an additive `cap` field on the error types, and an exported `isCapacityRefusal` predicate that classifies by controller body code rather than HTTP status.
+
+### Patch Changes
+
+- 84ac51b: Move the typed session presets from `@agentproto/harness` to `@agentproto/session-presets`. This is step 1 of 2 for AIP-45: the presets moved to `@agentproto/session-presets`, and the name `@agentproto/harness` now carries the AIP-45 runner (see the aip-45 changeset). `@agentproto/worktree` now imports the new package. The sandbox providers only update a doc comment that names the package, so they take a patch bump to satisfy the changeset coverage gate.
+- Updated dependencies [61e6068]
+- Updated dependencies [1d7b55a]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [804db17]
+- Updated dependencies [5ab8114]
+- Updated dependencies [61e6068]
+  - @agentproto/computer-api@0.4.0
+  - @agentproto/sandbox@0.14.0
+
 ## 0.4.0
 
 ### Minor Changes

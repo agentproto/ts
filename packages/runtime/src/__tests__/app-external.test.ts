@@ -17,6 +17,7 @@ import {
   resolveExternalPath,
   ExternalPathTraversalError,
 } from "../app-external.js"
+import { HOST_CALLER } from "../caller-scope.js"
 import { createAppRegistry } from "../app-registry.js"
 
 function parseToolJson(result: unknown): any {
@@ -43,7 +44,7 @@ async function setup(sandboxDir: string, externalReadRoots: string[]) {
     externalReadRoots,
   })
   const server = new McpServer({ name: "app-external-test-server", version: "0.0.0" })
-  registerAppExternalTools(server, { appRegistry })
+  registerAppExternalTools(server, { appRegistry, callerScope: HOST_CALLER })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "app-external-test-client", version: "0.0.0" })

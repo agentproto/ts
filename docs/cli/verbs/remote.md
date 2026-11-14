@@ -31,19 +31,32 @@ the same reason.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--qr` | `false` | Render the response's `phoneUrl` (see below) as an in-terminal QR code. |
+| `--qr` | `false` | No-service-worker fallback for phones: ask for the opt-in tunnel `phoneUrl` (`phoneLink: true`) and render it as an in-terminal QR code. Pairing is the recommended phone path; this link is readable by Cloudflare. |
 | `--provider <slug>` | `quick` | Tunnel backend. `quick` = Cloudflare Quick Tunnel — no API key, ephemeral `*.trycloudflare.com` URL. |
 | `--target-port <n>` | this gateway's own port | Tunnel a *different* local service instead (e.g. a dev server). In this mode the daemon does **not** gate the traffic — no bearer token is issued, and `phoneUrl` is omitted — the upstream service must handle its own auth. |
 | `--target-host <host>` | `127.0.0.1` | Host the tunnel forwards to. |
 | `--json` | `false` | Emit the full `EnableResult` (see below) as JSON. |
 
 ```bash
-agentproto remote enable --qr
+agentproto remote enable
 ```
 
 ```text
 tunnel up  https://ensure-opera-satisfactory-embassy.trycloudflare.com
-  bearer   bE2C9kyQ2fgcodKsG9nY2mPRF24razhjAZSlm4RPM38  (shown once — only its hash is persisted)
+  bearer   bE2C9kyQ2fgcodKsG9nY2mPRF24razhjAZSlm4RPM38  (shown once; only its hash is persisted)
+  mcp      https://ensure-opera-satisfactory-embassy.trycloudflare.com/mcp
+```
+
+For a browser without service workers, opt in to the tunnel phone link:
+
+```bash
+agentproto remote enable --qr
+```
+
+```text
+agentproto remote enable: pairing is the recommended phone path (`agentproto pair offer --qr`); this link is readable by Cloudflare.
+tunnel up  https://ensure-opera-satisfactory-embassy.trycloudflare.com
+  bearer   bE2C9kyQ2fgcodKsG9nY2mPRF24razhjAZSlm4RPM38  (shown once; only its hash is persisted)
   mcp      https://ensure-opera-satisfactory-embassy.trycloudflare.com/mcp
   phone    https://ensure-opera-satisfactory-embassy.trycloudflare.com/apps/@agentik/session-chat/ui#token=bE2C9kyQ2fgcodKsG9nY2mPRF24razhjAZSlm4RPM38
 [QR code of the phone URL]
@@ -68,15 +81,19 @@ that only ever appears once, in `enable`'s own response.
 |------|---------|-------------|
 | `--json` | `false` | Emit the full status object as JSON. |
 
-## `phoneUrl` — the QR/link target
+## `phoneUrl`: the opt-in tunnel phone link
 
-`enable`'s response (and MCP `remote_enable`'s) includes a `phoneUrl`: one
-link that gets a phone straight into a live view of this daemon, no typing
-required. It points at the `@agentik/session-chat` app:
-`<tunnelUrl>/apps/@agentik/session-chat/ui#token=<t>`, so it is only present
-when that app is installed with a UI. There is no hosted fallback panel; to
-connect a phone without session-chat, pair it through rendezvous instead
-(`agentproto pair offer --qr`, see [pairing](../concepts/pairing.md)).
+Phones pair through rendezvous by default: `agentproto pair offer --qr`
+(see [pairing](../concepts/pairing.md)). That path is end-to-end encrypted
+and does not expose the gateway to Cloudflare.
+
+`phoneUrl` is the fallback for a browser that cannot run the pair page's
+service worker. It is only emitted when the caller opts in
+(`phoneLink: true`, or `agentproto remote enable --qr`) and the
+`@agentik/session-chat` app is installed with a UI. It points at
+`<tunnelUrl>/apps/@agentik/session-chat/ui#token=<t>`, giving the phone the
+whole gateway behind the same bearer as a remote MCP client. The tunnel
+terminates at Cloudflare, which can read that traffic.
 
 The token rides in the URL **fragment** (`#token=…`), never a
 `?` query string. A fragment is never sent to a server — no `Referer`
@@ -87,7 +104,8 @@ receiving page (session-chat) reads the fragment client-side and immediately str
 
 `phoneUrl` is also omitted whenever `bearerToken`/`mcpEndpoint` are — i.e.
 for a `--target-port` passthrough tunnel, since there's no daemon UI to link
-a phone to in that mode.
+a phone to in that mode. Without `phoneLink: true` it is omitted even when
+session-chat is installed.
 
 ## Security model
 
@@ -115,8 +133,10 @@ bearer, before or after.
 
 ## Examples
 
-```bash
-# Publish this gateway and print the phone link + QR
+# Publish this gateway (phones pair via `agentproto pair offer --qr`)
+agentproto remote enable
+
+# No-service-worker fallback: opt in to the tunnel phone link + QR
 agentproto remote enable --qr
 
 # Tunnel a dev server instead — no bearer, no phoneUrl, upstream auths itself

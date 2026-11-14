@@ -40,6 +40,9 @@ export interface SessionDescriptor {
   title?: string
   name?: string
   cwd?: string
+  /** Canonical harness slug (always set by the daemon when `adapterSlug` is). */
+  harness?: string
+  /** @deprecated Read `harness`; kept for daemons older than the rename. */
   adapterSlug?: string
   model?: string
   costUsd?: number
@@ -48,7 +51,16 @@ export interface SessionDescriptor {
   contextSize?: number
   contextUsed?: number
   awaitingInput?: boolean
-  awaitingQuestion?: { text: string; options?: string[]; source: string }
+  awaitingQuestion?: {
+    text: string
+    options?: string[]
+    source: string
+    /** Mirrors the runtime's SessionAwaitingQuestion.kind; absent = unclassified. */
+    kind?: "permission" | "context" | "harness"
+    /** Pending-permission id of a multi-field harness question; it is
+     *  answered from the permission banner, not by sending a prompt. */
+    requestId?: string
+  }
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean
@@ -91,6 +103,14 @@ export interface SessionEventRecord {
   reason?: string
   error?: { message: string; code?: number; data?: JsonValue }
   options?: JsonValue
+  /** `agent-prompt` records (AIP-45): what is asked, absent on older daemons. */
+  request?: string
+  question?: JsonValue
+  planApproval?: JsonValue
+  /** `mode-changed` records (AIP-45). */
+  modeId?: string
+  previousModeId?: string
+  cause?: string
   entries?: Array<{ content: string; priority: string; status: string }>
   size?: number
   used?: number
@@ -207,6 +227,10 @@ export interface PendingPermission {
   text: string
   options: Array<{ optionId: string; name?: string; kind?: string }>
   requestedAt: string
+  /** AIP-45 typed request; absent (or older daemons) reads as a tool permission. */
+  request?: string
+  question?: JsonValue
+  planApproval?: JsonValue
 }
 
 /** POST /permissions/:id body — copied field-for-field from the VS Code client. */
@@ -214,4 +238,8 @@ export interface RespondPermissionInput {
   decision: "approve" | "deny"
   optionId?: string
   scope?: "once" | "always"
+  /** Free-text answer of a question, or the reason of a rejected plan. */
+  feedback?: string
+  /** Answers to a multi-field question (AIP-45 `question.fields`), keyed by field id. */
+  answers?: Record<string, { selected?: string[]; text?: string; value?: boolean | number }>
 }

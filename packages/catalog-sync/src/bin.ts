@@ -22,6 +22,10 @@ import { llmContextWindowsGenerator } from "./generators/llm-context-windows.js"
 import { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
 import { voiceMinimax } from "./generators/voice-minimax.js"
 import { imageReplicate } from "./generators/image-replicate.js"
+import {
+  mediaOpenRouterImage,
+  mediaOpenRouterVideo,
+} from "./generators/media-openrouter.js"
 import { runGenerators } from "./runner.js"
 
 const args = process.argv.slice(2)
@@ -55,6 +59,8 @@ const generators = [
   voiceElevenlabs,
   voiceMinimax,
   imageReplicate,
+  mediaOpenRouterImage,
+  mediaOpenRouterVideo,
 ]
 
 const { changed, files } = await runGenerators(generators, {

@@ -225,6 +225,63 @@ async function loadDriverEntry(id: string, driverPath: string, appRoot: string):
   }
 }
 
+/** One bundled tool, loaded alone, with the exact bytes it was parsed from. */
+export interface LoadedBundledTool {
+  readonly tool: ToolHandle
+  readonly driver: DriverHandle
+  /** The TOOL.md bytes `tool` was parsed from. */
+  readonly toolSource: string
+  /** The DRIVER.md bytes `driver` was parsed from. */
+  readonly driverSource: string
+}
+
+/**
+ * Load ONE bundle, `<dir>/.agentproto/tools/<id>/TOOL.md` and
+ * `<dir>/.agentproto/drivers/<id>/DRIVER.md`, without reading any other
+ * bundle in `dir`. Each file is read once and the handles are parsed from the
+ * returned sources, so a caller that hashes `toolSource`/`driverSource` hashes
+ * exactly what runs. Both frontmatter ids must equal `id`, and the driver must
+ * implement the tool: a bundle filed under one id cannot carry another.
+ */
+export async function loadBundledTool(dir: string, id: string): Promise<LoadedBundledTool> {
+  const toolPath = join(dir, ".agentproto", "tools", id, "TOOL.md")
+  const driverPath = join(dir, ".agentproto", "drivers", id, "DRIVER.md")
+  let toolSource: string
+  let driverSource: string
+  try {
+    toolSource = await readFile(toolPath, "utf8")
+  } catch (err) {
+    throw new AppLoadError(`tool '${id}': cannot read '${toolPath}': ${errMsg(err)}`)
+  }
+  try {
+    driverSource = await readFile(driverPath, "utf8")
+  } catch (err) {
+    throw new AppLoadError(`driver '${id}': cannot read '${driverPath}': ${errMsg(err)}`)
+  }
+  let tool: ToolHandle
+  let driver: DriverHandle
+  try {
+    tool = toolFromManifestOnly(parseToolManifest(toolSource))
+  } catch (err) {
+    throw new AppLoadError(`tool '${id}' at '${toolPath}': ${errMsg(err)}`)
+  }
+  try {
+    driver = driverHandleFromManifest(parseDriverManifest(driverSource), dir)
+  } catch (err) {
+    throw new AppLoadError(`driver '${id}' at '${driverPath}': ${errMsg(err)}`)
+  }
+  if (tool.id !== id) {
+    throw new AppLoadError(`tool at '${toolPath}' declares id '${tool.id}', not '${id}'.`)
+  }
+  if (driver.id !== id) {
+    throw new AppLoadError(`driver at '${driverPath}' declares id '${driver.id}', not '${id}'.`)
+  }
+  if (!driver.implements.some(impl => impl.tool === id)) {
+    throw new AppLoadError(`driver '${id}' at '${driverPath}' does not implement tool '${id}'.`)
+  }
+  return { tool, driver, toolSource, driverSource }
+}
+
 /**
  * Scan `<dir>/.agentproto/tools/*` and `<dir>/.agentproto/drivers/*` for
  * TOOL.md / DRIVER.md bundles and load them into live handles. Used by

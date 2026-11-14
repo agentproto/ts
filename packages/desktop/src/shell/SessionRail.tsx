@@ -32,7 +32,7 @@ interface SessionRailProps {
 
 function matches(s: SessionDescriptor, q: string): boolean {
   if (!q) return true
-  const hay = `${sessionTitle(s)} ${s.adapterSlug ?? ""} ${s.model ?? ""}`.toLowerCase()
+  const hay = `${sessionTitle(s)} ${s.harness ?? s.adapterSlug ?? ""} ${s.model ?? ""}`.toLowerCase()
   return hay.includes(q.toLowerCase())
 }
 
@@ -65,7 +65,7 @@ function Row({
               {session.awaitingQuestion.text}
             </span>
           ) : null}
-          {session.adapterSlug ? <span className="tag adapter">{session.adapterSlug}</span> : null}
+          {(session.harness ?? session.adapterSlug) ? <span className="tag adapter">{session.harness ?? session.adapterSlug}</span> : null}
           {session.model ? <span className="tag">{session.model}</span> : null}
           {stat && (stat.added || stat.removed) ? (
             <span className="diffstat">

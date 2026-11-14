@@ -14,12 +14,41 @@
 
 import { randomUUID } from "node:crypto"
 
-/** Sender's position in the tree, relative to the recipient. `peer` = no tree
- *  edge, but the same workspace (the `allowSameWorkspace` allowance). */
-export type MessageRelation = "child" | "parent" | "sibling" | "peer" | "human" | "system"
+/** Sender's position in the tree, relative to the recipient. `granted` = no
+ *  tree edge, but an allowance admitted the send (same workspace via
+ *  `allowSameWorkspace`, or a peer group). `peer` is the value `granted`
+ *  replaced: the daemon no longer produces it, but a message stored before
+ *  that change still carries it, so the type keeps modelling what is read. */
+export type MessageRelation =
+  | "child"
+  | "parent"
+  | "sibling"
+  | "granted"
+  | "human"
+  | "system"
+  /** @deprecated legacy value written before `granted` replaced it; never produced, read as `granted`. */
+  | "peer"
+
+/** Map a stored relation to the current vocabulary: the legacy value `peer`
+ *  (written before `granted` replaced it) reads as `granted`; anything that is
+ *  not a relation is `undefined`. */
+export function normalizeMessageRelation(value: string): MessageRelation | undefined {
+  if (value === "peer") return "granted"
+  switch (value) {
+    case "child":
+    case "parent":
+    case "sibling":
+    case "granted":
+    case "human":
+    case "system":
+      return value
+    default:
+      return undefined
+  }
+}
 export type MessageKind = "report" | "question" | "blocker" | "done" | "notice"
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
-export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
+export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "socket" | "inbox"
 
 export const MESSAGE_KINDS: readonly MessageKind[] = ["report", "question", "blocker", "done", "notice"]
 export const MESSAGE_URGENCIES: readonly MessageUrgency[] = ["fyi", "next-turn", "steer", "interrupt"]
@@ -29,9 +58,27 @@ export interface SessionMessageFrom {
   sessionId?: string
   /** Registry label at send time — display only, never identity. */
   label?: string
+  /** @deprecated use `agentSlug`. */
   role?: string
+  /** The sender's AIP-42 agent, when one was bound. */
+  agentSlug?: string
   adapter?: string
   relation: MessageRelation
+  /** True when this message came from a caller with no session identity
+   *  (an identity-less MCP client let through by `mcp.noCallerIdentity:
+   *  "accept"`). `label` is then the literal `claude-code`; the message is
+   *  never attributable to any session. */
+  anonymous?: boolean
+  /** True when the sender's identity was CLAIMED, not proven: an external
+   *  MCP client registered through `?callerSessionId=` + `?host=` (e.g. the
+   *  shared `claude-desktop` Chat-tab identity). Any local process can
+   *  claim it, so the recipient must treat the sender as unverified. */
+  unverified?: boolean
+  /** A `cc:<session_id>` the shared `claude-desktop` sender DECLARED as its
+   *  real session (`message_send.declaredSender`). Never proven and never used
+   *  for authorization or trust: the sender stays `unverified`, and this only
+   *  tells the recipient where a reply could be addressed. */
+  declaredSender?: string
 }
 
 export interface SessionMessage {
@@ -50,6 +97,10 @@ export interface SessionMessage {
   correlationId?: string
   /** A `SessionMessage.id` this answers. */
   replyTo?: string
+  /** A DECLARED caller identity supplied by an identity-less client (a
+   *  session id, `sess_*`/`cc:*`). Never used for authorization — it only
+   *  tells the recipient where a reply could be addressed. */
+  replyAddress?: string
   text: string
   /** Optional structured payload (≤ `MAX_MESSAGE_DATA_BYTES`). */
   data?: Record<string, unknown>
@@ -90,11 +141,24 @@ export interface MessageTreeNode {
   parentSessionId?: string
   label?: string
   role?: string
+  /** The sender's AIP-42 agent id, when one was bound at spawn. */
+  agentSlug?: string
+  /** Spawn-time hints; `meta.agentSlug` is the bound agent (built-in,
+   *  pack or manifest) and `meta.agentId` the AIP-42 manifest identity. */
+  meta?: Readonly<Record<string, string>>
   adapterSlug?: string
+  /** Session kind. `"external"` marks a client that registered through a
+   *  claimed `?callerSessionId=` + `?host=` and is therefore unverified. */
+  kind?: string
+  /** `kind: "external"` only: the claimed host (e.g. `claude-desktop`). */
+  externalHost?: string
   /** The workspace the session belongs to. Two sessions of the SAME
    *  workspace may message each other even without a tree edge - see
    *  {@link sameWorkspace} and `defaults.messaging.allowSameWorkspace`. */
   workspaceSlug?: string
+  /** The session's working directory. Used by the verified peer binding
+   *  (`defaults.messaging.peerBinding: "verified"`). */
+  cwd?: string
 }
 
 /**
@@ -176,7 +240,7 @@ export function samePeerGroup(
 
 /**
  * The relation the messaging ACL is evaluated against: the tree relation
- * when there IS a tree edge, else `peer` for two sessions of the same
+ * when there IS a tree edge, else `granted` for two sessions of the same
  * workspace (the `allowSameWorkspace` allowance) OR of the same peer group
  * (the `peerGroups` allowance), else `undefined` (a refusal - a different
  * workspace, or a session messaging itself).
@@ -189,15 +253,15 @@ export function resolveEffectiveRelation(
   const relation = resolveRelation(sender, recipient)
   if (relation) return relation
   if (!sender || sender.id === recipient.id) return undefined
-  if (sameWorkspace(sender, recipient)) return "peer"
-  return samePeerGroup(sender, recipient, peerGroups) ? "peer" : undefined
+  if (sameWorkspace(sender, recipient)) return "granted"
+  return samePeerGroup(sender, recipient, peerGroups) ? "granted" : undefined
 }
 
 /**
  * ACL: child→parent, parent→direct child, human/system→any. Sibling↔sibling
- * only when `allowSiblings` (config-gated, default off). A `peer` - two
+ * only when `allowSiblings` (config-gated, default off). A `granted` - two
  * sessions of the same workspace with no tree edge - is allowed when
- * `allowSameWorkspace` (config-gated, default ON); a `peer` linked by a PEER
+ * `allowSameWorkspace` (config-gated, default ON); a `granted` linked by a PEER
  * GROUP (`peerGroup: true`) is allowed whatever `allowSameWorkspace` says -
  * the group list is an independent operator decision. Anything else - a
  * cousin of another workspace, a stranger, yourself - is refused.
@@ -218,7 +282,8 @@ export function isMessageAllowed(
       return true
     case "sibling":
       return opts?.allowSiblings === true
-    case "peer":
+    case "granted":
+    case "peer": // legacy value, read as `granted`
       return opts?.peerGroup === true || opts?.allowSameWorkspace !== false
     default:
       return false
@@ -259,7 +324,7 @@ export function resolveMessageAcl(
   const peerGroup =
     !!sender && sender.id !== recipient.id && samePeerGroup(sender, recipient, opts.peerGroups)
   let relation = resolveEffectiveRelation(sender, recipient, opts.peerGroups)
-  if (relation === "sibling" && opts.allowSiblings !== true && peerGroup) relation = "peer"
+  if (relation === "sibling" && opts.allowSiblings !== true && peerGroup) relation = "granted"
   const allowed = isMessageAllowed(relation, {
     allowSiblings: opts.allowSiblings,
     allowSameWorkspace: opts.allowSameWorkspace,
@@ -274,14 +339,34 @@ export function messageFrom(
   relation: MessageRelation,
 ): SessionMessageFrom {
   if (!sender || relation === "human" || relation === "system") return { relation }
+  const agentSlug = sender.agentSlug || sender.meta?.agentSlug || sender.meta?.agentId
+  const unverified = sender.kind === "external" || sender.externalHost !== undefined
   return {
     sessionId: sender.id,
     ...(sender.label ? { label: sender.label } : {}),
     ...(sender.role ? { role: sender.role } : {}),
+    ...(agentSlug ? { agentSlug } : {}),
     ...(sender.adapterSlug ? { adapter: sender.adapterSlug } : {}),
     relation,
+    ...(unverified ? { unverified: true } : {}),
   }
 }
+
+/** The one shared, UNVERIFIED caller identity every Claude Desktop MCP entry
+ *  carries (`?callerSessionId=claude-desktop&host=claude-desktop`). It names a
+ *  host, not a session: no hook inbox or socket wake exists for it, so a caller
+ *  using it declares its own `cc:<session_id>` as `agent_start.parent`
+ *  (declared, never proven). */
+export const SHARED_CLAUDE_DESKTOP_ID = "claude-desktop"
+
+/** Header the stdio `mcp-bridge` sets from `CLAUDE_CODE_SESSION_ID` (the env
+ *  Claude Code gives its MCP child; the model cannot set it). Mirrored by
+ *  `CLAUDE_SESSION_HEADER` in the cli's mcp-bridge.logic.ts. Lets the daemon
+ *  attribute an otherwise shared-`claude-desktop` call to the real `cc:<id>` row. */
+export const CLAUDE_SESSION_HEADER = "x-agentproto-claude-session"
+
+/** A declared Claude Code address: `cc:<session_id>`. */
+export const DECLARED_CC_ADDRESS = /^cc:[A-Za-z0-9._-]{1,128}$/
 
 export function mintMessageId(): string {
   return `msg_${randomUUID().replace(/-/g, "").slice(0, 8)}`
@@ -294,6 +379,7 @@ export function createSessionMessage(input: {
   kind?: MessageKind
   urgency?: MessageUrgency
   replyTo?: string
+  replyAddress?: string
   correlationId?: string
   data?: Record<string, unknown>
 }): SessionMessage {
@@ -314,6 +400,7 @@ export function createSessionMessage(input: {
     kind: input.kind ?? "report",
     urgency: input.urgency ?? "next-turn",
     ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+    ...(input.replyAddress ? { replyAddress: input.replyAddress } : {}),
     correlationId: input.correlationId ?? input.replyTo ?? id,
     text: input.text,
     ...(input.data !== undefined ? { data: input.data } : {}),
@@ -332,7 +419,7 @@ export interface MessageFilter {
 
 export function matchesMessageFilter(msg: SessionMessage, filter: MessageFilter): boolean {
   if (filter.from === "children") {
-    if (msg.from.relation !== "child") return false
+    if (normalizeMessageRelation(msg.from.relation) !== "child") return false
   } else if (filter.from && filter.from.length) {
     if (!msg.from.sessionId || !filter.from.includes(msg.from.sessionId)) return false
   }
@@ -350,6 +437,26 @@ export function sanitizeLabel(label: string | undefined): string | undefined {
   if (!label) return undefined
   const clean = label.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 48)
   return clean.replace(/^_+|_+$/g, "") || undefined
+}
+
+/** The text prefix an unverified or anonymous sender's message carries
+ *  (`defaults.messaging.anonymousSend: "label"`), so the recipient sees it
+ *  in the body, not only in the envelope attributes. */
+export function unverifiedSenderPrefix(label: string | undefined): string {
+  return `[unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
+}
+
+/** The text prefix a message from the shared `claude-desktop` identity carries
+ *  when it declared its real `cc:<session_id>`: declared, never verified. */
+export function declaredSenderPrefix(address: string): string {
+  return `[declared sender: ${DECLARED_CC_ADDRESS.test(address) ? address : "unknown"}, unverified] `
+}
+
+/** The text prefix a reply carries when the message it answers came from an
+ *  unverified sender. The replier keeps its own (possibly verified) identity
+ *  in the envelope, so the label names the original sender instead. */
+export function replyToUnverifiedSenderPrefix(label: string | undefined): string {
+  return `[reply to unverified sender: ${sanitizeLabel(label) ?? "unknown"}] `
 }
 
 /** Attribute values are daemon-generated, but escape anyway (defence in
@@ -380,12 +487,17 @@ export function escapeHumanPrompt(text: string): string {
 }
 
 export function renderSessionMessage(msg: SessionMessage): string {
-  const attrs: string[] = [`id="${attr(msg.id)}"`, `from="${msg.from.relation}"`]
+  const relation = normalizeMessageRelation(msg.from.relation) ?? msg.from.relation
+  const attrs: string[] = [`id="${attr(msg.id)}"`, `from="${relation}"`]
   if (msg.from.sessionId) attrs.push(`session="${attr(msg.from.sessionId)}"`)
+  if (msg.from.anonymous) attrs.push(`anonymous="true"`)
+  if (msg.from.unverified) attrs.push(`unverified="true"`)
+  if (msg.from.declaredSender) attrs.push(`declared-sender="${attr(msg.from.declaredSender)}"`)
   const label = sanitizeLabel(msg.from.label)
   if (label) attrs.push(`label="${label}"`)
   attrs.push(`kind="${msg.kind}"`)
   if (msg.replyTo) attrs.push(`reply-to="${attr(msg.replyTo)}"`)
+  if (msg.replyAddress) attrs.push(`reply-address="${attr(msg.replyAddress)}"`)
   if (msg.correlationId && msg.correlationId !== msg.id) {
     attrs.push(`correlation="${attr(msg.correlationId)}"`)
   }
@@ -393,7 +505,7 @@ export function renderSessionMessage(msg: SessionMessage): string {
     msg.data !== undefined ? `\n<data>${escapeMessageBody(JSON.stringify(msg.data))}</data>` : ""
   return (
     `<${MESSAGE_TAG} ${attrs.join(" ")}>\n` +
-    `<body>\n${escapeMessageBody(msg.text)}\n</body>${data}\n` +
+    `<body>\n${msg.replyAddress ? `reply to: ${escapeMessageBody(msg.replyAddress)}\n` : ""}${escapeMessageBody(msg.text)}\n</body>${data}\n` +
     `</${MESSAGE_TAG}>`
   )
 }
@@ -409,8 +521,14 @@ export function renderInboxDigest(msgs: readonly SessionMessage[]): string {
   const who = msgs
     .map(m => {
       const label = sanitizeLabel(m.from.label)
-      const sender = m.from.sessionId ? `${m.from.relation} ${m.from.sessionId}${label ? ` (${label})` : ""}` : m.from.relation
-      return `${m.id} from ${sender} [${m.kind}]`
+      const relation = normalizeMessageRelation(m.from.relation) ?? m.from.relation
+      const sender = m.from.sessionId ? `${relation} ${m.from.sessionId}${label ? ` (${label})` : ""}` : relation
+      const unverified = m.from.unverified
+        ? m.from.declaredSender
+          ? ` (unverified, declared sender ${m.from.declaredSender})`
+          : " (unverified)"
+        : ""
+      return `${m.id} from ${sender}${unverified} [${m.kind}]`
     })
     .join("; ")
   return (

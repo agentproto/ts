@@ -17,9 +17,9 @@ import { parseReviewManifest } from "@agentproto/review"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import type { AgentSessionHost } from "@agentproto/workflow-runtime"
-import { clearDecisionCache, decisionCacheSize } from "../decision.js"
+import { clearDecisionCache, decisionCacheSize } from "@agentproto/decision"
 import type { EscalationHost, EscalationHostResult, EscalationHostRun } from "../decision-escalation.js"
-import { parseDecisionPolicy } from "../decision-policy.js"
+import { parseDecisionPolicy } from "@agentproto/decision"
 import type { PresetLookups } from "../decision-profile.js"
 import {
   registerDecisionWorkflowTools,

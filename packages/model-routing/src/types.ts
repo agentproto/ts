@@ -63,9 +63,6 @@ export interface RoutingPack<Key extends string = string, R extends Route = Rout
   routes: Readonly<Record<Key, R | null>>
 }
 
-/** @deprecated Use {@link RoutingPack}. Kept for `@agentproto/model-routing` consumers still on the old name. */
-export type Pack<Key extends string = string, R extends Route = Route> = RoutingPack<Key, R>
-
 // ── Layers and resolution (§3, §4) ──────────────────────────────────────
 
 /** The three reserved layer sources, highest precedence first. */

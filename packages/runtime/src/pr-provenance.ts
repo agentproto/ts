@@ -290,6 +290,15 @@ export function hasProvenanceFooter(body: string): boolean {
  *  `\n\n---\n` lead-in when present). */
 const FOOTER_BLOCK_RE = new RegExp(`(?:\\n+---)?\\n*<sub>[^\\n]*${MARKER}[^\\n]*</sub>`)
 
+/** Remove a rendered provenance footer (and the `---` separator that leads
+ *  it) from a body, trailing whitespace trimmed, the part of the body the
+ *  author wrote, as opposed to what the daemon appended. Used to remember
+ *  "the body the daemon last stamped" so a later rewrite can be told apart
+ *  from a deliberate footer-free edit (see the reconciler's footer state). */
+export function stripProvenanceFooter(body: string): string {
+  return body.replace(FOOTER_BLOCK_RE, "").replace(/\n+$/, "")
+}
+
 /** Just the `<sub>…</sub>` span of a rendered footer within `body` (or a
  *  standalone footer string, which is itself `<sub>…</sub>`-shaped) — every
  *  "read a signal out of an existing footer" helper below shares this

@@ -95,6 +95,16 @@ agentproto config set daemon.port 18791
     "traceRedactor": "secrets"
   },
 
+  // How the MCP gateway treats a call that carries no caller identity
+  // (a Claude Code / Claude Desktop session connecting to /mcp directly).
+  // "block" (default) refuses with no_caller_identity; "accept" lets an
+  // anonymous message_send through as a literal "claude-code" sender;
+  // "ask" parks it on a human approval. Reads stay empty and
+  // message_parent / message_reply still require a real identity.
+  "mcp": {
+    "noCallerIdentity": "block"
+  },
+
   // Generic ACP agents — any CLI that speaks the Agent Client Protocol,
   // connectable with zero adapter code. Keyed by adapter slug; shadows a
   // curated ACP_CATALOG entry of the same slug. Managed via
@@ -115,7 +125,14 @@ agentproto config set daemon.port 18791
     "isolation": "on-request",
     "provisionConcurrency": 2,
     "provisionConcurrencyByRepo": { "~/code/big-monorepo": 1 },
-    "provisionLoadFactor": 0
+    "provisionLoadFactor": 0,
+    "provisionStallTimeoutMs": 120000,
+    "provisionMaxMs": 1800000
+  },
+
+  // The default AIP-72 memory store. See "memory" below.
+  "memory": {
+    "root": "~/.agentproto/memory"
   },
 
   // Spawn-time policy for `agent_start` (dedupe, attach). See "spawn" below.
@@ -213,12 +230,27 @@ Defaults for `agentproto daemon` and `agentproto serve`:
 | `port`           | number   | Listen port (default `18790`).                         |
 | `bind`           | string   | Bind address (default `127.0.0.1` — loopback-only).    |
 | `allowedOrigins` | string[] | CORS allow-list for browser callers of the daemon API. |
+| `frameAncestors` | string[] | Extra origins allowed to embed the app page `GET /apps/:appId/ui` in an iframe, on top of the built-in `vscode-webview:` and `vscode-file:`. Lets a browser-based Telegram client frame the page (`https://web.telegram.org`). Only exact `https://host[:port]` origins (plain `http://` on loopback only) and custom schemes are kept; `*`, wildcards, bare `http:`/`https:`, paths and keywords are dropped with a warning at boot. Never `*`: the page injects the tool-call bridge, so a framer you cannot name could drive it. A single comma-separated string is read as a list. Absent: behaviour unchanged. Applies on daemon restart. |
 | `authToken`      | string   | Stable bearer token for `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route — survives restarts, unlike the per-boot `runtime.json` token. Overridden inline by `agentproto serve --auth-token <token>`. Loopback callers with no `X-Forwarded-For` header are still exempt. Unset ⇒ those routes stay open. |
 | `turnStallAfterMs` | number | Turn-liveness watchdog threshold in ms. When a busy agent-cli session has had no adapter activity for longer than this, the daemon stamps `stalledSinceMs` on the descriptor and emits `session:stalled`. If the turn has produced no output or usage at all since its prompt (a provider silently retrying, e.g. a swallowed 429), the descriptor also gets `lastTurnErrorMessage: "no output since prompt — provider retrying?"`. Detection-only — never auto-kills. Default on at 5 minutes (`300000`). Set to `0` or a negative value to disable. Env override: `AGENTPROTO_TURN_STALL_AFTER_MS`. |
+| `harnessCacheRetentionDays` | number | Quiet days after which a dead lineage's disposable adapter-config caches (`~/.agentproto/adapter-config/<id>/`, per `.agentproto-cache.json`) are swept. The periodic retention sweep and `agentproto sessions gc --adapter-caches` / `session_gc adapterCaches:true` both use it. Default `1`; a non-positive value disables the pass. The resume store is never reclaimed. |
+| `adapterCacheRetentionDays` | number | Deprecated name of `harnessCacheRetentionDays`, read only when that key is unset; removed in the next major of `@agentproto/runtime`. |
 | `externalSessionLivenessMs` | number | How long an `external` session (a Claude Desktop / `claude` CLI session the daemon did not spawn, registered from an authenticated `/mcp?callerSessionId=<id>&host=<label>` request) stays alive after its last MCP request or inbox poll. Default 30 minutes (`1800000`); a non-positive value falls back to the default. See [`hook inbox`](../verbs/hook.md). |
+| `claudeSocketWake` | boolean | Off by default. When `true`, a level 2 or higher message (next-turn, steer) to an external Claude Code row (`cc:<session_id>`) is delivered directly over its per-session unix socket and is NOT parked in the inbox, so the hook cannot re-inject it. Only a socket owned by the current user is used. Level 1 (fyi) and a missing/unsafe registration, socket or key fall back to inbox delivery. A `bypassPermissions` target is written to as well, but Claude Code holds messages from other sessions until `crossSessionInbound` is `"accept"` in `~/.claude/settings.json`; until then the result is `reason: "held-by-receiver-bypass"` (with a hint), the message is also parked in the inbox, and `agentproto doctor --fix` sets the setting. See [`hook inbox`](../verbs/hook.md). |
 | `sandboxGoneRestartDefault` | boolean | Off by default. When `true`, a sandbox (box) session spawned with no explicit `restartPolicy` gets `restartPolicy.on: ["sandbox-gone"]`, so if its box dies for good (lifetime cap, provider reclaim, unrecoverable unreachability) the daemon moves it to a fresh box instead of leaving it dead. An explicit per-session `restartPolicy` always wins. With `restartSweepIntervalMs` unset, turning it on also arms the restart sweep at 30s. Applies on daemon restart. See [`agent_start`](../../../packages/runtime/docs/mcp-tools/agent_start.md#restartpolicy). |
 
 Verb flags override config; config overrides hard-coded defaults.
+
+### `mcp: object`
+
+How the MCP gateway handles a call that arrives with no caller identity.
+This is an identity-less client (Claude Code, Claude Desktop) connecting to
+`/mcp` without a `callerSessionId`; it is never a session and never acts as
+one.
+
+| Field             | Type   | Meaning |
+| ----------------- | ------ | ------- |
+| `noCallerIdentity`| string | `block` (default), `ask`, or `accept`. `block` refuses with `no_caller_identity`. `accept` lets an anonymous `message_send` through, delivered with `from: "claude-code"` and marked anonymous; its body is prefixed with a `reply to:` line when `replyTo` is supplied. `ask` raises a human approval and sends only on approval. In every mode `message_parent` and `message_reply` still require a real identity, and `inbox_list` / `inbox_wait` return empty with a hint to pass `cc:<session_id>` as `replyTo`. Writable via `config_set mcp.noCallerIdentity <value>`; takes effect on the next call. |
 
 ### `defaults: object`
 
@@ -230,15 +262,87 @@ introduced in 0.5.0.
 | ------------------------- | ------------------------------------------ | --------------------------------------------------------------------- |
 | `skills`                  | `string[]`                                  | Global skills folded into every spawn's `options.skills`.             |
 | `options`                 | `Record<string, boolean\|number\|string>`   | Global options merged into every spawn.                                |
-| `adapters`                | `Record<string, { skills?, options?, auth? }>` | Per-adapter overrides, keyed by adapter slug (e.g. `"hermes"`).        |
-| `auth` (per-adapter)      | `{ mode?: "subscription" \| "api-key", token?: string, apiKey?: string, provider?: string }` | Per-adapter billing-auth defaults merged at spawn time. |
-| `defaultRoleDepthCutoff`  | `number`                                    | Spawn depth at/above which a session defaults to `executor` instead of `supervisor` (default `1`). |
+| `harnesses`               | `Record<string, { skills?, options?, auth? }>` | Per-harness overrides, keyed by harness slug (e.g. `"hermes"`).        |
+| `adapters`                | `Record<string, { skills?, options?, auth? }>` | Deprecated name of `harnesses`, still read as a fallback (a field set under `harnesses.<slug>` wins) with a warning; removed in the next major of `@agentproto/runtime`. |
+| `auth` (per-harness)      | `{ mode?: "subscription" \| "api-key", token?: string, apiKey?: string, provider?: string }` | Per-adapter billing-auth defaults merged at spawn time. |
+| `defaultRoleDepthCutoff`  | `number`                                    | Deprecated (removed in `@agentproto/runtime` 6.0.0). Spawn depth at/above which a session defaults to `executor` instead of `supervisor` (default `1`); still the boundary between `spawn.defaultAgent.root` and `.nested`. |
+| `spawn.defaultAgent.root` | `string`                                    | Agent a root spawn (below the depth cutoff) with no `agent` or `role` binds. A role name. Unknown ⇒ the built-in default, with a warning. Default `supervisor`. |
+| `spawn.defaultAgent.nested` | `string`                                  | Agent a nested spawn (at or above the depth cutoff) with no `agent` or `role` binds. A role name. Unknown ⇒ the built-in default, with a warning. Default `executor`. |
+| `spawn.delegationGate`    | `"off" \| "observe" \| "enforce"`           | AIP-46 delegation gate for nested spawns. `observe` (default) counts what the caller's agent `delegatesTo` would refuse and changes no decision; `enforce` refuses a child the caller does not declare with `delegation_denied`; `off` skips evaluation. |
+| `spawn.profileGate`       | `"off" \| "observe" \| "enforce"`           | AIP-46 auth-profile gate for spawns that name an access profile. `observe` (default) counts what the caller's profile set would refuse and changes no decision; `enforce` refuses a profile outside the caller's own profile plus `spawn.sharedProfiles` with `auth_profile_denied`; `off` skips evaluation. |
+| `spawn.stdioMountGate`    | `"off" \| "observe" \| "enforce"`           | Command-allowlist gate for stdio MCP servers a spawn mounts (`agent_start.mcpServers` entries with `transport: "stdio"`). `observe` (default) counts what the workspace allowlist would refuse and changes no decision; `enforce` refuses a mount whose command is not admitted with `stdio_mount_denied`; `off` skips evaluation. A root spawn, an external or unknown caller and a sandboxed spawn are never gated. The allowlist is the daemon boot workspace's, the same one `command_execute` uses. |
+| `spawn.sharedProfiles`    | `string[]`                                  | Auth profile ids any session may name at spawn, in addition to its own recorded profile. The auth-profile gate admits these for every caller. Default `[]`. |
+| `mcp.profile`             | `string`                                    | Default `/mcp` tool surface: `core`, `orchestrator`, `apps`, `admin`, `full`, or a comma-composed list. Absent ⇒ `full`. A `?profile=` query on the request wins over this. `?denyTools=` still wins over any profile; `?allowTools=` intersects with it. |
 | `maxGrantableDelegation`  | `number`                                    | Trust-boundary cap on how much delegation a supervisor can grant a child. |
 | `langfuseTracing`         | `boolean`                                   | Opt in to per-session Langfuse tracing by default.                     |
+| `reactions.brainIngest.workspaces` | `string[]` | Workspace slugs whose completed sessions are ingested into the workspace brain by the durable `agentproto:session-completed` reaction (receipts under `~/.agentproto/reaction-receipts/<bucket>.json`). Opt-in: unset or empty ⇒ the legacy exit subscriber ingests every workspace. A slug listed here is owned by the reaction only, never by both; remove it to hand it back. Read per completion, so edits apply to the next completed session without a restart. Example: `{ "defaults": { "reactions": { "brainIngest": { "workspaces": ["my-workspace"] } } } }`. |
+| `reactions.clerk.workspaces` | `string[]` | Workspace slugs whose clerk passes are dispatched through the durable `agentproto:clerk-due` reaction instead of the legacy dispatch (receipts under `~/.agentproto/reaction-receipts/<bucket>.json`). Opt-in: unset or empty means every workspace stays on the legacy dispatch. A listed slug is owned by the reaction for a given firing, never by both; remove it to hand it back. Read per firing, so edits apply to the next firing without a restart. Example: `{ "defaults": { "reactions": { "clerk": { "workspaces": ["my-workspace"] } } } }`. |
 | `traceRedactor`           | `string`                                    | Redactor slug (e.g. `"secrets"`) applied to traced session content.    |
 | `agentPromptInterrupt`    | `boolean`                                   | Default `interrupt` behaviour for `agent_prompt` / `message_parent` calls that omit the `interrupt` field. `false` (the default) queues the prompt behind any in-flight turn. `true` cancels the in-flight turn and redirects the session onto the new prompt immediately. An explicit `interrupt: true\|false` on a single call always overrides this default. For `message_parent` this only *requests* an interrupt — whether it may cut the parent's turn is `messaging.agentInterrupt`. |
-| `contextContinuity`       | `{ mode?, warnAtPct?, compactAtPct?, continueFreshAtPct?, hardStopAtPct?, handoffAtQuotaRemaining?, compactRequiresOperator?, compactHandoffTurn? }` | Context-window policy ([handoff guide](../guides/handoff.md#when-agentproto-suggests-a-handoff)). Compaction (a `/compact` or `/compress` prompt, runtime auto-compaction) and the hard stop each write a checkpoint first; compaction is refused if none can be written. `hardStopAtPct` is a trigger, not a wall: at the floor the runtime auto-compacts (checkpoint first, prompts wait with a retryable mid-turn error), then falls back to continue-fresh, and only stops as a last resort. Every outcome is announced in the transcript and as a `session:context-rescue` event (`compacted` / `continued` / `hard-stopped`). `compactRequiresOperator` (boolean, default `false`) refuses a compaction prompt attributed to a session (`agent_prompt`, `session_compact`, the session itself) so only an operator-originated prompt can compact. `compactHandoffTurn` (boolean, default `false`) has a `/compact` or `/compress` prompt ask the live session for a handoff turn before the checkpoint is built (one billed turn before the harness compacts in place); unset, the checkpoint is extracted from the transcript alone. The context-rescue path never asks. `handoffAtQuotaRemaining` (number ≥ 0, unset = off) emits a `session:handoff-suggested` event, once per quota window, when the session's Anthropic auth profile reports that many requests or fewer remaining. A raw `remaining` count (no limit is available to make a percentage); only sessions with an `access` profile are watched. It only suggests — it never switches harness. |
-| `messaging`               | `{ allowSiblings?: boolean, allowSameWorkspace?: boolean, peerGroups?: string[][], agentInterrupt?: "allow" \| "deny", pendingPromptStaleMinutes?: number }` | Inter-session messaging policy ([`sessions` → Messages between sessions](../verbs/sessions.md#messages-between-sessions)). `allowSiblings` (default `false`) lets `message_send` / `message_reply` reach a sibling session. `allowSameWorkspace` (default `true`) lets `message_send` / `message_reply` reach any session of the same workspace, even without a tree edge. `peerGroups` (default `[]`) is a list of groups of workspace slugs: two sessions may message each other without a tree edge when both slugs sit in the SAME group (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). It applies independently of `allowSameWorkspace` - a group link holds even when the same-workspace rule is off - and a session without a workspace slug is never linked. `agentInterrupt` (default `"deny"`) decides whether a **session** sender's `urgency: "interrupt"` may cancel the recipient's turn; when denied it's delivered as `steer` and the result reports it. Human (HTTP/CLI) senders always keep `interrupt`. `pendingPromptStaleMinutes` (default `5`) is how long a prompt may sit queued behind a mid-turn session before it is flagged `stale` in `session_list` / `session_recap` (`pendingPrompts`) and its sender is told via a `notice` message. |
+| `contextSettings`         | `{ mode?, warnAtPct?, compactAtPct?, continueFreshAtPct?, hardStopAtPct?, handoffAtQuotaRemaining?, compactRequiresOperator?, compactHandoffTurn?, autoCompactAtTokens?, goal?, plan?, decisions?, changedFiles?, gitStatus?, tests?, errors?, risks?, nextStep?, config?, label? }` | AIP-46 name of the context-settings block; `contextContinuity` is its legacy alias. Each setting is its own axis: the daemon, adapter and request blocks layer per key, so a request that sets only `autoCompactAtTokens` keeps the daemon's `hardStopAtPct` instead of falling back to the built-in default. `contextSettings` wins over `contextContinuity` key by key within one layer. Bands that conflict once layered (each layer valid alone) fail the spawn as `invalid_context_settings`, naming the layer that sets each band. |
+| `contextContinuity`       | `{ mode?, warnAtPct?, compactAtPct?, continueFreshAtPct?, hardStopAtPct?, handoffAtQuotaRemaining?, compactRequiresOperator?, compactHandoffTurn?, autoCompactAtTokens?, goal?, plan?, decisions?, changedFiles?, gitStatus?, tests?, errors?, risks?, nextStep?, config?, label? }` | Context-window policy ([handoff guide](../guides/handoff.md#when-agentproto-suggests-a-handoff)). Compaction (a `/compact` or `/compress` prompt, runtime auto-compaction) and the hard stop each write a checkpoint first; compaction is refused if none can be written. `hardStopAtPct` is a trigger, not a wall: at the floor the runtime auto-compacts (checkpoint first, prompts wait with a retryable mid-turn error), then falls back to continue-fresh, and only stops as a last resort. Every outcome is announced in the transcript and as a `session:context-rescue` event (`compacted` / `continued` / `hard-stopped`). `compactRequiresOperator` (boolean, default `false`) refuses a compaction prompt attributed to a session (`agent_prompt`, `session_compact`, the session itself) so only an operator-originated prompt can compact. `compactHandoffTurn` (boolean, default `false`) has a `/compact` or `/compress` prompt ask the live session for a handoff turn before the checkpoint is built (one billed turn before the harness compacts in place); unset, the checkpoint is extracted from the transcript alone. The context-rescue path never asks. `handoffAtQuotaRemaining` (number ≥ 0, unset = off) emits a `session:handoff-suggested` event, once per quota window, when the session's Anthropic auth profile reports that many requests or fewer remaining. A raw `remaining` count (no limit is available to make a percentage); only sessions with an `access` profile are watched. It only suggests — it never switches harness. `autoCompactAtTokens` (integer ≥ 0, clamped to `600000` max, `0` disables) is the ABSOLUTE token counterpart of the percent thresholds: when an idle session's context reaches this many tokens, the runtime compacts it at the turn boundary (checkpoint first, then `/compact`). Unset, the threshold is `max(150000, warnAtPct% of the context window)`: 150000 on a 200k window, 550000 on a 1M window, so a large window never compacts at 15%. An explicit value is absolute and window-independent. |
+| `messaging`               | `{ allowSiblings?: boolean, allowSameWorkspace?: boolean, peerGroups?: string[][], grants?: Array<{ principal: string, effect?: "allow" \| "deny", actions: Array<{ action: "session:message" \| "session:prompt" \| "session:control", scope?: string }>, ttl_seconds?: number, granted_at?: string, revoked?: boolean }>, agentInterrupt?: "allow" \| "deny", pendingPromptStaleMinutes?: number, anonymousSend?: "block" \| "label" }` | Inter-session messaging policy ([`sessions` → Messages between sessions](../verbs/sessions.md#messages-between-sessions)). `allowSiblings` (default `false`) lets `message_send` / `message_reply` reach a sibling session. `allowSameWorkspace` (default `true`) lets `message_send` / `message_reply` reach any session of the same workspace, even without a tree edge. `peerGroups` (default `[]`) is a list of groups of workspace slugs: two sessions may message each other without a tree edge when both slugs sit in the SAME group (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). It applies independently of `allowSameWorkspace` - a group link holds even when the same-workspace rule is off - and a session without a workspace slug is never linked. `grants` (default `[]`) is the one list of explicit AIP-38 session-to-session grants: a matching `session:message` allow admits a message pair the tree and the switches refuse (relation `granted`); a matching `session:prompt` allow may admit `agent_prompt`, and a matching `session:control` allow may admit `agent_interrupt` / `agent_kill` / `session_restart` / `session_continue_fresh`, when the legacy owner gate refuses. A matching deny wins, and scopes are matched against the target (`<sessionId>`, `label:<operatorLabel>`, `workspace:<verified slug>`). Only a string principal and `session:message`, `session:prompt` or `session:control` actions are accepted; see [`sessions` -> Explicit session grants](../verbs/sessions.md#explicit-session-grants). `agentInterrupt` (default `"deny"`) decides whether a **session** sender's `urgency: "interrupt"` may cancel the recipient's turn; when denied it's delivered as `steer` and the result reports it. Human (HTTP/CLI) senders always keep `interrupt`. `anonymousSend` (default `"label"`) decides what `message_send` / `message_reply` (and `POST /sessions/:id/messages`) do for a sender with no verified session identity: an identity-less MCP client under `mcp.noCallerIdentity: "accept"`, or a claimed external identity such as the shared `claude-desktop` Chat tab. `"label"` delivers to any live session with the text prefixed `[unverified sender: <label>] `, capped at `steer` (an `interrupt` request is delivered as `steer`, never refused); `"block"` keeps `forbidden_recipient` for an unverified session sender outside the tree and workspace relations. Verified senders and `agent_prompt` are unaffected. `pendingPromptStaleMinutes` (default `5`) is how long a prompt may sit queued behind a mid-turn session before it is flagged `stale` in `session_list` / `session_recap` (`pendingPrompts`) and its sender is told via a `notice` message. |
+| `identity`                | `{ sessionTokens?: "off" \| "shadow" \| "enforce", requireProof?: ("session:spawn")[] }` | Per-session identity tokens. `"shadow"` (the default) mints a token per spawned claude-code / hermes session, sends it as `x-agentproto-session-token` on its daemon self-mount (stored hashed in `session-credentials.json`, revoked on retire) and counts verified, mismatching, invalid, claim-only and anonymous callers at `GET /identity` without refusing anything. `"enforce"`: minted the same way, and refusals on, see below. `"off"`: no token, no observation. Applies to sessions spawned after the change. `requireProof` lists actions a caller must be PROVEN to invoke; empty by default, and only `"session:spawn"` is evaluated today. |
+| `nativeHooks`             | `{ preCompactCheckpoint?: "off" \| "on", command?: string }` | Hooks the daemon projects into a harness's own settings. `preCompactCheckpoint: "on"` gives a local claude-code session a synchronous `PreCompact` hook (auto compactions only) running `<command> hook pre-compact`, which writes a daemon checkpoint before the harness compacts its own context; it always exits 0, so a missed checkpoint never blocks the compaction. `"off"` (the default): no hook. `command` unset (the default) runs the CLI that serves this daemon, by absolute path, so a daemon with a minimal PATH still finds it; set a value to override it (a win32 daemon keeps the bare `agentproto` on the harness's PATH). Sandbox sessions and other adapters get no hook. Applies to sessions spawned, restarted or resumed after the change. |
+
+`defaults.identity.sessionTokens: "enforce"` (AIP-46 §Session principals)
+mints and delivers the token exactly like `"shadow"`, and refuses with 403,
+before the handler acts, on `/mcp`, `POST /sessions/agent`,
+`POST /sessions/chat` and `POST /sessions/:id/messages`: a token that is
+malformed, unknown or revoked (`identity_unverified`), a token minted for
+another session than the caller claim (`identity_mismatch`), and a claim
+without token naming a session the token was delivered to
+(`identity_unverified`). An anonymous caller, an external identifier
+(`?host=`), and a claim naming a session on an adapter or placement that gets
+no token (codex, opencode, a sandboxed session, one spawned while `"off"`) are
+never refused: enforcement never outruns delivery (rule 8). The default stays
+`"shadow"`. Before turning it on, read `GET /identity`: `claimOnlyByClass.delivered`
+counts the requests enforce would refuse as claim-only, `counters.mismatch` and
+`counters.invalid_token` the others, and `enforces` lists the surfaces and
+adapters it covers; `refused` counts what it refused since the observations
+began.
+
+`defaults.identity.requireProof` (default `[]`) lists the actions that
+require a PROVEN caller (AIP-46 §Session principals rule 9). Only
+`"session:spawn"` is evaluated today. A listed action refuses a `claimed`
+caller with `identity_unverified` and a token minted for another session than
+the claim with `identity_mismatch`; a scoped orchestrator caller is proven by
+its scope token, and an anonymous loopback caller is the operator and is
+never refused. The list is ignored while `sessionTokens` is `"off"` (rule 8:
+no token is minted, so nobody could be proven). Read
+`GET /identity` `spawnProof.wouldRefuse` and its `claimedByClass` split
+before listing it: a `claimed` caller on an adapter or placement that cannot
+carry a token (`undelivered`) cannot spawn while the action is listed. The
+same trusted caller id now reaches the delegation, auth-profile and stdio
+mount gates for a spawn made over the HTTP routes, so those spawns are
+judged instead of reading `no_caller`.
+
+`GET /identity` also serves `spawnProof`: `counts` per verdict
+(`proven`, `claimed`, `mismatch`, `none`, `caller_unknown`, `external`),
+`claimedByClass` (`delivered` / `undelivered`), `wouldRefuse` (claimed plus
+mismatch, what listing the action would refuse), `refused`,
+`requireProofIgnored`, the currently listed `requireProof` actions, and
+`since`. These counters are in memory and reset on a daemon restart.
+
+The totals behind `GET /identity` persist in
+`<AGENTPROTO_HOME|~/.agentproto>/identity-observations.json` and add up across
+daemon restarts, so a deploy does not erase the window you are reading. `since`
+is the first boot recorded in that file; `bootedAt` is the current boot, and
+`boots` lists the last 50 boots with their time and build sha, so you can see
+when and with what the daemon restarted. Deleting the file starts a new window
+at zero.
+
+Whatever the mode, a session caller (a valid session token, or a trusted claim
+naming a session the daemon spawned) cannot write `defaults.messaging.*`,
+`defaults.identity.*` or `defaults.tasks.operatorDelegates` (or an ancestor of
+them) through `config_set` or `PATCH /config`: `operator_only`, 403 on the
+route. The operator (anonymous loopback, an external identifier) can. Like the
+memory write policy, this is a write policy on the existing loopback trust
+model, not an authentication boundary: a spawned session that deliberately
+omits both its session token and its caller claim is indistinguishable from the
+operator and can still write these keys. It stops the session's normal
+identity-carrying self-mount from reconfiguring the daemon it runs on, not a
+host process that drops its identity on purpose.
 
 Merge precedence (low → high): `defaults.options` < `defaults.adapters.<slug>.options`
 < the explicit `options` passed at spawn time. For `skills`, an explicit
@@ -251,8 +355,9 @@ no declared `skills` option treat the resolved skills list as a no-op.
 Generic ACP agents — any CLI that already speaks the Agent Client Protocol,
 connectable with zero adapter code. Keyed by adapter slug; each value is a
 spawn recipe. A config entry **shadows** a curated `ACP_CATALOG` entry of the
-same slug, and both lose to a real `@agentproto/adapter-<slug>` npm package
-(resolution order: npm → config → catalog). Managed via
+same slug, and both lose to a real adapter npm package
+(`@agentproto/harness-<slug>` or `@agentproto/adapter-<slug>`;
+resolution order: npm → config → catalog). Managed via
 [`agentproto acp`](../verbs/acp.md); direct edit is fine.
 
 | Field          | Type                                  | Meaning                                                        |
@@ -278,10 +383,13 @@ policy for isolating spawned agent sessions into one.
 | Field  | Type   | Meaning                                                                                                     |
 | ------ | ------ | ------------------------------------------------------------------------------------------------------------- |
 | `root` | string | Absolute path new worktrees are created under (layout `<root>/<repoName>/<slug>`). Resolution order: `--root` flag > `AGENTPROTO_WORKTREES_ROOT` env > this field > the hardcoded default `~/.agentproto/worktrees`. |
+| `extraRoots` | string[] | Extra dirs `agentproto maintain --all` scans for worktrees, in addition to `root`: pools outside `root` such as a repo's own `_worktrees/`. A dir holds worktrees directly (`<dir>/<slug>`) or in buckets (`<dir>/<repo>/<slug>`); `~/` expands. The `--worktrees-root` flag adds to this list. |
 | `isolation` | `"always"` \| `"on-request"` \| `"never"` | Policy for `agent_start`'s `worktree` field. `on-request` (default) isolates only when a spawn passes `worktree`; `always` isolates every **root** spawn whose cwd is inside a git repo (a spawn made through an orchestrator inherits its parent's tree; a cwd outside any repo spawns plain); `never` turns it off and **rejects** an explicit `worktree` rather than silently ignoring it. Resolution order: `AGENTPROTO_WORKTREES_ISOLATION` env > this field > the default `on-request`. The worktree is **not** auto-removed on session exit — reclaim it with `agentproto worktree rm\|archive\|gc`. |
 | `provisionConcurrency` | integer >= 0 | Daemon-wide cap on concurrently running **heavy** provisioning phases (`depsCmd`, `cloneGlobs`/`copyGlobs`, `worktree.setup` hooks). Excess `agent_start({worktree})` spawns wait in a FIFO queue (fair across callers) and show `provisioning: { state: "queued", position }`. `0` disables the cap. Default `2`. Resolution order: `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY` env > this field > the default. Hot-applied: a change takes effect on the next provisioning without a daemon restart. `git worktree add` and the other cheap steps are never queued. |
 | `provisionConcurrencyByRepo` | object | Extra per-repo cap, `{ "<repo path or directory name>": cap }` (`~/` expands; a bare name matches the repo's directory name). Applies **in addition to** `provisionConcurrency`, never looser than it. Invalid entries are ignored. |
 | `provisionLoadFactor` | number | Optional load guard. When `> 0`, a queued provisioning is not admitted while the 1-minute load average exceeds `cores x provisionLoadFactor`, unless nothing is running (an idle scheduler always admits one, so a permanently loaded host cannot deadlock). Default `0` (off). |
+| `provisionStallTimeoutMs` | integer >= 0 | Stall bound on the heavy provisioning segment, in ms: if the `depsCmd` / `worktree.setup` process prints nothing for this long, its whole process tree is killed and the spawn fails (session `error`) naming the phase, elapsed time and last output lines. Output resets the clock, so a slow install that keeps printing never trips it. Not counted while queued. `0` disables. Default `120000`. Resolution order: per-spawn `agent_start.worktree.stallTimeoutMs` > `AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS` env > this field > the default. Hot-applied. |
+| `provisionMaxMs` | integer >= 0 | Hard cap on the whole heavy provisioning segment, in ms, output or not; same failure path as the stall bound. `0` disables. Default `1800000` (30 min). Resolution order: per-spawn `agent_start.worktree.maxMs` > `AGENTPROTO_WORKTREES_PROVISION_MAX_MS` env > this field > the default. Hot-applied. |
 
 ### `spawn: object`
 
@@ -323,6 +431,15 @@ Session-presence and transcript-storage policy.
 | ------------------ | -------- | ------- |
 | `attentionDelaySec`| `number` | How long (seconds) a session stays shown as `running` after its last turn ends before the dashboard settles it into `attention`/`quiet`. Absent ⇒ `60`. Env override: `AGENTPROTO_SESSIONS_ATTENTION_DELAY_SEC`. |
 | `eventsDir`        | `string` | Root directory the daemon stores per-session transcripts under: each session's `events.jsonl` (and a terminal session's `terminal.jsonl`) lives at `<eventsDir>/<sessionId>/events.jsonl`. Every writer and reader (the transcript writer, `GET /sessions/:id/events`, `sessions export`, tool-call/usage logs) resolves through this single key. Relative paths resolve against the home directory. Absent ⇒ the hardcoded default `~/.agentproto/sessions` — zero behaviour change out of the box. Takes effect on daemon restart; existing transcripts are not moved. Spawn responses (`agent_start` descriptor) carry the resolved absolute path of the current session's `events.jsonl` as `descriptor.eventsPath`. |
+
+### `memory: object`
+
+The daemon's default [AIP-72](https://agentproto.sh/docs/aip-72) memory store,
+read and written by the `memory_*` MCP tools and by the spawn digest.
+
+| Field  | Type     | Meaning |
+| ------ | -------- | ------- |
+| `root` | `string` | Root of the reference-layout store (`items/<type>/<id>.md`, `proposals/<id>.md`). Absolute, `~/`, or relative to the home directory. Absent means `~/.agentproto/memory`. Read at daemon boot. An agent whose AGENT.md `memory.store` names a files root (`./memory`, `/abs/path`, `~/x`) uses that store instead, resolved against the session's workspace; a bare store id is not resolved yet and falls back to this root with a spawn warning. |
 
 ### `features: object`
 
@@ -380,8 +497,8 @@ named model sets. Applied hot. An explicit `models.<role>` still wins.
 | `opus` | `claude-sonnet-5-5` | `claude-opus-5-5` (same as the built-in defaults) |
 | `sonnet` | `claude-sonnet-5-5` | `claude-sonnet-5-5` |
 | `haiku` | `claude-haiku-5-5` | `claude-haiku-5-5` |
-| `go-free` | `opencode-go/longcat-2.5-preview-free` | `opencode-go/longcat-2.5-preview-free` |
-| `free-sonnet` | `opencode-go/longcat-2.5-preview-free` | `claude-sonnet-5-5` |
+| `go-free` | `opencode-go/beam-free` | `opencode-go/beam-free` |
+| `free-sonnet` | `opencode-go/beam-free` | `claude-sonnet-5-5` |
 
 ```bash
 agentproto config set modelRolePreset go-free

@@ -104,6 +104,11 @@ capability is identical either way. See
 [pair.md](./pair.md#offer--daemon-side) for what host control actually
 grants.
 
+The **offering** daemon holds its half of that handshake **pending** until
+its operator runs [`pair confirm`](./pair.md#pending--confirm--decline--daemon-side)
+(`pair pending` lists the short code) — until then the registration drives
+nothing on that side.
+
 The registered host then shows up in `devices list` with `role: host`,
 `kind: daemon`, `scope: host`.
 

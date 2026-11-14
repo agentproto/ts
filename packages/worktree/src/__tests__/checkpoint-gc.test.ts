@@ -9,8 +9,8 @@
  * plus the merge-tree/cherry ladder that makes it robust to squash merges,
  * and the never-delete-unknown/parentless cases.
  */
-import { describe, it, expect, afterEach } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from "vitest"
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -19,6 +19,11 @@ import {
   applySandboxCheckpointGc,
   type SandboxCheckpointGcEntry,
 } from "../checkpoint-gc.js"
+
+// This file drives real git processes (bare origins, clones, pushes). They are
+// quick locally but cross vitest's default 5s budget on loaded CI runners, so
+// use the same real-process budget as the repo's other spawn-heavy tests.
+vi.setConfig({ testTimeout: 15_000 })
 
 function git(cwd: string, args: string[]): void {
   const res = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" })
@@ -39,9 +44,13 @@ interface World {
   baseRef: string
 }
 
-/** Bare remote + a work clone with a single seed commit on `branch`. */
-function world(branch = "main"): World {
-  const root = mkdtempSync(join(tmpdir(), "ckgc-"))
+/**
+ * Build one bare remote + work clone with a single seed commit on `branch`.
+ * Tests copy this instead of paying init/add/commit/push again per test.
+ */
+function buildSeed(branch: string): string {
+  const root = mkdtempSync(join(tmpdir(), "ckgc-seed-"))
+  seedPaths.push(root)
   const originDir = join(root, "origin.git")
   spawnSync("git", ["init", "--bare", originDir], { encoding: "utf8" })
   const workDir = join(root, "work")
@@ -57,6 +66,30 @@ function world(branch = "main"): World {
   // Point the clone's remote HEAD at the branch so detectDefaultBranch sees
   // it even when it is neither main nor master.
   spawnSync("git", ["-C", workDir, "symbolic-ref", `refs/remotes/origin/HEAD`, `refs/remotes/origin/${branch}`])
+  return root
+}
+
+const seedPaths: string[] = []
+const seeds = new Map<string, string>()
+
+beforeAll(() => {
+  for (const branch of ["main", "master", "trunk"]) seeds.set(branch, buildSeed(branch))
+})
+
+afterAll(() => {
+  while (seedPaths.length) rmSync(seedPaths.pop()!, { recursive: true, force: true })
+})
+
+/** Copy the seeded bare remote + work clone so each test gets its own repos. */
+function world(branch = "main"): World {
+  const seed = seeds.get(branch)
+  if (!seed) throw new Error(`no seed for branch ${branch}`)
+  const root = mkdtempSync(join(tmpdir(), "ckgc-"))
+  cpSync(seed, root, { recursive: true })
+  const originDir = join(root, "origin.git")
+  const workDir = join(root, "work")
+  // The seed's origin URL points inside the seed; retarget it at this copy.
+  git(workDir, ["remote", "set-url", "origin", originDir])
   return {
     cleanupPaths: [root],
     originDir,

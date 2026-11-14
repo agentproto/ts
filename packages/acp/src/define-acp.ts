@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { acpFrontmatterSchema } from "./schema.js"
 import type { AcpDefinition, AcpHandle } from "./types.js"
 

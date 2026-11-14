@@ -42,6 +42,16 @@ export const WORKTREE_PROVISION_CONCURRENCY_ENV = "AGENTPROTO_WORKTREES_PROVISIO
  *  the two together — the runtime takes no dependency on that package). */
 export const DEFAULT_WORKTREE_PROVISION_CONCURRENCY = 2
 
+/** Env overrides for the provisioning boot bounds, ahead of
+ *  `worktrees.provisionStallTimeoutMs` / `provisionMaxMs`. Enforced by
+ *  `@agentproto/worktree` (same names; a CLI test pins them together). */
+export const WORKTREE_PROVISION_STALL_TIMEOUT_ENV = "AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS"
+export const WORKTREE_PROVISION_MAX_ENV = "AGENTPROTO_WORKTREES_PROVISION_MAX_MS"
+
+/** Defaults for those bounds; mirror `@agentproto/worktree`'s. */
+export const DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS = 120_000
+export const DEFAULT_WORKTREE_PROVISION_MAX_MS = 30 * 60_000
+
 /** The default when nothing is configured. Back-compat-preserving: a caller
  *  that passes no `worktree` field spawns exactly where it asked. */
 export const DEFAULT_WORKTREE_ISOLATION: WorktreeIsolationMode = "on-request"
@@ -52,7 +62,9 @@ export const DEFAULT_WORKTREE_ISOLATION: WorktreeIsolationMode = "on-request"
  * async provisioning (`async: true` — see `WorktreeRequest.async`); `false`
  * (or omitted) is "no explicit request" — the policy mode decides.
  */
-export type WorktreeField = boolean | { slug?: string; base?: string; async?: boolean }
+export type WorktreeField =
+  | boolean
+  | { slug?: string; base?: string; async?: boolean; stallTimeoutMs?: number; maxMs?: number }
 
 /** The caller's explicit request, normalized — `undefined` when the field is
  *  absent or `false`, otherwise the (possibly empty) slug/base overrides. */
@@ -82,6 +94,13 @@ export interface WorktreeRequest {
    *  blocking ok/fail contract (this package's own `worktree_provision_failed`
    *  test coverage exercises it deliberately synchronous). */
   async?: boolean
+  /** Per-spawn boot bound: kill the setup and fail the session when the
+   *  deps/setup process prints nothing for this many ms. `0` disables it.
+   *  Omitted ⇒ env / `worktrees.provisionStallTimeoutMs` / default (120 s). */
+  stallTimeoutMs?: number
+  /** Per-spawn hard cap on the heavy provisioning segment, in ms. `0`
+   *  disables it. Omitted ⇒ env / `worktrees.provisionMaxMs` / default (30 min). */
+  maxMs?: number
 }
 
 /** What the runtime hands the provisioner. `cwd` is where the session would
@@ -122,6 +141,14 @@ export interface WorktreeProvisionRequest {
   /** Progress of the heavy provisioning segment (queued / started / phase /
    *  done). Best-effort; never throws into the provisioner. */
   onProgress?: (progress: WorktreeProvisionProgress) => void
+  /** Live stdout/stderr of the deps/setup processes, chunk by chunk, so the
+   *  session's output shows progress while it is still `starting`. */
+  onOutput?: (text: string, stream: "stdout" | "stderr") => void
+  /** Per-spawn overrides of the provisioning boot bounds (see
+   *  {@link WorktreeRequest.stallTimeoutMs} / `maxMs`); omitted ⇒ the
+   *  provisioner resolves env / config / defaults. */
+  stallTimeoutMs?: number
+  maxMs?: number
 }
 
 /** Phases of a worktree provisioning. `worktree` is the unthrottled
@@ -220,6 +247,8 @@ export function normalizeWorktreeField(
   if (field.slug !== undefined) request.slug = field.slug
   if (field.base !== undefined) request.base = field.base
   if (field.async !== undefined) request.async = field.async
+  if (field.stallTimeoutMs !== undefined) request.stallTimeoutMs = field.stallTimeoutMs
+  if (field.maxMs !== undefined) request.maxMs = field.maxMs
   return request
 }
 

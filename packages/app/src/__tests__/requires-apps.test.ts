@@ -76,4 +76,36 @@ describe("requires.apps entries", () => {
       normalizeManifestFields({ requires: { apps: [{ id: "@x/a", workflows: [1] }] } }, declared, fail),
     ).toThrow(/workflows/)
   })
+
+  it("takes tools as the provider's MCP names and round-trips them", () => {
+    const out = normalizeManifestFields(
+      { requires: { apps: [{ id: "@agentik/bureau", version: "^0.3", tools: ["bureau_navigate", "bureau_list_instances"] }] } },
+      declared,
+      fail,
+    )
+    expect(out.appRequirements).toEqual([
+      { id: "@agentik/bureau", version: "^0.3", tools: ["bureau_navigate", "bureau_list_instances"] },
+    ])
+  })
+
+  it("refuses a tools entry that is not an MCP name, an exposes.tools id included, naming its index", () => {
+    const tools = (list: unknown[]) => () =>
+      normalizeManifestFields({ requires: { apps: [{ id: "@agentik/bureau", tools: list }] } }, declared, fail)
+    expect(tools(["bureau_navigate", "imported:bureau/browser_navigate"])).toThrow(/requires\.apps\[0\]\.tools\[1\]/)
+    expect(tools(["bureau.status"])).toThrow(/MCP name/)
+    expect(tools(["Bureau_x"])).toThrow(/MCP name/)
+    expect(tools(["bureau_"])).toThrow(/MCP name/)
+    expect(tools([`bureau_${"a".repeat(60)}`])).toThrow(/64/)
+    expect(tools(["bureau_a", "bureau_a"])).toThrow(/duplicate/)
+    expect(tools("bureau_a" as never)).toThrow(/array/)
+  })
+
+  it("refuses two apps entries naming the same id, and an unknown requires key", () => {
+    expect(() =>
+      normalizeManifestFields({ requires: { apps: ["@x/a", { id: "@x/a", version: "^1" }] } }, declared, fail),
+    ).toThrow(/requires\.apps\[1\]': duplicate app id/)
+    expect(() => normalizeManifestFields({ requires: { apps: [], network: true } }, declared, fail)).toThrow(
+      /'requires\.network' is not a supported requires field/,
+    )
+  })
 })

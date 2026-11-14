@@ -58,8 +58,7 @@ export const KNOWN_ENTITY_TYPES = [
 export const auditEventSchema = z.object({
   // Reads accept the AIP-70 name and the pre-AIP-70 legacy name. The tag
   // is part of the hashed row bytes: verification always uses the tag
-  // stored in the row, never one re-derived from SPEC_NAME. New rows keep
-  // being written with the legacy tag for now (EMITTED_SPEC_NAME).
+  // stored in the row, never one re-derived from SPEC_NAME.
   schema: z.enum(ACCEPTED_SPEC_NAMES),
   doctype: z.literal("audit-event"),
 

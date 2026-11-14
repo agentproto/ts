@@ -22,6 +22,9 @@ import {
   linuxPidfilePath,
   pathNeedsRefresh,
   systemdUnitPath,
+  winDaemonShimCommand,
+  winExecutionPolicyBlocksScripts,
+  WIN_EXECUTION_POLICY_PROBE,
   type DaemonHealthInfo,
   type LinuxDaemonMode,
 } from "../../commands/daemon.js"
@@ -36,6 +39,30 @@ interface HealthResult {
   /** The `/health` body when reachable, else `null` — the node/adapter check
    *  needs the daemon's Node binary (`info.node`). */
   info: DaemonHealthInfo | null
+}
+
+/** Under Restricted/AllSigned, a bare `agentproto` resolves to the
+ *  agentproto.ps1 shim first and is refused, so every `agentproto daemon ...`
+ *  hint (install, start, restart) would fail before doing anything. Rewrite
+ *  them to the .cmd shim. Probes only when there is a fix to show, so a
+ *  healthy Windows host pays nothing; an unreadable policy keeps the plain
+ *  commands. */
+async function applyWinScriptPolicyHints(
+  ctx: StepContext,
+  checks: StepCheck[],
+): Promise<void> {
+  const fixable = checks.filter(c => c.fix?.startsWith("agentproto daemon "))
+  if (fixable.length === 0) return
+  const out = await ctx.exec(
+    WIN_EXECUTION_POLICY_PROBE.cmd,
+    WIN_EXECUTION_POLICY_PROBE.args,
+    { timeoutMs: 3_000 },
+  )
+  const policy = out.code === 0 ? out.stdout : null
+  if (!winExecutionPolicyBlocksScripts(policy)) return
+  for (const check of fixable) {
+    if (check.fix) check.fix = winDaemonShimCommand(check.fix, policy)
+  }
 }
 
 async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise<HealthResult> {
@@ -93,6 +120,21 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
     info,
     check: { id: "daemon.health", title: "Daemon /health", status: "ok", detail: `${version}${up} at ${info.url}`, data },
   }
+}
+
+/** Message-delivery warnings the daemon raised (one per receiver): a Claude Code
+ *  session in bypassPermissions was messaged while it would hold the wake. */
+function pushWakeWarnings(checks: StepCheck[], info: DaemonHealthInfo): void {
+  const held = (info.warnings ?? []).filter((w) => w.kind === "held-by-receiver-bypass")
+  if (held.length === 0) return
+  checks.push({
+    id: "daemon.wake",
+    title: "Waking Claude Code sessions in bypassPermissions",
+    status: "warn",
+    detail: `${held.map((w) => w.sessionId).join(", ")} hold messages from other sessions until crossSessionInbound is "accept"`,
+    fix: "agentproto doctor --fix",
+    data: { sessions: held.map((w) => w.sessionId) },
+  })
 }
 
 /**
@@ -284,6 +326,7 @@ async function detectLinux(ctx: StepContext): Promise<StepCheck[]> {
     if (unit !== null) checks.push(await checkPlistPath(ctx, unit, extractUnitPathValue))
   }
   if (health.info) {
+    pushWakeWarnings(checks, health.info)
     const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
     if (mismatch) checks.push(mismatch)
   }
@@ -330,9 +373,11 @@ export const daemonStep: OnboardingStep = {
       const health = await checkHealth(ctx, installed)
       const checks = [health.check, task]
       if (health.info) {
+        pushWakeWarnings(checks, health.info)
         const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
         if (mismatch) checks.push(mismatch)
       }
+      await applyWinScriptPolicyHints(ctx, checks)
       return checks
     }
     if (ctx.platform === "linux") {
@@ -351,6 +396,7 @@ export const daemonStep: OnboardingStep = {
         },
       ]
       if (health.info) {
+        pushWakeWarnings(checks, health.info)
         const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
         if (mismatch) checks.push(mismatch)
       }
@@ -362,6 +408,7 @@ export const daemonStep: OnboardingStep = {
     const checks = [health.check, await checkService(ctx, plistXml, plistPath)]
     if (plistXml !== null) checks.push(await checkPlistPath(ctx, plistXml))
     if (health.info) {
+      pushWakeWarnings(checks, health.info)
       const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
       if (mismatch) checks.push(mismatch)
     }
@@ -373,7 +420,9 @@ export const daemonStep: OnboardingStep = {
     const path = checks.find((c) => c.id === "daemon.path")
     const actions: SetupAction[] = []
     if (ctx.platform === "win32") {
-      if (service?.status === "warn" && service.fix === "agentproto daemon install") {
+      // The hint may be `agentproto.cmd daemon install` when the PowerShell
+      // policy blocks the .ps1 shim, so recognise either spelling.
+      if (service?.status === "warn" && service.fix?.endsWith("daemon install")) {
         actions.push({
           id: "daemon.install",
           title: "Install the daemon as a scheduled task at logon and start it",

@@ -183,11 +183,11 @@ async function checkCronScheduler(ctx) {
     schedule: "0 0 1 1 *", // once a year — never fires on its own during this run
     recurring: false,
     action: { kind: "command", command: disallowed, args: [] },
-  })
+  }, { token: ctx.sessionsToken })
   assert(negCreate.status === 201, `failed to create negative-test cron job: HTTP ${negCreate.status} ${JSON.stringify(negCreate.json)}`)
   const negId = negCreate.json.id
   ctx.cleanupCronJobs.push(negId)
-  const negRun = await httpJson("POST", `/cron/${negId}/run`)
+  const negRun = await httpJson("POST", `/cron/${negId}/run`, {}, { token: ctx.sessionsToken })
   assert(negRun.status === 200, `manual run of negative-test job failed unexpectedly: HTTP ${negRun.status} ${JSON.stringify(negRun.json)}`)
   const negResult = negRun.json.result
   assert(negResult?.ok === false, `expected disallowed command '${disallowed}' to be rejected, got ${JSON.stringify(negResult)}`)
@@ -201,7 +201,7 @@ async function checkCronScheduler(ctx) {
     schedule: "* * * * *",
     recurring: false,
     action: { kind: "command", command: "echo", args: [sentinel] },
-  })
+  }, { token: ctx.sessionsToken })
   assert(oneShotCreate.status === 201, `failed to create one-shot cron job: HTTP ${oneShotCreate.status} ${JSON.stringify(oneShotCreate.json)}`)
   const oneShotId = oneShotCreate.json.id
   ctx.cleanupCronJobs.push(oneShotId)
@@ -430,7 +430,7 @@ async function cleanup(ctx) {
   }
   for (const id of ctx.cleanupCronJobs) {
     try {
-      await httpJson("DELETE", `/cron/${id}`)
+      await httpJson("DELETE", `/cron/${id}`, undefined, { token: ctx.sessionsToken })
     } catch (err) {
       console.warn(`cleanup: failed to delete cron job ${id}: ${err.message}`)
     }

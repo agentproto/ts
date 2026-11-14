@@ -1,7 +1,7 @@
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
 /**
- * Two bundles:
+ * Three bundles:
  *  - `index.mjs`: the adapter. Bundles `@modelcontextprotocol/sdk` (used to
  *    enumerate MCP tools in connect()); `@agentproto/driver-agent-cli` external.
  *  - `mcp-bridge-extension.mjs`: the pi extension pi loads via `-e`. Bundles the
@@ -9,6 +9,8 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
  *    (`@earendil-works/*`) are never imported here (structural typing), and node
  *    builtins stay external. `splitting: false` keeps it fully self-contained so
  *    pi/jiti loads a single file with no sibling chunks.
+ *  - `provider-overrides-extension.mjs`: the pi extension that applies the
+ *    per-session provider overrides (OpenCode console org bearer + headers).
  */
 export default createTsupConfig({
   banner: `/**
@@ -26,11 +28,13 @@ const require = __agp_createRequire(import.meta.url)`,
   entry: {
     index: "src/index.ts",
     "mcp-bridge-extension": "src/mcp-bridge/extension.ts",
+    "provider-overrides-extension": "src/provider-overrides-extension.ts",
+    "question-extension": "src/question-extension.ts",
   },
   format: ["esm"],
   splitting: false,
   dts: { entry: { index: "src/index.ts" } },
-  external: ["@agentproto/driver-agent-cli"],
+  external: ["@agentproto/harness"],
   // tsup externalizes `dependencies` by default. Force the MCP SDK to be
   // INLINED: the bridge extension runs inside pi's process, which cannot
   // resolve `@modelcontextprotocol/sdk` — it must be self-contained. (The

@@ -39,8 +39,11 @@ agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cols <n>] [--rows <n>]
                                            [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
+                                         [--model <id>] [--access-profile <ref>]
+                                         [--prefer-native-terminal]
+                                         [--auto-compact-at-tokens <n>]
 agentproto sessions switch-profile --from <profileRef> --to <profileRef>
-                                           [--dry-run] [--json]
+                                           [--dry-run] [--include-dead] [--json]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
                                            [--force] [--json]
 agentproto sessions pin      <id-or-name> [--json]
@@ -50,14 +53,16 @@ agentproto sessions story    <id-or-name> [--json] [--no-color]
                                            [--source auto|native|daemon]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
                                            [--source auto|native|daemon]
-                                           [--adapter <slug>] [--cwd <dir>]
+                                           [--harness <slug>] [--cwd <dir>]
 agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
                                            [--error-kind <kind>] [--next-step <text>]
                                            [--question <text>] [--note <text>] [--json]
-agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
+agentproto sessions wait     <id-or-name>... [--until <event>] [--any]
+                                           [--since <seq>] [--timeout <duration>]
                                            [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
 agentproto sessions gc       --retention [--dry-run] [--json]
+agentproto sessions gc       --adapter-caches [--dry-run] [--json]
 agentproto sessions continue-interrupted [--send] [--id <id-or-name>...]
                                            [--prompt <text>] [--json]
 agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
@@ -146,6 +151,12 @@ activity first, and the response carries `total` (the filtered count before
 50 rows plus `truncated`, `total` and `nextCursor` (pass `limit` up to 200 and
 `cursor` to page).
 
+The default `GET /sessions` row omits the live-only `availableCommands` table
+(large, and only useful for a specific session). Add
+`?fields=availableCommands` to the list query when you need it, or read the
+per-session descriptor (`GET /sessions/<id>`), which always carries it. The
+`?since=` delta view uses the same projection.
+
 | Filter | Meaning |
 |---|---|
 | `ids` | only these session ids (exact; string or list): the cheap read of known sessions. MCP also falls back to cold history when none is live |
@@ -186,6 +197,21 @@ inserted between `WORKSPACE` and `STATUS` showing the worktree's leaf directory
 name. The full path and the worktree id are shown in the `--watch` detail pane
 and in `--json`.
 
+When any row has provenance, a `LAUNCHED BY` column is inserted between `AGE`
+and `COMMAND`. It is derived at read time from fields the descriptor already
+carries, with this precedence: a spawning session's id (`parentSessionId`),
+else a known invoking session (`callerSessionId`), else the operator
+(`operatorLabel`), else only the origin channel (`origin`). A session renders
+as `session <id> (<label>)` when its parent is in the same list with a label,
+`session <id>` without one, and gains ` via <origin>` when the channel is
+known; the operator renders as `operator via <origin>`, and an origin-only row
+as the origin itself. The cell is truncated at 40 characters, and a row with
+nothing renders as `-` once the column is shown. This is a declaration, not an
+authenticated fact: while caller identity is only observed (shadow mode), a
+local process can name any session as its caller, so the text says who the
+session claims launched it. The MCP `session_list` tool carries the same text on
+each compact row as `launchedBy`.
+
 A session whose worktree is still being provisioned reports `starting` plus
 what it is doing: `starting queued #2` while it waits for a provisioning slot
 (see [`worktree`](./worktree.md#provisioning-concurrency)), or `starting deps`
@@ -202,8 +228,9 @@ agentproto sessions board --watch
 agentproto sessions board --all
 ```
 
-At-a-glance status board: every session is assigned exactly one Badge sorted
-by attention-worthiness, with a one-line summary header.
+At-a-glance status board: every session that SURVIVES the lineage collapse
+below is assigned exactly one Badge sorted by attention-worthiness, with a
+one-line summary header.
 
 | Badge | Condition |
 |-------|-----------|
@@ -213,7 +240,7 @@ by attention-worthiness, with a one-line summary header.
 | `ACTIVE` | Running and busy (a turn is in flight) |
 | `IDLE` | Running, not busy, not stale (young or `keepAlive: true`) |
 | `COMMAND` | `kind: "command"` execution-log row (only visible with `--all`) |
-| `ENDED` | Terminal status (`exited` / `killed` / `error`) |
+| `ENDED` | Terminal status (`exited` / `killed` / `error`) — but see `--no-collapse-lineage` below: a restarted/continue-fresh'd/handed-over row's ENDED predecessor is hidden by default, not listed here |
 
 Sort order (most-attention-worthy first): `AWAITING > BLOCKED > STALE > ACTIVE > IDLE > COMMAND > ENDED`.
 
@@ -222,6 +249,15 @@ Sort order (most-attention-worthy first): `AWAITING > BLOCKED > STALE > ACTIVE >
 | `--all` | Include `kind: "command"` execution-log rows (same rows `command_list` returns). |
 | `--json` | Emit the classified rows as JSON — includes the Badge plus every evidence field the rules read (`keepAlive`, `interrupted`, `continuedFrom`, `blockedOn`, `idleMs`, `costUsd` when usage exists). Cannot be combined with `--watch`. |
 | `--watch` | Re-render every 2 s on a TTY (`q` to quit). On non-TTY stdout falls back to a single snapshot. |
+| `--no-collapse-lineage` | Opt out of the default `collapseLineage` request (see below) and show every retired restart/continue-fresh/handover hop. |
+
+By default the board requests `?collapseLineage=true` (see
+[`session_list`'s `collapseLineage` filter](../../../packages/runtime/docs/mcp-tools/session_list.md#collapselineage)):
+a session restarted repeatedly (a persistent brain, a PM) mints a fresh id
+each time, and without this the board fills up with one `ENDED` row per
+restart under the same label instead of staying glanceable. A row that is
+still `running`/`starting` is NEVER hidden by this, even if another row's
+lineage points at it.
 
 ### `--stats[=full]` (who is eating the host)
 
@@ -369,7 +405,7 @@ reattached later.
 | `--auth subscription\|api-key` | Deterministic billing-auth mode + inline credential for adapters that declare a subscription login (`authSubscription`) and/or an API-key provider in their manifest; any other adapter fails the spawn with `unsupported_auth_mode`. This is the *inline* billing selector; the first-class config axis is a **named auth profile** (`access.profileRef`) — see [Config axes](#config-axes-mcphttp). |
 | `--options-json <json\|@file>` | Object form of manifest-declared AIP-45 options; merged with `--base-url`/`--auth-token`/`--auth`/`--model`/`--effort` (discrete flags win on collision). |
 | `--prompt <text>`, `-p` | Initial user turn. |
-| `--agent <id-or-path>` | Load an AIP-42 `AGENT.md` as this spawn's defaults (prompt/persona/model/skills/tools). An id resolves to `<cwd>/.agents/<id>/AGENT.md`; a value ending in `.md` or containing a `/` (but not an `@owner/…` id) is treated as an explicit `AGENT.md` path instead. HTTP twin: the `agentId`/`agentPath` body fields on `POST /sessions/agent` — the MCP `agent_start` tool does not accept them. |
+| `--agent <id-or-path>` | Load an AIP-42 `AGENT.md` as this spawn's defaults (prompt/persona/model/skills/tools). An id resolves to `<cwd>/.agents/<id>/AGENT.md`; a value ending in `.md` or containing a `/` (but not an `@owner/…` id) is treated as an explicit `AGENT.md` path instead. HTTP twin: the `agent` body field on `POST /sessions/agent` (the MCP `agent_start` tool takes the same field); `agentId`/`agentPath` remain as legacy aliases. The CLI flag takes an id or a path only; a role name (`executor`, `supervisor`, a pack role) is passed through the `agent` body field of the HTTP route or the MCP tool. |
 | `--label <text>` | UI label for this session. |
 | `--title <text>` | Display title (auto-derived fallback) for this session. |
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |
@@ -384,7 +420,7 @@ reattached later.
 | `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
 | `--max-cost-usd <n>` | HARD spend ceiling in USD for this session: the daemon kills the session at the next turn-end once cumulative cost exceeds `n`. A positive number; rejected client-side if non-numeric or ≤ 0. Mirrors `agent_start.maxCostUsd`. |
 | `--cost-budget <spec>` | Windowed governance cap that **never kills** the session — raises a notification when the window's cumulative cost exceeds the cap, leaving the decision to an orchestrator or human. Two spellings: compact `<usd>:<window>[:<scope>]` (e.g. `20:5h:profile`, `15:7d`) or full JSON `{"maxCostUsd":20,"window":"5h","scope":"session"}`. `scope` is `session` (default) or `profile`. Mirrors `agent_start.costBudget`. |
-| `--turn-retry <spec>` | Retry a turn that failed on a transient provider error: after an exponential backoff the daemon re-sends the same session a short continuation prompt. **On by default** for executor-role and `--sandbox` spawns (rate-limit, upstream-5xx, no-output-stall; 6 retries — supervisor spawns stay opt-in, and `turnRetry: null` / an empty `on` opts out). `<spec>` is `all`, `off` (explicit opt-out), a comma list of classes (`rate-limit,upstream-5xx,no-output-stall`), or a JSON object (`{"on":["rate-limit"],"maxRetries":3,"baseDelayMs":5000,"factor":2,"maxDelayMs":60000}`). Add `"action":"migrate"` (with `"maxMigrations":2`, the migration cap) to move a SANDBOX session to a fresh box — new IP, same work branch — instead of re-prompting the current one; a non-sandbox session or a spent cap falls back to the retry above. Never retries an interrupt, kill, cost stop, 401/402/403, or a turn that already made a side-effecting tool call (unless `"retryAfterToolCalls":true`). Add `"rotate":[{"model":"opencode/big-pickle"}]` (plus optional `rotateOn`, `cooldownMs`) to switch to the next non-cooling model on a rate-limit or stall instead of retrying the throttled one; a free OpenCode model may only rotate to free ids. Mirrors `agent_start.turnRetry`; see [`agent_start`](../../../packages/runtime/docs/mcp-tools/agent_start.md#turnretry). |
+| `--turn-retry <spec>` | Retry a turn that failed on a transient provider error: after an exponential backoff the daemon re-sends the same session a short continuation prompt. **On by default** for executor-role and `--sandbox` spawns (rate-limit, upstream-5xx, no-output-stall; 6 retries — supervisor spawns stay opt-in, and `turnRetry: null` / an empty `on` opts out). `<spec>` is `all`, `off` (explicit opt-out), a comma list of classes (`rate-limit,upstream-5xx,no-output-stall`), or a JSON object (`{"on":["rate-limit"],"maxRetries":3,"baseDelayMs":5000,"factor":2,"maxDelayMs":60000}`). Add `"action":"migrate"` (with `"maxMigrations":2`, the migration cap) to move a SANDBOX session to a fresh box — new IP, same work branch — instead of re-prompting the current one; a non-sandbox session or a spent cap falls back to the retry above. Never retries an interrupt, kill, cost stop, 401/402/403, or a turn that already made a side-effecting tool call (unless `"retryAfterToolCalls":true`). Add `"rotate":[{"model":"opencode/big-pickle"}]` (plus optional `rotateOn`, `cooldownMs`) to switch to the next non-cooling model on a rate-limit or stall instead of retrying the throttled one; a free OpenCode model may only rotate to free ids. Add `usage-limit` to the classes (explicit opt-in, not part of `all`) to also react to a provider usage cap: no backoff retry, it rotates, falls back, or (with `"action":"migrate"`) moves a sandbox session to a fresh box. Mirrors `agent_start.turnRetry`; see [`agent_start`](../../../packages/runtime/docs/mcp-tools/agent_start.md#turnretry). |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
 
@@ -489,7 +525,11 @@ agentproto permissions deny <id>          # reject
 Same capability over MCP (`agent_start { permissionHold: true }` +
 `permissions_list` / `permissions_respond`) and HTTP
 (`POST /sessions/agent { permissionHold: true }`, `GET /permissions`,
-`POST /permissions/:id`). A held session renders with a `!` badge in `--watch`. See
+`POST /permissions/:id`). A held session renders with a `!` badge in `--watch`.
+`GET /permissions/grants` (read-only) reports the effective grants the
+messaging switches and `allowPromptFrom` derive, plus a `delegation` field
+with the AIP-46 delegation gate's mode and counters (see
+[`roles.md`](../concepts/roles.md#delegation-gate)). See
 [`permissions.md`](./permissions.md) for the full inbox verb. ACP adapters
 only (e.g. claude-code); adapters with no permission surface ignore the flag.
 
@@ -624,6 +664,8 @@ daemon returns 501 and this verb fails.
 ```bash
 agentproto sessions restart claude-tui
 agentproto sessions restart ses_abc12 --attach
+agentproto sessions restart ses_abc12 --model anthropic/claude-opus-4-8
+agentproto sessions restart ses_abc12 --model opencode/deepseek-v4.1-flash-free --access-profile work
 ```
 
 Looks up the (possibly historical) descriptor and spawns a new
@@ -633,6 +675,12 @@ fresh shape when the adapter reports the id is unknown ("session
 killed too early to persist"). The banner reports which path was
 taken: `(resumed via claude --resume from ses_abc12)` or
 `(fresh — resume not available)`.
+
+`--model` and `--access-profile` keep the model, billing profile and
+lineage when restarting: the CLI routes agent restarts through the
+daemon so those spawn fields survive. Both require an agent-cli
+restart (a PTY/command restart with them exits non-zero). A restart
+carrying either flag re-resolves auth like any other config change.
 
 **Restart-with-override (MCP/HTTP).** The `session_restart` MCP tool (and the
 `POST /sessions/:id/restart` route) accept per-axis overrides — `model`,
@@ -644,6 +692,14 @@ the PTY-native `claude --resume` branch, which can't re-resolve billing or apply
 an axis). This is the way to apply an axis that a [live switch](#config-axes-mcphttp)
 reported as `requires-restart`. Only agent-CLI sessions have axes to override —
 a PTY/command restart with overrides is rejected `400`.
+
+**Auto-compact threshold.** `--auto-compact-at-tokens <n>` sets the ABSOLUTE
+context threshold (tokens) at which an idle session is compacted automatically
+(clamped to 600000 max; `0` disables). Same semantic as
+`contextSettings.autoCompactAtTokens` (alias `contextContinuity.autoCompactAtTokens`) in [`../reference/config-schema.md`](../reference/config-schema.md) / the
+`agent_start` spawn field, but stamped onto this session's config for the
+restart's lifetime. The HTTP restart route accepts the whole block as `contextSettings` (or the alias
+`contextContinuity`) and overlays it, key by key, on the session's prior policy.
 
 **Sandbox sessions whose box is gone.** Restarting a [sandbox](#sandbox)
 session whose box died boots a fresh box instead of failing. The clone source
@@ -694,8 +750,9 @@ agentproto sessions unpin ses_abc12
 
 POSTs `/sessions/:id/pin`. A pinned session sorts to the top of the
 `sessions` table and the VS Code "Pinned" group, marked with a `PIN`
-indicator. Pinning is list-visibility only — it has no effect on
-keep-alive, the idle reaper, or notifications.
+indicator. A pinned session is never stopped by the idle reaper
+(pinned means never stopped). Pinning does not set keep-alive and sends no
+notification. Unpin it to make it reapable again.
 
 ### `POST /sessions/:id/archive` (HTTP)
 
@@ -762,7 +819,7 @@ running ones.
 | `--json` | markdown | Emit the raw `ExportedSession` JSON instead of rendered markdown. |
 | `--output <file>`, `-o` | stdout | Write to a file instead of stdout. |
 | `--source <auto\|native\|daemon>` | `auto` | Which backend to read. `auto` prefers the adapter's own native store (claude-code JSONL, hermes SQLite) and falls back to agentproto's `events.jsonl` capture when there isn't one or it can't be read; `native`/`daemon` force one and surface its own error instead of falling back. |
-| `--adapter <slug>` | from registry | Override the adapter slug — required with `--source native` when exporting a raw adapter-native id that isn't in the registry. |
+| `--harness <slug>` | from registry | Override the harness slug: required with `--source native` when exporting a raw harness-native id that isn't in the registry. `--adapter` is a deprecated alias of `--harness`: it still works and prints a deprecation line on stderr. |
 | `--cwd <dir>` | from registry | Override the working directory — required for a claude-code native export when the session isn't in the registry (used to locate the JSONL file). |
 
 The `/sessions/:id/export` route accepts the same `format`
@@ -796,17 +853,32 @@ fields are stored on the session (`outcome.reason`, `outcome.errorKind`, …,
 "completed" (it conflicts with an `--outcome` other than `done`). On an already-ended session the same flags relabel its
 outcome instead of erroring.
 
-### `wait <id-or-name>`
+### `wait <id-or-name>...`
 
 ```bash
 agentproto sessions wait ses_abc12
 agentproto sessions wait ses_abc12 --until turn-end --timeout 5m
+agentproto sessions wait ses_abc12 --until turn-end --since 0 --timeout 5m
+agentproto sessions wait ses_abc12 ses_def34 --until turn-end --timeout 5m
+agentproto sessions wait ses_abc12 ses_def34 --until turn-end --any
 agentproto sessions wait --policy pol_abc12 --timeout 2m
 ```
 
 Blocking long-poll: blocks the caller until the session fires a lifecycle
 event or the timeout expires. Chains calls across the daemon's ~55s
-per-call ceiling so the CLI-side timeout can be arbitrarily long.
+per-call ceiling so the CLI-side timeout can be arbitrarily long. With
+several ids it waits concurrently for all of them, or for the first real
+match with `--any`; the `--timeout` budget is shared across the fan-out
+(one deadline for every id, not a fresh budget per id). In `--policy` mode
+at most one session id may be given and it is ignored; more than one is a
+usage error (exit `2`).
+
+With `--any`, only exit code `0` (a real match) settles the group. A
+sibling that times out (`2`), is not found (`3`), produces an empty/errored
+turn (`4`), or is idle (`5`) is remembered and the wait keeps blocking for
+the others. Those remembered outcomes are surfaced only if every sibling
+fails too, or the shared `--timeout` budget runs out. Sibling waits are
+aborted only after a real match.
 
 This is the scriptable equivalent of the `session_monitor` MCP tool, but
 without the 49s MCP constraint — prefer it when you have shell access.
@@ -814,9 +886,37 @@ without the 49s MCP constraint — prefer it when you have shell access.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--until <event>` | `any` | Which lifecycle event to wait on: `turn-end`, `awaiting-input`, `exited`, `any`. |
-| `--timeout <duration>` | `60s` / `15m` | Total wait budget. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
-| `--policy <policyId>` | — | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, the positional `<id-or-name>` is ignored. |
-| `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. |
+| `--any` | `false` | With several session ids, return as soon as one of them really matches (exit `0`). Non-zero outcomes are remembered and only surfaced if every sibling fails or the shared budget runs out. |
+| `--since <seq>` | none | Event-ring cursor. Replays matching events after `seq` before blocking. Use `--since 0` from a spawn-then-wait caller when the first turn may end before this process starts; without a cursor the daemon cannot distinguish that turn-end from stale history and the CLI's idle pre-flight exits 5. |
+| `--timeout <duration>` | `60s` / `15m` | Total wait budget, shared by every id in a multi-id wait. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
+| `--policy <policyId>` | - | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, at most one positional `<id-or-name>` is accepted and ignored; extra positionals are a usage error. |
+| `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. With several ids it emits one aggregate document (see below) instead of one document per id. |
+
+#### Multi-id `--json` shape
+
+A single id keeps the historical output: the matched/idle/timeout object
+itself, printed on its own (byte-identical to earlier releases). With two
+or more ids, `--json` prints exactly one JSON document so
+`JSON.parse(stdout)` works:
+
+```json
+{
+  "results": [
+    { "idOrName": "ses_abc12", "event": "turn-end", "sessionId": "ses_abc12", "status": "running", "timeoutMs": 300000, "timeout": "5m" },
+    { "idOrName": "ses_def34", "event": "turn-end", "sessionId": "ses_def34", "status": "running", "timeoutMs": 300000, "timeout": "5m" }
+  ],
+  "mode": "all"
+}
+```
+
+`results` has one entry per id, in the order the ids were given. Each entry
+is the same object the single-id path would print for that session (matched
+result, `idle: true`, or `timedOut: true`), plus `idOrName`; an id that
+failed before producing a result (for example an unknown session) appears
+as `{ "idOrName": "...", "exitCode": 3 }`. Under `--any`, ids still waiting
+when a match settled the group appear as
+`{ "idOrName": "...", "aborted": true }`. `mode` is `"all"` or `"any"`.
+
 
 Before blocking, the CLI prints its interpreted budget to stderr
 (`waiting up to 5m (300000ms) for turn-end on ses_abc12…`) so a units
@@ -832,6 +932,11 @@ mistake is caught immediately — the incident this module exists for was a
 | `3` | Session/policy not found, or daemon unreachable. |
 | `4` | The matched turn-end was a silent no-op — `empty: true` (zero assistant output, zero tool calls) — or ended with `reason: "error"` (the adapter reported a failed turn). The wait DID resolve; the turn it resolved on produced nothing. Commonly a bad auth/model config. |
 
+For a multi-id wait without `--any`, the exit code is the first non-zero
+code among the ids (`0` only when all matched). With `--any` the group
+exits `0` on the first real match; otherwise it reports a remembered
+failure once every sibling has failed or the shared budget has run out.
+
 #### `status` vs `wait`
 
 `agentproto sessions` (or `--json`) is a **non-blocking snapshot** — it
@@ -843,7 +948,7 @@ and humans.
 
 | Surface | Max timeout | Multi-session | Use when |
 |---------|-------------|---------------|----------|
-| `sessions wait` (CLI) | Unlimited (chains calls) | No (one session) | You have a shell and want to script a gate or supervisor loop. |
+| `sessions wait` (CLI) | Unlimited (chains calls) | Yes (`--any` for first) | You have a shell and want to script a gate or supervisor loop. |
 | `session_monitor` (MCP) | 49s (MCP constraint) | Yes (up to 20) | You're an agent with MCP tools and need to fan-in across children. |
 
 Both hit the same daemon endpoint (`GET /sessions/:id/wait`); the CLI
@@ -881,6 +986,21 @@ deletes nothing. The daemon also runs this pass itself 10 minutes after boot
 and every 6 hours. Over MCP / HTTP the same pass is `session_gc` /
 `POST /sessions/gc` with `retention: true`, plus optional `dryRun`,
 `reviewMaxAgeDays` and `maxAgeDays` overrides.
+
+```bash
+agentproto sessions gc --adapter-caches --dry-run   # preview the cache sweep
+agentproto sessions gc --adapter-caches             # reclaim disposable caches
+```
+
+`--adapter-caches` runs the **adapter-config cache sweep** instead: once every
+session of a dead lineage is quiet for `daemon.adapterCacheRetentionDays`
+(default `1`), the disposable paths a spawn recorded in its
+`.agentproto-cache.json` (e.g. opencode's per-session `snapshot`,
+`tool-output`, `log` under a redirected `XDG_DATA_HOME`) are deleted. The
+resume store and non-disposable caches (pnpm store, uv-managed Pythons, …) are
+kept. `--dry-run` reports what would be reclaimed and deletes nothing. Over
+MCP / HTTP the same pass is `session_gc` with `adapterCaches: true` (plus
+optional `dryRun` and `maxAgeDays`, the quiet-days override).
 
 ### `continue-interrupted`
 
@@ -1086,7 +1206,7 @@ agentproto sessions handoff: ses_abc12 (claude-code) → ses_def34 (codex)
 ```
 
 Handoff is something you trigger — it is **not** automatic by default (see
-[contextContinuity mode](../guides/handoff.md#when-does-a-handoff-happen)).
+[contextSettings mode](../guides/handoff.md#when-does-a-handoff-happen)).
 Step-by-step walkthrough: [Hand off from Claude Code to Codex](../guides/handoff.md).
 
 HTTP twin: `POST /sessions/:id/handoff` with body
@@ -1165,7 +1285,7 @@ daemon predates this route — restart it.
 Sessions in the same tree talk through **typed messages**, separate from
 prompts. A prompt is an instruction from whoever drives a session; a
 message is a report between sessions whose sender the daemon **attests**:
-the `from` block (session id, relation, label) is computed from the
+the `from` block (session id, relation, label, and the sender's agent slug when one is bound) is computed from the
 caller's verified identity and the session tree, and no send request can
 set it. The recipient's agent sees each message as its own
 `<agentproto-message id=… from="child" session=… kind=…><body>…</body></agentproto-message>`
@@ -1176,7 +1296,7 @@ it can't forge a header. The recipient's transcript records a
 Who may message whom: child → parent, parent → direct child, human/daemon
 → anyone. Siblings only with `defaults.messaging.allowSiblings: true`. Any
 session of the **same workspace** may also message any other session of that
-workspace, even without a tree edge (relation `peer`) - that allowance is on
+workspace, even without a tree edge (relation `granted`) - that allowance is on
 by default and is turned off with `defaults.messaging.allowSameWorkspace:
 false`.
 
@@ -1195,16 +1315,125 @@ pass; a sibling passes only with `allowSiblings` - **except** that a sibling
 pair whose workspaces are linked by a peer group is allowed even without
 `allowSiblings` (the operator explicitly grouped those workspaces, and agents
 spawned under one orchestrator are always siblings); the message then carries
-relation `peer`. Two siblings of the SAME workspace are still gated by
+relation `granted`. Two siblings of the SAME workspace are still gated by
 `allowSiblings`. With no tree edge, same-workspace needs `allowSameWorkspace`
 and a peer-group link always passes.
+
+### Explicit session grants
+
+An operator can also write a relation down directly, as an AIP-38 grant
+under `defaults.messaging.grants`. This key keeps its name: it is the one
+list of session-to-session grants, and it now covers messaging and the
+drive gate together. A matching `allow` admits a send or a drive call the
+legacy rules refuse; a matching `deny` wins. This is the migration input for
+turning a switch off for everyone and granting only the pairs that need it
+(for example `defaults.messaging.allowSameWorkspace: false` plus a grant for
+the brain).
+
+The accepted shape is a strict subset of an AIP-38 `Grant`: a non-empty
+string `principal`, at least one action from the table below (with an
+optional `scope`), and optional `effect`, `ttl_seconds`, `granted_at` and
+`revoked`. An object-form principal and `conditions` are rejected.
+
+Which action guards which tool:
+
+| Action | Tools it may admit |
+|---|---|
+| `session:message` | `message_send`, `message_reply`, `POST /sessions/:id/messages`, the box parent relay (unchanged) |
+| `session:prompt` | `agent_prompt` |
+| `session:control` | `agent_interrupt`, `agent_kill`, `session_restart`, `session_continue_fresh` |
+
+`agent_prompt`, `agent_interrupt` and `agent_kill` also take `sessionId` (or
+`id`) as `"label:<operatorLabel>"`: it resolves to the one LIVE session whose
+immutable `operatorLabel` equals the label (the resolver `message_send` uses; a
+killed or retired twin never matches). No live match is
+`no_live_session_for_label`, several is `ambiguous_label` (the error lists only
+the ids the caller may drive, and picks none). The check below then runs on the
+resolved session, so a label never bypasses the owner gate or a grant.
+
+For the drive tools the legacy rules stay in `session-owner.ts` and are
+checked FIRST, byte for byte as before: the human operator, the session
+itself, the session that spawned it, an ancestor in the spawn tree, and an
+`allowPromptFrom` entry all still pass without any grant. A grant is
+consulted only when that gate refuses, and only for a session caller. It
+admits any OTHER caller, then reports rule `policy.matched-grant`.
+
+Scope forms, all matched against the target (the message recipient, or the
+session being driven):
+
+- `<sessionId>` - one exact session.
+- `label:<operatorLabel>` - the target's operator label.
+- `workspace:<slug>` - the target's **verified** workspace (its cwd
+  resolves to a registered workspace); an unresolvable cwd fails closed.
+
+Sender principals:
+
+- `session-label://<label>` - a session carrying that operator label.
+- `*` - any sender.
+
+Worked example: the Pygmalion brain may message the `agentik-studio`
+workspace, may prompt its sessions, and may control them (interrupt, kill,
+restart, continue fresh); any session of the daemon may reply to the brain:
+
+```json
+{
+  "defaults": {
+    "messaging": {
+      "allowSameWorkspace": false,
+      "grants": [
+        {
+          "principal": "session-label://pygmalion-brain-persistent",
+          "effect": "allow",
+          "actions": [
+            { "action": "session:message", "scope": "workspace:agentik-studio" },
+            { "action": "session:prompt", "scope": "workspace:agentik-studio" },
+            { "action": "session:control", "scope": "workspace:agentik-studio" }
+          ]
+        },
+        {
+          "principal": "*",
+          "effect": "allow",
+          "actions": [{ "action": "session:message", "scope": "label:pygmalion-brain-persistent" }]
+        }
+      ]
+    }
+  }
+}
+```
+
+How a grant is read: `GET /permissions/grants` returns the explicit grants
+as written under `configured`, beside the switch-derived `grants`;
+`permissions_explain` for `session.message` or `session.drive` answers the
+deciding rule (`policy.matched-grant` for an admitted call) through the same
+`decide()` the send and drive paths enforce. For `session.drive` it accepts
+an optional `tool` (default `agent_prompt`) and reports the decision
+`authoritative: true`.
+
+A matching deny removes only grant-derived reasons: it never overrides a
+tree edge, the operator or the system. For the drive gate a matching deny
+prevents only the NEW admission; it does not remove an `allowPromptFrom`
+grantee or a parent (a follow-up). The switches (`allowSiblings`,
+`allowSameWorkspace`, `peerGroups`) keep working exactly as before and stay
+the migration input for one release. `message_parent` and the box parent
+relay are tree-only: a grant can neither create nor remove those relations.
+
+Known limits, deliberately left for later PRs:
+
+- `defaults.tasks.operatorDelegates` is NOT a drive action. It gives the
+  task ledger its operator rights, which AIP-39 does not declare, and
+  `effective-grants.ts` lists it as `unmapped` for that reason.
+- The HTTP drive routes (`POST /sessions/:id/prompt`, `/interrupt`, `/kill`,
+  ...) apply no owner gate today and still do not. An anonymous loopback
+  caller is the operator; a claimed session reaching them is not evaluated.
+  This gap is to be taken after the spawn-proof counters are read.
+- `effective-grants.ts` and its derived list are untouched.
 
 ### Tools (MCP)
 
 | Tool | Inputs | Use |
 |---|---|---|
 | `message_parent` | `{message, kind?, urgency?, interrupt?, replyTo?}` | Report up to the session that spawned you. |
-| `message_send` | `{to: "parent" \| sessionId, text, kind?, urgency?, replyTo?, correlationId?, data?}` | Message a tree neighbour. |
+| `message_send` | `{to: "parent" \| sessionId \| "label:<label>", text, kind?, urgency?, replyTo?, correlationId?, data?, declaredSender?}` | Message a tree neighbour. `to: "label:<label>"` resolves to the one LIVE session whose immutable `operatorLabel` equals `<label>` (the notion `allowPromptFrom: "label:..."` uses; the mutable `label` never matches), so a sender survives a restart that changes the session id. No live match is `no_live_session_for_label`, several is `ambiguous_label` (ids you may message are listed, none is picked). The permission check runs on the resolved session, so a label never widens who can be reached. `declaredSender: "cc:<session_id>"` is accepted only from the shared unverified `claude-desktop` identity and refused (`declared_sender_refused`) for any call that carries a session identity; the recipient sees `[declared sender: cc:<id>, unverified]`, a `reply to:` line and `declared-sender` on the tag. Declared, not proven: urgency stays capped (never `interrupt`) and permissions use the real caller. |
 | `message_reply` | `{replyTo, text, kind?, urgency?}` | Answer a message you received — routed to its sender, same thread. |
 | `inbox_list` | `{from?, kind?, correlationId?, limit?}` | Read your un-consumed messages. |
 | `inbox_ack` | `{ids \| "all"}` | Acknowledge (remove) them. |
@@ -1256,6 +1485,7 @@ route:
 ```text
 CLI:  agentproto sessions prompt <id-or-name> --prompt "..." --interrupt
 MCP:  agent_prompt { sessionId, prompt, interrupt: true }
+MCP:  agent_prompt { sessionId: "label:<operatorLabel>", prompt }   # by label
 HTTP: POST /sessions/:id/prompt?wait=false  { "prompt": "...", "interrupt": true }
 ```
 

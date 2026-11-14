@@ -127,6 +127,34 @@ describe("wireSupervisorNotify", () => {
     reg.shutdown()
   })
 
+  it("the notice says which session died and its last status in plain words", () => {
+    const bus = createSessionEventBus()
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
+    wireSupervisorNotify({ registry: reg, sessionEvents: bus })
+    const parent = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-parent"),
+      adapterSlug: "claude-code",
+    })
+    const child = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-child"),
+      adapterSlug: "claude-code",
+      label: "child-1",
+      parentSessionId: parent.id,
+      notifyParentOnCrash: true,
+    })
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
+    expect(reg.markCrashed(child.id)).toBe(true)
+    const notice = enqueueSpy.mock.calls[0]![1] as string
+    expect(notice).toContain(`child-1 (session ${child.id}) died unexpectedly`)
+    expect(notice).toMatch(/it had not finished a turn yet|it was idle after finishing|it was in the middle of a turn/)
+    expect(notice).toContain("can no longer be messaged")
+    reg.shutdown()
+  })
+
   it("busy parent: NOT interrupted; the notice is queued and drains as its OWN turn at turn-end", async () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })

@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest"
 import {
   buildIndex,
   buildIndexYielding,
+  documentFrequency,
+  makeSnippet,
   score,
   tokenize,
   type BuildDocInput,
@@ -49,10 +51,10 @@ describe("buildIndex", () => {
       ]),
     ]
     // The frontmatter key/value must NOT be in the vocabulary.
-    expect(index.df.has("schema")).toBe(false)
-    expect(index.df.has("knowledge")).toBe(false)
-    expect(index.df.has("body")).toBe(true)
-    expect(index.df.has("words")).toBe(true)
+    expect(documentFrequency(index, "schema")).toBe(0)
+    expect(documentFrequency(index, "knowledge")).toBe(0)
+    expect(documentFrequency(index, "body")).toBe(1)
+    expect(documentFrequency(index, "words")).toBe(1)
   })
 
   it("computes document-frequency and average length", () => {
@@ -60,8 +62,8 @@ describe("buildIndex", () => {
       { id: "a", content: "cat cat dog" },
       { id: "b", content: "dog bird" },
     ])
-    expect(index.df.get("dog")).toBe(2)
-    expect(index.df.get("cat")).toBe(1)
+    expect(documentFrequency(index, "dog")).toBe(2)
+    expect(documentFrequency(index, "cat")).toBe(1)
     expect(index.docs).toHaveLength(2)
     // (3 + 2) / 2 = 2.5
     expect(index.avgDocLength).toBe(2.5)
@@ -84,9 +86,7 @@ describe("buildIndexYielding", () => {
     const async = await buildIndexYielding(inputs, 10)
     expect(async.docs.map(d => d.id)).toEqual(sync.docs.map(d => d.id))
     expect(async.avgDocLength).toBe(sync.avgDocLength)
-    expect([...async.df.entries()].sort()).toEqual(
-      [...sync.df.entries()].sort()
-    )
+    expect(async).toEqual(sync)
   })
 })
 
@@ -119,8 +119,13 @@ describe("score", () => {
     expect(hits).toHaveLength(1)
   })
 
-  it("attaches a snippet around the first matching token", () => {
+  it("cuts a snippet around the first matching token", () => {
     const hits = score(index, tokenize("purr"))
-    expect(hits[0]!.snippet?.text).toContain("purr")
+    expect(hits[0]!.doc.id).toBe("cats.md")
+    const snippet = makeSnippet(
+      "cats are great cats purr cats sleep",
+      tokenize("purr")
+    )
+    expect(snippet.text).toContain("purr")
   })
 })

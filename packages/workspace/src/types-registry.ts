@@ -57,9 +57,9 @@ export function parseTypesManifest(source: string): TypesManifestFrontmatter {
 // author doesn't have to spell out every zod default by hand.
 export function writeTypesManifest(def: TypesManifestFrontmatterInput, body = ""): string {
   const parsed = typesManifestSchema.parse(def)
-  // Writers keep emitting the legacy tag until the next major. Old readers
-  // in the field only know workspace-types/v1.
-  return matter.stringify(body, { ...parsed, schema: "workspace-types/v1" })
+  // Writers emit the canonical tag; readers still accept the legacy
+  // workspace-types/v1 alias in the schema enum above.
+  return matter.stringify(body, { ...parsed, schema: "workspace.types/v1" })
 }
 
 /** `type`'s resolved parent-chain floor, per the type's own `extends` chain. */
@@ -67,14 +67,70 @@ export function resolveTypeEntry(
   types: TypesManifestFrontmatter["types"],
   type: string,
 ): TypeEntry | undefined {
+  return resolveEntry(types, type, new Set())
+}
+
+// `visiting` makes a cyclic `extends` stop at the repeated type instead of
+// recursing forever; `validateTypesRegistry` is what reports the cycle.
+function resolveEntry(
+  types: TypesManifestFrontmatter["types"],
+  type: string,
+  visiting: Set<string>,
+): TypeEntry | undefined {
+  if (!Object.hasOwn(types, type)) return undefined
   const entry = types[type]
   if (!entry) return undefined
-  if (!entry.extends) return entry
-  const base = resolveTypeEntry(types, entry.extends)
+  if (!entry.extends || visiting.has(type)) return entry
+  visiting.add(type)
+  const base = resolveEntry(types, entry.extends, visiting)
   if (!base) return entry
   return {
     ...base,
     ...entry,
     requires_files: entry.requires_files.length > 0 ? entry.requires_files : base.requires_files,
   }
+}
+
+export type TypesRegistryIssue =
+  | { kind: "extends-cycle"; type: string; cycle: string[]; message: string }
+  | { kind: "unknown-parent"; type: string; extends: string; message: string }
+
+/**
+ * Reports the `extends` problems of a TYPES.md registry: a cycle (reported
+ * once, on the first type in registry order that sits on it) and an `extends`
+ * naming a type the registry does not declare.
+ */
+export function validateTypesRegistry(types: TypesManifestFrontmatter["types"]): TypesRegistryIssue[] {
+  const issues: TypesRegistryIssue[] = []
+  const inReportedCycle = new Set<string>()
+  for (const name of Object.keys(types)) {
+    const entry = types[name]
+    if (entry?.extends !== undefined && !Object.hasOwn(types, entry.extends)) {
+      issues.push({
+        kind: "unknown-parent",
+        type: name,
+        extends: entry.extends,
+        message: `type "${name}" extends "${entry.extends}", which TYPES.md does not declare.`,
+      })
+    }
+    const path: string[] = []
+    let cursor: string | undefined = name
+    while (cursor !== undefined && Object.hasOwn(types, cursor) && !path.includes(cursor)) {
+      path.push(cursor)
+      cursor = types[cursor]?.extends
+    }
+    if (cursor !== undefined && path.includes(cursor)) {
+      const cycle = path.slice(path.indexOf(cursor))
+      if (!cycle.some((t) => inReportedCycle.has(t))) {
+        cycle.forEach((t) => inReportedCycle.add(t))
+        issues.push({
+          kind: "extends-cycle",
+          type: name,
+          cycle: [...cycle, cursor],
+          message: `type "${name}" has an \`extends\` cycle: ${[...cycle, cursor].join(" -> ")}.`,
+        })
+      }
+    }
+  }
+  return issues
 }

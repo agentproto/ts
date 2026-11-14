@@ -107,6 +107,30 @@ describe("daemon_health", () => {
     await bad.close()
   })
 
+  it("reports paused cron jobs with their reasons, and a zero count when none", async () => {
+    const clean = await buildHarness(workspace, [], startedAt)
+    expect(JSON.parse(textOf(await clean.client.callTool({ name: "daemon_health", arguments: {} }))).cron).toEqual({ paused: 0, pausedJobs: [] })
+    await clean.close()
+
+    const pausedJobs = [{ id: "job_1", label: "autonomie-supervisor-15min", pausedReason: "auto-paused after 2 consecutive non-productive runs (last outcome: errored)" }]
+    const h = await buildHarness(workspace, [], startedAt, false, false, 0, { pausedCronJobs: () => pausedJobs })
+    const body = JSON.parse(textOf(await h.client.callTool({ name: "daemon_health", arguments: {} })))
+    expect(body.cron).toEqual({ paused: 1, pausedJobs })
+    await h.close()
+  })
+
+  it("reports app-registry self-heals apart from issues, so a healed registry has no issues", async () => {
+    const repairs = [{ kind: "dir-repointed", appId: "@t/fx", from: "/wt/fx", to: "/main/fx", at: "2026-11-01T00:00:00.000Z" }]
+    const h = await buildHarness(workspace, [], startedAt, false, false, 0, {
+      appRegistryIssues: () => [],
+      appRegistryRepairs: () => repairs,
+    })
+    const body = JSON.parse(textOf(await h.client.callTool({ name: "daemon_health", arguments: {} })))
+    expect(body.appRegistryIssues).toEqual([])
+    expect(body.appRegistryRepairs).toEqual(repairs)
+    await h.close()
+  })
+
   it("returns empty registered when no specs are registered", async () => {
     const { client, close } = await buildHarness(workspace, [], startedAt)
     const result = await client.callTool({ name: "daemon_health", arguments: {} })

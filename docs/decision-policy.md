@@ -137,7 +137,7 @@ verdict/ledger cache and never replaces it.
 ## Surfaces
 
 - `decide` / `parseDecisionPolicy` / types — exported from
-  `@agentproto/runtime` (see `packages/runtime/src/decision.ts`,
+  `@agentproto/runtime` (see `packages/decision/src/decision.ts`,
   `decision-policy.ts`).
 - `decision_decide` MCP tool (root `/mcp`, like `model_roles`): pass the
   DECISION.md markdown plus the evidence object; the tool wires the Jev

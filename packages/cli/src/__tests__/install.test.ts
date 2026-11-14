@@ -505,7 +505,7 @@ describe("agentproto install — enables the adapter (install == adapters instal
     rmSync(home, { recursive: true, force: true })
   })
 
-  function readConfig(): { adapters?: string[]; defaults?: { adapters?: Record<string, { auth?: { mode?: string } }> } } {
+  function readConfig(): { adapters?: string[]; defaults?: { adapters?: Record<string, { auth?: { mode?: string } }>; harnesses?: Record<string, { auth?: { mode?: string } }> } } {
     return JSON.parse(
       readFileSync(join(home, ".agentproto", "config.json"), "utf8"),
     )
@@ -546,7 +546,7 @@ describe("agentproto install — enables the adapter (install == adapters instal
     const code = await runInstall(["claude-code"])
 
     expect(code).toBe(0)
-    expect(readConfig().defaults?.adapters?.["claude-code"]?.auth?.mode).toBe(
+    expect(readConfig().defaults?.harnesses?.["claude-code"]?.auth?.mode).toBe(
       "api-key",
     )
     io.restore()

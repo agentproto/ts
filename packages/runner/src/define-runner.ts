@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { runnerFrontmatterSchema } from "./schema.js"
 import type { RunnerDefinition, RunnerHandle } from "./types.js"
 

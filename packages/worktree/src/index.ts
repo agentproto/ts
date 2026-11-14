@@ -56,6 +56,19 @@ export {
   type SchedulerSnapshot,
 } from "./provision-scheduler.js"
 export {
+  DEFAULT_PROVISION_MAX_MS,
+  DEFAULT_PROVISION_STALL_TIMEOUT_MS,
+  DEFAULT_PROVISION_TIMEOUTS,
+  PROVISION_MAX_ENV,
+  PROVISION_STALL_TIMEOUT_ENV,
+  ProvisionTimeoutError,
+  resolveProvisionTimeouts,
+  startProvisionWatchdog,
+  type ProvisionTimeouts,
+  type ProvisionWatchdog,
+  type ProvisionWatchdogOptions,
+} from "./provision-watchdog.js"
+export {
   CONFIG_FILENAME,
   parseConfig,
   normalizeHook,
@@ -130,6 +143,8 @@ export {
   computeWorktreeStatus,
   computeBaseDivergence,
   listWorktreeStatuses,
+  DEFAULT_STATUS_CONCURRENCY,
+  livenessSessionCount,
   listGitWorktrees,
   VERDICT_MEMO_PATH,
   FileVerdictMemoStore,
@@ -148,6 +163,7 @@ export {
   type ReconcileIntegrationInput,
   type ComputeWorktreeStatusInput,
   type ComputeTreeStateOptions,
+  type ComputeLivenessOptions,
   type ListWorktreeStatusesInput,
 } from "./status.js"
 export {
@@ -157,8 +173,10 @@ export {
   UnreachableForgeClient,
   ForgeUnavailableError,
   parseGithubOwnerRepo,
+  withUnavailableNotice,
   type ForgeClient,
   type ForgePullRequestRef,
+  type ForgePullRequestFacts,
 } from "./forge.js"
 export {
   computeProvenance,
@@ -181,6 +199,12 @@ export {
   type DaemonClient,
 } from "./agent-session-host.js"
 export {
+  decideBranchDeletion,
+  type BranchDeletionAction,
+  type BranchDeletionDecision,
+  type DecideBranchDeletionInput,
+} from "./branch-deletion.js"
+export {
   classifyForGc,
   resolveGcClass,
   isMechanicalDepBumpRange,
@@ -191,6 +215,8 @@ export {
   type GcReclaimReason,
   type InBaseReclaimReason,
   DEFAULT_GC_NOISE_PATHS,
+  DEFAULT_GC_CONDITIONAL_NOISE_PATHS,
+  resolveGcNoise,
   DEFAULT_GC_ACTIVE_MINUTES,
   type GcHoldReason,
   type ClassifyForGcOptions,
@@ -202,6 +228,12 @@ export {
   type GcApplyOutcome,
 } from "./gc.js"
 export {
+  proveDirtCarriesNoWork,
+  type DirtyNoWorkCase,
+  type DirtyNoWorkPath,
+  type DirtyNoWorkProof,
+} from "./dirty-no-work.js"
+export {
   BRANCH_GC_SCOPES,
   BRANCH_GC_STATE_DIR,
   BRANCH_TRIAGE_VERDICTS,
@@ -209,17 +241,21 @@ export {
   DEFAULT_BRANCH_GC_MIN_AGE_DAYS,
   DEFAULT_MIN_LINE_COVERAGE,
   lineCoverageGuard,
+  citedPrsOf,
+  rangeLowerBound,
   planBranchGc,
   applyBranchGc,
   summarizeBranchGcPlan,
   branchReviewQueue,
   readBranchGcRestoreLog,
+  restoreBranchGc,
   classifyTip,
   classifyTipAgainstBase,
   createLadderContext,
   detectAnchor,
   branchVerdictSchema,
   recordBranchVerdict,
+  approveBranchVerdict,
   FileBranchVerdictStore,
   InMemoryBranchVerdictStore,
   BranchVerdictError,
@@ -235,6 +271,15 @@ export {
   type TipClassification,
   type BranchRef,
   type BranchVerdictSummary,
+  type BranchHeadPr,
+  type VerifiedPrFile,
+  type VerifiedPrProof,
+  type DepBumpProof,
+  type HistoryCoveredFile,
+  type HistoryCoveredProof,
+  type RestoreBranchGcInput,
+  type BranchGcRestoreOutcome,
+  type BranchGcRestoreResult,
   type BranchGcPlanEntry,
   type BranchGcPlan,
   type BranchGcSummary,
@@ -252,6 +297,8 @@ export {
   type BranchVerdict,
   type BranchVerdictRecord,
   type BranchVerdictStore,
+  type BranchApprovalRefusal,
+  type BranchApprovalResult,
 } from "./branch-gc.js"
 export {
   SANDBOX_CHECKPOINT_PREFIX,

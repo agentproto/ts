@@ -271,7 +271,7 @@ describe("message_send - peer groups", () => {
     }
   })
 
-  it("a peer group overrides a denied sibling edge and records relation `peer`", async () => {
+  it("a peer group overrides a denied sibling edge and records relation `granted`", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const root = spawnNode(registry, undefined, STUDIO, "root")
     const child = spawnNode(registry, root.id, STUDIO, "child")
@@ -288,7 +288,7 @@ describe("message_send - peer groups", () => {
         arguments: { to: sib.id, text: "hi" },
       })
       expect(isError(toSibling)).toBeFalsy()
-      expect(JSON.parse(textOf(toSibling)).relation).toBe("peer")
+      expect(JSON.parse(textOf(toSibling)).relation).toBe("granted")
       expect(enqueue).toHaveBeenCalled()
     } finally {
       await h.close()

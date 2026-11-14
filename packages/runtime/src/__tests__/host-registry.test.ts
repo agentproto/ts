@@ -210,6 +210,18 @@ describe("createHostRegistry", () => {
       expect(file.v).toBe(1)
       expect(file.hosts).toHaveLength(1)
       expect(file.hosts[0].fingerprint).toBe(fingerprint)
+
+      // The `[heap]` log line's view of the registry (E99).
+      expect(registry.memoryStats?.()).toMatchObject({
+        hosts: 1,
+        pollers: 0,
+        inFlight: 0,
+        snapshots: 0,
+        snapshotOutputs: 0,
+        snapshotBytes: 0,
+        cachedBodies: 0,
+        cachedBodyBytes: 0,
+      })
     })
 
     it("defaults the name to the fingerprint when none is given", async () => {

@@ -63,6 +63,7 @@ async function connectTools(
   mcpProxy: McpProxyRegistry,
   bindingStore: TransmitterBindingStore,
   telegramCreds?: TelegramBotCredsStore,
+  caller?: { callerScope?: { ownerSessionId?: string }; callerSessionId?: string },
 ): Promise<Client> {
   const server = new McpServer({ name: "transmit-message-test-server", version: "0.0.0" })
   registerOrchestrationTools(server, {
@@ -72,6 +73,7 @@ async function connectTools(
     mcpProxy,
     bindingStore,
     telegramCreds,
+    ...caller,
   })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -126,6 +128,71 @@ describe("transmit_message", () => {
       mode: "route-or-spawn",
       provider: "agentpush",
     })
+  })
+
+  it("carries the caller scope owner as the imported-call context", async () => {
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "msg-ctx" }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+
+    const client = await connectTools(registry, mcpProxy, bindingStore, undefined, {
+      callerScope: { ownerSessionId: "sess_owner" },
+      callerSessionId: "sess_claim",
+    })
+
+    await client.callTool({
+      name: "transmit_message",
+      arguments: {
+        provider: "agentpush",
+        alias: "agentpush",
+        source: "+33600000000",
+        contact_ref: "alice",
+        text: "hello alice",
+        sessionId: "sess_1",
+      },
+    })
+
+    expect(callTool).toHaveBeenCalledWith(
+      "agentpush",
+      "send_message",
+      expect.anything(),
+      { callerSessionId: "sess_owner" },
+    )
+  })
+
+  it("falls back to the callerSessionId claim when there is no scope owner", async () => {
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "msg-ctx" }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+
+    const client = await connectTools(registry, mcpProxy, bindingStore, undefined, {
+      callerSessionId: "sess_claim",
+    })
+
+    await client.callTool({
+      name: "transmit_message",
+      arguments: {
+        provider: "agentpush",
+        alias: "agentpush",
+        source: "+33600000000",
+        contact_ref: "alice",
+        text: "hello alice",
+        sessionId: "sess_1",
+      },
+    })
+
+    expect(callTool).toHaveBeenCalledWith(
+      "agentpush",
+      "send_message",
+      expect.anything(),
+      { callerSessionId: "sess_claim" },
+    )
   })
 
   it("agentpush blocked status is reported as sent:false with blocked_reason/suggestion and does not bind", async () => {

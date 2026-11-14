@@ -51,11 +51,12 @@ append to a prior session's file.
 | `thought` | `text`, `partial?` | Same coalescing/debounce behavior as `text-delta`, for reasoning/thinking output. |
 | `tool-call` | `toolCallId`, `toolName`, `arguments` | One record per tool invocation. |
 | `tool-result` | `toolCallId`, `result`, `isError` | Correlates to a prior `tool-call` via `toolCallId`. |
-| `agent-prompt` | `toolCallId`, `options` | The agent asking the human a question (e.g. a tool permission prompt) — ACP's own "agent-prompt" direction. |
+| `agent-prompt` | `toolCallId`, `options`, `request?`, `question?`, `planApproval?` | The agent asking the human a question (e.g. a tool permission prompt) — ACP's own "agent-prompt" direction. `request` is the AIP-45 typed kind (`tool-permission` \| `question` \| `plan-approval`; absent reads as `tool-permission`); `question` and `planApproval` carry the matching payload when present. |
 | `permission-resolved` | `toolCallId`, `decision`, `optionId?` | Durable counterpart to an `agent-prompt` ask, written when the request is approved, denied, or cancelled. `decision` is `"approve"`, `"deny"`, or `"cancelled"`; `optionId` mirrors the chosen option when one was offered (e.g. `allow_always`). |
 | `plan` | `entries` (`{content, priority, status}[]`) | Structured plan/todo-list snapshot. |
 | `usage_update` | `size`, `used`, `cost?` | Context window usage; `cost` is only present when the adapter reports one. |
 | `usage_snapshot` | `model?`, `costUsd?`, `tokensIn?`, `tokensOut?`, `cacheReadTokens?`, `cacheWriteTokens?`, `reasoningTokens?`, `contextSize?`, `contextUsed?`, `source` | On-demand usage pull (e.g. from the `session_usage` MCP tool). |
+| `mode-changed` | `modeId`, `previousModeId`, `cause`, `reason?` | AIP-45 mode switch. `cause` is `"caller"` (the host's own `setSessionMode` echo) or `"agent"` (the agent moved itself); `reason` is optional free text. Recorded in the transcript, relayed from sandbox sessions, exported, and shown as a `[mode]` output line. |
 | `turn-end` | `reason` | Marks the end of a turn. |
 | `error` | `error` (`{message, code?, data?}`) | A turn-level error. |
 

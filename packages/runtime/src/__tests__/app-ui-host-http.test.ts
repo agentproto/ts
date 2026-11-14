@@ -19,6 +19,7 @@ import { workBoardApp, liveSessionApp, sessionChatApp } from "@agentproto/apps"
 
 import { startHttpServer, type RuntimeHttpServerOptions } from "../http-server.js"
 import { mintAppEmbedToken } from "../embed-tokens.js"
+import { PUBLIC_BASE_HEADER, signPublicBase } from "../public-origins.js"
 import { createRuntimeEvents } from "../events.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import type { ConversationStore } from "../conversations.js"
@@ -131,6 +132,34 @@ describe("standalone app UI host — REST routes", () => {
       expect(await res.text()).toContain(
         'window.__AGENTPROTO_BASEURL__="https://apps.example.test"',
       )
+    })
+  })
+
+  it("injects an https base URL for an X-Forwarded-Host that carries no X-Forwarded-Proto", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui`, {
+        headers: { "x-forwarded-host": "abc.trycloudflare.com" },
+      })
+      expect(await res.text()).toContain(
+        'window.__AGENTPROTO_BASEURL__="https://abc.trycloudflare.com"',
+      )
+    })
+  })
+
+  it("injects the daemon-signed public base, /d/<id> prefix included, and ignores a spoofed one", async () => {
+    await withServer(async base => {
+      const prefixed = "https://fp.agentproto.cloud/d/fp"
+      const trusted = await fetch(`${base}/apps/${APP_ID}/ui`, {
+        headers: { [PUBLIC_BASE_HEADER]: signPublicBase(prefixed) },
+      })
+      expect(await trusted.text()).toContain(`window.__AGENTPROTO_BASEURL__=${JSON.stringify(prefixed)}`)
+
+      for (const spoof of ["https://evil.example/d/x", `${Buffer.from("https://evil.example").toString("base64url")}.AAAA`]) {
+        const res = await fetch(`${base}/apps/${APP_ID}/ui`, { headers: { [PUBLIC_BASE_HEADER]: spoof } })
+        const html = await res.text()
+        expect(html).not.toContain("evil.example")
+        expect(html).toContain(`window.__AGENTPROTO_BASEURL__=${JSON.stringify(base)}`)
+      }
     })
   })
 

@@ -133,17 +133,17 @@ describe("resolveRelation + isMessageAllowed (ACL table)", () => {
     expect(isMessageAllowed("system")).toBe(true)
   })
 
-  it("a same-workspace peer is allowed by default, and refused when the allowance is off", () => {
-    expect(isMessageAllowed("peer")).toBe(true)
-    expect(isMessageAllowed("peer", { allowSameWorkspace: true })).toBe(true)
-    expect(isMessageAllowed("peer", { allowSameWorkspace: false })).toBe(false)
+  it("a same-workspace granted pair is allowed by default, and refused when the allowance is off", () => {
+    expect(isMessageAllowed("granted")).toBe(true)
+    expect(isMessageAllowed("granted", { allowSameWorkspace: true })).toBe(true)
+    expect(isMessageAllowed("granted", { allowSameWorkspace: false })).toBe(false)
   })
 
-  it("resolveEffectiveRelation: peer only inside one workspace", () => {
+  it("resolveEffectiveRelation: granted only inside one workspace", () => {
     const sameWs = { id: "x", workspaceSlug: "ws" }
     const otherWs = { id: "y", workspaceSlug: "other" }
     const noWs = { id: "z" }
-    expect(resolveEffectiveRelation(sameWs, { id: "w", workspaceSlug: "ws" })).toBe("peer")
+    expect(resolveEffectiveRelation(sameWs, { id: "w", workspaceSlug: "ws" })).toBe("granted")
     expect(resolveEffectiveRelation(sameWs, { id: "w", workspaceSlug: "other" })).toBeUndefined()
     expect(resolveEffectiveRelation(sameWs, { id: "w" })).toBeUndefined()
     expect(resolveEffectiveRelation(sameWs, sameWs)).toBeUndefined()
@@ -190,5 +190,31 @@ describe("createSessionMessage / messageFrom", () => {
       relation: "child",
     })
     expect(messageFrom({ id: "s" }, "system")).toEqual({ relation: "system" })
+  })
+
+  it("reads the bound agent from meta.agentSlug", () => {
+    expect(messageFrom({ id: "s", meta: { agentSlug: "executor" } }, "child")).toEqual({
+      sessionId: "s",
+      agentSlug: "executor",
+      relation: "child",
+    })
+  })
+
+  it("falls back to meta.agentId for a descriptor persisted before agentSlug", () => {
+    expect(messageFrom({ id: "s", meta: { agentId: "helper" } }, "child")).toEqual({
+      sessionId: "s",
+      agentSlug: "helper",
+      relation: "child",
+    })
+  })
+
+  it("a node-level agentSlug wins over both meta fields", () => {
+    expect(
+      messageFrom({ id: "s", agentSlug: "supervisor", meta: { agentSlug: "executor", agentId: "helper" } }, "child"),
+    ).toEqual({
+      sessionId: "s",
+      agentSlug: "supervisor",
+      relation: "child",
+    })
   })
 })

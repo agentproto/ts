@@ -3,16 +3,6 @@
   "entries": [
     {
       "file": "aip-53/draft/APP.schema.json",
-      "field": "properties.requires",
-      "reason": "app-to-app calls: requires.apps entries may be { id, version?, workflows? } objects and requires may be the { browser, fs, gpu, secrets, apps } object form; pending upstream spec PR"
-    },
-    {
-      "file": "aip-53/draft/APP.schema.json",
-      "field": "properties.exposes",
-      "reason": "app-to-app calls: exposes.workflows declares the callable surface other apps may name in requires.apps[].workflows; pending upstream spec PR"
-    },
-    {
-      "file": "aip-53/draft/APP.schema.json",
       "field": "properties.ui.properties.toolScope",
       "reason": "link-token scoping: argument-level refinement of ui.tools, keyed by tool id, enforced only for calls made under a valid AIP-53 scoped link/session token; pending upstream spec PR"
     },
@@ -52,14 +42,14 @@
       "reason": "approvals: telegram joins web_click/ui_card as a declared human decide channel, gated by a shared bot-bridge bearer secret instead of an Origin check; pending upstream spec PR"
     },
     {
-      "file": "aip-53/draft/APP.schema.json",
-      "field": "properties.services",
-      "reason": "managed-process app services: structured command/args/cwd declarations and oneOf(entry|command) replacing the entry-only shape; pending upstream spec PR"
+      "file": "aip-46/draft/SessionConfig.schema.json",
+      "field": "$defs.ConfigOverlay.properties.access.properties.profileRef",
+      "reason": "account slots: access.profileRef also accepts `slot:<name>`, resolved through the host `accountSlots` map at use time (spawn, restart, turn-retry fallback), the session recording `accessSlot` beside the billed profile; pending upstream spec PR"
     },
     {
-      "file": "pending/services/SERVICES.schema.json",
-      "field": "$defs.service",
-      "reason": "managed-process app services: structured command/args/cwd declarations and oneOf(entry|command) replacing the entry-only shape; pending upstream spec PR"
+      "file": "aip-46/draft/SessionConfig.schema.json",
+      "field": "$defs.SessionConfig.properties.access.properties.profileRef",
+      "reason": "account slots: access.profileRef also accepts `slot:<name>`, resolved through the host `accountSlots` map at use time (spawn, restart, turn-retry fallback), the session recording `accessSlot` beside the billed profile; pending upstream spec PR"
     }
   ]
 }

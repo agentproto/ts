@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-mastracode-inprocess",
-  "version": "0.5.3",
+  "version": "0.5.7",
   "description": "@agentproto/adapter-mastracode-inprocess — AIP-45 AGENT-CLI adapter for Mastra Code driven in-process via the `mastracode`/`mastracode/headless` SDK, instead of spawning a subprocess. Implements the `protocol: \"proprietary\"` arm contract directly.",
   "keywords": [
     "agentproto",
@@ -50,11 +50,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@mastra/core": "1.66.0",
-    "mastracode": "0.39.1"
+    "mastracode": "0.39.1",
+    "@agentproto/harness": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

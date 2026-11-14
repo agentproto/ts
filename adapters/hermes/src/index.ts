@@ -1,7 +1,7 @@
 /**
  * @agentproto/adapter-hermes — AIP-45 adapter for Nous Research's Hermes Agent.
  *
- * Re-exports a `defineAgentCli` instance plus the runtime factory so
+ * Re-exports a `defineHarness` instance plus the runtime factory so
  * a host can boot Hermes with one import:
  *
  *   import { hermes, hermesRuntime } from "@agentproto/adapter-hermes"
@@ -19,10 +19,10 @@
 import { join } from "node:path"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { listModels } from "@agentproto/model-catalog"
 import type {
   AuthStore,
@@ -75,7 +75,7 @@ function buildHermesModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
-export const hermes: AgentCliHandle = defineAgentCli({
+export const hermes: AgentCliHandle = defineHarness({
   name: "hermes",
   id: "hermes",
   description:
@@ -198,6 +198,9 @@ export const hermes: AgentCliHandle = defineAgentCli({
       const [major, minor] = process.versions.node.split(".").map(Number)
       return (major ?? 0) > 22 || ((major ?? 0) === 22 && (minor ?? 0) >= 5)
     })(),
+    // AIP-72 section 9: no native memory projection here, the in-force
+    // memory digest rides the declared system-prompt channel at spawn.
+    memory: { inject: "system-prompt", capture: "none" },
   },
   modes: [
     {

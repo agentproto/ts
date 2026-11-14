@@ -1,5 +1,37 @@
 # @agentproto/workspace
 
+## 2.0.0
+
+### Major Changes
+
+- e301b84: Emit the canonical AIP-70 tags `workspace.export/v1` (EXPORT.md), `workspace.lock/v1` and `review.pack-digest/v1:` pack digests (agentproto.lock), and `workspace.types/v1` (TYPES.md) instead of the legacy `workspace-export/v1`, `agentproto-lock/v1`, `agentproto-pack-digest/v1` and `workspace-types/v1`. Breaking for readers: files written by this version need @agentproto/workspace >= 1.1.0 to read. Readers of this version still accept the legacy tags.
+
+### Minor Changes
+
+- 9fb4e90: Add AIP-34 node-scope helpers: `resolveNodeScope` (nearest declared node containing a session's ground, with subpath), `nodeChain` and `nodeProjection` (chain to the tree root with walls, cut after the first sealed or hard node), `composeNodeChainPolicy`, and `loadNodeTree` / `canonicalizeGround` on `./checker`. Add `validateTypesRegistry` for TYPES.md `extends` cycles and undeclared parents (also reported by `checkWorkspaceTree`), and stop `resolveTypeEntry` from overflowing the stack on a cycle.
+
+## 1.1.0
+
+### Minor Changes
+
+- 52f8616: Accept the canonical AIP-70 document tags (for example `skill/v1` and `design/v1`) alongside their legacy aliases in every document parser. Writers keep emitting the legacy value until the next major.
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+
+### Patch Changes
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f18edbc]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+  - @agentproto/work@0.3.0
+
 ## 1.0.2
 
 ### Patch Changes

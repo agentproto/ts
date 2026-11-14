@@ -27,7 +27,11 @@ export type {
   KnowledgeConfig,
   KnowledgeProviderConfig,
   KnowledgeProviderAdapterId,
+  SessionReadResult,
+  SkippedTranscript,
 } from "./types.js"
+
+export { isSkippedTranscript } from "./types.js"
 
 // Persistence
 export {
@@ -80,6 +84,10 @@ export {
 
 // Orchestrator
 export { createBrainManager, type BrainManager } from "./brain-manager.js"
+
+// The `files` provider's default in-process index ceiling, for hosts that
+// surface it as a config default.
+export { DEFAULT_MAX_INDEX_DOCS } from "@agentproto/adapter-knowledge-files"
 
 // Re-export the provider contract so hosts don't need a direct dep on
 // @agentproto/knowledge-engine just to hold a brain's provider.

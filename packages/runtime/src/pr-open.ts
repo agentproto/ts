@@ -65,6 +65,9 @@ export interface OpenPrForSessionInput {
    *  (`pr view`, `pr edit`, the checkpoint `gh api` read). A returned string
    *  refuses that call; nothing has run yet. */
   authorizeArgs?: (args: readonly string[]) => string | undefined
+  /** Resolve `defaults.prProvenance.footer.skipRepos` per call. A PR in a
+   *  listed repo is still created, but never receives a provenance footer. */
+  skipFooterRepos?: () => Promise<readonly string[]> | readonly string[]
 }
 
 /** The `gh` argv `openPrForSession` runs to create the PR. */
@@ -210,6 +213,7 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
       ...(input.authorizeArgs ? { authorizeArgs: input.authorizeArgs } : {}),
       ...(input.host ? { host: input.host } : {}),
       ...(input.checkpointRefPrefix ? { checkpointRefPrefix: input.checkpointRefPrefix } : {}),
+      ...(input.skipFooterRepos ? { skipFooterRepos: input.skipFooterRepos } : {}),
       // The session the PR is opened FOR is an author, whatever the branch
       // match says, it is the session whose work the PR carries.
       extraAuthorSessionIds: [desc.id],

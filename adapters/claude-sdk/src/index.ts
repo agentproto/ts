@@ -20,10 +20,10 @@
 import { fileURLToPath } from "node:url"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import {
   listNativeModelIds,
   listOpencodeAnthropicModelRefs,
@@ -69,7 +69,7 @@ const OPENCODE_ANTHROPIC_MODELS = [
 // from node_modules) or a user runs the published bin.
 const cliEntry = fileURLToPath(new URL("./cli.mjs", import.meta.url))
 
-export const claudeSdk: AgentCliHandle = defineAgentCli({
+export const claudeSdk: AgentCliHandle = defineHarness({
   name: "claude-sdk",
   id: "claude-sdk",
   description:

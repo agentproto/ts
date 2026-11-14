@@ -90,7 +90,7 @@ describe("computerSandboxProvider.boot", () => {
       tenantId: "tenant-a",
       cpus: 4,
       memoryMiB: 8192,
-      env: { OPENROUTER_API_KEY: "sk-test" },
+      env: { OPENROUTER_API_KEY: "sk-test", NODE_OPTIONS: "--max-old-space-size=4915" },
     })
 
     // exec flow: health probe → CLI install → detached serve → wait-healthy
@@ -168,12 +168,47 @@ describe("computerSandboxProvider.boot", () => {
     expect(controller.createBodies[0]).not.toHaveProperty("egress")
   })
 
-  it("drops env vars the controller would reject", async () => {
+  it("drops env vars the controller would reject and adds the box-sized Node heap", async () => {
     await computerSandboxProvider.boot(
       spec(controller.url),
       { env: { GOOD_VAR: "kept", "bad-key-!dropped": "x", lower_case: "dropped", multiline: "a\nb" } },
     )
-    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({ GOOD_VAR: "kept" })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      GOOD_VAR: "kept",
+      NODE_OPTIONS: "--max-old-space-size=4915",
+    })
+  })
+
+  it("keeps an explicit NODE_OPTIONS from the spawn env", async () => {
+    await computerSandboxProvider.boot(spec(controller.url), {
+      env: { NODE_OPTIONS: "--max-old-space-size=2048" },
+    })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      NODE_OPTIONS: "--max-old-space-size=2048",
+    })
+  })
+
+  it("sizes the Node heap to the box's memory", async () => {
+    await computerSandboxProvider.boot(spec(controller.url, { memoryMiB: 2048 }), { env: {} })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      NODE_OPTIONS: "--max-old-space-size=1228",
+    })
+  })
+
+  it("appends the box heap to a caller NODE_OPTIONS without a heap flag", async () => {
+    await computerSandboxProvider.boot(spec(controller.url), {
+      env: { NODE_OPTIONS: "--enable-source-maps" },
+    })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      NODE_OPTIONS: "--enable-source-maps --max-old-space-size=4915",
+    })
+  })
+
+  it("treats an empty caller NODE_OPTIONS as absent", async () => {
+    await computerSandboxProvider.boot(spec(controller.url), { env: { NODE_OPTIONS: "" } })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      NODE_OPTIONS: "--max-old-space-size=4915",
+    })
   })
 
   it("maps create errors and never leaks a computer on a failed boot", async () => {
@@ -246,6 +281,91 @@ describe("computerSandboxProvider.boot", () => {
     expect(await installsFor("1.26.0-beta.1")).toBe(true)
     expect(await installsFor("1.26.0")).toBe(false)
     expect(await installsFor("v1.26.0")).toBe(false)
+  })
+
+  describe("baked toolchain (skip the boot npm install)", () => {
+    const OPENCODE = "@agentproto/adapter-opencode"
+    const installs = (): boolean => controller.execs.some((e) => (e.argv[2] ?? "").includes("npm i -g"))
+    const reset = (): void => {
+      controller.execs.length = 0
+      controller.serveSeen = false
+    }
+    const bootWith = async (extra: Record<string, unknown>, log?: (line: string) => void): Promise<boolean> => {
+      reset()
+      await computerSandboxProvider.boot(spec(controller.url, extra), { ...bootOpts, ...(log ? { log } : {}) })
+      return installs()
+    }
+
+    beforeEach(() => {
+      controller.cliBaked = true
+      controller.bakedCliVersion = "1.27.0"
+      controller.bakedPackages = { [OPENCODE]: "1.9.0" }
+    })
+
+    it("skips the install when the baked CLI and adapter satisfy an @latest request", async () => {
+      expect(await bootWith({ installPackages: [`${OPENCODE}@latest`] })).toBe(false)
+      expect(controller.serveSeen).toBe(true)
+      expect(await bootWith({ installPackages: [OPENCODE], cliVersion: "latest" })).toBe(false)
+    })
+
+    it("accepts an exact adapter pin only when it equals the baked version", async () => {
+      expect(await bootWith({ installPackages: [`${OPENCODE}@1.9.0`] })).toBe(false)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@1.10.0`] })).toBe(true)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@1.9`] })).toBe(true)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@^1.9.0`] })).toBe(true)
+      expect(await bootWith({ installPackages: [`${OPENCODE}@next`] })).toBe(true)
+    })
+
+    it("installs everything in one npm call when the CLI is baked but an adapter is missing", async () => {
+      expect(await bootWith({ installPackages: [`${OPENCODE}@latest`, "@agentproto/adapter-claude-sdk@latest"] })).toBe(true)
+      const script = controller.execs.map((e) => e.argv[2] ?? "").find((x) => x.includes("npm i -g")) ?? ""
+      expect(script).toContain("@agentproto/cli@'latest'")
+      expect(script).toContain("adapter-opencode@latest")
+      expect(script).toContain("adapter-claude-sdk@latest")
+    })
+
+    it("installs when the baked CLI does not match the pinned cliVersion even if the adapter does", async () => {
+      expect(await bootWith({ cliVersion: "1.30.0", installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+      expect(await bootWith({ cliVersion: "1.27.0", installPackages: [`${OPENCODE}@latest`] })).toBe(false)
+    })
+
+    it("installs when the baked versions cannot be read", async () => {
+      controller.bakedPackagesFail = true
+      expect(await bootWith({ installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+    })
+
+    it("installs when forceInstall is set, with or without extra packages", async () => {
+      expect(await bootWith({ forceInstall: true })).toBe(true)
+      expect(await bootWith({ forceInstall: true, installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+    })
+
+    it("reads forceInstall from COMPUTER_FORCE_INSTALL", async () => {
+      vi.stubEnv("COMPUTER_FORCE_INSTALL", "1")
+      try {
+        expect(await bootWith({ installPackages: [`${OPENCODE}@latest`] })).toBe(true)
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+
+    it("logs why the install was skipped or needed", async () => {
+      const lines: string[] = []
+      await bootWith({ installPackages: [`${OPENCODE}@latest`] }, (l) => lines.push(l))
+      expect(lines.some((l) => /boot: npm install skipped: baked CLI 1\.27\.0 and @agentproto\/adapter-opencode 1\.9\.0/.test(l))).toBe(true)
+      lines.length = 0
+      await bootWith({ installPackages: [`${OPENCODE}@2.0.0`] }, (l) => lines.push(l))
+      expect(lines.some((l) => /boot: npm install needed: baked @agentproto\/adapter-opencode 1\.9\.0 does not match 2\.0\.0/.test(l))).toBe(true)
+    })
+
+    it("keeps the single boot deadline over the probe execs", async () => {
+      controller.options.execDelayMs = (argv) => ((argv[2] ?? "").includes("# agentproto-baked-packages") ? 400 : undefined)
+      await expect(
+        computerSandboxProvider.boot(
+          spec(controller.url, { installPackages: [`${OPENCODE}@latest`], bootDeadlineMs: 150 }),
+          bootOpts,
+        ),
+      ).rejects.toMatchObject({ code: "sandbox_boot_timeout" })
+    })
   })
 
   it("restarts a healthy daemon on connect when its recorded origin is stale", async () => {
@@ -530,7 +650,7 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.daemonToken).toBe(token)
     expect(controller.attachBodies.length).toBe(attaches)
 
-    const result = await execBox.exec!({ command: "echo hi" })
+    const result = await execBox.exec!({ command: "echo hi", timeoutMs: 5_000 })
     expect(result.exitCode).toBe(0)
     // Only the caller's command: no health probe, token read or serve.
     expect(controller.execs).toHaveLength(1)
@@ -565,6 +685,75 @@ describe("computerSandboxProvider shared sessions", () => {
     await expect(
       computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, { maxSessions: 5 }), bootOpts),
     ).rejects.toThrow(/maximum number of sessions/)
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+  })
+
+  it("an attach rendezvous (expose private) takes no session slot, even on a full computer", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 1, sessionHolder: "sess_a" }),
+      bootOpts,
+    )
+    const attaches = controller.attachBodies.length
+
+    const rendezvous = await computerSandboxProvider.connect!(
+      booted.sandboxId,
+      spec(controller.url, { maxSessions: 1 }),
+      { ...bootOpts, expose: "private" },
+    )
+
+    // Nobody ever closes a rendezvous handle, so a slot taken here would leak.
+    expect(controller.attachBodies.length).toBe(attaches)
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    expect(rendezvous.sandboxId).toBe(booted.sandboxId)
+    expect(controller.sessionHolders.get(booted.sandboxId)).toEqual(new Set(["sess_a"]))
+  })
+
+  it("a connect whose handle cannot be built releases the slots it took", async () => {
+    const first = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_a" }),
+      bootOpts,
+    )
+    const unbuildable = { ...spec(controller.url, { maxSessions: 2, sessionHolder: "sess_b", daemonRoute: true }), extraPorts: [9000] }
+    await expect(computerSandboxProvider.connect!(first.sandboxId, unbuildable, bootOpts)).rejects.toThrow(
+      /daemonRoute mode can only reach/,
+    )
+    expect(controller.sessionHolders.get(first.sandboxId)).toEqual(new Set(["sess_a"]))
+    expect(controller.sessions.get(first.sandboxId)).toBe(1)
+
+    // The process-local count was released too: a good connect still fits.
+    const second = await computerSandboxProvider.connect!(
+      first.sandboxId,
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_b" }),
+      bootOpts,
+    )
+    expect(controller.sessions.get(first.sandboxId)).toBe(2)
+    await second.detach!()
+    await first.stop()
+  })
+
+  it("a boot whose handle cannot be built removes the computer it created", async () => {
+    const unbuildable = { ...spec(controller.url, { daemonRoute: true }), extraPorts: [9000] }
+    await expect(computerSandboxProvider.boot(unbuildable, bootOpts)).rejects.toThrow(/daemonRoute mode can only reach/)
+    expect(controller.removed).toHaveLength(1)
+  })
+
+  it("releaseSession frees a dead holder's slot without resuming or removing the computer", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_dead" }),
+      bootOpts,
+    )
+    await computerSandboxProvider.connect!(
+      booted.sandboxId,
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_live" }),
+      bootOpts,
+    )
+    await computerSandboxProvider.releaseSession!(booted.sandboxId, "sess_dead")
+    expect(controller.sessionHolders.get(booted.sandboxId)).toEqual(new Set(["sess_live"]))
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    expect(controller.removed).toEqual([])
+    expect(controller.suspended).toEqual([])
+    // Idempotent: a holder the controller no longer knows is a no-op.
+    await computerSandboxProvider.releaseSession!(booted.sandboxId, "sess_dead")
     expect(controller.sessions.get(booted.sandboxId)).toBe(1)
   })
 
@@ -762,4 +951,106 @@ describe("computerSandboxProvider.remove — shared-box semantics", () => {
     vi.stubEnv("COMPUTER_TENANT_ID", "tenant-a")
     await expect(computerSandboxProvider.remove!("cmp-does-not-exist")).resolves.toBeUndefined()
   })
+})
+
+describe("computerSandboxProvider.boot diagnostics on a failed running box", () => {
+  let controller: FakeController
+
+  beforeEach(async () => {
+    controller = new FakeController({ token: SERVICE_TOKEN })
+    await controller.start()
+  })
+  afterEach(async () => {
+    await controller.stop()
+    vi.restoreAllMocks()
+  })
+
+  function diagnostic(script: string): boolean {
+    return (
+      script === "ip -br addr" ||
+      script === "ip route" ||
+      script === "cat /etc/resolv.conf" ||
+      script === "getent hosts registry.npmjs.org" ||
+      script.startsWith("tail -n 40 ") ||
+      script.startsWith("ps -eo ")
+    )
+  }
+
+  it("attaches a redacted in-box snapshot to the error and still reclaims the box when the daemon never becomes healthy", async () => {
+    controller.serveFixesHealth = false
+    controller.options.execOutcome = (argv) => {
+      const script = argv[2] ?? ""
+      if (script === "ip -br addr") {
+        return { exitCode: 0, stdout: "1: lo: <LOOPBACK,UP> mtu 65536\n2: eth0: <BROADCAST,UP> mtu 1500", stderr: "" }
+      }
+      if (script === "ip route") return { exitCode: 0, stdout: "default via 10.0.0.1 dev eth0", stderr: "" }
+      if (script === "cat /etc/resolv.conf") return { exitCode: 0, stdout: "nameserver 10.0.0.2", stderr: "" }
+      if (script === "getent hosts registry.npmjs.org") return { exitCode: 2, stdout: "", stderr: "getent: not found" }
+      if (script.startsWith("tail -n 40 ")) {
+        return {
+          exitCode: 0,
+          stdout: "agentproto serve --auth-token 'token-abcdef-secret'\ndaemon: listen EADDRNOTAVAIL",
+          stderr: "",
+        }
+      }
+      if (script.startsWith("ps -eo ")) {
+        return { exitCode: 0, stdout: "  42 00:03 agentproto serve --auth-token abcdef123456", stderr: "" }
+      }
+      return undefined
+    }
+
+    const logs: string[] = []
+    let caught: unknown
+    try {
+      await computerSandboxProvider.boot(spec(controller.url), {
+        ...bootOpts,
+        log: (line: string) => logs.push(line),
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    const err = caught as Error & { bootDiagnostics?: string }
+    expect(err).toBeInstanceOf(Error)
+    expect(err.bootDiagnostics).toBeTruthy()
+    expect(err.bootDiagnostics).toContain("## ip -br addr")
+    expect(err.bootDiagnostics).toContain("eth0")
+    expect(err.bootDiagnostics).toContain("default via 10.0.0.1")
+    expect(err.bootDiagnostics).toContain("nameserver 10.0.0.2")
+    expect(err.bootDiagnostics).toContain("EADDRNOTAVAIL")
+    expect(err.bootDiagnostics).toContain("## agentproto processes")
+    // Secrets echoed by the daemon start line / process table are redacted.
+    expect(err.bootDiagnostics).not.toContain("token-abcdef-secret")
+    expect(err.bootDiagnostics).not.toContain("abcdef123456")
+    expect(err.bootDiagnostics).toContain("<redacted>")
+    // The same snapshot rides the phase error message and the boot log.
+    expect(err.message).toContain("--- boot diagnostics ---")
+    expect(err.message).toContain("EADDRNOTAVAIL")
+    expect(logs.join("\n")).toContain("boot diagnostics")
+    expect(controller.removed).toHaveLength(1)
+  }, 20_000)
+
+  it("keeps teardown bounded and still reclaims the box when the diagnostics exec hangs", async () => {
+    controller.serveFixesHealth = false
+    controller.options.execDelayMs = (argv) => {
+      const script = argv[2] ?? ""
+      return diagnostic(script) ? 6_000 : undefined
+    }
+
+    const started = Date.now()
+    let caught: unknown
+    try {
+      await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    } catch (err) {
+      caught = err
+    }
+    const elapsed = Date.now() - started
+
+    const err = caught as Error & { bootDiagnostics?: string }
+    expect(err).toBeInstanceOf(Error)
+    expect(err.bootDiagnostics).toBeTruthy()
+    expect(err.bootDiagnostics).toContain("timed out after")
+    expect(elapsed).toBeLessThan(10_000)
+    expect(controller.removed).toHaveLength(1)
+  }, 20_000)
 })

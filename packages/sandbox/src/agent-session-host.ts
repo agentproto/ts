@@ -33,12 +33,20 @@ export class SandboxHostBootFailedError extends Error {
    *  the cleanup itself is best-effort, so a failed cleanup still records
    *  the attempt. */
   readonly cleanedUp: "paused" | "stopped"
+  /** Concrete provider that owned the box, when the boot came through a
+   *  composite provider (`auto`). Absent for a single-provider boot, where
+   *  the caller's requested slug already IS the provider. */
+  readonly provider?: string
 
-  constructor(message: string, info: { sandboxId: string; cleanedUp: "paused" | "stopped" }) {
+  constructor(
+    message: string,
+    info: { sandboxId: string; cleanedUp: "paused" | "stopped"; provider?: string },
+  ) {
     super(message)
     this.name = "SandboxHostBootFailedError"
     this.sandboxId = info.sandboxId
     this.cleanedUp = info.cleanedUp
+    if (info.provider !== undefined) this.provider = info.provider
   }
 }
 
@@ -55,12 +63,39 @@ export class SandboxPortExposureUnsupportedError extends Error {
   }
 }
 
+/**
+ * How a composite provider (e.g. `auto`) chose the concrete backend for one
+ * boot. `requested` is the slug the caller asked for, `provider` the one that
+ * actually produced the box; `from` names the provider a fallback moved away
+ * from (when there was one), and `reason` is a short, secret-free explanation.
+ */
+export interface SandboxProviderChoice {
+  /** Slug the caller requested (e.g. `"auto"`). */
+  requested: string
+  /** Concrete provider that actually produced the box. */
+  provider: string
+  /** Provider a fallback moved away from, when the choice was not the first
+   *  candidate (e.g. `"computer"` on an overflow to e2b). */
+  from?: string
+  /** Short, secret-free explanation for the choice. */
+  reason?: string
+  /** ISO instant the choice was made. */
+  at: string
+}
+
 /** What a `SandboxProvider` hands back once the box is up and reachable. */
 export interface BootedSandbox {
   /** The booted agentproto daemon's MCP endpoint, reachable from this process. */
   mcpUrl: string
   /** Provider-assigned sandbox id, for logging / lookup. */
   sandboxId: string
+  /** Concrete provider that produced this box, for a composite provider
+   *  (`auto`). Absent for a single-provider boot, where the caller's own
+   *  requested slug already IS the provider. */
+  provider?: string
+  /** How a composite provider chose this backend. Absent for a
+   *  single-provider boot. */
+  choice?: SandboxProviderChoice
   /** The egress address the provider brokered for this box, when it supports
    *  selecting one (AIP-36 `network.egressIp` / provider config `egressIp`).
    *  `null` means the controller explicitly reports no dedicated address
@@ -265,6 +300,86 @@ export interface SandboxBootOpts {
    * through its normal failed-boot path instead of adopting the session.
    */
   signal?: AbortSignal
+  /**
+   * Egress-address health the caller knows about. A provider that picks a pool
+   * address itself (`egressIp: "auto"`) consults it and avoids an address that
+   * is cooling down for the model, throwing {@link SandboxEgressAllCoolingError}
+   * when none is left. Providers without an address pool ignore it.
+   */
+  egressHealth?: SandboxEgressHealthView
+  /**
+   * Set when the caller has another placement to fall back to (a non-final
+   * placement-ladder rung). A provider that would otherwise wait out a
+   * capacity refusal (a fleet unshelving a host) gives up at once when the
+   * refusal carries no retry hint, and waits at most once, no longer than this
+   * many ms, when it does. Omitted keeps the provider's own wait.
+   */
+  capacityWaitBudgetMs?: number
+}
+
+/** A cooldown on one egress address for the session's model. */
+export interface SandboxEgressCooldown {
+  /** Epoch ms the cooldown ends. */
+  until: number
+  /** Why the address is cooling (`usage-limit`, `rate-limit`, ...). */
+  errorClass: string
+}
+
+/** Read-only view of the egress health ledger, scoped to one model. */
+export interface SandboxEgressHealthView {
+  /** The model the session will run; cooldowns are per (address, model). */
+  model: string
+  /** The active cooldown for `publicIp` and `model`, or undefined when healthy. */
+  cooling(publicIp: string): SandboxEgressCooldown | undefined
+}
+
+/** One address-pool slot as a provider reports it. */
+export interface SandboxEgressSlot {
+  /** Pool slot id, the value `egressIp` selects explicitly (`a`..`f`). */
+  id: string
+  /** Public address traffic from this slot leaves from. */
+  publicIp: string
+  /** Boxes currently using the slot, when reported. */
+  computers?: number
+}
+
+/** One slot that was skipped because its address is cooling down. */
+export interface SandboxEgressCoolingSlot {
+  slot: string
+  publicIp: string
+  until: string
+  errorClass: string
+}
+
+/**
+ * Thrown by a provider's boot when `egressIp: "auto"` found every pool slot
+ * cooling down for the model. Nothing was booted. A placement ladder treats it
+ * as "advance without booting"; match it with
+ * {@link isSandboxEgressAllCoolingError} or its stable `code`.
+ */
+export class SandboxEgressAllCoolingError extends Error {
+  readonly code = "sandbox_egress_all_cooling"
+  readonly model: string
+  readonly slots: readonly SandboxEgressCoolingSlot[]
+
+  constructor(model: string, slots: readonly SandboxEgressCoolingSlot[]) {
+    super(
+      `every egress slot is cooling down for model "${model}" (` +
+        `${slots.map(s => `${s.slot} ${s.publicIp} until ${s.until} [${s.errorClass}]`).join("; ")}); no box was booted`,
+    )
+    this.name = "SandboxEgressAllCoolingError"
+    this.model = model
+    this.slots = slots
+  }
+}
+
+/** Structural check (name + code, so it works across package boundaries and with mocks). */
+export function isSandboxEgressAllCoolingError(err: unknown): err is SandboxEgressAllCoolingError {
+  return (
+    err instanceof Error &&
+    err.name === "SandboxEgressAllCoolingError" &&
+    (err as { code?: unknown }).code === "sandbox_egress_all_cooling"
+  )
 }
 
 /** Thrown by a provider's boot/connect when the caller cancelled a spawn
@@ -273,6 +388,10 @@ export interface SandboxBootOpts {
 export class SandboxBootCancelledError extends Error {
   /** The provider box id, when it was known before the cancel was observed. */
   readonly sandboxId?: string
+  /** Concrete provider that was booting, when a composite provider (`auto`)
+   *  tagged the error — so the failed-boot ledger row names a resolvable
+   *  provider instead of the composite slug. */
+  provider?: string
 
   constructor(message = "sandbox boot cancelled", sandboxId?: string) {
     super(message)
@@ -332,12 +451,99 @@ export interface SandboxProviderBox {
   id: string
   /** Provider-reported state ("running", "stopped", …), when available. */
   state?: string
+  /** The agentproto session that booted the box, when the provider recorded
+   *  it (e2b: the `owner` metadata stamped at boot). */
+  owner?: string
   /** Session slots the provider still counts for this box. */
   sessions?: number
   /** Memory the box holds, in MiB - when the provider reports it. */
   memoryMiB?: number
   /** Creation timestamp (ISO-8601) - when the provider reports it. */
   createdAt?: string
+}
+
+/**
+ * One box as the unified inventory surface reports it
+ * (`SandboxProvider.list`). Wider than `SandboxProviderBox`: identity,
+ * ownership, sizing and activity, as far as the provider's control plane
+ * knows them.
+ *
+ * Missing means UNKNOWN: a field the provider does not report stays
+ * `undefined` and is never inferred from another field (in particular a
+ * missing `tenantId`/`endUser` is not "the default tenant").
+ */
+export interface SandboxBox {
+  /** Provider-assigned box id - the same id `boot()` returned. */
+  id: string
+  /** Concrete provider that owns the box. */
+  provider: "computer" | "e2b"
+  /** Provider-reported state ("running", "stopped", …), when available. */
+  state?: string
+  /** Owning product tenant, when the provider reports it. */
+  tenantId?: string
+  /** End user inside the tenant, when the provider reports it. */
+  endUser?: string
+  /** The agentproto session that booted the box, when the provider recorded
+   *  it (e2b: the `owner` metadata stamped at boot). */
+  owner?: string
+  /** That session's label, when the provider recorded it. */
+  label?: string
+  /** Provider host identifier (the computer controller's `hostId`), when
+   *  reported. */
+  host?: string
+  /** Virtual CPUs allocated to the box, when reported. */
+  cpus?: number
+  /** Memory the box holds, in MiB - when reported. */
+  memoryMiB?: number
+  /** Creation timestamp (ISO-8601) - when reported. */
+  createdAt?: string
+  /** Start of the current active interval (ISO-8601) - when reported. */
+  activeSince?: string
+  /** Last activity timestamp (ISO-8601) - when reported. */
+  lastActivityAt?: string
+  /** Public egress address, `null` when the provider says the box has none,
+   *  `undefined` when the provider does not report egress. */
+  egressIp?: string | null
+  /** Session slots the provider still counts for this box, when reported. */
+  sessions?: number
+  /** Accumulated cost in EUR, when the provider reports it; `null` when it
+   *  knows the box but has no cost model. */
+  costEur?: number | null
+}
+
+/**
+ * One usage window, the exact W0 `UsageWindow` shape from
+ * `projects/computer/CONTRACT-SCALE.md` (camelCase JSON, ISO-8601 UTC
+ * times, integer seconds, EUR). Providers map their own ledger onto this
+ * without adding or renaming fields.
+ */
+export interface SandboxUsageWindow {
+  /** Box id the window belongs to. */
+  computer: string
+  /** Owning product tenant. */
+  tenantId: string
+  /** End user inside the tenant, when the ledger knows it. */
+  endUser?: string
+  /** Concrete provider that produced the window. */
+  provider: "computer" | "e2b"
+  /** Provider host identifier, when the provider reports it. */
+  host?: string
+  /** Window start (ISO-8601). */
+  from: string
+  /** Window end (ISO-8601). */
+  to: string
+  /** Seconds the box was active in the window. */
+  activeSec: number
+  /** `activeSec * cpus`. */
+  vcpuSec: number
+  /** `activeSec * memoryMiB / 1024`. */
+  gibSec: number
+  /** Cost for the window in EUR, from the provider's cost model; `null`
+   *  when the host has no price model, never `0`. */
+  costEur: number | null
+  /** Opening ledger event id, when the provider exposes one (the fleet
+   *  dedupes windows on it). */
+  eventId?: string
 }
 
 /**
@@ -363,6 +569,12 @@ export interface SandboxProvider {
    * session or tear down the box.
    */
   connectForExec?(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
+  /**
+   * The provider's egress address pool, when it brokers one: each slot's id,
+   * public address and load. Optional: providers without an address pool omit
+   * it. Read-only, no box is booted.
+   */
+  egressPool?(spec: SandboxSpec): Promise<SandboxEgressSlot[]>
   /**
    * Liveness probe against the PROVIDER (not the box's daemon): answers
    * whether the sandbox id still exists at all — the signal a box death
@@ -396,6 +608,16 @@ export interface SandboxProvider {
    */
   remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
   /**
+   * Release ONE session's provider-side claim on a box WITHOUT connecting to
+   * it (connecting resumes a suspended box, which needs capacity). The gc
+   * calls it for a session that died or vanished without closing its handle,
+   * so its slot stops counting against the box's session cap. `holder` is the
+   * stable session identity the claim was taken under. Idempotent; an unknown
+   * box or holder is success. Optional: providers with no per-session claim
+   * omit it.
+   */
+  releaseSession?(sandboxId: string, holder: string): Promise<void>
+  /**
    * List the boxes this provider's control plane still holds - the surface
    * the orphan-box gc reads. A box the provider still lists (and still
    * charges RAM for) that no live agentproto session references is an
@@ -404,6 +626,22 @@ export interface SandboxProvider {
    * omit it, and the gc simply has no candidate for that provider.
    */
   listBoxes?(): Promise<SandboxProviderBox[]>
+  /**
+   * List the boxes for the unified inventory surface. Same control-plane
+   * read as `listBoxes`, with the ownership/sizing/activity fields the
+   * fleet and ops views need. Providers that cannot enumerate boxes omit
+   * it. `from`/`to` optionally scope a provider that can filter its view by
+   * time; providers with no such filter ignore them.
+   */
+  list?(opts?: { from?: string; to?: string }): Promise<SandboxBox[]>
+  /**
+   * Usage windows the provider's ledger covers for `[from, to]`, one per
+   * active interval, optionally restricted to one `endUser`. Providers
+   * without a usage ledger omit it. Windows are mapped exactly as
+   * `SandboxUsageWindow`; unknown fields stay absent rather than being
+   * filled in.
+   */
+  usage?(opts: { from: string; to: string; endUser?: string }): Promise<SandboxUsageWindow[]>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */
@@ -427,6 +665,10 @@ export interface CreateSandboxAgentSessionHostOpts {
   /** Abort a boot whose session was killed mid-provision; see
    *  `SandboxBootOpts.signal`. */
   signal?: AbortSignal
+  /** Egress health forwarded to the provider; see `SandboxBootOpts.egressHealth`. */
+  egressHealth?: SandboxEgressHealthView
+  /** Capacity-wait ceiling forwarded to the provider; see `SandboxBootOpts.capacityWaitBudgetMs`. */
+  capacityWaitBudgetMs?: number
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
@@ -437,6 +679,14 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
    *  caller can record it (there's no local PID for a sandboxed session). */
   sandboxId: string
+  /** Concrete provider that produced the box (`BootedSandbox.provider`) —
+   *  forwarded so a caller records the ACTUAL backend, not the requested
+   *  composite slug. Absent for a single-provider boot. */
+  provider?: BootedSandbox["provider"]
+  /** How a composite provider chose the backend (`BootedSandbox.choice`) —
+   *  forwarded for the descriptor + operator log. Absent for a
+   *  single-provider boot. */
+  choice?: BootedSandbox["choice"]
   /** Headers the box daemon's gated HTTP routes require — the same ones the
    *  MCP connection presents. Absent for an ungated daemon. */
   authHeaders?: Record<string, string>
@@ -511,6 +761,8 @@ export async function createSandboxAgentSessionHost(
       env,
       ...(opts.log ? { log: opts.log } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.egressHealth ? { egressHealth: opts.egressHealth } : {}),
+      ...(opts.capacityWaitBudgetMs !== undefined ? { capacityWaitBudgetMs: opts.capacityWaitBudgetMs } : {}),
     })
   }
   // A box whose public edge has NO provider-side auth of its own (InstaBox)
@@ -544,13 +796,31 @@ export async function createSandboxAgentSessionHost(
     }
     throw new SandboxHostBootFailedError(
       err instanceof Error ? err.message : String(err),
-      { sandboxId: booted.sandboxId, cleanedUp },
+      {
+        sandboxId: booted.sandboxId,
+        cleanedUp,
+        ...(booted.provider !== undefined ? { provider: booted.provider } : {}),
+      },
     )
+  }
+  // The daemon connection of a dead or unreachable box often fails to close
+  // cleanly. That must never skip the provider-side stop/pause/detach: the
+  // provider call is what releases the session slot and the box, so a throwing
+  // close would leak both exactly when the session died.
+  const closeHostThen = async (release: () => Promise<void>): Promise<void> => {
+    try {
+      await host.close()
+    } catch {
+      // best-effort: the provider release below is the part that must run
+    }
+    await release()
   }
   return {
     ...host,
     mcpUrl: booted.mcpUrl,
     sandboxId: booted.sandboxId,
+    ...(booted.provider !== undefined ? { provider: booted.provider } : {}),
+    ...(booted.choice !== undefined ? { choice: booted.choice } : {}),
     ...(headers ? { authHeaders: headers } : {}),
     ...(booted.ports ? { ports: booted.ports } : {}),
     ...(booted.egressIp !== undefined ? { egressIp: booted.egressIp } : {}),
@@ -561,22 +831,19 @@ export async function createSandboxAgentSessionHost(
     ...(booted.extendTimeout ? { extendTimeout: booted.extendTimeout.bind(booted) } : {}),
     ...(booted.lifetimeMs !== undefined ? { lifetimeMs: booted.lifetimeMs } : {}),
     async stop(): Promise<void> {
-      await host.close()
-      await booted.stop()
+      await closeHostThen(() => booted.stop())
     },
     ...(booted.pause
       ? {
           async pause(): Promise<void> {
-            await host.close()
-            await booted.pause!()
+            await closeHostThen(() => booted.pause!())
           },
         }
       : {}),
     ...(booted.detach
       ? {
           async detach(): Promise<void> {
-            await host.close()
-            await booted.detach!()
+            await closeHostThen(() => booted.detach!())
           },
         }
       : {}),

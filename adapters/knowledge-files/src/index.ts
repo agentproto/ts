@@ -3,8 +3,8 @@
  * for the `@agentproto/knowledge-engine` `IKnowledgeProvider` contract.
  *
  * Ships the contract implementation ({@link FilesKnowledgeAdapter}) over local
- * files with an in-process BM25 index (no embeddings, no network, no API key),
- * a `node:fs` {@link LocalFs} `FsPort` so it runs standalone, and a
+ * files with a BM25 index (on disk via SQLite FTS5 when `node:sqlite` has it,
+ * in process otherwise; no embeddings, no network, no API key), a `node:fs` {@link LocalFs} `FsPort` so it runs standalone, and a
  * provider-kit family that registers it under the `@agentproto/adapter-
  * knowledge-*` discovery convention. Every BM25 index/query idiom is confined
  * to this package — `@agentproto/knowledge-engine` and everything above it
@@ -17,12 +17,16 @@ export {
   FilesKnowledgeAdapter,
   FILES_ENGINE_ID,
   FILES_CAPABILITIES,
+  DEFAULT_MAX_INDEX_DOCS,
+  DEFAULT_RECONCILE_INTERVAL_MS,
+  FilesIndexTooLargeError,
+  filesIndexBuildsRunning,
   type FilesAdapterConfig,
   type FilesKnowledgeAdapterOptions,
 } from "./adapter.js"
 
 // standalone backing (node:fs FsPort + factory)
-export { LocalFs, type LocalFsOptions } from "./local-fs.js"
+export { LocalFs, type LocalFsOptions, type WalkStatEntry } from "./local-fs.js"
 export { createStandaloneFilesAdapter } from "./standalone.js"
 
 // typed env
@@ -36,6 +40,12 @@ export {
   tokenize,
   buildIndex,
   buildIndexYielding,
+  Bm25IndexBuilder,
+  documentFrequency,
+  bm25Idf,
+  bm25TermScore,
+  makeSnippet,
+  stripFrontmatter,
   score,
   type Bm25Doc,
   type Bm25Index,

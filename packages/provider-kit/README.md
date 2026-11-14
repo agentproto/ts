@@ -25,5 +25,3 @@ See `docs/provider-kit.md` for the full design (the kit's concepts are unchanged
 > Status engine is **pure & sync** (fed pre-resolved booleans). `AdapterHandle.check()`
 > is async and **never** invoked during listing — status comes from resolvability
 > plus ledger/creds existence only.
-
-The previous package name `@agentproto/adapter-kit` remains available as a deprecated shim that re-exports `@agentproto/provider-kit` unchanged.

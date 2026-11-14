@@ -23,6 +23,8 @@
  * the persisted secret), TTL expiry (no delivery after `until.at`).
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -45,12 +47,12 @@ import {
   type EventsUnsubscribeInput,
 } from "../mcp-events/adapter.js"
 import { daemonBearerPrincipal } from "../mcp-events/events-registry.js"
-import { createSentinelStore, type SentinelStore } from "../sentinel-store.js"
-import { createSentinelRuntime, type SentinelRuntime, type SentinelRuntimeRegistry } from "../sentinel-runtime.js"
-import { createFakeSentinelProvider, makeFakeEvent, type FakeSentinelProvider } from "../sentinel-providers/fake.js"
+import { createSentinelStore, type SentinelStore } from "@agentproto/sentinel"
+import { createSentinelRuntime, type SentinelRuntime, type SentinelRuntimeRegistry } from "@agentproto/sentinel"
+import { createFakeSentinelProvider, makeFakeEvent, type FakeSentinelProvider } from "@agentproto/sentinel"
 import { resetChallengeCacheForTests } from "../webhook-egress/challenge.js"
 import { setEgressDispatcherForTests } from "../webhook-egress/ssrf-fetch.js"
-import type { SentinelEvent, SentinelProviderHandle } from "../sentinel-providers/types.js"
+import type { SentinelEvent, SentinelProviderHandle } from "@agentproto/sentinel"
 import type { SessionMessage } from "../session-message.js"
 
 vi.setConfig({ testTimeout: 30_000 })

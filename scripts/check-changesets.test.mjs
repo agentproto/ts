@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { declaredPackages, nearestWorkspaceName, fixChangeset, mergeFrontmatterBlocks } from './check-changesets.mjs'
+import { declaredPackages, nearestWorkspaceName, fixChangeset, mergeFrontmatterBlocks, changesetCovered, parseAgenticChangesetComment } from './check-changesets.mjs'
 
 const KNOWN = new Set(['agentproto-vscode', '@agentproto/cli', '@agentproto/runtime'])
 
@@ -69,4 +69,27 @@ test('mergeFrontmatterBlocks keeps the highest bump for a package declared twice
 test('mergeFrontmatterBlocks leaves a single-block changeset and body --- rules alone', () => {
   const md = '---\n"@agentproto/cli": patch\n---\n\nIntro.\n\n---\n\nMore prose after a rule.\n'
   assert.deepEqual(mergeFrontmatterBlocks(md), { text: md, merged: false })
+})
+
+test('changesetCovered: an author changeset declaring the same packages covers the bot proposal (#2448)', () => {
+  const bot = '---\n"@agentproto/runtime": patch\n---\n\nBot note.'
+  const author = '---\n"@agentproto/runtime": minor\n"@agentproto/cli": patch\n---\n\nAuthor note.'
+  assert.equal(changesetCovered(bot, [author]), true)
+})
+
+test('changesetCovered: a package the existing changesets miss is not covered', () => {
+  const bot = '---\n"@agentproto/runtime": patch\n"@agentproto/cli": patch\n---\n\nBot note.'
+  const author = '---\n"@agentproto/runtime": patch\n---\n\nAuthor note.'
+  assert.equal(changesetCovered(bot, [author]), false)
+  assert.equal(changesetCovered(bot, []), false)
+})
+
+test('parseAgenticChangesetComment reads the marker path and the fenced block', () => {
+  const body =
+    '<!-- agentic-changeset:.changeset/pr-2448-agentic.md -->\nProposed changeset:\n\n```md\n---\n"@agentproto/runtime": patch\n---\n\nNote.\n```\n'
+  assert.deepEqual(parseAgenticChangesetComment(body), {
+    path: '.changeset/pr-2448-agentic.md',
+    md: '---\n"@agentproto/runtime": patch\n---\n\nNote.\n',
+  })
+  assert.equal(parseAgenticChangesetComment('no marker here'), null)
 })

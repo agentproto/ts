@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach } from "vitest"
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { resolveClerkHookConfig } from "@agentproto/clerk"
 import { resolveAgentManifestPath, loadAgentManifestDefaults } from "../spawn-agent-manifest.js"
 
 const tmpRoots: string[] = []
@@ -144,5 +145,88 @@ describe("loadAgentManifestDefaults", () => {
       expect(out.code).toBe("agent_manifest_unreadable")
       expect(out.message).toContain("ghost")
     }
+  })
+})
+
+/** Write a synthetic AGENT.md whose frontmatter carries `extra` lines verbatim. */
+async function writeAgentWith(root: string, id: string, extra: string[]): Promise<string> {
+  const dir = join(root, ".agents", id)
+  await mkdir(dir, { recursive: true })
+  const path = join(dir, "AGENT.md")
+  await writeFile(
+    path,
+    ["---", "schema: agent/v1", `id: ${id}`, `description: Agent ${id}`, "model: test-model", ...extra, "---", "", `You are ${id}.`].join("\n") + "\n",
+    "utf8",
+  )
+  return path
+}
+
+async function clerkLevelOf(extra: string[]) {
+  const root = await mktmp()
+  const path = await writeAgentWith(root, "probe", extra)
+  const out = await loadAgentManifestDefaults(path, { adapter: "opencode" })
+  expect(out.ok).toBe(true)
+  if (!out.ok) throw new Error("manifest did not load")
+  return out.defaults.hooks?.clerk
+}
+
+describe("AGENT `on: {turn-end: session:clerk-pass}` enables the clerk", () => {
+  it("a turn-end session:clerk-pass entry yields an enabled clerk config", async () => {
+    const level = await clerkLevelOf(["on:", "  turn-end: session:clerk-pass"])
+    expect(level).toEqual({ enabled: true })
+    expect(resolveClerkHookConfig({ agent: level }).config.enabled).toBe(true)
+  })
+
+  it("without the entry there is no clerk config and the clerk stays disabled", async () => {
+    const level = await clerkLevelOf([])
+    expect(level).toBeUndefined()
+    expect(resolveClerkHookConfig({ agent: level }).config.enabled).toBe(false)
+  })
+
+  it("recognises the per-turn alias, the object form and the array form", async () => {
+    expect(await clerkLevelOf(["on:", "  per-turn: session:clerk-pass"])).toEqual({ enabled: true })
+    expect(await clerkLevelOf(["on:", "  turn-end:", "    action: session:clerk-pass"])).toEqual({ enabled: true })
+    expect(await clerkLevelOf(["on:", "  turn-end:", "    - session:archive", "    - session:clerk-pass"])).toEqual({
+      enabled: true,
+    })
+  })
+
+  it("ignores another action on turn-end and the clerk action on another event", async () => {
+    expect(await clerkLevelOf(["on:", "  turn-end: session:archive"])).toBeUndefined()
+    expect(await clerkLevelOf(["on:", "  turn-start: session:clerk-pass"])).toBeUndefined()
+  })
+
+  it("keeps the config of metadata.hooks.clerk and adds only the enable", async () => {
+    const level = await clerkLevelOf([
+      "on:",
+      "  turn-end: session:clerk-pass",
+      "metadata:",
+      "  hooks:",
+      "    clerk:",
+      "      debounceMs: 30000",
+      "      run:",
+      "        routine: steward",
+    ])
+    expect(level).toEqual({ enabled: true, debounceMs: 30_000, run: { routine: "steward" } })
+  })
+
+  it("metadata.hooks.clerk without the on entry is unchanged: it does not enable the clerk", async () => {
+    const level = await clerkLevelOf(["metadata:", "  hooks:", "    clerk:", "      debounceMs: 30000"])
+    expect(level).toEqual({ debounceMs: 30_000 })
+    expect(resolveClerkHookConfig({ agent: level }).config.enabled).toBe(false)
+  })
+
+  it("metadata.hooks.clerk.enabled stays authoritative in both directions", async () => {
+    const enabled = await clerkLevelOf(["metadata:", "  hooks:", "    clerk:", "      enabled: true"])
+    expect(enabled).toEqual({ enabled: true })
+    const disabled = await clerkLevelOf([
+      "on:",
+      "  turn-end: session:clerk-pass",
+      "metadata:",
+      "  hooks:",
+      "    clerk:",
+      "      enabled: false",
+    ])
+    expect(disabled).toEqual({ enabled: false })
   })
 })

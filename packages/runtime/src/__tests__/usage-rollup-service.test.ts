@@ -115,6 +115,45 @@ describe("collectSessionSnapshots", () => {
     const out = await collectSessionSnapshots(registry)
     expect(out.map(s => s.sessionId)).toEqual(["a"])
   })
+
+  // E99: every read streams one whole transcript; an unbounded fan-out over a
+  // daemon's thousands of sessions held them all in heap at once.
+  it("reads at most 8 transcripts at a time and keeps the registry order", async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    const ids = Array.from({ length: 50 }, (_, i) => `s${i}`)
+    const registry = {
+      list: () => ids.map(id => ({ id, kind: "agent-cli" })),
+      readUsageSnapshots: async () => {
+        inFlight++
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise(resolve => setTimeout(resolve, 1))
+        inFlight--
+        return [snap(1)]
+      },
+    } as unknown as SessionsRegistry
+    const out = await collectSessionSnapshots(registry)
+    expect(out.map(s => s.sessionId)).toEqual(ids)
+    expect(maxInFlight).toBeLessThanOrEqual(8)
+  })
+
+  it("never opens the transcript of a session outside the requested profile", async () => {
+    const read: string[] = []
+    const registry = {
+      list: () => [
+        { id: "mine", kind: "agent-cli", accessProfile: { profileRef: "max" } },
+        { id: "theirs", kind: "agent-cli", accessProfile: { profileRef: "other" } },
+        { id: "none", kind: "agent-cli" },
+      ],
+      readUsageSnapshots: async (id: string) => {
+        read.push(id)
+        return [snap(1)]
+      },
+    } as unknown as SessionsRegistry
+    const out = await collectSessionSnapshots(registry, { profileRef: "max" })
+    expect(out.map(s => s.sessionId)).toEqual(["mine"])
+    expect(read).toEqual(["mine"])
+  })
 })
 
 function emptyBucket() {

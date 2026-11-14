@@ -54,7 +54,7 @@ anything.
   machine-origin session with a parent, or a review / gate / workflow / cron
   origin: its owner relaunches it) and recent (`--relaunch-window`). Superseded,
   owned and stale failures are `mark-failed` with the reason (for example
-  "superseded by <id>").
+  `"superseded by <id>"`).
 - `needs-input` flags a session that waits on someone; a user-origin session is
   only ever flagged or labelled, never closed or killed.
 - `close-abandoned` retires a session that never ran / was abandoned.

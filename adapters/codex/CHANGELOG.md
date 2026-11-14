@@ -1,5 +1,58 @@
 # @agentproto/adapter-codex
 
+## 2.1.3
+
+### Patch Changes
+
+- ae6751d: Surface codex `request_user_input` as an AIP-45 structured question under permission hold. A new `permissionHoldConfig` manifest field lets an agent-cli definition deep-merge inline JSON config into its config env var only for a `permissionHold` session; adapter-codex uses it to enable codex's `default_mode_request_user_input` feature through `CODEX_CONFIG`, keeping `developer_instructions`. The ACP elicitation mapping now reads codex-acp's form shape: the question from `title`, the header from `description`, and the `<id>_note` property (`_meta.codex.role: "user_note"`) as the free-text companion instead of a separate field.
+- Updated dependencies [ae6751d]
+  - @agentproto/harness@3.1.0
+
+## 2.1.2
+
+### Patch Changes
+
+- 6d47d90: Bump the pinned `@agentclientprotocol/codex-acp` wrapper from 1.13.1 to 2.5.0, which bundles `@openai/codex` ^0.165.0, and keep the adapter manifest, docs, and spawn/onboarding fixtures in sync. The `@agentproto/cli` update only refreshes the onboarding detection fixture to match the new wrapper pin.
+  - @agentproto/harness@3.0.1
+
+## 2.1.1
+
+### Patch Changes
+
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+- 11b18bf: AIP-72 memory follow-ups. The spawn digest now follows section 9 resolution step 3: an adapter whose `capabilities.memory.inject` is `none`, or that declares no memory capability, gets no digest; only `system-prompt` (with a usable channel) and the `native-dir` fallback carry it. codex, hermes, opencode and pi, which have a system-prompt channel, now declare `memory: { inject: "system-prompt", capture: "none" }` so they keep the digest. `session_restart` now carries the spawn role (`meta.role`), so the memory commit gate gives the same answer before and after a restart. `@agentproto/memory` documents the unfilled `tags` default in `validateMemory` and scopes the `renderMemory` status-rewrite note to files it wrote.
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [c350f3a]
+- Updated dependencies [c53688d]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [dd134f4]
+- Updated dependencies [30961a9]
+  - @agentproto/harness@3.0.0
+
+## 2.1.0
+
+### Minor Changes
+
+- 0fcc582: Declare the native hook capabilities of the Codex and Claude Code harnesses under `capabilities.hooks`.
+
+### Patch Changes
+
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- Updated dependencies [7a90c4b]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [84ac51b]
+  - @agentproto/harness@2.16.0
+
 ## 2.0.31
 
 ### Patch Changes

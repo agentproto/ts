@@ -96,3 +96,29 @@ describe("httpPostJson / httpGetJson / httpDelete — error body survives end to
     await expect(httpDelete(baseUrl)).rejects.toThrow(LONG_MESSAGE)
   })
 })
+
+describe("httpGetJson — abort signal", () => {
+  let server: Server
+  let baseUrl: string
+
+  beforeEach(async () => {
+    // Never respond, so only the abort signal can settle the request.
+    server = createServer(() => {})
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
+    const { port } = server.address() as AddressInfo
+    baseUrl = `http://127.0.0.1:${port}`
+  })
+
+  afterEach(async () => {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  })
+
+  it("rejects when the provided signal aborts", async () => {
+    const controller = new AbortController()
+    const pending = httpGetJson(baseUrl, { signal: controller.signal })
+    setTimeout(() => controller.abort(), 10)
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+  })
+})

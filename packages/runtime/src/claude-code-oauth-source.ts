@@ -17,7 +17,8 @@ import {
   resolveRecipeMethod,
   resolveSourceSpec,
 } from "@agentproto/secrets/provision/recipe"
-import { SubscriptionSourceError } from "./spawn-defaults.js"
+import { reauthCommand, type ReauthHint } from "@agentproto/auth"
+import { FILE_BASED_AUTH_SOURCES, SubscriptionSourceError } from "./spawn-defaults.js"
 
 /**
  * Resolve a provision recipe's default method to a plaintext credential. `id`
@@ -29,6 +30,19 @@ import { SubscriptionSourceError } from "./spawn-defaults.js"
 export async function resolveClaudeCodeOauthToken(id: string): Promise<string> {
   const { method } = resolveRecipeMethod(id)
   return (await resolveSourceSpec(method.source)).trim()
+}
+
+/** `agentproto auth reauth` has a built-in login for these file-based sources only. */
+function reauthHintFor(recipeId: string): ReauthHint | undefined {
+  if (!FILE_BASED_AUTH_SOURCES.has(recipeId)) return undefined
+  return { command: reauthCommand(recipeId), source: recipeId, reason: "missing" }
+}
+
+function loginAdvice(recipeId: string, adapterSlug: string): string {
+  const hint = reauthHintFor(recipeId)
+  return hint
+    ? `run \`${hint.command}\` to log in again (it runs \`${adapterSlug} login\`; sign in with your subscription)`
+    : `run \`${adapterSlug} login\` and sign in with your subscription first`
 }
 
 /**
@@ -73,15 +87,16 @@ export async function verifyLocalLoginPresent(
   } catch (err) {
     throw new SubscriptionSourceError(
       "auth_source_unresolved",
-      `no ${adapterSlug} login found — run \`${adapterSlug} login\` and sign in ` +
-        `with your subscription first (${err instanceof Error ? err.message : String(err)}).`,
+      `no ${adapterSlug} login found — ${loginAdvice(recipeId, adapterSlug)} ` +
+        `(${err instanceof Error ? err.message : String(err)}).`,
+      reauthHintFor(recipeId),
     )
   }
   if (!token) {
     throw new SubscriptionSourceError(
       "auth_source_unresolved",
-      `no ${adapterSlug} login found — run \`${adapterSlug} login\` and sign in ` +
-        `with your subscription first.`,
+      `no ${adapterSlug} login found — ${loginAdvice(recipeId, adapterSlug)}.`,
+      reauthHintFor(recipeId),
     )
   }
 }

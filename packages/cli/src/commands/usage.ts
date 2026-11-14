@@ -9,15 +9,24 @@
  *
  * Usage:
  *   agentproto usage rollup --window <5h|7d|30m|2w|P7D|PT5H> [--profile <ref>] [--json]
+ *   agentproto usage plan <usage> [--cwd <dir>] [--adapter <slug>] [--json]
  */
+import { parseArgs } from "node:util"
 import type { UsageBucket, UsageRollup } from "@agentproto/runtime"
+import {
+  MAX_LOCAL_FREE_AGENTS,
+  resolveUsagePlan,
+  listUsageSlugs,
+  UnknownUsageError,
+  SensitivityRefusalError,
+} from "@agentproto/usage-presets"
 import {
   discoverDaemon,
   httpGetJson,
   printNoDaemonError,
 } from "./_daemon-helpers.js"
 
-const USAGE = `agentproto usage — local spend estimate over a rolling window
+const USAGE = `agentproto usage, local spend estimate + usage-named spawn plans
 
 Usage:
   agentproto usage rollup --window <w> [--profile <ref>] [--json]
@@ -36,7 +45,45 @@ Examples:
   agentproto usage rollup --window 7d
   agentproto usage rollup --window 5h --profile claude-max
   agentproto usage rollup --window P1DT12H --json
+
+Usage-named spawn plans (the caller names the WORK, never the model or
+the execution place, @agentproto/usage-presets declares them):
+
+  agentproto usage plan <usage> [--cwd <dir>] [--adapter <slug>] [--json]
+
+  <usage>         one of: pr-fix, explore, implement, review, deploy
+                  (pr-fix + review run on the OVH sandbox; explore +
+                  implement run locally on a free model until the
+                  2-free-agents-local IP limit redirects to the sandbox;
+                  deploy is sensitive and refuses any free model)
+
+Examples:
+  agentproto usage plan pr-fix --json
+  agentproto usage plan implement --cwd ~/ssd/Code/products/agentik/agentik-studio
 `
+
+/** A slim row of GET /sessions?onlyAlive=true, only what the limiter reads. */
+interface SessionRow {
+  id: string
+  alive?: boolean
+  remote?: boolean
+  model?: string
+}
+
+/**
+ * Count the LIVE sessions already running a FREE model as a LOCAL
+ * subprocess (the daemon's session list proves it: alive + `remote`
+ * absent + model ending `-free`).
+ */
+export function countFreeLocalSessions(rows: readonly SessionRow[]): number {
+  return rows.filter(
+    r =>
+      r.alive === true &&
+      r.remote !== true &&
+      typeof r.model === "string" &&
+      r.model.endsWith("-free"),
+  ).length
+}
 
 export async function runUsage(argv: readonly string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -45,13 +92,14 @@ export async function runUsage(argv: readonly string[]): Promise<number> {
   }
   const sub = argv[0]
   if (sub === "rollup") return runRollup(argv.slice(1))
+  if (sub === "plan") return runPlan(argv.slice(1))
 
   if (!sub) {
     process.stderr.write("agentproto usage: missing subcommand\n\n" + USAGE)
     return 2
   }
   process.stderr.write(
-    `agentproto usage: unknown subcommand "${sub}"\n  Known: rollup\n`,
+    `agentproto usage: unknown subcommand "${sub}"\n  Known: rollup, plan\n`,
   )
   return 2
 }
@@ -139,4 +187,108 @@ function printHuman(rollup: UsageRollup): void {
   section("by harness", rollup.byHarness, r => r.harness)
 
   process.stdout.write(lines.join("\n") + "\n")
+}
+
+// ── plan ───────────────────────────────────────────────────────────────
+
+async function runPlan(argv: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...argv],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+      cwd: { type: "string" },
+      adapter: { type: "string" },
+    },
+  })
+
+  const usageSlug = positionals[0]
+  if (!usageSlug) {
+    process.stderr.write(
+      `agentproto usage plan: missing required <usage>, one of: ${listUsageSlugs().join(", ")}\n\n` + USAGE,
+    )
+    return 2
+  }
+
+  // Count the live free-local sessions BEFORE resolving: the resolver
+  // redirects the overflowing free agent to the sandbox (usage plan is
+  // read-only here, so nothing changes while we count).
+  let freeLocalInUse = 0
+  let freeLocalInUseError: string | undefined
+  let daemonFound = false
+  const report = await discoverDaemon()
+  if (report.found) {
+    daemonFound = true
+    try {
+      // GET /sessions returns `{ sessions, total }`, not a bare array.
+      const body = await httpGetJson<{ sessions?: SessionRow[] }>(
+        `${report.found.url}/sessions?onlyAlive=true`,
+      )
+      freeLocalInUse = countFreeLocalSessions(body.sessions ?? [])
+    } catch (err) {
+      freeLocalInUseError = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  let plan
+  try {
+    plan = resolveUsagePlan(usageSlug, {
+      freeLocalInUse,
+      ...(values.adapter ? { adapter: values.adapter } : {}),
+    })
+  } catch (err) {
+    if (err instanceof SensitivityRefusalError) {
+      process.stderr.write(`agentproto usage plan: REFUS, ${err.message}\n`)
+      return 3
+    }
+    if (err instanceof UnknownUsageError) {
+      process.stderr.write(`agentproto usage plan: ${err.message}\n`)
+      return 2
+    }
+    throw err
+  }
+
+  if (values.json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          usage: plan.usage,
+          daemon: daemonFound,
+          freeLocalInUse,
+          ...(freeLocalInUseError ? { freeLocalInUseError } : {}),
+          plan,
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+    return 0
+  }
+
+  const lines: string[] = []
+  lines.push(`usage "${plan.usage}"`)
+  lines.push(`place    : ${plan.place}${plan.sandbox ? ` (${plan.sandbox.provider})` : ""}`)
+  lines.push(`model    : ${plan.resolvedModel}`)
+  lines.push(`profile  : ${plan.profileRef}`)
+  lines.push(`posture  : ${plan.posture}`)
+  if (values.cwd) lines.push(`cwd      : ${values.cwd}`)
+  if (freeLocalInUseError) {
+    lines.push("")
+    lines.push(
+      `⚠ free-local count UNVERIFIED (${freeLocalInUseError}), the ${MAX_LOCAL_FREE_AGENTS}-agent cap was not applied`,
+    )
+  }
+  lines.push("")
+  lines.push("agent_start input (the complete configuration; nothing else to remember):")
+  lines.push(JSON.stringify(
+    { ...(plan.spawn as Record<string, unknown>), ...(values.cwd ? { cwd: values.cwd } : {}) },
+    null,
+    2,
+  ))
+  lines.push("")
+  if (plan.warning) lines.push("", `⚠ ${plan.warning}`)
+  if (!plan.warning) lines.push("", "(règles appliquées : jamais de modèle gratuit pour un usage sensible ; au plus 2 agents gratuits en local, repli sandbox au-delà)")
+  process.stdout.write(lines.join("\n") + "\n")
+  return 0
 }

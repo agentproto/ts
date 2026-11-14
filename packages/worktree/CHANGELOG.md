@@ -1,5 +1,87 @@
 # @agentproto/worktree
 
+## 0.21.1
+
+### Patch Changes
+
+- 057c438: Fix `branch gc approve` refusing with `tip-moved` for stored verdicts whose name is a display label (`remote:feat/x`, `local:a, local:b`): the name is now resolved into branch names and every matching ref at the sha is reported.
+
+## 0.21.0
+
+### Minor Changes
+
+- f12741f: Let an operator approve a guard-refused branch verdict without retyping it.
+
+  - New `agentproto branch gc approve <sha|branch>... --by <name> [--note <text>] [--repo <dir>] [--dry-run] [--json]`. It copies the stored verdict for each tip and adds `operator: { by, note }`. It refuses, and records nothing, when no verdict is stored, the stored `gate.agree` is not true, no ref named in the verdict still points at its sha, or `--by` is the reviewer.
+  - The approval goes through the new daemon route `POST /branches/gc/approve`. The route accepts only `Authorization: Bearer <per-boot token>` (no loopback bypass, no allowlisted Origin, no `?token=`) and refuses any request carrying a session identity (a session token or a caller-session claim). The CLI forwards `$AGENTPROTO_SESSION_ID`, so the command is refused from inside an agent session. The existing `branch_gc_verdict` session refusal is unchanged.
+  - `@agentproto/worktree` exports `approveBranchVerdict`; `@agentproto/runtime` exports the `BranchGcOperatorApprover` port (`approveBranchGcVerdict` in `createGateway`).
+  - The repo-maintenance `maintain` report prints one `agentproto branch gc approve <sha> --by <your name>` command per queued tip instead of a JSON template, and counts and lists the decision queue and the reviewed-reclaimed list once per tip sha, with the ref kinds on one line.
+
+- 35a339d: branch gc: a deterministic `verified-pr` pass lets a reviewed branch past the line-coverage guard when a `superseded` verdict cites a PR (new optional `landedIn`, else `#N` in the gate) that the forge confirms merged into base, and every file with uncovered lines was touched by that PR, is a consumed `.changeset/*.md`, or is a path base deleted or moved after that PR merged. On by default; `requireOperatorBelowGuard` / `--require-operator-below-guard` turns it off. The outcome and restore log carry `guard: "verified-pr"` with the proof, refusals carry `verifiedPrRefusal`, and the maintain report lists auto-passed tips apart from the human decision queue. New `agentproto branch gc restore <restore-log>` (and the `branch_gc_restore` MCP tool) re-creates deleted refs from a restore log (commands rebuilt from validated fields, the log's repo must be the caller's), refuses to overwrite a ref at another sha, and drops the restored tips' operator approval so the next run re-judges them.
+- 457da84: Remove agreed reviewed held worktrees via worktree_gc, keep the branch
+- 6c86b8c: Show branch PR state and evidence in the maintain decision queue. `branch_gc` plan entries for unmerged local and remote refs now carry `headPr`, the forge's PR for the branch name (open, newest merged, newest closed-unmerged, or none) read from bulk PR lists, through the new optional `ForgeClient.listClosedUnmergedPullRequests`. The maintain report prints that PR state instead of `unknown`, gives every human decision queue row its stored verdict, PR state and the reviewer's reason, prints one batch `agentproto branch gc approve` command (a sha per line, flags last), and its Worktrees header says `mode: apply` when worktree_gc applied.
+- 650fa3a: Let worktree gc reclaim integrated worktrees whose only changes carry no work (an emptied checkout, turbo's managed AGENTS.md block, or changes already on base), reported as `reclaimReason: "dirty-no-work"` with the sub-cases in `dirtyNoWork`. Anything unexplained keeps its previous class.
+- 0bc7927: Bound worktree provisioning with a stall timeout (default 2 min without setup output) and a hard cap (default 30 min). A tripped bound kills the setup process tree and fails the session with the phase, elapsed time and last output lines. Configurable per spawn (`worktree.stallTimeoutMs` / `maxMs`), via `worktrees.provisionStallTimeoutMs` / `provisionMaxMs` or env. The setup hook output now streams into the starting session's output and provisioning start, phases and failure are logged to daemon.log.
+- 9a31444: Make branch gc output something an operator can act on.
+
+  - `summarizeBranchGcPlan` adds `summary.distinct`: branch counts keyed by name across ref kinds (a local branch and its remote twin count once), next to the per-kind ref counts. `agentproto branch gc` prints it.
+  - The `branch_gc` MCP reply is compact by default: the summary, the plan metadata and one page of entries (name, kind, sha, class, status, reclaimReason / mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard when set), 100 rows per page. An apply pages its outcomes by default (pass `section: "entries"` to page the plan entries instead) and keeps the restore log and `applySummary`. `cursor` pages the same run and the same filtered slice without re-running it, keeping the `section`/`classes`/`limit` it was created with. `fields`, `classes`, `section` and `limit` shape the page, and `full: true` returns today's whole result. Callers that read full plan entries must now pass `full: true`.
+  - The repo-maintenance `maintain` workflow requests `full: true` on each branch_gc call, headlines "N branches (M refs)", lists the whole human decision queue (lowest line coverage first) with the `branch_gc_verdict` operator-approval call that clears an entry, and names where the full list is for every other capped list (`review` and `verdictRecords` are now in the run output).
+
+### Patch Changes
+
+- 8d3a80e: `branch gc --include-reviewed`: a second deterministic pass, `dep-bump`, reclaims a guard-refused tip with an agreeing `obsolete` or `superseded` verdict when every line it adds is in `pnpm-lock.yaml` or a `.changeset/*.md`, or is a `package.json` dependency spec (or `version`) that base already declares at an equal or higher semver lower bound. It is computed from git objects only. Any other line keeps the tip in the human queue, including a deleted line base still has, and `depBumpRefusal` names the first unexplained line (also shown on the maintain report's human decision queue rows). The pass is recorded as `guard: "dep-bump"` + `depBump` on the apply outcome and the restore log, and listed under "Auto-passed by dep-bump" in the maintain report. It is on by default, and `requireOperatorBelowGuard` turns it off together with verified-pr.
+- 29a0599: `branch gc --include-reviewed`: a third deterministic pass, `history-covered`, runs when verified-pr and dep-bump both refuse. It reclaims a guard-refused tip with an agreeing `obsolete` or `superseded` verdict when every changed file is proven by the dep-bump per-file rules, or is a text file that deletes no line base still has and whose every uncovered added line was added to that same path (or the path base moved it to) by a commit in base's history. Lines from other paths never count. Each path's history is read once per plan, bounded at 50 files and 32 MiB of history per tip, and past the bound it refuses. The pass is recorded as `guard: "history-covered"` + `historyCovered` (files checked, lines matched, per file the oldest and newest base commit) on the plan entry, the apply outcome and the restore log; a refusal sets `historyRefusal`. The maintain report gains an "Auto-passed by history-covered" section and a "history refused" fragment on human queue rows. `requireOperatorBelowGuard` turns it off with the other two passes.
+- 440acad: `branch gc restore`: entries of one restore log that map to the same target (with `--local-only`, a remote and a local entry of the same name) are resolved before anything runs, from content rather than log order, so a dry run reports exactly what the real run does. The same sha twice is restored once (the next is `already-present`); when one sha descends from the other, the descendant is restored and the ancestor gets the new `contained` result; diverged shas are both `refused-conflict`, naming each other, until `--sha` picks one. The CLI summary counts `contained`.
+- 0d39c7f: `branch gc restore`: an ancestor entry is reported `contained` only when the descendant that shares its target actually lands (`restored`, `already-present`, or `would-restore` in a dry run). When the descendant is refused or fails, the ancestor is `refused-conflict` or `failed` with a message naming the descendant and its result, since nothing then holds its commits. The dry-run message now reads "would be restored to <target> instead".
+- 7b7e06b: branch gc: the verified-pr pass now also explains an uncovered file the cited PR did not touch when the dep-bump per-file rules prove every line it changes (recorded as `why: "manifest-proven"`, shown by `maintain` as `N manifest-proven`), and the dep-bump rules prove a `packageManager` pin `<name>@<version>[+<hash>]` when base declares the same manager at the same or a newer version.
+- e65057d: The repo-maintenance `maintain` workflow now re-reviews, once per tip, a tip whose stored verdict says superseded (triage and gate), agreed, cites no PR and sits under branch_gc's line-coverage guard, so the verified-pr pass can reclaim it once the reviewer cites the merged PR that landed the work (or the reviewer changes the verdict). Re-reviews come after every unreviewed tip under the same `maxReviews`, the report's Review section counts them, and `rereviewUncited: false` turns them off. The verdict store stamps `revision` on a record that replaces an earlier verdict for the same tip (so a re-review is never repeated), and branch_gc's plan entry verdict summary now carries `gateVerdict`, `citedPrs` (from `citedPrsOf`) and `revision`.
+- Updated dependencies [0380c2b]
+  - @agentproto/workflow-runtime@0.21.0
+
+## 0.20.0
+
+### Minor Changes
+
+- ac14e7d: branch gc: a branch whose work landed through a merged PR is now `pr-merged` (reclaim) even when its tip is not that PR's exact head. Two new deterministic matches, both read from one `git log --stdin` over every merged PR head that is present locally: `ancestor` (the tip is an ancestor of a merged PR's head, the PR kept going after the branch stopped) and `patch` (every non-merge commit of the tip has a patch-equivalent commit, same `git patch-id --stable` and same author time and email, in some merged PR's history, so a rebased branch or one whose commits landed across stacked PRs matches). Entries carry `mergedPrMatch` (`head`, `ancestor` or `patch`) next to `mergedPr`. Before, these branches sat in the review class, where the line-coverage guard refused their agreeing verdicts. The plan still never fetches: a merged PR head missing from the object database offers no match.
+- 467af3b: Reviewer-proposed changeset for PR #2323. The PR's own changeset covers the worktree/cli/runtime/apps changes; this file additionally bumps `agentproto-vscode` for the mirrored `skipped-stale` outcome and `reason` field in its worktree GC client types. All five packages are listed here in one frontmatter block so no changed package is missed.
+- ac14e7d: branch gc: a branch whose work landed through a merged PR is now `pr-merged` (reclaim) even when its tip is not that PR's exact head. Two new deterministic matches read from one `git log --stdin` over every merged PR head present locally: `ancestor` (the tip is an ancestor of a merged PR's head) and `patch` (every non-merge commit of the tip has a patch-equivalent commit, same `git patch-id --stable` and same author time and email, in some merged PR's history, so a rebased branch or one whose commits landed across stacked PRs matches). Entries carry `mergedPrMatch` (`head`, `ancestor` or `patch`) next to `mergedPr`. The plan still never fetches: a merged PR head missing from the object database offers no match.
+- a255a13: Make `worktree gc` and `worktree archive`/`rm` safe for unmerged commits. A detached HEAD is now reclaimed by `gc` only when its sha is proven in base (ancestor, squash, patch, or a merged PR's head) and is held otherwise; proven ones are reclaimed by default, so `maintain` handles them, and `--include-detached` stays accepted. `archive`/`rm` keep the branch unless it is proven merged into base (`--force` overrides), print the decision, and record it in `MANIFEST.json`. The `worktree --help` text for `archive` now states exactly what is preserved.
+- 467af3b: Follow-ups on `worktree gc`/`status` and the `maintain` workflow:
+
+  - `worktree gc --apply` (and the daemon's `worktree_gc` apply from a precomputed plan) re-checks each entry's branch, HEAD sha and index mtime right before touching it, and skips with `skipped-stale` if anything moved since the plan was made.
+  - Liveness now consults the daemon's session registry (an alive session whose cwd is the worktree, or under it, blocks reclaim) and the newest mtime among modified/untracked files, not only the index; it degrades to mtime-only and says so when the daemon is unreachable.
+  - `pnpm-lock.yaml` is noise only when the worktree's `package.json` files are unchanged versus HEAD; a changed manifest keeps the lockfile as real dirt. An explicit `--noise` override still wins outright.
+  - `worktree ls --status` and the gc/maintain integration state gain `closed-unmerged(#N)` for a branch whose PR was closed without merge.
+  - The `maintain` reviewer input carries each candidate's PR state (open/merged/closed-unmerged/none) and a `git cherry` summary against the compare base; the maintain report prints one reason line per verdict.
+  - Forge resolution normalizes `github.com-<alias>` SSH host aliases to `github.com` for the owner/repo slug, resolves the `gh` token from a neutral cwd, and both `ls --status` and `gc` print once to stderr when PR status can't be fetched instead of staying silent.
+  - `worktree gc` lists and classifies worktrees with bounded concurrency instead of serially, cutting a ~40-worktree sweep from the 50s+ range down substantially (see PR body for before/after numbers).
+
+### Patch Changes
+
+- Updated dependencies [66c9f6d]
+- Updated dependencies [66c9f6d]
+  - @agentproto/session-presets@0.7.1
+  - @agentproto/workflow-runtime@0.20.3
+  - @agentproto/driver@0.4.1
+  - @agentproto/tool@0.6.1
+
+## 0.19.1
+
+### Patch Changes
+
+- e1fa90e: Attach stored verdicts to checkpoint refs in branch gc
+- 84ac51b: Move the typed session presets from `@agentproto/harness` to `@agentproto/session-presets`. This is step 1 of 2 for AIP-45: the presets moved to `@agentproto/session-presets`, and the name `@agentproto/harness` now carries the AIP-45 runner (see the aip-45 changeset). `@agentproto/worktree` now imports the new package. The sandbox providers only update a doc comment that names the package, so they take a patch bump to satisfy the changeset coverage gate.
+- e1fa90e: Attach stored review verdicts to sandbox checkpoint refs in branch gc and let `includeReviewed` reclaim an agreeing checkpoint through the line-coverage guard.
+- Updated dependencies [84ac51b]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/session-presets@0.7.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow-runtime@0.20.2
+
 ## 0.19.0
 
 ### Minor Changes

@@ -51,8 +51,29 @@ export interface QuotaProfile {
   credentialRef?: string
 }
 
+/**
+ * Why a reader produced no status. Optional diagnostic only: a reader still
+ * resolves to `undefined`, it just also says why through `reportFailure`.
+ * Never carries a secret value (a credential is cited by its ref name).
+ */
+export const QUOTA_READ_FAILURE_CODES = [
+  "credential_missing",
+  "credential_rejected",
+  "rate_limited",
+  "provider_unreachable",
+  "no_usable_figures",
+] as const
+export type QuotaReadFailureCode = (typeof QUOTA_READ_FAILURE_CODES)[number]
+
+export interface QuotaReadFailure {
+  code: QuotaReadFailureCode
+  message: string
+}
+
 export interface QuotaReadContext {
   signal?: AbortSignal
+  /** Called by a reader that is about to resolve `undefined`, to say why. */
+  reportFailure?(failure: QuotaReadFailure): void
   /** Resolve a profile's opaque credentialRef to a bearer secret. */
   resolveCredential?(ref: string): Promise<string | undefined>
   fetchImpl?: typeof fetch

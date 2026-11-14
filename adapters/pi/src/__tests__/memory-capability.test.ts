@@ -1,0 +1,14 @@
+import { describe, expect, it } from "vitest"
+import { pi } from "../index.js"
+
+// AIP-72 section 9: an adapter that declares no memory capability reads as
+// `inject: "none"` and gets no digest, so this one declares the
+// system-prompt path its channel can carry.
+describe("pi AIP-72 memory capability", () => {
+  it("declares system-prompt inject and no capture", () => {
+    expect(pi.capabilities?.memory).toEqual({ inject: "system-prompt", capture: "none" })
+  })
+  it("has the system-prompt channel the digest rides", () => {
+    expect(pi.systemPrompt?.via).toBe("argv")
+  })
+})

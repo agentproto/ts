@@ -259,19 +259,6 @@
       ]
     },
     {
-      "id": "grok-imagine-image-quality",
-      "aliases": [
-        "grok-imagine-image-quality-20260403",
-        "grok-imagine-image-quality-latest",
-        "grok-imagine-image-pro"
-      ],
-      "context_length": 16000,
-      "created": 1775174400,
-      "object": "model",
-      "owned_by": "xai",
-      "image_price": 500000000
-    },
-    {
       "id": "grok-imagine-video",
       "aliases": [],
       "created": 1769558400,
@@ -285,6 +272,13 @@
         "grok-imagine-video-1.5-2026-05-30"
       ],
       "created": 1779840000,
+      "object": "model",
+      "owned_by": "xai"
+    },
+    {
+      "id": "grok-imagine-video-1.5-lite",
+      "aliases": [],
+      "created": 1787702400,
       "object": "model",
       "owned_by": "xai"
     }

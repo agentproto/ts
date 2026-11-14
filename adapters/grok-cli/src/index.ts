@@ -28,10 +28,10 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 // Verified live against grok 1.0.3 (`grok models`, and the ACP `initialize`
 // response's `modelState.availableModels`) — restricted to the text/coding
@@ -48,7 +48,7 @@ const GROK_TEXT_MODELS = [
   "grok-build-0.1",
 ] as const
 
-export const grokCli: AgentCliHandle = defineAgentCli({
+export const grokCli: AgentCliHandle = defineHarness({
   name: "grok-cli",
   id: "grok-cli",
   description:

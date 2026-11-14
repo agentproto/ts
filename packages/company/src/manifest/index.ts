@@ -7,24 +7,33 @@
  * frontmatter. Both inputs end up in `defineCompany` so the cross-AIP
  * invariants run uniformly.
  *
- *
- * The frontmatter zod schema below was generated from
- * `resources/aip-6/draft/COMPANY.schema.json` via json-schema-to-zod.
- * Re-run scaffold-aip to refresh after spec changes (or hand-tune
- * any constraint the converter doesn't capture cleanly).
+ * The aliases `kind` and `slug` are resolved before validation, so the
+ * frontmatter handed back carries `doctype` and `id`. A legacy
+ * `doctype: role` file is validated by `./legacy-role.ts`, not by the generated
+ * schema (COMPANY.schema.json no longer defines it).
  */
 
 import matter from "gray-matter"
-import { companyFrontmatterSchema, type CompanyFrontmatter } from "../schema.js"
+import { canonicalizeCompany } from "../aliases.js"
 import { defineCompany } from "../define-company.js"
+import {
+  legacyRoleFrontmatterSchema,
+  type LegacyRoleFrontmatter,
+} from "../legacy-role.js"
+import { companyFrontmatterSchema, type CompanyFrontmatter } from "../schema.js"
 import type { CompanyDefinition, CompanyHandle } from "../types.js"
 
 // Re-export so consumers can import the schema + inferred type either
-// from "@@agentproto/company/manifest" or directly from "@@agentproto/company/schema".
-export { companyFrontmatterSchema, type CompanyFrontmatter }
+// from "@agentproto/company/manifest" or directly from "@agentproto/company/schema".
+export {
+  companyFrontmatterSchema,
+  legacyRoleFrontmatterSchema,
+  type CompanyFrontmatter,
+  type LegacyRoleFrontmatter,
+}
 
 export interface CompanyManifest {
-  frontmatter: CompanyFrontmatter
+  frontmatter: CompanyFrontmatter | LegacyRoleFrontmatter
   body: string
 }
 
@@ -33,7 +42,11 @@ export function parseCompanyManifest(source: string): CompanyManifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new Error("parseCompanyManifest: missing or empty frontmatter")
   }
-  const result = companyFrontmatterSchema.safeParse(parsed.data)
+  const data = canonicalizeCompany(parsed.data, "parseCompanyManifest")
+  const result =
+    data.doctype === "role"
+      ? legacyRoleFrontmatterSchema.safeParse(data)
+      : companyFrontmatterSchema.safeParse(data)
   if (!result.success) {
     throw new Error(
       `parseCompanyManifest: invalid frontmatter — ${result.error.issues

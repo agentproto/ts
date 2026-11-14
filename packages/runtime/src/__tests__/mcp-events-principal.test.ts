@@ -1,3 +1,5 @@
+import "../sentinel-platform.js"
+
 import { describe, expect, it } from "vitest"
 
 import {
@@ -8,8 +10,8 @@ import {
   type EventsUnsubscribeContext,
 } from "../mcp-events/adapter.js"
 import { daemonBearerPrincipal, sessionPrincipal } from "../mcp-events/events-registry.js"
-import { createSentinelStore, type SentinelStore } from "../sentinel-store.js"
-import { createFakeSentinelProvider, type FakeSentinelProvider } from "../sentinel-providers/fake.js"
+import { createSentinelStore, type SentinelStore } from "@agentproto/sentinel"
+import { createFakeSentinelProvider, type FakeSentinelProvider } from "@agentproto/sentinel"
 import type { ChallengeOutcome } from "../webhook-egress/challenge.js"
 
 const OPERATOR = daemonBearerPrincipal()

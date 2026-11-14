@@ -248,12 +248,12 @@
       "properties": {
         "agent": {
           "type": "object",
-          "required": ["adapter", "prompt"],
+          "required": ["harness", "prompt"],
           "additionalProperties": false,
           "properties": {
-            "adapter": { "type": "string", "minLength": 1, "description": "Agent adapter slug (e.g. 'claude-code', 'hermes')." },
+            "harness": { "type": "string", "minLength": 1, "description": "AIP-45 harness slug (e.g. 'claude-code', 'hermes')." },
             "prompt": { "type": "string", "minLength": 1, "description": "Initial prompt / consigne sent to the spawned agent." },
-            "model": { "type": "string", "minLength": 1, "description": "Optional model identifier forwarded to the adapter." },
+            "model": { "type": "string", "minLength": 1, "description": "Optional model identifier forwarded to the harness." },
             "cwd": { "type": "string", "minLength": 1, "description": "Working directory for the spawned session." }
           }
         }

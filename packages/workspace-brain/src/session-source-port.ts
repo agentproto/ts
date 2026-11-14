@@ -30,24 +30,24 @@ import type {
   ConversationSourcePort,
   ConversationTurn,
 } from "@agentproto/corpus"
-import type { ExportedSessionLike } from "./types.js"
+import { isSkippedTranscript, type SessionReadResult } from "./types.js"
 
 export interface BrainSessionSourcePortOptions {
   /** The injected transcript reader (workspace's conversation resolver). */
-  readonly readSession: (ref: string) => Promise<ExportedSessionLike | null>
+  readonly readSession: (ref: string) => Promise<SessionReadResult>
 }
 
 export class BrainSessionSourcePort implements ConversationSourcePort {
   constructor(private readonly opts: BrainSessionSourcePortOptions) {}
 
   async fetchConversation(ref: string): Promise<ConversationDoc | null> {
-    let session: ExportedSessionLike | null
+    let session: SessionReadResult
     try {
       session = await this.opts.readSession(ref)
     } catch {
       return null
     }
-    if (!session) return null
+    if (!session || isSkippedTranscript(session)) return null
 
     // Drop the leading run of system-role messages (the harness preamble) —
     // stop at the first non-system message, whatever role it is.

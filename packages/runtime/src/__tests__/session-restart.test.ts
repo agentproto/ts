@@ -24,6 +24,8 @@ import { registerSessionTools } from "../session-tools.js"
 import { claudeCodeProjectDir } from "../conversation-store.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { resolveContextContinuityPolicy } from "../context-continuity.js"
+import { spawningCallerContext, type SpawningCallerContext } from "../spawning-caller-context.js"
 import type {
   AgentSessionLike,
   AgentSessionResumer,
@@ -81,6 +83,9 @@ function makeResolver(opts: {
    *  test in this file) ⇒ `resolveResumeAuth` short-circuits to `{}`,
    *  same as an adapter with no billing-auth at all (hermes). */
   authDescriptor?: AdapterAuthDescriptor
+  /** Called inside every `startSession`, before it resolves: what an ACP
+   *  adapter that lists the gateway's tools during `session/new` sees. */
+  onStart?: (sessOpts: { configDir?: string }) => void
 } = {}): {
   resolver: AgentAdapterResolver
   calls: Array<{
@@ -105,6 +110,7 @@ function makeResolver(opts: {
   let rejected = false
   const resolver: AgentAdapterResolver = async slug => ({
     async startSession(sessOpts) {
+      opts.onStart?.(sessOpts)
       calls.push({
         adapter: slug,
         cwd: sessOpts.cwd,
@@ -434,6 +440,126 @@ describe("session_restart", () => {
       "sess_peer",
       "label:pygmalion-brain-persistent",
     ])
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("carries operator and operatorDigest forward onto the restarted session's new id (AIP-46 operator binding, rule 5)", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      operator: "operator:cto",
+      operatorDigest: "sha256:aaa",
+    })
+    expect(registry.get(prev.id)).toMatchObject({ operator: "operator:cto", operatorDigest: "sha256:aaa" })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(registry.get(desc.id as string)).toMatchObject({
+      operator: "operator:cto",
+      operatorDigest: "sha256:aaa",
+    })
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("carries exposedToolOptIn forward onto the restarted session's new id", async () => {
+    const { client, registry, close } = await buildHarness()
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      exposedToolOptIn: ["jobkit_leads_upsert"],
+    } as never)
+    expect(registry.get(prev.id)).toMatchObject({ exposedToolOptIn: ["jobkit_leads_upsert"] })
+    registry.kill(prev.id)
+    const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
+    expect(result.isError).toBeFalsy()
+    expect(registry.get(toolJson(result).id as string)).toMatchObject({ exposedToolOptIn: ["jobkit_leads_upsert"] })
+    await close()
+    registry.shutdown()
+  })
+
+  it("carries the AGENT.md identity meta forward, and serves it to the gateway while the restarted driver starts", async () => {
+    const identity = {
+      agentId: "emploi",
+      agentManifestPath: "/apps/pyg/.agents/emploi/AGENT.md",
+      agentRoleHash: "efe6c93790b32ebd",
+      agentToolsHash: "e3b0c44298fc1c14",
+      agentDelegatesTo: "scout",
+    }
+    let duringStart: { registered: boolean; ctx: SpawningCallerContext | undefined } | undefined
+    const harness = await buildHarness({
+      onStart: sessOpts => {
+        const id = /sess_[0-9a-z]+/.exec(sessOpts.configDir ?? "")?.[0]
+        if (id) duringStart = { registered: harness.registry.get(id) !== undefined, ctx: spawningCallerContext(id) }
+      },
+    })
+    const { client, registry, close } = harness
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      exposedToolOptIn: ["bureau_click"],
+      meta: { ...identity, role: "supervisor" },
+    } as never)
+    registry.kill(prev.id)
+    const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
+    expect(result.isError).toBeFalsy()
+    const nextId = toolJson(result).id as string
+    expect(registry.get(nextId)?.meta).toMatchObject(identity)
+    expect(duringStart?.registered).toBe(false)
+    expect(duringStart?.ctx?.meta).toMatchObject(identity)
+    expect(duringStart?.ctx?.exposedToolOptIn).toEqual(["bureau_click"])
+    expect(spawningCallerContext(nextId)).toBeUndefined()
+    await close()
+    registry.shutdown()
+  })
+
+  it("carries toolDenyGrants forward onto the restarted session's new id, and adds none when the source had none", async () => {
+    const { client, registry, close } = await buildHarness()
+    const grants = [
+      { principal: "*", effect: "deny", actions: [{ action: "tool:invoke", scope: "agentproto/cron_create" }] },
+    ]
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      toolDenyGrants: grants,
+    } as never)
+    expect(registry.get(prev.id)).toMatchObject({ toolDenyGrants: grants })
+    registry.kill(prev.id)
+    const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
+    expect(result.isError).toBeFalsy()
+    expect(registry.get(toolJson(result).id as string)).toMatchObject({ toolDenyGrants: grants })
+
+    const bare = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.kill(bare.id)
+    const bareResult = await client.callTool({ name: "session_restart", arguments: { idOrName: bare.id } })
+    expect(bareResult.isError).toBeFalsy()
+    expect(registry.get(toolJson(bareResult).id as string)?.toolDenyGrants).toBeUndefined()
 
     await close()
     registry.shutdown()
@@ -1007,6 +1133,33 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(desc.contextProfile).toBe("lean")
     expect(desc.routeSelection).toBe("free")
     expect(calls[0]).toMatchObject({ posture: "plan", contextProfile: "lean" })
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("carries the resolved context policy across an agent restart", async () => {
+    const { client, registry, close } = await buildHarness()
+    const contextContinuity = resolveContextContinuityPolicy(
+      undefined, undefined, undefined,
+      { mode: "auto", autoCompactAtTokens: 90000 },
+    )
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      contextContinuity,
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const restarted = toolJson(result) as { contextContinuity?: { autoCompactAtTokens?: number } }
+    expect(restarted.contextContinuity?.autoCompactAtTokens).toBe(90000)
 
     await close()
     registry.shutdown()

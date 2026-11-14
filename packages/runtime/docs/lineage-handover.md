@@ -41,6 +41,15 @@ alike.
 3. **`session_adopt { childIds, from }`** - the explicit re-parenting verb.
    Moves named children of `from` onto `from`'s DECLARED successor.
    Authorized to the human operator and to that declared successor only.
+   The operator may also pass `to` to declare the successor in the same call
+   (the repair path when the replacement was spawned without `succeeds`).
+   `POST /sessions/agent` accepts `succeeds` too (HTTP twin of `agent_start`).
+4. **`message_parent` fallback** - self-healing from the child side. When the
+   recorded parent is dead, the report goes to its live declared successor
+   (`succeededBy` chain), else the nearest live ancestor, and the child is
+   re-parented onto it (a `session:lineage-handover` event with
+   `reason: "message_parent"`). With no live target the call keeps failing
+   with the "not running" error.
 
 Every handover records the succession on both descriptors
 (`from.succeededBy = to`, `to.succeeds = from` - persisted, so it survives a

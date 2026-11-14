@@ -20,7 +20,8 @@ on:
 #   - build-and-test does NOT cancel (see its concurrency comment — the
 #     parallel reviewer's changeset push must not kill the running build)
 #   - pr-review NEVER cancels — wait for it to finish
-#   - pr-fix / auto-merge queue behind pr-review's group
+#   - pr-fix has its own serialized group and runs after pr-review via needs
+#   - auto-merge runs after pr-review and build-and-test via needs
 
 jobs:
   # On `synchronize` pushes only: skip the ~15min Build+test job when the
@@ -121,9 +122,10 @@ jobs:
   # This used to be ONE serial job (median 12.4 min over 28 PR runs: tests 7.7,
   # type-check 3.3, build 0.8). It is now:
   #   typecheck       build + `tsc --noEmit` + the repo-level script gates
-  #   test (matrix)   the workspace's test suites in 4 weight-balanced shards
-  #                   (scripts/ci-test-shards.mjs — every package with a test
-  #                   script lands in exactly one shard)
+  #   test (matrix)   the workspace's test suites in 5 shards
+  #                   (scripts/ci-test-shards.mjs): runtime split in two by
+  #                   test file (vitest --shard), every other package with a
+  #                   test script in exactly one of the 3 weight-balanced rest
   #   build-and-test  a tiny aggregate that KEEPS the name "Build + test" and
   #                   the id `build-and-test`: increment-guard's prior-green
   #                   lookup, pr-review's "Wait for Build + test", auto-merge's
@@ -201,7 +203,7 @@ jobs:
             pnpm build
           fi
         env:
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
@@ -214,7 +216,7 @@ jobs:
             pnpm check-types
           fi
         env:
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
@@ -231,6 +233,11 @@ jobs:
       - name: Run ci-test-shards tests
         run: node --test scripts/ci-test-shards.test.mjs
 
+      # Guards scripts/gate.mjs: the machine-wide lock and the --affected
+      # narrowing that keep local gates from saturating the host.
+      - name: Run gate tests
+        run: node --test scripts/gate.test.mjs
+
       # `pnpm test` only covers packages/** and adapters/**, so the release
       # tooling in scripts/ would otherwise ship untested. These guard the
       # @agentproto/cli@0.5.0 incident (a console trace published as a release
@@ -238,16 +245,11 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/list-unpublished-packages.test.mjs
 
-      # Guard STATUS.md (scripts/gen-status.mjs) against drift: the package
-      # tier table is generated, so a workspace package add/remove/rename or
-      # a classification change without a regen would otherwise ship stale.
-      # Also runs the unit suite (independent workspace walk, root-parameter
-      # isolation, STATUS.md row coverage, generateStatusFile equality).
-      # Outside packages/**/adapters/**, so `pnpm test` misses it.
-      - name: Check STATUS.md drift
-        run: |
-          node --test scripts/gen-status.test.mjs
-          node scripts/gen-status.mjs --check
+      # The tier classification (scripts/gen-status.mjs) and the spec packages
+      # doc generator (scripts/gen-spec-packages-doc.mjs) live outside
+      # packages/**/adapters/**, so `pnpm test` misses their unit suites.
+      - name: Run package classification tests
+        run: node --test scripts/gen-status.test.mjs scripts/gen-spec-packages-doc.test.mjs
 
       # Guards the bootstrap installer's npm-prefix fallback (#2056): a
       # system Node (apt/dnf) leaves a root-owned npm global prefix and a
@@ -333,6 +335,15 @@ jobs:
       - name: Run sync-templates tests
         run: node --test scripts/sync-templates.test.mjs
 
+      # Push sites have one owner: scripts/agentflow/bot-push.mjs (CAS through
+      # @agentproto/git-cas). A new raw push in a workflow bypasses the
+      # head_moved park path, so fail unless the workflow is explicitly
+      # allowlisted (release.yml only).
+      - name: Check for direct push sites
+        run: |
+          node --test scripts/check-bot-push.test.mjs
+          node scripts/check-bot-push.mjs
+
       # Guards refresh-template.mjs's publish/proof flow — the dev --latest
       # and stable --pin channels (pins, guards, recorded proofs) ship
       # untested otherwise. Zero-credential: fake git/npm/e2b binaries.
@@ -366,17 +377,28 @@ jobs:
       - name: Run changeset-check tests
         run: node --test scripts/check-changesets.test.mjs scripts/check-changeset-coverage.test.mjs scripts/list-changed-packages.test.mjs scripts/list-published-changes.test.mjs
 
+      # Guards the weekly adapter pin freshness report, including the
+      # indeterminate decision when a registry lookup fails.
+      - name: Run adapter pin check tests
+        run: node --test scripts/check-adapter-pins.test.mjs
+
+      # The sandbox-agent + gh_open_pr tests import the built git-cas dist
+      # (CAS push command rendering and casPush itself).
+      - name: Build git-cas for entry tests
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
+
       # Guards the pr-review workflow's placement switch (host/sandbox/local
-      # prompt branches in entry.mjs) — a `pnpm test`-only gate would miss this
-      # file entirely (it lives outside packages/**/adapters/**).
+      # prompt branches in entry.mjs) and the shared CAS push prompts: a
+      # `pnpm test`-only gate would miss these files entirely (they live outside
+      # packages/**/adapters/**).
       - name: Run pr-review entry tests
-        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs
+        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/agentproto-workflows/lib/sandbox-agent.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs .github/actions/agentproto-run/credential-rotation.test.mjs scripts/lib/tools.test.mjs scripts/workflow-env.test.mjs
 
       # Guards the CI artifact ledger — the pure record/marker/select helpers
       # the delivery helper, the agentproto-run driver, and both stamp scripts
       # share. Lives outside packages/**/adapters/**, so `pnpm test` misses it.
       - name: Run artifact-ledger tests
-        run: node --test scripts/lib/artifact-ledger.test.mjs .github/agentproto-workflows/lib/deliver-artifact.test.mjs
+        run: node --test scripts/lib/artifact-ledger.test.mjs .github/agentproto-workflows/lib/deliver-artifact.test.mjs .github/agentproto-workflows/lib/reconcile-review-state.test.mjs
 
       # Guards the shared local-daemon MCP contract (scripts/lib/daemon-mcp.mjs)
       # the `review.mjs --engine daemon` gate drives (token read, connect,
@@ -385,6 +407,9 @@ jobs:
       # packages/**/adapters/**, so `pnpm test` misses it.
       - name: Run daemon-mcp and agentflow config tests
         run: node --test scripts/lib/daemon-mcp.test.mjs scripts/agentflow/config.test.mjs
+
+      - name: Run agentflow llm engine tests
+        run: node --test scripts/agentflow/llm.test.mjs
 
       # Guards the two blind spots that made PR #1297's review job fail with no
       # usable diagnostics: the agentproto-run driver's poll heartbeat
@@ -409,7 +434,7 @@ jobs:
         run: node scripts/check-changesets.mjs
 
   test:
-    name: Tests (${{ matrix.shard }}/4)
+    name: Tests (${{ matrix.shard }}/5)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [increment-guard]
@@ -421,7 +446,7 @@ jobs:
       # author want the full list of failing packages in one run.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-test-${{ matrix.shard }}
       cancel-in-progress: ${{ startsWith(github.head_ref, 'changeset-release/') }}
@@ -456,7 +481,7 @@ jobs:
       # the package's own `dist/`.
       - name: Build shard packages
         run: |
-          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4)
+          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5)
           AFFECTED=""
           if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
             AFFECTED="--affected"
@@ -465,12 +490,12 @@ jobs:
           # Suites that load a package's `dist/` without depending on it (the
           # cli's jcode smoke test) — built unscoped by --affected, see
           # BUILD_EXTRAS in scripts/ci-test-shards.mjs.
-          EXTRAS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4 --extras)
+          EXTRAS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5 --extras)
           if [ -n "$EXTRAS" ]; then
             pnpm exec turbo run build $EXTRAS
           fi
         env:
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
@@ -483,14 +508,17 @@ jobs:
       # CPU saturation (see AGENTS.md `tests` section).
       - name: Run tests
         run: |
-          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4)
+          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5)
+          # A runtime slice adds vitest's own `--shard=k/n` (SPLIT in the
+          # script); empty for every other shard.
+          VSHARD=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 5 --vitest-shard)
           if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
-            pnpm exec turbo run test --affected $FILTERS
+            pnpm exec turbo run test --affected $FILTERS ${VSHARD:+-- $VSHARD}
           else
-            pnpm -r $FILTERS test
+            pnpm -r $FILTERS test ${VSHARD:+$VSHARD}
           fi
         env:
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
@@ -622,26 +650,34 @@ jobs:
           fi
           node scripts/check-changeset-coverage.mjs origin/main
 
-  # On PRs: enforce two conventions that used to rely on remembering to say
-  # them in every prompt — no per-worktree scratch docs land in the repo, and
-  # no AI-attribution trailers ride into commits or PR bodies. Fast,
+  # On PRs: enforce three conventions that used to rely on remembering to say
+  # them in every prompt — no per-worktree scratch docs land in the repo, no
+  # AI-attribution trailers ride into commits or PR bodies, and PRs under the
+  # shared `agentiknet` account carry a provenance footer. Fast,
   # pure-git/shell, runs in parallel with build-and-test.
   hygiene-check:
     name: Hygiene checks
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # The provenance check may poll the PR body for up to
+    # PROVENANCE_GRACE_SECONDS (default 600, scripts/check-provenance-footer.mjs).
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Check for scratch docs and AI-attribution trailers
+      - name: Run provenance-footer check tests
+        run: node --test scripts/check-provenance-footer.test.mjs
+
+      - name: Check scratch docs, AI-attribution trailers, and provenance footer
         # Pass PR_TITLE via env, not inline `${{ … }}` interpolation — see the
         # changeset-check step above for why (shell injection via backticks).
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TITLE="$PR_TITLE"
@@ -684,17 +720,54 @@ jobs:
             FAIL=1
           fi
 
-          PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q .body || true)
+          if ! PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q .body); then
+            echo "::error::Failed to fetch the PR body from the GitHub API."
+            echo "This is a transient API/network failure, not a hygiene violation — re-run the job."
+            exit 1
+          fi
           if printf '%s' "$PR_BODY" | grep -iE "$ATTRIBUTION_PATTERN" > /dev/null; then
             echo "::error::The PR body carries an AI-attribution trailer."
             echo "PR bodies must not carry AI-attribution footers (e.g. 'Co-Authored-By: Claude ...', 'Generated with ...'). Edit the PR description to remove them."
             FAIL=1
           fi
 
+          # 3. Every PR pushed under the shared `agentiknet` account must carry
+          # the agentproto provenance footer — that account's `author` field is
+          # identical on every one of our PRs, so it can never say WHICH agent
+          # or role opened this one; the footer (session id, branch authors,
+          # adapter/model) is the only thing that can. A PR missing it under
+          # this account means it was opened by a tool that never ran through
+          # agentproto at all (e.g. a bare `gh pr create` from a Claude Desktop
+          # or Codex session outside any agentproto session) — the daemon's
+          # `provenance.wrapGh` PATH shim (gh-provenance-shim.ts) stamps this
+          # automatically for every session it spawns, so this only fires for
+          # work that bypassed it. A human opening a PR under their own GitHub
+          # login is unaffected — the author field already identifies them.
+          #
+          # Every stamping lane edits the footer in AFTER `gh pr create`, so
+          # `opened` always sees a footer-less body and this job (which does
+          # not run on `edited`) went red on PRs stamped minutes later
+          # (agentproto/ts#2541, #2542). The script polls the PR body for a
+          # bounded grace period and fails only if the footer never shows up.
+          # No point waiting when the job is already failing: check once.
+          if [ "$PR_AUTHOR" = "agentiknet" ]; then
+            GRACE="${PROVENANCE_GRACE_SECONDS:-600}"
+            if [ "$FAIL" -ne 0 ]; then GRACE=0; fi
+            if ! PR_BODY="$PR_BODY" PROVENANCE_GRACE_SECONDS="$GRACE" node scripts/check-provenance-footer.mjs; then
+              echo "::error::This PR was opened under the shared 'agentiknet' account but carries no agentproto provenance footer (waited ${GRACE}s for one to be stamped)."
+              echo "The author field can't tell us which agent/role opened it without one. Either let agentproto's gh-provenance shim stamp it (provenance.wrapGh), or add a rendered '@agentproto-bot' footer naming the session/role by hand."
+              FAIL=1
+            fi
+          fi
+
           if [ "$FAIL" -ne 0 ]; then
             exit 1
           fi
-          echo "✓ No scratch docs, no AI-attribution trailers."
+          if [ "$PR_AUTHOR" = "agentiknet" ]; then
+            echo "✓ No scratch docs, no AI-attribution trailers, provenance footer present."
+          else
+            echo "✓ No scratch docs, no AI-attribution trailers (provenance check skipped — not the shared 'agentiknet' account)."
+          fi
 
   # On PRs: conformance tests for the auto-merge decision logic
   # (scripts/agentflow/merge-gate.mjs) — no workspace deps, so this runs
@@ -794,9 +867,12 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-review
       cancel-in-progress: false
+    outputs:
+      final_head: ${{ steps.finalhead.outputs.sha }}
     permissions:
       contents: write       # push generated changeset back to the branch
       pull-requests: write  # post review + comments
+      checks: write         # post the supervised stage summary as a check run
       statuses: write       # post explicit commit-status on HEAD after push
       actions: read         # "Wait for Build + test" polls this run's jobs
     steps:
@@ -827,6 +903,10 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
           pnpm: 'true'
+
+      - name: Build git-cas
+        if: steps.prstate.outputs.skip != 'true'
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
 
       # Capture the PR head SHA the reviewer will actually SEE, before
       # anything can move HEAD (the sandboxed reviewer pushes its changeset to
@@ -1048,12 +1128,12 @@ jobs:
         run: |
           # The automatic reviewer runs on OpenCode's hosted free Zen routes.
           # This step only checks the credential needed by that free lane.
-          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+          if [ -n "${{ secrets.OPENCODE_API_KEY_HODL }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
             echo "Using agentproto lane (OpenCode free model)"
           else
             echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "::error::No OpenCode credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_API_KEY) — the reviewer cannot authenticate."
+            echo "::error::No OpenCode credential (OPENCODE_API_KEY_HODL/_WS03/OPENCODE_API_KEY) — the reviewer cannot authenticate."
           fi
 
           # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
@@ -1086,7 +1166,7 @@ jobs:
           # Go-ONLY configuration therefore arms the primary tier and silently
           # disarms this one — which is fine (the Zen fallback would fail
           # anyway), but worth knowing when reading a run's tier ladder.
-          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+          if [ -n "${{ secrets.OPENCODE_API_KEY_HODL }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "has-opencode-fallback=true" >> "$GITHUB_OUTPUT"
           else
             echo "has-opencode-fallback=false" >> "$GITHUB_OUTPUT"
@@ -1103,10 +1183,18 @@ jobs:
           # explicitly-sanctioned paid model through while still failing closed
           # on a model a PR slipped into the config.
           ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Owner-controlled model override (repo VARIABLE): wins over the
+          # config's `reviewerModel` and goes through the same free/metered
+          # guard below, so it cannot route reviews to an unsanctioned paid id.
+          # It reaches the workflow through the lane's `model` input: the
+          # credential ladder writes the rung model into the reviewConfig the
+          # workflow's `model` selector reads, and only keys funding its route
+          # run it (a Go id skips the Zen keys).
+          AGENT_REVIEW_MODEL: ${{ vars.AGENT_REVIEW_MODEL }}
         run: |
           CONFIG="$REVIEW_CONFIG"
           CLI_SOURCE=$(printf '%s' "$CONFIG" | jq -r '.cliSource // "npm"')
-          CLI_VERSION=$(printf '%s' "$CONFIG" | jq -r '.cliVersion // "0.8.0"')
+          CLI_VERSION=$(printf '%s' "$CONFIG" | jq -r '.cliVersion // "latest"')
           # OpenCode's hosted free routes authenticate headlessly with an API
           # key, while the selected model remains zero-priced.
           AUTH_MODE=$(printf '%s' "$CONFIG" | jq -r '.reviewerAuthMode // "subscription"')
@@ -1117,6 +1205,10 @@ jobs:
           # the workflow step's `model` selector and (for opencode-style
           # adapters that route by model id) the provider key env.
           REVIEWER_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
+          if [ -n "${AGENT_REVIEW_MODEL// }" ]; then
+            REVIEWER_MODEL="$AGENT_REVIEW_MODEL"
+            echo "Reviewer model overridden by the AGENT_REVIEW_MODEL repo variable: $REVIEWER_MODEL"
+          fi
           FALLBACK_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerFallbackModels[0] // ""')
           HAS_CLOUD=$(printf '%s' "$CONFIG" | jq -r '(.resolvedAgentAction.presets // []) | index("claude-cloud") != null')
           # Fail closed on a metered route UNLESS it is owner-sanctioned.
@@ -1168,7 +1260,7 @@ jobs:
           ADAPTER: ${{ steps.cliver.outputs.adapter }}
           HAS_OPENCODE_FALLBACK: ${{ steps.mode.outputs.has-opencode-fallback }}
           HAS_CLOUD: ${{ steps.cliver.outputs.has-cloud }}
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
@@ -1247,7 +1339,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           # Home-daemon join token (see AIP-36 `join.tokenEnv`, and
           # sandbox-agent.mjs's gated AGENTPROTO_JOIN passthrough default) —
-          # lets a freshly booted e2b box dial home and register itself as a
+          # lets a freshly booted sandbox box dial home and register itself as a
           # driveable host. Absent on a fork PR (no access to repo secrets),
           # which is a deliberate no-op end to end: sandbox-agent.mjs only
           # adds the passthrough NAME when this env var actually has a value.
@@ -1261,26 +1353,75 @@ jobs:
           # doesn't know the join token's own name ("ci-reviewer"), only the
           # home daemon does — join-token-registry.ts synthesizes
           # "<token name> #<pr>" from these labels when the box doesn't
-          # self-report one. reviewerSandbox.provider is pinned to "e2b" in
-          # .github/agentic-review.json, so that part's a safe literal too.
-          AGENTPROTO_JOIN_PROVIDER: e2b
+          # self-report one. No AGENTPROTO_JOIN_PROVIDER here: reviewerPlacement
+          # is a ladder in the config order (computer, e2b, computer with the
+          # paid fallback model), which AGENT_REVIEW_PLACEMENT can reorder, so
+          # reviewerPlacementFor defaults it to the first rung's provider.
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The paid usage-limit fallback rung (opencode-go/*) needs its own key:
+          # Zen and Go both read OPENCODE_API_KEY, which the api-key input below
+          # fills with ONE of them. reviewerPlacementFor/reviewerTurnRetryFor
+          # read these two from the daemon env, drop the paid id when the key is
+          # absent or the id is not in the owner-only allowlist, and pass the Go
+          # key into the box as OPENCODE_GO_API_KEY (never as OPENCODE_API_KEY).
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Owner-controlled placement preference (repo VARIABLE, e.g. `e2b` or
+          # `e2b,computer`): reorders reviewerPlacement.ladder without a PR.
+          # reviewerPlacementFor reads it; unset = the config order.
+          AGENT_REVIEW_PLACEMENT: ${{ vars.AGENT_REVIEW_PLACEMENT }}
+          # Credential ladder (`credential-ladder` below): every key this lane
+          # may rotate through, each under its own name. run-with-rotation.mjs
+          # removes them all from the daemon env and hands the daemon only the
+          # active rung's key, so a key whose quota or credit is exhausted moves
+          # the review to the next key, then to Go flash on a Go key.
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_WS01: ${{ secrets.OPENCODE_GO_API_KEY_WS01 }}
+          OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
+          # Zen keys fund the lane's free model; Go keys run Go flash (a metered
+          # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
+          # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
+          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          credential-ladder: |
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_DEFAULT opencode
+            OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           # The key authenticates OpenCode. It is selected by the resolved
           # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a
           # Zen key). The resolver step above fails closed unless the model is
           # a zero-priced free id OR an owner-sanctioned metered id.
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
-          api-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
-          # e2b microVM sandbox for the reviewer session (reviewerSandbox in
-          # .github/agentic-review.json) — the daemon-internal spawn failure on
-          # the runner does not reproduce inside a sandbox, whose own daemon
-          # spawns the adapter.
+          # Sandbox for the reviewer session: a placement ladder in the config
+          # order (computer fleet, e2b, computer with the paid fallback model;
+          # reviewerPlacement in .github/agentic-review.json), which the
+          # AGENT_REVIEW_PLACEMENT repo variable can reorder. The
+          # daemon-internal spawn failure on the runner does not reproduce
+          # inside a sandbox, whose own daemon spawns the adapter.
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet legs of the reviewer placement ladder (reviewerPlacement
+          # in .github/agentic-review.json). All five are optional: with no
+          # COMPUTER_FLEET_URL (fork PR, secrets not provisioned) reviewerPlacementFor
+          # drops the computer rungs and the ladder is just the e2b rung. E2B_API_KEY above stays: it funds the
+          # e2b leg (the fallback, and the capped overflow when the fleet is full).
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           # Langfuse session tracing for the reviewer (HOST daemon emits — it
           # owns the proxied sandbox session). All-or-nothing: missing secrets
           # ⇒ tracing silently skipped, never a red review.
@@ -1288,7 +1429,12 @@ jobs:
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
           langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
           langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
-          workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          # ONE supervised run: review -> (changes requested) fix -> re-review,
+          # bounded by maxFixIterations. The `supervisor` input spawns the
+          # parent session the reviewer/fixer nest under. The fallback tiers
+          # below keep the single-shot workflow as a safe fallback.
+          workflow-path: .github/agentproto-workflows/pr-review-supervised/WORKFLOW.md
+          supervisor: 'true'
           cli-source: ${{ steps.cliver.outputs.cli-source }}
           cli-version: ${{ steps.cliver.outputs.cli-version }}
           workflow-input: |
@@ -1480,10 +1626,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           # Same join-token passthrough as the primary attempt above — this
-          # is still an e2b sandbox reviewer run, just billed to the fallback
+          # is still a sandboxed (auto) reviewer run, just billed to the fallback
           # account. See that step's comment for the no-op-on-fork guarantee.
           AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
-          AGENTPROTO_JOIN_PROVIDER: e2b
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
@@ -1496,6 +1641,12 @@ jobs:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           model: ${{ steps.cliver.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet legs of the placement ladder: see the primary lane step.
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
           langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
@@ -1678,16 +1829,47 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
-          AGENTPROTO_JOIN_PROVIDER: e2b
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Credential ladder (`credential-ladder` below): every key this lane
+          # may rotate through, each under its own name. run-with-rotation.mjs
+          # removes them all from the daemon env and hands the daemon only the
+          # active rung's key, so a key whose quota or credit is exhausted moves
+          # the review to the next key, then to Go flash on a Go key.
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_WS01: ${{ secrets.OPENCODE_GO_API_KEY_WS01 }}
+          OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: opencode
           auth-mode: api-key
-          api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          # Zen keys fund the lane's free model; Go keys run Go flash (a metered
+          # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
+          # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
+          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          credential-ladder: |
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_DEFAULT opencode
+            OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+          api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet legs of the placement ladder: see the primary lane step.
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
           langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
@@ -1974,6 +2156,77 @@ jobs:
             echo "- changeset commit: $([ "$build_ok" = "true" ] && echo pushed || echo withheld)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The supervised loop's fixer writes the WORKING TREE only
+      # (`fixDelivery: "commit"` - agents never commit/push). The calling job
+      # owns delivery: once this run's build gate is green (same rule as the
+      # changeset below), commit and push the fixer's edits so the next CI run
+      # reviews the pushed commit. The message deliberately matches the
+      # historical `auto-fix from review` counter, so pr-fix's iteration budget
+      # still sees these commits. Changesets are excluded here and handled by
+      # the dedicated step below.
+      - name: Commit supervised review fixes
+        id: fixes
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.buildwait.outputs.build_ok == 'true' &&
+          steps.reviewer-agentproto.outputs.status == 'done'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          bash scripts/configure-bot-git.sh
+          # Only a run that reached `done` can reach this step (see the `if:`):
+          # a timed-out or crashed fixer can leave PARTIAL edits in the tree, and
+          # those must never be committed and pushed as a fix.
+          git add -A -- . ':(exclude).changeset/**'
+          if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "cas_outcome=noop" >> "$GITHUB_OUTPUT"
+            echo "No supervised fixes to commit."
+            exit 0
+          fi
+          ITER=$(git log --oneline --grep="auto-fix from review" \
+            "origin/${{ github.base_ref }}..HEAD" | wc -l | tr -d ' ')
+          NEXT=$((ITER + 1))
+          git -c user.name="agentproto-bot" \
+              -c user.email="agentproto-bot@users.noreply.github.com" \
+              commit -m "chore: auto-fix from review (iter $NEXT)"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          node scripts/agentflow/bot-push.mjs push \
+            --branch "$HEAD_REF" \
+            --expect "${{ steps.headsha.outputs.sha }}" \
+            --pr "$PR_NUMBER" \
+            --step "the supervised fix" \
+            --patch-dir .agentflow-park
+
+      - name: Upload parked supervised fix
+        if: steps.fixes.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        id: parkfixes
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.fixes.outputs.cas_artifact_name }}
+          path: ${{ steps.fixes.outputs.cas_patch_path }}
+          retention-days: 7
+
+      - name: Comment parked supervised fix
+        if: steps.fixes.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node scripts/agentflow/bot-push.mjs comment \
+            --meta "${{ steps.fixes.outputs.cas_park_meta }}" \
+            --artifact-url "${{ steps.parkfixes.outputs.artifact-url }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER"
+
       - name: Commit changeset (if written by reviewer)
         # Only push the changeset once THIS run's build is success or
         # skipped (buildwait.build_ok) — a red build must not get a
@@ -1981,7 +2234,8 @@ jobs:
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
-          steps.buildwait.outputs.build_ok == 'true'
+          steps.buildwait.outputs.build_ok == 'true' &&
+          steps.fixes.outputs.cas_outcome != 'head_moved'
         id: changeset
         # The sandboxed reviewer never pushes (it hands its changeset over as a
         # PR comment, materialized below). This step's own outcome is still
@@ -1993,6 +2247,7 @@ jobs:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           # Attribute the commit to the App bot (mentionable identity) when an
           # App token was minted; fall back to github-actions[bot] otherwise.
@@ -2010,25 +2265,21 @@ jobs:
           # pushes: moving the PR head mid-turn raced the dedupe gates above and
           # produced duplicate reviews (PR #1137, #1241, #1576). This step runs
           # AFTER every gate, so landing the file here is race-free. Never
-          # overwrites a changeset already on the branch.
+          # overwrites a changeset already on the branch, and adds nothing when
+          # the branch already adds changesets declaring every proposed package
+          # (#2448).
           gh api --paginate "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
             | jq -rs 'add | [.[] | select(.user.type=="Bot" and (.body // "" | test("<!-- agentic-changeset:")))] | sort_by(.created_at) | last | .body // empty' \
             > changeset-comment.txt || true
           if [ -s changeset-comment.txt ]; then
-            node -e '
-              const fs = require("fs")
-              const body = fs.readFileSync("changeset-comment.txt", "utf8")
-              const m = body.match(/<!-- agentic-changeset:(\.changeset\/[A-Za-z0-9._-]+\.md) -->[\s\S]*?```md\n([\s\S]*?)```/)
-              if (!m) { console.log("agentic-changeset: marker found but no fenced block — ignoring"); process.exit(0) }
-              if (fs.existsSync(m[1])) { console.log("agentic-changeset: " + m[1] + " already on the branch — keeping it"); process.exit(0) }
-              fs.writeFileSync(m[1], m[2]); console.log("agentic-changeset: materialized " + m[1] + " from the reviewer comment")
-            '
+            node scripts/materialize-agentic-changeset.mjs changeset-comment.txt origin/main || true
           fi
           rm -f changeset-comment.txt
           node scripts/check-changesets.mjs --fix || true
           git add '.changeset/*.md'
           if git diff --cached --quiet; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "cas_outcome=noop" >> "$GITHUB_OUTPUT"
             echo "No changeset changes to commit."
           else
             # Explicit statuses below already cover "Agentic review" and
@@ -2048,9 +2299,95 @@ jobs:
             git -c user.name="agentproto-bot" \
                 -c user.email="agentproto-bot@users.noreply.github.com" \
                 commit -m "chore: agentic reviewer — changeset"
-            git push
             echo "committed=true" >> "$GITHUB_OUTPUT"
+            EXPECTED="${{ steps.fixes.outputs.cas_to }}"
+            if [ "${{ steps.fixes.outputs.cas_outcome }}" != "pushed" ] || [ -z "$EXPECTED" ]; then
+              EXPECTED="${{ steps.headsha.outputs.sha }}"
+            fi
+            node scripts/agentflow/bot-push.mjs push \
+              --branch "$HEAD_REF" \
+              --expect "$EXPECTED" \
+              --pr "$PR_NUMBER" \
+              --step "the changeset" \
+              --patch-dir .agentflow-park
           fi
+
+      - name: Upload parked changeset
+        if: steps.changeset.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        id: parkchangeset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.changeset.outputs.cas_artifact_name }}
+          path: ${{ steps.changeset.outputs.cas_patch_path }}
+          retention-days: 7
+
+      - name: Comment parked changeset
+        if: steps.changeset.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node scripts/agentflow/bot-push.mjs comment \
+            --meta "${{ steps.changeset.outputs.cas_park_meta }}" \
+            --artifact-url "${{ steps.parkchangeset.outputs.artifact-url }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER"
+
+      - name: Resolve final head
+        id: finalhead
+        if: steps.prstate.outputs.skip != 'true'
+        run: |
+          SHA="${{ steps.headsha.outputs.sha }}"
+          if [ "${{ steps.fixes.outputs.cas_outcome }}" = "pushed" ] && [ -n "${{ steps.fixes.outputs.cas_to }}" ]; then
+            SHA="${{ steps.fixes.outputs.cas_to }}"
+          fi
+          if [ "${{ steps.changeset.outputs.cas_outcome }}" = "pushed" ] && [ -n "${{ steps.changeset.outputs.cas_to }}" ]; then
+            SHA="${{ steps.changeset.outputs.cas_to }}"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "final_head=$SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      # The supervised run's stages must be VISIBLE: a check run with a real
+      # title + summary listing every review/fix step and its verdict (the
+      # driver also appends the same markdown to this job's step summary).
+      # Informational only - the merge gate is still the "Agentic review"
+      # commit status below, so a failure to post this never reds the review.
+      - name: Post supervised review summary check run
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.reviewer-agentproto.outputs.status == 'done'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SUMMARY_TITLE: ${{ steps.reviewer-agentproto.outputs.summary-title }}
+          SUMMARY: ${{ steps.reviewer-agentproto.outputs.summary }}
+          VERDICT: ${{ steps.reviewer-agentproto.outputs.summary-verdict }}
+        run: |
+          # Target final_head: the reviewed commit plus only this job's own
+          # successful CAS pushes. A live-head read could be the mover's
+          # unreviewed commit, and a local read could be an unpushed commit.
+          SHA="${{ steps.finalhead.outputs.sha }}"
+          [ -n "$SHA" ] || SHA="${{ steps.headsha.outputs.sha }}"
+          case "$VERDICT" in
+            approved) CONCLUSION=success ;;
+            changes_requested|failed) CONCLUSION=failure ;;
+            *) CONCLUSION=neutral ;;
+          esac
+          TITLE=${SUMMARY_TITLE:-"Agentic review: $VERDICT"}
+          gh api "repos/${{ github.repository }}/check-runs" \
+            -f name="Agentic review (supervised)" \
+            -f head_sha="$SHA" \
+            -f status=completed \
+            -f conclusion="$CONCLUSION" \
+            -f "output[title]=$TITLE" \
+            -f "output[summary]=$SUMMARY" \
+            > /dev/null
+          echo "Posted 'Agentic review (supervised)' = $CONCLUSION ($TITLE)"
 
       # Sweep the reviewer's per-PR scratch branch. The sandbox bootstrap fetches
       # the PR head into a LOCAL branch named `pr-<N>`
@@ -2104,7 +2441,11 @@ jobs:
           # The commit the reviewer actually reviewed (captured before this
           # job's own "Commit changeset" step could move the branch head).
           REVIEWED_SHA: ${{ steps.headsha.outputs.sha }}
+          FINAL_HEAD: ${{ steps.finalhead.outputs.sha }}
           CHANGESET_COMMITTED: ${{ steps.changeset.outputs.committed }}
+          FIXES_COMMITTED: ${{ steps.fixes.outputs.committed }}
+          CHANGESET_CAS_OUTCOME: ${{ steps.changeset.outputs.cas_outcome }}
+          FIXES_CAS_OUTCOME: ${{ steps.fixes.outputs.cas_outcome }}
         run: |
           # Re-resolve the head LIVE, same reasoning as the postcheck steps
           # above — a review's commit_id is stamped against the PR's head at
@@ -2140,26 +2481,71 @@ jobs:
           fi
           echo "Reviews posted against live head $SHA: $COUNT"
           REVIEWED="$SHA"
+          EXTERNAL_MOVE=false
+          if [ "$FIXES_CAS_OUTCOME" = "head_moved" ] || [ "$CHANGESET_CAS_OUTCOME" = "head_moved" ]; then
+            EXTERNAL_MOVE=true
+          fi
+          if [ -n "$FINAL_HEAD" ] && [ "$SHA" != "$FINAL_HEAD" ]; then
+            EXTERNAL_MOVE=true
+          fi
           if ! [ "${COUNT:-0}" -gt 0 ] 2>/dev/null \
-            && [ "$CHANGESET_COMMITTED" = "true" ] \
+            && { [ "$CHANGESET_COMMITTED" = "true" ] || [ "$FIXES_COMMITTED" = "true" ]; } \
             && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$SHA" ]; then
-            # This job pushed the reviewer's changeset commit AFTER the review
-            # was posted (PR #1105: review at :12, changeset commit at :25), so
-            # the live head moved past the commit the reviewer saw. The review
-            # legitimately sits on that reviewed commit — count it there. The
-            # next run's bypass step applies the same parent-commit rule.
+            # This job pushed a commit AFTER the review was posted (PR #1105: a
+            # changeset at :12, its commit at :25), so the live head moved past
+            # the commit the reviewer saw. THE SAME applies to the supervised
+            # loop's fix commit: the re-review judged the fixer's working tree,
+            # which this job then committed - the verdict sits on the reviewed
+            # commit, so count it there. The next run's bypass step applies the
+            # same parent-commit rule.
             COUNT=$(count_reviews "$REVIEWED_SHA" || echo "")
             echo "Head moved by this job's changeset commit — reviews posted against the reviewed commit $REVIEWED_SHA: ${COUNT:-?}"
             REVIEWED="$REVIEWED_SHA"
           fi
+          if ! [ "${COUNT:-0}" -gt 0 ] 2>/dev/null \
+            && [ "$EXTERNAL_MOVE" = "true" ] \
+            && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$REVIEWED" ]; then
+            COUNT=$(count_reviews "$REVIEWED_SHA" || echo "")
+            echo "Head moved outside this job - reviews posted against the reviewed commit $REVIEWED_SHA: ${COUNT:-?}"
+            REVIEWED="$REVIEWED_SHA"
+          fi
+          echo "external_move=$EXTERNAL_MOVE" >> "$GITHUB_OUTPUT"
           if [ "${COUNT:-0}" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
             echo "reviewed_sha=$REVIEWED" >> "$GITHUB_OUTPUT"
+          elif [ "$EXTERNAL_MOVE" = "true" ]; then
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Head moved outside this job and no review row was found on the reviewed commit. The mover's own run owns verification; the gate goes neutral, not red."
+            exit 0
           else
             echo "posted=false" >> "$GITHUB_OUTPUT"
             echo "::error::No review found for the reviewed commit $SHA — the reviewer reported success but nothing landed on the PR."
             exit 1
           fi
+
+      # Deterministic review-state guard for the HOST delivery path: a reviewer
+      # that STATES approve/request_changes in its structured verdict but posts
+      # the review as COMMENTED leaves the PR REVIEW_REQUIRED - GitHub does not
+      # count COMMENTED (PR #2616, run 42326443318). The prompts now pick the
+      # `gh pr review` flag deterministically; this is the belt-and-suspenders
+      # for a model that ignores them. The decision is pure and tested in
+      # lib/reconcile-review-state.mjs; this step only calls it.
+      - name: Reconcile review event with structured verdict
+        id: reconcile
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.verify.outputs.posted == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ steps.verify.outputs.reviewed_sha }}
+          VERDICT_PRIMARY: ${{ steps.reviewer-agentproto.outputs.summary-verdict }}
+          VERDICT_FALLBACK: ${{ steps.reviewer-agentproto-fallback.outputs.summary-verdict }}
+          VERDICT_OPENCODE: ${{ steps.reviewer-agentproto-opencode.outputs.summary-verdict }}
+        run: node .github/agentproto-workflows/lib/reconcile-review-state.mjs
 
       # Stamp a DETERMINISTIC @agentproto-bot provenance footer (session id +
       # label, supervisor/parent session, adapter+auth, sandbox, cost/tokens,
@@ -2242,17 +2628,22 @@ jobs:
           #   CHANGES_REQUESTED + blocking → failure
           #   else                → success
           if [ "$BYPASS" = "true" ]; then
-            echo "state=success" >> "$GITHUB_OUTPUT"
+            state=success
           elif [ "$REVIEWER_OUTCOME" != "success" ]; then
             echo "::error::Agentic reviewer did not post a review (outcome=$REVIEWER_OUTCOME)."
-            echo "state=failure" >> "$GITHUB_OUTPUT"
+            state=failure
           elif [ "$VERIFY_POSTED" != "true" ]; then
-            echo "::error::Reviewer reported success but no review exists for the reviewed SHA (verify.posted=$VERIFY_POSTED) — refusing a false green."
-            echo "state=failure" >> "$GITHUB_OUTPUT"
+            if [ "$VERIFY_MOVED" = "true" ]; then
+              state=neutral
+              echo "::warning::Reviewer verification was deferred: the head moved outside this job. The mover's run owns the review of the new head."
+            else
+              echo "::error::Reviewer reported success but no review exists for the reviewed SHA (verify.posted=$VERIFY_POSTED) - refusing a false green."
+              state=failure
+            fi
           elif [ "$BLOCKING" = "true" ] && [ "$DECISION" = "CHANGES_REQUESTED" ]; then
-            echo "state=failure" >> "$GITHUB_OUTPUT"
+            state=failure
           else
-            echo "state=success" >> "$GITHUB_OUTPUT"
+            state=success
           fi
 
           # A red build must not green-light a merge. The review's opinion
@@ -2266,7 +2657,24 @@ jobs:
           # itself failed stays failure: neutral is reserved for the
           # build-broke-it case, never a CHANGES_REQUESTED review.
           if [ "$BUILD_OK" = "false" ] && [ "$state" = "success" ]; then
-            echo "state=neutral" >> "$GITHUB_OUTPUT"
+            state=neutral
+          fi
+
+          # A CAS push outcome must be visible in the gate. rejected_other is a
+          # real failure; head_moved means the work was parked and the mover's
+          # push owns the next review, so it neutralizes a green gate only.
+          CAS_ACTUAL=""
+          if [ "$FIXES_CAS_OUTCOME" = "rejected_other" ] || [ "$CHANGESET_CAS_OUTCOME" = "rejected_other" ]; then
+            state=failure
+          elif [ "$FIXES_CAS_OUTCOME" = "head_moved" ] || [ "$CHANGESET_CAS_OUTCOME" = "head_moved" ]; then
+            CAS_ACTUAL="${FIXES_CAS_ACTUAL:-$CHANGESET_CAS_ACTUAL}"
+            if [ "$state" = "success" ]; then
+              state=neutral
+            fi
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          if [ -n "$CAS_ACTUAL" ]; then
+            echo "superseded=${CAS_ACTUAL:0:7}" >> "$GITHUB_OUTPUT"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2274,13 +2682,23 @@ jobs:
           BYPASS: ${{ steps.bypass.outputs.skip }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
           VERIFY_POSTED: ${{ steps.verify.outputs.posted }}
+          VERIFY_MOVED: ${{ steps.verify.outputs.external_move }}
           BUILD_OK: ${{ steps.buildwait.outputs.build_ok }}
+          FIXES_CAS_OUTCOME: ${{ steps.fixes.outputs.cas_outcome }}
+          FIXES_CAS_ACTUAL: ${{ steps.fixes.outputs.cas_actual }}
+          CHANGESET_CAS_OUTCOME: ${{ steps.changeset.outputs.cas_outcome }}
+          CHANGESET_CAS_ACTUAL: ${{ steps.changeset.outputs.cas_actual }}
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'
         run: |
-          SHA=$(git rev-parse HEAD)
+          SHA="${{ steps.finalhead.outputs.sha }}"
+          [ -n "$SHA" ] || SHA="${{ steps.headsha.outputs.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          DESCRIPTION="decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}"
+          if [ -n "${{ steps.gate.outputs.superseded }}" ]; then
+            DESCRIPTION="superseded by ${{ steps.gate.outputs.superseded }}"
+          fi
           # A transient GitHub 5xx on either POST used to fail the step outright,
           # which reds an already-APPROVED review and — worse — leaves the PR
           # half-statused (first context posted, second never), so the merge gate
@@ -2308,7 +2726,7 @@ jobs:
           rc=0
           post_status "Agentic review" \
             "${{ steps.gate.outputs.state }}" \
-            "decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}" || rc=1
+            "$DESCRIPTION" || rc=1
           # Mirror "Changeset present?" so the merge gate stays green after a
           # [skip ci] changeset commit (which suppresses the changeset-check job).
           post_status "Changeset present?" "success" "written by agentic reviewer" || rc=1
@@ -2342,6 +2760,9 @@ jobs:
       always() &&
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-fix
+      cancel-in-progress: false
     permissions:
       contents: write        # commit + push fixes back to the branch
       pull-requests: write   # post escalation comment when loop is exhausted
@@ -2367,6 +2788,33 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
           pnpm: 'true'
+
+      - name: Build git-cas
+        if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
+
+      - name: Pre-check reviewed head
+        id: precheck
+        if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        env:
+          EXPECTED: ${{ needs.pr-review.outputs.final_head }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -z "$EXPECTED" ]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::pr-review produced no final_head (it was skipped); pr-fix does no work."
+            exit 0
+          fi
+          ACTUAL=$(git ls-remote origin "refs/heads/$HEAD_REF" | cut -f1)
+          echo "actual=$ACTUAL" >> "$GITHUB_OUTPUT"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::head moved before the fix (expected $EXPECTED, found $ACTUAL); no fixer turn."
+            exit 0
+          fi
+          echo "moved=false" >> "$GITHUB_OUTPUT"
+          git fetch origin "$EXPECTED"
+          git checkout --detach "$EXPECTED"
 
       # Bound the loop exactly as scripts/apply-review.mjs used to: count the
       # auto-fix commits already on the branch and, at the budget, escalate to
@@ -2402,9 +2850,10 @@ jobs:
         id: fixcfg
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         env:
-          KEY_ZEN: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          KEY_ZEN: ${{ secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
         run: |
           MODEL=$(jq -r '.commands.fix.reviewerModel // .reviewerModel // "opencode/deepseek-v4.1-flash-free"' .github/agentic-review.json)
           echo "model=$MODEL" >> "$GITHUB_OUTPUT"
@@ -2415,7 +2864,7 @@ jobs:
             exit 1
           fi
           if [ -z "$KEY_ZEN" ]; then
-            echo "::error::No OpenCode Zen credential (OPENCODE_API_KEY_WS02/_WS03/OPENCODE_API_KEY) - the auto-fix cannot authenticate."
+            echo "::error::No OpenCode Zen credential (OPENCODE_API_KEY_HODL/_WS03/OPENCODE_API_KEY) - the auto-fix cannot authenticate."
             exit 1
           fi
           echo "Auto-fix model: $MODEL"
@@ -2423,9 +2872,10 @@ jobs:
       - name: Build the agentproto CLI + OpenCode adapter for the fixer
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         env:
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
@@ -2437,24 +2887,34 @@ jobs:
         id: fixer-lane
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         uses: ./.github/actions/agentproto-run
         env:
           # The daemon spawns the adapter with this env inherited, so the host
           # session's gh CLI can read the PR and its reviews.
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           GH_TOKEN: ${{ steps.setup.outputs.token }}
+          # Zen-only credential ladder: a key whose quota or credit is
+          # exhausted moves the fixer to the next Zen key. No Go rung: the
+          # fixer never uses a Go subscription key.
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
         with:
           adapter: opencode
           auth-mode: api-key
+          credential-ladder: |
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_DEFAULT opencode
           # Free Zen key. The fixer never uses a Go subscription key.
-          api-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.fixcfg.outputs.model }}
           workflow-path: .github/agentproto-workflows/review-fix/WORKFLOW.md
           cli-source: workspace
-          cli-version: 0.8.0
           workflow-input: |
             {
               "prNumber": ${{ github.event.pull_request.number }},
@@ -2464,12 +2924,17 @@ jobs:
           timeout-minutes: 45
 
       - name: Commit and push fixes
+        id: fixpush
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          EXPECTED: ${{ needs.pr-review.outputs.final_head }}
         run: |
           bash scripts/configure-bot-git.sh
           git add -A
@@ -2480,8 +2945,37 @@ jobs:
               | wc -l | tr -d ' ')
             NEXT=$((ITER + 1))
             git commit -m "chore: auto-fix from review (iter $NEXT)"
-            git push
+            node scripts/agentflow/bot-push.mjs push \
+              --branch "$HEAD_REF" \
+              --expect "$EXPECTED" \
+              --pr "$PR_NUMBER" \
+              --step "the auto-fix" \
+              --patch-dir .agentflow-park
           fi
+
+      - name: Upload parked auto-fix
+        if: steps.fixpush.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        id: parkfix
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.fixpush.outputs.cas_artifact_name }}
+          path: ${{ steps.fixpush.outputs.cas_patch_path }}
+          retention-days: 7
+
+      - name: Comment parked auto-fix
+        if: steps.fixpush.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node scripts/agentflow/bot-push.mjs comment \
+            --meta "${{ steps.fixpush.outputs.cas_park_meta }}" \
+            --artifact-url "${{ steps.parkfix.outputs.artifact-url }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER"
 
   # On PRs: once the agentic review APPROVES, optionally enable GitHub-native
   # auto-merge so the PR merges itself when all required checks pass. This is the

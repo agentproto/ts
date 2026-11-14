@@ -13,7 +13,7 @@ describe("definePolicy (AIP-7)", () => {
     })
     expect(policy.slug).toBe("invoice-cap-500eur")
     expect(policy.name).toBe("Invoice cap 500 EUR")
-    expect(policy.schema).toBe("agentgovernance/v1")
+    expect(policy.schema).toBe("governance/v1")
     expect(policy.doctype).toBe("policy")
     expect(policy.threshold).toBe("single")
     expect(policy.appliesTo).toEqual([])

@@ -21,6 +21,7 @@ import {
   type CredentialStore,
 } from "@agentproto/auth"
 import { autoCredentialRefOf, buildSandboxSecretResolver } from "./sandbox-secret-resolver.js"
+import { AccountSlotError, isSlotRef, resolveProfileRef, type AccountSlots } from "./account-slots.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 
 export const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]*$/
@@ -33,6 +34,8 @@ export interface EnvProfilesDeps {
     profile: AuthProfile,
     ctx: { credential?: string },
   ) => Promise<ResolvedProfileSubaccount | undefined>
+  /** Account slot map for a `slot:<name>` profile id. Defaults to config.json. */
+  loadAccountSlots?: () => Promise<AccountSlots>
 }
 
 export type ResolveEnvProfilesResult =
@@ -87,7 +90,23 @@ export async function resolveEnvProfiles(
     message,
   })
 
-  for (const [name, profileId] of Object.entries(envProfiles)) {
+  for (const [name, requestedProfileId] of Object.entries(envProfiles)) {
+    // An account slot (`slot:<name>`) resolves to the real profile through the
+    // one shared resolver; an unknown or disabled slot fails the whole call.
+    let profileId = requestedProfileId
+    if (isSlotRef(requestedProfileId)) {
+      try {
+        profileId = (
+          await resolveProfileRef(requestedProfileId, {
+            getAuthProfile: getProfile,
+            ...(deps.loadAccountSlots ? { loadAccountSlots: deps.loadAccountSlots } : {}),
+          })
+        ).profileRef
+      } catch (err) {
+        if (err instanceof AccountSlotError) return fail(`envProfiles: "${name}": ${err.message}`)
+        throw err
+      }
+    }
     let profile: AuthProfile | undefined
     try {
       profile = await getProfile(profileId)

@@ -18,7 +18,7 @@ import { registerUiResource } from "@agentproto/mcp-server"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "../approvals/engine.js"
 import { registerApprovalTools } from "../approvals/tools.js"
-import { registerApprovalCardDecideTool } from "../approvals/card-tool.js"
+import { registerApprovalCardDecideTool, registerApprovalCardListTool } from "../approvals/card-tool.js"
 import { approvalCardResourceUri, renderApprovalCardHtml } from "../approvals/card.js"
 
 let home: string
@@ -48,11 +48,12 @@ async function connectClient(callerSessionId?: string): Promise<Client> {
   const server = new McpServer({ name: "approvals-mcp-test", version: "0.0.0" })
   registerApprovalTools(server, { engine, ...(callerSessionId ? { callerSessionId } : {}) })
   registerApprovalCardDecideTool(server, engine)
+  registerApprovalCardListTool(server, engine)
   for (const pending of engine.list({ status: "pending" })) {
     registerUiResource(server, {
       name: `approval-${pending.id}`,
       uri: approvalCardResourceUri(pending.id),
-      html: () => renderApprovalCardHtml(engine, pending.id),
+      html: () => renderApprovalCardHtml(pending.id),
     })
   }
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -149,6 +150,14 @@ describe("Approvals MCP: model-visible tools", () => {
 })
 
 describe("Approvals MCP: nothing model-visible can decide", () => {
+  it("approval_card_list's definition carries _meta.ui.visibility: ['app']", async () => {
+    client = await connectClient()
+    const { tools } = await client.listTools()
+    const cardList = tools.find(t => t.name === "approval_card_list")
+    expect(cardList).toBeDefined()
+    expect((cardList?._meta as { ui?: { visibility?: string[] } } | undefined)?.ui?.visibility).toEqual(["app"])
+  })
+
   it("approval_card_decide's definition carries _meta.ui.visibility: ['app']", async () => {
     client = await connectClient()
     const { tools } = await client.listTools()
@@ -172,6 +181,7 @@ describe("Approvals MCP: nothing model-visible can decide", () => {
     expect(modelVisibleNames).toContain("approval_wait")
     expect(modelVisibleNames).toContain("approval_consume")
     expect(modelVisibleNames).not.toContain("approval_card_decide")
+    expect(modelVisibleNames).not.toContain("approval_card_list")
   })
 })
 
@@ -198,10 +208,15 @@ describe("Approvals MCP: ui_card channel via a real resources/read", () => {
     if (!content || !("text" in content)) throw new Error("resource read returned no text content")
     const html = content.text
     expect(html).toContain("Approve")
-    expect(html).toContain("Deny")
-    const ticketMatch = html.match(/var TICKET = "([^"]+)"/)
-    expect(ticketMatch).toBeTruthy()
-    const ticket = ticketMatch![1]!
+    expect(html).toContain("Refuse")
+    expect(html).not.toContain("var TICKET")
+
+    // The page gets its ticket from the app-only list tool, after the handshake.
+    const listed = (await client.callTool({ name: "approval_card_list", arguments: { approvalId: id } })) as {
+      structuredContent?: { approvals: Array<{ id: string; ticket?: string }> }
+    }
+    const ticket = listed.structuredContent?.approvals.find(a => a.id === id)?.ticket
+    expect(ticket).toBeTruthy()
 
     const decided = parse(
       await client.callTool({ name: "approval_card_decide", arguments: { approvalId: id, decision: "approve", ticket } }),
@@ -259,5 +274,34 @@ describe("Approvals MCP: the ticket never appears in a model-visible result", ()
     for (const blob of [JSON.stringify(requested), JSON.stringify(got), JSON.stringify(waitResult), JSON.stringify(consumed)]) {
       expect(blob).not.toContain(ticket)
     }
+  })
+})
+
+describe("Approvals MCP: reach on approval_request", () => {
+  const base = { kind: "send", title: "Send", preview: {}, payload: { x: 1 } }
+
+  it("refuses urgency now: a model-callable parameter never sets it", async () => {
+    client = await connectClient("sess_model")
+    const result = (await client.callTool({ name: "approval_request", arguments: { ...base, reach: { urgency: "now" } } })) as {
+      isError?: boolean
+      content?: Array<{ text?: string }>
+    }
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toMatch(/Invalid input at reach/)
+    expect(engine.list()).toHaveLength(0)
+  })
+
+  it("stores reach: false and urgency normal or digest", async () => {
+    client = await connectClient("sess_model")
+    for (const reach of [false, { urgency: "normal" }, { urgency: "digest" }]) {
+      const created = parse(await client.callTool({ name: "approval_request", arguments: { ...base, reach } }))
+      expect(engine.get(String(created.id))?.reach).toEqual(reach)
+    }
+  })
+
+  it("leaves reach off the record when the request does not say", async () => {
+    client = await connectClient()
+    const created = parse(await client.callTool({ name: "approval_request", arguments: base }))
+    expect(engine.get(String(created.id))).not.toHaveProperty("reach")
   })
 })

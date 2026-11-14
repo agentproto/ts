@@ -4,11 +4,15 @@
  *
  * Three tools, mirroring the CLI verbs:
  *
- *   pair_offer   — mint a one-time offer + start dialing the rendezvous; returns
- *                  the `agentproto://pair?…` URL, fingerprint, and expiry.
- *   pair_list    — list persisted pairings (name, fingerprint, lastSeen).
- *   pair_revoke  — drop a pairing by fingerprint or name; stops its rendezvous
- *                  connections so it can no longer reconnect.
+ *   pair_offer    : mint a one-time offer + start dialing the rendezvous;
+ *                   returns the `agentproto://pair?…` URL, fingerprint, expiry.
+ *   pair_list     : list persisted pairings (name, fingerprint, lastSeen).
+ *   pair_pending  : list pairings whose handshake succeeded but which are
+ *                   waiting for the operator's confirmation.
+ *   pair_confirm  : promote a pending pairing into pairings.json.
+ *   pair_decline  : drop a pending pairing.
+ *   pair_revoke   : drop a pairing by fingerprint or name; stops its rendezvous
+ *                   connections so it can no longer reconnect.
  *
  * Registered beside `remote_*` (remote-tools.ts) — same closure-rebind pattern;
  * the registry singleton lives on the gateway.
@@ -110,6 +114,66 @@ export function registerPairingTools(
           ...(p.scope ? { scope: p.scope } : {}),
         })),
       })
+    },
+  )
+
+  server.tool(
+    "pair_pending",
+    "List pairings waiting for operator confirmation: a client completed the " +
+      "handshake, but nothing is persisted and it can drive nothing until you " +
+      "confirm it. Each row carries the short code shown on the client's screen; " +
+      "compare it before confirming. Confirm with the short code or the full " +
+      "fingerprint, never the client-supplied name.",
+    {},
+    async () => {
+      const pending = await registry.listPending()
+      return text({ pending })
+    },
+  )
+
+  server.tool(
+    "pair_confirm",
+    "Promote a pending pairing into pairings.json and start serving it. Pass " +
+      "the short code or the full fingerprint from `pair_pending`. The " +
+      "client-supplied name is never accepted. Confirm only when the short " +
+      "code matches the one on the client's screen; an ambiguous code promotes " +
+      "nothing.",
+    {
+      target: z
+        .string()
+        .describe(
+          "The pending pairing's short code or full fingerprint (see pair_pending). Never the client name.",
+        ),
+    },
+    async ({ target }) => {
+      const result = await registry.confirmPending(target)
+      return text(
+        result.ok
+          ? { ok: true, confirmed: target }
+          : { ok: false, reason: result.reason, message: result.message },
+      )
+    },
+  )
+
+  server.tool(
+    "pair_decline",
+    "Drop a pending pairing without persisting it. Pass the short code or the " +
+      "full fingerprint from `pair_pending`. The client-supplied name is never " +
+      "accepted. An ambiguous code drops nothing.",
+    {
+      target: z
+        .string()
+        .describe(
+          "The pending pairing's short code or full fingerprint (see pair_pending). Never the client name.",
+        ),
+    },
+    async ({ target }) => {
+      const result = await registry.declinePending(target)
+      return text(
+        result.ok
+          ? { ok: true, declined: target }
+          : { ok: false, reason: result.reason, message: result.message },
+      )
     },
   )
 

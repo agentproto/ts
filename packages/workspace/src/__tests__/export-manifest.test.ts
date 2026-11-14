@@ -7,7 +7,7 @@ describe("EXPORT.md round-trip", () => {
       { schema: "workspace-export/v1", from: "@jeremy/perso", generated_at: "2026-10-17T07:00:00Z", generated_by: "coach" },
       "## Santé\n\nRien à signaler.\n",
     )
-    expect(md).toContain("schema: workspace-export/v1")
+    expect(md).toContain("schema: workspace.export/v1")
     const parsed = parseExportManifest(md)
     expect(parsed.frontmatter.from).toBe("@jeremy/perso")
     expect(parsed.frontmatter.generated_by).toBe("coach")
@@ -42,9 +42,9 @@ describe("EXPORT.md round-trip", () => {
     expect(parseExportManifest(md).frontmatter.schema).toBe("workspace-export/v1")
   })
 
-  it("keeps writing the legacy tag even when handed the canonical one", () => {
-    const md = writeExportManifest({ schema: "workspace.export/v1", from: "@a/b", generated_at: "2026-10-17T07:00:00Z" }, "")
-    expect(md).toContain("schema: workspace-export/v1")
+  it("writes the canonical tag even when handed the legacy one", () => {
+    const md = writeExportManifest({ schema: "workspace-export/v1", from: "@a/b", generated_at: "2026-10-17T07:00:00Z" }, "")
+    expect(md).toContain("schema: workspace.export/v1")
   })
 
   it("parseExportManifest rejects a wrong schema literal", () => {

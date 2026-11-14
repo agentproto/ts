@@ -14,7 +14,7 @@
  */
 
 import { join } from "node:path"
-import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle } from "@agentproto/harness"
 import { catalogByType } from "../../registry/catalog.js"
 import { interpretVersionCheck } from "../../commands/install.js"
 import { fetchHealth } from "../../commands/daemon.js"

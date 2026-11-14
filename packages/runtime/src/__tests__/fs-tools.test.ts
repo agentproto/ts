@@ -9,6 +9,7 @@
  * Runs fully in-process — no daemon needed.
  */
 
+import { HOST_CALLER } from "../caller-scope.js"
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -31,7 +32,7 @@ afterEach(() => {
 
 async function makeSetup() {
   const server = new McpServer({ name: "test-fs", version: "0.0.1" })
-  registerFsTools(server, { workspace: tmp })
+  registerFsTools(server, { workspace: tmp, callerScope: HOST_CALLER })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)

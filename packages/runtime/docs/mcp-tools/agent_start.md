@@ -9,16 +9,19 @@ This doc holds the field-level detail cut from the tool's schema to keep
 `Details: tool_help {name:"agent_start", topic:"worktree"}` — pass that
 `topic` to get just one section, or omit it for the whole doc.
 
-## adapter
-
-Adapter slug — one of the installed `@agentproto/adapter-*` packages (e.g.
-'claude-code', 'hermes', 'aider'). Omit only when `presetId` names a saved
-preset with an adapter.
-
 ## harness
 
-Canonical harness slug — alias for `adapter`. Accepts the same values; use
-whichever field your caller produces.
+Harness slug: one of the installed harnesses (`harness_list`; packages
+`@agentproto/adapter-*`, e.g. 'claude-code', 'hermes', 'aider'). Omit only
+when `presetId` names a saved preset with a harness. Resolution order:
+`harness ?? adapter ?? preset.harness ?? preset.adapter`.
+
+## adapter
+
+Deprecated alias of `harness`: same values, and `harness` wins when both are
+set. Using it adds a warning to the result's `warnings` (and a
+`session:harness-warning` event): "`adapter` is deprecated and will be
+removed in the next major of @agentproto/runtime; use `harness`".
 
 ## presetId
 
@@ -88,6 +91,24 @@ agent-to-agent `agent_start`). The child's `depth` is derived from the
 parent (parent depth + 1); you don't set it. Ignored when this call arrives
 through the scoped orchestrator gateway — that path derives the parent from
 its own token, which always wins over this hint.
+
+## parent
+
+Declared parent for a caller the daemon cannot identify. Claude Code connects
+to a static MCP URL, so its tool calls carry no caller identity (identity is
+per connection: `?callerSessionId=` or the `x-agentproto-caller-session-id`
+header) and a spawn would land as a parentless root. Pass your own address,
+`cc:<session_id>` (or a live session id), and the child nests under it, so its
+`message_parent` is delivered to that row. Declared, not proven: same trust as
+a `replyTo` address, descriptor-only lineage. Refused when the call already
+carries an identity (it attaches under that identity automatically), with one
+exception: the shared, unverified `claude-desktop` identity that every Claude
+Desktop MCP entry carries (`?callerSessionId=claude-desktop`) may declare its own
+`cc:<session_id>` (the `session_id` of its hook payload; `cc:<id>` form only),
+because that shared row has no hook inbox or socket wake. The child's
+`message_parent` and follow digests then reach the declared row. With
+`mcp.noCallerIdentity: accept`, an identity-less spawn also records
+`meta.anonymous: "claude-code"` and gains no privilege.
 
 ## succeeds
 
@@ -167,6 +188,12 @@ lands in a worktree another LIVE session already occupies under the same
 `label` is always refused (`dedupeSource: "worktree-cwd"`) — a shared
 worktree, unlike a shared plain cwd, is never a legitimate fan-out.
 
+The daemon counts every spawn admission decision in memory, per stage and
+outcome (reuse, deny, allow, defer). `GET /spawn-admission` reads them back as
+counts only (`total`, `stages`, `dedupeSources`, `codes`, `since`) and resets
+on a daemon restart. Each non-allow decision also writes one
+`[spawn-admission] stage=... outcome=... code=...` line to the daemon log.
+
 ## permissionHold
 
 Start the session in permission-hold mode: every ACP permission request the
@@ -183,7 +210,8 @@ session later crashes (adapter process gone between turns), the parent
 (`parentSessionId`, direct or inherited) is told via `[child-crashed]
 <label/id>: <reason> — <lastError>` — enqueued immediately if the parent is
 alive and idle, or queued for its next turn (never interrupting an
-in-flight one) if it's busy. Default false. The free external webhook
+in-flight one) if it's busy. Default true for an `executor` that has a
+declared or attached parent, false otherwise; pass `false` to opt out. The free external webhook
 (`notifyUrl`) already fires on any crash regardless of this flag — this
 only adds the direct signal into the parent's OWN session, for a delegating
 supervisor that wants to react to a child's death without polling.
@@ -275,6 +303,30 @@ profile.
 Named auth profile to bill at initial spawn; resolved from the local
 keychain.
 
+Every ref (`profileRef`, each `profileRefs` and `delegateProfileRefs` entry)
+may also be an account slot, `slot:<name>`, resolved through config.json
+`accountSlots` (slot name -> real profile id) on the host, before the profile
+gate and before host auth resolution, so a box receives the credential of the
+profile the slot points at now. An unknown slot, or one pointing at a missing
+or disabled profile, refuses the spawn with `account_slot_unresolved`; there
+is no fallback. The descriptor records the real profile in `accessProfile`
+(billing is unchanged) and the slot asked for in `accessSlot`. Slots are also
+accepted by session presets, harness presets, `turnRetry.fallback[].access`
+(resolved when the fallback fires, so a swap made while the session lives is
+followed) and `session_restart`. See [`agentproto accounts`](../../../../docs/cli/verbs/accounts.md).
+
+AIP-46 gates these profiles per spawn. Only the profiles the request names
+(`access.profileRef` and every `access.profileRefs` entry) are evaluated; a
+profile supplied by a preset, an AGENT.md manifest or config is not a
+request. The caller may pass on only its own recorded profile plus
+`defaults.spawn.sharedProfiles`. `defaults.spawn.profileGate` is `observe`
+by default (counts only, visible on `GET /permissions/grants` under
+`profileUse`); `enforce` refuses a profile outside that set with
+`auth_profile_denied` before any credential is resolved. A root spawn and
+any spawn with no trusted caller are never gated. A session with no
+recorded profile has an empty set of its own, so under `enforce` it may
+name only the shared profiles.
+
 ## inference
 
 Bind this spawn to a local/LAN inference endpoint instead of a cloud model.
@@ -332,6 +384,30 @@ Forwarded verbatim to `session/new.mcpServers` on the ACP arm — gives the
 child agent a host-chosen scoped toolset (e.g. the daemon's own
 orchestration gateway so it can spawn + supervise sub-agents). Adapters
 that don't model MCP mounting ignore it.
+
+A `transport: "stdio"` entry is command execution: its `ref` is the
+command and `args` its argv. `defaults.spawn.stdioMountGate` gates those
+entries when a trusted session made the request: the command basename (and
+an argv prefix, when the allowlist constrains it) must be admitted by the
+same `.agentproto/allowed-commands.json` allowlist `command_execute` uses.
+`observe` (default) only counts and warns; `enforce` refuses the spawn with
+`stdio_mount_denied` and `details.denied` naming each `{ name, command }`.
+Only the entries the request names are evaluated (not preset, manifest,
+bundle, config or daemon-injected mounts), and root spawns, external or
+unknown callers and sandboxed spawns are never gated. `env` is not
+evaluated. Counters are on `GET /permissions/grants` under `stdioMounts`.
+
+A spawn from a session is judged by a proof gate before any other gate. A
+scoped orchestrator is `proven` by its scope token; a session on the plain
+`/mcp` path is `proven` when the request carried the session token minted
+for the session it names, `claimed` when it only named itself, and
+`mismatch` when the token names another session. `defaults.identity.
+requireProof` (default empty) lists actions that require proof; today only
+`"session:spawn"` is evaluated, and a `claimed` caller is refused
+`identity_unverified` while a mismatch is refused `identity_mismatch`.
+Anonymous loopback callers (the operator), external labels and unknown ids
+are never refused, and the list is ignored while `sessionTokens` is `"off"`
+(rule 8). Read `GET /identity` `spawnProof` before listing it.
 
 A `mcpServers` entry in the descriptor (or the daemon self-mount) only
 means the mount was *requested*: it does not guarantee the child actually
@@ -495,6 +571,23 @@ in-band error (`lastTurnErrorMessage`), or from the stall watchdog:
   example opencode retrying a 429 internally and silently. That turn is still
   running, so the retry interrupts it before re-prompting. Needs the daemon's
   stall watchdog to be on (`turnStallAfterMs`).
+- `usage-limit` (opt-in, never in the default set or in `"all"`): a provider
+  usage cap ("Free usage limit reached", "usage limit exceeded"). A cap does
+  not recover with backoff, so there is NO same-config retry. The session goes
+  straight to `rotate` (when configured), then the `fallback` chain; with
+  `"action": "migrate"` on a sandbox session it first moves to a fresh box,
+  because a new box is a new IP and OpenCode's free tier is capped per IP.
+  With none of those available it gives up (`skipped`), as before. The capped
+  model joins the daemon-wide cooldown map, `rotateOn` includes it by default
+  once `on` lists it, and each divert books one `turnRetryAttempts`. On a
+  sandbox session both `rotate` and the model overlay of `fallback` use the
+  restart transition (the box has no live model switch), which re-attaches the
+  box with the new model as a NEW session id; the retry attempt and the
+  continuation go to that new session. An opted-in usage cap obeys the tool-call rule
+  below like every other class: after a side-effecting tool call it is not
+  continued, by rotate or fallback, unless `retryAfterToolCalls` is true.
+  Without the opt-in a usage cap still walks the `fallback` chain, as it did
+  before.
 
 Never retried, whatever `on` says:
 
@@ -502,11 +595,18 @@ Never retried, whatever `on` says:
 - a killed, exited or errored session. That includes the `maxCostUsd` kill. A
   dead process is `restartPolicy`'s job;
 - a session with a failed governance policy, such as a tripped `costBudget`;
-- auth and billing errors (401/402/403, invalid key, insufficient quota) and
-  provider usage caps ("usage limit exceeded");
-- a turn that already made a tool call outside a small read-only allowlist
-  (read, grep, glob, ls, find, search, webfetch, websearch, todo, think).
-  The continuation could repeat a write or an exec. Set
+- auth and billing errors (401/402/403, invalid key, insufficient quota) and,
+  unless `usage-limit` is listed in `on`, provider usage caps ("usage limit
+  exceeded");
+- a turn that already made a tool call that is not provably read-only.
+  Read-only means a harness read tool (read, grep, glob, ls, find, search,
+  webfetch, websearch, todo, think) or a shell command line made only of
+  read-only programs (`git status|diff|log|show|rev-parse|ls-remote|...`,
+  `cat`, `sed -n`, `grep`/`rg`, `ls`, `head`, `tail`, `wc`, `pwd`, `echo`,
+  `cd`, ...) joined by `&&`, `||`, `;` or `|`, with no output redirection to
+  a file (`>`, `>>`, `tee`). Anything else, or anything the classifier cannot
+  parse (command substitution, subshells, heredocs, loops), counts. The
+  continuation could repeat a write or an exec. Set
   `retryAfterToolCalls: true` to retry those turns anyway.
 
 `maxRetries` counts consecutive retries. The counter is exposed on the
@@ -537,8 +637,11 @@ A non-sandbox session, a spent cap, or a migration that cannot run (no
 orchestrator, no work branch, a refused spawn) all fall back to the normal
 retry above, with a `[turn-retry] no migration: …` /
 `[turn-retry] did not migrate …` notice; a failed migration leaves the old
-session untouched. Once `maxRetries` is spent as well there is nothing left
-to fall back to: the daemon reports `exhausted` and gives up. The transitions
+session untouched. For `usage-limit` the fallback is not a re-prompt of the
+same capped box: it rotates or walks the `fallback` chain instead. Once
+`maxRetries` is spent as well there is nothing left to fall back to: the
+daemon walks the `fallback` chain when one is configured (a usage cap needs no
+retry budget for that), then reports `exhausted` and gives up. The transitions
 land as `migrated` (with `migratedTo`) and `migrate-failed` (with
 `skipReason`) events.
 
@@ -624,9 +727,10 @@ allows.
 
 ## contextContinuity
 
-Context-continuity policy for this session — controls warning,
-opportunistic compaction, fresh-continuation, and hard-stop thresholds.
-Resolved from global → per-adapter → explicit override.
+Legacy alias of `contextSettings` (AIP-70 section 4). Context policy for this
+session: controls warning, opportunistic compaction, fresh-continuation, and
+hard-stop thresholds. Resolved from global → per-adapter → explicit override,
+key by key.
 
 Every step that discards conversation context writes a checkpoint (goal,
 plan, decisions, changed files, tests, errors, risks, next step) first: a
@@ -663,10 +767,11 @@ the path of the full transcript and a reminder that `transcript_search` /
 `transcript_read` exist, so the session can look up anything the summary
 dropped: on the compact command itself for a harness whose command takes an
 argument (claude-code), otherwise as a one-line note riding along with the
-next prompt the session receives (never a turn of its own). It is
-window-independent: the percent ladder never fires on a 1M-token window (558k
-of 1M is "55% full", the warn band), so a long session grew without ever
-compacting. Default 150000, clamped to 200000 max, `0` disables. The
+next prompt the session receives (never a turn of its own). An
+explicit value is absolute and window-independent. Unset, the threshold is
+`max(150000, warnAtPct% of the context window)`: 150000 on a 200k window,
+550000 on a 1M window, so a large window never compacts at 15%. Clamped to
+600000 max, `0` disables. The
 continuity mode does not gate it (like the hard-stop floor, it is a safety
 guard, not a nudge).
 
@@ -678,10 +783,33 @@ with no billed model turn before compaction. The context-rescue path never
 asks, and explicit handoffs (`session_checkpoint`, `session_continue_fresh`)
 are unaffected.
 
+## contextSettings
+
+The AIP-46 name of the context-settings block. Its keys are exactly those
+described under [contextContinuity](#contextcontinuity): `mode`, the percent
+bands (`warnAtPct`, `compactAtPct`, `continueFreshAtPct`, `hardStopAtPct`),
+`autoCompactAtTokens`, `compactRequiresOperator`, `compactHandoffTurn`,
+`handoffAtQuotaRemaining`, and the checkpoint sections.
+
+Each setting is its own axis: the block layers over the daemon, adapter and
+request, and the highest layer that sets a key wins for that key. A request
+that sets only `autoCompactAtTokens` keeps the daemon block's
+`hardStopAtPct`. When both names appear in the same layer, `contextSettings`
+wins over `contextContinuity` key by key. `contextContinuity` remains a
+working alias of the whole block.
+
+Layering can combine two blocks that are each valid alone into a conflicting
+one (a request's `continueFreshAtPct: 78` under a daemon `compactAtPct: 80`).
+The spawn then fails with `invalid_context_settings` (HTTP 400), and the
+message names the layer that sets each percent band. `POST
+/sessions/:id/restart` takes the block under either name and overlays it, key
+by key, on the session's prior policy.
+
 ## role
 
-Spawn-time role gating whether this child may itself delegate (spawn/drive
-further children) and, if it can, which roles IT may in turn spawn.
+Deprecated alias of `agent`. Spawn-time role gating whether this child may
+itself delegate (spawn/drive further children) and, if it can, which roles IT
+may in turn spawn.
 Built-ins: 'executor' = leaf, cannot delegate — `orchestrator` is ignored
 and `agent_start`/`agent_prompt` are stripped from its default toolset,
 regardless of `promptAppend`. 'supervisor' = may delegate (today's default
@@ -689,10 +817,11 @@ behaviour). Custom roles installed as role packs (see `role_list`) resolve
 the same way. A spawn made THROUGH an orchestrator is additionally gated by
 the privilege lattice: the calling role may only spawn a role allowlisted
 in its `spawnableRoles`, or — open mode, the default — at or below its own
-`level` (never something MORE privileged than itself). Omit `role` to
-derive from spawn depth (root spawns default to supervisor; spawns made
-through an orchestrator default to executor — see
-`defaultRoleDepthCutoff` in config.json's `defaults` block).
+`level` (never something MORE privileged than itself). Omit `role` (and
+`agent`) to bind `defaults.spawn.defaultAgent.root` below the depth cutoff
+(default `supervisor`) or `.nested` at or above it (default `executor`); the
+cutoff is `defaultRoleDepthCutoff` in config.json's `defaults` block
+(deprecated, removed with `role` in `@agentproto/runtime` 6.0.0).
 
 ## allowPromptFrom
 
@@ -703,7 +832,8 @@ of the form `label:<exact label>` or `label:<prefix>*` grant a ROOT caller
 session (no parent) whose operator-assigned label matches — normally the label
 stamped when the human operator spawned it with `agent_start` (the operator
 may re-stamp it later with `agent_set_operator_label`); renaming a session
-never changes it. By
+never changes it. A label an owner stamps on a child never matches (see
+`agent_set_operator_label`). By
 default the session may only be driven by its OWNER — the caller that
 spawned it — one of its ancestors in the spawn tree (a grandparent or
 orchestrator root keeps its existing subtree authority), and the human
@@ -713,6 +843,18 @@ list later with `agent_set_prompt_policy` (session ids or `label:` entries
 in/out, or an empty
 array to reset): only the session itself, its owner, and the operator may.
 `any` never widens what a caller's own role allows the daemon to do.
+
+Default for a Claude Desktop supervisor: when the spawn comes from the shared
+`claude-desktop` identity, declares `parent: "cc:<id>"` and leaves
+`allowPromptFrom` unset, the daemon records `["claude-desktop"]` for the child.
+The declared `cc:<id>` is the child's recorded owner, but a Desktop MCP call
+always arrives as `claude-desktop`, so without this the supervisor could not
+`agent_kill` or `agent_prompt` its own children. Any Desktop chat on that shared
+identity can then drive the child (trusted single-operator setup). An explicit
+`allowPromptFrom` is never touched; pass `[]` to opt out. The grant is not
+added for verified identities, an identity-less caller, or a Desktop spawn
+without a declared parent, and it does not let `claude-desktop` edit the list
+with `agent_set_prompt_policy`.
 
 A `label:` entry only matches a caller that already has an `operatorLabel`.
 That label is normally stamped at the fresh root spawn named above and then
@@ -923,6 +1065,180 @@ changing this only affects a FUTURE checkpoint), `minIntervalMs` /
 wins when both are set; `0` disables the timer AND the turn-end hook even
 when `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs`
 (per-checkpoint wall-clock budget).
+
+## preflight
+
+Probe ids run against the booted `sandbox` box BEFORE the agent starts, in
+order (e.g. `["model-answers"]`). Requires `sandbox`; ignored otherwise.
+Each probe answers `ok`, `ko` or `unknown`:
+
+- `model-answers`: runs a one-line prompt through the session's harness
+  inside the box (opencode: `opencode run -m <model> "reply ok"`) with a 90 s
+  hard timeout. A usage cap, rate limit, 5xx or auth refusal is `ko`, with the
+  same error class a live turn would get. On a zero exit with an answer, only
+  a usage cap printed in the output counts (an answer that merely mentions
+  "unauthorized" or "rate limit" is `ok`). A timeout, a missing binary, an
+  adapter with no known one-line command, or an unclassified failure is
+  `unknown`.
+
+The probe runs before the box's credentials arrive (they reach the box through
+its own `agent_start`, not its environment), so a spawn that carries `auth` is
+not probed: it is skipped with a warning rather than judged unauthenticated.
+Credentials already in the box environment (`env.passthrough`) are visible to
+it. Duplicate ids run once. Each probe command is bounded by the probe's
+budget, and once a probe is over (timeout included) the box refuses further
+commands from it. Box output in `probeDetail` and `warnings` is redacted of
+bearer tokens, `key=value` secrets and long opaque strings before it leaves
+the daemon.
+
+`ko` destroys the box (a reused box is paused instead, a box other sessions
+are attached to is left alone) and fails the spawn with
+`sandbox_preflight_failed`: `probe`, `errorClass`, `probeDetail`, `provider`,
+`sandboxId`, `egressIp` when the provider brokered one, and the `outcomes` of
+every probe that ran. `unknown` never blocks the spawn; it is reported in the
+spawn `warnings`. An id no probe is registered under is refused up front with
+`sandbox_preflight_invalid`, before any box boots. Why: OpenCode's free tier is
+capped per source IP, so a box on an exhausted egress address only finds out
+mid-run.
+
+## placement
+
+An ordered fallback ladder of sandboxes: `{ ladder: Rung[] }` with 1 to 8
+rungs, each `{ sandbox, model?, access?, preflight?, turnRetry? }` (`access`
+is `{ profileRef?, profileRefs? }`). The spawn tries rung 1; when that rung
+cannot place the box it moves to rung 2, and so on. Use it for "e2b first, then
+a device, then local", or "this model on that box, a cheaper model elsewhere".
+An axis a rung omits inherits the spawn's own top-level value (`model`,
+`access`, `preflight`, `turnRetry`), so the ladder only states what differs.
+
+`placement` replaces the top-level `sandbox`: passing both is refused with
+`placement_invalid` (HTTP 400), as is an empty or malformed ladder, more than
+8 rungs, or a rung whose `sandbox` carries `reuse` (a rung boots a fresh box).
+
+A rung is skipped only when the box could not be placed, all before the agent
+started: a failed preflight (`sandbox_preflight_failed`), a capacity or
+overflow refusal from the provider (`sandbox_overflow_refused`, or the
+provider's own typed `sandbox_*` code, kept as `errorClass`), an exhausted
+egress pool (`sandbox_egress_pool_exhausted`), every egress address cooling
+down for the model (`sandbox_egress_all_cooling`, nothing is booted), a provider that is not set up,
+an offline device, or any other boot failure (`sandbox_boot_failed`,
+`sandbox_proxy_failed`, `sandbox_workspace_setup_failed`,
+`sandbox_app_serve_failed`). Any other failure (a bad `cwd`, an unknown
+preflight probe, a policy refusal, a cancelled boot) would fail the same way on
+every rung, so it ends the walk with its own code and the `attempts` so far.
+Matching is on typed codes, never on provider message text.
+
+Once a rung has started the agent the ladder is finished: a failure after that
+point never moves the session to another rung. That is `turnRetry`'s job.
+
+The descriptor records `placement: { rung, ladder, attempts }`: `rung` is the
+0-based rung the session runs on, `ladder` the requested ladder (with inherited
+axes filled in), and `attempts` one entry per rung tried: `{ rung, provider,
+model?, outcome: "ok" | "failed", errorClass?, egressIp?, durationMs }`. A
+spawn that skipped rungs also returns a warning naming them.
+
+When every rung fails the spawn fails with `sandbox_placement_exhausted`
+(HTTP 502); the message and `details.attempts` list every attempt in order.
+
+`session_migrate` and a fresh-box `session_restart` re-place from rung 1 of
+the recorded ladder (a migrate with an explicit `sandbox` leaves the ladder),
+and carry `preflight` and `placement` onto the new session. A rung's `sandbox`,
+`model`, `preflight` and `turnRetry` are replayed on both. A rung's `access` is
+replayed by `session_migrate` only: a restart keeps the session's own
+credentials rather than re-resolving them per rung. A restart whose ladder
+stops on a non-placement failure reports `sandbox_box_start_failed` and names
+the underlying code in the message.
+
+## agent
+
+The ONE agent reference for this spawn: an AIP-42 agent id
+(`<cwd>/.agents/<id>/AGENT.md`), an explicit `AGENT.md` path (a value
+containing `/` or `\`, or ending in `.md`), or a role name (`executor`,
+`supervisor`, or a pack role from `role_list`). A path becomes `agentPath`; an
+AGENT.md on disk wins over a role of the same name and becomes `agentId`;
+otherwise a known role becomes `role`. `agentId`, `agentPath` and `role` keep
+working as aliases; pass only one of `agent`, `agentId` or `agentPath`.
+`role` is deprecated in favour of `agent` and will be removed in
+`@agentproto/runtime` 6.0.0; a caller that passes it still gets the same
+behaviour plus a deprecation warning.
+
+## agentId
+
+Alias of `agent`. AIP-42 agent by logical id. The daemon loads
+`<cwd>/.agents/<agentId>/AGENT.md` and applies its prompt, persona, model,
+skills and tools as spawn DEFAULTS; a field you pass on the call always wins.
+The by-id twin of `agentPath`; when both are set, `agentPath` wins. This is
+the same field `POST /sessions/agent` already takes. A manifest that cannot be
+found or read fails the spawn with `agent_manifest_unresolved` /
+`agent_manifest_unreadable`.
+
+## agentPath
+
+Alias of `agent`. AIP-42 agent by explicit AGENT.md path, absolute or relative
+to the resolved `cwd`. Same default-filling semantics as `agentId`, and it wins
+when both are set. The session records the manifest identity in
+`meta.agentManifestPath`, `meta.agentId` and `meta.agentRoleHash`.
+
+## operator
+
+AIP-46 operator binding. The session records which operator it works for:
+`operator:<slug>`, `operator:<slug>@<owner>/<workspace>` or
+`ws://operators/<slug>`. A bare slug is not a ref. The `ws://` form is stored
+in its compact form `operator:<slug>` and never gains a workspace suffix.
+
+It binds, it does not authorize: it grants no permission and does not choose
+the node scope (that comes from the spawn's ground).
+
+The daemon has no operator resolver, so "resolved at spawn" means the ref is
+well formed; a malformed ref is refused with `operator_unresolvable` before
+any session starts. Whether the operator exists is the check of the host that
+composes the agent, made before it names the operator here.
+
+Who may name one (rule 4): the host (no calling session) may name any
+operator. A calling session may name only the operator of its OWN session;
+any other ref is refused with `delegation_denied`. A nested spawn that names
+no operator starts without one: the operator is never inherited from the
+caller. A continuation (`session_restart`, `session_continue_fresh`) carries
+the operator and its digest forward from the registry, never from the
+request.
+
+The same `delegation_denied` code also reports the AIP-46 agent gate: with
+`defaults.spawn.delegationGate: "enforce"`, a child the caller's bound agent
+does not declare in `delegatesTo` is refused with `details.gate: "agent"`,
+`details.callerAgent`, `details.childAgent`, `details.delegatesTo` and
+`details.legacyCode: "role_spawn_denied"`. `details.childAgent` is the child's
+manifest id when one is bound (`agent`/`agentId`), else its resolved role name;
+a caller must name the manifest id to declare such a child. An `allowed` child
+skips only the open-mode level comparison — a parent with `spawnableRoles` or
+`toolPolicy.delegation: "deny"` is still constrained. The default `observe`
+mode refuses nothing and only counts the pair for `GET /permissions/grants`.
+
+For a manifest-bound caller (`agent`/`agentId`/`agentPath`), the runtime
+reads the manifest's `delegates_to` once at spawn, resolves each entry to an
+agent identity (an agent id, an `@owner/` prefix ignored, or a role name),
+and records the resolved list on the session as `meta.agentDelegatesTo`. The
+gate compares the child's bound agent (its manifest id, or its role name)
+against that frozen list and never re-reads the file. An absent or empty list
+is `undeclared` (the schema defaults the field to `[]`, so "declares none"
+cannot be told apart, and AIP-46's deny-by-default is not applied yet). An
+entry given as a path, `file` or `inline` is not resolved yet: the spawn
+carries a warning and the agent is `undeclared`. Edit the manifest and
+respawn to apply a change; a restart carries the recorded list, and
+`session_continue_fresh` carries the recorded list and the manifest id too (an
+explicit `agent` or `role` in the continuation request wins instead and
+nothing is carried).
+
+## operatorDigest
+
+The host's digest of the operator body it resolved when it composed this
+session, recorded beside `operator`. Opaque to the daemon. Giving it without
+an `operator` is refused with `operator_unresolvable`.
+
+It lets a later read flag drift: pass the current digest to
+`session_role_refresh` (`operatorDigest`) or a map of current digests to
+`session_list` (`operatorDigests`, keyed by operator ref) and a session whose
+recorded digest differs is reported with `operatorStale: true`. The daemon
+never advances the recorded digest by itself.
 
 ## full
 

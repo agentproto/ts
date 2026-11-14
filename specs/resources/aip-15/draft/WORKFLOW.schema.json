@@ -426,7 +426,7 @@
         "kind": { "const": "agent" },
         "agent": {
           "type": "object",
-          "description": "App-scoped agent id to resolve at compile time. Omit to spawn a plain `adapter` (no app-ref resolution) or reuse via `sessionRef`.",
+          "description": "App-scoped agent id to resolve at compile time. Omit to spawn a plain harness through the step's `adapter` key (no app-ref resolution) or reuse via `sessionRef`.",
           "required": ["ref"],
           "properties": {
             "ref": { "type": "string" }
@@ -435,7 +435,7 @@
         "prompt": { "type": "string" },
         "adapter": {
           "type": "string",
-          "description": "Adapter slug for spawning a NEW session. Ignored (and unnecessary) when `agent.ref` resolves one for you. Omit both to reuse via `sessionRef`."
+          "description": "AIP-45 harness slug for spawning a NEW session. Ignored (and unnecessary) when `agent.ref` resolves one for you. Omit both to reuse via `sessionRef`. The key keeps the name `adapter` until the AIP-15 open question on the `harness` block is settled."
         },
         "sessionRef": {
           "type": "string",
@@ -492,7 +492,7 @@
         "options": {
           "type": "object",
           "additionalProperties": { "type": ["boolean", "number", "string"] },
-          "description": "Manifest-declared adapter option id → value, forwarded to a NEW spawn's `startSession({ options })` — e.g. mastra-agent's `agent` option, set by `agent.ref` resolution at compile time. Only meaningful with `adapter`; ignored on a `sessionRef` reuse. May also be authored directly on the step."
+          "description": "Manifest-declared harness option id → value, forwarded to a NEW spawn's `startSession({ options })` — e.g. mastra-agent's `agent` option, set by `agent.ref` resolution at compile time. Only meaningful with `adapter`; ignored on a `sessionRef` reuse. May also be authored directly on the step."
         },
         "harness": { "$ref": "#/$defs/harness" }
       }
@@ -520,21 +520,21 @@
     },
     "harness": {
       "type": "object",
-      "description": "Harness pinning for a `kind: \"agent\"` step's spawn. Precedence when a field is also set elsewhere: step `harness` (highest) > the resolved AGENT.md's own frontmatter > `app_run` caller args > the adapter's own default (lowest).",
+      "description": "Harness pinning for a `kind: \"agent\"` step's spawn. Precedence when a field is also set elsewhere: step `harness` (highest) > the resolved AGENT.md's own frontmatter > `app_run` caller args > the harness's own default (lowest).",
       "additionalProperties": false,
       "properties": {
         "model": { "type": "string", "description": "Model id override for this spawn." },
-        "effort": { "type": "string", "description": "Reasoning-effort override for this spawn (adapter-defined vocabulary, e.g. \"low\" | \"medium\" | \"high\")." },
+        "effort": { "type": "string", "description": "Reasoning-effort override for this spawn (harness-defined vocabulary, e.g. \"low\" | \"medium\" | \"high\")." },
         "role": { "type": "string", "description": "Spawn-time role governing the child's tool-policy disposition (e.g. \"executor\" | \"supervisor\")." },
         "tools": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Per-spawn tool allowlist. Applied where the resolved adapter supports a generic per-spawn allowlist mechanism; where it doesn't, the host records `toolsApplied: false` on the step's run record and emits a warning event instead of silently ignoring the field."
+          "description": "Per-spawn tool allowlist. Applied where the resolved harness supports a generic per-spawn allowlist mechanism; where it doesn't, the host records `toolsApplied: false` on the step's run record and emits a warning event instead of silently ignoring the field."
         },
         "skills": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Skill ids auto-mounted into the spawn — adapters with no such option (e.g. claude-code, which auto-discovers skills) ignore it."
+          "description": "Skill ids auto-mounted into the spawn — harnesses with no such option (e.g. claude-code, which auto-discovers skills) ignore it."
         },
         "cwd": { "type": "string", "description": "Working directory override for this step's spawn; takes precedence over the run-level cwd." },
         "promptFile": { "type": "string", "description": "Read this file (relative to the WORKFLOW.md's directory) at load time and use its contents as the step's `prompt`, replacing any inline `prompt`." },

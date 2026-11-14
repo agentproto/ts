@@ -139,7 +139,7 @@ export interface VerifyAttestationResult {
  */
 export function verifyAttestation(att: Attestation, expect: VerifyAttestationExpect = {}): VerifyAttestationResult {
   const problems: string[] = []
-  if (att.schema !== ATTESTATION_SCHEMA && att.schema !== "review.attestation/v1") {
+  if (att.schema !== ATTESTATION_SCHEMA && att.schema !== "agentproto.review.attestation/v1") {
     problems.push(`unknown schema '${String(att.schema)}'`)
   }
   if (att.rangeSha !== rangeSha(att.target)) problems.push("rangeSha does not match target.baseSha..target.headSha")

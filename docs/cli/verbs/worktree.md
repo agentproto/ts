@@ -4,9 +4,9 @@
 agentproto worktree ls      [--repo <dir>] [--status] [--json]
 agentproto worktree new     <slug> [--repo <dir>] [--base <ref>] [--branch <name>]
                                    [--root <dir>] [--no-setup] [--json]
-agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch]
+agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--force]
                                    [--discard-untracked] [--discard-modified] [--json]
-agentproto worktree archive <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--json]
+agentproto worktree archive <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--force] [--json]
 agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
                                    [--include-detached] [--noise <path,...>]
                                    [--active-minutes <n>] [--json]
@@ -70,7 +70,8 @@ the flag matching the class of change present authorizes it.
 |------|---------|-------------|
 | `--repo <dir>` | *(from `<path>`)* | Repo that owns the worktree. |
 | `--base <ref>` | `origin/main` | Ref whose committed teardown hooks run. |
-| `--keep-branch` | `false` | Keep the branch; by default it's deleted too. |
+| `--keep-branch` | `false` | Always keep the branch. Without it the branch is deleted only when its tip is proven merged into base (the [`branch gc`](./branch.md) ladder); an unmerged branch is kept and the output says so. |
+| `--force` | `false` | Delete the branch even when it is not proven merged. |
 | `--discard-untracked` | `false` | Authorize discarding unignored untracked files. |
 | `--discard-modified` | `false` | Authorize discarding modified tracked files. |
 | `--json` | `false` | Emit `{"removed":path,"branch":str\|null}` as JSON. |
@@ -83,12 +84,20 @@ file, and a `MANIFEST.json`) **before** running the same removal as `rm` with
 both discard flags granted — so nothing still on disk is lost. If the salvage
 step fails, nothing is removed.
 
+The snapshot covers **uncommitted** state only. Committed work lives on the
+branch, which `archive` keeps unless its tip is proven merged into base (or
+`--force` is given). The decision, with its reason and the number of commits
+present on no remote, is printed and recorded in `MANIFEST.json` as
+`branchDecision` (written before the removal runs, so it is the intended
+outcome). A detached HEAD has no branch to keep; only its `tipSha` is recorded.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo <dir>` | *(from `<path>`)* | Repo that owns the worktree. |
 | `--base <ref>` | `origin/main` | Ref whose committed teardown hooks run. |
-| `--keep-branch` | `false` | Keep the branch. |
-| `--json` | `false` | Emit `{"archived":path,"branch":…,"salvageDir":path}` as JSON. |
+| `--keep-branch` | `false` | Always keep the branch (see above for the default). |
+| `--force` | `false` | Delete the branch even when it is not proven merged. |
+| `--json` | `false` | Emit `{"archived":path,"branch":…,"salvageDir":path,"branchDecision":…}` as JSON. |
 
 ### `gc`
 
@@ -97,16 +106,16 @@ nothing is touched without `--apply`.**
 
 | Class | Definition | `--apply` does |
 |-------|-----------|----------------|
-| `reclaim` | `(merged or fresh) + clean + idle`, **or** a clean `unpushed` worktree whose only commits are mechanical dependency bumps (`chore(deps)` / `fix(deps)` subjects and the diff touches only lockfiles + `package.json`), **or** a clean, idle worktree whose branch content is provably in base by the [`branch gc`](./branch.md) ladder (squash-, patch- or content-merged — never for an open PR or an offline forge) | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
-| `salvage` | merged + dirty, and not written to in the last 15 minutes | Nothing, unless `--salvage-dirty` — then archives it (snapshot, then remove). |
-| `hold` | everything else, including a fresh or merged branch with uncommitted work, and any worktree whose own git index was written within the last `--active-minutes` (recent activity — someone is working in it) | **Never touched**, with or without flags. |
+| `reclaim` | `(merged or fresh) + clean + idle`, **or** a clean `unpushed` worktree whose only commits are mechanical dependency bumps (`chore(deps)` / `fix(deps)` subjects and the diff touches only lockfiles + `package.json`), **or** a clean, idle worktree whose branch content is provably in base by the [`branch gc`](./branch.md) ladder (squash-, patch- or content-merged — never for an open PR or an offline forge), **or** an integrated, idle worktree whose dirty paths provably carry no work (reason `dirty-no-work`: an emptied checkout, only turbo's managed `AGENTS.md` block, or changes byte-identical to base) | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. For `dirty-no-work`, restores exactly the proven paths first (`git checkout HEAD --` / unlink). |
+| `salvage` | merged + dirty, where the dirt is not provably work-free, and not written to in the last 15 minutes | Nothing, unless `--salvage-dirty` — then archives it (snapshot, then remove). |
+| `hold` | everything else, including a fresh or merged branch with uncommitted work that is not provably work-free, and any worktree whose own git index was written within the last `--active-minutes` (recent activity — someone is working in it) | **Never touched**, with or without flags. |
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo <dir>` | cwd | Repo to sweep. |
 | `--apply` | `false` | Execute the plan instead of printing it. |
 | `--salvage-dirty` | `false` | Also archive salvage-class worktrees. |
-| `--include-detached` | `false` | Also reclaim clean, idle detached worktrees. |
+| `--include-detached` | `false` | Accepted for compatibility; no longer widens anything. A clean, idle detached worktree is reclaimed by default, but only when its HEAD is proven in base (ancestor, squash, patch, or the head of a merged PR); otherwise it holds. |
 | `--noise <path,...>` | `.opencode/package-lock.json` | Worktree-relative paths whose dirt is known noise: a worktree dirty only on these counts as clean, and removal restores them before a plain non-force remove. `--noise ""` disables. |
 | `--active-minutes <n>` | `60` | Recent-activity window in minutes: a worktree whose own git index mtime is younger than this holds with reason `recent-activity` instead of reclaiming/salvaging. `0` disables the guard. |
 | `--json` | `false` | Emit the plan (or the outcomes, with `--apply`) as JSON. |
@@ -187,6 +196,34 @@ dropped, and a running install has its whole process tree terminated (SIGTERM
 to the process group, SIGKILL after a grace period), so no orphaned `pnpm`
 survives. A cancelled provisioning removes the half-made worktree and branch;
 a provisioning that merely fails keeps its worktree for inspection, as before.
+
+### Boot timeouts and setup output
+
+A hung or very slow `worktree.setup` / `depsCmd` can no longer leave a session
+in `starting` forever with nothing to read. Once the spawn holds its slot (queue
+wait does not count), two bounds apply to the heavy segment:
+
+- **Stall**: no output for `stallTimeoutMs` (default `120000`, 2 min). Output
+  from the hook resets the clock, so a 13-minute install that keeps printing
+  is fine.
+- **Hard cap**: `maxMs` (default `1800000`, 30 min) for the whole segment,
+  output or not.
+
+When a bound trips, the hook's whole process tree is killed (SIGTERM to the
+process group, SIGKILL after a grace period) and the session ends in `error`
+with a reason naming the phase, the elapsed time and the last 20 output lines
+(also in `lastError`). The worktree is kept for inspection, like any failed
+setup. `0` disables a bound. Set them per spawn with
+`agent_start({ worktree: { slug, stallTimeoutMs, maxMs } })`, or daemon-wide
+with `worktrees.provisionStallTimeoutMs` / `worktrees.provisionMaxMs` (env
+`AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS` /
+`AGENTPROTO_WORKTREES_PROVISION_MAX_MS`); per-spawn beats env beats config
+beats the default.
+
+While provisioning runs, the hook's stdout/stderr is streamed into the
+starting session's output (`agent_output`, lines prefixed `[setup]` /
+`[deps]`, with `── provisioning: phase X ──` banners), and `daemon.log` gets
+a `[worktree]` line for each start, phase change and failure.
 
 Two limits: the queue lives in the daemon, so `agentproto worktree new` (its
 own short-lived process) throttles only against itself, not against the

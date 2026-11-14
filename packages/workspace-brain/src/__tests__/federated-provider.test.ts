@@ -204,6 +204,38 @@ describe("FederatedKnowledgeProvider.query", () => {
     expect(r.engine).toBe("federated")
   })
 
+  it("surfaces a files index refusal when no provider answered", async () => {
+    const a = makeStub("a", { scores: [0.5] })
+    const refusal = Object.assign(
+      new Error("files engine (ws): refusing to build the in-process index: 9 indexable files exceed the ceiling of 3."),
+      { name: "FilesIndexTooLargeError" },
+    )
+    a.resolved.provider.query = async () => {
+      throw refusal
+    }
+    const alone = new FederatedKnowledgeProvider({ providers: [a.resolved] })
+    await expect(alone.query({ query: "x" })).rejects.toBe(refusal)
+
+    // With another provider answering, the refused one just drops out.
+    const b = makeStub("b", { scores: [0.7] })
+    const both = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    const r = await both.query({ query: "x", topK: 10 })
+    expect(r.hits.map(h => h.chunkId)).toEqual(["b-chunk-0"])
+  })
+
+  it("flags the merged result partial when a contributing provider is partial", async () => {
+    const a = makeStub("a", { scores: [0.5] })
+    const b = makeStub("b", { scores: [0.7] })
+    const realQuery = a.resolved.provider.query.bind(a.resolved.provider)
+    a.resolved.provider.query = async q => ({ ...(await realQuery(q)), partial: true })
+    const alone = new FederatedKnowledgeProvider({ providers: [a.resolved] })
+    expect((await alone.query({ query: "x" })).partial).toBe(true)
+    const both = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    expect((await both.query({ query: "x", topK: 10 })).partial).toBe(true)
+    const complete = new FederatedKnowledgeProvider({ providers: [b.resolved] })
+    expect((await complete.query({ query: "x" })).partial).toBeUndefined()
+  })
+
   it("returns empty (never throws) when EVERY provider fails", async () => {
     const a = makeStub("a", { scores: [0.5], failQuery: true })
     const fed = new FederatedKnowledgeProvider({ providers: [a.resolved] })

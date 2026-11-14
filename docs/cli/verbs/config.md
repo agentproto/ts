@@ -102,11 +102,16 @@ Creates the file if missing before launching the editor.
 | `daemon.bind` | `string` | Default `127.0.0.1`. |
 | `daemon.workspace` | `string` | Absolute path; passed as `serve --workspace` when set. |
 | `daemon.allowedOrigins` | `string[]` | Trusted browser origins for mutating routes (in addition to localhost defaults). |
+| `daemon.frameAncestors` | `string[]` | Extra origins allowed to embed the app page in an iframe (for example a browser-based Telegram client). See [`serve`](./serve.md#framing-the-app-page). |
+| `approvals.humanTelegramIds` | `string[]` | Telegram user ids (digits only) allowed to read and decide one approval through an approval link (a link token with an `approvalId` claim). Empty (default) keeps approval links off. Not settable through `config_set`; edit the file by hand. Needs a restart. See [app agent tools](../guides/app-agent-tools.md). |
 | `daemon.strictOrigins` | `boolean` | When true, drop the localhost-default. Only `allowedOrigins` are honoured. |
 | `daemon.label` | `string` | Server label sent in tunnel hello frames. |
 | `daemon.reviewSessionRetentionDays` | `number` | Days after which a terminal review-lane session dir (`~/.agentproto/sessions/<id>/`) is deleted by the retention sweep. Default `7`; `0` disables. See [`sessions gc --retention`](./sessions.md#gc). |
 | `daemon.sessionRetentionDays` | `number` | Same, for every other terminal session. Default off (unset / `0`). Pinned, `keepAlive` and live sessions are never deleted. |
+| `daemon.harnessCacheRetentionDays` | `number` | Quiet days after which a dead lineage's disposable adapter-config caches are swept by the periodic retention sweep or `sessions gc --adapter-caches`. Default `1`; `0` (or a non-positive value) disables the pass entirely. The resume store is kept. |
+| `daemon.adapterCacheRetentionDays` | `number` | Deprecated name of `daemon.harnessCacheRetentionDays`, read only when that key is unset. |
 | `daemon.idleReapAfterMs` | `number` | Retire an idle agent-cli session after this many ms (SIGTERM the adapter, row `killed` / `idle-reaped`, lazily resumable). Default off (unset / `0`). Env: `AGENTPROTO_IDLE_REAP_AFTER_MS`. Needs a restart. |
+| `daemon.bootResumeKeepAliveMaxIdleMinutes` | `number` | With `resumeSessionsOnBoot`, stop eagerly resuming a `keepAlive` session idle longer than this many minutes (from its last turn-end). It stays lazy-resumable on the next prompt. Only explicitly pinned sessions always resume; an operator label does not exempt a row. Default `30`; `0` disables the cutoff. Needs a restart. |
 | `daemon.sandboxIdleReapAfterMs` | `number` | Shorter idle threshold for **sandboxed** sessions (a session in a provider box: e2b, …). Default `900000` (15 min); `0` turns it off. Env: `AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS`. Needs a restart. See [Sandbox idle reap](#sandbox-idle-reap). |
 | `tunnel.host` | `string` | Default tunnel URL for `serve` and `daemon install`. |
 | `tunnel.autoconnect` | `boolean` | When true, `daemon install` bakes `--connect tunnel.host` into the plist; `serve` falls back to it when `--connect` is omitted. |

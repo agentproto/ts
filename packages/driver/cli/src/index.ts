@@ -25,6 +25,9 @@ import {
   type DriverHandle,
 } from "@agentproto/driver"
 
+/** AIP-70 registry spec id for this package (`cli/v1`, AIP-29). */
+export const SPEC_NAME = "cli/v1" as const
+
 export interface CliDriverDefinition
   extends Omit<DriverDefinition, "kind" | "execute"> {
   kind?: "cli"
@@ -36,7 +39,7 @@ export interface CliDriverDefinition
    * Absolute working directory for the spawned subprocess. Unset means
    * "inherit the host process's cwd" — the historical (and, for a
    * standalone TS-authored driver, still correct) behaviour. App-bundled
-   * drivers loaded via `@agentproto/app-kit`'s `loadAppBundledTools` get
+   * drivers loaded via `@agentproto/app`'s `loadAppBundledTools` get
    * this set to the app root so argv/DRIVER.md-relative paths resolve
    * predictably instead of against whatever directory happens to be
    * running the host.
@@ -113,7 +116,11 @@ function createExecuteFn(args: {
   return async ({ input, context, driverCtx, signal }) => {
     const inputObj = (input ?? {}) as Record<string, unknown>
     const ctxObj = context as Record<string, unknown>
-    const provCtx = driverCtx as { secrets: Record<string, string>; [k: string]: unknown }
+    const provCtx = driverCtx as {
+      secrets: Record<string, string>
+      hostEnv?: Record<string, string>
+      [k: string]: unknown
+    }
     void ctxObj
 
     const argvTemplate = cliMeta.argv ?? []
@@ -125,7 +132,7 @@ function createExecuteFn(args: {
     const result = await runSubprocess({
       bin: args.bin,
       argv: [...args.binArgs, ...argv],
-      env: buildEnv(args.sandbox?.env, provCtx.secrets ?? {}),
+      env: buildEnv(args.sandbox?.env, provCtx.secrets ?? {}, provCtx.hostEnv),
       cwd: args.cwd,
       signal,
     })
@@ -409,12 +416,17 @@ function resolvePath(obj: unknown, path: string): unknown {
 
 function buildEnv(
   envConfig: NonNullable<CliDriverDefinition["sandbox"]>["env"] | undefined,
-  secrets: Record<string, string>
+  secrets: Record<string, string>,
+  hostEnv?: Record<string, string>
 ): Record<string, string> {
   const out: Record<string, string> = {}
   // Pass through declared env vars from host.
   for (const key of envConfig?.pass ?? []) {
     if (process.env[key] !== undefined) out[key] = process.env[key]!
+  }
+  // Host-provided non-secret env wins over the daemon's, declared names only.
+  for (const key of envConfig?.pass ?? []) {
+    if (hostEnv?.[key] !== undefined) out[key] = hostEnv[key]!
   }
   // Inject resolved secrets that match passed env names.
   for (const key of envConfig?.pass ?? []) {

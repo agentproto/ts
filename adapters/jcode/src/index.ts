@@ -26,10 +26,10 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
 import {
   deriveDeclaredCapabilities,
@@ -74,7 +74,7 @@ function buildJcodeModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
-export const jcode: AgentCliHandle = defineAgentCli({
+export const jcode: AgentCliHandle = defineHarness({
   name: "jcode",
   id: "jcode",
   description:

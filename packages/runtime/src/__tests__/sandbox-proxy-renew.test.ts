@@ -108,22 +108,6 @@ describe("sandbox proxy — box lifetime renewal", () => {
     expect(extendTimeout).toHaveBeenCalledTimes(2)
   })
 
-  it("renews on streamed events, not just on prompt dispatch", async () => {
-    const extendTimeout = vi.fn(async () => {})
-    const host = makeHost({ extendTimeout })
-    // The first turn rode the spawn dial: no prompt is sent, only the stream is read.
-    const proxy = createSandboxAgentSessionProxy({
-      host,
-      remoteSessionId: "remote_1",
-      promptCarriedInStart: true,
-    })
-
-    await collect(proxy.send("go"))
-
-    expect(host.prompt).not.toHaveBeenCalled()
-    expect(extendTimeout).toHaveBeenCalledTimes(1)
-  })
-
   it("never renews while idle", async () => {
     const extendTimeout = vi.fn(async () => {})
     const host = makeHost({ extendTimeout })

@@ -224,3 +224,118 @@ describe("defineCliDriver — cwd", () => {
     }
   })
 })
+
+function envEchoTool() {
+  return defineTool({
+    id: "env-echo-tool",
+    description: "returns the data dir variable the subprocess sees",
+    inputSchema: z.object({}),
+    outputSchema: z.object({ value: z.string().nullable() }),
+  })
+}
+
+function envEchoDriver(pass: readonly string[], argv?: readonly string[]) {
+  return defineCliDriver({
+    id: "env-echo-cli",
+    name: "env echo",
+    description: "x",
+    kind: "cli",
+    bin: process.execPath,
+    output: { defaultFormat: "json", exitCodes: { 0: "ok" } },
+    sandbox: { env: { pass } },
+    implements: [
+      {
+        tool: "./tools/env-echo-tool/TOOL.md",
+        version: "^1",
+        metadata: {
+          cli: {
+            argv: argv ?? [
+              "-e",
+              "process.stdout.write(JSON.stringify({value: process.env.AGENTPROTO_APP_DATA_DIR ?? null}))",
+            ],
+          },
+        },
+      },
+    ],
+  })
+}
+
+describe("defineCliDriver hostEnv (docs/design/app-bundled-tool-data-dir.md)", () => {
+  const NAME = "AGENTPROTO_APP_DATA_DIR"
+  const saved = process.env[NAME]
+  const restore = () => {
+    if (saved === undefined) delete process.env[NAME]
+    else process.env[NAME] = saved
+  }
+
+  it("fills a declared pass name from hostEnv", async () => {
+    delete process.env[NAME]
+    try {
+      const out = await runTool({
+        tool: envEchoTool(),
+        candidates: [envEchoDriver([NAME])],
+        input: {},
+        hostEnv: { [NAME]: "/registered/data" },
+      })
+      expect(out).toEqual({ value: "/registered/data" })
+    } finally {
+      restore()
+    }
+  })
+
+  it("hostEnv wins over the same name in the daemon environment", async () => {
+    process.env[NAME] = "/ambient/data"
+    try {
+      const out = await runTool({
+        tool: envEchoTool(),
+        candidates: [envEchoDriver([NAME])],
+        input: {},
+        hostEnv: { [NAME]: "/registered/data" },
+      })
+      expect(out).toEqual({ value: "/registered/data" })
+    } finally {
+      restore()
+    }
+  })
+
+  it("does not deliver a name the driver did not declare in pass", async () => {
+    delete process.env[NAME]
+    try {
+      const out = await runTool({
+        tool: envEchoTool(),
+        candidates: [envEchoDriver(["PATH"])],
+        input: {},
+        hostEnv: { [NAME]: "/registered/data" },
+      })
+      expect(out).toEqual({ value: null })
+    } finally {
+      restore()
+    }
+  })
+
+  it("without hostEnv the daemon environment still passes through (unchanged behaviour)", async () => {
+    process.env[NAME] = "/ambient/data"
+    try {
+      const out = await runTool({ tool: envEchoTool(), candidates: [envEchoDriver([NAME])], input: {} })
+      expect(out).toEqual({ value: "/ambient/data" })
+    } finally {
+      restore()
+    }
+  })
+
+  it("hostEnv is not a secret: a ${secrets.X} argv template does not see it", async () => {
+    const out = await runTool({
+      tool: envEchoTool(),
+      candidates: [
+        envEchoDriver([NAME], [
+          "-e",
+          "process.stdout.write(JSON.stringify({value: process.argv[1] ?? null}))",
+          "${secrets.AGENTPROTO_APP_DATA_DIR | default('none')}",
+        ]),
+      ],
+      input: {},
+      hostEnv: { [NAME]: "/registered/data" },
+    })
+    expect(out).toEqual({ value: "none" })
+  })
+})

@@ -260,14 +260,21 @@ describe("app_* verbs", () => {
     expect(body.error).toContain("totally_bogus_tool_xyz")
   })
 
-  it("app_install: adapter not resolvable fails with an actionable hint", async () => {
+  it("app_install: succeeds for an app with an agent when mastra-agent is not resolvable", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
-    const { client } = await setup({ resolveAgentAdapter: async () => null })
+    const startSession = fakeStartSession()
+    const { client } = await setup({
+      resolveAgentAdapter: async slug =>
+        slug === "claude-code"
+          ? { startSession, commandPreview: "mock-claude-code", declaredOptions: [] }
+          : null,
+    })
 
     const res = await client.callTool({ name: "app_install", arguments: { dir } })
-    expect(isError(res)).toBe(true)
-    const body = parseToolJson(res)
-    expect(body.error).toContain("agentproto install mastra-agent")
+    expect(isError(res)).toBe(false)
+    const record = parseToolJson(res)
+    expect(record.appId).toBe("@test/fixture-app")
+    expect(record.agents).toHaveLength(1)
   })
 
   it("app_install normalizes a `~`-relative externalReadRoots entry and validates it exists", async () => {
@@ -1312,6 +1319,28 @@ describe("app_run: multi-adapter support (P7 deliverable 2)", () => {
     expect(ran.errors).toHaveLength(1)
     expect(ran.errors[0].error).toMatch(/agent_start: no auth profile "no-such-profile" found/)
   })
+
+  it("app_run accepts a slot `access.profileRef`: the spawn resolves it (an unknown slot is refused by name)", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    // Isolated HOME so the slot map read is an empty test config, never the machine's.
+    const prevHome = process.env.HOME
+    process.env.HOME = dir
+    try {
+      const ran = parseToolJson(
+        await client.callTool({
+          name: "app_run",
+          arguments: { appId: "@test/fixture-app", access: { profileRef: "slot:claude-primary" } },
+        }),
+      )
+      expect(ran.errors).toHaveLength(1)
+      expect(ran.errors[0].error).toMatch(/agent_start: account slot "claude-primary" is not defined/)
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+    }
+  })
 })
 
 describe("app_run: the AGENT.md reaches every harness (AIP-42 projection)", () => {
@@ -1673,9 +1702,58 @@ describe("app_run: per-agent adapter resolution (F26 — no caller adapter/harne
       {
         agentId: "foo-worker",
         error:
-          'agent "foo-worker" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run',
+          'agent "foo-worker" has no harness: set metadata.harness in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass harness to app_run',
       },
     ])
+  })
+
+  it("an app_run whose agents all fail reports errors and never a mastra-agent runner", async () => {
+    await emitAgentsApp("@test/all-fail-runner-app", [
+      { id: "foo-worker", model: "some-provider/foo-1" },
+    ])
+    const startSession = fakeStartSession()
+    const { client } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/all-fail-runner-app" } }),
+    )
+    expect(ran.errors).toHaveLength(1)
+    expect(ran.sessions).toEqual([])
+    expect(startSession).not.toHaveBeenCalled()
+    expect(ran.adapter).toBeUndefined()
+    expect(ran.harness).toBeUndefined()
+  })
+
+  it("an app_run whose agents all fail is ended failed, so app_uninstall runs without app_stop", async () => {
+    await emitAgentsApp("@test/all-fail-ended-app", [
+      { id: "foo-worker", model: "some-provider/foo-1" },
+    ])
+    const startSession = fakeStartSession()
+    const { client, appRegistry } = await setup({
+      resolveAgentAdapter: adapterResolverFor(startSession),
+      startSession,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/all-fail-ended-app" } }),
+    )
+    expect(ran.errors).toHaveLength(1)
+    expect(ran.status).toBe("failed")
+    expect(ran.endedAt).toBeTruthy()
+    const run = appRegistry.getRun(ran.appRunId)!
+    expect(run.status).toBe("failed")
+    expect(run.endedAt).toBeTruthy()
+
+    const uninstalled = await client.callTool({
+      name: "app_uninstall",
+      arguments: { appId: "@test/all-fail-ended-app" },
+    })
+    expect(isError(uninstalled)).toBe(false)
   })
 
   it("an unroutable model with `metadata.adapter: mastra-agent` spawns mastra-agent with the `agent` option", async () => {
@@ -1952,7 +2030,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     await client.callTool({ name: "app_install", arguments: { dir } })
     const handle = await loadWorkflowHandle(join(dir, ".agentproto", "workflows", "do-thing-unroutable", "WORKFLOW.md"))
     await expect(resolveAgentRefsForWorkflow(appRegistry, handle.id)).rejects.toThrow(
-      'agent "worker" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run',
+      'agent "worker" has no harness: set metadata.harness in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass harness to app_run',
     )
   })
 
@@ -2073,8 +2151,8 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     // No resolver / an unresolvable role never leaks the raw `role:` string —
     // and with no metadata adapter the ref now fails loudly (no adapter)
     // instead of silently falling back to mastra-agent.
-    await expect(compileWith()).rejects.toThrow(/has no adapter/)
-    await expect(compileWith(async () => undefined)).rejects.toThrow(/has no adapter/)
+    await expect(compileWith()).rejects.toThrow(/has no harness/)
+    await expect(compileWith(async () => undefined)).rejects.toThrow(/has no harness/)
   })
 
   it("resolveAgentModelRef passes plain ids through and only resolves role: refs", async () => {
@@ -2317,6 +2395,97 @@ describe("BRIEF-D: app-bundled TOOL.md/DRIVER.md tool steps", () => {
       }),
     )
     expect(res).toEqual({ name: "known_tool", args: { x: 1 } })
+  })
+
+  describe("data dir of a bundled CLI tool (docs/design/app-bundled-tool-data-dir.md)", () => {
+    const NAME = "AGENTPROTO_APP_DATA_DIR"
+    const ambient = process.env[NAME]
+    afterEach(() => {
+      if (ambient === undefined) delete process.env[NAME]
+      else process.env[NAME] = ambient
+    })
+
+    /** A bundled tool whose driver prints the data dir variable and the cwd
+     *  it sees; `pass` is what the driver declares in sandbox.env.pass. */
+    async function buildDataDirApp(pass: string[]): Promise<void> {
+      await writeBundledManifest(dir, "tools", "where", "TOOL.md", {
+        schema: "agentproto/tool/v1",
+        id: "where",
+        name: "Where",
+        description: "Reports the data dir the subprocess sees.",
+        version: "1.0.0",
+        inputs: { type: "object", properties: {} },
+        outputs: { type: "object", required: ["dataDir"], properties: { dataDir: { type: ["string", "null"] } } },
+      })
+      await writeBundledManifest(dir, "drivers", "where-cli", "DRIVER.md", {
+        schema: "agentproto/driver/v1",
+        id: "where-cli",
+        name: "Where CLI Driver",
+        description: "Echoes AGENTPROTO_APP_DATA_DIR.",
+        version: "1.0.0",
+        kind: "cli",
+        implements: [
+          {
+            tool: "where",
+            version: "*",
+            metadata: {
+              cli: {
+                argv: [
+                  "-e",
+                  "console.log(JSON.stringify({dataDir: process.env.AGENTPROTO_APP_DATA_DIR ?? null}))",
+                ],
+                outputFormat: "json",
+              },
+            },
+          },
+        ],
+        metadata: { cli: { bin: process.execPath, sandbox: { env: { pass } } } },
+      })
+    }
+
+    async function callWhere(dataDir: string | undefined): Promise<unknown> {
+      const appRegistry = createAppRegistry()
+      appRegistry.upsertApp({
+        appId: "@test/where-app",
+        dir,
+        ...(dataDir !== undefined ? { dataDir } : {}),
+        agents: [],
+        workflows: [],
+        unvalidatedAgentTools: [],
+        ui: { path: join(dir, "index.html"), tools: ["where"] },
+      })
+      const { client } = await setup({ appRegistry })
+      const res = await client.callTool({
+        name: "app_tool_call",
+        arguments: { appId: "@test/where-app", tool: "where", args: {} },
+      })
+      expect(isError(res)).toBe(false)
+      return parseToolJson(res)
+    }
+
+    it("hands the registered dataDir to a driver that declares AGENTPROTO_APP_DATA_DIR", async () => {
+      delete process.env[NAME]
+      await buildDataDirApp([NAME])
+      expect(await callWhere("/registered/real-data")).toEqual({ dataDir: "/registered/real-data" })
+    })
+
+    it("the registered dataDir wins over the daemon's own AGENTPROTO_APP_DATA_DIR", async () => {
+      process.env[NAME] = "/ambient/other"
+      await buildDataDirApp([NAME])
+      expect(await callWhere("/registered/real-data")).toEqual({ dataDir: "/registered/real-data" })
+    })
+
+    it("a driver that does not declare the variable gets nothing", async () => {
+      delete process.env[NAME]
+      await buildDataDirApp(["PATH"])
+      expect(await callWhere("/registered/real-data")).toEqual({ dataDir: null })
+    })
+
+    it("an installed record without a dataDir injects nothing (unchanged behaviour)", async () => {
+      delete process.env[NAME]
+      await buildDataDirApp([NAME])
+      expect(await callWhere(undefined)).toEqual({ dataDir: null })
+    })
   })
 
   it("runs the app driver for the app tool step and the daemon passthrough for the other — agent-free", async () => {
@@ -2801,7 +2970,8 @@ describe("app_tool_call", () => {
       }),
     )
     expect(res).toEqual({ alias: "github", tool: "list_repos", args: { q: "x" } })
-    expect(callImportedTool).toHaveBeenCalledWith("github", "list_repos", { q: "x" })
+    // No `caller` in these deps: no caller session reaches the import.
+    expect(callImportedTool).toHaveBeenCalledWith("github", "list_repos", { q: "x" }, undefined)
   })
 
   it("rejects a tool that is not in the app's ui.tools allowlist", async () => {

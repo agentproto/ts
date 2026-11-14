@@ -11,6 +11,7 @@
  *   - a real OS-sandbox write attempt against the zones the host handed over.
  */
 
+import { HOST_CALLER } from "../caller-scope.js"
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir, userInfo } from "node:os"
@@ -145,7 +146,7 @@ describe("boundaryRestartOptions", () => {
 
 async function fsClient(boundary: AppBoundary) {
   const server = new McpServer({ name: "test-fs", version: "0.0.1" })
-  registerFsTools(server, { workspace: daemonWorkspace, boundary })
+  registerFsTools(server, { workspace: daemonWorkspace, boundary, callerScope: HOST_CALLER })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "test-client", version: "0.0.1" })

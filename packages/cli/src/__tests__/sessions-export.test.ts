@@ -151,6 +151,33 @@ describe("agentproto sessions export — dispatch", () => {
     expect(calledUrl).toContain("format=json")
   })
 
+  it("passes --harness as ?harness=, and the deprecated --adapter the same way with a warning", async () => {
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18790", token: "tok" },
+      stale: [],
+    })
+    httpGetJson.mockResolvedValue({
+      sessionId: "sess_005",
+      adapter: "hermes",
+      format: "markdown",
+      meta: {},
+      content: "# Hermes",
+    })
+
+    await runSessions(["export", "sess_005", "--harness", "hermes"])
+    const canonicalUrl = (httpGetJson.mock.calls[0] as [string])[0]
+    expect(canonicalUrl).toContain("harness=hermes")
+    expect(canonicalUrl).not.toContain("adapter=")
+    expect(stderrChunks.join("")).not.toContain("deprecated")
+
+    await runSessions(["export", "sess_005", "--adapter", "hermes"])
+    const legacyUrl = (httpGetJson.mock.calls[1] as [string])[0]
+    expect(legacyUrl).toContain("harness=hermes")
+    expect(stderrChunks.join("")).toContain(
+      "agentproto sessions export: `--adapter` is deprecated and will be removed in the next major of @agentproto/runtime; use `--harness`",
+    )
+  })
+
   it("passes --source through to the query string", async () => {
     discoverDaemon.mockResolvedValue({
       found: { url: "http://127.0.0.1:18790", token: "tok" },

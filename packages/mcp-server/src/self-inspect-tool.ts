@@ -122,7 +122,7 @@ export async function selfInspect(
   workspace: string,
 ): Promise<SelfInspectResult> {
   // Hand-authored manifests live at `.agents/<id>/`; manifests emitted from a
-  // TS app (@agentproto/app-kit `emit`) live under the runtime-owned base
+  // TS app (@agentproto/app `emit`) live under the runtime-owned base
   // `.agentproto/agents/<id>/`. Discover both so an emitted app is inspectable
   // without the caller knowing which authoring path produced it.
   const candidatePaths = [

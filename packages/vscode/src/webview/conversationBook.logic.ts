@@ -176,6 +176,7 @@ export function fillChapter(chapter: BookChapter, turn: PresentedTurn): void {
       case "plan":
       case "error":
       case "agent-question":
+      case "mode-changed":
         chapter.notices.push(seg)
         break
       // A stray "user" segment inside an assistant turn shouldn't happen; ignore.

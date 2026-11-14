@@ -1,0 +1,68 @@
+/* DESIGN TOKENS | static contract, no build step required.
+   Plain CSS custom properties; override them on :root (or on a [data-kit]
+   block) to restyle every component without touching the HTML.
+
+   Universal colours:
+   --color-background: workspace background; --color-surface: panels and cards.
+   --color-ink: primary text; --color-ink-muted: metadata and labels.
+   --color-accent: selection and primary action; --color-accent-fg: text on top of it.
+   --color-border: separators; --color-border-strong: hover outlines.
+   --color-success: green controls; --color-warning: waiting and blocked.
+   --color-error: failure, rejection and diff deletions; --color-info: agent processing.
+   Derived automatically:
+   --color-surface-raised: previews and fields; --color-sidebar: navigation.
+   --color-{accent,success,warning,error,info}-soft: tinted badge and state backgrounds.
+   --color-ring: keyboard focus; --color-shadow: shadow tint; --color-overlay: modal veil.
+   Typography: --font-body-family: UI; --font-heading-family: headings;
+   --font-mono-family: identifiers, traces and diffs. --text-{xs,sm,body,md,lg,xl,display}
+   sets the scale; --weight-{normal,medium,semibold,bold} the weight;
+   --leading-{tight,body} the line height; --tracking-heading the heading tracking.
+   Geometry: --space-{1,2,3,4,5,6,7,8,10,12}: 4 px spacing grid;
+   --rounded-{sm,md,lg,full}: radii; --shadow-{sm,lg}: card / window elevation;
+   --sidebar-width: navigation width; --content-width: maximum content width.
+   [data-kit] picks palette and radii; [data-mode] picks light or dark, no network.
+   Two kits ship in the box. Their attribute values are data-kit="workshop"
+   (radii 4/8/14/9999 px) and data-kit="forge" (3/6/10/9999 px); the public
+   names exposed by kit.js are "paper" and "graphite", see README.md.
+*/
+:root {
+ --color-background:#f7f6f2; --color-surface:#fffefa; --color-surface-raised:var(--color-surface);
+ --color-sidebar:color-mix(in srgb,var(--color-ink) 4%,var(--color-background)); --color-ink:#282923; --color-ink-muted:#686a60;
+ --color-accent:#805214; --color-accent-soft:color-mix(in srgb,var(--color-accent) 11%,var(--color-surface)); --color-accent-fg:#ffffff;
+ --color-border:#deded4; --color-border-strong:#b9bdad; --color-success:#2b694d;
+ --color-success-soft:color-mix(in srgb,var(--color-success) 9%,var(--color-surface)); --color-warning:#835c12; --color-warning-soft:color-mix(in srgb,var(--color-warning) 10%,var(--color-surface));
+ --color-error:#a63a3a; --color-error-soft:color-mix(in srgb,var(--color-error) 8%,var(--color-surface)); --color-info:#3c607d; --color-info-soft:color-mix(in srgb,var(--color-info) 8%,var(--color-surface));
+ --color-ring:var(--color-accent); --color-overlay:color-mix(in srgb,var(--color-ink) 30%,transparent); --color-shadow:color-mix(in srgb,var(--color-ink) 7%,transparent);
+ --font-body-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+ --font-heading-family:var(--font-body-family); --font-mono-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+ --text-xs:11px; --text-sm:12px; --text-body:13px; --text-md:14px; --text-lg:17px; --text-xl:24px; --text-display:32px;
+ --weight-normal:400; --weight-medium:500; --weight-semibold:600; --weight-bold:700;
+ --leading-tight:1.25; --leading-body:1.55; --tracking-heading:-.025em;
+ --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px; --space-7:28px; --space-8:32px; --space-10:40px; --space-12:48px;
+ --rounded-sm:4px; --rounded-md:8px; --rounded-lg:14px; --rounded-full:9999px;
+ --shadow-sm:0 1px 3px var(--color-shadow); --shadow-lg:0 12px 32px var(--color-shadow);
+ --sidebar-width:208px; --content-width:1280px;
+}
+:root[data-kit="forge"] {
+ --rounded-sm:3px; --rounded-md:6px; --rounded-lg:10px; --rounded-full:9999px;
+ --color-background:#20231f; --color-surface:#292d27; --color-ink:#efeee7; --color-ink-muted:#b1b5a8;
+ --color-accent:#e6b96d; --color-accent-fg:#28251e;
+ --color-border:#444b3e; --color-border-strong:#646e5a; --color-success:#9bc9a6; --color-warning:#e5c07d;
+ --color-error:#ecaaa4; --color-info:#a3c5e0;
+
+}
+
+/* Complementary modes: adaptations of the two base palettes.
+   Geometry stays that of the kit: paper 4/8/14 px, graphite 3/6/10 px.
+   The base palettes are paper light (data-kit="workshop") and graphite dark
+   (data-kit="forge"). */
+:root[data-kit="workshop"][data-mode="dark"] {
+ --color-background:#24211d; --color-surface:#2e2a25; --color-ink:#f4eee6; --color-ink-muted:#bdb2a5;
+ --color-accent:#e7b277; --color-accent-fg:#282019; --color-border:#51483d; --color-border-strong:#82715e;
+ --color-success:#a1d3b3; --color-warning:#edcc91; --color-error:#f2b1aa; --color-info:#a9cde8;
+}
+:root[data-kit="forge"][data-mode="light"] {
+ --color-background:#f2f3f5; --color-surface:#ffffff; --color-ink:#20252c; --color-ink-muted:#606a77;
+ --color-accent:#85541b; --color-accent-fg:#ffffff; --color-border:#d5d9df; --color-border-strong:#9fa9b6;
+ --color-success:#276b48; --color-warning:#825818; --color-error:#ac3434; --color-info:#315f87;
+}

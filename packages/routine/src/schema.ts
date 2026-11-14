@@ -33,14 +33,21 @@ const targetToolSchema = z
   })
   .strict()
 
+/** The error for a `target.agent` block still using the pre-AIP-41-rename key. */
+const TARGET_AGENT_ADAPTER_RENAMED =
+  "`target.agent.adapter` was renamed to `target.agent.harness` (AIP-41); write `harness: <slug>`"
+
 const targetAgentSchema = z
   .object({
     agent: z
       .object({
-        adapter: z.string().min(1).describe("Agent adapter slug (e.g. 'claude-code', 'hermes')."),
+        harness: z.string().min(1).describe("AIP-45 harness slug (e.g. 'claude-code', 'hermes')."),
         prompt: z.string().min(1).describe("Initial prompt / consigne sent to the spawned agent."),
-        model: z.string().min(1).describe("Optional model identifier forwarded to the adapter.").optional(),
+        model: z.string().min(1).describe("Optional model identifier forwarded to the harness.").optional(),
         cwd: z.string().min(1).describe("Working directory for the spawned session.").optional(),
+        // AIP-41 renamed `adapter` to `harness`. Declared (never valid) so the
+        // old key fails naming the new one instead of passing through below.
+        adapter: z.never({ error: TARGET_AGENT_ADAPTER_RENAMED }).optional(),
       })
       // Any other `agent_start` field (access, role, worktree, …) passes
       // through: the runtime validates the whole object against agent_start's
@@ -144,3 +151,30 @@ const routineScheduleSchema = z
 export const routineFrontmatterSchema = z.object({ "schema": z.literal("routine/v1"), "id": z.string().regex(new RegExp("^[a-z0-9@][a-z0-9.@/_-]*$")).min(2).max(80).describe("Machine identifier. Lowercase, digits, dashes, dots, optional @owner/ prefix. Unique within the registry that hosts the routine."), "description": z.string().min(1).max(2000).describe("One-paragraph purpose."), "version": z.string().regex(new RegExp("^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$")).describe("Spec version of THIS file.").default("1.0.0"), "schedule": routineScheduleSchema, "target": routineTargetSchema, "identity": z.any().describe("Identity that owns the routine fire (AIP-23). Defaults to host policy.").optional(), "retry": z.any().describe("Retry behaviour on failure.").optional(), "on_failure": z.any().describe("Where to route failures after retries exhaust.").optional(), "history": z.any().describe("Run history retention.").optional(), "fires_events": z.array(z.string().min(1)).describe("AIP-37 LIFECYCLE event names this routine fires.").default(["routine-triggered","routine-completed","routine-failed"]), "enabled": z.boolean().describe("If false, routine registers but does not fire. Useful for staging.").default(true), "tags": z.array(z.string()).describe("Free-form discovery tags.").default([] as never), "metadata": z.record(z.string(), z.any()).describe("Free-form, namespaced.").optional() }).strict().describe("Validates the YAML frontmatter portion of an AIP-41 ROUTINE.md manifest. Decouples 'when' (schedule) from 'what' (target action/workflow/tool).")
 
 export type RoutineFrontmatter = z.infer<typeof routineFrontmatterSchema>
+
+type ZodIssue = z.core.$ZodIssue
+
+/**
+ * Format zod issues as `path: message; …`. A union issue (the `target` arms)
+ * is expanded into the one arm the author meant, the only arm whose root key
+ * matched (no unrecognized key at its root), so `target.agent.adapter` reports
+ * its own message instead of a bare "Invalid input".
+ */
+export function formatRoutineIssues(issues: readonly ZodIssue[]): string {
+  return flattenIssues(issues, [])
+    .map((i) => `${i.path.join(".")}: ${i.message}`)
+    .join("; ")
+}
+
+function flattenIssues(issues: readonly ZodIssue[], prefix: PropertyKey[]): ZodIssue[] {
+  return issues.flatMap((issue) => {
+    const path = [...prefix, ...issue.path]
+    if (issue.code === "invalid_union") {
+      const meant = issue.errors.filter(
+        (arm) => !arm.some((i) => i.code === "unrecognized_keys" && i.path.length === 0),
+      )
+      if (meant.length === 1) return flattenIssues(meant[0]!, path)
+    }
+    return [{ ...issue, path }]
+  })
+}

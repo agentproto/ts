@@ -60,12 +60,13 @@ Pick whichever matches what you're trying to do:
 - [`agentproto onboard`](./verbs/onboard.md) — alias of the `setup` wizard
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
-- [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
+- [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, answer harness questions, or auto-resolve with `watch` rules
 - [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
 - [`agentproto review`](./verbs/review.md) — run, verify and scaffold REVIEW.md reviews (pre-push hook + GitHub Actions shim)
 - [`agentproto provider-preset`](./verbs/presets.md) — list provider gateway definitions + key-env status
 - [`agentproto preset`](./verbs/preset.md) — manage saved user spawn configurations
 - [`agentproto quota`](./verbs/quota.md) — live provider quota for a named auth profile (AIP-67)
+- [`agentproto accounts`](./verbs/accounts.md) — account slots (`slot:claude-primary`): list them, swap a primary/secondary pair, move alive sessions
 - [`agentproto remote`](./verbs/remote.md) — publish this gateway (or another local port) to the internet via Cloudflare, bearer-gated
 - [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
@@ -81,7 +82,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto workflow`](./verbs/workflow.md) — start, inspect, and cancel background workflow runs on the daemon
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces; `check` verifies an AIP-34 workspace/v2 tree
 - [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
-- [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue
+- [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue, operator approve/restore
 - [`agentproto maintain`](./verbs/maintain.md) — plan/review (and optionally apply) branch + worktree + sandbox checkpoint gc for a repo, via the built-in `repo-maintenance` app's workflow
 - [`agentproto steward`](./verbs/steward.md) — judge idle agent sessions, then close or flag them with a recorded outcome, via the built-in `session-steward` app's workflow (dry run by default)
 
@@ -106,6 +107,7 @@ Pick whichever matches what you're trying to do:
 - [Sandboxes and rendezvous: boot-and-drive vs. attach](./guides/sandbox-rendezvous.md) — connection models, keeping a box reachable, and the cost tradeoffs
 - [Hand off from Claude Code to Codex](./guides/handoff.md) — checkpoint a session and continue its work on another harness, with `--dry-run`
 - [Harness upgrades](./guides/harness-upgrades.md) — keep the agent CLIs adapters spawn current: `harness outdated|check|upgrade`, the pinned-npx rule, range guard, rollback, and a weekly report cron
+- [Find out why your daemon looks big](./guides/daemon-memory.md): read the `[heap]` floor, `GET /debug/heap`, heap snapshots, and the boot-resume levers on live session count
 
 ### File reference
 

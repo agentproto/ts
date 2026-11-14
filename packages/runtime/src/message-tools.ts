@@ -10,20 +10,41 @@
  * gateway-verified caller identity and the session tree.
  */
 
+import { homedir } from "node:os"
+import { join } from "node:path"
+
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
+import type { Grant } from "@agentproto/policy"
+
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import {
+  shadowDeliveryGrant,
+  type DeliveryApplyConfig,
+  type Level,
+} from "@agentproto/delivery"
+
+import { sendMessageWithDeadRecipientRoute } from "./message-dead-route.js"
+import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
-import { decide, type PermissionContext } from "./permissions.js"
+import { ANONYMOUS_SEND_RULE, REPLY_RULE, decide, type PermissionContext } from "./permissions.js"
+import { isExternalInboxOpen, isRetired } from "./session-retirement.js"
+import { warnPeerUnverified } from "./workspace-binding.js"
 import {
+  DECLARED_CC_ADDRESS,
+  SHARED_CLAUDE_DESKTOP_ID,
   createSessionMessage,
+  declaredSenderPrefix,
   messageFrom,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
   type MessageFilter,
   type MessageKind,
   type MessageUrgency,
+  replyToUnverifiedSenderPrefix,
+  unverifiedSenderPrefix,
   type SessionMessage,
 } from "./session-message.js"
 
@@ -56,12 +77,44 @@ export interface RegisterMessageToolsOptions {
    *  group, even without a tree edge and even when the same-workspace
    *  allowance is off. Empty (the default) = no cross-workspace link. */
   peerGroups?: readonly (readonly string[])[]
+  /** `defaults.messaging.grants` - explicit AIP-38 `session:message` grants.
+   *  A matching allow admits a pair the tree and switches refuse. */
+  messagingGrants?: readonly Grant[]
+  /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
+  peerBinding?: "slug" | "verified"
+  /** cwd to registered workspace slug, for the verified peer binding. */
+  workspaceOfCwd?: (cwd: string) => string | undefined
   /** `defaults.messaging.agentInterrupt: "allow"` — let a session sender's
    *  `interrupt` cancel the recipient's turn. Off by default (→ `steer`). */
   allowInterrupt?: boolean
+  /** `defaults.messaging.anonymousSend` - "label" (default) or "block". */
+  anonymousSend?: "block" | "label"
+  /** `mcp.noCallerIdentity` — how a call with no caller identity is handled.
+   *  `block` (default) keeps the refusal; `accept` lets an identity-less
+   *  `message_send` go out as the anonymous `claude-code` sender; `ask`
+   *  parks that send on a human approval. */
+  noCallerIdentity?: "block" | "ask" | "accept"
+  /** `ask` mode: raise a human approval for an identity-less send and
+   *  resolve true only when it is approved. Absent ⇒ `ask` degrades to the
+   *  `block` refusal (reported in the error text). */
+  requestAnonymousMessageApproval?: (detail: AnonymousMessageApprovalDetail) => Promise<boolean>
+  /** `delivery.apply` (K6 funnel). A `message.*` type opted in routes a
+   *  message to a dead recipient to its live parent. Absent = off. */
+  deliveryApply?: DeliveryApplyConfig
+  /** Delivery ledger file for the lines the funnel writes (tests). Default
+   *  `<AGENTPROTO_HOME or ~/.agentproto>/delivery-ledger.jsonl`. */
+  ledgerPath?: string
 }
 
-type ToolResult = {
+/** What an `ask` approval gate is asked to allow. */
+export interface AnonymousMessageApprovalDetail {
+  to: string
+  text: string
+  kind: MessageKind
+  urgency: MessageUrgency
+}
+
+export type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
 }
@@ -90,6 +143,56 @@ const noFromField = z
   .optional()
   .describe("Not settable — leave it out: the daemon attests the sender from your session identity.")
 
+/** A session an address can still reach: not retired, and either running or
+ *  an external row whose inbox is open (the same test the session-follow
+ *  delivery gate uses). */
+export const isLiveRecipient = (d: SessionDescriptor): boolean =>
+  !isRetired(d) && (d.status === "running" || d.status === "starting" || isExternalInboxOpen(d))
+
+/** `label:<label>` resolves to the ONE live session whose immutable,
+ *  operator-assigned `operatorLabel` equals `<label>` exactly (the notion
+ *  `allowPromptFrom: "label:..."` and `session_labels` use; the mutable
+ *  `label` a session or its spawner can set never matches). It only picks the
+ *  target: the caller then runs its usual permission check on the resolved
+ *  session, so a label never widens who can be reached. Any other `to` passes
+ *  through unchanged. Shared by `message_send` and the drive tools
+ *  (`agent_prompt` / `agent_interrupt` / `agent_kill`); `mayReach` decides
+ *  which candidates an `ambiguous_label` error may name. */
+export function resolveLiveLabelAddress(input: {
+  registry: SessionsRegistry
+  tool: string
+  to: string
+  mayReach: (d: SessionDescriptor) => boolean
+  /** What the caller may not do to the hidden candidates, for the error text. */
+  verb?: "message" | "drive"
+}): { id: string } | ToolResult {
+  const { registry, tool, to, mayReach, verb = "message" } = input
+  if (!to.startsWith("label:")) return { id: to }
+  const label = to.slice("label:".length)
+  if (label.trim() === "") {
+    return fail("invalid_label", `${tool}: \`label:\` needs a label after the colon.`)
+  }
+  const live = registry.list().filter(d => d.operatorLabel === label && isLiveRecipient(d))
+  if (live.length === 0) {
+    return fail(
+      "no_live_session_for_label",
+      `${tool}: no live session carries the label "${label}". A killed or retired session never matches.`,
+    )
+  }
+  if (live.length > 1) {
+    const reachable = live.filter(mayReach)
+    const hidden = live.length - reachable.length
+    const ids = reachable.map(d => d.id).join(", ")
+    return fail(
+      "ambiguous_label",
+      `${tool}: ${live.length} live sessions carry the label "${label}"; none was picked. ` +
+        `Address one by session id${ids ? `: ${ids}` : ""}` +
+        `${hidden > 0 ? ` (${hidden} more you may not ${verb})` : ""}.`,
+    )
+  }
+  return { id: live[0]!.id }
+}
+
 /** Compact wire view of a message for tool results. */
 function view(m: SessionMessage): Record<string, unknown> {
   return {
@@ -101,6 +204,7 @@ function view(m: SessionMessage): Record<string, unknown> {
     text: m.text,
     ...(m.data !== undefined ? { data: m.data } : {}),
     ...(m.replyTo ? { replyTo: m.replyTo } : {}),
+    ...(m.replyAddress ? { replyAddress: m.replyAddress } : {}),
     ...(m.correlationId ? { correlationId: m.correlationId } : {}),
     ...(m.delivered ? { delivered: m.delivered } : {}),
   }
@@ -114,14 +218,23 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   /** `defaults.messaging.peerGroups` - the operator's workspace families.
    *  Empty (the default) = no cross-workspace link. */
   const peerGroups = opts.peerGroups ?? []
-  const policy: PermissionContext = {
-    messaging: {
+  /** `defaults.messaging.anonymousSend` - "label" unless the operator set "block". */
+  const anonymousSendMode: "block" | "label" = opts.anonymousSend ?? "label"
+  // One shared messaging context (messaging-context.ts) so the tools,
+  // `POST /sessions/:id/messages` and `permissions_explain` cannot drift.
+  const basePolicy: PermissionContext = buildMessagingPermissionContext({
+    defaults: {
       allowSiblings: allowSiblings === true,
       allowSameWorkspace,
       peerGroups,
+      peerBinding: opts.peerBinding ?? "slug",
       agentInterrupt: allowInterrupt ? "allow" : "deny",
+      anonymousSend: anonymousSendMode,
+      grants: opts.messagingGrants ?? [],
     },
-  }
+    registry,
+    ...(opts.workspaceOfCwd ? { workspaceOfCwd: opts.workspaceOfCwd } : {}),
+  })
 
   /** The verified caller, or a tool error explaining why there's none. */
   const resolveCaller = (tool: string): SessionDescriptor | ToolResult => {
@@ -141,31 +254,221 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   const isResult = (v: unknown): v is ToolResult =>
     typeof v === "object" && v !== null && "content" in v
 
+  const noCallerIdentity = opts.noCallerIdentity ?? "block"
+  /** The id this gateway was told about, if any (absence is the
+   *  identity-less case `noCallerIdentity` governs). */
+  const rawCallerId = callerScope?.ownerSessionId ?? callerSessionId
+
+  /** `cc:<id>` is always a declared address; any other value that names a
+   *  live session is one too; `msg_*` stays a message thread id. Anything
+   *  else is rejected rather than silently reinterpreted. */
+  const classifyReplyTo = (
+    value: string,
+    tool: string,
+  ): { replyTo?: string; replyAddress?: string } | ToolResult => {
+    if (value.startsWith("msg_")) return { replyTo: value }
+    const declared = /^(?:cc:)?[A-Za-z0-9._-]{1,128}$/.test(value)
+    if ((declared && value.startsWith("cc:")) || registry.get(value)) {
+      return { replyAddress: value }
+    }
+    return fail(
+      "invalid_reply_to",
+      `${tool}: replyTo "${value}" is neither a message id (msg_…) nor a declared ` +
+        "caller address (cc:<id> or a live session id).",
+    )
+  }
+
+  const resolveLabelAddress = (
+    tool: string,
+    to: string,
+    self: SessionDescriptor | undefined,
+  ): { id: string } | ToolResult => {
+    // List only sessions the caller may message, so the ambiguity error
+    // cannot be used to enumerate sessions it has no relation to.
+    const principal = self
+      ? ({ kind: "session", session: self } as const)
+      : ({ kind: "operator", via: "anonymous-local" } as const)
+    return resolveLiveLabelAddress({
+      registry,
+      tool,
+      to,
+      mayReach: d => decide(principal, "session.message", { kind: "session", session: d } as const, basePolicy).allow,
+    })
+  }
+
+  /** An identity-less client asks to send under `accept`/`ask`: only
+   *  `message_send` may act, and always as the anonymous `claude-code`
+   *  sender — never as a session. */
+  const anonymousSend = async (
+    tool: string,
+    to: string,
+    input: {
+      text: string
+      kind?: MessageKind
+      urgency?: MessageUrgency
+      replyTo?: string
+      replyAddress?: string
+      correlationId?: string
+      data?: Record<string, unknown>
+      from?: unknown
+    },
+  ): Promise<ToolResult> => {
+    if (noCallerIdentity === "block") {
+      return fail(
+        "no_caller_identity",
+        `${tool}: cannot identify the calling session. Config \`mcp.noCallerIdentity\` ` +
+          "is \"block\"; set it to \"accept\" (or \"ask\") to allow an anonymous send.",
+      )
+    }
+    const target = resolveLabelAddress(tool, to, undefined)
+    if (isResult(target)) return target
+    const toId = target.id
+    const kind = input.kind ?? "report"
+    const urgency = input.urgency ?? defaultUrgencyForKind(kind)
+    if (noCallerIdentity === "ask") {
+      const request = opts.requestAnonymousMessageApproval
+      if (!request) {
+        return fail(
+          "no_caller_identity",
+          `${tool}: config \`mcp.noCallerIdentity\` is \"ask\", but no approval channel ` +
+            "is wired into this gateway; the send is refused.",
+        )
+      }
+      let approved = false
+      try {
+        approved = await request({ to: toId, text: input.text, kind, urgency })
+      } catch {
+        approved = false
+      }
+      if (!approved) {
+        return fail(
+          "anonymous_not_approved",
+          `${tool}: an identity-less send to "${toId}" was not approved.`,
+        )
+      }
+    }
+    return send(tool, undefined, toId, { ...input, kind, urgency }, true)
+  }
+
+  /** What an `accept` reader can do instead of reading a nonexistent inbox. */
+  const anonymousReadHint = (tool: string): ToolResult =>
+    ok({
+      messages: [],
+      anonymous: true,
+      hint:
+        `${tool}: this caller has no session identity, so it has no inbox to read. ` +
+        "To receive replies, pass your own session id as `replyTo` on `message_send` " +
+        "(cc:<id> or the session id) so the recipient knows where to address a reply; " +
+        "read your inbox through your harness hook instead.",
+    })
+
+  /** One ledger line per funnel-applied send (the producer is `message`; the
+   *  target stays the addressed session, `routedTo` names the parent that
+   *  took it). Nothing is written while the funnel is off. */
+  const writeFunnelLedger = (
+    msg: SessionMessage,
+    self: SessionDescriptor | undefined,
+    targetId: string,
+    r: { queued: boolean; delivered: { via: string } | null; refused?: "inbox-full" },
+    routedTo: string | undefined,
+  ): void => {
+    const level: Level = msg.urgency === "fyi" ? 1 : msg.urgency === "next-turn" ? 2 : 3
+    const outcome =
+      r.refused !== undefined
+        ? "dropped"
+        : routedTo !== undefined
+          ? "retargeted"
+          : r.queued
+            ? "queued"
+            : r.delivered?.via === "inbox"
+              ? "inbox"
+              : "delivered"
+    appendLedgerLine(
+      opts.ledgerPath ??
+        join(process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto"), DELIVERY_LEDGER_FILE),
+      {
+        ts: new Date().toISOString(),
+        producer: "message",
+        subscriptionId: "message:tool",
+        target: { kind: "session", id: targetId },
+        eventId: msg.id,
+        type: `message.${msg.kind ?? "message"}`,
+        subject: self?.id ?? "claude-code",
+        level,
+        cap: 3,
+        rule: "sender-urgency",
+        applied: true,
+        grant: shadowDeliveryGrant({ producer: {}, subject: self?.id ?? "claude-code", target: targetId }),
+        outcome,
+        ...(routedTo !== undefined ? { routedTo } : {}),
+        messageId: msg.id,
+      },
+    )
+  }
+
   /** Shared send path for `message_send` / `message_reply`. */
   const send = async (
     tool: string,
-    self: SessionDescriptor,
+    self: SessionDescriptor | undefined,
     toId: string,
     input: {
       text: string
       kind?: MessageKind
       urgency?: MessageUrgency
       replyTo?: string
+      replyAddress?: string
       correlationId?: string
       data?: Record<string, unknown>
       from?: unknown
+      /** Validated `cc:<id>` from the shared `claude-desktop` caller. */
+      declaredSender?: string
     },
+    anonymous = false,
   ): Promise<ToolResult> => {
     if (input.from !== undefined) {
       return fail("from_not_settable", `${tool}: \`from\` is not settable — the daemon attests the sender.`)
     }
     const recipient = registry.get(toId)
     if (!recipient) return fail("no_such_session", `${tool}: session "${toId}" does not exist.`)
-    // One ACL for every messaging entry point (permissions.ts).
-    const principal = { kind: "session", session: self } as const
+    // A reply to a message the caller received is admitted whatever the
+    // relation (permissions.ts REPLY_RULE); the context carries the lookup.
+    const policy: PermissionContext =
+      self && input.replyTo?.startsWith("msg_")
+        ? {
+            ...basePolicy,
+            reply: {
+              messageId: input.replyTo,
+              originalSenderOf: (id, mid) => registry.findReceivedMessage(id, mid)?.from.sessionId,
+            },
+          }
+        : basePolicy
+    // One ACL for every messaging entry point (permissions.ts). An
+    // identity-less caller is evaluated as the operator/human principal,
+    // which is what it already is on the wire (the same principal an
+    // unauthenticated local `/mcp` operator call gets); it is never any
+    // session and never gains a session's grants.
+    const principal = self
+      ? ({ kind: "session", session: self } as const)
+      : ({ kind: "operator", via: "anonymous-local" } as const)
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
+    /** The message answers one the caller received from this recipient: it never interrupts. */
+    const answersReceived =
+      self !== undefined && policy.reply?.originalSenderOf(self.id, policy.reply.messageId) === recipient.id
+    /** The message being answered came from an unverified/anonymous sender: label the reply too. */
+    const originalFrom =
+      answersReceived && self && input.replyTo ? registry.findReceivedMessage(self.id, input.replyTo)?.from : undefined
+    const originalUnverified = originalFrom?.unverified === true || originalFrom?.anonymous === true
+    const replyToUnverified = self !== undefined && decision.rule === REPLY_RULE && originalUnverified
     const relation = decision.relation
+    if (self && decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
+      warnPeerUnverified({
+        senderId: self.id,
+        recipientId: recipient.id,
+        slug: self.workspaceSlug,
+        rule: decision.rule,
+      })
+    }
     if (!decision.allow || !relation) {
       return fail(
         "forbidden_recipient",
@@ -183,38 +486,96 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const kind = input.kind ?? "report"
     const urgency = input.urgency ?? defaultUrgencyForKind(kind)
+    // `defaults.messaging.anonymousSend: "label"`: an identity-less caller, or
+    // a session sender admitted only because its identity is unverified, is
+    // delivered with a visible text prefix and capped at steer. "block"
+    // leaves an anonymous sender exactly as before (operator principal).
+    const labelled =
+      anonymousSendMode === "label" && (self
+        ? decision.rule === ANONYMOUS_SEND_RULE || replyToUnverified
+        : anonymous)
+    // The shared `claude-desktop` caller named its real Claude Code session.
+    // Declared, never proven: it changes the header text and reply address
+    // only; the permission checks above ran on the real caller identity, and
+    // it can never interrupt.
+    const declared = self ? input.declaredSender : undefined
+    const labelPrefix = labelled
+      ? replyToUnverified
+        ? replyToUnverifiedSenderPrefix(originalFrom?.label ?? originalFrom?.sessionId)
+        : unverifiedSenderPrefix(self ? (self.label ?? self.id) : "claude-code")
+      : ""
+    const textPrefix = declared
+      ? declaredSenderPrefix(declared) + (replyToUnverified ? labelPrefix : "")
+      : labelPrefix
     let msg: SessionMessage
     try {
       msg = createSessionMessage({
         to: recipient.id,
-        from: messageFrom(self, relation),
-        text: input.text,
+        from: self
+          ? { ...messageFrom(self, relation), ...(declared ? { declaredSender: declared } : {}) }
+          : { relation: "human", label: "claude-code", anonymous: true },
+        text: textPrefix + input.text,
         kind,
         urgency,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        ...(input.replyAddress || declared ? { replyAddress: input.replyAddress ?? declared } : {}),
         ...(input.correlationId ? { correlationId: input.correlationId } : {}),
         ...(input.data !== undefined ? { data: input.data } : {}),
       })
     } catch (err) {
       return fail("invalid_message", `${tool}: ${err instanceof Error ? err.message : String(err)}`)
     }
-    const provenance = `${relation}:${self.id}`
+    const provenance = self ? `${relation}:${self.id}` : "anonymous:claude-code"
     try {
       const interrupt = decide(principal, "session.message.interrupt", resource, policy)
-      const r = await registry.sendMessage(msg, {
-        source: provenance,
-        origin: provenance,
-        decision,
-        ...(interrupt.allow ? { allowInterrupt: true } : {}),
-      })
+      const routed = await sendMessageWithDeadRecipientRoute(
+        registry,
+        msg,
+        {
+          source: provenance,
+          origin: provenance,
+          decision,
+          ...(interrupt.allow && !labelled && !answersReceived && !declared ? { allowInterrupt: true } : {}),
+        },
+        opts.deliveryApply,
+        parent => decide(principal, "session.message", { kind: "session", session: parent } as const, policy),
+      )
+      const r = routed.result
+      if (routed.applied) writeFunnelLedger(msg, self, recipient.id, r, routed.routedTo)
       return ok({
         messageId: r.messageId,
-        to: recipient.id,
+        to: routed.routedTo ?? recipient.id,
+        ...(routed.routedTo ? { routedFrom: recipient.id } : {}),
         relation,
         delivered: r.delivered,
         queued: r.queued,
         urgencyApplied: r.urgencyApplied,
-        ...(r.urgencyApplied !== urgency
+        ...(r.wake ? { wake: r.wake } : {}),
+        ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
+        ...(declared
+          ? {
+              declaredSender: declared,
+              declaredNote: `delivered with a declared, unverified sender (${declared}); it is a claim, not proof, and the urgency is never interrupt`,
+            }
+          : {}),
+        ...(labelled
+          ? {
+              ...(replyToUnverified ? { replyToUnverified: true } : { unverified: true }),
+              note: `${
+                replyToUnverified
+                  ? "delivered as a reply to an unverified sender: the recipient sees the original sender as unverified"
+                  : "delivered unverified: the recipient sees the sender as unverified"
+              } and the urgency is capped at steer${
+                r.urgencyApplied !== urgency ? ` ("${urgency}" delivered as "${r.urgencyApplied}")` : ""
+              }`,
+            }
+          : {}),
+        ...(decision.rule === REPLY_RULE && recipient.kind === "external"
+          ? {
+              replyNote: `reply delivered to the external row "${recipient.id}" (its inbox/hook); a shared identity does not record which real session sent the original`,
+            }
+          : {}),
+        ...(!labelled && r.urgencyApplied !== urgency
           ? { note: `urgency "${urgency}" delivered as "${r.urgencyApplied}"` }
           : {}),
       })
@@ -248,28 +609,85 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       "of your parent or one of your direct children - or, while the operator leaves " +
       "`defaults.messaging.allowSameWorkspace` on (the default), to any session of " +
       "your own workspace, or to any session whose workspace sits in the same " +
-      "`defaults.messaging.peerGroups` group as yours. The daemon attests the sender " +
+      "`defaults.messaging.peerGroups` group as yours. `to: \"label:<label>\"` " +
+      "addresses the single LIVE session carrying that operator-assigned label " +
+      "(it survives a restart that changes the session id); the same permission " +
+      "rules then apply to the session it resolves to. The daemon attests the sender " +
       "(you) in the header the recipient sees; you never set it. Not a delegation " +
       "tool: it reaches only neighbours and grants no control. If the recipient is " +
       "blocked in `inbox_wait` it gets the message as that call's result; otherwise " +
       "it lands in its inbox and — unless `fyi` — arrives as its own turn.",
     {
-      to: z.string().min(1).describe('"parent", or the recipient session id.'),
+      to: z
+        .string()
+        .min(1)
+        .describe(
+          '"parent", the recipient session id, or "label:<label>" (the one live session with that operator label).',
+        ),
       ...payloadShape,
       replyTo: z.string().optional().describe("Id of the message this answers."),
       correlationId: z.string().optional().describe("Thread id (defaults to the first message's id)."),
+      declaredSender: z
+        .string()
+        .optional()
+        .describe(
+          "Only from the shared unverified `claude-desktop` identity (Claude Desktop MCP entries): your own " +
+            "Claude Code address `cc:<session_id>`, so the recipient can reply to the real session. Declared, " +
+            "not proven (same trust as `replyTo`): the message stays unverified, capped at steer, and permissions " +
+            "still use the real caller. Refused for any call that carries a session identity.",
+        ),
     },
     async input => {
+      const { declaredSender: rawDeclared, ...sendInput } = input
+      // A declared sender is for the one shared, unverified identity only (the
+      // same boundary as `agent_start.parent`): any call that carries a real
+      // identity, or none, is refused rather than allowed to relabel itself.
+      if (rawDeclared !== undefined) {
+        if (callerScope !== undefined || rawCallerId !== SHARED_CLAUDE_DESKTOP_ID) {
+          return fail(
+            "declared_sender_refused",
+            "message_send: `declaredSender` is only for the shared unverified `claude-desktop` identity; " +
+              "this call " +
+              (rawCallerId ? "is attributed to a session and" : "has no caller identity and") +
+              " the daemon attests the sender itself. Omit `declaredSender`.",
+          )
+        }
+        if (!DECLARED_CC_ADDRESS.test(rawDeclared)) {
+          return fail(
+            "invalid_declared_sender",
+            "message_send: from the shared `claude-desktop` identity, `declaredSender` must be your own " +
+              "declared Claude Code address `cc:<session_id>`.",
+          )
+        }
+      }
+      const routed = input.replyTo !== undefined ? classifyReplyTo(input.replyTo, "message_send") : {}
+      if (isResult(routed)) return routed
       const self = resolveCaller("message_send")
-      if (isResult(self)) return self
+      if (isResult(self)) {
+        // A known-caller-descriptor failure is a real refusal; only an
+        // ABSENT identity is the case `mcp.noCallerIdentity` governs.
+        if (rawCallerId) return self
+        if (input.to === "parent") {
+          return fail("no_parent", "message_send: this caller has no parent session.")
+        }
+        return anonymousSend("message_send", input.to, { ...sendInput, ...routed })
+      }
       let toId = input.to
       if (toId === "parent") {
         if (!self.parentSessionId) {
           return fail("no_parent", "message_send: this session has no recorded parent.")
         }
         toId = self.parentSessionId
+      } else {
+        const target = resolveLabelAddress("message_send", toId, self)
+        if (isResult(target)) return target
+        toId = target.id
       }
-      return send("message_send", self, toId, input)
+      return send("message_send", self, toId, {
+        ...sendInput,
+        ...routed,
+        ...(rawDeclared !== undefined ? { declaredSender: rawDeclared } : {}),
+      })
     },
   )
 
@@ -329,7 +747,10 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     },
     async input => {
       const self = resolveCaller("inbox_list")
-      if (isResult(self)) return self
+      if (isResult(self)) {
+        if (!rawCallerId && noCallerIdentity === "accept") return anonymousReadHint("inbox_list")
+        return self
+      }
       const msgs = registry.listInbox(self.id, {
         ...toFilter(input),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -342,16 +763,39 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     "inbox_ack",
     "Acknowledge (remove) messages from your inbox — by id, or \"all\". An acked " +
       "message still waiting to be delivered as a turn is dropped from that queue " +
-      "too. History stays in your transcript.",
+      "too. History stays in your transcript. Set `noop: true` when you looked and " +
+      "there is nothing to do: it lets the host record this wake as a silent turn " +
+      "instead of mistaking your ack for work.",
     {
       ids: z
         .union([z.literal("all"), z.array(z.string().min(1)).min(1)])
         .describe('Message ids to ack, or "all".'),
+      noop: z
+        .boolean()
+        .optional()
+        .describe(
+          'Set true when you looked and there is nothing to do. Only meaningful ' +
+            'when this call actually acks at least one message; the host records ' +
+            'it, never the message text.',
+        ),
     },
     async input => {
       const self = resolveCaller("inbox_ack")
-      if (isResult(self)) return self
-      return ok(registry.ackInbox(self.id, input.ids))
+      if (isResult(self)) {
+        if (!rawCallerId && noCallerIdentity === "accept") {
+          const read = anonymousReadHint("inbox_ack")
+          return ok({ ...JSON.parse(read.content[0]!.text), acked: [], noop: input.noop === true })
+        }
+        return self
+      }
+      const noop = input.noop === true
+      const before = noop ? (registry.listInbox(self.id) ?? []) : []
+      const result = registry.ackInbox(self.id, input.ids)
+      if (noop && result.acked.length > 0) {
+        const acked = new Set(result.acked)
+        registry.recordNoopAck(self.id, before.filter(m => acked.has(m.id)))
+      }
+      return ok(result)
     },
   )
 
@@ -375,7 +819,13 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     },
     async (input, extra) => {
       const self = resolveCaller("inbox_wait")
-      if (isResult(self)) return self
+      if (isResult(self)) {
+        if (!rawCallerId && noCallerIdentity === "accept") {
+          const read = anonymousReadHint("inbox_wait")
+          return ok({ ...JSON.parse(read.content[0]!.text), timedOut: false, pendingChildren: [] })
+        }
+        return self
+      }
       const signal = (extra as { signal?: AbortSignal } | undefined)?.signal
       const r = await registry.waitForMessages(self.id, toFilter(input), {
         timeoutMs: input.timeoutMs ?? INBOX_WAIT_DEFAULT_MS,

@@ -116,9 +116,29 @@
         },
         "scope": {
           "type": "string",
-          "description": "Optional scope narrowing for this grant (action-specific)."
+          "description": "Optional scope narrowing for this grant (action-specific). For `tool:invoke` (AIP-39), a tool name `<server>/<name>` (AIP-54 tool-body), or a `*`-suffix glob such as `<server>/*`; matching is AIP-38 Scope matching rules 1, 2 and 5."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["action"],
+            "properties": {
+              "action": {
+                "enum": ["tool:invoke", "@agentik/actions/standard/tool-invoke"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "pattern": "^(\\*|[A-Za-z0-9_.-]+\\*|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]*\\*?)$",
+                "description": "Lint for `tool:invoke`: `*`, a `<prefix>*` glob, a full tool name `<server>/<name>`, or a `<server>/<prefix>*` glob. A bare name such as `cron_create` has no server and matches nothing (AIP-38 Tool names)."
+              }
+            }
+          }
+        }
+      ]
     },
     "condition": {
       "type": "object",

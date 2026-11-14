@@ -1,5 +1,35 @@
 # @agentproto/workflow-runtime
 
+## 0.21.0
+
+### Minor Changes
+
+- 0380c2b: Agent workflow steps accept `placement` (an ordered sandbox ladder) and `turnRetry` (usage-limit and rate-limit fallback) selectors, and export the `AgentPlacementRef` and `AgentTurnRetryRef` types. The runtime session host forwards both onto the spawn, and a failed sandbox boot now settles its dedupe claim, so a labelled spawn walking a placement ladder moves on to the next rung instead of waiting on its own failed first attempt. The CI review-lane skill doc now describes the placement ladder and the turn-retry fallback.
+
+## 0.20.3
+
+### Patch Changes
+
+- Updated dependencies [b67f58e]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+  - @agentproto/corpus@1.0.0
+  - @agentproto/driver@0.4.1
+  - @agentproto/tool@0.6.1
+
+## 0.20.2
+
+### Patch Changes
+
+- Updated dependencies [8aa0aeb]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/corpus@0.9.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow@0.8.0
+
 ## 0.20.1
 
 ### Patch Changes

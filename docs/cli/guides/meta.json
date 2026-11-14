@@ -5,18 +5,23 @@
     "central-capabilities",
     "create-agentproto-app",
     "build-your-own-agent-app",
+    "app-services",
     "distribute-an-app",
     "install-apps",
     "app-store",
     "app-agent-tools",
     "a2a",
     "no-admin-install",
+    "phone-pairing",
     "fleets",
     "handoff",
     "gates",
     "cron",
     "harness-upgrades",
     "workflows",
-    "sentinels"
+    "sentinels",
+    "daemon-memory",
+    "agent-comms",
+    "signals-and-wake"
   ]
 }

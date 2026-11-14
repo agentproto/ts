@@ -5,6 +5,7 @@
   "scripts": {
     "build": { "command": "pnpm build" },
     "test": { "command": "pnpm test" },
+    "gate": { "command": "pnpm gate" },
     "check-types": { "command": "pnpm check-types" }
   }
 }

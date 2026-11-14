@@ -269,6 +269,33 @@ describe("createSandboxAgentSessionHost", () => {
     expect(stopBox).not.toHaveBeenCalled()
   })
 
+  it("a throwing daemon-host close() never skips the provider-side release (stop, pause, detach)", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const close = vi.fn(async () => {
+      throw new Error("mcp transport already gone")
+    })
+    connectDaemonAgentSessionHostMock.mockImplementation(async () => fakeHost({ close }))
+    const stopBox = vi.fn(async () => {})
+    const pauseBox = vi.fn(async () => {})
+    const detachBox = vi.fn(async () => {})
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: stopBox,
+        pause: pauseBox,
+        detach: detachBox,
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({ provider, spec, secrets: { slugs: [FAKE_SLUG] } })
+    await host.stop()
+    await host.pause!()
+    await host.detach!()
+    expect(stopBox).toHaveBeenCalledTimes(1)
+    expect(pauseBox).toHaveBeenCalledTimes(1)
+    expect(detachBox).toHaveBeenCalledTimes(1)
+  })
+
   it("omits pause() entirely when the booted sandbox doesn't support it", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     const provider = fakeProvider()

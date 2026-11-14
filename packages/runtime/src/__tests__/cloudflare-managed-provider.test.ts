@@ -207,6 +207,38 @@ describe("probeHostname", () => {
     expect((await probeHostname(f, "d.example.com")).ok).toBe(false)
     expect(await probeHostname(f, "e.example.com")).toMatchObject({ ok: false, reason: /ENOTFOUND/ })
   })
+
+  it("probes the DoH-pinned address and never the system resolver", async () => {
+    const pinned: Array<{ hostname: string; address: string }> = []
+    let systemCalls = 0
+    const result = await probeHostname(
+      async () => {
+        throw new Error("the system-resolver fetch must not be used")
+      },
+      "fresh.example.com",
+      1_000,
+      {
+        resolve: async () => ({ kind: "answer", addresses: ["203.0.113.9"] }),
+        pinnedFetch(hostname, address) {
+          pinned.push({ hostname, address })
+          return async () => ({
+            status: 403,
+            ok: false,
+            headers: { get: () => null },
+            json: async () => ({}),
+            text: async () => "",
+          })
+        },
+        systemLookup: async () => {
+          systemCalls++
+          return []
+        },
+      },
+    )
+    expect(result).toMatchObject({ ok: true })
+    expect(pinned).toEqual([{ hostname: "fresh.example.com", address: "203.0.113.9" }])
+    expect(systemCalls).toBe(0)
+  })
 })
 
 // ── provider ─────────────────────────────────────────────────────────────
@@ -232,6 +264,7 @@ function makeProvider(probeStatus: Record<string, number | Error> = {}) {
     probeFetch: probeFetch(status),
     spawner: sp.spawner,
     healthIntervalMs: 0,
+    publicDns: false,
     supervisor: { now: timers.now, setTimer: timers.setTimer, initialBackoffMs: 10, maxRestarts: 2 },
   })
   return { cf, sp, timers, provider, status }

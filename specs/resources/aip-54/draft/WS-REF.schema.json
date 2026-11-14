@@ -10,7 +10,8 @@
     "ws://wikis/platform/http-server",
     "ws://workspaces/@acme/agentik-studio",
     "ws://roles/seo-specialist",
-    "ws://companies/acme-co/teams/growth"
+    "ws://companies/acme-co/teams/growth",
+    "ws://tools/agentproto/session_list"
   ],
   "x-collection-enum": [
     "operators",

@@ -53,6 +53,8 @@ const OUTCOME_ORDER: readonly WorktreeGcOutcomeView["result"][] = [
   "skipped-dirty",
   "aborted-reclassified",
   "aborted-vanished",
+  "skipped-stale",
+  "removed-keep-branch",
   "failed",
 ]
 

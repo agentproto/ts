@@ -1,5 +1,12 @@
 # @agentproto/computer-api
 
+## 0.4.0
+
+### Minor Changes
+
+- 61e6068: Add common sandbox list and usage surface with W0b fields
+- 61e6068: Add the common sandbox list and usage surface. `@agentproto/sandbox` gains the `SandboxBox` and `SandboxUsageWindow` types plus optional `list()`/`usage()` methods on `SandboxProvider`; `@agentproto/computer-api` gains the `GET /v1/usage` schemas/types and additive W0b list fields; `@agentproto/sandbox-computer` implements `list()`/`usage()` and `ComputerControllerClient.getUsage()`, keeping absent controller fields absent.
+
 ## 0.3.0
 
 ### Minor Changes

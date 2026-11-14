@@ -26,8 +26,8 @@ import {
   type EventsUnsubscribeContext,
 } from "../../mcp-events/adapter.js"
 import { GITHUB_SCHEME, daemonBearerPrincipal, sessionPrincipal } from "../../mcp-events/events-registry.js"
-import { createSentinelStore, type SentinelStore, type SentinelWebhookTargetAtRest } from "../../sentinel-store.js"
-import { createFakeSentinelProvider, makeFakeEvent, type FakeSentinelProvider } from "../../sentinel-providers/fake.js"
+import { createSentinelStore, type SentinelStore, type SentinelWebhookTargetAtRest } from "@agentproto/sentinel"
+import { createFakeSentinelProvider, makeFakeEvent, type FakeSentinelProvider } from "@agentproto/sentinel"
 import type { ChallengeOutcome, ChallengeFailureReason } from "../../webhook-egress/challenge.js"
 
 const PRINCIPAL = daemonBearerPrincipal()

@@ -95,11 +95,12 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
 
   it("llm-endpoint points at the local Anthropic-compatible proxy with no /v1 suffix", () => {
     const ep = getAnthropicGatewayPreset("llm-endpoint")
+    expect(ep.description).toContain("@agentproto/inference-endpoint")
     expect(ep.baseUrl).toBe("http://localhost:18090")
     expect(ep.schemaFlavor).toBe("anthropic")
     // keyEnv MUST be the same var the proxy's inbound gate reads
     // (`parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS)` in
-    // @agentproto/llm-endpoint) — otherwise the profile's presented bearer is
+    // @agentproto/inference-endpoint) — otherwise the profile's presented bearer is
     // read from a var the proxy never checks and the gate 401s. The dead
     // `LLM_ENDPOINT_API_KEY` (read by neither side) must not reappear.
     expect(ep.keyEnv).toBe("LLM_ENDPOINT_ACCESS_TOKENS")

@@ -190,6 +190,60 @@ describe("session_list filters (MCP)", () => {
     expect((res as { isError?: boolean }).isError).toBe(true)
     expect(String(typeof body === "string" ? body : JSON.stringify(body))).toContain("updatedSince")
   })
+
+  it("collapseLineage: default omitted ⇒ a restarted predecessor stays in the list", async () => {
+    const { call, ids } = await harness()
+    // `restartAgentSession` always kills `prev` (SIGTERM, reason "restarted")
+    // once the new row is up — see session-restart-core.ts:2467 — so a real
+    // restarted predecessor is always terminal by the time listing sees it.
+    registry!.kill(ids.main, "SIGTERM", "restarted")
+    const successor = registry!.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/work/app",
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+      label: "pygmalion-brain",
+      resumedFrom: ids.main,
+    } as never).id
+    const got = (await call({})).body.sessions.map((s: { id: string }) => s.id)
+    expect(got).toContain(ids.main)
+    expect(got).toContain(successor)
+  })
+
+  it("collapseLineage:true hides the restarted-from predecessor, keeps the tail", async () => {
+    const { call, ids } = await harness()
+    registry!.kill(ids.main, "SIGTERM", "restarted")
+    const successor = registry!.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/work/app",
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+      label: "pygmalion-brain",
+      resumedFrom: ids.main,
+    } as never).id
+    const got = (await call({ collapseLineage: true })).body.sessions.map((s: { id: string }) => s.id)
+    expect(got).not.toContain(ids.main)
+    expect(got).toContain(successor)
+  })
+
+  it("collapseLineage:true keeps a STILL-RUNNING succeeds predecessor visible", async () => {
+    const { call, ids } = await harness()
+    // ids.main is still running (seed() never ends it). `setLineageSuccessor`
+    // is exactly what `handoverLineage` calls for an `agent_start.succeeds`
+    // declaration — it records the pointers WITHOUT retiring `from` (see
+    // `collapseLineageChains`'s doc), so it must stay visible.
+    const successor = registry!.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/work/app",
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+      label: "pygmalion-brain",
+    } as never).id
+    registry!.setLineageSuccessor(ids.main, successor)
+    const got = (await call({ collapseLineage: true })).body.sessions.map((s: { id: string }) => s.id)
+    expect(got).toContain(ids.main)
+    expect(got).toContain(successor)
+  })
 })
 
 describe("GET /sessions filters (HTTP)", () => {
@@ -218,7 +272,9 @@ describe("GET /sessions filters (HTTP)", () => {
   }
   const heartbeat: HeartbeatRunner = { start() {}, stop() {}, async fireNow() {} }
 
-  async function withServer(run: (get: (qs: string) => Promise<Response>, ids: Seeded) => Promise<void>) {
+  async function withServer(
+    run: (get: (qs: string) => Promise<Response>, ids: Seeded, registry: SessionsRegistry) => Promise<void>,
+  ) {
     const registry = createSessionsRegistry({ persist: false, spawnPty: fakePtyFactory })
     const port = await new Promise<number>((resolve, reject) => {
       const srv = createServer()
@@ -241,7 +297,7 @@ describe("GET /sessions filters (HTTP)", () => {
     })
     stop = () => http.stop()
     try {
-      await run(qs => fetch(`http://127.0.0.1:${port}/sessions${qs}`), seed(registry))
+      await run(qs => fetch(`http://127.0.0.1:${port}/sessions${qs}`), seed(registry), registry)
     } finally {
       await http.stop()
       stop = undefined
@@ -280,6 +336,61 @@ describe("GET /sessions filters (HTTP)", () => {
       expect(bad.status).toBe(400)
       expect(((await bad.json()) as { error: string }).error).toBe("invalid_filter")
       expect((await get("?q=x&limit=abc")).status).toBe(400)
+    })
+  })
+
+  it("collapseLineage omitted ⇒ a restarted predecessor stays in the list", async () => {
+    await withServer(async (get, ids, registry) => {
+      // Real restarts always kill `prev` first (session-restart-core.ts:2467)
+      // — mirror that so the fixture matches a real restarted lineage.
+      registry.kill(ids.main, "SIGTERM", "restarted")
+      const successor = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/work/app",
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+        label: "pygmalion-brain",
+        resumedFrom: ids.main,
+      } as never).id
+      const got = await idsOf(await get(""))
+      expect(got).toContain(ids.main)
+      expect(got).toContain(successor)
+    })
+  })
+
+  it("collapseLineage=true hides the restarted-from predecessor, keeps the tail", async () => {
+    await withServer(async (get, ids, registry) => {
+      registry.kill(ids.main, "SIGTERM", "restarted")
+      const successor = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/work/app",
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+        label: "pygmalion-brain",
+        resumedFrom: ids.main,
+      } as never).id
+      const got = await idsOf(await get("?collapseLineage=true"))
+      expect(got).not.toContain(ids.main)
+      expect(got).toContain(successor)
+    })
+  })
+
+  it("collapseLineage=true keeps a STILL-RUNNING succeeds predecessor visible", async () => {
+    await withServer(async (get, ids, registry) => {
+      // `agent_start.succeeds` (handoverLineage → setLineageSuccessor) never
+      // retires `from` — unlike a restart, so a succeeds predecessor can
+      // legitimately still be running when the successor is listed.
+      const successor = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/work/app",
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+        label: "pygmalion-brain",
+      } as never).id
+      registry.setLineageSuccessor(ids.main, successor)
+      const got = await idsOf(await get("?collapseLineage=true"))
+      expect(got).toContain(ids.main)
+      expect(got).toContain(successor)
     })
   })
 })

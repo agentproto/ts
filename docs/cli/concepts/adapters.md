@@ -13,7 +13,7 @@ declare:
 - How to spawn the agent for a single turn or a long-lived session.
 
 The CLI loads adapters by name; the AgentProto runtime treats every
-adapter uniformly through `@agentproto/driver-agent-cli`.
+adapter uniformly through `@agentproto/harness`.
 
 ## Naming convention
 
@@ -28,7 +28,41 @@ Per the
 
 The CLI doesn't care about the scope — any package on the resolution
 path with a valid `AgentCliHandle` works. The conventions exist for
-human discoverability.
+human discoverability. The daemon's MCP surface exposes the same listing
+under `harness_list` (canonical, rows under `harnesses`) and `adapter_list`
+(deprecated alias, rows under `adapters`, retained for older clients and
+daemons): both accept the same slug filters. Discovery (CLI ≥ 1.32.0) also accepts the
+canonical AIP-70 `harness-` spelling — `@agentproto/harness-<slug>` or
+`@<vendor>/agentproto-harness-<slug>` — which wins a same-slug collision
+with the `adapter-` package; the bare `@agentproto/harness` package
+never matches a slug.
+
+## `harness` is the canonical name, `adapter` is deprecated
+
+Per the AIP-70 glossary, the agent CLI a session runs is its **harness**.
+Every surface that took `adapter` now takes `harness`; the old name still
+works, and every use of it returns a dated warning: "`adapter` is
+deprecated and will be removed in the next major of @agentproto/runtime;
+use `harness`". A later major release removes the old names.
+
+| Surface | Canonical | Deprecated alias (still works, warns) |
+| ------- | --------- | -------------------------------------- |
+| MCP tools | `harness_list`, `harness_models`, `harness_install` | `adapter_list`, `adapter_models`, `adapter_install` |
+| List key | `harnesses` (in `harness_list`, `GET /harnesses`) | `adapters` (repeated next to `harnesses` for now) |
+| Tool argument | `harness` (`agent_start`, `session_continue_fresh`, `app_run`, `catalog_models`, `harness_models`, `agent_export`, `user_preset_save`, `workflow_start` steps, `inbound_watcher_start`, judge gates `judge.harness`, decision `profileOptions.escalation.harness`) | `adapter` |
+| HTTP | `GET /harnesses`, `POST /harnesses/:slug/install`, `harness` in the `POST /sessions/agent` body, `?harness=` on `GET /sessions/:id/export` and `GET /catalog/models` | `GET /adapters`, `POST /adapters/:slug/install`, `adapter`, `?adapter=` |
+| Session descriptor | `harness` (always set when the session has one) | `adapterSlug` (same value) |
+| CLI flag | `--harness` (`cron add`, `preset add`, `auth provider set`, `sandbox egress-health`, `sessions export`/`story`, `worktree-agent run`) | `--adapter` (prints the warning on stderr) |
+| Config | `defaults.harnesses.<slug>.*`, `daemon.harnessCacheRetentionDays` | `defaults.adapters.<slug>.*`, `daemon.adapterCacheRetentionDays` |
+
+Resolution is always `harness ?? adapter ?? preset.harness ?? preset.adapter`.
+In config, a field set under `defaults.harnesses.<slug>` wins over the same
+field under `defaults.adapters.<slug>`; the daemon reads the old key as a
+fallback and logs the warning once, it never rewrites your config file.
+`config_get` lists the new keys and flags the old ones with
+`deprecated: { replacedBy, message }`. The package names
+(`@agentproto/adapter-<slug>`) and the `~/.agentproto/adapter-config/<id>`
+directory are unchanged.
 
 ## Installing
 
@@ -42,6 +76,8 @@ succeeds, then runs the optional `setup[]` pipeline. The ledger at
 `~/.agentproto/setup/<slug>.json` records what landed so re-runs are
 idempotent. Pass `--force` to redo, `--dry-run` to plan, `--skip-setup`
 to install but defer configuration.
+
+Adapter package pins are checked weekly by `scripts/check-adapter-pins.mjs`; the schedule and tracking issue live in [`.github/workflows/adapter-pins.yml`](../../../.github/workflows/adapter-pins.yml).
 
 ## Running
 
@@ -110,13 +146,12 @@ only the ones whose mode is easy to misread.
 
 ## Authoring an adapter
 
-The `defineAgentCli` API lives in `@agentproto/driver-agent-cli`. A
-minimal adapter looks like:
+The `defineHarness` API lives in `@agentproto/harness`. A minimal adapter looks like:
 
 ```ts
-import { defineAgentCli } from "@agentproto/driver-agent-cli"
+import { defineHarness } from "@agentproto/harness"
 
-export const myAgent = defineAgentCli({
+export const myAgent = defineHarness({
   id: "my-agent",
   displayName: "My Agent",
   install: [
@@ -235,13 +270,14 @@ See [`verbs/acp.md`](../verbs/acp.md).
 `agentproto run <slug>` (and every other path through `resolveAdapter`)
 resolves a slug in this order:
 
-1. **npm** — `@agentproto/adapter-<slug>` (a real adapter package always
-   wins).
+1. **npm** — `@agentproto/harness-<slug>` first, then
+   `@agentproto/adapter-<slug>` (a real adapter package always wins;
+   on a same-slug collision the `harness-` spelling wins).
 2. **config** — `config.acpAgents[<slug>]`.
 3. **catalog** — `ACP_CATALOG`.
 
 So a published adapter is never shadowed by a generic spec, and your config
-overrides the built-in catalog. In `adapter_list` / `GET /adapters`, generic
+overrides the built-in catalog. In `harness_list` / `adapter_list` / `GET /adapters`, generic
 agents appear with status `available` (bin found on `PATH`) or `supported`
 (not installed — shows the install hint).
 

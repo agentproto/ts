@@ -146,4 +146,62 @@ describe("sandbox box teardown on kill", () => {
     expect(host.stop).toHaveBeenCalledTimes(1)
     reg.shutdown()
   })
+
+  it("agent_kill of the last session on a reusable pause-policy box KILLS it (reuse alone is not a pause request)", async () => {
+    recordSandboxBoot({ sandboxId: "cmp-reuse", provider: "computer", state: "booted", sessionId: "sess_reuse" })
+    const host = makeHost()
+    const reg = registry()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/home/user",
+      agentSession: createSandboxAgentSessionProxy({
+        host,
+        remoteSessionId: "remote_reuse",
+        // The old resolver gave every reused box teardown:"pause".
+        lifecyclePolicy: { teardown: "pause" },
+        ledger: { sandboxId: "cmp-reuse", provider: "computer", sessionId: "sess_reuse" },
+      }),
+      adapterSlug: "claude-code",
+      remote: true,
+      sandboxId: "cmp-reuse",
+      sandboxProvider: "computer",
+      sandboxTeardown: "pause",
+    })
+
+    expect(reg.kill(desc.id)).toBe(true)
+    await flush()
+
+    expect(host.stop).toHaveBeenCalledTimes(1)
+    expect(host.pause).not.toHaveBeenCalled()
+    reg.shutdown()
+  })
+
+  it("agent_kill still PAUSES when the spawn explicitly asked for pause_after_idle", async () => {
+    recordSandboxBoot({ sandboxId: "cmp-idle", provider: "computer", state: "booted", sessionId: "sess_idle" })
+    const host = makeHost()
+    const reg = registry()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/home/user",
+      agentSession: createSandboxAgentSessionProxy({
+        host,
+        remoteSessionId: "remote_idle",
+        lifecyclePolicy: { teardown: "pause", pauseAfterIdleMs: 60_000 },
+        ledger: { sandboxId: "cmp-idle", provider: "computer", sessionId: "sess_idle" },
+      }),
+      adapterSlug: "claude-code",
+      remote: true,
+      sandboxId: "cmp-idle",
+      sandboxProvider: "computer",
+      sandboxTeardown: "pause",
+      sandboxPauseAfterIdleMs: 60_000,
+    })
+
+    expect(reg.kill(desc.id)).toBe(true)
+    await flush()
+
+    expect(host.pause).toHaveBeenCalledTimes(1)
+    expect(host.stop).not.toHaveBeenCalled()
+    reg.shutdown()
+  })
 })

@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
-import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, CALLER_SESSION_ID_HEADER, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, APP_AGENT_META_KEY, CALLER_SESSION_ID_HEADER, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import {
   CLOUD_SESSION_META_FILE_ENV,
   CloudSpawnError,
@@ -19,14 +19,21 @@ import {
   cloudRepoSpawnEnv,
   cloudSessionMetaFilePath,
   encodeCloudSessionMeta,
+  GIT_TOKEN_ENV,
   resolveCloudResumeId,
   resolveCloudSpawn,
   watchCloudSessionMeta,
   type CloudSessionMeta,
   type ResolvedCloudSpawn,
-} from "./cloud-vendors.js"
+} from "@agentproto/cloud-agent"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
-import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
+import {
+  credentialRelayForSession,
+  mintRelayForBox,
+  revokeParentRelayGrant,
+  type CredentialRelay,
+} from "./parent-relay.js"
+import { requestRelayedCredential, withBoxProfileHint } from "./credential-relay.js"
 import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
@@ -48,6 +55,7 @@ import {
   findWorkspaceByPath,
   getActiveWorkspace,
   type WorkspaceRemote,
+  workspaceRemotePort,
 } from "./workspaces-config.js"
 import { loadConfig } from "./config.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
@@ -65,6 +73,7 @@ import {
   resolveBundleDefaults,
   resolveDefaultContextProfile,
   type SpawnDefaultsConfig,
+  harnessDefaultsFor,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
   type AuthEcho,
@@ -72,7 +81,7 @@ import {
   type CredentialSource,
   forwardedSubaccountAuthInputs,
 } from "./spawn-defaults.js"
-import { loadBundles, type BundlesFile } from "./bundles.js"
+import { effectiveBundles, loadBundles, type BundlesFile } from "./bundles.js"
 import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 import {
   loadImportedSkills,
@@ -85,6 +94,8 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { profileAllowsModelId, profileModelAllowlistMessage } from "./auth-profile-model-allowlist.js"
+import { modelApplyMismatch, modelApplyWarning } from "./model-apply-mismatch.js"
 import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
@@ -112,6 +123,7 @@ import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-h
 import {
   sandboxConfigForDescriptor,
   withSandboxSessionHolder,
+  withSandboxSpawnContext,
 } from "./sandbox-session-holder.js"
 import {
   autoCredentialRefOf,
@@ -120,7 +132,6 @@ import {
 } from "./sandbox-secret-resolver.js"
 import {
   GH_TOKEN_ENV,
-  GIT_TOKEN_ENV,
   SANDBOX_BRANCH_PREFIX,
   withGhTokenAlias,
   withoutReservedSandboxEnv,
@@ -159,8 +170,11 @@ import {
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
 import {
+  describeBandLayers,
+  layerContextSettings,
   resolveContextContinuityPolicy,
   type ContextContinuityPolicy,
+  type ContextSettings,
   type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
@@ -174,6 +188,14 @@ import {
 } from "./session-preset-resolver.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import {
+  AccountSlotError,
+  accessNamesSlot,
+  isSlotRef,
+  resolveAccessSlots,
+  resolveProfileRef,
+  type AccountSlots,
+} from "./account-slots.js"
+import {
   HEADLESS_BROWSER_PROMPT_HINT,
   resolveBrowserMode,
   resolveHeadlessBrowser as realResolveHeadlessBrowser,
@@ -181,8 +203,45 @@ import {
   type ResolveHeadlessBrowser,
   type SpawnBrowserMode,
 } from "./browser-mount.js"
-import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
+import {
+  DEFAULT_ROLE_DEPTH_CUTOFF,
+  resolveRole,
+  composeRoleContext,
+  canSpawn,
+  mergeRoleRegistry,
+  unknownDefaultAgents,
+  DELEGATION_TOOL_NAMES,
+} from "./role.js"
 import type { DelegationReach, RoleProfile } from "./role.js"
+import {
+  DEFAULT_DELEGATION_GATE_MODE,
+  decideDelegation,
+  recordDelegation,
+  type DelegationVerdict,
+  type ManifestDelegates,
+} from "./delegation-gate.js"
+import {
+  DEFAULT_PROFILE_GATE_MODE,
+  callerProfileSet,
+  decideProfileUse,
+  recordProfileUse,
+  type ProfileVerdict,
+} from "./profile-gate.js"
+import {
+  DEFAULT_STDIO_MOUNT_GATE_MODE,
+  decideStdioMount,
+  recordStdioMount,
+  stdioMountRequests,
+  type StdioMountVerdict,
+} from "./stdio-mount-gate.js"
+import type { AllowlistEntry } from "./command-allowlist.js"
+import {
+  claimClassOf,
+  decideSpawnProof,
+  recordSpawnProof,
+  spawnGateCallerId,
+} from "./proof-gate.js"
+import { decide as decidePermission } from "./permissions.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
@@ -197,6 +256,7 @@ import {
   type WorkspaceRulesResolution,
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
+import { resolveOperatorBinding } from "./session-operator.js"
 import { isAbsolute, join } from "node:path"
 import {
   APP_BOUNDARY_UNENFORCEABLE,
@@ -258,15 +318,40 @@ import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
   isSandboxBootCancelledError,
+  isSandboxEgressAllCoolingError,
   isSandboxBoxGoneError,
+  renamedSandboxKeyError,
   resolveLifecyclePolicy,
   SandboxHostBootFailedError,
   type SandboxAgentSessionHost,
   type SandboxLifecyclePolicy,
+  type SandboxProviderChoice,
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import { projectRemoteUsage, type RemoteUsageSnapshot } from "./sandbox-usage.js"
+import {
+  defaultPreflightRegistry,
+  buildPreflightRegistry,
+  preflightFailedResult,
+  runSandboxPreflight,
+  unknownPreflightProbes,
+  type PreflightRegistry,
+} from "./sandbox-preflight.js"
+import { egressHealthLedger, isEgressHealthErrorClass } from "./egress-health.js"
+import {
+  MAX_AGENT_START_TIMEOUT_MS,
+  bootErrorClass,
+  formatPlacementAttempts,
+  placementInputSchema,
+  placementRungProblem,
+  resolveLadder,
+  rungOverrides,
+  rungProviderLabel,
+  walkPlacementLadder,
+  type PlacementInput,
+  type SessionPlacement,
+} from "./placement-ladder.js"
 import { isDeviceOfflineError, isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
@@ -336,17 +421,47 @@ import {
   type SpawnAdmissionCheck,
   type SpawnDedupeSource,
 } from "./action-hooks/spawn-admission.js"
+import { recordSpawnAdmission } from "./action-hooks/spawn-admission-counters.js"
+import { reactionSpawnStamp } from "./action-hooks/reaction-context.js"
 import type { AdmissionDecision } from "./action-hooks/types.js"
 import {
   loadProvenanceWrapGh,
   ensureGhShimDir,
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
+import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
 import { prefixPrompt } from "./agent-projection.js"
 import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
-import { parseAgentClerkHook, type ClerkHookConfig } from "./clerk-hook-config.js"
+import { resolveAgentRef } from "./agent-ref.js"
+import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
+import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
+import {
+  sessionTokenDeliverySafe,
+  sessionTokenModeOf,
+  sessionTokensMinted,
+  type SessionTokenMode,
+} from "./identity-defaults.js"
+import { preCompactCommandFor } from "./native-hooks-defaults.js"
+import type { MemoryScope, MemoryStore } from "@agentproto/memory"
+import type { Grant } from "@agentproto/policy"
+import {
+  memoryProjectionEnabled,
+  memoryStoreAt as defaultMemoryStoreAt,
+  resolveMemoryStoreRoot,
+  type AgentMemoryBinding,
+} from "./memory-stores.js"
+import {
+  DEFAULT_MEMORY_DIGEST_MAX_CHARS,
+  buildMemoryDigest,
+  buildNativeMemoryProjection,
+  decideMemoryInject,
+  sessionAnchorTags,
+  type NativeMemoryProjection,
+} from "./memory-digest.js"
+import { sessionMemoryScope } from "./caller-scope.js"
+import { stageSpawningCaller } from "./spawning-caller-context.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -547,6 +662,15 @@ function worktreeSetupLogPath(sessionId: string): string {
   return join(sessionTranscriptDir(sessionId), "worktree-setup.log")
 }
 
+/** The caller's per-spawn boot bounds, forwarded to the provisioner as-is
+ *  (omitted fields fall through to its env / config / default resolution). */
+function provisionBoundsOf(req: WorktreeRequest): { stallTimeoutMs?: number; maxMs?: number } {
+  return {
+    ...(req.stallTimeoutMs !== undefined ? { stallTimeoutMs: req.stallTimeoutMs } : {}),
+    ...(req.maxMs !== undefined ? { maxMs: req.maxMs } : {}),
+  }
+}
+
 function findWorktreeLabelCwdCollision(
   registry: SessionsRegistry,
   excludeId: string,
@@ -644,9 +768,11 @@ export interface AccessProfileAuthError {
   code:
     | "access_profile_not_found"
     | "access_profile_ineligible"
+    | "account_slot_unresolved"
     | "unsupported_auth_mode"
     | "unsupported_auth_source"
     | "auth_source_unresolved"
+    | "auth_profile_denied"
   message: string
   details?: Record<string, unknown>
 }
@@ -712,7 +838,24 @@ export async function resolveAccessProfileAuth(input: {
   // profile with no descriptor still reports `access_profile_not_found` — the
   // single-`profileRef` contract, preserved.
   const resolvedCandidates: Array<{ ref: string; profile: Profile }> = []
-  for (const ref of candidates) {
+  for (const candidate of candidates) {
+    // `spawnAgentSession` resolves account slots before it gets here; other
+    // callers (a workflow agent step's `access`) may still hand a
+    // `slot:<name>` ref, resolved through the same single resolver.
+    let ref = candidate
+    if (isSlotRef(candidate)) {
+      try {
+        ref = (await resolveProfileRef(candidate)).profileRef
+      } catch (err) {
+        if (!(err instanceof AccountSlotError)) throw err
+        return {
+          ok: false,
+          code: "account_slot_unresolved",
+          message: err.message,
+          details: { slotCode: err.code, slot: err.slot },
+        }
+      }
+    }
     const profile = await getAuthProfile(ref)
     if (!profile) {
       return {
@@ -738,8 +881,15 @@ export async function resolveAccessProfileAuth(input: {
   let selected: Candidate | undefined
   const firstProfile = resolvedCandidates[0]!.profile
   let firstProjected: ReturnType<typeof spawnEligibilityManifest>
+  // Per-profile model curation is part of ELIGIBILITY, not a gate applied
+  // after the ladder has locked a candidate: `access.profileRefs` means "bill
+  // the FIRST profile eligible for the model's route", so a route-eligible
+  // profile whose allow-list excludes the model must fall through to the next
+  // candidate rather than fail the spawn.
+  const requestedModel = model ?? defaultModel
+  let modelRefusal: { profileId: string; ids: readonly string[] } | undefined
   for (const [index, { profile }] of resolvedCandidates.entries()) {
-    let projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+    let projected = spawnEligibilityManifest(adapter, authDescriptor, route, requestedModel)
     // The naive/prefix-guessed route above is only ever a GUESS when the
     // caller didn't pin one explicitly (`route?.gateway` still wins outright,
     // untouched, above); when the guess leaves the named profile ineligible,
@@ -747,9 +897,9 @@ export async function resolveAccessProfileAuth(input: {
     let resolvedRouteGateway: string | undefined
     if (
       route?.gateway === undefined &&
-      (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0)
+      (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, requestedModel).length === 0)
     ) {
-      const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
+      const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, requestedModel)
       if (resolved) {
         projected = resolved
         // A GATEWAY resolution (routeId ≠ the adapter's direct endpoint) must
@@ -764,15 +914,34 @@ export async function resolveAccessProfileAuth(input: {
       }
     }
     if (index === 0) firstProjected = projected
-    if (
-      projected &&
-      eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length > 0
-    ) {
+    const routeEligible =
+      projected !== undefined &&
+      eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, requestedModel).length > 0
+    if (projected && routeEligible) {
+      if (
+        requestedModel &&
+        !profileAllowsModelId(profile, requestedModel, { route: projected.routeId })
+      ) {
+        modelRefusal ??= { profileId: profile.id, ids: profile.models?.ids ?? [] }
+        continue
+      }
       selected = { profile, projected, ...(resolvedRouteGateway !== undefined ? { resolvedRouteGateway } : {}) }
       break
     }
   }
   if (!selected) {
+    if (modelRefusal && requestedModel) {
+      return {
+        ok: false,
+        code: "access_profile_ineligible",
+        message:
+          profileModelAllowlistMessage(modelRefusal.profileId, requestedModel, modelRefusal.ids) +
+          (candidates.length > 1
+            ? ` None of the ${candidates.length} candidate profiles [${candidates.join(", ")}] allow it.`
+            : ""),
+        details: { adapter, profile: modelRefusal.profileId, model: requestedModel },
+      }
+    }
     const endpoint = firstProjected?.manifest.endpointByRoute[firstProjected.routeId] ?? "an unknown endpoint"
     const suffix =
       candidates.length > 1
@@ -826,7 +995,7 @@ export async function resolveAccessProfileAuth(input: {
           ok: false,
           code: err.code,
           message: err.message,
-          details: { adapter, profile: profile.id },
+          details: { adapter, profile: profile.id, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err
@@ -853,7 +1022,7 @@ export async function resolveAccessProfileAuth(input: {
           ok: false,
           code: err.code,
           message: err.message,
-          details: { adapter, profile: profile.id },
+          details: { adapter, profile: profile.id, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err
@@ -872,7 +1041,7 @@ export async function resolveAccessProfileAuth(input: {
           ok: false,
           code: err.code,
           message: err.message,
-          details: { adapter, profile: profile.id },
+          details: { adapter, profile: profile.id, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err
@@ -1007,34 +1176,27 @@ export function delegationReachFor(
 
 /**
  * Should this spawn get the daemon's own `/mcp` gateway mounted by default
- * (caller supplied no `mcpServers`)? Pure — the per-adapter reasoning lives
- * here so the injection site and its tests share one decision.
+ * (caller supplied no `mcpServers`)? Pure -- the injection site and its
+ * tests share one decision.
  *
- *  - `hermes`: always. It has zero built-in tools — without a mount it
- *    silently spawns chat-only. Sandbox spawns keep the historical
- *    behaviour (inject) — the box's own daemon re-resolves the spawn on
- *    its side anyway.
- *  - `claude-code`: on-host spawns only. The mount is about IDENTITY, not
- *    capability: ambient MCP config (project `.mcp.json` / global claude
- *    config) already points these sessions at the daemon but can never
- *    carry a per-session `callerSessionId`, leaving every spawn they make
- *    an anonymous depth-0 orphan (observed in production: 0 of 663
- *    sessions ever carried a `parentSessionId`). The injected same-named
- *    entry shadows the ambient one at the SDK layer and carries the stamp.
- *    A sandbox spawn is excluded — the box cannot reach this daemon's
- *    loopback gateway, and unlike hermes there is no historical behaviour
- *    to preserve.
- *  - everything else: never. Mounting the daemon into adapters that never
- *    had it (codex, gemini, …) would be a capability grant, not a fix —
- *    those callers opt in explicitly via `mcpServers`.
+ * On-host (sandbox === undefined): always true for every adapter. The
+ * mount carries the per-session `callerSessionId` that ambient MCP config
+ * can never provide, and makes `agent_start` visible to
+ * `delegationReachFor` so `resolveRole` does not downgrade to executor at
+ * depth 0. Without it, any adapter whose ambient config lacks the daemon
+ * mount silently loses delegation reach.
+ *
+ * Sandbox (sandbox !== undefined): false for every adapter except hermes.
+ * A sandbox box cannot reach this daemon's loopback gateway. Hermes is
+ * the exception -- its box runs its own daemon that re-resolves the spawn
+ * on its side, so the mount is harmless and preserves historical behaviour.
  */
 export function shouldInjectDaemonSelfMount(
   adapter: string,
   sandbox: unknown,
 ): boolean {
-  if (adapter === "hermes") return true
-  if (adapter === "claude-code") return sandbox === undefined
-  return false
+  if (sandbox !== undefined && adapter !== "hermes") return false
+  return true
 }
 
 /**
@@ -1055,6 +1217,10 @@ export function buildDaemonSelfMountEntry(
     /** `?allowTools=` scope (see `SpawnAgentSessionInput.allowTools`);
      *  forces deferred loading off. */
     allowTools?: readonly string[]
+    /** Raw session token (`session-credentials.ts`), sent as
+     *  `SESSION_TOKEN_HEADER`. Only ever set on the ADAPTER's copy of the
+     *  mounts, never on one that reaches a descriptor. */
+    sessionToken?: string
   },
 ): AcpMcpServer {
   let ref = opts.delegationDenied
@@ -1076,7 +1242,10 @@ export function buildDaemonSelfMountEntry(
     name: "agentproto",
     transport: "http",
     ref,
-    headers: { [CALLER_SESSION_ID_HEADER]: opts.callerSessionId },
+    headers: {
+      [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
+      ...(opts.sessionToken ? { [SESSION_TOKEN_HEADER]: opts.sessionToken } : {}),
+    },
   }
 }
 
@@ -1107,17 +1276,43 @@ export function targetsDaemonGateway(ref: string, daemonMcpUrl: string): boolean
   } catch {
     return false
   }
-  if (target.protocol !== daemon.protocol) return false
-  // The daemon is loopback-bound, so a different SPELLING of the same
-  // loopback host (`localhost` vs `127.0.0.1` vs `::1`) is the same
-  // endpoint, not a different one. A non-loopback host must match exactly.
-  if (target.host !== daemon.host) {
-    if (!isLoopbackHost(target.hostname) || !isLoopbackHost(daemon.hostname)) return false
-  }
-  if (effectivePort(target) !== effectivePort(daemon)) return false
+  if (!sameDaemonOrigin(target, daemon)) return false
   const targetPath = target.pathname.replace(/\/+$/, "")
   const daemonPath = daemon.pathname.replace(/\/+$/, "")
   return targetPath === daemonPath
+}
+
+/** Is `ref` on the daemon's imported-MCP passthrough (`<daemon /mcp>/imported/<id>`)?
+ *  Same origin matching as {@link targetsDaemonGateway}, but a deeper path:
+ *  the passthrough is the route a capability bundle mounts into another
+ *  harness, and it reads the caller session exactly like `/mcp` does. */
+export function targetsDaemonImportedPassthrough(
+  ref: string,
+  daemonMcpUrl: string,
+): boolean {
+  let target: URL
+  let daemon: URL
+  try {
+    target = new URL(ref)
+    daemon = new URL(daemonMcpUrl)
+  } catch {
+    return false
+  }
+  if (!sameDaemonOrigin(target, daemon)) return false
+  const daemonPath = daemon.pathname.replace(/\/+$/, "")
+  const importedPrefix = `${daemonPath}/imported/`
+  return target.pathname.replace(/\/+$/, "").startsWith(importedPrefix)
+}
+
+/** The daemon is loopback-bound, so a different SPELLING of the same
+ *  loopback host (`localhost` vs `127.0.0.1` vs `::1`) is the same endpoint,
+ *  not a different one. A non-loopback host must match exactly. */
+function sameDaemonOrigin(target: URL, daemon: URL): boolean {
+  if (target.protocol !== daemon.protocol) return false
+  if (target.host !== daemon.host) {
+    if (!isLoopbackHost(target.hostname) || !isLoopbackHost(daemon.hostname)) return false
+  }
+  return effectivePort(target) === effectivePort(daemon)
 }
 
 /** The port a URL actually talks to (empty ⇒ the protocol's default). */
@@ -1157,33 +1352,188 @@ function isLoopbackHost(hostname: string): boolean {
  */
 export function stampDaemonCallerSessionId(
   mcpServers: readonly AcpMcpServer[] | undefined,
-  opts: { daemonMcpUrl: string; callerSessionId: string },
+  opts: {
+    daemonMcpUrl: string
+    callerSessionId: string
+    /** Raw session token to add as `SESSION_TOKEN_HEADER` (shadow mode).
+     *  Pass it ONLY when stamping the adapter's copy of the mounts: the
+     *  descriptor copy is persisted and served by read surfaces. Added only
+     *  to an entry that speaks as `callerSessionId` (not a foreign pin), and
+     *  an existing token header is never overwritten. */
+    sessionToken?: string
+  },
 ): AcpMcpServer[] | undefined {
   if (!mcpServers) return undefined
   return mcpServers.map(entry => {
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
+    if (targetsDaemonImportedPassthrough(entry.ref, opts.daemonMcpUrl)) {
+      return stampImportedPassthrough(
+        entry as AcpMcpServer & { ref: string },
+        opts.callerSessionId,
+      )
+    }
     if (!targetsDaemonGateway(entry.ref, opts.daemonMcpUrl)) return entry
     // An entry that already carries a caller identity (an explicit pin, or
     // one left over from a prior stamp) is respected and never overwritten.
-    if (entry.ref.includes("callerSessionId=")) return entry
-    if (hasCallerSessionIdHeader(entry.headers)) return entry
-    const sep = entry.ref.includes("?") ? "&" : "?"
-    return {
-      ...entry,
-      ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`,
-      headers: {
-        ...entry.headers,
-        [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
-      },
+    let next = entry
+    if (!entry.ref.includes("callerSessionId=") && !hasHeader(entry.headers, CALLER_SESSION_ID_HEADER)) {
+      const sep = entry.ref.includes("?") ? "&" : "?"
+      next = {
+        ...entry,
+        ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`,
+        headers: {
+          ...entry.headers,
+          [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
+        },
+      }
     }
+    if (
+      opts.sessionToken &&
+      !hasHeader(next.headers, SESSION_TOKEN_HEADER) &&
+      speaksAs(next, opts.callerSessionId)
+    ) {
+      next = { ...next, headers: { ...next.headers, [SESSION_TOKEN_HEADER]: opts.sessionToken } }
+    }
+    return next
   })
 }
 
-/** Does this mount already carry the caller-identity header? Header names
- *  are case-insensitive on the wire, so the comparison is too. */
-function hasCallerSessionIdHeader(headers: Record<string, string> | undefined): boolean {
+/**
+ * Identity-stamp an imported-passthrough mount. The mount carries no
+ * capability the id does not already grant, so the only question is whether
+ * it names a DIFFERENT session: an explicit foreign pin (query or header) is
+ * respected and left exactly as it is. Otherwise the missing carriers are
+ * filled in, so a mount produced by `mountImports` (query already present)
+ * also gains the header that survives a client rebuilding the URL. The
+ * session token is deliberately never added here: the passthrough route does
+ * not evaluate proof, so a token on it would only leak into the adapter's
+ * config for no gate.
+ */
+function stampImportedPassthrough(
+  entry: AcpMcpServer & { ref: string },
+  callerSessionId: string,
+): AcpMcpServer {
+  const query = queryCallerSessionId(entry.ref)
+  const header = headerValue(entry.headers, CALLER_SESSION_ID_HEADER)
+  if (
+    (query !== null && query !== callerSessionId) ||
+    (header !== undefined && header !== callerSessionId)
+  ) {
+    return entry
+  }
+  let next = entry
+  if (query === null) {
+    const sep = entry.ref.includes("?") ? "&" : "?"
+    next = {
+      ...next,
+      ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(callerSessionId)}`,
+    }
+  }
+  if (header === undefined) {
+    next = {
+      ...next,
+      headers: { ...next.headers, [CALLER_SESSION_ID_HEADER]: callerSessionId },
+    }
+  }
+  return next
+}
+
+/** The `callerSessionId` query value of a ref, or null when absent or the
+ *  ref is not a parseable URL. */
+function queryCallerSessionId(ref: string): string | null {
+  try {
+    return new URL(ref).searchParams.get("callerSessionId")
+  } catch {
+    return null
+  }
+}
+
+/** The value of header `name`, matched case-insensitively. */
+function headerValue(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined
+  const key = Object.keys(headers).find(k => k.toLowerCase() === name)
+  return key === undefined ? undefined : headers[key]
+}
+
+/** Does this mount already carry header `name`? Header names are
+ *  case-insensitive on the wire, so the comparison is too. */
+function hasHeader(headers: Record<string, string> | undefined, name: string): boolean {
   if (!headers) return false
-  return Object.keys(headers).some(k => k.toLowerCase() === CALLER_SESSION_ID_HEADER)
+  return Object.keys(headers).some(k => k.toLowerCase() === name)
+}
+
+/** Does every caller identity this mount carries (query and header) name
+ *  `sessionId`? A mount pinned to another session must not carry this
+ *  session's token. */
+function speaksAs(entry: AcpMcpServer, sessionId: string): boolean {
+  let query: string | null = null
+  try {
+    query = new URL(entry.ref ?? "").searchParams.get("callerSessionId")
+  } catch {
+    return false
+  }
+  if (query !== null && query !== sessionId) return false
+  for (const [k, v] of Object.entries(entry.headers ?? {})) {
+    if (k.toLowerCase() === CALLER_SESSION_ID_HEADER && v !== sessionId) return false
+  }
+  return true
+}
+
+/** A copy of `mcpServers` without any `SESSION_TOKEN_HEADER`: the form that
+ *  may reach a descriptor (persisted, served by read surfaces). */
+export function stripSessionTokenHeaders(
+  mcpServers: readonly AcpMcpServer[] | undefined,
+): AcpMcpServer[] | undefined {
+  if (!mcpServers) return undefined
+  return mcpServers.map(entry => {
+    if (!hasHeader(entry.headers, SESSION_TOKEN_HEADER)) return entry
+    const kept = Object.entries(entry.headers ?? {}).filter(([k]) => k.toLowerCase() !== SESSION_TOKEN_HEADER)
+    const { headers: _drop, ...rest } = entry
+    return kept.length > 0 ? { ...rest, headers: Object.fromEntries(kept) } : rest
+  })
+}
+
+/**
+ * The ADAPTER's copy of a session's mounts: `mcpServers` (the descriptor
+ * copy, already caller-stamped) plus a freshly minted session token on the
+ * daemon self-mount, when `defaults.identity.sessionTokens` mints (`"shadow"`
+ * or `"enforce"`)
+ * and the adapter receives its mounts in memory (`sessionTokenDeliverySafe`).
+ * Returns the input unchanged otherwise. Shared by the spawn, restart and
+ * lazy-resume paths, each of which mints a NEW token rather than reading one
+ * back from a descriptor (there is none there to read).
+ */
+export function withSessionToken(
+  mcpServers: AcpMcpServer[] | undefined,
+  opts: {
+    mode: SessionTokenMode
+    adapter: string | undefined
+    sandbox?: unknown
+    daemonMcpUrl: string | undefined
+    sessionId: string
+    mint?: (sessionId: string) => string
+  },
+): AcpMcpServer[] | undefined {
+  if (!mcpServers || !sessionTokensMinted(opts.mode) || !opts.daemonMcpUrl) return mcpServers
+  if (!sessionTokenDeliverySafe(opts.adapter, opts.sandbox)) return mcpServers
+  const daemonMcpUrl = opts.daemonMcpUrl
+  const target = mcpServers.some(
+    e =>
+      e.transport === "http" &&
+      typeof e.ref === "string" &&
+      targetsDaemonGateway(e.ref, daemonMcpUrl) &&
+      !hasHeader(e.headers, SESSION_TOKEN_HEADER) &&
+      speaksAs(e, opts.sessionId),
+  )
+  if (!target) return mcpServers
+  return stampDaemonCallerSessionId(mcpServers, {
+    daemonMcpUrl,
+    callerSessionId: opts.sessionId,
+    sessionToken: (opts.mint ?? mintSessionToken)(opts.sessionId),
+  })
 }
 
 /** Slugify an imported-MCP alias into a valid `mcpServers[].name` — lowercase,
@@ -1273,8 +1623,23 @@ export function cleanAgentLines(lines: string[]): string[] {
     })
 }
 
+/** The `accessSlot` descriptor field for a spawn: the slot whose resolved
+ *  profile is the one actually billed (`profileRefs` picks the first eligible
+ *  candidate, so the slot is looked up by the billed profile id). */
+function accessSlotOf(
+  echo: { profileRef: string } | undefined,
+  slotByProfile: Map<string, string> | undefined,
+): { accessSlot?: string } {
+  const slot = echo ? slotByProfile?.get(echo.profileRef) : undefined
+  return slot ? { accessSlot: slot } : {}
+}
+
 export interface SpawnAgentSessionDeps {
   registry: SessionsRegistry
+  /** Account slot map source for `slot:<name>` access refs. Defaults to
+   *  config.json's `accountSlots`; tests inject a stub so they never read the
+   *  real file. */
+  loadAccountSlots?: () => Promise<AccountSlots>
   /** Required — callers must check for its absence themselves (the MCP
    *  tool and HTTP route each have their own "not enabled" response
    *  shape for the missing-resolver case). */
@@ -1296,6 +1661,12 @@ export interface SpawnAgentSessionDeps {
   /** Calling orchestrator's scope (orchestrator WP4). See
    *  `RegisterAgentToolsOptions.callerScope`. */
   callerScope?: OrchestratorScope
+  /** The session a valid session token on this request was minted for
+   *  (AIP-46 §Session principals). Trusted transport data, never a caller
+   *  body: the MCP path forwards the verified token's session, the HTTP
+   *  spawn routes resolve it from the request header. A `callerScope` is
+   *  already proof, so this is only read on the unscoped path. */
+  callerCredentialSessionId?: string
   /** Optional webhook notifier — see `RegisterAgentToolsOptions.webhookNotifier`. */
   webhookNotifier?: WebhookNotifier
   /** Loads config.json's `defaults` block (global + per-adapter skills/
@@ -1304,6 +1675,12 @@ export interface SpawnAgentSessionDeps {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Loads the workspace command allowlist (`.agentproto/allowed-commands.json`)
+   *  for the stdio mount gate; the SAME workspace `command_execute` gates
+   *  against. Omitted ⇒ an EMPTY list, so every session stdio mount reads
+   *  `would_deny` (conservative). Read per spawn, only when the gate is not
+   *  `off` and the request carries at least one stdio mount. */
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>
   /** Loads `~/.agentproto/bundles.json` for capability-bundle expansion
    *  (`agent_start.bundles` / config `defaults.bundles`, PLAN D phase 1).
    *  Defaults to the real loader when omitted; tests inject a stub to avoid
@@ -1328,6 +1705,10 @@ export interface SpawnAgentSessionDeps {
    *  tests inject a stub registry to avoid touching the real
    *  filesystem. */
   loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
+  /** The AIP-72 store at a resolved root, read by the spawn digest.
+   *  Defaults to the daemon's shared per-root stores (`memory-stores.ts`);
+   *  tests inject a temp-dir store. */
+  memoryStoreAt?: (root: string) => MemoryStore
   /** Resolves an `agent_start.sandbox` slug (or an inline spec's own
    *  `.provider`) to a concrete sandbox provider handle. Required for
    *  `input.sandbox` — omitted ⇒ `sandbox_provider_not_found`. */
@@ -1370,6 +1751,11 @@ export interface SpawnAgentSessionDeps {
    *  `loadProvenanceWrapGh` (reads the real config) when omitted; tests
    *  inject a stub to pin it without touching env or the file. */
   resolveProvenanceWrapGh?: () => Promise<boolean>
+  /** Resolves `defaults.prProvenance.footer.skipRepos` when the `gh` shim is
+   *  installed, so a listed repo gets no footer from the shim either.
+   *  Defaults to `loadFooterSkipRepos` (reads the real config); tests inject
+   *  a stub. */
+  resolveFooterSkipRepos?: () => Promise<readonly string[]>
   /** Resolves + shapes the AGENTS.md for a spawn's `cwd` (see
    *  `agents-md.ts`): inline / pointer / absent, plus the standing cd-contract
    *  line. Defaults to the real resolver over `loadAgentsMdInlineMaxKb`'s
@@ -1462,6 +1848,10 @@ export interface SpawnAgentSessionInput {
    *  the depth-gated worktree/role guards — declaring a logical parent is not
    *  the same as being a nested (scoped) spawn. */
   parentSessionId?: string
+  /** Daemon-internal: the call carried no caller identity and
+   *  `mcp.noCallerIdentity` let it through. Stamped as `meta.anonymous`; it
+   *  grants nothing (no ACL elevation). Set by `agent_start`, never by input. */
+  anonymousCaller?: boolean
   /** Attach policy override for THIS spawn (`agent_start.attach`). `false`
    *  forces an independent root even when a parent is derivable; `true` opts
    *  in to attaching under the derived parent even under an `on-request`
@@ -1508,6 +1898,32 @@ export interface SpawnAgentSessionInput {
   /** AIP-42 manifest by explicit AGENT.md path (absolute, or relative to the
    *  resolved cwd). Same default-filling semantics as `agentId`. */
   agentPath?: string
+  /** ONE agent reference: an AGENT.md path, an agent id, or a role name.
+   *  Resolved by `resolveAgentRef` (agent-ref.ts) into `agentId`/`agentPath`/
+   *  `role`, which keep working as aliases. */
+  agent?: string
+  /** A manifest identity already frozen on a prior session (continue-fresh):
+   *  its `meta` identity keys (`carryAgentIdentityMeta`), AGENT.md opt-in and
+   *  deny grants, recorded and staged as-is instead of re-reading the
+   *  manifest. Ignored when `agentId`/`agentPath` resolves a manifest. Daemon-
+   *  internal: never filled from a request body. */
+  carriedAgentIdentity?: {
+    meta: Readonly<Record<string, string>>
+    exposedToolOptIn?: readonly string[]
+    toolDenyGrants?: readonly Grant[]
+  }
+  /** AIP-46 operator binding: `operator:<slug>[@<owner>/<workspace>]` or
+   *  `ws://operators/<slug>`. Validated for form here (the daemon has no
+   *  operator resolver) and recorded on the descriptor in its compact form.
+   *  Never inherited from a calling session. */
+  operator?: string
+  /** The composing host's digest of the operator body it resolved; recorded
+   *  beside `operator` so a later read can flag a drifted operator. */
+  operatorDigest?: string
+  /** The session making this call, derived by the daemon from the transport
+   *  (MCP caller scope, HTTP caller header), NEVER from a request body. Absent
+   *  means the host. Gates who may name an operator (AIP-46 rule 4). */
+  callerSessionId?: string
   /**
    * Filesystem boundary for this spawn (see `app-boundary.ts`): app source
    * read-only, run workspace + data dir writable, the rest denied. Set by
@@ -1572,11 +1988,11 @@ export interface SpawnAgentSessionInput {
    *  the resolved skill list). Ignored (with a warning) for a sandbox spawn —
    *  the box cannot reach this daemon's loopback `/mcp`. */
   bundles?: string[]
-  /** Explicitly mount the daemon's own scoped `/mcp` for this spawn — the
-   *  only way an adapter outside `shouldInjectDaemonSelfMount`'s allowlist
-   *  (opencode, codex, gemini, …) gets it. Merged with config's
-   *  `defaults.adapters.<slug>.daemonMount` (per-spawn wins). Ignored (with a
-   *  warning) for a sandbox spawn. */
+  /** Explicitly mount the daemon's own scoped `/mcp` for this spawn --
+   *  mainly useful for sandbox spawns or after an `mcpServers: []` opt-out,
+   *  since the universal on-host default now covers all adapters. Merged
+   *  with config's `defaults.adapters.<slug>.daemonMount` (per-spawn wins).
+   *  Ignored (with a warning) for a sandbox spawn. */
   daemonMount?: boolean
   model?: string
   effort?: string
@@ -1587,7 +2003,7 @@ export interface SpawnAgentSessionInput {
    *  the runtime bills the FIRST profile eligible for the model's route.
    *  Resolved from auth-profiles + keychain at the final spawn boundary; the
    *  secret never crosses HTTP/MCP. */
-  access?: { profileRef?: string; profileRefs?: string[] }
+  access?: { profileRef?: string; profileRefs?: string[]; delegateProfileRefs?: string[] }
   /** Bind this spawn to a local/LAN inference endpoint — resolved (and fit-
    *  checked) at the very top of `spawnAgentSession`, BEFORE preset
    *  expansion, into ordinary `model`/`route`/`access`/`auth`/`deferredTools`
@@ -1675,8 +2091,12 @@ export interface SpawnAgentSessionInput {
   hooks?: { clerk?: Partial<ClerkHookConfig> }
   /** Context-continuity policy for this session — controls warning,
    *  opportunistic compaction, fresh-continuation, and hard-stop thresholds.
-   *  Resolved from global → per-adapter → per-model → explicit override. */
+   *  Resolved from global → per-adapter → per-model → explicit override,
+   *  key by key. */
   contextContinuity?: ContextContinuityPolicy
+  /** The AIP-46 name of the same block; layered per setting over the adapter
+   *  and daemon blocks and wins over `contextContinuity` key by key. */
+  contextSettings?: ContextSettings
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -1731,6 +2151,35 @@ export interface SpawnAgentSessionInput {
    *  `defaults.sandbox.checkpoint`. Meaningful only for a `sandbox` spawn
    *  with a workspace-remote delivery target; ignored otherwise. */
   sandboxCheckpoint?: SandboxCheckpointConfig | false
+  /** Preflight probe ids (`sandbox-preflight.ts`) run against the booted box
+   *  BEFORE the agent starts, in order. A `ko` destroys the box and fails the
+   *  spawn with `sandbox_preflight_failed`; `unknown` never blocks. Only
+   *  meaningful with `sandbox`; an id with no registered probe is refused
+   *  (`sandbox_preflight_invalid`) before any box boots. */
+  preflight?: string[]
+  /** Budget, ms, for the box's own `agent_start` (the adapter spawn on the
+   *  booted box). Unset keeps the harness client's 5 minute request timeout.
+   *  Set per placement rung (`placement.ladder[].agentStartTimeoutMs`) so a
+   *  box that accepted the workspace but never starts the adapter costs the
+   *  ladder that budget instead of 5 minutes; an expiry fails the rung with
+   *  `sandbox_proxy_failed` (`details.errorClass: "sandbox_agent_start_timeout"`)
+   *  and tears the box down. Only meaningful with `sandbox`. */
+  agentStartTimeoutMs?: number
+  /** INTERNAL (the placement ladder sets it, never an `agent_start` argument):
+   *  this spawn is a non-final ladder rung, so a provider that would wait out a
+   *  capacity refusal gives up at once (no retry hint) or waits once, at most
+   *  this many ms, and lets the ladder move on. Unset keeps the provider's own
+   *  wait: a plain `sandbox` spawn and the last rung. */
+  ladderCapacityWaitBudgetMs?: number
+  /** Ordered placement ladder: rung 1 is tried first and the spawn moves down
+   *  the list when a rung cannot place the box (failed preflight, capacity or
+   *  overflow refusal, egress pool exhausted, any boot failure before the
+   *  agent started). Each rung is a `sandbox` plus optional `model` / `access`
+   *  / `preflight` / `turnRetry` overrides; omitted axes inherit this input's
+   *  own. Mutually exclusive with a top-level `sandbox` (`placement_invalid`).
+   *  Once the agent started the ladder never moves the session: that is
+   *  `turnRetry`'s job. The attempts land on the descriptor's `placement`. */
+  placement?: PlacementInput
   /** INTERNAL (`session_migrate`, never an `agent_start` argument): which
    *  checkpoint snapshot the new box restores onto the work branch's
    *  checkout. Default `"any"` — see `CheckpointRestoreSnapshot`. */
@@ -1786,9 +2235,10 @@ export interface SpawnAgentSessionInput {
    *  `parentSessionId`, if any — enqueued immediately when the parent is
    *  alive and idle, queued for its next turn when busy (never
    *  interrupted). Recorded verbatim onto {@link SessionDescriptor
-   *  .notifyParentOnCrash}; see that field's doc. Default false — the free
-   *  external webhook path (`notifyUrl`) already fires regardless of this
-   *  flag. */
+   *  .notifyParentOnCrash}; see that field's doc. Default true for an
+   *  `executor` that has a declared or attached parent, false otherwise;
+   *  an explicit `false` always opts out. The free external webhook path
+   *  (`notifyUrl`) fires regardless of this flag. */
   notifyParentOnCrash?: boolean
   /** A REMOTE parent (host relay) forwarded by the host into a BOX daemon's
    *  `agent_start`: the parent session lives in the HOST daemon's registry,
@@ -1797,6 +2247,11 @@ export interface SpawnAgentSessionInput {
    *  (see `parent-relay.ts` and `docs/lineage-handover.md`). Recorded
    *  verbatim onto {@link SessionDescriptor.remoteParent}. */
   remoteParent?: { sessionId: string; url: string; token: string }
+  /** A CREDENTIAL relay forwarded by the host into a BOX daemon's
+   *  `agent_start` (see `credential-relay.ts`): where this session's nested
+   *  spawns ask the HOST to resolve a profile the box does not hold. The
+   *  token is kept in memory only, never on a descriptor. */
+  credentialRelay?: { url: string; token: string }
   /** Per-spawn opt-out of sentinel auto-link (AIP-60 §6/step 4): `false`
    *  means a PR this session opens is never auto-watched, regardless of
    *  `config.sentinel.autoWatchPrs`. Recorded verbatim onto
@@ -1896,12 +2351,15 @@ export type SpawnAgentSessionResult =
         | "orchestrator_max_depth_exceeded"
         | "orchestrator_child_quota_exceeded"
         | "invalid_role"
+        | "invalid_agent"
+        | "invalid_context_settings"
         | "role_spawn_denied"
         | "unsupported_auth_mode"
         | "unsupported_auth_source"
         | "auth_source_unresolved"
         | "access_profile_not_found"
         | "access_profile_ineligible"
+        | "account_slot_unresolved"
         | "harness_preset_profile_unavailable"
         | "inference_endpoint_unresolved"
         | "inference_fit_check_failed"
@@ -1923,6 +2381,12 @@ export type SpawnAgentSessionResult =
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
         | "sandbox_workspace_setup_failed"
+        | "sandbox_preflight_failed"
+        | "sandbox_preflight_invalid"
+        | "sandbox_spec_invalid"
+        | "sandbox_egress_all_cooling"
+        | "placement_invalid"
+        | "sandbox_placement_exhausted"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -1937,6 +2401,12 @@ export type SpawnAgentSessionResult =
         | "agent_manifest_unreadable"
         | "model_policy_refused"
         | "session_preset_invalid"
+        | "operator_unresolvable"
+        | "delegation_denied"
+        | "auth_profile_denied"
+        | "stdio_mount_denied"
+        | "identity_unverified"
+        | "identity_mismatch"
       message: string
       details?: Record<string, unknown>
     }
@@ -2095,6 +2565,132 @@ export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
+  if (input.placement === undefined) return spawnAgentSessionOnce(deps, input)
+  return spawnWithPlacementLadder(deps, input, input.placement)
+}
+
+/** Try each rung of `placement.ladder` as an ordinary single-box spawn. The
+ *  walk stops at the first rung that returns a session, so it can never move a
+ *  session whose agent already started; see `placement-ladder.ts` for what
+ *  counts as "this rung cannot place the box". */
+async function spawnWithPlacementLadder(
+  deps: SpawnAgentSessionDeps,
+  input: SpawnAgentSessionInput,
+  placement: PlacementInput,
+): Promise<SpawnAgentSessionResult> {
+  const invalid = (message: string): SpawnAgentSessionResult => ({ ok: false, code: "placement_invalid", message })
+  if (input.sandbox !== undefined) {
+    return invalid(
+      "agent_start: `placement` and `sandbox` are mutually exclusive; put the sandbox on a ladder rung " +
+        "(placement.ladder[].sandbox) or drop `placement`.",
+    )
+  }
+  const parsed = placementInputSchema.safeParse(placement)
+  if (!parsed.success) {
+    return invalid(`agent_start: invalid placement: ${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`)
+  }
+  const { placement: _stripped, ladderCapacityWaitBudgetMs: _ignored, ...inherited } = input
+  const ladder = resolveLadder(parsed.data.ladder, {
+    ...(inherited.model !== undefined ? { model: inherited.model } : {}),
+    ...(inherited.access !== undefined ? { access: inherited.access } : {}),
+    ...(inherited.preflight !== undefined ? { preflight: inherited.preflight } : {}),
+    ...(inherited.turnRetry !== undefined ? { turnRetry: inherited.turnRetry } : {}),
+  })
+  for (const [index, rung] of ladder.entries()) {
+    const problem = placementRungProblem(rung, index)
+    if (problem) return invalid(`agent_start: ${problem}`)
+  }
+  const walk = await walkPlacementLadder(
+    ladder,
+    async (rung, index) => {
+      const hasNextRung = index < ladder.length - 1
+      const result = await spawnAgentSessionOnce(deps, {
+        ...inherited,
+        ...rungOverrides(rung),
+        ...(hasNextRung ? { ladderCapacityWaitBudgetMs: rung.agentStartTimeoutMs ?? MAX_AGENT_START_TIMEOUT_MS } : {}),
+      })
+      if (result.ok) return { ok: true, value: result }
+      if (ladder.length > 1) {
+        console.warn(
+          `[placement] rung ${index + 1}/${ladder.length} (${rungProviderLabel(rung)}) cannot place the box: ` +
+            `${result.code}${typeof result.details?.errorClass === "string" ? ` [${result.details.errorClass}]` : ""}: ` +
+            result.message,
+        )
+      }
+      return { ok: false, code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) }
+    },
+  )
+  if (!walk.ok) {
+    if (walk.exhausted) {
+      return {
+        ok: false,
+        code: "sandbox_placement_exhausted",
+        message:
+          `agent_start: no placement rung could start the session (${formatPlacementAttempts(walk.attempts)}). ` +
+          `Last failure: ${walk.failure.message}`,
+        details: { attempts: walk.attempts },
+      }
+    }
+    return {
+      ok: false,
+      code: walk.failure.code as Extract<SpawnAgentSessionResult, { ok: false }>["code"],
+      message: walk.failure.message,
+      details: { ...walk.failure.details, attempts: walk.attempts },
+    }
+  }
+  const result = walk.value
+  if (result.ok && result.deduped) return result
+  const record: SessionPlacement = { rung: walk.rung, ladder, attempts: walk.attempts }
+  const descriptor = deps.registry.recordPlacement(result.descriptor.id, record) ?? result.descriptor
+  const skipped = walk.attempts.filter(a => a.outcome === "failed")
+  return {
+    ...result,
+    descriptor,
+    ...(skipped.length > 0
+      ? {
+          warnings: [
+            ...(result.warnings ?? []),
+            `agent_start: placement rung ${walk.rung + 1}/${ladder.length} (${rungProviderLabel(ladder[walk.rung]!)}) ` +
+              `after ${skipped.length} skipped (${formatPlacementAttempts(skipped)})`,
+          ],
+        }
+      : {}),
+  }
+}
+
+async function spawnAgentSessionOnce(
+  deps: SpawnAgentSessionDeps,
+  input: SpawnAgentSessionInput,
+): Promise<SpawnAgentSessionResult> {
+  const reactionStamp = reactionSpawnStamp(input.origin)
+  // The auth profiles the REQUEST names, captured before preset expansion
+  // replaces `input.access` with a layered value (harness preset, session
+  // preset, AGENT.md manifest, config). The profile gate evaluates only what
+  // the caller asked for, never operator or author configuration.
+  let requestedAccess = input.access
+  const slotDeps = deps.loadAccountSlots ? { loadAccountSlots: deps.loadAccountSlots } : {}
+  // The MCP servers the REQUEST names, captured before any later layer
+  // (preset, manifest, bundle, checkpoint resume) can merge or replace
+  // `input.mcpServers` and before the daemon injects its own mounts. The
+  // stdio mount gate evaluates only what the caller asked for.
+  const requestedMcpServers = input.mcpServers
+  // AIP-46 operator binding, validated before any side effect.
+  const operatorBinding = resolveOperatorBinding({
+    ...(input.operator !== undefined ? { operator: input.operator } : {}),
+    ...(input.operatorDigest !== undefined ? { operatorDigest: input.operatorDigest } : {}),
+    ...(input.callerSessionId !== undefined ? { callerSessionId: input.callerSessionId } : {}),
+    operatorOf: id => deps.registry.get(id)?.operator,
+  })
+  if (!operatorBinding.ok) {
+    return {
+      ok: false,
+      code: operatorBinding.code,
+      message: operatorBinding.message,
+      details: operatorBinding.details,
+    }
+  }
+  const recordedOperator = operatorBinding.operator
+  const recordedOperatorDigest = operatorBinding.operatorDigest
   // CONTROLLER marker (issue #1647) — read ONCE here, then stripped from
   // the rest of the spawn. Nothing downstream (descriptor, registry rows,
   // adapter options) ever sees it: a `spawnAgentSession` input field is not
@@ -2108,6 +2704,15 @@ export async function spawnAgentSession(
     check: SpawnAdmissionCheck,
     admission: SpawnAdmission,
   ): void => {
+    try {
+      recordSpawnAdmission({
+        stage: check.stage,
+        decision: admission.decision,
+        ...(admission.dedupeSource ? { dedupeSource: admission.dedupeSource } : {}),
+      })
+    } catch {
+      // Telemetry must never change a spawn.
+    }
     try {
       deps.onSpawnAdmission?.({
         stage: check.stage,
@@ -2286,14 +2891,33 @@ export async function spawnAgentSession(
       // and the profile — letting the spawn proceed would fail later anyway,
       // deep inside credential resolution, with an opaque eligibility error
       // that never mentions the preset that silently applied.
-      const presetProfile = await getAuthProfile(preset.profileRef)
+      // A preset may name an account slot (`slot:claude-primary`): the slot is
+      // resolved now, against the current `accountSlots`, and an unknown slot
+      // fails the spawn with the same preset-naming message.
+      let presetProfileRef = preset.profileRef
+      if (isSlotRef(preset.profileRef)) {
+        try {
+          presetProfileRef = (await resolveProfileRef(preset.profileRef, slotDeps)).profileRef
+        } catch (err) {
+          if (!(err instanceof AccountSlotError)) throw err
+          return {
+            ok: false,
+            code: "harness_preset_profile_unavailable",
+            message:
+              `harness preset "${preset.id}" (default for ${preset.harnessSlug}) bills through ` +
+              `"${preset.profileRef}": ${err.message}`,
+            details: { slotCode: err.code, slot: err.slot },
+          }
+        }
+      }
+      const presetProfile = await getAuthProfile(presetProfileRef)
       if (!presetProfile || presetProfile.disabled) {
         return {
           ok: false,
           code: "harness_preset_profile_unavailable",
           message:
             `harness preset "${preset.id}" (default for ${preset.harnessSlug}) bills through auth ` +
-            `profile "${preset.profileRef}" which is ${!presetProfile ? "missing" : "disabled"} — ` +
+            `profile "${presetProfileRef}" which is ${!presetProfile ? "missing" : "disabled"} — ` +
             "re-enable it, or point the harness default elsewhere with harness_preset_create / " +
             "harness_preset_set_default.",
         }
@@ -2339,6 +2963,43 @@ export async function spawnAgentSession(
       ? { options: sessionConfig.options as SpawnAgentSessionInput["options"] }
       : {}),
   }
+  // ACCOUNT SLOTS (AIP-46 access axis): every `slot:<name>` ref in the merged
+  // access (request, preset, harness preset, manifest) becomes the real
+  // profile id HERE, before anything reads it: the profile gate, host auth
+  // resolution for a box (`resolveHostAuth` below, which must hand the box an
+  // already-resolved credential: a box has neither the slot map nor the
+  // keychain) and the credential-relay allowlist. An unknown slot, or one
+  // pointing at a missing or disabled profile, refuses the spawn.
+  const slotRefusal = (err: unknown) =>
+    err instanceof AccountSlotError
+      ? {
+          ok: false as const,
+          code: "account_slot_unresolved" as const,
+          message: `agent_start: ${err.message}`,
+          details: { slotCode: err.code, slot: err.slot },
+        }
+      : undefined
+  let accessSlotByProfile: Map<string, string> | undefined
+  if (accessNamesSlot(input.access)) {
+    try {
+      const resolvedAccess = await resolveAccessSlots(input.access!, slotDeps)
+      input = { ...input, access: resolvedAccess.access }
+      accessSlotByProfile = resolvedAccess.slotByProfile
+    } catch (err) {
+      const refusal = slotRefusal(err)
+      if (refusal) return refusal
+      throw err
+    }
+  }
+  if (accessNamesSlot(requestedAccess)) {
+    try {
+      requestedAccess = (await resolveAccessSlots(requestedAccess!, slotDeps)).access
+    } catch (err) {
+      const refusal = slotRefusal(err)
+      if (refusal) return refusal
+      throw err
+    }
+  }
   // A preset `browser` sits BELOW the role default (see `resolveBrowserMode`),
   // so it is kept aside instead of folded into input.
   const presetBrowser = sessionConfig.browser
@@ -2377,6 +3038,7 @@ export async function spawnAgentSession(
     buildOrchestratorMcp,
     daemonMcpUrl,
     callerScope,
+    callerCredentialSessionId,
     webhookNotifier,
     loadDefaultsConfig,
     resolveSandboxProvider,
@@ -2385,6 +3047,7 @@ export async function spawnAgentSession(
     resolveSpawnAttach,
     resolveSpawnDedupe,
     resolveProvenanceWrapGh,
+    resolveFooterSkipRepos,
     resolveAgentsMd,
     resolveWorkspaceRules,
     listCatalogModels,
@@ -2814,6 +3477,42 @@ export async function spawnAgentSession(
   // spawn that didn't go through the agentId/agentPath branch.
   let callerAgentRoleHash: string | undefined
   let callerAgentToolsHash: string | undefined
+  let callerToolDenyGrants: Grant[] | undefined
+  let callerExposedToolOptIn: string[] | undefined
+  // The manifest's `delegates_to`, resolved ONCE here and frozen on the
+  // session (`meta.agentDelegatesTo`). The delegation gate reads the recorded
+  // list, never the file, so a session that rewrote its own AGENT.md cannot
+  // widen its own grant (AIP-46 rule 3).
+  let callerAgentDelegates: ManifestDelegates | undefined
+  // The manifest's AIP-72 binding (`memory.enabled`/`store`/`anchors`), read
+  // by the spawn digest below once the adapter is resolved.
+  let callerAgentMemory: AgentMemoryBinding | undefined
+  // The store root the session's memory tools and digest use, recorded on
+  // the descriptor `meta` (`memoryStoreRoot`) when the agent binds memory.
+  let memoryStoreRoot: string | undefined
+  // Role REGISTRY (spawn-role-profiles extensibility): custom
+  // (pack-carried) roles merged with the two built-ins at every
+  // resolution below; see `role.ts`'s `mergeRoleRegistry`. Loaded once
+  // per spawn so the child-role resolution and the parent-role gate
+  // check (right below) agree on the exact same set.
+  const roleRegistry = deps.loadRoleRegistry
+    ? await deps.loadRoleRegistry()
+    : await loadDefaultRoleRegistry()
+  // ONE `agent` reference (an AGENT.md path, an agent id or a role name)
+  // resolved into the three legacy spellings below. The resolution must run
+  // before the manifest block (it may set `agentId`/`agentPath`) and before
+  // `resolveRole(input.role, ...)`.
+  const agentRef = resolveAgentRef(input, {
+    cwd,
+    roleNames: Object.keys(mergeRoleRegistry(roleRegistry)),
+  })
+  if (!agentRef.ok) {
+    return { ok: false, code: agentRef.code, message: agentRef.message }
+  }
+  delete input.agent
+  if (agentRef.agentId !== undefined) input.agentId = agentRef.agentId
+  if (agentRef.agentPath !== undefined) input.agentPath = agentRef.agentPath
+  if (agentRef.role !== undefined) input.role = agentRef.role
   // AIP-42 manifest defaults (agentId / agentPath): load the AGENT.md and fold
   // its model/instructions/skills/tools into the spawn, WITHOUT overriding
   // anything the caller pinned. Resolved here — after `cwd` is final (agentId
@@ -2845,6 +3544,10 @@ export async function spawnAgentSession(
     const roleFingerprint = fingerprintAgentRole(d)
     callerAgentRoleHash = roleFingerprint.roleHash
     callerAgentToolsHash = roleFingerprint.toolsHash
+    callerToolDenyGrants = d.toolDenyGrants
+    callerExposedToolOptIn = d.exposedToolOptIn
+    callerAgentDelegates = d.delegatesTo
+    callerAgentMemory = d.memory
     const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
     const manifestPrompt =
       d.instructions !== undefined ? prefixPrompt(d.instructions, callerPrompt) : callerPrompt
@@ -2873,6 +3576,22 @@ export async function spawnAgentSession(
       ...(input.hooks === undefined && d.hooks !== undefined ? { hooks: d.hooks } : {}),
     }
     if (d.warnings.length > 0) spawnWarnings.push(...d.warnings)
+    if (callerAgentDelegates?.kind === "unresolved") {
+      spawnWarnings.push(
+        `agent_start: manifest delegates_to entry ${callerAgentDelegates.entry} cannot be resolved to an agent identity yet (only agent ids and role names are); the delegation gate treats this agent as declaring no delegatesTo.`,
+      )
+    }
+  } else if (input.carriedAgentIdentity) {
+    // The identity a prior session's spawn froze, NOT a re-read of its
+    // AGENT.md (AIP-46 "No self-widening"). Recorded and staged exactly like
+    // a resolved manifest so the gateway sees it while the driver starts.
+    const carried = input.carriedAgentIdentity
+    callerAgentId = carried.meta.agentId
+    callerAgentManifestPath = carried.meta.agentManifestPath
+    callerAgentRoleHash = carried.meta.agentRoleHash
+    callerAgentToolsHash = carried.meta.agentToolsHash
+    if (carried.exposedToolOptIn) callerExposedToolOptIn = [...carried.exposedToolOptIn]
+    if (carried.toolDenyGrants) callerToolDenyGrants = [...carried.toolDenyGrants]
   }
   // The AGENT level of the clerk hook, resolved once and recorded on the
   // descriptor (`clerkHook`) - the daemon's clerk-turn-end controller
@@ -3035,31 +3754,349 @@ export async function spawnAgentSession(
   // (turning `bundleIds` into `mcpServers` entries, below) needs
   // `~/.agentproto/bundles.json` + the imported-MCP set, so it happens later,
   // once `mintedSessionId` exists.
-  const { bundleIds, daemonMount: explicitDaemonMount } = resolveBundleDefaults(
+  const resolvedBundleDefaults = resolveBundleDefaults(
     configDefaults,
     input.adapter,
     { bundles: input.bundles, daemonMount: input.daemonMount },
   )
+  // AIP-66 §4: a managed cloud agent has no MCP surface (the vendor owns the
+  // harness). Explicit `bundles`/`daemonMount` were already refused by name
+  // above; what reaches here is a config default, which is skipped silently.
+  const bundleIds = cloudResolved ? [] : resolvedBundleDefaults.bundleIds
+  const explicitDaemonMount = cloudResolved ? false : resolvedBundleDefaults.daemonMount
   const bundleSkillsUnion = new Set<string>()
-  // Role REGISTRY (spawn-role-profiles extensibility): custom
-  // (pack-carried) roles merged with the two built-ins at every
-  // resolution below — see `role.ts`'s `mergeRoleRegistry`. Loaded once
-  // per spawn so the child-role resolution and the parent-role gate
-  // check (right below) agree on the exact same set.
-  const roleRegistry = deps.loadRoleRegistry
-    ? await deps.loadRoleRegistry()
-    : await loadDefaultRoleRegistry()
   // Spawn-time role (see role.ts). Resolved BEFORE the orchestrator/
   // hermes-default mcpServers decisions below so `toolPolicy.delegation`
   // can gate both — the hard tool gate this whole primitive exists for.
   let role
   try {
-    role = resolveRole(input.role, childDepth, configDefaults?.defaultRoleDepthCutoff, roleRegistry)
+    role = resolveRole(
+      input.role,
+      childDepth,
+      configDefaults?.defaultRoleDepthCutoff,
+      roleRegistry,
+      undefined,
+      configDefaults?.spawn?.defaultAgent,
+    )
   } catch (err) {
     return {
       ok: false,
       code: "invalid_role",
       message: `agent_start: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  if (input.role === undefined) {
+    // Same boundary `resolveRole` uses to pick root/nested: `depth < cutoff`,
+    // not `depth === 0`. A configured cutoff > 1 binds `defaultAgent.root` at
+    // depths 1..cutoff-1, so the warning must follow it or it names the side
+    // that was never consulted.
+    const cutoff = configDefaults?.defaultRoleDepthCutoff ?? DEFAULT_ROLE_DEPTH_CUTOFF
+    const side = childDepth < cutoff ? "root" : "nested"
+    for (const name of unknownDefaultAgents(
+      configDefaults?.spawn?.defaultAgent,
+      roleRegistry,
+      side,
+    )) {
+      spawnWarnings.push(
+        `agent_start: defaults.spawn.defaultAgent names "${name}", which is not a known agent or role; the built-in default applies.`,
+      )
+    }
+  }
+  // AIP-46 spawn proof gate, counters always on, before every other gate
+  // (identity precedes authorisation). A `callerScope` is proven by its own
+  // token; an unscoped caller is proven only when the request carried a
+  // session token minted for the session it names. `defaults.identity.
+  // requireProof` is opt-in and defaults empty; when it lists `session:spawn`
+  // a `claimed` caller is refused `identity_unverified` and a credential
+  // naming another session `identity_mismatch`. Enforcement is skipped while
+  // `defaults.identity.sessionTokens` is `off`: no token is minted, so nobody
+  // could ever be proven (rule 8), and the reading counts as ignored.
+  const proofCallerId = spawnGateCallerId(callerScope, input)
+  const proofCallerDescriptor =
+    proofCallerId !== undefined ? registry.get(proofCallerId) : undefined
+  const proofVerdict = decideSpawnProof({
+    callerSessionId: proofCallerId,
+    callerKnown: proofCallerDescriptor !== undefined,
+    callerExternal: proofCallerDescriptor?.kind === "external",
+    scoped: callerScope !== undefined,
+    credentialSessionId: callerCredentialSessionId,
+  })
+  const proofClaimClass =
+    proofVerdict === "claimed" && proofCallerId !== undefined
+      ? claimClassOf(proofCallerId, proofCallerDescriptor)
+      : undefined
+  const proofListed = (configDefaults?.identity?.requireProof ?? []).includes("session:spawn")
+  const proofTokensOn = sessionTokenModeOf(configDefaults) !== "off"
+  const refuseClaimed = proofListed && proofTokensOn && proofVerdict === "claimed"
+  const refuseMismatch = proofListed && proofTokensOn && proofVerdict === "mismatch"
+  recordSpawnProof(proofVerdict, {
+    listed: proofListed,
+    refused: refuseClaimed || refuseMismatch,
+    ...(proofClaimClass !== undefined ? { claimClass: proofClaimClass } : {}),
+    surface: callerScope ? "scoped" : "mcp",
+    ...(proofCallerId !== undefined ? { callerId: proofCallerId } : {}),
+    tokensOn: proofTokensOn,
+  })
+  if (refuseClaimed) {
+    const reason =
+      proofClaimClass === "undelivered"
+        ? `this session's adapter or placement could not be given a session token, so it cannot spawn while "session:spawn" is listed (AIP-46 rule 8).`
+        : `the request omitted the session token it was given; present it on this request.`
+    return {
+      ok: false,
+      code: "identity_unverified",
+      message:
+        `agent_start: the caller session did not present its session token on this request, so it ` +
+        `cannot spawn while "session:spawn" requires proof: ${reason}`,
+      details: {
+        gate: "proof",
+        action: "session:spawn",
+        claimClass: proofClaimClass,
+      },
+    }
+  }
+  if (refuseMismatch) {
+    return {
+      ok: false,
+      code: "identity_mismatch",
+      message:
+        `agent_start: the session token on this request was minted for a different session than the ` +
+        `caller it names, so it cannot spawn while "session:spawn" requires proof.`,
+      details: {
+        gate: "proof",
+        action: "session:spawn",
+      },
+    }
+  }
+  // AIP-46 delegation gate, observe first. On every nested spawn (scoped
+  // or unscoped), compare the child's bound agent against the CALLING
+  // session's agent `delegatesTo`. `observe` (the default) only counts and
+  // warns, changing no decision; `enforce` refuses a child the caller does
+  // not declare, before the lattice below. `off` skips the work entirely.
+  const delegationGateMode = configDefaults?.spawn?.delegationGate ?? DEFAULT_DELEGATION_GATE_MODE
+  let delegationVerdict: DelegationVerdict | undefined
+  if (delegationGateMode !== "off") {
+    const gateCallerId = spawnGateCallerId(callerScope, input)
+    const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
+    const callerMeta = callerDescriptor?.meta
+    const callerAgent =
+      (typeof callerMeta?.agentSlug === "string" ? callerMeta.agentSlug : undefined) ??
+      callerScope?.role ??
+      (typeof callerMeta?.role === "string" ? callerMeta.role : undefined)
+    // A manifest-bound caller's list was frozen at ITS spawn; read that,
+    // never the manifest file (a session that rewrote its own AGENT.md must
+    // not widen its own grant). Every other caller keeps the role path.
+    let callerDelegatesTo: readonly string[] | undefined
+    if (typeof callerMeta?.agentDelegatesTo === "string" && callerMeta.agentDelegatesTo !== "") {
+      callerDelegatesTo = callerMeta.agentDelegatesTo.split(",")
+    } else if (callerAgent !== undefined) {
+      try {
+        callerDelegatesTo = resolveRole(
+          callerAgent,
+          callerScope?.depth ?? 0,
+          configDefaults?.defaultRoleDepthCutoff,
+          roleRegistry,
+          undefined,
+          configDefaults?.spawn?.defaultAgent,
+        ).delegatesTo
+      } catch {
+        // A manifest agent id is not a built-in or pack role: when its spawn
+        // recorded no manifest delegates_to, it declares nothing the gate can
+        // evaluate, so the legacy rule applies.
+        callerDelegatesTo = undefined
+      }
+    }
+    const childAgent = callerAgentId ?? role.name
+    delegationVerdict = decideDelegation({
+      callerSessionId: gateCallerId,
+      callerAgent,
+      callerDelegatesTo,
+      childAgent,
+    })
+    recordDelegation(delegationVerdict, {
+      mode: delegationGateMode,
+      ...(callerAgent !== undefined ? { callerAgent } : {}),
+      childAgent,
+      surface: callerScope ? "scoped" : "mcp",
+    })
+    if (delegationGateMode === "enforce" && delegationVerdict === "would_deny") {
+      const list = callerDelegatesTo ?? []
+      return {
+        ok: false,
+        code: "delegation_denied",
+        message:
+          `agent_start: agent "${callerAgent}" does not declare "${childAgent}" in delegatesTo ` +
+          `(allowed: ${list.length > 0 ? list.join(", ") : "(none)"}).`,
+        details: {
+          gate: "agent",
+          callerAgent,
+          childAgent,
+          delegatesTo: [...list],
+          legacyCode: "role_spawn_denied",
+        },
+      }
+    }
+  }
+  // AIP-46 auth-profile gate, observe first. A nested spawn may name an
+  // auth profile only when it is in the CALLING session's set: its own
+  // recorded `accessProfile.profileRef` plus `defaults.spawn.sharedProfiles`.
+  // Only the profiles the REQUEST names are evaluated (captured before preset
+  // expansion above); a profile from a preset, manifest or config layer is
+  // operator or author configuration, not a request. Spawns with no trusted
+  // caller (continue-fresh, restart, migrate, cron, retries, a root spawn)
+  // are `no_caller` and never gated: the host's own auth authorises them.
+  const profileGateMode = configDefaults?.spawn?.profileGate ?? DEFAULT_PROFILE_GATE_MODE
+  let profileVerdict: ProfileVerdict | undefined
+  if (profileGateMode !== "off") {
+    const gateCallerId = spawnGateCallerId(callerScope, input)
+    const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
+    const callerKnown = callerDescriptor !== undefined
+    // An external identifier is a label, evaluated as anonymous (AIP-46 rule
+    // 7): the operator's own Claude Desktop or CLI session registers as one.
+    const callerExternal = callerDescriptor?.kind === "external"
+    const callerProfiles = callerProfileSet({
+      caller: callerDescriptor,
+      shared: configDefaults?.spawn?.sharedProfiles ?? [],
+    })
+    const requestedProfiles: string[] = []
+    for (const ref of [
+      requestedAccess?.profileRef,
+      ...(requestedAccess?.profileRefs ?? []),
+      // Delegating a profile to a box supervisor hands out the right to bill
+      // it, so it is held to the same "own or shared" rule as naming it.
+      ...(requestedAccess?.delegateProfileRefs ?? []),
+    ]) {
+      if (ref !== undefined && ref !== "" && !requestedProfiles.includes(ref)) {
+        requestedProfiles.push(ref)
+      }
+    }
+    const decision = decideProfileUse({
+      callerSessionId: gateCallerId,
+      callerKnown,
+      callerExternal,
+      requested: requestedProfiles,
+      callerProfiles,
+    })
+    profileVerdict = decision.verdict
+    let denied = decision.denied
+    if ((profileVerdict === "allowed" || profileVerdict === "would_deny") && callerDescriptor) {
+      // decide() answers "may this principal use this profile" for each ref;
+      // the gate derives its verdict from those answers so introspection and
+      // enforcement cannot drift.
+      const principal = { kind: "session" as const, session: callerDescriptor }
+      denied = requestedProfiles.filter(
+        ref =>
+          !decidePermission(
+            principal,
+            "auth.profile.use",
+            { kind: "profile", ref },
+            { profiles: { callerAllowed: callerProfiles } },
+          ).allow,
+      )
+      profileVerdict = denied.length > 0 ? "would_deny" : "allowed"
+    }
+    recordProfileUse(profileVerdict, {
+      mode: profileGateMode,
+      callerProfiles,
+      denied,
+      surface: callerScope ? "scoped" : "mcp",
+    })
+    if (profileGateMode === "enforce" && profileVerdict === "would_deny") {
+      return {
+        ok: false,
+        code: "auth_profile_denied",
+        message:
+          `agent_start: the caller may not name auth profile${denied.length > 1 ? "s" : ""} ` +
+          `${denied.map(ref => `"${ref}"`).join(", ")}; a session may pass on only its own profile ` +
+          `and the configured shared ones. Add a profile to defaults.spawn.sharedProfiles to allow it.`,
+        details: {
+          gate: "profile",
+          denied: [...denied],
+          callerProfiles: [...callerProfiles],
+        },
+      }
+    }
+  }
+  // Command-allowlist gate for stdio MCP mounts, observe first. A stdio
+  // mount is an arbitrary command the agent CLI launches, so a session may
+  // mount only a command the workspace allowlist admits (the SAME evaluator
+  // `command_execute` uses). Only the mounts the REQUEST names are
+  // evaluated, captured before any preset/AGENT.md/bundle layer and before
+  // the daemon injects its own mounts. A spawn with no trusted caller, an
+  // external or unknown caller, and a sandboxed spawn are counted, never
+  // gated.
+  const stdioMountGateMode =
+    configDefaults?.spawn?.stdioMountGate ?? DEFAULT_STDIO_MOUNT_GATE_MODE
+  let stdioMountVerdict: StdioMountVerdict | undefined
+  if (stdioMountGateMode !== "off") {
+    const requestedMounts = stdioMountRequests(requestedMcpServers)
+    const gateCallerId = spawnGateCallerId(callerScope, input)
+    const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
+    const callerKnown = callerDescriptor !== undefined
+    const callerExternal = callerDescriptor?.kind === "external"
+    const sandboxed = input.sandbox !== undefined
+    // The allowlist is read per spawn, only when the decision could reach
+    // the allowlist at all: a known, internal, non-sandboxed caller that
+    // named at least one stdio mount.
+    const couldReachAllowlist =
+      gateCallerId !== undefined &&
+      callerKnown &&
+      !callerExternal &&
+      !sandboxed &&
+      requestedMounts.length > 0
+    const allowlist: readonly AllowlistEntry[] = couldReachAllowlist
+      ? deps.loadCommandAllowlist
+        ? await deps.loadCommandAllowlist()
+        : []
+      : []
+    const decision = decideStdioMount({
+      callerSessionId: gateCallerId,
+      callerKnown,
+      callerExternal,
+      sandboxed,
+      requested: requestedMounts,
+      allowlist,
+    })
+    stdioMountVerdict = decision.verdict
+    let denied = decision.denied
+    if (
+      (stdioMountVerdict === "allowed" || stdioMountVerdict === "would_deny") &&
+      callerDescriptor
+    ) {
+      // decide() answers "may this session mount this command" for each
+      // request; the gate derives its verdict from those answers so
+      // introspection and enforcement cannot drift.
+      const principal = { kind: "session" as const, session: callerDescriptor }
+      denied = requestedMounts.filter(
+        request =>
+          !decidePermission(
+            principal,
+            "mcp.mount.stdio",
+            { kind: "command", command: request.command, args: request.args },
+            { mounts: { allowlist } },
+          ).allow,
+      )
+      stdioMountVerdict = denied.length > 0 ? "would_deny" : "allowed"
+    }
+    recordStdioMount(stdioMountVerdict, {
+      mode: stdioMountGateMode,
+      denied,
+      surface: callerScope ? "scoped" : "mcp",
+    })
+    if (stdioMountGateMode === "enforce" && stdioMountVerdict === "would_deny") {
+      const mounts = denied.map(request => `"${request.name}" (${request.command})`).join(", ")
+      return {
+        ok: false,
+        code: "stdio_mount_denied",
+        message:
+          `agent_start: a session may not mount stdio MCP server${denied.length > 1 ? "s" : ""} ` +
+          `whose command is outside the command allowlist: ${mounts}. Add the command ` +
+          `(with an argv prefix where possible) to .agentproto/allowed-commands.json to allow it.`,
+        details: {
+          gate: "mount",
+          denied: denied.map(request => ({ name: request.name, command: request.command })),
+        },
+      }
     }
   }
   // Privilege-lattice spawn gate: when this spawn arrives through the
@@ -3069,7 +4106,14 @@ export async function spawnAgentSession(
   // the second line of defense (after `toolPolicy.delegation`) for a
   // custom role that keeps delegation but must not spawn UP. A root
   // spawn (no callerScope) has no parent to gate against, same as the
-  // existing depth/quota checks above.
+  // existing depth/quota checks above. With the delegation gate in
+  // `enforce`, an `allowed` verdict skips only the open-mode LEVEL
+  // comparison: `canSpawn`'s hard parts still apply, so `delegatesTo`
+  // cannot widen a parent's own closed `spawnableRoles` allowlist or
+  // revive a parent whose `toolPolicy.delegation` is `"deny"`. The two
+  // authorities intersect; `undeclared`, `unbound` and `no_caller` use the
+  // full lattice unchanged.
+  const delegationAllowed = delegationGateMode === "enforce" && delegationVerdict === "allowed"
   if (callerScope) {
     let parentRole: RoleProfile
     try {
@@ -3078,6 +4122,8 @@ export async function spawnAgentSession(
         callerScope.depth,
         configDefaults?.defaultRoleDepthCutoff,
         roleRegistry,
+        undefined,
+        configDefaults?.spawn?.defaultAgent,
       )
     } catch (err) {
       return {
@@ -3086,7 +4132,8 @@ export async function spawnAgentSession(
         message: `agent_start: caller role — ${err instanceof Error ? err.message : String(err)}`,
       }
     }
-    if (!canSpawn(parentRole, role)) {
+    const latticeOk = canSpawn(parentRole, role, { ignoreLevel: delegationAllowed })
+    if (!latticeOk) {
       return {
         ok: false,
         code: "role_spawn_denied",
@@ -3259,6 +4306,7 @@ export async function spawnAgentSession(
         cloudWorkspaceRemote,
         resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
         async ref => (await new KeychainStore().read({ path: ref }))?.value,
+        workspaceRemotePort,
       )
     } catch (err) {
       if (err instanceof CloudSpawnError) {
@@ -3277,26 +4325,15 @@ export async function spawnAgentSession(
   // continuity on the descriptor.
   let resumeLineageFields: { resumedFrom?: string; resumeVia?: string } | undefined
   // Default the daemon's own gateway onto spawns that supplied no
-  // `mcpServers` — two distinct rationales, one mechanism (see
-  // `shouldInjectDaemonSelfMount` for the per-adapter reasoning):
-  //   - hermes: CAPABILITY — it has zero built-in tools; without an
-  //     explicit `mcpServers` it silently spawns as a chat-only session
-  //     with no error. The default makes that impossible by omission.
-  //   - claude-code: IDENTITY — its sessions typically reach this same
-  //     daemon anyway through ambient MCP config (a project `.mcp.json` /
-  //     the operator's global claude config), but those static mounts can
-  //     never carry a per-session `callerSessionId`, so every spawn such a
-  //     session made landed as an anonymous depth-0 orphan —
-  //     `spawn-attach.ts`'s auto-parent had nothing to derive from, and
-  //     origin grouping had no lineage to walk. The injected entry reuses
-  //     the same `agentproto` server name, and a session-level entry
-  //     SHADOWS an ambient same-named one at the SDK layer (verified live:
-  //     the child sees only the session-level server's tools), so the
-  //     child keeps the daemon toolset it already had — now with identity
-  //     baked in, its own spawns auto-attaching, and the ambient unstamped
-  //     mount neutralized in one move.
-  // An explicit `[]` is a deliberate opt-out and must be respected as
-  // such, so this only fires when the caller passed no `mcpServers` at all.
+  // `mcpServers` (see `shouldInjectDaemonSelfMount` for the full rule):
+  // on-host, EVERY adapter gets the mount -- it carries the per-session
+  // `callerSessionId` that ambient MCP config cannot provide, and makes
+  // `agent_start` visible to `delegationReachFor` so `resolveRole` does
+  // not downgrade to executor at depth 0. Sandbox spawns are excluded
+  // (the box cannot reach this daemon's loopback) except hermes (whose
+  // box runs its own daemon). An explicit `[]` is a deliberate opt-out
+  // and must be respected as such, so this only fires when the caller
+  // passed no `mcpServers` at all.
   //
   // HARD GATE: when the resolved role denies delegation, the injected
   // gateway URL carries `denyTools=<DELEGATION_TOOL_NAMES>` so the
@@ -3313,18 +4350,21 @@ export async function spawnAgentSession(
   // ANY adapter, scoped to exactly that list — the declaration is the
   // capability ask, same as a workflow agent step (`agentStepMcpServers`).
   const allowTools = input.allowTools?.length ? input.allowTools : undefined
-  if (allowTools && (mcpServers || input.sandbox !== undefined || !daemonMcpUrl)) {
+  if (allowTools && (mcpServers || cloudResolved || input.sandbox !== undefined || !daemonMcpUrl)) {
     spawnWarnings.push(
       `agent_start: tools allowlist (${allowTools.join(", ")}) not applied — ` +
-        (mcpServers
-          ? "the caller supplied its own mcpServers."
-          : input.sandbox !== undefined
-            ? "a sandbox spawn cannot reach this daemon's loopback /mcp."
-            : "the daemon has no /mcp URL configured."),
+        (cloudResolved
+          ? "a managed cloud agent takes no MCP mounts (AIP-66 section 4)."
+          : mcpServers
+            ? "the caller supplied its own mcpServers."
+            : input.sandbox !== undefined
+              ? "a sandbox spawn cannot reach this daemon's loopback /mcp."
+              : "the daemon has no /mcp URL configured."),
     )
   }
   if (
     !mcpServers &&
+    !cloudResolved &&
     daemonMcpUrl &&
     (allowTools ? input.sandbox === undefined : shouldInjectDaemonSelfMount(input.adapter, input.sandbox))
   ) {
@@ -3372,6 +4412,12 @@ export async function spawnAgentSession(
       sandboxOrchestratorForward = narrowSandboxOrchestratorForward(
         typeof input.orchestrator === "object" ? input.orchestrator : true,
         callerScope,
+      )
+    }
+  } else if (cloudResolved) {
+    if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
+      spawnWarnings.push(
+        "agent_start: `orchestrator` ignored for a managed cloud agent — it takes no MCP mounts (AIP-66 section 4).",
       )
     }
   } else if (input.orchestrator !== undefined && input.orchestrator !== false && !delegationDenied) {
@@ -3438,18 +4484,24 @@ export async function spawnAgentSession(
       )
     }
     const bundlesFile = deps.loadBundlesConfig ? await deps.loadBundlesConfig() : await loadBundles()
-    let importedConfig: ImportedMcpsConfig | undefined
+    // The built-in `browser` bundle needs the live import set to resolve its
+    // `mcpImports`, even when this spawn mounts nothing (sandbox / no /mcp).
+    const importedConfig: ImportedMcpsConfig = deps.loadImportedMcpsConfig
+      ? await deps.loadImportedMcpsConfig()
+      : await loadImportedMcps()
+    const resolvedBundles = effectiveBundles(
+      bundlesFile.bundles,
+      configDefaults?.browser?.proxyImport,
+      importedConfig,
+    )
     for (const bundleId of bundleIds) {
-      const bundle = bundlesFile.bundles.find(b => b.id === bundleId)
+      const bundle = resolvedBundles.find(b => b.id === bundleId)
       if (!bundle) {
         spawnWarnings.push(`agent_start: bundle "${bundleId}" not found — skipped.`)
         continue
       }
       for (const skill of bundle.skills) bundleSkillsUnion.add(skill)
       if (!mcpMountUrl) continue
-      importedConfig ??= deps.loadImportedMcpsConfig
-        ? await deps.loadImportedMcpsConfig()
-        : await loadImportedMcps()
       const mounted = mountImports(bundle.mcpImports, {
         bundleId,
         mcpMountUrl,
@@ -3479,10 +4531,10 @@ export async function spawnAgentSession(
     }
   }
   // Explicit any-harness daemon opt-in (`agent_start.daemonMount` / config
-  // `defaults.adapters.<slug>.daemonMount`) — independent of bundles, and of
-  // `shouldInjectDaemonSelfMount`'s fixed adapter allowlist (that default
-  // stays unchanged; this is the caller saying so explicitly for an adapter
-  // that isn't on it, e.g. opencode/codex/gemini).
+  // `defaults.adapters.<slug>.daemonMount`) -- independent of bundles and
+  // of the universal default self-mount. With the universal default now
+  // covering all on-host adapters, this path is mainly relevant for
+  // sandbox spawns or when the default was opted out of via `mcpServers: []`.
   if (explicitDaemonMount) {
     if (input.sandbox !== undefined) {
       spawnWarnings.push(
@@ -3511,23 +4563,21 @@ export async function spawnAgentSession(
       callerSessionId: mintedSessionId,
     })
   }
-  // ── Report-back channel (child → parent) ──────────────────────────
+  // ── Report-back channel (child -> parent) ──────────────────────────
   // Every child with a recorded parent should be able to reach
   // `message_parent` (report a result or blocker UP to the session that
   // spawned it) without being handed the delegation surface. Two cases are
   // already covered: an orchestrator scope carries `message_parent` in its
-  // default allowlist, and any daemon-targeting `/mcp` entry (the hermes
-  // default above, or caller-supplied) reaches the root gateway, where the
-  // tool is registered and never deny-gated. The remaining case is a child
-  // with a parent and NO gateway at all (an adapter outside the default
-  // self-mount set — a plain codex/gemini leaf — or a daemon running
-  // without `daemonMcpUrl`; claude-code leaves land here only in the
-  // latter case now that they get the full default mount):
+  // default allowlist, and any daemon-targeting `/mcp` entry (the universal
+  // on-host default above, or caller-supplied) reaches the root gateway,
+  // where the tool is registered and never deny-gated. The remaining case
+  // is a child with a parent and NO gateway at all (a daemon running
+  // without `daemonMcpUrl`, or a sandbox non-hermes spawn):
   // mint a scope narrowed to `message_parent` only, riding the same
   // token/lifecycle machinery as a full orchestrator scope (revoked when
-  // the child exits). This grants NO delegation — the scope's tool set has
-  // no `agent_start`/`agent_prompt`, and its role is the child's own, so
-  // the `canSpawn` gate stays shut for an executor. An explicit
+  // the child exits). This grants NO delegation -- the scope's tool set
+  // has no `agent_start`/`agent_prompt`, and its role is the child's own,
+  // so the `canSpawn` gate stays shut for an executor. An explicit
   // `mcpServers` (including `[]`) or `orchestrator: false` is a deliberate
   // caller choice and is respected as an opt-out; a sandbox spawn is
   // skipped (a remote box can't reach the loopback gateway anyway).
@@ -3536,6 +4586,7 @@ export async function spawnAgentSession(
     parentSessionId &&
     buildOrchestratorMcp &&
     input.orchestrator !== false &&
+    !cloudResolved &&
     input.sandbox === undefined
   ) {
     // No `caller` ceiling on purpose: report-back is universal, not a
@@ -3596,8 +4647,17 @@ export async function spawnAgentSession(
       configDefaults?.defaultRoleDepthCutoff,
       roleRegistry,
       delegationReach,
+      configDefaults?.spawn?.defaultAgent,
     )
   }
+  // Crash notice to the supervisor: an explicit `notifyParentOnCrash` (true or
+  // false) always wins; otherwise an executor with a declared or attached
+  // parent opts in, so a delegating supervisor hears about a silent death
+  // without having to remember the flag. Resolved once here (role is final)
+  // and recorded on the descriptor, so a restart inherits the same answer.
+  const notifyParentOnCrash =
+    input.notifyParentOnCrash ??
+    (parentSessionId !== undefined && role.name === "executor")
   // Context-intake default (config `defaults.adapters.<slug>.contextProfile`,
   // else the built-in executor default) — role is final here.
   const effectiveContextProfile = resolveDefaultContextProfile({
@@ -3614,7 +4674,7 @@ export async function spawnAgentSession(
   // for a browser never suppresses the self-mount / report-back channel,
   // and an explicit `mcpServers: []` opt-out still only opts out of those.
   // A caller entry already named like the browser mount wins as-is.
-  const browserMode = resolveBrowserMode({
+  const browserMode = cloudResolved ? false : resolveBrowserMode({
     explicit: input.browser,
     role: role.browser,
     preset: presetBrowser,
@@ -3666,6 +4726,7 @@ export async function spawnAgentSession(
     options: input.options,
     auth: input.auth,
     contextContinuity: input.contextContinuity,
+    contextSettings: input.contextSettings,
   })
   // Fold bundle skills (collected while expanding `bundleIds` above) into the
   // resolved skill list — bundles UNION in regardless of whether `skills`
@@ -3684,13 +4745,39 @@ export async function spawnAgentSession(
   // resolver from the manifest). Adapters that DON'T (hermes, whose `skills`
   // is an opaque comma-joined option) keep their ids untouched and raise no
   // "unknown skill id" warning.
-  const resolvedContextContinuity: ResolvedContextContinuityPolicy =
-    resolveContextContinuityPolicy(
+  let resolvedContextContinuity: ResolvedContextContinuityPolicy
+  try {
+    resolvedContextContinuity = resolveContextContinuityPolicy(
       undefined,
       undefined,
       undefined,
       spawnDefaults.contextContinuity,
     )
+  } catch (err) {
+    // The layers are each valid alone but can conflict once layered key by
+    // key (a request's continueFreshAtPct under the daemon's compactAtPct):
+    // a 400 that says which layer sets what, never a 500.
+    const adapterDefaults = harnessDefaultsFor(configDefaults, input.adapter)
+    return {
+      ok: false,
+      code: "invalid_context_settings",
+      message:
+        `agent_start: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Context settings layer setting by setting, lowest layer first: ` +
+        describeBandLayers([
+          {
+            name: "daemon defaults",
+            block: layerContextSettings(configDefaults?.contextContinuity, configDefaults?.contextSettings),
+          },
+          {
+            name: `harness ${input.adapter}`,
+            block: layerContextSettings(adapterDefaults?.contextContinuity, adapterDefaults?.contextSettings),
+          },
+          { name: "request", block: layerContextSettings(input.contextContinuity, input.contextSettings) },
+        ]) +
+        `.`,
+    }
+  }
   // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
   // the host. Two host wallets are the exceptions: a named `access.profileRef`
   // AND a wallet configured in `defaults.adapters.<slug>.auth` (an explicit
@@ -3788,6 +4875,167 @@ export async function spawnAgentSession(
           : "the configured default wallet") +
         " for a sandbox spawn.",
     }
+  }
+  // ── AIP-72 memory digest (section 9 inject) ─────────────────────────────
+  // An agent that binds memory (`memory.enabled`/`store`/`anchors`, unless
+  // `enabled: false`) gets the in-force items scoped to this session
+  // appended to its system prompt, through the same channel the AGENT.md
+  // body takes below. Only when the adapter's `capabilities.memory.inject`
+  // is `system-prompt` and it has a usable channel; `none` or no
+  // declaration gets no digest (AIP-72 section 9, step 3). A
+  // `native-dir` adapter gets the items as `memoryProjection` instead (the
+  // driver writes them into its native dir, or appends the digest when the
+  // session cannot read that dir), so no session ever gets the items
+  // through two paths. Never fails the spawn: a store
+  // that cannot be read is a warning, and the memory_* tools remain.
+  // The store root is resolved for any binding, `enabled: false` included,
+  // so the session's memory tools read the agent's own store.
+  const storeRoot =
+    callerAgentMemory !== undefined
+      ? resolveMemoryStoreRoot({
+          ...(callerAgentMemory.store !== undefined ? { store: callerAgentMemory.store } : {}),
+          ...(cwd !== undefined ? { workspaceRoot: cwd } : {}),
+        })
+      : undefined
+  if (storeRoot !== undefined) {
+    memoryStoreRoot = storeRoot.root
+    if (storeRoot.warning) spawnWarnings.push(`agent_start: ${storeRoot.warning}`)
+  }
+  // The native-dir half (rule 25: one path per session): the same selection
+  // goes to the driver as `memoryProjection`, with the rendered digest as its
+  // fallback for a session that cannot read its native dir.
+  let memoryProjection: NativeMemoryProjection | undefined
+  let memoryAnchorTags: string[] | undefined
+  if (storeRoot !== undefined && memoryProjectionEnabled(callerAgentMemory)) {
+    const anchors = {
+      session: mintedSessionId,
+      ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
+      ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
+      ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
+    }
+    // AIP-34/AIP-72 section 10: the digest is the projection of THIS session's
+    // node, derived from its own ground and operator. A ground the tree cannot
+    // place injects nothing, never an unscoped digest.
+    let memoryScope: MemoryScope | undefined
+    try {
+      memoryScope = sessionMemoryScope({
+        sessionId: mintedSessionId,
+        ...(cwd !== undefined ? { ground: cwd } : {}),
+        ...(recordedOperator !== undefined ? { operator: recordedOperator } : {}),
+      })
+    } catch (err) {
+      spawnWarnings.push(
+        `agent_start: memory not injected, the node scope of this session could not be derived: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+    const decision = decideMemoryInject({
+      ...(resolved?.memoryInject !== undefined ? { inject: resolved.memoryInject } : {}),
+      ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
+      sandbox: input.sandbox !== undefined,
+    })
+    if (memoryScope === undefined) {
+      // fail closed: nothing is injected or projected for this session.
+    } else if (decision.path === "system-prompt") {
+      const existing = input.appendSystemPrompt
+      const channelRoom =
+        resolved?.systemPromptMaxChars !== undefined
+          ? resolved.systemPromptMaxChars - (existing !== undefined ? existing.length + 2 : 0)
+          : DEFAULT_MEMORY_DIGEST_MAX_CHARS
+      const maxChars = Math.min(DEFAULT_MEMORY_DIGEST_MAX_CHARS, channelRoom)
+      try {
+        const digest =
+          maxChars > 0
+            ? await buildMemoryDigest((deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root), {
+                anchors,
+                maxChars,
+                scope: memoryScope,
+              })
+            : null
+        if (digest) {
+          input = {
+            ...input,
+            appendSystemPrompt: existing !== undefined ? `${existing}\n\n${digest.text}` : digest.text,
+          }
+        }
+      } catch (err) {
+        spawnWarnings.push(
+          `agent_start: memory digest not injected, the store at ${storeRoot.root} could not be read: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    } else if (decision.path === "native-dir") {
+      try {
+        memoryProjection = await buildNativeMemoryProjection(
+          (deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root),
+          {
+            anchors,
+            scope: memoryScope,
+            ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
+            ...(resolved?.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
+            ...(input.appendSystemPrompt !== undefined ? { existingSystemPromptChars: input.appendSystemPrompt.length } : {}),
+          },
+        )
+        // Recorded so a respawn (restart, lazy resume) recomputes the same
+        // projection and the capture tags what it proposes with them.
+        memoryAnchorTags = sessionAnchorTags({
+          ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
+          ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
+          ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
+        }).filter(tag => tag !== "global")
+      } catch (err) {
+        spawnWarnings.push(
+          `agent_start: native memory not projected, the store at ${storeRoot.root} could not be read: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    } else {
+      spawnWarnings.push(
+        `agent_start: memory digest not injected: ${decision.reason}. The memory_* tools still reach the store.`,
+      )
+      // TODO(sandbox capture): a sandbox box owns its own adapter config
+      // dir (tarred back by `sandbox-adapter-store.ts`); capture there needs
+      // the unpacked dir or an in-box diff, neither done here.
+      if (input.sandbox !== undefined && resolved?.memoryCapture === "native-dir-diff") {
+        spawnWarnings.push(
+          "agent_start: native memory capture skipped for a sandbox session: its config dir lives in the box.",
+        )
+      }
+    }
+  }
+  // Descriptor `meta` the memory tools read, stamped by BOTH the sync spawn
+  // and the async-worktree pending descriptor: the resolved spawn role (the
+  // commit gate, `memory-tools.ts`), the agent's store root, and AIP-42
+  // `memory.enabled: false` (the tools then refuse this session's writes).
+  const memoryMeta: Record<string, string> = {
+    role: role.name,
+    // The bound agent (AIP-46 §The agent binding): the manifest agent when
+    // one was resolved, else the built-in or pack role the spawn bound.
+    // Distinct from meta.agentId, which stays the manifest identity. A
+    // restart carries it (`MEMORY_META_KEYS` in memory-digest.ts).
+    agentSlug: callerAgentId ?? role.name,
+    // The manifest's frozen delegation grant (comma-joined identities; ids
+    // never contain a comma). Read by the gate, NOT re-read from the file.
+    // A restart carries it like `agentSlug`.
+    ...(callerAgentDelegates?.kind === "agents"
+      ? { agentDelegatesTo: callerAgentDelegates.agents.join(",") }
+      : {}),
+    ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
+    ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
+    // AIP-72 native-dir path: the inject path and anchors a respawn
+    // recomputes the projection from, and the capture flag the
+    // turn-end/exit diff (`memory-capture.ts`) runs on, only for a session
+    // whose native dir this spawn projected.
+    ...(memoryAnchorTags !== undefined
+      ? {
+          memoryInject: "native-dir",
+          memoryAnchors: memoryAnchorTags.join(","),
+          ...(resolved?.memoryCapture === "native-dir-diff" ? { memoryCapture: "native-dir-diff" } : {}),
+        }
+      : {}),
   }
   // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────
   // An adapter that declared a manifest `systemPrompt` channel takes the
@@ -3937,7 +5185,7 @@ export async function spawnAgentSession(
   // unchanged while the profile-resolved gateway also drives wire routing.
   let profileResolvedRoute: RouteSpec | undefined
   if (resolved && (input.access?.profileRef || input.access?.profileRefs?.length) && !cloudResolved) {
-    const result = await resolveAccessProfileAuth({
+    let result = await resolveAccessProfileAuth({
       adapter: input.adapter,
       ...(input.access?.profileRef ? { profileRef: input.access.profileRef } : {}),
       ...(input.access?.profileRefs?.length ? { profileRefs: input.access.profileRefs } : {}),
@@ -3946,6 +5194,26 @@ export async function spawnAgentSession(
       model: input.model,
       defaultModel: resolved.defaultModel,
     })
+    // CREDENTIAL RELAY: a box daemon holds no auth profiles, so a nested
+    // spawn naming one finds nothing locally. When the calling box session was
+    // granted a host credential relay, ask the HOST to resolve the profile
+    // (the host enforces the grant's allowlist). A local profile always wins;
+    // the relay is only a fallback, and a still-refused spawn names the fix.
+    if (!result.ok && result.code === "access_profile_not_found" && input.sandbox === undefined) {
+      const relayCallerId = spawnGateCallerId(callerScope, input)
+      const relay = relayCallerId ? credentialRelayForSession(relayCallerId) : undefined
+      if (relay) {
+        result = await requestRelayedCredential(relay, {
+          adapter: input.adapter,
+          ...(input.access?.profileRef ? { profileRef: input.access.profileRef } : {}),
+          ...(input.access?.profileRefs?.length ? { profileRefs: input.access.profileRefs } : {}),
+          ...(input.route ? { route: input.route } : {}),
+          ...(input.model ? { model: input.model } : {}),
+        })
+      } else if (relayCallerId !== undefined) {
+        result = { ...result, message: withBoxProfileHint(result.message) }
+      }
+    }
     if (!result.ok) {
       return {
         ok: false,
@@ -4068,7 +5336,7 @@ export async function spawnAgentSession(
           ok: false,
           code: err.code,
           message: `agent_start: ${err.message}`,
-          details: { adapter: input.adapter },
+          details: { adapter: input.adapter, ...(err.reauth ? { reauth: err.reauth } : {}) },
         }
       }
       throw err
@@ -4571,10 +5839,249 @@ export async function spawnAgentSession(
   // like the spawn never arrived. Cleared once `registry.spawnAgent` adopts
   // the placeholder, and cleaned up on any earlier failure.
   let sandboxPendingId: string | undefined
+  // Clears the context a local spawn stages for the gateway while its
+  // driver starts; a no-op for the other placements.
+  let unstageSpawningCaller = (): void => {}
   try {
     // Independent of cwd/the worktree — safe to resolve before either the
     // async or the synchronous provisioning branch below needs it.
     const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
+    // SESSION IDENTITY TOKEN (ts#2165 step 5, shadow): two copies of the
+    // mounts from here on. The DESCRIPTOR copy is persisted and served by
+    // read surfaces (`session_list full`, `GET /sessions/...`,
+    // `session_capabilities`), so it never carries a session token, not even
+    // one a caller supplied. The ADAPTER copy gets a freshly minted token on
+    // the daemon self-mount and goes only to `startSession`. The mint is
+    // lazy: it runs right before `startSession`, so a spawn that is refused
+    // or fails while the worktree is provisioned never leaves a credential
+    // behind (one that fails AT `startSession` is revoked by the catches).
+    const descriptorMcpServers = stripSessionTokenHeaders(resolvedMcpServers)
+    const adapterMcpServersForStart = (): AcpMcpServer[] | undefined =>
+      withSessionToken(resolvedMcpServers, {
+        mode: sessionTokenModeOf(configDefaults),
+        adapter: input.adapter,
+        sandbox: input.sandbox,
+        daemonMcpUrl,
+        sessionId: mintedSessionId,
+      })
+    // The driver env for a LOCAL spawn, shared by the async-worktree branch
+    // below and the synchronous one. Both must hand the child the same
+    // vars: the async branch used to start the driver with no `env` at all,
+    // so a default worktree spawn's child had no identity vars and no `gh`
+    // provenance shim, and the PRs it opened carried no footer (E75).
+    // `configDir` is the isolated config dir that branch hands the driver.
+    const localSpawnEnv = async (configDir: string): Promise<Record<string, string>> => {
+      // Opt-in `gh` provenance shim (provenance.wrapGh): when enabled, prepend
+      // a shim dir to this session's PATH so any `gh pr create` it — or an
+      // adapter subprocess shelling out — runs gets the daemon's provenance
+      // footer stamped onto the created PR's body (see `gh-provenance-shim.ts`).
+      // Off by default; only local spawns — a sandbox spawn runs on the box's
+      // own daemon, which owns its own provenance.
+      let ghProvenanceEnv: Record<string, string> = {}
+      try {
+        const wrapGh = await (resolveProvenanceWrapGh ?? loadProvenanceWrapGh)()
+        if (wrapGh) {
+          const shimDir = await ensureGhShimDir()
+          const skipRepos = await (resolveFooterSkipRepos ?? loadFooterSkipRepos)()
+          ghProvenanceEnv = buildGhShimEnv({
+            shimDir,
+            basePath: process.env.PATH ?? "",
+            adapter: input.harness ?? input.adapter,
+            ...(input.model ?? resolved?.defaultModel
+              ? { model: input.model ?? resolved?.defaultModel }
+              : {}),
+            ...(skipRepos.length > 0 ? { skipRepos } : {}),
+          })
+        }
+      } catch {
+        // Stamping is cosmetic — a shim-preparation failure must never block a
+        // spawn. Fall through with no PATH shim (unchanged behaviour).
+        ghProvenanceEnv = {}
+      }
+      // Session identity (SESSION_ID_ENV's doc, sessions.ts) — minted
+      // above as `mintedSessionId` (not left to `spawnAgent`'s own
+      // default) specifically so it's known here, before the child ever
+      // exec's. `agent_start` has no caller-facing `env` passthrough to
+      // collide with, so this is the entire env for this spawn.
+      return {
+        // Provenance shim env FIRST (PATH + adapter/model) so the identity
+        // vars below always win — they must never be forgeable or shadowed,
+        // and `ghProvenanceEnv` never carries an identity var anyway.
+        ...ghProvenanceEnv,
+        [SESSION_ID_ENV]: mintedSessionId,
+        [WORKSPACE_SLUG_ENV]: resolvedSlug,
+        // Lineage (PARENT_SESSION_ID_ENV's doc, sessions.ts) — mirrors
+        // the descriptor's `parentSessionId` so the child can discover
+        // who spawned it without a registry round-trip. Absent on a
+        // parentless root spawn.
+        ...(parentSessionId ? { [PARENT_SESSION_ID_ENV]: parentSessionId } : {}),
+        // App identity (APP_ID_ENV's doc, sessions.ts) — set only for an
+        // `app_run` spawn, so a daemon-tool proxy the child builds can
+        // auto-fill `appId` into an `app_*` call that omits one.
+        ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
+        // AIP-66 cloud (cloud-vendors.ts): tell the cloud relay where to
+        // write the learned vendor session id — a path inside the SAME
+        // isolated config dir the adapter was handed, never a credential.
+        ...(cloudResolved
+          ? {
+              [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(configDir),
+              ...cloudRepoEnv,
+            }
+          : {}),
+      }
+    }
+    // The driver start options for a LOCAL spawn, built here ONCE for both
+    // the async-worktree branch below and the synchronous one (E77). The two
+    // branches used to build their own literal, and the async one drifted:
+    // no `env` (E75), no resume-target resolution (it handed the adapter the
+    // raw `resumeSessionId` and a fresh config dir), and no app-boundary
+    // `fsZones`/`isolateHostContext`. Only what legitimately differs per
+    // branch is a parameter: the cwd (the provisioned worktree on the async
+    // path, known only after provisioning) and the activity pulse.
+    const preCompactCommand = preCompactCommandFor(configDefaults, { adapter: input.adapter, sandbox: input.sandbox })
+    const localStartOptions = async (startCwd: string, onActivity: () => void) => {
+      const startConfigDir = resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId)
+      const adapterMcpServers = adapterMcpServersForStart()
+      return {
+        cwd: startCwd,
+        ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
+        // Persistent isolated-config dir, keyed by this session's id —
+        // recorded on the descriptor so restart/lazy-resume can hand the
+        // respawned adapter the same dir (native-resume store). Adapters
+        // that don't isolate a config dir ignore it. A RESUME reuses the
+        // target's dir instead (see `resolveResumeTarget`) — the provider's
+        // conversation store lives inside it, so a fresh dir is exactly what
+        // turns a resume into a blank spawn.
+        configDir: startConfigDir,
+        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
+        ...(input.mode ? { mode: input.mode } : {}),
+        ...(launchConfig.options ? { options: launchConfig.options } : {}),
+        ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+        ...(authSpec ? { auth: authSpec } : {}),
+        ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
+        ...(input.permissionHold ? { permissionHold: true } : {}),
+        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // App boundary (computed above from `appBoundary`). An app-boundaried
+        // spawn is refused any worktree today (`app_boundary_worktree`), so
+        // the async branch never carries one, but the zones still ride
+        // through here so the two branches cannot diverge if that changes.
+        ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
+        ...(boundaryIsolateContext ? { isolateHostContext: true } : {}),
+        // Projected PreCompact hook (`defaults.nativeHooks`), local
+        // claude-code only: this helper never serves a sandbox spawn, the
+        // resolver still checks so the rule lives in one place.
+        ...(preCompactCommand ? { preCompactCommand } : {}),
+        env: await localSpawnEnv(startConfigDir),
+        // Exact-file AGENTS.md read grant — the driver derives the
+        // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
+        // extra read paths) from this option itself, so the option is the
+        // single authority. See additionalReadPathsForAgentsMd above.
+        ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
+        // AGENT.md text on the adapter's declared system-prompt channel
+        // (channel decision computed above — never set for a sandbox or
+        // a no-channel adapter, which fell back to the prefix instead).
+        ...(appendSystemPromptChannel !== undefined
+          ? { appendSystemPrompt: appendSystemPromptChannel }
+          : {}),
+        // AIP-72 native-dir inject (decision above), the driver's channel.
+        ...(memoryProjection ? { memoryProjection } : {}),
+        onActivity,
+      }
+    }
+    // Start the local driver with `localStartOptions`, shared by both
+    // branches for the same reason. `resumed` is true only when the adapter
+    // accepted the resume id: same "not found" retry as `session_restart`
+    // (session-restart-core.ts) — the adapter rejected the resume id, or its
+    // transport died mid-load, so the stored conversation couldn't be
+    // rehydrated, and one fresh-spawn retry is strictly better than failing
+    // the whole start. Never retried without a resume id (that would just
+    // loop the original error).
+    const startLocalAgentSession = async (
+      startArgs: Awaited<ReturnType<typeof localStartOptions>>,
+    ): Promise<{ agentSession: AgentSessionLike; resumed: boolean }> => {
+      try {
+        return { agentSession: await resolved!.startSession(startArgs), resumed: !!resumeTarget }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (
+          !resumeTarget ||
+          !(RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
+        ) {
+          throw err
+        }
+        const { resumeSessionId: _dropped, ...freshStartArgs } = startArgs
+        const agentSession = await resolved!.startSession({
+          ...freshStartArgs,
+          configDir: adapterConfigDirFor(mintedSessionId),
+        })
+        return { agentSession, resumed: false }
+      }
+    }
+    // Claimed only once a resume actually succeeded, so a fallback fresh
+    // spawn never wears a phantom `resumeVia` (resume-honesty).
+    const resumedLineageFields = (): { resumedFrom?: string; resumeVia?: string } => ({
+      ...(resumeSource ? { resumedFrom: resumeSource.id } : {}),
+      resumeVia: "resumed via ACP",
+    })
+    // The native-tool sandbox for a LOCAL spawn, also shared: an app boundary
+    // with enforced zones defaults it to "workspace".
+    const localCommandSandbox = (startCwd: string) =>
+      resolveEffectiveCommandSandbox(
+        input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
+        startCwd,
+      )
+    // AIP-66 cloud session identity (cloud-vendors.ts): persist the vendor
+    // binding as `meta.cloud` (JSON-encoded — descriptor meta values are
+    // strings). A fresh cloud spawn starts with just the vendor; a RE-ATTACH
+    // carries the full learned mapping (vendor + sessionId + url) forward
+    // from the source row so the revived descriptor keeps the vendor id.
+    const carriedCloudMeta = resumeSource ? cloudMetaOf(resumeSource) : undefined
+    const cloudMeta: CloudSessionMeta | undefined = cloudResolved
+      ? {
+          vendor: cloudResolved.vendor.slug,
+          ...(carriedCloudMeta?.sessionId !== undefined
+            ? { sessionId: carriedCloudMeta.sessionId }
+            : {}),
+          ...(carriedCloudMeta?.url !== undefined ? { url: carriedCloudMeta.url } : {}),
+        }
+      : undefined
+    // The descriptor `meta` every spawn records, shared by the async
+    // placeholder and the synchronous `spawnAgent` (E77): restart reads the
+    // app boundary and `meta.cloud` back from here, and the gateway and
+    // `session_role_refresh` read the agent identity, so a branch that
+    // dropped them silently lost those on every async worktree session.
+    // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
+    // descriptor — the task ledger's board resolution reads it BEFORE the
+    // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
+    // generic `meta` hint map so future spawn-time hints need no new field.
+    // Always present: every spawn records at least its resolved `role`.
+    const spawnDescriptorMeta = (): Record<string, string> => ({
+      ...(input.boardId ? { boardId: input.boardId } : {}),
+      ...(input.anonymousCaller ? { anonymous: "claude-code" } : {}),
+      ...workflowOwnerMeta(input.workflowOwner),
+      ...(appBoundary ? boundaryMeta(appBoundary) : {}),
+      // The app whose own agent this is (`app_run`): its requires.apps tool grants apply.
+      ...(input.appId ? { [APP_AGENT_META_KEY]: input.appId } : {}),
+      ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
+      // The caller's OWN AIP-42 manifest identity (see the capture
+      // above). Trusted because the daemon resolved it at spawn; the
+      // gateway reads it to bind the `create_tool`/`delete_tool` grant
+      // to the caller session, never a caller-supplied payload field.
+      ...(callerAgentId ? { agentId: callerAgentId } : {}),
+      ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
+      // The fingerprint THIS spawn rendered: `session_role_refresh`'s
+      // baseline (agent-role-refresh.ts). Only present alongside
+      // `agentManifestPath`, which is what makes a session eligible
+      // for a hot role refresh at all.
+      ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
+      ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
+      // Role, store root, memory disabled (see `memoryMeta` above).
+      ...memoryMeta,
+      ...(reactionStamp ? reactionStamp.meta : {}),
+    })
     // ── Async worktree provisioning ──────────────────────────────────
     // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
     // can run minutes, and every prior guard (PR #803's claim window, #805's
@@ -4601,6 +6108,10 @@ export async function spawnAgentSession(
       const provisionAbort = new AbortController()
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
+        ...(recordedOperator ? { operator: recordedOperator } : {}),
+        ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
+        ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+        ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
         ...resumeLineageFields,
         onCancel: () => provisionAbort.abort(),
         workspaceSlug: resolvedSlug,
@@ -4625,22 +6136,22 @@ export async function spawnAgentSession(
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+        ...(accessSlotOf(accessProfileEcho, accessSlotByProfile)),
         ...(resumeLabel ? { label: resumeLabel } : {}),
         // CRASH RESUME - the task this session works on: the correlation key
         // a later relaunch names to resume THIS session's checkpoint.
         ...(resumeTaskId ? { taskId: resumeTaskId } : {}),
         ...(initialTitle ? { title: initialTitle } : {}),
-        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(descriptorMcpServers ? { mcpServers: descriptorMcpServers } : {}),
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
-        ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
+        ...(notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        ...(input.boardId || input.workflowOwner
-          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner) } }
-          : {}),
-        ...(input.origin ? { origin: input.origin } : {}),
+        meta: spawnDescriptorMeta(),
+        ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
@@ -4679,6 +6190,10 @@ export async function spawnAgentSession(
       // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was
       // found — present-or-absent, so an undefined field already means absent.
       if (workspaceRulesResolution.path) pendingDesc.rulesMd = workspaceRulesResolution.path
+      if (bundleIds.length > 0) pendingDesc.bundles = bundleIds
+      // Same harness warnings the sync path emits once its row exists.
+      if (boundaryWarnings.length > 0) registry.emitHarnessWarning(pendingDesc.id, boundaryWarnings, input.label)
+      if (input.harnessWarnings?.length) registry.emitHarnessWarning(pendingDesc.id, input.harnessWarnings, input.label)
       // Anything from here to the early return must never throw past this
       // point without settling the row it just registered — otherwise the
       // outer catch below would report `agent_spawn_failed` to the ORIGINAL
@@ -4723,9 +6238,16 @@ export async function spawnAgentSession(
                 signal: provisionAbort.signal,
                 ...(parentSessionId ? { callerId: parentSessionId } : {}),
                 onProgress: progress => registry.reportProvisioning(pendingDesc.id, progress),
+                onOutput: (text, stream) => registry.appendProvisioningOutput(pendingDesc.id, text, stream),
+                ...provisionBoundsOf(worktreeRequest),
               }),
           )
         } catch (err) {
+          console.warn(
+            `[worktree] ${pendingDesc.id} provisioning failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
           registry.settlePendingAgent(pendingDesc.id, {
             ok: false,
             message: `agent_start: worktree provisioning failed — ${
@@ -4765,39 +6287,12 @@ export async function spawnAgentSession(
           }
         }
         try {
-          const effectiveCommandSandbox = await resolveEffectiveCommandSandbox(
-            input.commandSandbox,
-            finalCwd,
-          )
+          const effectiveCommandSandbox = await localCommandSandbox(finalCwd)
           if (effectiveCommandSandbox) pendingDesc.commandSandbox = effectiveCommandSandbox
-          const agentSession = await resolved!.startSession({
-            cwd: finalCwd,
-            ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
-            // Persistent isolated-config dir, keyed by this session's id —
-            // recorded on the pending descriptor above so restart/lazy-resume
-            // can hand the respawned adapter the same dir (native-resume
-            // store). Adapters that don't isolate a config dir ignore it.
-            configDir: adapterConfigDirFor(mintedSessionId),
-            ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
-            ...(input.mode ? { mode: input.mode } : {}),
-            ...(launchConfig.options ? { options: launchConfig.options } : {}),
-            ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
-            ...(input.effort ? { effort: input.effort } : {}),
-            ...(input.posture !== undefined ? { posture: input.posture } : {}),
-            ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
-            ...(authSpec ? { auth: authSpec } : {}),
-            ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
-            ...(input.permissionHold ? { permissionHold: true } : {}),
-            ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
-            ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
-            // AGENT.md text on the adapter's declared system-prompt channel
-            // (channel decision computed above — never set for a sandbox or
-            // a no-channel adapter, which fell back to the prefix instead).
-            ...(appendSystemPromptChannel !== undefined
-              ? { appendSystemPrompt: appendSystemPromptChannel }
-              : {}),
-            onActivity: () => registry.pulseActivity(pendingDesc.id),
-          })
+          const { agentSession, resumed } = await startLocalAgentSession(
+            await localStartOptions(finalCwd, () => registry.pulseActivity(pendingDesc.id)),
+          )
+          if (resumed) Object.assign(pendingDesc, resumedLineageFields())
           let asyncPrompt = effectivePrompt
           if (input.posture !== undefined) {
             const resolution = resolvePosture(input.posture, agentSession.availableModes ?? [])
@@ -4839,6 +6334,8 @@ export async function spawnAgentSession(
             ...(asyncPrompt ? { initialPromptSystem: composedPreamble(asyncPrompt, input.prompt) } : {}),
           })
         } catch (err) {
+          // The row never went live: drop the credential minted for it.
+          revokeSessionTokens(mintedSessionId)
           registry.settlePendingAgent(pendingDesc.id, {
             ok: false,
             message: `agent_start: spawn failed — ${
@@ -4878,6 +6375,7 @@ export async function spawnAgentSession(
               // have, but no descriptor field and no mid-provision cancellation.
               ...(parentSessionId ? { callerId: parentSessionId } : {}),
               onProgress: progress => registry.reportProvisioning(mintedSessionId, progress),
+              ...provisionBoundsOf(worktreeRequest),
             }),
         )
       } catch (err) {
@@ -4929,10 +6427,16 @@ export async function spawnAgentSession(
     let readUsage: (() => Promise<import("./usage.js").UsageReadResult | null>) | undefined
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
+    let sandboxEgressIp: { slot: string; publicIp: string } | undefined
+    let sandboxProviderChoice: SandboxProviderChoice | undefined
     let sandboxConfig: Record<string, unknown> | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxPauseAfterIdleMs: number | undefined
     let sandboxDeliveryTarget: SandboxDeliveryTarget | undefined
+    // HOST repo root behind the in-box checkout. `cwd` is replaced by the
+    // box's own path after boot, so capture it now for the exit-time
+    // checkpoint gc (`SessionDescriptor.sandboxRepoRoot`).
+    let sandboxRepoRoot: string | undefined
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
     let commandSandbox: SandboxMode | undefined
@@ -4967,9 +6471,14 @@ export async function spawnAgentSession(
       // Killing the placeholder mid-boot aborts the boot: the phases below
       // check this signal and a cancelled boot tears its box down instead of
       // registering a session.
+      sandboxRepoRoot = cwd
       const bootAbort = new AbortController()
       const pendingSandbox = registry.spawnAgentPending({
         id: mintedSessionId,
+        ...(recordedOperator ? { operator: recordedOperator } : {}),
+        ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
+        ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+        ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -4985,11 +6494,31 @@ export async function spawnAgentSession(
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
       })
       sandboxPendingId = pendingSandbox.id
+      // CREDENTIAL RELAY allowlist: the host profiles this box session's
+      // NESTED spawns may bill. Only an orchestrator that can reach
+      // `agent_start` gets one: its own resolved profile, the operator's
+      // shared profiles and an explicit `access.delegateProfileRefs`.
+      const delegatedProfileRefs: string[] = []
+      if (
+        sandboxOrchestratorForward === true ||
+        (typeof sandboxOrchestratorForward === "object" &&
+          (sandboxOrchestratorForward.tools === undefined ||
+            sandboxOrchestratorForward.tools.includes("agent_start")))
+      ) {
+        for (const ref of [
+          accessProfileEcho?.profileRef,
+          ...(configDefaults?.spawn?.sharedProfiles ?? []),
+          ...(input.access?.delegateProfileRefs ?? []),
+        ]) {
+          if (ref !== undefined && ref !== "" && !delegatedProfileRefs.includes(ref)) delegatedProfileRefs.push(ref)
+        }
+      }
       const booted = await bootSandboxAgentSession({
         sandbox: input.sandbox,
         resolveSandboxProvider,
         adapter: input.adapter,
         sessionHolder: mintedSessionId,
+        spawnWorkspaceSlug: resolvedSlug,
         signal: bootAbort.signal,
         checkpointConfig,
         // CRASH RESUME - the checkpoint of the DEAD session this spawn
@@ -5018,7 +6547,7 @@ export async function spawnAgentSession(
         cwd,
         explicitCwd: explicitCwd && boxCwdRequest === undefined,
         ...(boxCwdRequest !== undefined ? { boxCwdRequest } : {}),
-        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(descriptorMcpServers ? { mcpServers: descriptorMcpServers } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
@@ -5038,6 +6567,14 @@ export async function spawnAgentSession(
         ...(accessProfileEcho ? { authProfileRef: accessProfileEcho.profileRef } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
+        ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
+        ...(configDefaults?.sandbox?.preflight?.probes?.length
+          ? { preflightRegistry: buildPreflightRegistry(configDefaults.sandbox.preflight.probes) }
+          : {}),
+        ...(input.agentStartTimeoutMs !== undefined ? { agentStartTimeoutMs: input.agentStartTimeoutMs } : {}),
+        ...(input.ladderCapacityWaitBudgetMs !== undefined
+          ? { capacityWaitBudgetMs: input.ladderCapacityWaitBudgetMs }
+          : {}),
         ...(sandboxTarWorkspace
           ? {
               tarWorkspace: sandboxTarWorkspace,
@@ -5072,14 +6609,6 @@ export async function spawnAgentSession(
               },
             }
           : {}),
-        // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
-        // prompt INSIDE the inner `agent_start` (see `bootSandboxAgentSession`'s
-        // `initialPrompt`) so the device bridge makes ONE dial, not two. The
-        // controller still drives/records the first turn through the proxy
-        // below (`registry.spawnAgent`'s `initialPrompt` / the `wait`
-        // `sendPrompt`); `promptCarriedInStart` stops the proxy from
-        // re-sending it. Non-device sandboxes are untouched (two-dial shape).
-        ...(isDeviceSpawn && effectivePrompt !== undefined ? { initialPrompt: effectivePrompt } : {}),
         // NESTED ORCHESTRATION — the caller's `orchestrator` request,
         // forwarded onto the BOX's own `agent_start` (see the
         // `sandboxOrchestratorForward` comment above): the box daemon mints
@@ -5096,7 +6625,15 @@ export async function spawnAgentSession(
         // box's own `agent_start` (the parent lives in the HOST registry).
         // No relay URL configured ⇒ nothing forwarded (the box keeps today's
         // clear "no recorded parent" error).
-        ...(parentSessionId ? { parentRelay: { parentSessionId, boxSessionId: mintedSessionId } } : {}),
+        ...(parentSessionId || delegatedProfileRefs.length > 0
+          ? {
+              parentRelay: {
+                ...(parentSessionId ? { parentSessionId } : {}),
+                boxSessionId: mintedSessionId,
+                ...(delegatedProfileRefs.length > 0 ? { profileRefs: delegatedProfileRefs } : {}),
+              },
+            }
+          : {}),
       })
       if (!booted.ok) {
         // The boot never produced a session: remove the placeholder so the
@@ -5104,7 +6641,7 @@ export async function spawnAgentSession(
         // existed (no orphaned `starting` row).
         registry.forget(pendingSandbox.id)
         sandboxPendingId = undefined
-        return booted
+        return finish(booted)
       }
       // Belt and braces for a kill that landed between the boot's final
       // cancellation check and this point: never adopt a row that is no
@@ -5126,6 +6663,8 @@ export async function spawnAgentSession(
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
+      sandboxEgressIp = booted.egressIp
+      sandboxProviderChoice = booted.choice
       sandboxConfig = booted.sandboxConfig
       sandboxTeardown = booted.sandboxTeardown
       sandboxPauseAfterIdleMs = booted.pauseAfterIdleMs
@@ -5159,139 +6698,25 @@ export async function spawnAgentSession(
       // undefined` branch above already returned `adapter_not_found`
       // otherwise.
       //
-      // Opt-in `gh` provenance shim (provenance.wrapGh): when enabled, prepend
-      // a shim dir to this session's PATH so any `gh pr create` it — or an
-      // adapter subprocess shelling out — runs gets the daemon's provenance
-      // footer stamped onto the created PR's body (see `gh-provenance-shim.ts`).
-      // Off by default; only the local (non-sandbox) branch — a sandbox spawn
-      // runs on the box's own daemon, which owns its own provenance.
-      let ghProvenanceEnv: Record<string, string> = {}
-      try {
-        const wrapGh = await (resolveProvenanceWrapGh ?? loadProvenanceWrapGh)()
-        if (wrapGh) {
-          const shimDir = await ensureGhShimDir()
-          ghProvenanceEnv = buildGhShimEnv({
-            shimDir,
-            basePath: process.env.PATH ?? "",
-            adapter: input.harness ?? input.adapter,
-            ...(input.model ?? resolved?.defaultModel
-              ? { model: input.model ?? resolved?.defaultModel }
-              : {}),
-          })
-        }
-      } catch {
-        // Stamping is cosmetic — a shim-preparation failure must never block a
-        // spawn. Fall through with no PATH shim (unchanged behaviour).
-        ghProvenanceEnv = {}
-      }
-      commandSandbox = await resolveEffectiveCommandSandbox(
-        input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
-        cwd,
-      )
-      const localStartArgs = {
-        cwd,
-        ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
-        // Persistent isolated-config dir, keyed by this session's id —
-        // recorded on the descriptor below so restart/lazy-resume can hand
-        // the respawned adapter the same dir (native-resume store).
-        // Adapters that don't isolate a config dir ignore it. A RESUME
-        // reuses the target's dir instead (see `resolveResumeTarget`) — the
-        // provider's conversation store lives inside it, so a fresh dir is
-        // exactly what turns a resume into a blank spawn.
-        configDir: resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
-        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
-        ...(input.mode ? { mode: input.mode } : {}),
-        ...(launchConfig.options ? { options: launchConfig.options } : {}),
-        ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
-        ...(input.effort ? { effort: input.effort } : {}),
-        ...(input.posture !== undefined ? { posture: input.posture } : {}),
-        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
-        ...(authSpec ? { auth: authSpec } : {}),
-        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
-        ...(input.permissionHold ? { permissionHold: true } : {}),
-        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
-        ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
-        ...(boundaryIsolateContext ? { isolateHostContext: true } : {}),
-        // Session identity (SESSION_ID_ENV's doc, sessions.ts) — minted
-        // above as `mintedSessionId` (not left to `spawnAgent`'s own
-        // default) specifically so it's known here, before the child ever
-        // exec's. `agent_start` has no caller-facing `env` passthrough to
-        // collide with, so this is the entire env for this spawn.
-        env: {
-          // Provenance shim env FIRST (PATH + adapter/model) so the identity
-          // vars below always win — they must never be forgeable or shadowed,
-          // and `ghProvenanceEnv` never carries an identity var anyway.
-          ...ghProvenanceEnv,
-          [SESSION_ID_ENV]: mintedSessionId,
-          [WORKSPACE_SLUG_ENV]: resolvedSlug,
-          // Lineage (PARENT_SESSION_ID_ENV's doc, sessions.ts) — mirrors
-          // the descriptor's `parentSessionId` so the child can discover
-          // who spawned it without a registry round-trip. Absent on a
-          // parentless root spawn.
-          ...(parentSessionId ? { [PARENT_SESSION_ID_ENV]: parentSessionId } : {}),
-          // App identity (APP_ID_ENV's doc, sessions.ts) — set only for an
-          // `app_run` spawn, so a daemon-tool proxy the child builds can
-          // auto-fill `appId` into an `app_*` call that omits one.
-          ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
-          // AIP-66 cloud (cloud-vendors.ts): tell the cloud relay where to
-          // write the learned vendor session id — a path inside the SAME
-          // isolated config dir the adapter was handed above, never a
-          // credential.
-          ...(cloudResolved
-            ? {
-                [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(
-                  resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
-                ),
-                ...cloudRepoEnv,
-              }
-            : {}),
-        },
-        // Exact-file AGENTS.md read grant — the driver derives the
-        // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
-        // extra read paths) from this option itself, so the option is the
-        // single authority. See additionalReadPathsForAgentsMd above.
-        ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
-        // AGENT.md text on the adapter's declared system-prompt channel
-        // (channel decision computed above — never set for a sandbox or
-        // a no-channel adapter, which fell back to the prefix instead).
-        ...(appendSystemPromptChannel !== undefined
-          ? { appendSystemPrompt: appendSystemPromptChannel }
-          : {}),
-        onActivity: () => {
+      commandSandbox = await localCommandSandbox(cwd)
+      // The adapter lists the gateway's tools while it starts, before the
+      // descriptor below exists: stage what the gateway reads for this
+      // caller until it is registered (spawning-caller-context.ts).
+      unstageSpawningCaller = stageSpawningCaller(mintedSessionId, {
+        meta: spawnDescriptorMeta(),
+        ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
+        ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+      })
+      const localStart = await startLocalAgentSession(
+        await localStartOptions(cwd, () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
-        },
-      }
-      try {
-        agentSession = await resolved!.startSession(localStartArgs)
-        // The adapter accepted the resume id — the conversation continues.
-        // Claimed only here (not up front) so a fallback fresh spawn never
-        // wears a phantom `resumeVia` (resume-honesty).
-        if (resumeTarget) {
-          resumeLineageFields = {
-            ...(resumeSource ? { resumedFrom: resumeSource.id } : {}),
-            resumeVia: "resumed via ACP",
-          }
-        }
-      } catch (err) {
-        // Same "not found" retry as `session_restart`
-        // (session-restart-core.ts): the adapter rejected the resume id, or
-        // its transport died mid-load — the stored conversation couldn't be
-        // rehydrated, and one fresh-spawn retry is strictly better than
-        // failing the whole start. Never retried without a resume id (that
-        // would just loop the original error).
-        const msg = err instanceof Error ? err.message : String(err)
-        if (
-          !resumeTarget ||
-          !(RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
-        ) {
-          throw err
-        }
-        const { resumeSessionId: _dropped, ...freshStartArgs } = localStartArgs
-        agentSession = await resolved!.startSession({
-          ...freshStartArgs,
-          configDir: adapterConfigDirFor(mintedSessionId),
-        })
-      }
+        }),
+      )
+      agentSession = localStart.agentSession
+      // The adapter accepted the resume id — the conversation continues.
+      // Claimed only here (not up front) so a fallback fresh spawn never
+      // wears a phantom `resumeVia` (resume-honesty).
+      if (localStart.resumed) resumeLineageFields = resumedLineageFields()
       // A harness that advertises a matching ACP mode gets the canonical
       // posture as a real boundary before the initial prompt is sent. When no
       // native mode exists, the initial prompt carries the advisory preamble;
@@ -5323,6 +6748,36 @@ export async function spawnAgentSession(
     }
 
     const defaultModel = resolved?.defaultModel
+    // A connect-time model-apply rejection means the live session is NOT on the
+    // requested model. Record it on the descriptor (plus a visible warning) and
+    // prefer whatever model the adapter actually reports, instead of letting
+    // the descriptor and every usage_snapshot keep claiming the request.
+    const mismatch = modelApplyMismatch({
+      ...(agentSession.modelApplyRejection ? { rejection: agentSession.modelApplyRejection } : {}),
+      ...(agentSession.availableConfigOptions
+        ? { availableConfigOptions: agentSession.availableConfigOptions }
+        : {}),
+    })
+    const mismatchWarnings: string[] = mismatch ? [modelApplyWarning(mismatch)] : []
+    if (mismatch) spawnWarnings.push(...mismatchWarnings)
+    // The adapter-reported fallback can itself sit outside the attached
+    // profile's allow-list (the spawn gate validated the REQUESTED model). Do
+    // not silently bill past the contract: surface it as a warning.
+    if (mismatch?.reportedModel && accessProfileEcho) {
+      const profile = await getAuthProfile(accessProfileEcho.profileRef)
+      if (
+        profile &&
+        !profileAllowsModelId(profile, mismatch.reportedModel, {
+          ...(descriptorRoute?.gateway ? { route: descriptorRoute.gateway } : {}),
+        })
+      ) {
+        mismatchWarnings.push(
+          `[model] adapter is running "${mismatch.reportedModel}", which auth profile ` +
+            `"${profile.id}" does not allow; this session may bill outside the profile's curation.`,
+        )
+        spawnWarnings.push(mismatchWarnings.at(-1)!)
+      }
+    }
     // The daemon-composed part of the initial prompt (role disposition +
     // lineage line + AGENTS.md + posture) sits AHEAD of the caller's own
     // `prompt`. Recover it now that `effectivePrompt` is final so it can be
@@ -5330,23 +6785,12 @@ export async function spawnAgentSession(
     // `composedPreamble`) — the adapter still receives the single
     // concatenated `effectivePrompt`, unchanged.
     const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
-    // AIP-66 cloud session identity (cloud-vendors.ts): persist the vendor
-    // binding as `meta.cloud` (JSON-encoded — descriptor meta values are
-    // strings). A fresh cloud spawn starts with just the vendor; a RE-ATTACH
-    // carries the full learned mapping (vendor + sessionId + url) forward
-    // from the source row so the revived descriptor keeps the vendor id.
-    const carriedCloudMeta = resumeSource ? cloudMetaOf(resumeSource) : undefined
-    const cloudMeta: CloudSessionMeta | undefined = cloudResolved
-      ? {
-          vendor: cloudResolved.vendor.slug,
-          ...(carriedCloudMeta?.sessionId !== undefined
-            ? { sessionId: carriedCloudMeta.sessionId }
-            : {}),
-          ...(carriedCloudMeta?.url !== undefined ? { url: carriedCloudMeta.url } : {}),
-        }
-      : undefined
     const desc = registry.spawnAgent({
       id: mintedSessionId,
+      ...(recordedOperator ? { operator: recordedOperator } : {}),
+      ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
+      ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
+      ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
       ...resumeLineageFields,
       workspaceSlug: resolvedSlug,
       cwd,
@@ -5371,13 +6815,23 @@ export async function spawnAgentSession(
       ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
-      ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
+      ...(mismatch
+        ? mismatch.reportedModel
+          ? { model: mismatch.reportedModel, activeModel: mismatch.reportedModel }
+          : {}
+        : input.model
+          ? { model: input.model }
+          : defaultModel
+            ? { model: defaultModel }
+            : {}),
+      ...(mismatch ? { modelApplyRejection: mismatch.rejection } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
       ...(input.posture !== undefined ? { posture: input.posture } : {}),
       ...(descriptorRoute ? { route: descriptorRoute } : {}),
       ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+      ...(accessSlotOf(accessProfileEcho, accessSlotByProfile)),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(initialSystemPrompt ? { initialPromptSystem: initialSystemPrompt } : {}),
       ...(resumeLabel ? { label: resumeLabel } : {}),
@@ -5392,7 +6846,7 @@ export async function spawnAgentSession(
       // as a belt-and-braces for the `wait` path (which sends the prompt
       // itself, not via `initialPrompt`).
       ...(initialTitle ? { title: initialTitle } : {}),
-      ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+      ...(descriptorMcpServers ? { mcpServers: descriptorMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
       ...(input.appendSystemPrompt !== undefined
@@ -5407,39 +6861,10 @@ export async function spawnAgentSession(
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
-      ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
-      // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
-      // descriptor — the task ledger's board resolution reads it BEFORE the
-      // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
-      // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId ||
-      appBoundary ||
-      input.workflowOwner ||
-      cloudMeta ||
-      callerAgentId ||
-      callerAgentManifestPath
-        ? {
-            meta: {
-              ...(input.boardId ? { boardId: input.boardId } : {}),
-              ...workflowOwnerMeta(input.workflowOwner),
-              ...(appBoundary ? boundaryMeta(appBoundary) : {}),
-              ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
-              // The caller's OWN AIP-42 manifest identity (see the capture
-              // above). Trusted because the daemon resolved it at spawn; the
-              // gateway reads it to bind the `create_tool`/`delete_tool` grant
-              // to the caller session, never a caller-supplied payload field.
-              ...(callerAgentId ? { agentId: callerAgentId } : {}),
-              ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
-              // The fingerprint THIS spawn rendered — `session_role_refresh`'s
-              // baseline (agent-role-refresh.ts). Only present alongside
-              // `agentManifestPath`, which is what makes a session eligible
-              // for a hot role refresh at all.
-              ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
-              ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
-            },
-          }
-        : {}),
-      ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
+      ...(notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+      meta: spawnDescriptorMeta(),
+      ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
@@ -5478,13 +6903,17 @@ export async function spawnAgentSession(
       ...(hostSessionId ? { hostSessionId } : {}),
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
+      ...(sandboxEgressIp ? { sandboxEgressIp: sandboxEgressIp.publicIp, sandboxEgressSlot: sandboxEgressIp.slot } : {}),
+      ...(sandboxProviderChoice ? { sandboxProviderChoice } : {}),
       ...(sandboxConfig ? { sandboxConfig } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs } : {}),
       ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
+      ...(sandboxRepoRoot ? { sandboxRepoRoot } : {}),
       ...(sandboxDeliveryTarget && input.sandboxCheckpoint !== undefined
         ? { sandboxCheckpointOverride: input.sandboxCheckpoint }
         : {}),
+      ...(sandboxId && input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
       ...(commandSandbox ? { commandSandbox } : {}),
@@ -5496,6 +6925,8 @@ export async function spawnAgentSession(
     // The placeholder (if any) is now the live row: `spawnAgent` adopted it in
     // place, so the error path must not try to remove it as an orphan.
     sandboxPendingId = undefined
+    // The registry now serves this caller's context itself.
+    unstageSpawningCaller()
     // Stamp the title from the caller's ask BEFORE anything else can name
     // this session from the composed prompt instead: `spawnAgent` above,
     // when `initialPrompt` was passed, already ran the first turn's
@@ -5509,6 +6940,7 @@ export async function spawnAgentSession(
     if (initialTitle) desc.title = initialTitle
     if (boundaryWarnings.length > 0) registry.emitHarnessWarning(desc.id, boundaryWarnings, input.label)
     if (input.harnessWarnings?.length) registry.emitHarnessWarning(desc.id, input.harnessWarnings, input.label)
+    if (mismatchWarnings.length > 0) registry.emitHarnessWarning(desc.id, mismatchWarnings, input.label)
     for (const notice of sandboxSourceNotices) registry.recordNotice(desc.id, notice)
     // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
     // `sessions --json` / the summaries view can report the resolved path +
@@ -5616,9 +7048,18 @@ export async function spawnAgentSession(
     // wait mode: block until the first turn completes, then return
     // the descriptor with cleaned output appended.
     if (input.wait && effectivePrompt) {
-      await registry.sendPrompt(desc.id, effectivePrompt, {
-        ...(initialSystemPrompt ? { system: initialSystemPrompt } : {}),
-      })
+      try {
+        await registry.sendPrompt(desc.id, effectivePrompt, {
+          ...(initialSystemPrompt ? { system: initialSystemPrompt } : {}),
+        })
+      } catch (err) {
+        // The row was adopted by `registry.spawnAgent` above. A failed first
+        // prompt dial (the box's `agent_prompt`) must not leave a live-looking
+        // session whose turn never arrived; kill it so the box is released
+        // and the caller gets the failure, not a stranded row.
+        registry.kill(desc.id)
+        throw err
+      }
       const waitLines: string[] = []
       const waitUnsub = registry.attach(desc.id, (line: string) => {
         waitLines.push(line)
@@ -5639,6 +7080,7 @@ export async function spawnAgentSession(
       ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
     })
   } catch (err) {
+    unstageSpawningCaller()
     // A sandbox boot that threw before `spawnAgent` adopted the placeholder
     // must not leave a `starting` row behind: this is the same shape as the
     // pre-placeholder failure path (no row at all).
@@ -5646,6 +7088,9 @@ export async function spawnAgentSession(
       registry.forget(sandboxPendingId)
       sandboxPendingId = undefined
     }
+    // A spawn that failed before its row went live must not leave the
+    // credential minted for it (a live row keeps its own).
+    if (!registry.get(mintedSessionId)) revokeSessionTokens(mintedSessionId)
     return finish({
       ok: false,
       code: "agent_spawn_failed",
@@ -5752,8 +7197,14 @@ export type SandboxBootResult =
        *  descriptor's own `cwd` so it reflects what the box actually got. */
       cwd: string
       /** Provider slug (e.g. `"e2b"`, `"local"`) — stamped onto the
-       *  descriptor's `sandboxProvider` by the caller. */
+       *  descriptor's `sandboxProvider` by the caller. For a composite
+       *  provider (`auto`) this is the provider that ACTUALLY produced the
+       *  box, never the requested composite slug. */
       provider: string
+      /** How a composite provider chose that backend — stamped onto the
+       *  descriptor's `sandboxProviderChoice`. Absent for a single-provider
+       *  boot. */
+      choice?: SandboxProviderChoice
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
       /** The spec's `lifecycle.pause_after_idle` window — stamped onto the
        *  descriptor's `sandboxPauseAfterIdleMs`. Absent when none declared. */
@@ -5770,6 +7221,11 @@ export type SandboxBootResult =
        *  device provider resolves a name target to its fingerprint at boot).
        *  Stamped onto the descriptor's `hostFingerprint` by the caller. */
       deviceFingerprint?: string
+      /** The egress address the box leaves from (pool slot id + public IP),
+       *  when the provider brokers one. Stamped onto the descriptor so a
+       *  throttled turn on this box can cool the address down in the egress
+       *  health ledger. */
+      egressIp?: { slot: string; publicIp: string }
       /** Spawn-time explanations (derived remote, tar mode, …) the caller
        *  records on the new session. */
       notices?: string[]
@@ -5799,6 +7255,10 @@ export type SandboxBootResult =
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
         | "sandbox_workspace_setup_failed"
+        | "sandbox_preflight_failed"
+        | "sandbox_preflight_invalid"
+        | "sandbox_spec_invalid"
+        | "sandbox_egress_all_cooling"
         | "device_spawn_unreachable"
         | "device_offline"
       message: string
@@ -5942,7 +7402,7 @@ function withSandboxAdapterPackages(spec: SandboxSpec, adapter: string): Sandbox
 }
 
 /**
- * PLAN-F — semantic `config.installAdapters` slugs. Harness slugs the caller
+ * PLAN-F — semantic `config.installHarnesses` slugs (AIP-36). Harness slugs the caller
  * wants pre-installed in the box BEYOND the spawned adapter #1232 already
  * auto-injects — the "spawn a second agent in this box without reinstalling"
  * case. Each slug expands to `@agentproto/adapter-<slug>@latest` plus its
@@ -5950,12 +7410,12 @@ function withSandboxAdapterPackages(spec: SandboxSpec, adapter: string): Sandbox
  * and merges into `config.installPackages` with dedupe, so caller-declared
  * pins keep winning. Order: the #1232 auto-injection, the caller's existing
  * `installPackages` pins (verbatim, relative order preserved), then the
- * `installAdapters` expansions. Purely additive — a spec without the field
+ * `installHarnesses` expansions. Purely additive — a spec without the field
  * passes through unchanged.
  */
-function withSandboxInstallAdapters(spec: SandboxSpec): SandboxSpec {
+function withSandboxInstallHarnesses(spec: SandboxSpec): SandboxSpec {
   const slugs: string[] = []
-  for (const slug of spec.config.installAdapters ?? []) {
+  for (const slug of spec.config.installHarnesses ?? []) {
     if (typeof slug === "string" && slug.length > 0) slugs.push(slug)
   }
   if (slugs.length === 0) return spec
@@ -6047,6 +7507,61 @@ async function startDeviceSessionWithRetry(
   throw new DeviceSpawnUnreachableError(target, attempts, lastErr)
 }
 
+/** The box's own `agent_start` outlived its budget. */
+class AgentStartTimeoutError extends Error {
+  readonly timeoutMs: number
+  constructor(timeoutMs: number) {
+    super(`the box's agent_start did not return within ${timeoutMs}ms`)
+    this.name = "AgentStartTimeoutError"
+    this.timeoutMs = timeoutMs
+  }
+}
+
+/** Settle with `start`, or reject once `timeoutMs` passes. The underlying call
+ *  is not cancellable; the caller destroys the box, which ends it. */
+function startWithinBudget<T>(start: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+  if (timeoutMs === undefined) return start
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new AgentStartTimeoutError(timeoutMs)), timeoutMs)
+    start.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      err => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+const BOX_DIAGNOSTICS_COMMAND =
+  'tail -n 40 "$HOME/.agentproto-daemon.log" 2>&1; echo "--- processes"; ' +
+  "ps -eo pid,etime,pcpu,args 2>&1 | grep -E 'npm|npx|opencode|claude' | grep -v grep | head -n 10"
+const BOX_DIAGNOSTICS_BUDGET_MS = 8_000
+const BOX_DIAGNOSTICS_MAX_CHARS = 4_000
+
+/** Best-effort tail of the box daemon log plus the adapter-related processes,
+ *  read after a failed `agent_start` and before the box is destroyed. Never
+ *  throws and never takes longer than its budget. */
+async function boxStartDiagnostics(exec: NonNullable<SandboxAgentSessionHost["exec"]>): Promise<string | undefined> {
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const budget = new Promise<undefined>(resolve => {
+      timer = setTimeout(() => resolve(undefined), BOX_DIAGNOSTICS_BUDGET_MS)
+    })
+    const ran = exec({ command: BOX_DIAGNOSTICS_COMMAND, timeoutMs: BOX_DIAGNOSTICS_BUDGET_MS }).catch(() => undefined)
+    const result = await Promise.race([ran, budget])
+    if (timer) clearTimeout(timer)
+    if (!result) return undefined
+    const text = `${result.stdout}${result.stderr}`.trim()
+    return text ? text.slice(-BOX_DIAGNOSTICS_MAX_CHARS) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Resolve `opts.sandbox`, boot the box, spawn `adapter` on the box's OWN
  * `agent_start`, and wrap the result in a `SandboxAgentSessionProxy`. Called
@@ -6069,6 +7584,10 @@ export async function bootSandboxAgentSession(opts: {
    *  against ITS OWN registry and fail loudly when it can't, without the
    *  controller being able to say so itself. */
   workspaceSlug?: string
+  /** The workspace slug the spawn resolved to, explicit or not. Only tags
+   *  the box (`config.workspaceSlug`, e2b `tenantId` metadata); falls back
+   *  to `workspace` / `tarWorkspace` / `workspaceSlug` when absent. */
+  spawnWorkspaceSlug?: string
   /** The HOST's resolved cwd for this spawn — see `explicitCwd` for whether
    *  the caller actually asked for this path, or it's just where cwd
    *  resolution fell through to (active workspace / worktree). */
@@ -6128,8 +7647,11 @@ export async function bootSandboxAgentSession(opts: {
    *  The relay URL itself comes from the operator's configuration
    *  (`AGENTPROTO_PARENT_RELAY_URL`): without it no remote parent is
    *  forwarded and the box keeps today's clear "no recorded parent" error.
+   *  `parentSessionId` is absent when the host operator spawned the session;
+   *  `profileRefs` is the allowlist of host profiles its nested spawns may
+   *  bill through the credential relay (`credential-relay.ts`).
    *  Absent for every non-sandbox spawn. */
-  parentRelay?: { parentSessionId: string; boxSessionId: string }
+  parentRelay?: { parentSessionId?: string; boxSessionId: string; profileRefs?: readonly string[] }
   /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
    *  when one was resolved (config-default wallet / access profile). Consulted
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
@@ -6195,25 +7717,47 @@ export async function bootSandboxAgentSession(opts: {
    *  box, or a raw adapter conversation id) instead of starting blank. The
    *  box reports the outcome on the returned descriptor's `resumeVia`. */
   resumeSessionId?: string
-  /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
-   *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
-   *  `forwardHttpStream` dial delivers both the spawn and the first turn.
-   *  Previously the prompt went as a SECOND concurrent `agent_prompt` dial
-   *  that failed at ~15s on a flapping channel (session created, prompt never
-   *  delivered — field-observed repeatedly). Forwarded as a content block so
-   *  the target daemon sends it VERBATIM (its `agent_start` block form skips
-   *  role/AGENTS.md recomposition), which keeps the host's recorded
-   *  user-prompt text identical to the controller's so the read-time device
-   *  mirror's seed walk still matches rather than re-merging the turn.
-   *  Ignored for every non-device provider. */
-  initialPrompt?: string | Record<string, unknown> | unknown[]
   /** Aborted when the session row is killed while it is still `starting`.
    *  Checked between boot phases; a boot that completes after this fires is
    *  torn down through the failed-boot path and reported as
    *  `sandbox_boot_cancelled` instead of registering a session. */
   signal?: AbortSignal
+  /** Preflight probe ids (`sandbox-preflight.ts`), run in order against the
+   *  booted box before anything else is set up in it. A `ko` tears the box
+   *  down and fails with `sandbox_preflight_failed`. */
+  preflight?: readonly string[]
+  /** Budget, ms, for the box's own `agent_start`; see
+   *  `SpawnAgentSessionInput.agentStartTimeoutMs`. */
+  agentStartTimeoutMs?: number
+  /** Capacity-wait ceiling for a non-final ladder rung; see
+   *  `SpawnAgentSessionInput.ladderCapacityWaitBudgetMs`. */
+  capacityWaitBudgetMs?: number
+  /** Probe registry; defaults to the daemon-wide one. Test seam. */
+  preflightRegistry?: PreflightRegistry
+  /** Per-probe budget override, ms. Test seam. */
+  preflightTimeoutMs?: number
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
+  // A pre-AIP-36-rename key (`config.installAdapters`) would boot a box that
+  // silently skips the install: refuse it, naming the new key.
+  const renamedKey = typeof opts.sandbox === "string" ? undefined : renamedSandboxKeyError(opts.sandbox)
+  if (renamedKey) {
+    return { ok: false, code: "sandbox_spec_invalid", message: `agent_start: ${renamedKey}` }
+  }
+  const preflightIds = opts.preflight ?? []
+  const preflightRegistry = opts.preflightRegistry ?? defaultPreflightRegistry
+  const unknownProbes = unknownPreflightProbes(preflightIds, preflightRegistry)
+  if (unknownProbes.length > 0) {
+    return {
+      ok: false,
+      code: "sandbox_preflight_invalid",
+      message:
+        `agent_start: unknown preflight probe${unknownProbes.length > 1 ? "s" : ""} ` +
+        `${unknownProbes.map(id => `"${id}"`).join(", ")}; registered: ` +
+        preflightRegistry.list().map(p => p.id).join(", "),
+      details: { unknown: unknownProbes },
+    }
+  }
   if (!opts.resolveSandboxProvider) {
     return {
       ok: false,
@@ -6372,7 +7916,7 @@ export async function bootSandboxAgentSession(opts: {
     hasGitToken,
   )
   const rawSpec: SandboxSpec = await withSandboxAuthAutoPassthrough(
-    withSandboxInstallAdapters(
+    withSandboxInstallHarnesses(
       withSandboxAdapterPackages(
         withoutReservedSandboxEnv(
           typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox,
@@ -6394,7 +7938,13 @@ export async function bootSandboxAgentSession(opts: {
   // `AGENTPROTO_SESSION_ID`, so the runtime names it explicitly instead of
   // relying on the env variable only the spawned agent child carries.
   const sessionHolder = opts.sessionHolder ?? opts.sessionId
-  const spec: SandboxSpec = withSandboxSessionHolder(rawSpec, sessionHolder)
+  // Label and workspace ride the same way, so a provider can tag the box with
+  // who started it (e2b: `label` / `tenantId` metadata).
+  const spec: SandboxSpec = withSandboxSpawnContext(withSandboxSessionHolder(rawSpec, sessionHolder), {
+    ...(opts.label !== undefined ? { label: opts.label } : {}),
+    workspaceSlug:
+      opts.spawnWorkspaceSlug ?? opts.workspace?.slug ?? opts.tarWorkspace?.slug ?? opts.workspaceSlug,
+  })
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
   // hands back its URL in `BootedSandbox.ports` (which also stamps the
@@ -6455,8 +8005,22 @@ export async function bootSandboxAgentSession(opts: {
       // `daemon.log` instead of silent until it fails.
       log: (line: string) => console.warn(line),
       ...(opts.signal ? { signal: opts.signal } : {}),
+      // An `egressIp: "auto"` computer box picks a pool slot whose address is
+      // not cooling down for this model; other providers ignore it.
+      ...(opts.model ? { egressHealth: egressHealthLedger.view(opts.model) } : {}),
+      ...(opts.capacityWaitBudgetMs !== undefined ? { capacityWaitBudgetMs: opts.capacityWaitBudgetMs } : {}),
     })
   } catch (err) {
+    // Every pool address is cooling down for this model: nothing was booted,
+    // so a placement ladder can advance without paying for a box.
+    if (isSandboxEgressAllCoolingError(err)) {
+      return {
+        ok: false,
+        code: "sandbox_egress_all_cooling",
+        message: `agent_start: ${err.message}`,
+        details: { model: err.model, slots: err.slots },
+      }
+    }
     // Two DISJOINT failure shapes, both needing a ledger stamp — see
     // `createSandboxAgentSessionHost`: it raises `SandboxHostBootFailedError`
     // only once `connect()`/`boot()` has already SUCCEEDED (the box exists,
@@ -6497,7 +8061,7 @@ export async function bootSandboxAgentSession(opts: {
       const keepForSurvivors = err.cleanedUp === "paused" && survivorsAfterFailedAttach > 0
       markFailedBootLedger({
         sandboxId: err.sandboxId,
-        provider: providerSlug,
+        provider: failedBootProvider(err, providerSlug),
         state: err.cleanedUp,
         keepAttachedSessions: keepForSurvivors,
         ...(opts.label ? { label: opts.label } : {}),
@@ -6511,7 +8075,7 @@ export async function bootSandboxAgentSession(opts: {
       if (typeof err.sandboxId === "string" && err.sandboxId !== "") {
         markFailedBootLedger({
           sandboxId: err.sandboxId,
-          provider: providerSlug,
+          provider: failedBootProvider(err, providerSlug),
           state: "stopped",
           ...(opts.label ? { label: opts.label } : {}),
           ...(boxCwd ? { cwd: boxCwd } : {}),
@@ -6541,8 +8105,18 @@ export async function bootSandboxAgentSession(opts: {
           message:
             `agent_start: sandbox boot failed (provider "${providerSlug}") — ` +
             `${err instanceof Error ? err.message : String(err)}`,
+          // The provider's own typed code (capacity, overflow refused, egress
+          // pool exhausted, ...), so a placement ladder records why a rung was
+          // skipped without matching the message.
+          ...(bootErrorClass(err) ? { details: { errorClass: bootErrorClass(err) } } : {}),
         }
   }
+
+  // A composite provider (`auto`) reports the backend that actually produced
+  // the box; a plain provider leaves it undefined and the requested slug IS
+  // the provider. Everything recorded from here on (ledger row, descriptor,
+  // command preview) uses the ACTUAL provider.
+  const actualProvider = host.provider ?? providerSlug
 
   // PLAN-D1 §1 — stamp the box into the sandbox ledger. "connected" for a
   // reuse (the box already existed), "booted" for a fresh boot. `expiresAt`
@@ -6551,7 +8125,7 @@ export async function bootSandboxAgentSession(opts: {
   // never throws.
   recordSandboxBoot({
     sandboxId: host.sandboxId,
-    provider: providerSlug,
+    provider: actualProvider,
     state: reuseSandboxId !== undefined ? "connected" : "booted",
     // AIP-36 shared-box refcount: the attaching session joins
     // `attachedSessions` in the same write (the boot stamp lands before the
@@ -6596,6 +8170,95 @@ export async function bootSandboxAgentSession(opts: {
   }
   const bootCancelled = (): boolean => opts.signal?.aborted === true
   if (bootCancelled()) return cancelBoot()
+
+  // Preflight: the box is up and healthy, nothing has been set up in it and no
+  // agent runs yet. Runs before the workspace checkout so a placement that
+  // cannot work is dropped in seconds, not after a clone.
+  if (preflightIds.length > 0) {
+    if (!host.exec) {
+      bootWarnings.push(
+        `agent_start: preflight ${preflightIds.join(", ")} skipped, provider "${actualProvider}" cannot run commands in the box`,
+      )
+    } else {
+      // `host.exec` exists, so the probes that can speak for this spawn run now. The box's
+      // credentials reach it through its own `agent_start` (`host.start`), never through its
+      // environment, so a `postlaunch` probe would call the model unauthenticated and veto a
+      // healthy placement: those are skipped, visibly. A `prelaunch` probe (installed
+      // tooling, a per-IP cap no key changes) runs either way.
+      //
+      // Seam for the future postlaunch execution path: running a `postlaunch` probe on an
+      // authed spawn needs the started box session rather than `host.exec`. It would have to
+      // wait for `host.start` (and its credentials), prompt the started session through
+      // the sessions registry's `sendPrompt`, classify the reply, tear the box down on `ko`
+      // the same way a failed prelaunch does, and let a placement ladder move to the next
+      // rung on
+      // `sandbox_preflight_failed`. Until that exists, the probe is skipped here.
+      const runnable = opts.auth
+        ? preflightIds.filter(id => (preflightRegistry.get(id)?.phase ?? "prelaunch") === "prelaunch")
+        : preflightIds
+      for (const id of preflightIds) {
+        if (!runnable.includes(id)) {
+          bootWarnings.push(
+            `agent_start: preflight ${id} skipped, the spawn carries credentials a postlaunch probe cannot present before the agent starts`,
+          )
+        }
+      }
+      const run = await runSandboxPreflight(
+        runnable,
+        {
+          exec: host.exec,
+          adapter: opts.adapter,
+          ...(opts.model ? { model: opts.model } : {}),
+          ...(handle.defaultCwd ? { cwd: handle.defaultCwd } : {}),
+          ...(host.egressIp?.publicIp ? { egressIp: host.egressIp.publicIp } : {}),
+        },
+        { registry: preflightRegistry, ...(opts.preflightTimeoutMs !== undefined ? { timeoutMs: opts.preflightTimeoutMs } : {}) },
+      )
+      for (const o of run.outcomes) {
+        if (o.verdict === "unknown") bootWarnings.push(`agent_start: preflight "${o.probe}" inconclusive: ${o.detail}`)
+      }
+      if (
+        run.failed &&
+        host.egressIp?.publicIp &&
+        opts.model &&
+        isEgressHealthErrorClass(run.failed.errorClass)
+      ) {
+        egressHealthLedger.mark({
+          publicIp: host.egressIp.publicIp,
+          model: opts.model,
+          errorClass: run.failed.errorClass,
+          slot: host.egressIp.id,
+          source: `preflight:${run.failed.probe}`,
+        })
+      }
+      if (run.failed) {
+        console.warn(
+          `[sandbox] boot: preflight "${run.failed.probe}" failed (${actualProvider} ${host.sandboxId}` +
+            `${host.egressIp?.publicIp ? `, egress ${host.egressIp.publicIp}` : ""}): ${run.failed.detail}`,
+        )
+        // Same teardown as a failed workspace setup: survivors keep a shared
+        // box, a reused box is paused so it stays reconnectable, a fresh one dies.
+        if (!(await detachOnBootFailure())) {
+          if (reuseSandboxId !== undefined && host.pause) {
+            await host.pause().catch(() => undefined)
+            recordSandboxState(host.sandboxId, "paused")
+          } else {
+            await host.stop().catch(() => undefined)
+            recordSandboxState(host.sandboxId, "stopped")
+          }
+        }
+        return preflightFailedResult(
+          { ...run, failed: run.failed },
+          {
+            provider: actualProvider,
+            sandboxId: host.sandboxId,
+            ...(host.egressIp?.publicIp ? { egressIp: host.egressIp.publicIp } : {}),
+          },
+        )
+      }
+      if (bootCancelled()) return cancelBoot()
+    }
+  }
 
   let deliveryTarget: SandboxDeliveryTarget | undefined
   const deliverySessionId = opts.sessionId
@@ -6688,7 +8351,7 @@ export async function bootSandboxAgentSession(opts: {
   // One daemon-log line per boot phase, with the box id once known. The
   // provider logs create/running/daemon-healthy itself; the workspace and
   // agent phases live here.
-  console.warn(`[sandbox] boot: workspace ready (${providerSlug} ${host.sandboxId})`)
+  console.warn(`[sandbox] boot: workspace ready (${actualProvider} ${host.sandboxId})`)
 
   if (opts.boxCwdRequest !== undefined && handle.defaultCwd) {
     const landed = resolveBoxCwdRequest({
@@ -6760,15 +8423,6 @@ export async function bootSandboxAgentSession(opts: {
   // retry (see `startDeviceSessionWithRetry`). Every other provider (local,
   // e2b, Box, …) keeps the exact single-attempt behaviour.
   const deviceTarget = deviceTargetOf(opts.sandbox)
-  // F2 single-dial spawn — only the DEVICE bridge carries the prompt inside
-  // the spawn. Wrapped as a content block (see `initialPrompt`'s doc) so the
-  // target's `agent_start` sends it verbatim instead of recomposing it.
-  const carriedPrompt =
-    deviceTarget !== undefined && opts.initialPrompt !== undefined
-      ? typeof opts.initialPrompt === "string"
-        ? [{ type: "text", text: opts.initialPrompt }]
-        : opts.initialPrompt
-      : undefined
   let remoteSessionId: string
   let resolvedCwd = boxCwd
   // PARENT RELAY: mint the short-lived, single-session-scoped relay token
@@ -6779,13 +8433,19 @@ export async function bootSandboxAgentSession(opts: {
   // the operator configured a relay URL reachable FROM the box; without one
   // nothing is forwarded and the box's `message_parent` keeps today's clear
   // "no recorded parent" error.
-  const remoteParent = mintRemoteParentForBox(opts.parentRelay)
+  const relayMint = mintRelayForBox(opts.parentRelay)
+  const remoteParent = relayMint?.remoteParent
+  const credentialRelay = relayMint?.credentialRelay
+  const revokeRelayGrant = (): void => {
+    if (relayMint) revokeParentRelayGrant(relayMint.token)
+  }
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
   if (bootCancelled()) {
-    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    revokeRelayGrant()
     return cancelBoot()
   }
+  const agentStartStartedAt = Date.now()
   try {
     const startArgs = {
       adapter: opts.adapter,
@@ -6815,8 +8475,6 @@ export async function bootSandboxAgentSession(opts: {
       ...(opts.auth
         ? { auth: boxLoginUpload ? { ...opts.auth, loginFile: true } : opts.auth }
         : {}),
-      // F2 — the initial prompt rides the SAME dial as the spawn (device only).
-      ...(carriedPrompt !== undefined ? { prompt: carriedPrompt } : {}),
       // Nested orchestration — the forwarded `orchestrator` request (see the
       // opts comment above): the box daemon mints the scope and mounts
       // /mcp/orchestrator on its own loopback, reachable inside the box.
@@ -6830,15 +8488,18 @@ export async function bootSandboxAgentSession(opts: {
       // PARENT RELAY: the REMOTE parent (host relay) block; see the
       // `remoteParent` mint above.
       ...(remoteParent ? { remoteParent } : {}),
+      // CREDENTIAL RELAY: the same grant, for a box orchestrator's nested
+      // spawns (see `credential-relay.ts`).
+      ...(credentialRelay ? { credentialRelay } : {}),
     }
     const remoteDesc =
       deviceTarget !== undefined
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
-        : await host.start(startArgs)
+        : await startWithinBudget(host.start(startArgs), opts.agentStartTimeoutMs)
     remoteSessionId = remoteDesc.id
-    console.warn(`[sandbox] boot: agent started (${providerSlug} ${host.sandboxId}, session ${remoteSessionId})`)
+    console.warn(`[sandbox] boot: agent started (${actualProvider} ${host.sandboxId}, session ${remoteSessionId})`)
     if (bootCancelled()) {
-      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      revokeRelayGrant()
       return cancelBoot()
     }
     boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
@@ -6855,10 +8516,25 @@ export async function bootSandboxAgentSession(opts: {
     // box (kill: it holds nothing of value) and mark the ledger so the
     // failure is never a silent orphan. AIP-36 shared-box: survivors keep
     // the box — detach only.
+    // Log the failure here: this path used to be invisible in daemon.log, so
+    // a cold-box timeout looked like a spawn that simply vanished (2026-10-29).
+    console.warn(
+      `[sandbox] boot: agent_start failed (${actualProvider} ${host.sandboxId}, ` +
+        `adapter ${opts.adapter}, ${Date.now() - agentStartStartedAt}ms): ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
+    // The box is about to be destroyed and its own daemon log with it, so
+    // pull what shows why the adapter never started while it still exists.
+    if (boxExec) {
+      const diagnostics = await boxStartDiagnostics(boxExec)
+      if (diagnostics) {
+        console.warn(`[sandbox] boot: box diagnostics (${actualProvider} ${host.sandboxId}):\n${diagnostics}`)
+      }
+    }
     // PARENT RELAY: the boot never completed, so the relay grant minted
     // above is dead on arrival - revoke it instead of leaving a live token
     // behind for a box session that will never exist.
-    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    revokeRelayGrant()
     if (!(await detachOnBootFailure())) {
       await host.stop().catch(() => undefined)
       recordSandboxState(host.sandboxId, "stopped")
@@ -6881,6 +8557,9 @@ export async function bootSandboxAgentSession(opts: {
       message:
         `agent_start: the sandbox's own agent_start failed for adapter "${opts.adapter}" — ` +
         `${err instanceof Error ? err.message : String(err)}`,
+      ...(err instanceof AgentStartTimeoutError
+        ? { details: { errorClass: "sandbox_agent_start_timeout", timeoutMs: err.timeoutMs } }
+        : {}),
     }
   }
 
@@ -6898,7 +8577,7 @@ export async function bootSandboxAgentSession(opts: {
     if (!serve.ok) {
       // PARENT RELAY: the boot failed after the grant was minted - revoke
       // it (see the `agent_start` failure path above).
-      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      revokeRelayGrant()
       if (!(await detachOnBootFailure())) {
         await host.stop().catch(() => undefined)
         recordSandboxState(host.sandboxId, "stopped")
@@ -6953,7 +8632,7 @@ export async function bootSandboxAgentSession(opts: {
   const onBeforeTeardown = composeTeardownHooks(trackedDeliveryOpts?.onBeforeTeardown, appGithubPushHook)
 
   if (bootCancelled()) {
-    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    revokeRelayGrant()
     return cancelBoot()
   }
 
@@ -6975,7 +8654,7 @@ export async function bootSandboxAgentSession(opts: {
       ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
       ledger: {
         sandboxId: host.sandboxId,
-        provider: providerSlug,
+        provider: actualProvider,
         // AIP-36 shared-box refcount: `close()` detaches THIS session and
         // only kills the box when no other session is still attached.
         ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
@@ -6987,9 +8666,6 @@ export async function bootSandboxAgentSession(opts: {
       // Device spawns only: surface a first-turn failure's raw host line
       // (see `surfaceHostTurnErrors`).
       ...(deviceTarget !== undefined ? { surfaceHostTurnErrors: true } : {}),
-      // F2 — when the first prompt rode the spawn dial, don't re-send it as a
-      // second `agent_prompt` dial (see `promptCarriedInStart`).
-      ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
       ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
       // AIP-36 — on a shared box, a detaching session removes its own git
       // worktree of the shared clone (only when the final delivery pushed
@@ -7022,10 +8698,11 @@ export async function bootSandboxAgentSession(opts: {
       // a box whose `/health` this host can probe directly.
       ...(deviceTarget === undefined ? { watchdog: {} } : {}),
     }),
-    commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
+    commandPreview: `sandbox:${actualProvider} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     cwd: resolvedCwd,
-    provider: providerSlug,
+    provider: actualProvider,
+    ...(host.choice ? { choice: host.choice } : {}),
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
       ? { pauseAfterIdleMs: lifecyclePolicy.pauseAfterIdleMs }
@@ -7041,6 +8718,7 @@ export async function bootSandboxAgentSession(opts: {
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.
     ...(host.device ? { deviceFingerprint: host.device.fingerprint } : {}),
+    ...(host.egressIp?.publicIp ? { egressIp: { slot: host.egressIp.id, publicIp: host.egressIp.publicIp } } : {}),
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
     ...(appServe ? { appServe } : {}),
     // The proxy flattens the box's stream to text (documented limitation),
@@ -7144,6 +8822,19 @@ function sandboxSubaccountScope(
     ...(auth.extraEnv ? { extraEnv: auth.extraEnv } : {}),
     ...(auth.isolateDataHome === false ? { isolateDataHome: false } : {}),
   }
+}
+
+/**
+ * The concrete provider a failed boot's box lives on, when the provider tagged
+ * the error (a composite like `auto` does); otherwise the requested slug.
+ * Keeps failed-boot ledger rows resolvable by `sandbox gc`.
+ */
+function failedBootProvider(err: unknown, requested: string): string {
+  if (typeof err === "object" && err !== null) {
+    const provider = (err as { provider?: unknown }).provider
+    if (typeof provider === "string" && provider !== "") return provider
+  }
+  return requested
 }
 
 /**

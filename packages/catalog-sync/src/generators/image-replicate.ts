@@ -7,6 +7,9 @@
  */
 
 import { z } from "zod"
+
+import { REPLICATE_IMAGE_PRICING } from "@agentproto/model-catalog/image"
+
 import type {
   CatalogGenerator,
   CatalogSource,
@@ -113,6 +116,8 @@ interface ImageModelEntry {
   description: string
   agentVisible: boolean
   triggerWord?: string
+  /** Which price won. `replicate` = scraped; `hand`/`default` = fallback. */
+  priceSource?: "replicate" | "hand" | "default"
 }
 
 // ── Pricing (hand-authored, mirrors model-catalog) ──────────────────────
@@ -321,11 +326,28 @@ function mapModel(raw: ReplicateModel): ImageModelEntry {
     output: "string" as const,
   }
 
-  const pricing = PRICING[raw.name] ?? {
-    costPerImage: 0.03,
-    costTier: "low" as const,
-    baseCost: 0.03,
-    creditCost: 3,
+  const scraped = REPLICATE_IMAGE_PRICING[`replicate:${raw.owner}/${raw.name}`]
+  const scrapedPerImage =
+    scraped && scraped.unit === "per_image" && Number.isFinite(scraped.priceUsd)
+      ? scraped.priceUsd
+      : undefined
+  const hand = PRICING[raw.name]
+
+  let pricing: PricingRecord
+  let priceSource: "replicate" | "hand" | "default"
+  if (scrapedPerImage !== undefined) {
+    pricing = {
+      costPerImage: scrapedPerImage,
+      costTier: tierFor(scrapedPerImage),
+      baseCost: scrapedPerImage,
+    }
+    priceSource = "replicate"
+  } else if (hand) {
+    pricing = hand
+    priceSource = "hand"
+  } else {
+    pricing = { costPerImage: 0.03, costTier: "low", baseCost: 0.03, creditCost: 3 }
+    priceSource = "default"
   }
 
   return {
@@ -348,7 +370,15 @@ function mapModel(raw: ReplicateModel): ImageModelEntry {
     description: raw.description ?? "",
     agentVisible: AGENT_VISIBLE.has(raw.name),
     ...(spec.triggerWord ? { triggerWord: spec.triggerWord } : {}),
+    priceSource,
   }
+}
+
+/** Cost tier buckets used by the legacy hand-written table. */
+function tierFor(price: number): "low" | "medium" | "high" {
+  if (price >= 0.1) return "high"
+  if (price >= 0.05) return "medium"
+  return "low"
 }
 
 // ── Generator ────────────────────────────────────────────────────────────
@@ -416,6 +446,11 @@ export const imageReplicate: CatalogGenerator = defineGenerator({
         ? `,\n      overrideCreditCost: ${e.pricing.overrideCreditCost}`
         : ""
 
+      if (e.priceSource === "hand") {
+        lines.push("  // fallback: hand-written PRICING (no scraped Replicate price)")
+      } else if (e.priceSource === "default") {
+        lines.push("  // fallback: default price (no scraped or hand-written price)")
+      }
       lines.push(`  ${JSON.stringify(e.id)}: {`)
       lines.push(`    id: ${JSON.stringify(e.id)},`)
       lines.push(`    name: ${JSON.stringify(e.name)},`)

@@ -59,7 +59,15 @@ import {
   type EncodedRepresentation,
   type RepresentationCache,
 } from "@agentproto/runtime/app-ui-delivery"
-import { peekAppUi } from "@agentproto/app"
+import {
+  loadAppBundledTools,
+  parseExposedTools,
+  peekAppUi,
+  resolveExposedTools,
+  validateExposedToolsAgainstBundle,
+  type ResolvedExposedTool,
+} from "@agentproto/app"
+import { DAEMON_TOOL_NAMES } from "@agentproto/runtime/daemon-tool-names"
 import { ensureAppUiBuilt } from "@agentproto/runtime/app-ui-build"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { pathExists } from "./commands/skill-install/shared.js"
@@ -374,7 +382,8 @@ export function handleToolCallRequest(
  * postMessage host's `tools/call` reply RESOLVES with them).
  *
  * `allowedTools`: when defined, only listed tool names — UNION
- * `APP_UI_DISCOVERY_TOOLS` (`adapter_list`, `harness_preset_list`, always
+ * `APP_UI_DISCOVERY_TOOLS` (`adapter_list`, `harness_list`,
+ * `harness_preset_list`, always
  * allowed so `@agentproto/app-client/runner-select`'s `mountRunnerSelect`
  * works out of the box) — are forwarded (403 otherwise). When `undefined`
  * (APP.md omits `ui.tools`), all tools pass. Mirrors the `ui.tools`
@@ -576,6 +585,38 @@ export async function readDeclaredUITools(appDir: string): Promise<string[] | un
   } catch {
     return undefined
   }
+}
+
+/**
+ * The app's `exposes.tools`, validated by the same rules `defineApp` applies
+ * (plus the daemon-name checks only the CLI/daemon can make) and resolved to
+ * MCP name + real input schema. `undefined` only when the app declares no
+ * `exposes.tools` key at all (the caller falls back to `ui.tools`); a
+ * malformed value (not an array) throws instead of silently falling back, as
+ * does the first violated rule, so a bad APP.md never half-registers. An
+ * explicit `[]` resolves to `[]` (nothing exposed).
+ */
+export async function readDeclaredExposedTools(appDir: string): Promise<ResolvedExposedTool[] | undefined> {
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+  if (!(await pathExists(appMdPath))) return undefined
+  let data: Record<string, unknown>
+  try {
+    data = matter(await readFile(appMdPath, "utf8")).data as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+  const exposes = data.exposes
+  if (!exposes || typeof exposes !== "object") return undefined
+  const rawTools = (exposes as Record<string, unknown>).tools
+  if (rawTools === undefined) return undefined
+
+  const fail = (msg: string) => new Error(`${appMdPath}: ${msg}`)
+  const parsed = parseExposedTools(rawTools, (exposes as Record<string, unknown>).prefix, fail, {
+    daemonToolNames: DAEMON_TOOL_NAMES,
+  })
+  const { tools: bundled } = await loadAppBundledTools(appDir)
+  validateExposedToolsAgainstBundle(parsed, { tools: bundled }, fail)
+  return resolveExposedTools(parsed, bundled)
 }
 
 /**
@@ -1235,7 +1276,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
 
   // The runner selector is injected alongside the McpApp bridge so a served
   // UI can call window.AgentprotoUI.mountRunnerSelect without hand-rolling
-  // its own harness/model picker — same discovery tools (adapter_list,
+  // its own harness/model picker — same discovery tools (adapter_list/harness_list,
   // harness_preset_list) callDaemonTool always allows above.
   const bridgeScript = buildBridgeScript(TOOL_CALL_PATH) + RUNNER_SELECT_SCRIPT
   const runJson = values.json === true

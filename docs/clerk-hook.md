@@ -48,7 +48,7 @@ states, so an agent that sets `enabled` alone still inherits the workspace's
 | `enabled` | boolean | `false` | Whether the hook fires at all |
 | `on` | `"turn_end"` | `"turn_end"` | The event the hook is bound to |
 | `debounceMs` | number | `600000` (10 min) | Idle debounce before the pass runs |
-| `run.routine` | string | `"steward"` | An AIP-41 routine the pass triggers |
+| `run.routine` | string | - | An AIP-41 routine the pass triggers (e.g. a Steward routine). With neither `run.routine` nor `run.command`, an enabled clerk does a clean no-op and logs one info line |
 | `run.command` | string | - | A shell command the pass runs instead of a routine. Must pass the command allowlist (`.agentproto/allowed-commands.json`), same as `command_execute`; default-deny |
 | `run.args` | string[] | - | argv for `run.command`; `$SESSION_ID` is replaced by the id of the session the pass runs for |
 | `run.cwd` | string | the session's cwd | Working directory for `run.command`, anchored under the session's cwd |
@@ -112,15 +112,67 @@ Daemon level - `~/.agentproto/config.json`:
 { "daemon": { "clerk": { "enabled": true, "debounceMs": 600000 } } }
 ```
 
+## Durable dispatch (opt-in)
+
+By default the firing of a debounce timer calls the legacy pass runner
+directly. A workspace can hand its clerk passes to the durable reaction path
+instead by listing its slug in `defaults.reactions.clerk.workspaces`:
+
+```json
+{ "defaults": { "reactions": { "clerk": { "workspaces": ["my-workspace"] } } } }
+```
+
+What changes for a listed workspace:
+
+- each firing emits the host event `agentproto:clerk-due` and writes a
+  receipt under `~/.agentproto/reaction-receipts/<bucket>.json`;
+- the pass runs through the reaction runner, so a pass that throws (a refused
+  command, a failed spawn) is retried with backoff, up to 3 attempts in total;
+- a `run.command` that runs but exits with a non-zero code, or is killed by
+  its timeout, is not retried (the pass is not idempotent): the receipt ends
+  `dead` with the exit code as its reason. The legacy path still ignores the
+  exit code;
+- boot reconciliation marks a stale `pending` receipt `dead` with
+  `stale_trigger` (the session is gone) and does not replay a `running`
+  receipt because the pass target is not idempotent;
+- the binding appears in `GET /reactions` visibility like the other builtin
+  bindings.
+
+What does not change:
+
+- the controller stays the gate: its ignore rules, its per-session debounce
+  timer and its config resolution are untouched;
+- single-flight per session still holds, but for a listed workspace it is
+  enforced inside the pass target rather than by the controller (the
+  controller returns as soon as the event is emitted): a second concurrent
+  pass for the same session is recorded as done with the outcome
+  `skipped:single_flight` and runs nothing;
+- the firing that reaches the reaction is already debounced, and ownership is
+  read once for that firing, so a workspace never runs both paths for the
+  same firing.
+
+Rollback: remove the slug from `defaults.reactions.clerk.workspaces`. The key
+is hot, so the next firing uses the legacy dispatch again.
+
+Limits:
+
+- the debounce timer stays in memory: a restart drops a pending debounce
+  exactly as before;
+- a pass interrupted by a crash is not replayed;
+- a dispatch that throws is retried with backoff, up to 3 attempts in total; a
+  command that exits non-zero ends the receipt `dead` without a retry.
+
 ## Implementation
 
-- `packages/runtime/src/clerk-turn-end.ts` - the controller (debounce,
+- `packages/clerk/src/clerk-turn-end.ts` - the controller (debounce,
   single-flight, fire-and-forget, the ignore rules).
-- `packages/runtime/src/clerk-hook-config.ts` - the three-level resolution,
+- `packages/clerk/src/clerk-hook-config.ts` - the three-level resolution,
   the per-field merge and the config shapes.
-- `packages/runtime/src/clerk-pass-runner.ts` - what a pass launches: an
+- `packages/clerk/src/clerk-pass-runner.ts` - what a pass launches: an
   AIP-41 routine (through the daemon's routine registrar) or a detached
   shell command.
+- `packages/runtime/src/action-hooks/clerk-reaction.ts` - the opt-in durable
+  reaction and the dispatch the controller calls.
 
 The daemon wires the controller at boot (`packages/runtime/src/index.ts`) and
 disposes it on shutdown, cancelling every pending debounce timer.
@@ -129,7 +181,7 @@ disposes it on shutdown, cancelling every pending debounce timer.
 
 `run.routine` and `run.command` are mutually exclusive arms. A level that
 names one arm replaces the other arm entirely (so an agent that only names a
-`command` does not keep the built-in `steward` routine); a level naming both
+`command` does not keep an inherited routine); a level naming both
 keeps the routine. `run.cwd` and `run.timeoutMs` are options of the pass and
 are inherited field by field. In the resolved provenance, `sources.run` is
 the level that chose the arm.

@@ -240,3 +240,39 @@ export async function sendTerminalInput(
     })
   })
 }
+
+interface TunnelDescriptorLike {
+  publicUrl?: unknown
+  status?: unknown
+}
+
+/**
+ * POST /tunnels — ask the daemon for a public tunnel to `port`. A mutating
+ * route, so it carries the daemon's per-boot token (resolved like the
+ * prompt delivery does) and a JSON content-type.
+ */
+export async function createPublicTunnel(
+  daemonUrl: string,
+  port: number,
+  opts: { fetchImpl?: typeof fetch; token?: string } = {},
+): Promise<string> {
+  const fetchImpl = opts.fetchImpl ?? fetch
+  const token = opts.token ?? (await resolveDaemonToken(daemonUrl, { fetchImpl }))
+  const res = await fetchImpl(`${daemonUrl}/tunnels`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ targetPort: port, label: "agentproto-relay" }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    throw new Error(`failed to create tunnel: HTTP ${res.status} ${text}`)
+  }
+  const desc = (await res.json()) as TunnelDescriptorLike
+  if (typeof desc.publicUrl !== "string" || !desc.publicUrl) {
+    throw new Error(`daemon did not return a publicUrl: ${JSON.stringify(desc)}`)
+  }
+  return desc.publicUrl
+}

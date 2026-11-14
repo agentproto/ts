@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/docs/aip-53/APP.schema.json",
   "title": "APP.md frontmatter — app/v1 (agent app bundle + UI surface)",
-  "description": "Validates the YAML frontmatter portion of an AIP-53 APP.md manifest — the on-disk form of an AppDefinition. Codifies shipped behaviour: `agents` may be empty for a UI-only app when `ui` is present (packages/app-kit/src/define-app.ts:49-52), and `data` / `category` are carried verbatim (packages/app-kit/src/types.ts).",
+  "description": "Validates the YAML frontmatter portion of an AIP-53 APP.md manifest, the on-disk form of an AppDefinition. Codifies shipped behaviour: `agents` may be empty for a UI-only app when `ui` is present (packages/app/src/define-app.ts:60-64), and `data` / `category` are carried verbatim (packages/app/src/types.ts).",
   "type": "object",
   "required": [
     "schema",
@@ -85,13 +85,14 @@
       "description": "Optional home workspace id (AIP-34). When set, a sibling WORKSPACE.md exists at the app dir root."
     },
     "requires": {
-      "description": "What the app needs from its host. Either a flat array of APP ids this app depends on (legacy form), or an object { browser?, fs?, gpu?, secrets?, apps? }. Each `apps` entry is a bare id (dependency only) or an object { id, version?, workflows? }: `version` is a semver range (exact \"1.2.3\", caret \"^1\"/\"^1.2\"/\"^1.2.3\", or tilde \"~1\"/\"~1.2\"/\"~1.2.3\") the provider's installed version must satisfy; `workflows` lists which of the provider's `exposes.workflows` this consumer may call via the app_call tool — omitted/empty means the dependency carries no call permission.",
-      "anyOf": [
+      "description": "What the app needs (see the AIP-53 section `Requirements`). Either a list of app ids (each a dependency only: no version range, no workflow, nothing granted), or an object naming host capabilities and, under `apps`, the apps it depends on with what it uses from each.",
+      "oneOf": [
         {
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "\\S"
           },
           "uniqueItems": true
         },
@@ -101,62 +102,34 @@
           "properties": {
             "browser": {
               "type": "boolean",
+              "default": false,
               "description": "Needs the user's real browser."
             },
             "fs": {
               "type": "boolean",
-              "description": "Needs the user's local filesystem beyond app data."
+              "default": false,
+              "description": "Needs the user's local filesystem beyond the app data dir."
             },
             "gpu": {
               "type": "boolean",
+              "default": false,
               "description": "Needs a GPU."
             },
             "secrets": {
               "type": "array",
               "items": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "pattern": "\\S"
               },
-              "description": "Env/secret names the app needs."
+              "description": "Env or secret names the app needs."
             },
             "apps": {
               "type": "array",
-              "description": "Other app ids this app depends on — bare ids or { id, version?, workflows? } objects.",
               "items": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "object",
-                    "required": [
-                      "id"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "The depended-on app id."
-                      },
-                      "version": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Optional semver range the provider's installed version must satisfy: exact (\"1.2.3\"), caret (\"^1\", \"^1.2\", \"^1.2.3\"), or tilde (\"~1\", \"~1.2\", \"~1.2.3\")."
-                      },
-                      "workflows": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "description": "Provider workflows (ids from its exposes.workflows) this consumer may call via app_call. Omitted/empty = dependency only, no call permission."
-                      }
-                    }
-                  }
-                ]
-              }
+                "$ref": "#/$defs/appRequirement"
+              },
+              "description": "Apps this app depends on. Two entries naming the same `id` are refused (loader rule)."
             }
           }
         }
@@ -328,7 +301,7 @@
               }
             }
           },
-          "description": "Dev-only launch recipes. Carried verbatim; NEVER executed by app-kit — `defineApp` validates the shape only (packages/app-kit/src/define-app.ts:62-64) and no loader/emit path runs it. The production hosting surface is `services` (below), not this."
+          "description": "Dev-only launch recipes. Carried verbatim; NEVER executed by `@agentproto/app`; `defineApp` validates the shape only (packages/app/src/define-app.ts:65-67) and no loader/emit path runs it. The production hosting surface is `services` (below), not this."
         }
       },
       "description": "Dev-launch configuration, carried verbatim in frontmatter."
@@ -343,46 +316,158 @@
           "name"
         ],
         "additionalProperties": false,
-        "oneOf": [
-          { "required": ["entry"], "not": { "anyOf": [{ "required": ["command"] }, { "required": ["args"] }] } },
-          { "required": ["command"], "not": { "required": ["entry"] } }
-        ],
         "properties": {
           "name": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9-]*$",
-            "description": "Service identifier — kebab-case slug, unique across the array."
+            "description": "Service identifier: kebab-case slug, unique across the array (JSON Schema cannot express per-key uniqueness; `uniqueItems` only guards exact duplicates, a loader MUST also reject two entries that share a `name`)."
           },
           "entry": {
             "type": "string",
-            "minLength": 1,
-            "description": "Legacy shell command line that starts the service (e.g. `pnpm --filter x start`, `node dist/server.js`). Carried verbatim; the loader/`defineApp` never executes it. Exactly one of entry/command."
+            "pattern": "\\S",
+            "description": "Legacy form: a shell command line that starts the service (e.g. `pnpm --filter x start`, `node dist/server.js`), run by the host under `sh -c`. Exactly one of `entry` / `command` is required. Carried verbatim; the loader and `defineApp` never execute it."
           },
           "command": {
             "type": "string",
-            "minLength": 1,
-            "description": "Structured (preferred) command form: the binary/script to run, never shell-interpreted — the runner passes it as argv[0]. Exactly one of entry/command."
+            "pattern": "\\S",
+            "description": "Structured form (preferred): the binary or script to run, passed as `argv[0]` with no shell interpretation. Exactly one of `entry` / `command` is required."
           },
           "args": {
             "type": "array",
             "minItems": 1,
-            "items": { "type": "string" },
-            "description": "Structured command form: argv after `command`, passed verbatim. Requires `command`."
+            "items": {
+              "type": "string"
+            },
+            "description": "Structured form only: the argv after `command`, passed verbatim. Not valid alongside `entry`."
           },
           "cwd": {
             "type": "string",
-            "minLength": 1,
-            "description": "Working directory the runner starts the service in; relative paths resolve against the app's installed dir."
+            "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S",
+            "description": "Working directory, relative to the installed app directory (default: the app directory itself). Stricter than the reference implementation, which also resolves absolute paths and `..` segments: this schema forbids both so a service cannot start outside its app."
           },
           "port": {
             "type": "integer",
             "minimum": 1,
             "maximum": 65535,
-            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. One process per entry, one port."
+            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. For a keep-alive service this is bookkeeping only: the host records it and does not inject it into the service's environment. With `activation.mode: on-demand` the host listens on this port itself and gives the process another one in `PORT`. An `expose`d service's tunnel targets it."
+          },
+          "expose": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "enum": [
+                  "guard",
+                  "service"
+                ],
+                "default": "guard",
+                "description": "Who authenticates a request that reaches the public URL. `guard`: the host's access guard sits in front of the tunnel. `service`: no guard, the URL is public and the service authenticates every request itself (for example a Telegram Mini App validating `initData`)."
+              },
+              "hostname": {
+                "type": "string",
+                "pattern": "^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$",
+                "description": "Hostname request: a DNS label or a full name, lowercase. Passed as the primary AIP-73 `hostnames` entry; the provider may assign another name."
+              }
+            },
+            "description": "Ask the host for a public URL that reaches `port`, through one AIP-73 tunnel per service, keyed `app.<app>.<service>.<hash>` (AIP-53 § Tunnel key). The host picks the provider and passes the public origin to the process as `AGENTPROTO_PUBLIC_URL`. Requires `port`. See AIP-53 § Exposure."
+          },
+          "activation": {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "enum": [
+                  "always",
+                  "on-demand"
+                ],
+                "description": "`always`: the host starts the process at install and boot and keeps it running. `on-demand`: the host owns `port` (and the `expose` tunnel's target), starts the process on the first inbound connection, proxies HTTP and WebSocket traffic to it and stops it after `idleStopMs` without traffic. `on-demand` requires `port`, and the process MUST bind the port the host passes in `PORT`."
+              },
+              "idleStopMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 86400000,
+                "default": 300000,
+                "description": "`on-demand` only. Milliseconds without an open request or connection before the host stops the process. Default 300000."
+              },
+              "startTimeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 300000,
+                "default": 30000,
+                "description": "`on-demand` only. Milliseconds a request waits for the process to start listening before the host answers 503. Default 30000."
+              }
+            },
+            "if": {
+              "properties": {
+                "mode": {
+                  "const": "always"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "idleStopMs": false,
+                "startTimeoutMs": false
+              }
+            },
+            "description": "When the host runs the process. Omitted means `{ mode: always }`: kept running from install and boot, restarted on an unexpected exit. Only a service whose work is driven entirely by inbound requests may be `on-demand`; one that polls or schedules on its own would be stopped while idle. See AIP-53 § Activation."
           }
-        }
+        },
+        "dependentRequired": {
+          "expose": [
+            "port"
+          ]
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "activation"
+              ],
+              "properties": {
+                "activation": {
+                  "required": [
+                    "mode"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "const": "on-demand"
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "port"
+              ]
+            }
+          }
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "entry"
+            ],
+            "properties": {
+              "command": false,
+              "args": false
+            }
+          },
+          {
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "entry": false
+            }
+          }
+        ]
       },
-      "description": "Production hosting surface: one supervised service process per entry — NO dependency graph, NO scaling, NO scheduler. The host (NOT app-kit) spawns exactly one keep-alive service-owner session per entry at install time (later work item) that runs `entry`; `dev.launch` is NOT executed by the loader and is not this surface. Names MUST be unique. See the pending SERVICES schema draft (pending upstream spec PR)."
+      "description": "Production hosting surface: long-running processes the host starts with the app, one process per entry. No dependency graph, no replicas, no scheduler; `activation` only chooses between keeping the process running and starting it on demand. Not `dev.launch`, which stays dev-only and is never executed. See AIP-53 § Services."
     },
     "setup": {
       "type": "array",
@@ -421,12 +506,14 @@
     "exposes": {
       "type": "object",
       "additionalProperties": false,
+      "description": "What the app offers to callers outside it: A2A-visible agents and workflows, and the tools and `ui://` views it publishes to MCP clients (see the AIP-53 section `Exposed tools and resources`). Closed object. Rules JSON Schema cannot express (ids naming the app's own agents/workflows, a TOOL.md behind every non-imported tool id, no two entries computing the same MCP name, a computed name of at most 64 characters) are enforced by the loader.",
       "properties": {
         "agents": {
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "\\S"
           },
           "description": "Agent ids this app exposes. Every id must name one of the app's own agents."
         },
@@ -434,15 +521,224 @@
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "\\S"
           },
-          "description": "Workflow ids this app exposes — the callable surface other apps' requires.apps[].workflows entries may name (consumed via the app_call tool). Every id must name one of the app's own workflows."
+          "description": "Workflow ids this app exposes: the callable surface other apps' `requires.apps[].workflows` entries may name (consumed via `app_call`). Every id must name one of the app's own workflows."
+        },
+        "prefix": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]{1,15}$",
+          "description": "MCP name prefix of every exposed tool: the computed name is `<prefix>_<name>`. Lowercase letters and digits only, no `_`, 2 to 16 characters. Required when `tools` is non-empty. A host additionally refuses a prefix that is the first `_` segment of one of its own tool names."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exposedTool"
+          },
+          "description": "Tools offered to MCP clients, each with an explicit access class. `id` values are unique within the array (loader rule)."
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^ui://[^\\s]+$"
+          },
+          "uniqueItems": true,
+          "description": "Per-app allowlist of `ui://` view URIs a host may relay to the app's imported MCP servers on `resources/read`. Needs at least one `imported:` entry in `tools` to relay from. An empty array is accepted and means no allowlist."
         }
       },
-      "description": "A2A-visible agents/workflows. Ids must exist in the app's agents / workflows."
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "tools"
+            ],
+            "properties": {
+              "tools": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "prefix"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "resources"
+            ],
+            "properties": {
+              "resources": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "tools"
+            ],
+            "properties": {
+              "tools": {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "id"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^imported:"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {
+    "appRequirement": {
+      "description": "One `requires.apps` entry: a bare provider app id (a dependency only) or an object. Rules JSON Schema cannot express (every `workflows` id in the provider's `exposes.workflows` when called, every `tools` name computed by one of the provider's `exposes.tools` entries) are enforced by the host against the installed provider.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The provider app id, as it appears in the provider's APP.md `id`."
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^(?:[\\^~]\\d+(?:\\.\\d+(?:\\.\\d+)?)?|\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?)$",
+              "description": "Range the provider's installed version must satisfy: an exact version (`1.2.3`), a caret (`^1`, `^1.2`, `^1.2.3`) or a tilde (`~1`, `~1.2`, `~1.2.3`). Omitted means any version."
+            },
+            "workflows": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "uniqueItems": true,
+              "description": "Provider workflows this app may call with `app_call`: ids from the provider's `exposes.workflows`. Omitted or empty means no call is allowed."
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9]{1,15}_[a-zA-Z0-9-](?:[a-zA-Z0-9_-]*[a-zA-Z0-9-])?$"
+              },
+              "uniqueItems": true,
+              "description": "Provider tools granted to this app's own agents: the MCP names the provider's `exposes.tools` entries compute (`<prefix>_<name>`, for example `bureau_navigate`). Each is granted at the access class the provider declares, as if every AGENT.md of this app had opted in to it by name. Omitted or empty means nothing is granted."
+            }
+          }
+        }
+      ]
+    },
+    "exposedTool": {
+      "type": "object",
+      "required": [
+        "id",
+        "access",
+        "description"
+      ],
+      "additionalProperties": false,
+      "description": "One entry of `exposes.tools`. The MCP name is computed from `exposes.prefix` and `mcpName` (else `id`); see the AIP-53 section `Exposed tools and resources`.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "pattern": "^approval"
+          },
+          "description": "A TOOL.md id the app bundles, or `imported:<alias>/<tool>` for a tool of one of the app's imported MCP servers. An id starting with `approval` is refused: deciding an approval never goes through this registry. A host's own tool names are refused too (loader rule)."
+        },
+        "access": {
+          "enum": [
+            "read",
+            "write",
+            "approve"
+          ],
+          "description": "Access class. `read` is visible to every caller by default; `write` and `approve` are visible only to a caller that opted in by exact MCP name."
+        },
+        "description": {
+          "type": "string",
+          "pattern": "\\S",
+          "maxLength": 300,
+          "description": "Written for a model; non-blank, at most 300 characters."
+        },
+        "inputSchema": {
+          "type": "object",
+          "description": "JSON Schema object for the tool's input. Defaults to the bundled TOOL.md `inputs`. On an `imported:` entry whose schema declares `properties`, a host drops every undeclared input key before the call, unless `additionalProperties` is `true`."
+        },
+        "mcpName": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+          "not": {
+            "pattern": "^approval"
+          },
+          "description": "Replaces the id as the source of the MCP name (no `:`, `/` or `.`). Required for an `imported:` id. A name starting with `approval` is refused."
+        },
+        "approvalArg": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the input argument that carries an approval reference. Only for `access: approve`; a shape hint, not a guarantee."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "approvalArg"
+            ]
+          },
+          "then": {
+            "properties": {
+              "access": {
+                "const": "approve"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "pattern": "^imported:"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mcpName"
+            ],
+            "properties": {
+              "access": {
+                "const": "read"
+              }
+            }
+          }
+        }
+      ]
+    },
     "stepId": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$",
@@ -991,7 +1287,7 @@
   "allOf": [
     {
       "title": "UI-only carve-out",
-      "description": "An app with an empty or absent `agents` array is conforming ONLY when `ui` is present (codifies packages/app-kit/src/define-app.ts:49-52 and the five builtin panels in packages/apps/src/index.ts that ship as agents: []).",
+      "description": "An app with an empty or absent `agents` array is conforming ONLY when `ui` is present (codifies packages/app/src/define-app.ts:60-64 and the five builtin panels in packages/apps/src/index.ts that ship as agents: []).",
       "if": {
         "anyOf": [
           {

@@ -20,6 +20,11 @@ describe("parseTurnRetryFlag", () => {
   it("accepts a comma list of classes", () => {
     expect(parseTurnRetryFlag("rate-limit, no-output-stall")).toEqual({ on: ["rate-limit", "no-output-stall"] })
   })
+  it("accepts the opt-in usage-limit class, which 'all' leaves out", () => {
+    expect(parseTurnRetryFlag("usage-limit")).toEqual({ on: ["usage-limit"] })
+    expect(parseTurnRetryFlag("rate-limit,usage-limit")).toEqual({ on: ["rate-limit", "usage-limit"] })
+    expect((parseTurnRetryFlag("all") as { on: string[] }).on).not.toContain("usage-limit")
+  })
   it("passes a JSON object through", () => {
     expect(parseTurnRetryFlag('{"on":["upstream-5xx"],"maxRetries":2,"retryAfterToolCalls":true}')).toEqual({
       on: ["upstream-5xx"],

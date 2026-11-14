@@ -3,48 +3,73 @@
  *
  * AIP-42 says the markdown body of an AGENT.md is the agent's primary
  * system prompt. Boundaries, persona inline content, and trait scores
- * are appended in that order so the body — the human-authored part —
- * stays at the top where the model sees it first.
+ * are appended after it so the body, the human-authored part, stays at
+ * the top where the model sees it first.
  */
 
 import type { AgentHandle } from "./types.js"
 
-const HEADER_RULE = "Hard rules — these MUST be followed:"
+export const DEFAULT_BOUNDARIES_HEADER = "Hard rules (these MUST be followed):"
+
+export type InstructionSection = "body" | "persona" | "boundaries" | "traits"
+
+export const DEFAULT_SECTION_ORDER: readonly InstructionSection[] = [
+  "body",
+  "persona",
+  "boundaries",
+  "traits",
+]
+
+export interface ComposeInstructionsOptions {
+  /** Line that introduces the boundaries list. Defaults to {@link DEFAULT_BOUNDARIES_HEADER}. */
+  readonly boundariesHeader?: string
+  /**
+   * Sections to render, in order. A section left out is not rendered, so a
+   * host can drop traits or move boundaries ahead of the persona. Defaults to
+   * {@link DEFAULT_SECTION_ORDER}.
+   */
+  readonly sectionOrder?: readonly InstructionSection[]
+}
 
 /**
  * Compose the AGENT.md body + structural fields into a system prompt.
  *
- * Order:
+ * Default order:
  *   1. body (markdown after frontmatter), or `description` if absent
  *   2. inline persona block (when `persona` is `{ inline: ... }`)
  *   3. boundaries (rendered as a bulleted "hard rules" block)
  *   4. traits (rendered as a one-line guidance hint when present)
  *
- * Refs (`persona: "@some/persona"`) are NOT inlined — the host is
- * expected to resolve them externally and inject them via
- * `formatInstructions` if it cares, or pre-resolve and pass the
- * resolved body in via `body:`.
+ * Refs (`persona: "@some/persona"`) are NOT inlined. The host is
+ * expected to resolve them externally and pass the resolved text in
+ * via `body`.
  */
 export function composeInstructions(
   handle: AgentHandle,
   body: string | undefined,
+  opts: ComposeInstructionsOptions = {},
 ): string {
-  const parts: string[] = []
-  parts.push(body?.trim() || handle.description.trim())
+  const header = opts.boundariesHeader ?? DEFAULT_BOUNDARIES_HEADER
+  const order = opts.sectionOrder ?? DEFAULT_SECTION_ORDER
 
-  const personaInline = extractPersonaInline(handle)
-  if (personaInline) parts.push(personaInline)
-
-  if (handle.boundaries && handle.boundaries.length > 0) {
-    const lines = handle.boundaries.map((b) => `- ${b}`).join("\n")
-    parts.push(`${HEADER_RULE}\n${lines}`)
+  const render: Record<InstructionSection, () => string | undefined> = {
+    body: () => body?.trim() || handle.description.trim(),
+    persona: () => extractPersonaInline(handle),
+    boundaries: () => {
+      if (!handle.boundaries || handle.boundaries.length === 0) return undefined
+      const lines = handle.boundaries.map((b) => `- ${b}`).join("\n")
+      return `${header}\n${lines}`
+    },
+    traits: () => {
+      if (!handle.traits || Object.keys(handle.traits).length === 0) return undefined
+      return traitsLine(handle.traits)
+    },
   }
 
-  if (handle.traits && Object.keys(handle.traits).length > 0) {
-    parts.push(traitsLine(handle.traits))
-  }
-
-  return parts.filter((s) => s.length > 0).join("\n\n")
+  return order
+    .map((section) => render[section]?.())
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join("\n\n")
 }
 
 function extractPersonaInline(handle: AgentHandle): string | undefined {

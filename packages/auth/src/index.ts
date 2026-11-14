@@ -94,6 +94,28 @@ export {
   type SubaccountResolution,
 } from "./subaccounts.js"
 export {
+  EXPIRING_WINDOW_MS,
+  EXPIRY_SKEW_MS,
+  AuthReauthRequiredError,
+  deriveAuthState,
+  findReauthAdapter,
+  listReauthAdapters,
+  profileAuthStatus,
+  reauthCommand,
+  reauthHintOf,
+  registerReauthAdapter,
+  unregisterReauthAdapter,
+  type AuthState,
+  type ParentAccountInfo,
+  type ProfileAuthStatus,
+  type ReauthAdapter,
+  type ReauthHint,
+  type ReauthLoginPlan,
+  type ReauthReason,
+  type ReauthTarget,
+  type ReauthVerification,
+} from "./reauth.js"
+export {
   authProfilesPath,
   loadAuthProfiles,
   listAuthProfiles,

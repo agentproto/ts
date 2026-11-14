@@ -21,6 +21,7 @@
  * checkpoint moved from/to.
  */
 
+import { carriedAccessSlot, slotRef } from "./account-slots.js"
 import { boundaryFromMeta } from "./app-boundary.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import type { ContextCheckpoint } from "./context-checkpoint.js"
@@ -32,8 +33,16 @@ import {
   type SpawnAgentSessionInput,
   type SpawnAgentSessionResult,
 } from "./session-spawn.js"
-import { CALLER_SESSION_ID_HEADER, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
+import {
+  APP_AGENT_META_KEY,
+  CALLER_SESSION_ID_HEADER,
+  carrySessionPin,
+  type SessionDescriptor,
+  type SessionsRegistry,
+} from "./sessions.js"
 import { handoverLineage } from "./lineage-handover.js"
+import { carryAgentIdentityMeta } from "./spawning-caller-context.js"
+import { SESSION_TOKEN_HEADER } from "./session-credentials.js"
 
 export interface ContinueAgentSessionFreshResult {
   ok: true
@@ -60,13 +69,11 @@ export interface ContinueAgentSessionFreshOptions {
   contextContinuity?: import("./context-continuity.js").ContextContinuityPolicy
   /** Optional base directory for checkpoint storage (tests). */
   baseDir?: string
-  /** Override the adapter (driver slug) for the fresh session — the
-   *  cross-harness handoff axis. Alias of `harness`; when both are set,
-   *  `harness` wins for the descriptor's `harness` label but this still
-   *  picks the driver. Omitted -> carried forward from `prev`, unchanged. */
+  /** @deprecated Alias of `harness`; `harness` wins when both are set.
+   *  Removed in the next major of @agentproto/runtime. */
   adapter?: string
-  /** Override the canonical harness slug for the fresh session. Alias of
-   *  `adapter` — set either or both. Omitted -> carried forward from `prev`. */
+  /** Override the harness for the fresh session: the cross-harness
+   *  handoff axis (canonical). Omitted -> carried forward from `prev`. */
   harness?: string
   /** Override the model for the fresh session. Omitted -> carried forward
    *  from `prev`, unchanged. */
@@ -128,11 +135,17 @@ export function stripOwnCallerStamp(
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
     // The identity header travels with the query (see
     // `CALLER_SESSION_ID_HEADER`): strip OURS too, or the fresh session
-    // would keep speaking to the daemon under the dead session's id.
+    // would keep speaking to the daemon under the dead session's id. A
+    // session token (`SESSION_TOKEN_HEADER`) is never carried forward
+    // either: it names exactly one session, and the fresh session gets its
+    // own at spawn. (Descriptors carry none; this guards a legacy or
+    // hand-built list.)
     const original = entry.headers
     const kept = original
       ? Object.entries(original).filter(
-          ([k, v]) => !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId),
+          ([k, v]) =>
+            !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId) &&
+            k.toLowerCase() !== SESSION_TOKEN_HEADER,
         )
       : []
     const strippedHeader = original !== undefined && kept.length !== Object.keys(original).length
@@ -154,6 +167,35 @@ export function stripOwnCallerStamp(
     url.searchParams.delete("callerSessionId")
     return { ...next, ref: url.toString() }
   })
+}
+
+/**
+ * Pick the source session's recorded agent binding so a fresh continuation
+ * can hand it to its successor unchanged.
+ *
+ * The binding is frozen at the source's spawn: its role, the manifest agent
+ * it bound, the delegation list that spawn resolved from the manifest, and a
+ * memory opt-out. Carrying it is what stops a continuation from widening its
+ * own grant (AIP-46 "No self-widening"): the successor must not come back on
+ * a wider default agent, nor re-read a manifest its predecessor already had
+ * frozen. The memory PROJECTION keys (`memoryInject`, `memoryAnchors`,
+ * `memoryCapture`, `memoryStoreRoot`) are deliberately not picked: they
+ * describe the projection the source's spawn built, and the successor's own
+ * spawn recomputes its own, so carrying them would claim a projection this
+ * session never had.
+ */
+export function pickAgentBindingMeta(
+  meta: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const picked: Record<string, string> = {}
+  for (const key of ["role", "agentSlug", "agentDelegatesTo"] as const) {
+    const value = meta?.[key]
+    if (typeof value === "string" && value !== "") picked[key] = value
+  }
+  // Only an opt-out is meaningful to carry: `memory.enabled: true` is the
+  // default and its absence already says nothing.
+  if (meta?.memory === "disabled") picked.memory = "disabled"
+  return picked
 }
 
 function formatPostureForSpawn(
@@ -189,11 +231,127 @@ export function stripContinuedSuffix(label: string): string {
  * being encoded in the label. The label and title are NOT renamed: they
  * pass through unchanged (minus a legacy " (continued)" tail, see
  * {@link stripContinuedSuffix}), to match a session that compacts in place.
+ *
+ * A source session continues at most once. On 2026-10-26 an auto-compact turn
+ * at 172k tokens re-entered this path and the daemon created two successors of
+ * the same source 4.8 s apart (two checkpoints, two handoff prompts). Calls
+ * are therefore memoised per `prev.id`: a duplicate or concurrent call with
+ * the SAME options gets the first call's result (same checkpoint, same
+ * successor) instead of a second spawn. A later call with DIFFERENT options
+ * is refused with `ContinueFreshSpawnError` (`already_continued`) rather than
+ * silently returning a successor that does not match the request.
+ *
+ * The entry is kept after success, because the source is retired and a later
+ * call would still fork the lineage — including an explicit handoff that
+ * leaves the source running (`performContextHandoff`): its source is linked
+ * via `continuedTo`, so it too gets no second continuation. It is dropped on
+ * rejection so a failed attempt can be retried. The map is bounded; only
+ * SETTLED entries are evicted (oldest first), never an in-flight attempt.
+ * This memo is process-local and does not survive a daemon restart; the
+ * registry's `continuedTo` link remains the durable record of the lineage.
  */
-export async function continueAgentSessionFresh(
+export function continueAgentSessionFresh(
   deps: SpawnAgentSessionDeps,
   prev: SessionDescriptor,
   opts: ContinueAgentSessionFreshOptions = {},
+): Promise<ContinueAgentSessionFreshResult> {
+  const requestKey = continuationRequestKey(opts)
+  const existing = continuedSources.get(prev.id)
+  if (existing) {
+    if (existing.requestKey === requestKey) return existing.promise
+    const target = existing.result ? ` as "${existing.result.descriptor.id}"` : " (still in progress)"
+    return Promise.reject(
+      new ContinueFreshSpawnError(
+        "already_continued",
+        `Session ${prev.id} was already continued fresh${target}; refusing a second continuation with different options.`,
+        {
+          continuedFrom: prev.id,
+          ...(existing.result
+            ? {
+                continuedTo: existing.result.descriptor.id,
+                checkpointId: existing.result.checkpoint.checkpointId,
+              }
+            : {}),
+        },
+      ),
+    )
+  }
+  const promise = continueAgentSessionFreshOnce(deps, prev, opts)
+  const entry: ContinuedSourceEntry = { promise, requestKey, settled: false }
+  continuedSources.set(prev.id, entry)
+  pruneSettledContinuedSources()
+  promise.then(
+    result => {
+      entry.settled = true
+      entry.result = result
+      pruneSettledContinuedSources()
+    },
+    () => {
+      if (continuedSources.get(prev.id) === entry) continuedSources.delete(prev.id)
+    },
+  )
+  return promise
+}
+
+export const CONTINUED_SOURCES_MAX = 128
+const continuedSources = new Map<string, ContinuedSourceEntry>()
+
+interface ContinuedSourceEntry {
+  promise: Promise<ContinueAgentSessionFreshResult>
+  /** Canonical signature of the options that decide what the continuation
+   *  does; a cache hit with a different signature is a conflict, not a
+   *  duplicate. */
+  requestKey: string
+  settled: boolean
+  result?: ContinueAgentSessionFreshResult
+}
+
+/** Clear the per-source continuation memo. Test-only isolation hook. */
+export function resetContinueFreshMemoForTests(): void {
+  continuedSources.clear()
+}
+
+function pruneSettledContinuedSources(): void {
+  if (continuedSources.size <= CONTINUED_SOURCES_MAX) return
+  for (const [id, entry] of continuedSources) {
+    if (continuedSources.size <= CONTINUED_SOURCES_MAX) return
+    if (entry.settled) continuedSources.delete(id)
+  }
+}
+
+function continuationRequestKey(opts: ContinueAgentSessionFreshOptions): string {
+  return canonicalize({
+    adapter: opts.harness ?? opts.adapter,
+    harness: opts.harness ?? opts.adapter,
+    model: opts.model,
+    access: opts.access,
+    notes: opts.notes,
+    askSource: opts.askSource,
+    askTimeoutMs: opts.askTimeoutMs,
+    stampHandoff: opts.stampHandoff,
+    contextContinuity: opts.contextContinuity,
+    spawn: opts.spawn,
+  })
+}
+
+/** Stable JSON for option comparison — key order must not turn a duplicate
+ *  into a false conflict. `baseDir`, `sources` and `handoffAsker` are
+ *  deliberately not part of the signature: they are a storage location and
+ *  per-call dependency hooks, not a different target. */
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined"
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record)
+    .filter(key => record[key] !== undefined)
+    .sort()
+  return `{${keys.map(key => `${JSON.stringify(key)}:${canonicalize(record[key])}`).join(",")}}`
+}
+
+async function continueAgentSessionFreshOnce(
+  deps: SpawnAgentSessionDeps,
+  prev: SessionDescriptor,
+  opts: ContinueAgentSessionFreshOptions,
 ): Promise<ContinueAgentSessionFreshResult> {
   const registry = deps.registry
   const resolveAgentAdapter = deps.resolveAgentAdapter
@@ -220,13 +378,16 @@ export async function continueAgentSessionFresh(
 
   // Cross-harness handoff (SPEC gap #5): each axis below is independently
   // overridable — omitted falls back to `prev`'s own value, exactly like
-  // `session_restart`'s override axes. `adapter` picks the driver; `harness`
-  // is the descriptor label (defaults to `adapter` inside `spawnAgentSession`
-  // when unset) — set either or both.
-  const adapter = opts.adapter ?? opts.harness ?? prev.adapterSlug ?? prev.harness ?? "claude-code"
-  const harness = opts.harness ?? opts.adapter ?? prev.harness
+  // `session_restart`'s override axes. `harness` is canonical and `adapter`
+  // its deprecated alias: `harness ?? adapter`, then the prior session's.
+  const adapter = opts.harness ?? opts.adapter ?? prev.harness ?? prev.adapterSlug ?? "claude-code"
+  const harness = adapter
   const model = opts.model ?? prev.model
-  const access = opts.access ?? formatAccessForSpawn(prev)
+  // A session that asked for an account slot keeps asking for it while the
+  // slot still points at the profile it bills (so the successor records the
+  // same `accessSlot`); otherwise the real profile is carried, unchanged.
+  const keptSlot = opts.access ? undefined : await carriedAccessSlot(prev)
+  const access = opts.access ?? (keptSlot ? { profileRef: slotRef(keptSlot) } : formatAccessForSpawn(prev))
   // `prev.route` was resolved for the OLD adapter's gateway. Carrying it
   // forward unconditionally into a DIFFERENT adapter is doubly wrong: it may
   // not even be reachable from there, and an explicit `route.gateway` also
@@ -237,6 +398,21 @@ export async function continueAgentSessionFresh(
   // for the NEW adapter from scratch, same as a fresh `agent_start` would.
   const adapterChanged = opts.adapter !== undefined || opts.harness !== undefined
   const route = adapterChanged ? undefined : prev.route
+
+  // An explicit agent/role in the continuation request wins outright, and
+  // then nothing from the source's binding is carried (see
+  // {@link pickAgentBindingMeta} for why the rest is carried as frozen).
+  const bindingOverridden =
+    opts.spawn?.role !== undefined ||
+    opts.spawn?.agent !== undefined ||
+    opts.spawn?.agentId !== undefined ||
+    opts.spawn?.agentPath !== undefined
+  const carriedBinding = bindingOverridden ? undefined : pickAgentBindingMeta(prev.meta)
+  // The manifest identity the gateway reads (`agentId`, `agentManifestPath`,
+  // role/tools hashes) plus the frozen opt-in and deny grants: handed to the
+  // spawn so it records them AND stages them before the driver lists the
+  // gateway's tools, same as `session_restart` (spawning-caller-context.ts).
+  const carriedIdentity = bindingOverridden ? undefined : carryAgentIdentityMeta(prev.meta)
 
   const spawnInput: SpawnAgentSessionInput = {
     adapter,
@@ -276,6 +452,21 @@ export async function continueAgentSessionFresh(
     ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
     // The fresh session stays inside the same app boundary as `prev`.
     ...(boundaryFromMeta(prev.meta) ? { appBoundary: boundaryFromMeta(prev.meta)! } : {}),
+    // Still the same app's agent (its requires.apps tool grants, its APP_ID_ENV).
+    ...(prev.meta?.[APP_AGENT_META_KEY] ? { appId: prev.meta[APP_AGENT_META_KEY] } : {}),
+    // The internal role spelling `spawnAgentSession` takes; the `role` alias
+    // warning is emitted only by the MCP/HTTP handlers, so none is produced
+    // here. Placed before `opts.spawn` so an explicit request still wins.
+    ...(carriedBinding?.role !== undefined ? { role: carriedBinding.role } : {}),
+    ...(carriedIdentity && Object.keys(carriedIdentity).length > 0
+      ? {
+          carriedAgentIdentity: {
+            meta: carriedIdentity,
+            ...(prev.exposedToolOptIn ? { exposedToolOptIn: prev.exposedToolOptIn } : {}),
+            ...(prev.toolDenyGrants ? { toolDenyGrants: prev.toolDenyGrants } : {}),
+          },
+        }
+      : {}),
     ...opts.spawn,
   }
 
@@ -290,6 +481,25 @@ export async function continueAgentSessionFresh(
 
   const fresh = result.descriptor
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
+  if (prev.operator) registry.setOperator(fresh.id, prev.operator, prev.operatorDigest)
+  if (prev.toolDenyGrants) registry.setToolDenyGrants(fresh.id, prev.toolDenyGrants)
+  if (prev.exposedToolOptIn) registry.setExposedToolOptIn(fresh.id, prev.exposedToolOptIn)
+  // `pinned` (and its `pinnedOrder` slot) survives a continuation exactly like
+  // `keepAlive` above: it is the only flag exempting a keepAlive row from the
+  // boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`), so dropping
+  // it here silently un-pins a long-lived brain at every continue-fresh. The
+  // retired source keeps its own pin, same as it keeps `keepAlive`.
+  carrySessionPin(registry, prev, fresh.id)
+  // The spawn just wrote ITS OWN binding (the default agent for its depth, or
+  // whatever the request named). Put the source's frozen binding back on top
+  // so a continuation cannot widen its grant by re-spawning itself (AIP-46
+  // "No self-widening"): the manifest identity, its delegation list and a
+  // memory opt-out are exactly what the source's spawn recorded, never what
+  // AGENT.md says now. `role` is already in the spawn input above; the merge
+  // is gated by the same "request named none" condition.
+  if (carriedBinding && Object.keys(carriedBinding).length > 0 && registry.get(fresh.id)) {
+    registry.mergeMeta(fresh.id, carriedBinding)
+  }
   // Same reasoning as `operatorLabel` above: `allowPromptFrom` is applied
   // post-spawn by the `agent_start` MCP handler, never re-derived by
   // `spawnAgentSession` — a continue-fresh landing on a NEW session id

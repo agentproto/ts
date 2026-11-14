@@ -34,7 +34,7 @@ export type OfficeDefinition = {
    */
   version: string
   /**
-   * OPTIONAL — relative path to a parent OFFICE.md. Presence makes the manifest a VIEW; absence makes it a WORKSPACE ROOT. Recursive composition; maximum chain depth is 8.
+   * OPTIONAL: relative path to a parent OFFICE.md, for example ../OFFICE.md from a child node of a company tree. Presence makes the manifest a VIEW; absence makes it a WORKSPACE ROOT. Recursive composition; maximum chain depth is 8.
    */
   extends?: string
   /**
@@ -75,7 +75,7 @@ export type OfficeDefinition = {
     taxId?: string
   }
   /**
-   * OPTIONAL — AIP-9 default org-level operator. The host activates this operator for company-level prompts when no more-specific operator applies.
+   * OPTIONAL: AIP-9 default org-level operator of the whole tree this office spans, as a ws:// ref or an AIP-54 `operator:<slug>[@<workspace>]` compact ref. The `@<workspace>` form names an operator of another workspace; ws:// cannot. The host activates this operator for company-level prompts when no more-specific seat or view applies.
    */
   executor?: string
   /**
@@ -83,7 +83,7 @@ export type OfficeDefinition = {
    */
   governance?: string
   /**
-   * OPTIONAL — AIP-20 work tracker the company runs. Cross-references on items resolve against the bound work workspace by default.
+   * OPTIONAL — AIP-20 work tracker the company runs, as the AIP-54 ref of its WORK.md: `ws://workspaces/@<owner>/<slug>/WORK.md`. Cross-references on items resolve against the bound work workspace by default.
    */
   work?: string
   /**
@@ -115,7 +115,7 @@ export type OfficeDefinition = {
        */
       enabled?: boolean
       /**
-       * Item field name carrying the org-parent ref. Defaults to AIP-18's universal-ish 'parent'.
+       * Item field name carrying the org-parent ref: an item id, or for a seat attached to a node an AIP-54 `workspace:` ref to that node's view. Defaults to AIP-18's universal-ish 'parent'.
        */
       field?: string
       /**
@@ -127,7 +127,7 @@ export type OfficeDefinition = {
          */
         allowedKinds?: string[]
         /**
-         * OPTIONAL — containment matrix. Keys are CHILD collection names; values are arrays of allowed PARENT collection names. The host enforces this at item-write time. Per-item violations: office_orgtree_invalid_parent_kind (HARD).
+         * OPTIONAL: containment matrix. Keys are CHILD collection names; values are arrays of allowed PARENT collection names. The reserved parent name `view` stands for a node of the same tree that carries a view of this office; it is not a collection. The host enforces this at item-write time. Per-item violations: office_orgtree_invalid_parent_kind (HARD).
          */
         allowedParentKinds?: {
           [k: string]: string[]

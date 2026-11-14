@@ -5,10 +5,10 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
 import {
   listNativeModelIds,
@@ -73,25 +73,27 @@ const OPENCODE_ANTHROPIC_MODELS = [
   })),
 ]
 
-export const claudeCode: AgentCliHandle = defineAgentCli({
+export const claudeCode: AgentCliHandle = defineHarness({
   name: "claude-code",
   id: "claude-code",
   description:
     "Anthropic's Claude Code wrapped as an ACP agent via @agentclientprotocol/claude-agent-acp. Spawned via `npx -y @agentclientprotocol/claude-agent-acp` and driven over stdio JSON-RPC.",
   version: "0.1.0",
   bin: "npx",
-  // Pinned for reproducibility. 0.81.2 bundles @anthropic-ai/claude-agent-sdk
-  // 0.3.280 = Claude Code 2.1.280, the FLOOR for the current Opus generation:
-  // the 0.75.1 pin shipped CC 2.1.257, which rejects `claude-opus-5-5` outright
-  // ("API Error: 400 … does not support this model; version 2.1.280 or newer is
-  // required") — a spawn-time failure, not a silent fallback. Nothing between
-  // 0.75.1 and 0.81.2 breaks this adapter: the one ⚠ BREAKING entry (0.77.0,
-  // `claudeCode.options.agent` no longer forwarded + the agent-picker exports
-  // removed) is library-API surface for in-process consumers, and we drive the
-  // wrapper as a spawned ACP server over stdio and never set that option. The
-  // config options we DO apply (`model`, `effort`, `mode` via
-  // `session/set_config_option`) and `session/new` are unchanged.
-  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.81.2"],
+  // Pinned for reproducibility. 0.106.0 bundles @anthropic-ai/claude-agent-sdk
+  // 0.3.322 = Claude Code 2.1.322, the FLOOR for claude-fable-5-2 (the 0.81.2
+  // pin shipped CC 2.1.280, which rejects it outright: "API Error: 400 …
+  // does not support this model; version 2.1.290 or newer is required" — a
+  // spawn-time failure, not a silent fallback). The one ⚠ BREAKING entry
+  // between 0.81.2 and 0.106.0 (0.103.0, "serve ACP v2 … remove the v1
+  // bridge") sounds like it should break us — we drive this wrapper as a
+  // spawned ACP server over stdio at protocolVersion 1 (`PROTOCOL_VERSION_DEFAULT`
+  // in `@agentproto/acp`'s client) — but it only removed the wrapper's
+  // in-process v1 *library* bridge for embedders; the spawned ACP server
+  // still negotiates `initialize` down to v1 for a v1 client. Verified with
+  // `agentproto harness check claude-code` (initialize + session/new, no
+  // tokens spent) before relying on a real spawn.
+  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.106.0"],
   install: [
     {
       method: "npm",
@@ -283,6 +285,11 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // The daemon therefore mounts itself eager here — see
     // `resolveSpawnDeferredTools` (packages/runtime/src/deferred-tools.ts).
     nativeToolSearch: true,
+    // AIP-72 section 9: the driver projects in-force memory into the
+    // session's auto-memory dir (`<configDir>/memory`, pinned through
+    // `autoMemoryDirectory`) and the daemon diffs it back as proposals.
+    // Falls back to the system-prompt digest when auto memory is off.
+    memory: { inject: "native-dir", capture: "native-dir-diff" },
   },
   // Only the `lean` context mode remains a manifest `modes[]` entry (SPEC
   // §3.4a). Posture (plan / accept-edits / bypass-permissions) and the gateway
@@ -381,6 +388,21 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         "compute budget across models, and defaults differ by model " +
         "(e.g. Sonnet 4.6 / Opus 4.8 default to 'high'; Opus 4.7 to 'xhigh'). " +
         "'max' and 'ultracode' are session-only. Omit to keep the model's own default.",
+    },
+    {
+      id: "mcp_timeout",
+      // MCP_TIMEOUT is the claude binary's startup connection timeout for MCP
+      // servers (default 30000 ms). A stdio server launched via tsx can cold
+      // start past that under load, and claude then drops it for the whole
+      // session, so callers can raise it per spawn.
+      type: "integer" as const,
+      min: 1,
+      description:
+        "MCP server startup connection timeout in milliseconds, via MCP_TIMEOUT " +
+        "in the claude process env. Raise it when a stdio MCP server cold starts " +
+        "slowly (claude drops a server that misses it for the whole session). " +
+        "Omit to keep Claude Code's default (30000).",
+      env: { MCP_TIMEOUT: "{value}" },
     },
     {
       id: "max_turns",

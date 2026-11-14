@@ -38,6 +38,12 @@ export async function runTool<TInput, TOutput, TContext extends ToolContext>(arg
   availability?: Map<string, DriverAvailability>
   /** Resolved secrets to inject into DriverContext. */
   secrets?: Record<string, string>
+  /**
+   * Non-secret environment the host hands the driver (for example the
+   * installed app's data dir). A CLI driver delivers an entry only when it
+   * lists the name in `sandbox.env.pass`; it is never a `${secrets.*}` source.
+   */
+  hostEnv?: Record<string, string>
   /** Caller-set abort signal. Must be honoured. */
   signal?: AbortSignal
 }): Promise<TOutput> {
@@ -80,6 +86,7 @@ export async function runTool<TInput, TOutput, TContext extends ToolContext>(arg
   // 4. Build DriverContext.
   const driverCtx: DriverContext = {
     secrets: args.secrets ?? {},
+    ...(args.hostEnv !== undefined ? { hostEnv: args.hostEnv } : {}),
     authState: "authed",
     providerId: provider.id,
     driverKind: provider.kind,

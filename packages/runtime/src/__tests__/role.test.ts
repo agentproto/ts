@@ -17,6 +17,9 @@ import {
   SUPERVISOR_ROLE,
   DELEGATION_TOOL_NAMES,
   DEFAULT_ROLE_DEPTH_CUTOFF,
+  DEFAULT_ROOT_AGENT,
+  DEFAULT_NESTED_AGENT,
+  unknownDefaultAgents,
   type RoleProfile,
 } from "../role.js"
 
@@ -171,6 +174,74 @@ describe("resolveRole — default follows reach", () => {
   })
 })
 
+describe("resolveRole: defaultAgent", () => {
+  it("picks a configured root agent below the cutoff", () => {
+    expect(resolveRole(undefined, 0, 1, undefined, undefined, { root: "executor" })).toBe(EXECUTOR_ROLE)
+  })
+
+  it("picks a configured nested agent at or above the cutoff", () => {
+    expect(resolveRole(undefined, 1, 1, undefined, undefined, { nested: "supervisor" })).toBe(SUPERVISOR_ROLE)
+  })
+
+  it("the cutoff still decides which side of the config applies", () => {
+    expect(resolveRole(undefined, 1, 2, undefined, undefined, { root: "executor" })).toBe(EXECUTOR_ROLE)
+  })
+
+  it("no defaultAgent keeps today's depth-derived behaviour", () => {
+    expect(resolveRole(undefined, 0)).toBe(SUPERVISOR_ROLE)
+    expect(resolveRole(undefined, 1)).toBe(EXECUTOR_ROLE)
+  })
+
+  it("an unknown configured root agent falls back to the built-in supervisor", () => {
+    expect(resolveRole(undefined, 0, 1, undefined, undefined, { root: "nope" })).toBe(SUPERVISOR_ROLE)
+  })
+
+  it("a pack-carried role can be the configured nested agent", () => {
+    expect(
+      resolveRole(undefined, 1, 1, { reviewer: REVIEWER_ROLE }, undefined, { nested: "reviewer" }),
+    ).toBe(REVIEWER_ROLE)
+  })
+
+  it("unreachable delegation still gives the executor even with a configured root supervisor", () => {
+    expect(
+      resolveRole(undefined, 0, 1, undefined, { reachable: false }, { root: "supervisor" }),
+    ).toBe(EXECUTOR_ROLE)
+  })
+
+  it("the documented built-in defaults match the depth-derived constants", () => {
+    expect(DEFAULT_ROOT_AGENT).toBe("supervisor")
+    expect(DEFAULT_NESTED_AGENT).toBe("executor")
+  })
+})
+
+describe("unknownDefaultAgents", () => {
+  it("returns nothing when no defaultAgent is configured", () => {
+    expect(unknownDefaultAgents(undefined)).toEqual([])
+  })
+
+  it("returns nothing for the built-in names", () => {
+    expect(unknownDefaultAgents({ root: "supervisor", nested: "executor" })).toEqual([])
+  })
+
+  it("names an unknown configured agent", () => {
+    expect(unknownDefaultAgents({ root: "nope" })).toEqual(["nope"])
+  })
+
+  it("knows a role carried by the registry", () => {
+    expect(unknownDefaultAgents({ nested: "reviewer" }, { reviewer: REVIEWER_ROLE })).toEqual([])
+  })
+
+  it("names a shared unknown agent once when both sides are asked", () => {
+    expect(unknownDefaultAgents({ root: "nope", nested: "nope" })).toEqual(["nope"])
+  })
+
+  it("looks only at the side it is given", () => {
+    const config = { root: "nopeRoot", nested: "nopeNested" }
+    expect(unknownDefaultAgents(config, undefined, "root")).toEqual(["nopeRoot"])
+    expect(unknownDefaultAgents(config, undefined, "nested")).toEqual(["nopeNested"])
+  })
+})
+
 describe("DELEGATION_TOOL_NAMES", () => {
   it("includes at minimum the spawn + drive surface", () => {
     expect(DELEGATION_TOOL_NAMES).toContain("agent_start")
@@ -198,6 +269,14 @@ describe("built-in role shapes", () => {
 
   it("supervisor has no deferredTools opinion — falls through to the gateway's own default", () => {
     expect(SUPERVISOR_ROLE.deferredTools).toBeUndefined()
+  })
+
+  it("executor delegates to nothing", () => {
+    expect(EXECUTOR_ROLE.delegatesTo).toEqual([])
+  })
+
+  it("supervisor delegates to itself and executor", () => {
+    expect(SUPERVISOR_ROLE.delegatesTo).toEqual(["supervisor", "executor"])
   })
 })
 
@@ -305,5 +384,30 @@ describe("listRoles / spawnableRolesFor", () => {
     for (const role of listRoles(registry)) {
       expect(spawnable.some(r => r.name === role.name)).toBe(canSpawn(PLANNER_ROLE, role))
     }
+  })
+})
+
+describe("canSpawn ignoreLevel (a delegation verdict skips only the open-mode level check)", () => {
+  const HIGH_ROLE: RoleProfile = {
+    name: "high",
+    disposition: "A more privileged role.",
+    toolPolicy: { delegation: "allow" },
+    level: 100,
+  }
+
+  it("allows a child above the parent's level in open mode when ignoreLevel is true", () => {
+    expect(canSpawn(PLANNER_ROLE, HIGH_ROLE)).toBe(false)
+    expect(canSpawn(PLANNER_ROLE, HIGH_ROLE, { ignoreLevel: true })).toBe(true)
+  })
+
+  it("still refuses when the parent's toolPolicy.delegation is deny", () => {
+    const denied: RoleProfile = { ...PLANNER_ROLE, toolPolicy: { delegation: "deny" } }
+    expect(canSpawn(denied, HIGH_ROLE, { ignoreLevel: true })).toBe(false)
+  })
+
+  it("still refuses a child outside a closed spawnableRoles allowlist", () => {
+    const closed: RoleProfile = { ...PLANNER_ROLE, spawnableRoles: ["executor"] }
+    expect(canSpawn(closed, HIGH_ROLE, { ignoreLevel: true })).toBe(false)
+    expect(canSpawn(closed, EXECUTOR_ROLE, { ignoreLevel: true })).toBe(true)
   })
 })

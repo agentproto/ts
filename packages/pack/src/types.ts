@@ -11,7 +11,14 @@
  */
 
 /**
- * PACK.md bundle: plugin + apps + knowledge + playbook.
+ * A catalog member entry: the member's file, relative to the pack root.
+ */
+export type PackCatalogMemberRef = {
+  path: string
+}
+
+/**
+ * PACK.md bundle: plugin + apps + catalog members + knowledge + playbook.
  */
 export type PackDefinition = {
   schema: "pack/v1"
@@ -47,6 +54,23 @@ export type PackDefinition = {
      */
     path: string
   }>
+
+  /**
+   * AIP-47 role members, each a `ROLE.md` relative to the pack root. The
+   * identity (`name`) comes from the file, never from the manifest.
+   */
+  roles?: PackCatalogMemberRef[]
+
+  /**
+   * AIP-25 persona members, each a `PERSONA.md`. Identity is the file's `name`.
+   */
+  personas?: PackCatalogMemberRef[]
+
+  /**
+   * AIP-38 policy members, each a `POLICY.md`. Identity is the file's `id`,
+   * so a listed policy MUST declare one.
+   */
+  policies?: PackCatalogMemberRef[]
 
   knowledge?: {
     /**

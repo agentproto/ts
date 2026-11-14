@@ -43,14 +43,19 @@ import { randomUUID } from "node:crypto"
 import type {
   BootedSandbox,
   SandboxBootOpts,
+  SandboxEgressCoolingSlot,
+  SandboxEgressHealthView,
+  SandboxEgressSlot,
   SandboxExecOpts,
   SandboxExecResult,
   SandboxProbeResult,
   SandboxSpec,
   SandboxProvider,
   SandboxProviderBox,
+  SandboxBox,
+  SandboxUsageWindow,
 } from "@agentproto/sandbox"
-import { SandboxBoxGoneError, SandboxBootCancelledError } from "@agentproto/sandbox"
+import { SandboxBoxGoneError, SandboxBootCancelledError, SandboxEgressAllCoolingError } from "@agentproto/sandbox"
 import {
   ComputerApiError,
   ComputerControllerClient,
@@ -58,23 +63,107 @@ import {
   type ComputerClientConfig,
 } from "./client.js"
 import { ComputerSandboxError, type ComputerSandboxErrorCode } from "./errors.js"
+import { detachedExec, type DetachedExecIo } from "./detached-exec.js"
+import { shQuote } from "./quote.js"
 import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
-import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
+import type { ComputerListEntry, ComputerStatus, CreateComputerResponse, PortPublish } from "@agentproto/computer-api"
 
-/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
+/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/session-presets`). */
 export const DEFAULT_PORT = 18790
 const DEFAULT_WORKSPACE = "/home/user"
 /** Tenant every computer is created under when config doesn't name one. */
 export const DEFAULT_TENANT_ID = "agentproto"
 export const DEFAULT_TEMPLATE = "agentproto-workstation"
+
+/** Fallback Node heap for work in the box when its memory is unknown. A
+ *  monorepo `pnpm install`/build on a 12 GB workstation dies at Node's ~4 GB
+ *  default heap. When `config.memoryMiB` is known the heap is sized from it
+ *  instead (see {@link boxNodeOptions}). */
+const DEFAULT_BOX_NODE_OPTIONS = "--max-old-space-size=8192"
+const BOX_HEAP_FLOOR_MB = 768
+const BOX_HEAP_CAP_MB = 8192
+
+/** Node heap flag sized to the box: 60% of its RAM, clamped to
+ *  [768, 8192] MB so the heap stays below the box's memory reservation and
+ *  leaves room for the daemon and build workers. Unknown memory falls back to
+ *  {@link DEFAULT_BOX_NODE_OPTIONS}. */
+function boxNodeOptions(memoryMiB: number | undefined): string {
+  if (memoryMiB === undefined || memoryMiB <= 0) return DEFAULT_BOX_NODE_OPTIONS
+  const heapMb = Math.min(BOX_HEAP_CAP_MB, Math.max(BOX_HEAP_FLOOR_MB, Math.floor(memoryMiB * 0.6)))
+  return `--max-old-space-size=${heapMb}`
+}
+
+/** Descriptive daemon env (join self-report metadata): not secrets. The
+ *  controller registers every create-time env value and refuses any exec whose
+ *  argv contains one, so a short value such as `computer` would block the
+ *  daemon start command (its `--allow-origin` host). These are handed to the
+ *  daemon as exports in its start command instead of through create env. */
+const DAEMON_ONLY_ENV_KEYS: ReadonlySet<string> = new Set([
+  "AGENTPROTO_JOIN_NAME",
+  "AGENTPROTO_JOIN_PROVIDER",
+  "AGENTPROTO_JOIN_SANDBOX_ID",
+  "AGENTPROTO_JOIN_LABELS",
+])
+
+const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]{0,63}$/
+
+/** Controller-shapable env entry: valid key, value within the size cap and
+ *  free of newlines / NUL. */
+function isShapableEnv(key: string, value: unknown): value is string {
+  return typeof value === "string" && ENV_KEY_RE.test(key) && value.length <= 4096 && !/[\r\n\0]/.test(value)
+}
+
+/** Split a boot env into the values sent in the create payload and the
+ *  descriptive ones exported by the daemon start command. */
+function splitBoxEnv(env: Record<string, string> | undefined): {
+  createEnv: Record<string, string>
+  daemonEnv: Record<string, string>
+} {
+  const createEnv: Record<string, string> = {}
+  const daemonEnv: Record<string, string> = {}
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (!isShapableEnv(k, v)) continue
+    if (DAEMON_ONLY_ENV_KEYS.has(k)) daemonEnv[k] = v
+    else createEnv[k] = v
+  }
+  return { createEnv, daemonEnv }
+}
+
+/** Layer the box's Node heap under a caller's env, matching
+ *  `@agentproto/sandbox-e2b`'s merge semantics: a caller heap flag wins, a
+ *  caller `NODE_OPTIONS` without one gets ours appended, and an empty value
+ *  counts as absent. */
+function withBoxNodeOptions(env: Record<string, string>, memoryMiB: number | undefined): void {
+  const heap = boxNodeOptions(memoryMiB)
+  const caller = env.NODE_OPTIONS
+  if (caller === undefined || caller.trim() === "") env.NODE_OPTIONS = heap
+  else if (!caller.includes("--max-old-space-size")) env.NODE_OPTIONS = `${caller} ${heap}`
+}
+
 /** Cap on one exec call: the controller accepts `timeoutSec ≤ 600`. */
 const EXEC_TIMEOUT_MAX_SEC = 600
+/** A caller that asks for a command timeout above this runs it through the
+ *  detached transport, so no single controller request can outlive the 100
+ *  second Cloudflare request cut. Short commands keep the one-shot path. */
+const DETACHED_EXEC_THRESHOLD_MS = 90_000
 const DEFAULT_WAIT_READY_TIMEOUT_MS = 120_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
+/** Collect this snapshot only when a box reached `running` but the daemon
+ *  never came up (or attach failed) and it is about to be destroyed. Commands
+ *  run CONCURRENTLY, each capped, with one overall budget so teardown is never
+ *  delayed beyond it. */
+const BOOT_DIAGNOSTICS_TOTAL_MS = 20_000
+const BOOT_DIAGNOSTICS_COMMAND_TIMEOUT_MS = 4_000
+const BOOT_DIAGNOSTICS_MAX_CHARS = 4_096
 /** One budget for the whole provider-side boot (create -> running -> daemon
  *  healthy -> attach), so a wedge in any phase fails in bounded time instead
  *  of hanging the caller indefinitely. */
 const DEFAULT_BOOT_DEADLINE_MS = 300_000
+/** Unshelving a host measured 568 s to ACTIVE plus the autoscaler cooldown
+ *  (about 10 min 42 s from the first refusal, 2026-11-01): 12 min covers it. */
+const DEFAULT_FLEET_CAPACITY_WAIT_MS = 12 * 60_000
+const DEFAULT_FLEET_CAPACITY_RETRY_MS = 30_000
+const MIN_FLEET_CAPACITY_RETRY_AFTER_MS = 1_000
 const UPDATE_CLI_TIMEOUT_MS = 600_000
 /** Base64 chunk size for writeFile chunks: ~6668 chars stays under the
  *  controller's 8192-character argv element cap. */
@@ -172,12 +261,18 @@ interface ComputerSandboxConfig {
   /** Run `npm i -g @agentproto/cli@<cliVersion>` before starting the daemon
    *  when the health probe finds it not already up. Default true. */
   updateCliOnBoot?: boolean
-  /** CLI version pin for the on-boot install. Default `@latest`. */
+  /** CLI version pin for the on-boot install. Default `@latest`. A baked CLI
+   *  already satisfies `latest` (the image refresh keeps it current); an exact
+   *  version must equal the baked one, anything else installs. */
   cliVersion?: string
   /** Extra npm specs installed globally ALONGSIDE the CLI update (single
    *  `npm i -g`) — e.g. the adapter about to be spawned. Ignored when
    *  `updateCliOnBoot` is false. */
   installPackages?: string[]
+  /** Always run the on-boot `npm i -g`, even when the image already carries a
+   *  CLI and every `installPackages` entry that satisfies the request (see
+   *  `cliVersion`). Default false. Env: `COMPUTER_FORCE_INSTALL=1`. */
+  forceInstall?: boolean
   /** Extra setup commands run (idempotent required) before the start. */
   setupCommands?: string[]
   /** How long to wait for the computer to reach `running` after create/resume. */
@@ -188,6 +283,17 @@ interface ComputerSandboxConfig {
    *  attach). Default 5 minutes. On expiry the boot fails with a
    *  `sandbox_boot_timeout` typed error naming the phase it was stuck in. */
   bootDeadlineMs?: number
+  /**
+   * How long a create answered `503 fleet-capacity` keeps being retried while
+   * the fleet frees or wakes a host (a shelved host takes about 10 min to come
+   * back). Default 12 minutes; 0 fails on the first refusal. Time spent
+   * waiting here does not count against `bootDeadlineMs`. Every retry reuses
+   * one `Idempotency-Key`, so a replayed create never makes a second box.
+   */
+  fleetCapacityWaitMs?: number
+  /** Wait between two fleet-capacity retries when the refusal carries no
+   *  `Retry-After`. Default 30 s. */
+  fleetCapacityRetryMs?: number
   /** Internal: headers added to `authHeaders` in `daemonRoute` mode. */
   routeHeaders?: Record<string, string>
 }
@@ -323,6 +429,10 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     }),
     updateCliOnBoot: typeof config.updateCliOnBoot === "boolean" ? config.updateCliOnBoot : undefined,
     cliVersion: str(config.cliVersion),
+    forceInstall:
+      typeof config.forceInstall === "boolean"
+        ? config.forceInstall
+        : TRUTHY.has((process.env.COMPUTER_FORCE_INSTALL ?? "").toLowerCase()),
     installPackages: Array.isArray(config.installPackages)
       ? config.installPackages.filter((p): p is string => typeof p === "string" && p.length > 0)
       : undefined,
@@ -332,6 +442,8 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     waitReadyTimeoutMs: int(config.waitReadyTimeoutMs),
     daemonReadyTimeoutMs: int(config.daemonReadyTimeoutMs),
     bootDeadlineMs: int(config.bootDeadlineMs),
+    fleetCapacityWaitMs: int(config.fleetCapacityWaitMs),
+    fleetCapacityRetryMs: int(config.fleetCapacityRetryMs),
   }
 }
 
@@ -341,6 +453,18 @@ const CONTROLLER_ERROR_CODES: Record<string, ComputerSandboxErrorCode> = {
   "egress-slot-dedicated": "sandbox_egress_slot_dedicated",
   "egress-pool-unknown": "sandbox_egress_slot_unknown",
   "host-capacity": "sandbox_capacity",
+  "fleet-capacity": "sandbox_fleet_capacity",
+  "tenant-running-cap": "sandbox_tenant_running_cap",
+  "end-user-cap": "sandbox_end_user_cap",
+  "fleet-tenant-cap": "sandbox_fleet_tenant_cap",
+}
+
+/** Human wording for the capacity codes that have no per-resource detail. */
+const CAPACITY_REFUSAL_LABELS: Partial<Record<ComputerSandboxErrorCode, string>> = {
+  sandbox_fleet_capacity: "fleet capacity exhausted",
+  sandbox_tenant_running_cap: "tenant running-computer cap reached",
+  sandbox_end_user_cap: "end-user computer cap reached",
+  sandbox_fleet_tenant_cap: "fleet tenant computer cap reached",
 }
 
 /** Unit suffix for a resource's amounts, when the controller named one we
@@ -424,6 +548,29 @@ async function mapControllerError(err: unknown, client?: ComputerControllerClien
     )
   }
 
+  const label = CAPACITY_REFUSAL_LABELS[code]
+  if (label !== undefined) {
+    const cap = err.cap !== undefined ? ` (cap ${err.cap})` : ""
+    const retry =
+      err.retryAfterMs !== undefined
+        ? `; retry after ${Math.ceil(err.retryAfterMs / 1000)}s`
+        : ""
+    const why = code === "sandbox_fleet_capacity" && err.reason !== undefined ? ` (reason: ${err.reason})` : ""
+    return new ComputerSandboxError(
+      code,
+      `computer sandbox: ${label}${why}${cap}${retry}`,
+      {
+        status: err.status,
+        resource: err.resource,
+        requested: err.requested,
+        available: err.available,
+        budget: err.budget,
+        cap: err.cap,
+        retryAfterMs: err.retryAfterMs,
+      },
+    )
+  }
+
   return new ComputerSandboxError(
     code,
     `computer sandbox: controller rejected egress selection (HTTP ${err.status}, "${err.code}")`,
@@ -490,10 +637,7 @@ function applyDaemonRoute(config: ComputerSandboxConfig, client: ComputerClientC
 // a per-element 8192-char cap and synchronous execution — every long-lived
 // process is therefore started detached via `nohup … &` inside one bash -lc.
 
-/** shQuote a value so a `bash -lc <script>` can interpolate it safely. */
-export function shQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
+export { shQuote } from "./quote.js"
 
 /** Computers run as an unprivileged user with no sudo, so a global npm install
  *  must target a user-writable prefix, and the serve script must find the CLI
@@ -520,11 +664,26 @@ export function buildServeCommand(opts: {
   workspace: string
   allowOrigin?: string
 }): string {
+  return serveCommand(opts, {})
+}
+
+/** Internal: `buildServeCommand` plus the descriptive join metadata. The
+ *  values are placed in the exec command line, so they must never be secrets:
+ *  only the names in `DAEMON_ONLY_ENV_KEYS` are exported, anything else is
+ *  dropped. Credentials belong in the create env. */
+function serveCommand(
+  opts: { token: string; port: number; workspace: string; allowOrigin?: string },
+  daemonEnv: Record<string, string>,
+): string {
+  const safeEnv: Record<string, string> = {}
+  for (const [k, v] of Object.entries(daemonEnv)) if (DAEMON_ONLY_ENV_KEYS.has(k)) safeEnv[k] = v
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
   const marker = opts.allowOrigin ? `printf %s ${shQuote(opts.allowOrigin)} > "${DAEMON_ORIGIN_PATH}"; ` : ""
   const tokenFile = `umask 077; printf %s ${shQuote(opts.token)} > "${DAEMON_TOKEN_PATH}"; `
+  const envPrefix = inlineEnv(safeEnv)
   return (
     USER_BIN_PATH_EXPORT +
+    (envPrefix ? `${envPrefix} ` : "") +
     marker +
     tokenFile +
     `nohup agentproto serve --port ${opts.port} --bind 0.0.0.0` +
@@ -682,6 +841,28 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** Sleep that ends early, throwing the boot-cancelled error, when `signal`
+ *  aborts. */
+async function cancellableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  throwIfBootCancelled(signal)
+  if (signal === undefined) return sleep(ms)
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new SandboxBootCancelledError("sandbox boot cancelled"))
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+function formatSeconds(ms: number): string {
+  return `${Math.ceil(ms / 1000)}s`
+}
+
 /** URL for reaching `port` on a computer: the gateway template with
  *  `{port}`/`{id}`/`{hostPort}` substituted, else the computer's own
  *  generated name — the default assumes the box network is addressable by
@@ -762,6 +943,22 @@ export const computerSandboxProvider: SandboxProvider = {
     return booted
   },
 
+  /** The controller's egress address pool (`GET /v1/egress-pool`): slot ids,
+   *  public addresses and load. Read-only, boots nothing. */
+  async egressPool(spec: SandboxSpec): Promise<SandboxEgressSlot[]> {
+    const base = readComputerConfig(spec)
+    const client = new ComputerControllerClient(resolveClientConfig(spec, base))
+    try {
+      return (await client.getEgressPool()).map(entry => ({
+        id: entry.id,
+        publicIp: entry.publicIp,
+        computers: entry.computers,
+      }))
+    } catch (err) {
+      throw await mapControllerError(err, client)
+    }
+  },
+
   /** Liveness against the controller — one cheap GET, no box contact.
    *  404 ⇒ `{alive:false}`; anything else propagates ("check failed",
    *  never "box died"). Uses the spec config captured at boot/connect,
@@ -826,34 +1023,311 @@ export const computerSandboxProvider: SandboxProvider = {
   },
 
   /**
-   * Every computer the controller still holds (`GET /v1/computers`) - the
-   * orphan-box gc's view of the provider's control plane. Read-only: no box
-   * is touched, no session slot is taken. The controller's session count is
-   * reported as the box's `sessions` (the stale attachments an orphan box
-   * keeps), and `memoryMiB`/`createdAt` when the controller reports them.
+   * Release one holder's controller slot WITHOUT resuming the computer: the
+   * gc's way to free the slot of a session that died or vanished without
+   * detaching. A holder the controller does not know, or a computer that is
+   * gone, is success.
    */
-  async listBoxes(): Promise<SandboxProviderBox[]> {
+  async releaseSession(sandboxId: string, holder: string): Promise<void> {
     const fallbackConfig = () =>
       resolveClientConfig(
         { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
         readComputerConfig({ provider: "computer", config: {} }),
       )
-    const client = new ComputerControllerClient(fallbackConfig())
-    const computers = await client.listComputers()
-    return computers.map(entry => ({
-      id: entry.name,
-      state: entry.state,
-      ...(entry.sessions !== undefined ? { sessions: countSessions(entry.sessions) } : {}),
-      ...(entry.memoryMiB !== undefined ? { memoryMiB: entry.memoryMiB } : {}),
-      ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
-    }))
+    for (const id of [sandboxId, resolveAlias(sandboxId)]) {
+      const client = new ComputerControllerClient(probeClientConfigs.get(id) ?? fallbackConfig())
+      try {
+        await client.detach(id, { holder })
+        // This process may have taken that very slot: keep its books honest.
+        if (controllerHolders.get(id)?.delete(holder)) {
+          const now = controllerSlots.get(id) ?? 0
+          if (now <= 1) controllerSlots.delete(id)
+          else controllerSlots.set(id, now - 1)
+        }
+        return
+      } catch (err) {
+        if (err instanceof ComputerApiError && err.status === 404) continue
+        throw err
+      }
+    }
   },
+
+  /**
+   * Every computer the controller still holds (`GET /v1/computers`), as the
+   * richer inventory shape. Read-only: no box is touched, no session slot is
+   * taken. Fields the controller does not report stay absent.
+   */
+  async list(_opts?: { from?: string; to?: string }): Promise<SandboxBox[]> {
+    return listComputerBoxes()
+  },
+
+  /** Usage windows from the controller's ledger (`GET /v1/usage`) in the
+   *  requested window, optionally restricted to one end user. */
+  async usage(opts: { from: string; to: string; endUser?: string }): Promise<SandboxUsageWindow[]> {
+    const client = new ComputerControllerClient(fallbackClientConfig())
+    const body = await client.getUsage(opts)
+    return body.windows
+  },
+
+  /**
+   * Every computer the controller still holds (`GET /v1/computers`) - the
+   * orphan-box gc's view of the provider's control plane. Shares `list()`'s
+   * mapping and keeps only the fields `SandboxProviderBox` declares.
+   */
+  async listBoxes(): Promise<SandboxProviderBox[]> {
+    return (await listComputerBoxes()).map(toProviderBox)
+  },
+}
+
+/** Client for the process-wide bookkeeping paths (`probe`, `remove`,
+ *  `list`, `listBoxes`), which have no per-agent spec: config from the
+ *  `COMPUTER_CONTROLLER_*` env vars, exactly like the registry fills them. */
+function fallbackClientConfig(): ComputerClientConfig {
+  return resolveClientConfig(
+    { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
+    readComputerConfig({ provider: "computer", config: {} }),
+  )
+}
+
+async function listComputerBoxes(): Promise<SandboxBox[]> {
+  const client = new ComputerControllerClient(fallbackClientConfig())
+  return (await client.listComputers()).map(toSandboxBox)
+}
+
+/** Map one controller list entry onto the unified inventory shape, field by
+ *  field: an absent controller field stays absent (never invented). */
+function toSandboxBox(entry: ComputerListEntry): SandboxBox {
+  return {
+    id: entry.name,
+    provider: "computer",
+    ...(entry.state !== undefined ? { state: entry.state } : {}),
+    ...(entry.tenantId !== undefined ? { tenantId: entry.tenantId } : {}),
+    ...(entry.endUser !== undefined ? { endUser: entry.endUser } : {}),
+    ...(entry.hostId !== undefined ? { host: entry.hostId } : {}),
+    ...(entry.cpus !== undefined ? { cpus: entry.cpus } : {}),
+    ...(entry.memoryMiB !== undefined ? { memoryMiB: entry.memoryMiB } : {}),
+    ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
+    ...(entry.lastActivityAt !== undefined ? { lastActivityAt: entry.lastActivityAt } : {}),
+    ...(entry.egressIp !== undefined ? { egressIp: entry.egressIp === null ? null : entry.egressIp.publicIp } : {}),
+    ...(entry.sessions !== undefined ? { sessions: countSessions(entry.sessions) } : {}),
+  }
+}
+
+/** Project a rich inventory box back onto the gc's thin shape. */
+function toProviderBox(box: SandboxBox): SandboxProviderBox {
+  return {
+    id: box.id,
+    ...(box.state !== undefined ? { state: box.state } : {}),
+    ...(box.sessions !== undefined ? { sessions: box.sessions } : {}),
+    ...(box.memoryMiB !== undefined ? { memoryMiB: box.memoryMiB } : {}),
+    ...(box.createdAt !== undefined ? { createdAt: box.createdAt } : {}),
+  }
 }
 
 /** The controller reports the session slots of a computer either as a count
  *  or as a list of holders - normalize both to a number. */
 function countSessions(sessions: number | readonly unknown[]): number {
   return typeof sessions === "number" ? sessions : sessions.length
+}
+
+/** Pool-slot choice for `egressIp: "auto"` once the caller knows which
+ *  addresses are cooling down for the model: every healthy slot, least loaded
+ *  first (ties by id), or the cooling slots when none is healthy. The
+ *  controller's own `auto` cannot exclude an address, so the client names a
+ *  slot explicitly. */
+export function pickEgressSlot(
+  pool: readonly SandboxEgressSlot[],
+  health: SandboxEgressHealthView,
+): { candidates: string[]; cooling: SandboxEgressCoolingSlot[] } {
+  const candidates: SandboxEgressSlot[] = []
+  const cooling: SandboxEgressCoolingSlot[] = []
+  for (const slot of pool) {
+    const cooldown = health.cooling(slot.publicIp)
+    if (cooldown === undefined) {
+      candidates.push(slot)
+    } else {
+      cooling.push({
+        slot: slot.id,
+        publicIp: slot.publicIp,
+        until: new Date(cooldown.until).toISOString(),
+        errorClass: cooldown.errorClass,
+      })
+    }
+  }
+  candidates.sort((a, b) => (a.computers ?? 0) - (b.computers ?? 0) || a.id.localeCompare(b.id))
+  return { candidates: candidates.map(slot => slot.id), cooling }
+}
+
+/** Fleet reasons a pinned slot's refusal says nothing about other hosts: no
+ *  host is awake, so another slot cannot help. */
+const FLEET_WIDE_CAPACITY_REASONS = new Set(["no-active-host"])
+
+/** A create naming a pool slot was refused for capacity on that slot's host:
+ *  `fleet-capacity` (the fleet's `reason` names the shortfall, e.g. `memory`,
+ *  `cpus`, `egress-slot-unavailable`) or the older bare
+ *  `egress-slot-unavailable` code. */
+function isSlotHostCapacityRefusal(err: ComputerApiError): boolean {
+  if (err.code === "egress-slot-unavailable") return true
+  return err.code === "fleet-capacity" && !(err.reason !== undefined && FLEET_WIDE_CAPACITY_REASONS.has(err.reason))
+}
+
+/** Ordered slot ids to try, plus the host that owns each slot when the pool
+ *  said so (a fleet pool does, a single controller's does not). */
+interface EgressSlotPlan {
+  slots: string[]
+  hosts: ReadonlyMap<string, string>
+}
+
+/** Slot ids to try, in order, when `auto` should avoid cooling addresses.
+ *  `undefined` leaves the selection to the controller (no health view, not
+ *  `auto`, or the pool cannot be read: the controller then answers with its
+ *  own typed error). Throws when the pool is known and every slot is cooling. */
+async function planEgressSlots(
+  client: ComputerControllerClient,
+  config: ComputerSandboxConfig,
+  opts: SandboxBootOpts,
+  bootLog: (line: string) => void,
+): Promise<EgressSlotPlan | undefined> {
+  const health = opts.egressHealth
+  if (config.egressIp !== "auto" || health === undefined) return undefined
+  let pool: SandboxEgressSlot[]
+  const hosts = new Map<string, string>()
+  try {
+    pool = (await client.getEgressPool()).map(entry => {
+      // A fleet adds the owning `hostId` to each slot (the entry schema is
+      // passthrough); a single controller does not.
+      const hostId = (entry as { hostId?: unknown }).hostId
+      if (typeof hostId === "string" && hostId !== "") hosts.set(entry.id, hostId)
+      return { id: entry.id, publicIp: entry.publicIp, computers: entry.computers }
+    })
+  } catch (err) {
+    bootLog(`egress pool unreadable (${err instanceof Error ? err.message : String(err)}); leaving slot choice to the controller`)
+    return undefined
+  }
+  if (pool.length === 0) return undefined
+  const { candidates, cooling } = pickEgressSlot(pool, health)
+  if (candidates.length === 0) throw new SandboxEgressAllCoolingError(health.model, cooling)
+  if (cooling.length > 0) {
+    bootLog(`egress slots cooling for ${health.model}: ${cooling.map(c => `${c.slot} (${c.publicIp})`).join(", ")}`)
+  }
+  return { slots: candidates, hosts }
+}
+
+/** In-box commands run for {@link collectBootDiagnostics}. Order is the order
+ *  the sections appear in the snapshot, even though they execute in parallel. */
+const BOOT_DIAGNOSTIC_COMMANDS: ReadonlyArray<{ label: string; script: string }> = [
+  { label: "ip -br addr", script: "ip -br addr" },
+  { label: "ip route", script: "ip route" },
+  { label: "/etc/resolv.conf", script: "cat /etc/resolv.conf" },
+  { label: "getent hosts registry.npmjs.org", script: "getent hosts registry.npmjs.org" },
+  { label: `agentproto daemon log (last 40 lines of ${DAEMON_LOG_PATH})`, script: `tail -n 40 "${DAEMON_LOG_PATH}" 2>/dev/null` },
+  { label: "agentproto processes", script: "ps -eo pid,etime,cmd | grep -i agentproto | head" },
+]
+
+/** Strip anything that looks like a credential before the snapshot reaches
+ *  the host daemon log / the agent_start error. The in-box daemon log can
+ *  echo its own start line, which carries `--auth-token`. */
+function redactBootDiagnostics(text: string): string {
+  return text
+    .replace(/(--auth-token[=\s]+)(?:"[^"]*"|'[^']*'|\S+)/gi, "$1<redacted>")
+    .replace(/(\bprintf\s+%s\s+)(?:"[^"]*"|'[^']*'|\S+)(\s*>\s*"\$HOME\/\.agentproto-daemon\.token")/gi, "$1<redacted>$2")
+    .replace(/(authorization\s*:\s*bearer\s+)(\S+)/gi, "$1<redacted>")
+    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1<redacted>")
+    .replace(
+      /((?:[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key)[A-Za-z0-9_-]*)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)/gi,
+      "$1<redacted>",
+    )
+}
+
+function truncateBootDiagnostics(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= BOOT_DIAGNOSTICS_MAX_CHARS) return trimmed
+  const suffix = "\n... (boot diagnostics truncated)"
+  return trimmed.slice(0, BOOT_DIAGNOSTICS_MAX_CHARS - suffix.length) + suffix
+}
+
+function formatBootDiagnostic(
+  label: string,
+  result: { exitCode: number; stdout: string; stderr: string },
+): string {
+  const lines = [`## ${label}`]
+  const stdout = result.stdout.trim()
+  const stderr = result.stderr.trim()
+  if (stdout !== "") lines.push(stdout)
+  if (stderr !== "") lines.push(`[stderr] ${stderr}`)
+  if (stdout === "" && stderr === "") lines.push(`(no output; exit ${result.exitCode})`)
+  return lines.join("\n")
+}
+
+/** Bound a promise by `ms` without touching the underlying request: on timeout
+ *  the caller moves on (teardown is never delayed past the cap) and a late
+ *  rejection is swallowed by the attached handlers. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  if (ms <= 0) return Promise.reject(new Error(`${label}: diagnostics time budget exhausted`))
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}: timed out after ${ms}ms`)), ms)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      err => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+/** Best-effort in-box snapshot of a boot that reached `running` but whose
+ *  daemon never became healthy (or whose attach failed). Runs the short
+ *  commands concurrently, each bounded, and NEVER throws: whatever came back
+ *  is what the caller gets. */
+async function collectBootDiagnostics(client: ComputerControllerClient, id: string): Promise<string> {
+  const deadline = Date.now() + BOOT_DIAGNOSTICS_TOTAL_MS
+  const parts = await Promise.all(
+    BOOT_DIAGNOSTIC_COMMANDS.map(async ({ label, script }) => {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return `## ${label}\n(skipped: diagnostics time budget exhausted)`
+      const budgetMs = Math.min(BOOT_DIAGNOSTICS_COMMAND_TIMEOUT_MS, remaining)
+      try {
+        const result = await withTimeout(
+          client.exec(id, bashArgv(script), {
+            timeoutSec: Math.max(1, Math.ceil(budgetMs / 1000)),
+          }),
+          budgetMs,
+          label,
+        )
+        return formatBootDiagnostic(label, result)
+      } catch (err) {
+        return `## ${label}\n(error: ${err instanceof Error ? err.message : String(err)})`
+      }
+    }),
+  )
+  return truncateBootDiagnostics(redactBootDiagnostics(parts.join("\n\n")))
+}
+
+/** Attach the snapshot to the error AND the boot log. Mutates the error in
+ *  place (a plain Error or a ComputerSandboxError) so the phase message the
+ *  caller already has still carries the in-box evidence. */
+function attachBootDiagnostics(err: unknown, diagnostics: string, bootLog: (line: string) => void): void {
+  const text = diagnostics.trim()
+  if (text === "") return
+  bootLog(`boot diagnostics:\n${text}`)
+  if (typeof err !== "object" || err === null) return
+  try {
+    ;(err as { bootDiagnostics?: string }).bootDiagnostics = text
+  } catch {
+    // A frozen error cannot carry the extra property; the message append
+    // below is still the useful surface.
+  }
+  if (err instanceof Error) {
+    try {
+      err.message = `${err.message}\n\n--- boot diagnostics ---\n${text}`
+    } catch {
+      // Immutable message: bootDiagnostics is the fallback.
+    }
+  }
 }
 
 async function bootOnClient(
@@ -865,7 +1339,7 @@ async function bootOnClient(
   const port = config.port ?? DEFAULT_PORT
   const workspace = config.workspace ?? DEFAULT_WORKSPACE
   const bootDeadlineMs = config.bootDeadlineMs ?? DEFAULT_BOOT_DEADLINE_MS
-  const deadlineAt = Date.now() + bootDeadlineMs
+  let deadlineAt = Date.now() + bootDeadlineMs
   const deadlineLeft = (): number => deadlineAt - Date.now()
   let sandboxId: string | undefined
 
@@ -907,15 +1381,11 @@ async function bootOnClient(
   // Only controller-shapable env vars are forwarded into the create payload
   // (the controller 400s on anything else). Neither the controller token nor
   // the per-box daemon token ever appears in here.
-  const envKeyRe = /^[A-Z_][A-Z0-9_]{0,63}$/
-  const createEnv: Record<string, string> = {}
-  for (const [k, raw] of Object.entries(opts.env ?? {})) {
-    const v = typeof raw === "string" ? raw : undefined
-    if (v !== undefined && envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v)) createEnv[k] = v
-  }
+  const { createEnv, daemonEnv } = splitBoxEnv(opts.env)
+  withBoxNodeOptions(createEnv, config.memoryMiB)
 
   throwIfBootCancelled(opts.signal)
-  let created
+  let created: CreateComputerResponse
   const template = config.template ?? DEFAULT_TEMPLATE
   // No direct logging: the provider stays silent unless the daemon passes
   // `opts.log` (see `SandboxBootOpts.log`). One helper keeps every phase line
@@ -925,9 +1395,29 @@ async function bootOnClient(
     `create requested (${template}` +
       `${config.memoryMiB !== undefined ? `, ${config.memoryMiB} MiB` : ""})`,
   )
-  try {
+  // One key for every attempt of this boot: a retry after a fleet-capacity
+  // refusal (or a replay of a create that did land) gets the same box back.
+  const bootKey = `boot-${randomUUID()}`
+  const plan = await planEgressSlots(client, config, opts, bootLog)
+  const slotPlan = plan?.slots
+  let slotIndex = 0
+  // Set once every planned slot was refused for capacity: the create then
+  // sends plain `auto`, which the fleet places host-first.
+  let sendAuto = false
+  // Hosts a slot create was refused on for capacity; their other slots are skipped.
+  const fullHosts = new Set<string>()
+  // A different slot is a different create body, so it gets its own key.
+  const currentIdempotencyKey = (): string =>
+    sendAuto ? `${bootKey}-auto` : slotPlan !== undefined && slotIndex > 0 ? `${bootKey}-${slotPlan[slotIndex]}` : bootKey
+  const fleetCapacityWaitMs = Math.max(0, config.fleetCapacityWaitMs ?? DEFAULT_FLEET_CAPACITY_WAIT_MS)
+  const fleetCapacityRetryMs = Math.max(0, config.fleetCapacityRetryMs ?? DEFAULT_FLEET_CAPACITY_RETRY_MS)
+  const capacityWaitBudgetMs = opts.capacityWaitBudgetMs !== undefined ? Math.max(0, opts.capacityWaitBudgetMs) : undefined
+  let capacityGiveUp: string | undefined
+  const fleetWaitStartedAt = Date.now()
+  let fleetAttempt = 1
+  const attemptCreate = async (): Promise<CreateComputerResponse> => {
     const createAbort = new AbortController()
-    created = await withinDeadline(
+    return withinDeadline(
       "create",
       () =>
         client.createComputer(
@@ -940,17 +1430,145 @@ async function bootOnClient(
             ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
             ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
             ...(config.egress ? { egress: { allow: config.egress } } : {}),
-            ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
+            ...(slotPlan !== undefined
+              ? { egressIp: sendAuto ? "auto" : (slotPlan[slotIndex] as string) }
+              : config.egressIp !== undefined && config.egressIp !== "shared"
+                ? { egressIp: config.egressIp }
+                : {}),
             env: createEnv,
           },
-          { signal: createAbort.signal },
+          { signal: createAbort.signal, idempotencyKey: currentIdempotencyKey() },
         ),
       { onTimeout: () => createAbort.abort() },
     )
+  }
+  try {
+    for (;;) {
+      try {
+        created = await attemptCreate()
+        break
+      } catch (err) {
+        // A slot the controller refuses to hand out (pinned to a dedicated
+        // box, or full) is skipped for the next healthy one.
+        if (
+          slotPlan !== undefined &&
+          err instanceof ComputerApiError &&
+          (err.code === "egress-slot-dedicated" || err.code === "egress-pool-exhausted") &&
+          slotIndex + 1 < slotPlan.length
+        ) {
+          bootLog(`egress slot ${slotPlan[slotIndex]} refused (${err.code}); trying ${slotPlan[slotIndex + 1]}`)
+          slotIndex++
+          continue
+        }
+        // A concrete slot id pins the host that owns it, so a capacity
+        // refusal on it says that host is full, not the fleet. Try a slot on
+        // another host, then plain `auto`, before waiting on the fleet.
+        if (
+          plan !== undefined &&
+          !sendAuto &&
+          err instanceof ComputerApiError &&
+          isSlotHostCapacityRefusal(err)
+        ) {
+          const refused = plan.slots[slotIndex] as string
+          const why = err.reason ?? err.code ?? "capacity"
+          const refusedHost = plan.hosts.get(refused)
+          if (refusedHost !== undefined) fullHosts.add(refusedHost)
+          const skipped: string[] = []
+          let next = slotIndex + 1
+          for (; next < plan.slots.length; next++) {
+            const host = plan.hosts.get(plan.slots[next] as string)
+            if (host === undefined || !fullHosts.has(host)) break
+            skipped.push(plan.slots[next] as string)
+          }
+          const skippedNote =
+            skipped.length > 0 ? `, skipping ${skipped.join(", ")} on a host already refused (${plan.hosts.get(skipped[0] as string)})` : ""
+          if (next < plan.slots.length) {
+            bootLog(`egress slot ${refused} refused for capacity (${why})${skippedNote}; trying ${plan.slots[next]}`)
+            slotIndex = next
+          } else {
+            bootLog(
+              `egress slot ${refused} refused for capacity (${why})${skippedNote}; ` +
+                "no slot left on another host, sending auto",
+            )
+            sendAuto = true
+          }
+          continue
+        }
+        if (!(err instanceof ComputerApiError) || err.code !== "fleet-capacity") throw err
+        const waited = Date.now() - fleetWaitStartedAt
+        let left = fleetCapacityWaitMs - waited
+        // A Retry-After of 0 must not spin for the whole window; a long one
+        // still gets a last attempt when the window closes.
+        const asked =
+          err.retryAfterMs !== undefined ? Math.max(MIN_FLEET_CAPACITY_RETRY_AFTER_MS, err.retryAfterMs) : fleetCapacityRetryMs
+        // The caller has another placement to try: no Retry-After means no
+        // host is waking, so fail the rung now; with one, wait once, within
+        // the caller's budget, then let the caller move on.
+        if (capacityWaitBudgetMs !== undefined) {
+          if (err.retryAfterMs === undefined || fleetAttempt > 1) {
+            bootLog(
+              `create refused (HTTP ${err.status}, "fleet-capacity"${err.reason ? `, ${err.reason}` : ""}): ` +
+                (err.retryAfterMs === undefined
+                  ? "no Retry-After, no host is waking; "
+                  : `still refused after waiting ${formatSeconds(waited)}; `) +
+                "giving up so the caller can try its next placement",
+            )
+            capacityGiveUp = err.retryAfterMs === undefined ? "no host is waking" : "still full after one wait"
+            throw err
+          }
+          left = Math.min(left, capacityWaitBudgetMs)
+        }
+        const delay = Math.min(asked, left)
+        if (left <= 0) {
+          if (fleetAttempt > 1) {
+            bootLog(
+              `fleet capacity still exhausted after ${fleetAttempt} attempts over ${formatSeconds(waited)}; giving up`,
+            )
+          }
+          throw err
+        }
+        bootLog(
+          `create refused (HTTP ${err.status}, "fleet-capacity"), attempt ${fleetAttempt}: ` +
+            `waiting ${formatSeconds(delay)} for the fleet to free or wake a host ` +
+            `(${formatSeconds(left)} left of ${formatSeconds(fleetCapacityWaitMs)})`,
+        )
+        const sleptFrom = Date.now()
+        await cancellableSleep(delay, opts.signal)
+        // Waiting on the fleet is not boot time: the deadline covers create
+        // through attach, so push it out by the time spent asleep.
+        deadlineAt += Date.now() - sleptFrom
+        fleetAttempt++
+      }
+    }
   } catch (err) {
+    // A create with NO answer used to hang the whole spawn with no provider
+    // line once the outer request timed out. Surface the phase deadline here
+    // so the daemon log names the create (and whether a box exists). The
+    // deadline is still enforced by `withinDeadline`, which aborts the
+    // in-flight create request so the controller does not keep provisioning.
+    if (err instanceof ComputerSandboxError && err.code === "sandbox_boot_timeout") {
+      bootLog(
+        `create timed out after ${bootDeadlineMs}ms (phase "${err.phase ?? "create"}") — no computer was created; ` +
+          "the controller may be refusing capacity or stuck provisioning",
+      )
+    }
     if (err instanceof ComputerApiError) {
       const mapped = await mapControllerError(err, client)
-      if (mapped !== err) throw mapped
+      if (mapped instanceof ComputerSandboxError && mapped.code === "sandbox_fleet_capacity") {
+        if (capacityGiveUp !== undefined) {
+          mapped.message += ` (not waiting for the fleet: ${capacityGiveUp}, another placement is available)`
+        } else if (fleetAttempt > 1) {
+          mapped.message += ` (still refused after ${fleetAttempt} attempts over ${formatSeconds(Date.now() - fleetWaitStartedAt)})`
+        }
+      }
+      if (mapped !== err) {
+        bootLog(
+          `create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""}): ` +
+            `${mapped instanceof Error ? mapped.message : String(mapped)}`,
+        )
+        throw mapped
+      }
+      bootLog(`create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""}): ${err.message}`)
       throw new Error(
         `computer sandbox: create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""})` +
           (err.code === "unknown template" || err.code === "invalid body"
@@ -964,6 +1582,10 @@ async function bootOnClient(
   let daemonToken: string | undefined
   let published: readonly PortPublish[] = []
   let status: ComputerStatus
+  // Set once the box is running: a failure after this point (daemon healthy /
+  // attach) means the box exists and is about to be destroyed, so it is the
+  // only chance to see WHY from inside.
+  let boxRunning = false
 
   try {
     // Post-create cancellation MUST stay inside this try: the box id is now
@@ -976,12 +1598,13 @@ async function bootOnClient(
         ? Math.min(config.waitReadyTimeoutMs, Math.max(1, deadlineLeft()))
         : Math.max(1, deadlineLeft())
     status = await waitRunning(client, sandboxId, runningTimeout, opts.signal)
+    boxRunning = true
     bootLog(`computer ${sandboxId} running`)
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
     throwIfBootCancelled(opts.signal, sandboxId)
     daemonToken = await withinDeadline("daemon healthy", () =>
-      daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin),
+      daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin, daemonEnv, bootLog),
     )
     bootLog(`computer ${sandboxId} daemon healthy`)
     throwIfBootCancelled(opts.signal, sandboxId)
@@ -991,6 +1614,18 @@ async function bootOnClient(
     // sandbox-e2b): propagate the original error but reclaim the box. The
     // box was created here and no session has attached to it, so force is
     // safe and keeps a stray controller-held slot from blocking the cleanup.
+    //
+    // When the box already reached running, grab a bounded in-box snapshot
+    // BEFORE destroying it: that is the only window in which the real cause
+    // (no route, DNS, a daemon that crashed on start) is still observable.
+    if (boxRunning && sandboxId !== undefined) {
+      try {
+        const diagnostics = await collectBootDiagnostics(client, sandboxId)
+        attachBootDiagnostics(err, diagnostics, bootLog)
+      } catch {
+        // Diagnostics are best-effort and must never change the failure.
+      }
+    }
     await client.remove(sandboxId, { force: true }).catch(() => undefined)
     throw err
   }
@@ -998,7 +1633,17 @@ async function bootOnClient(
   const egressIp = created.egressIp !== undefined ? created.egressIp : status.egressIp
 
   acquireSessionSlot(sandboxId, config.maxSessions ?? 1)
-  return wrapBox(client, sandboxId, spec, config, port, published, daemonToken, egressIp)
+  try {
+    return await wrapBox(client, sandboxId, spec, config, port, published, daemonToken, egressIp)
+  } catch (err) {
+    // The box exists and holds our slots, but no handle will ever be
+    // returned to stop it: reclaim it like any other failed boot.
+    releaseSessionSlot(sandboxId)
+    await client.remove(sandboxId, { force: true }).catch(() => undefined)
+    controllerSlots.delete(sandboxId)
+    controllerHolders.delete(sandboxId)
+    throw err
+  }
 }
 
 /** Resolve an existing computer to a running id (resuming when suspended and
@@ -1047,7 +1692,25 @@ async function connectOnClient(
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
   const mcpOrigin = new URL(boxUrl(currentId, port, config.gatewayUrl, published)).origin
-  const daemonToken = await daemonHealthyOrThrow(client, currentId, config, randomUUID(), port, workspace, mcpOrigin)
+  const daemonToken = await daemonHealthyOrThrow(
+    client,
+    currentId,
+    config,
+    randomUUID(),
+    port,
+    workspace,
+    mcpOrigin,
+    splitBoxEnv(opts.env).daemonEnv,
+    (line) => opts.log?.(`[sandbox-computer] boot: ${line}`),
+  )
+
+  // `expose: "private"` is the `sandbox_attach` rendezvous: it hands an
+  // external client a connection descriptor and nobody ever closes this
+  // handle, so a slot taken here could never be released and would count
+  // against `maxSessions` forever.
+  if (opts.expose === "private") {
+    return wrapBox(client, currentId, spec, config, port, published, daemonToken, egressIp)
+  }
 
   const maxSessions = config.maxSessions ?? 1
   if (!acquireSessionSlot(currentId, maxSessions)) {
@@ -1068,7 +1731,14 @@ async function connectOnClient(
     }
     throw err
   }
-  return wrapBox(client, currentId, spec, config, port, published, daemonToken, egressIp)
+  try {
+    return await wrapBox(client, currentId, spec, config, port, published, daemonToken, egressIp)
+  } catch (err) {
+    // No handle was returned, so nobody can ever detach the slots taken above.
+    releaseSessionSlot(currentId)
+    await detachController(client, currentId, config.sessionHolder)
+    throw err
+  }
 }
 
 /** Exec-only attach: same running-box resolution as `connect()`, then a
@@ -1152,7 +1822,11 @@ async function daemonHealthyOrThrow(
   port: number,
   workspace: string,
   mcpOrigin: string,
+  daemonEnv: Record<string, string>,
+  log: (line: string) => void = () => {},
 ): Promise<string | undefined> {
+  // A daemon that is already up (template-autostarted, or started by an older
+  // provider) is left as is, so `daemonEnv` only reaches daemons started here.
   const probe = await hardExec(client, id, bashArgv(buildHealthCommand(port)), 10)
   const alreadyUp = probe.exitCode === 0 && !probe.stdout.includes("__down__")
   if (alreadyUp) {
@@ -1164,7 +1838,7 @@ async function daemonHealthyOrThrow(
     const current = recorded.exitCode === 0 ? recorded.stdout.trim() : ""
     if (current !== "" && current !== mcpOrigin) {
       await hardExec(client, id, bashArgv(`pkill -f '[a]gentproto serve' || true`), 10)
-      await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+      await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin, daemonEnv)
       return daemonToken
     }
     // The running daemon keeps the token it was started with: read it back.
@@ -1172,24 +1846,28 @@ async function daemonHealthyOrThrow(
     return stored.exitCode === 0 && stored.stdout.trim() !== "" ? stored.stdout.trim() : undefined
   }
 
-  if (config.updateCliOnBoot !== false && !(await cliAlreadyPresent(client, id, config))) {
-    const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
-    const install = await hardExec(
-      client,
-      id,
-      bashArgv(
+  const detachedIo = createDetachedExecIo(client, id)
+  if (config.updateCliOnBoot !== false) {
+    const baked = await bakedToolchainSatisfies(client, id, config)
+    if (baked.satisfied) {
+      log(`npm install skipped: ${baked.reason}`)
+    } else {
+      log(`npm install needed: ${baked.reason}`)
+      const extras = (config.installPackages ?? []).map((p) => ` ${shQuote(p)}`).join("")
+      const install = await detachedExec(
+        detachedIo,
         `${USER_BIN_PATH_EXPORT}npm i -g --prefix "$HOME/.local" @agentproto/cli@${shQuote(config.cliVersion ?? "latest")}${extras}`,
-      ),
-      Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(UPDATE_CLI_TIMEOUT_MS / 1000)),
-    )
-    if (install.exitCode !== 0) throw bootStepError("CLI install", id, install)
+        { timeoutMs: UPDATE_CLI_TIMEOUT_MS },
+      )
+      if (install.exitCode !== 0) throw bootStepError("CLI install", id, install)
+    }
   }
   for (const command of config.setupCommands ?? []) {
-    const setup = await hardExec(client, id, bashArgv(command), EXEC_TIMEOUT_MAX_SEC)
+    const setup = await detachedExec(detachedIo, command, { timeoutMs: EXEC_TIMEOUT_MAX_SEC * 1000 })
     if (setup.exitCode !== 0) throw bootStepError("setup command", id, setup)
   }
 
-  await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+  await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin, daemonEnv)
   return daemonToken
 }
 
@@ -1201,11 +1879,12 @@ async function startDaemonAndWait(
   port: number,
   workspace: string,
   mcpOrigin: string,
+  daemonEnv: Record<string, string>,
 ): Promise<void> {
   await hardExec(
     client,
     id,
-    bashArgv(buildServeCommand({ token: daemonToken, port, workspace, allowOrigin: mcpOrigin })),
+    bashArgv(serveCommand({ token: daemonToken, port, workspace, allowOrigin: mcpOrigin }, daemonEnv)),
     15,
   )
 
@@ -1225,23 +1904,100 @@ async function startDaemonAndWait(
   }
 }
 
-/** True when the computer image already carries an `agentproto` CLI that
- *  satisfies the config: the install is then pure boot latency. An extra
- *  `installPackages` list or a pinned `cliVersion` the baked CLI does not
- *  match still forces the install. */
-async function cliAlreadyPresent(
+/** Marker the in-box package-version probe carries (test controllers key on it). */
+export const BAKED_PACKAGES_MARKER = "# agentproto-baked-packages"
+
+/**
+ * Whether the image already carries what the boot install would put there, so
+ * the `npm i -g` (20 s to minutes, and a hard failure on a bad egress path) is
+ * pure boot latency. Decided from the box itself, with cheap execs:
+ *
+ *  - the CLI is on PATH and its version satisfies `cliVersion`: `latest` (or
+ *    unset) accepts whatever is baked (the image refresh pipeline owns
+ *    freshness), an exact `x.y.z` must equal the baked version, anything else
+ *    installs;
+ *  - every `installPackages` entry is present in the SAME global tree as that
+ *    CLI (an adapter only loads from there) and satisfies its own tag by the
+ *    same rule: no tag or `@latest` accepts the baked version, an exact version
+ *    must match, a range or another dist-tag installs.
+ *
+ * Any doubt (probe fails, output unreadable, `forceInstall`) installs, which
+ * is the previous behavior. One install covers the CLI and all extras together
+ * so a partial refresh never splits them across two npm prefixes.
+ */
+async function bakedToolchainSatisfies(
   client: ComputerControllerClient,
   id: string,
   config: ComputerSandboxConfig,
-): Promise<boolean> {
-  if ((config.installPackages ?? []).length > 0) return false
+): Promise<{ satisfied: boolean; reason: string }> {
+  if (config.forceInstall === true) return { satisfied: false, reason: "forceInstall is set" }
   const probe = await hardExec(client, id, bashArgv(`${USER_BIN_PATH_EXPORT}agentproto --version`), 20)
-  if (probe.exitCode !== 0) return false
+  if (probe.exitCode !== 0) return { satisfied: false, reason: "no agentproto CLI in the image" }
+  const haveCli = semverCore(probe.stdout)
   const pin = config.cliVersion
-  if (!pin || pin === "latest") return true
-  const want = semverCore(pin)
-  const have = semverCore(probe.stdout)
-  return want !== null && want === have
+  if (pin && pin !== "latest") {
+    const want = semverCore(pin)
+    if (want === null || want !== haveCli) {
+      return { satisfied: false, reason: `baked CLI ${haveCli ?? "?"} does not match cliVersion ${pin}` }
+    }
+  }
+  const wanted = (config.installPackages ?? []).map(parseNpmSpec)
+  if (wanted.length === 0) return { satisfied: true, reason: `baked CLI ${haveCli ?? "?"} satisfies ${pin ?? "latest"}` }
+
+  const names = [...new Set(wanted.map((w) => w.name))]
+  const versions = await readBakedVersions(client, id, names)
+  if (versions === null) return { satisfied: false, reason: "baked package versions could not be read" }
+  for (const w of wanted) {
+    const have = versions.get(w.name)
+    if (have === undefined) return { satisfied: false, reason: `${w.name} is not baked next to the CLI` }
+    if (w.tag !== "" && w.tag !== "latest") {
+      const want = exactVersion(w.tag)
+      if (want === null) return { satisfied: false, reason: `${w.name}@${w.tag} is not an exact version` }
+      if (semverCore(have) !== want) {
+        return { satisfied: false, reason: `baked ${w.name} ${have} does not match ${w.tag}` }
+      }
+    }
+  }
+  const list = wanted.map((w) => `${w.name} ${versions.get(w.name)}`).join(", ")
+  return { satisfied: true, reason: `baked CLI ${haveCli ?? "?"} and ${list} satisfy the request` }
+}
+
+/** `name@tag` split on the last `@` past position 0 (a scope's own `@` stays in the name). */
+function parseNpmSpec(spec: string): { name: string; tag: string } {
+  const at = spec.lastIndexOf("@")
+  return at > 0 ? { name: spec.slice(0, at), tag: spec.slice(at + 1) } : { name: spec, tag: "" }
+}
+
+/** `x.y.z[-pre]` when the whole tag is one (leading `v` allowed), else null. */
+function exactVersion(tag: string): string | null {
+  const match = /^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(tag)
+  return match ? (match[1] as string) : null
+}
+
+/** Versions of the named packages in the global tree the PATH's `agentproto`
+ *  lives in (null when that tree cannot be determined or the exec fails). */
+async function readBakedVersions(
+  client: ComputerControllerClient,
+  id: string,
+  names: string[],
+): Promise<Map<string, string> | null> {
+  const js =
+    'const fs=require("fs");const[root,...names]=process.argv.slice(1);' +
+    'for(const n of names){try{console.log(n+"\\t"+JSON.parse(fs.readFileSync(root+"/"+n+"/package.json","utf8")).version)}catch{}}'
+  const script =
+    `${USER_BIN_PATH_EXPORT}${BAKED_PACKAGES_MARKER}\n` +
+    'bin="$(readlink -f "$(command -v agentproto)")" || exit 3\n' +
+    'case "$bin" in */node_modules/*) ;; *) exit 4 ;; esac\n' +
+    'root="${bin%%/node_modules/*}/node_modules"\n' +
+    `node -e ${shQuote(js)} "$root" ${names.map(shQuote).join(" ")}`
+  const out = await hardExec(client, id, bashArgv(script), 20)
+  if (out.exitCode !== 0) return null
+  const versions = new Map<string, string>()
+  for (const line of out.stdout.split("\n")) {
+    const [name, version] = line.trim().split("\t")
+    if (name && version) versions.set(name, version)
+  }
+  return versions
 }
 
 /** `major.minor.patch[-prerelease]` of the first version-looking token,
@@ -1272,6 +2028,18 @@ async function hardExec(
   timeoutSec: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return client.exec(id, argv, { timeoutSec: Math.max(1, Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(timeoutSec))) })
+}
+
+/** The primitive surface `detachedExec` runs on: short synchronous execs plus
+ *  the box's own chunked file helpers. Exported for the transport tests. */
+export function createDetachedExecIo(client: ComputerControllerClient, id: string): DetachedExecIo {
+  return {
+    id,
+    exec: (script, opts) =>
+      hardExec(client, id, bashArgv(script, opts?.cwd, opts?.env), Math.ceil((opts?.timeoutMs ?? 30_000) / 1000)),
+    writeFile: (path, data) => writeBoxFile(client, id, path, data),
+    readFile: (path) => readBoxFile(client, id, path),
+  }
 }
 
 // ── handle wrapping ───────────────────────────────────────────────────
@@ -1405,10 +2173,21 @@ function boxIo(
 ): Pick<BootedSandbox, "exec" | "readFile" | "writeFile"> {
   return {
     async exec(execOpts: SandboxExecOpts): Promise<SandboxExecResult> {
+      // Resolve the default before the threshold check: an omitted timeout is
+      // still a real 120s budget, and must not fall through to a single
+      // synchronous request that the edge cuts at 100s.
+      const effectiveTimeoutMs = execOpts.timeoutMs ?? 120_000
+      if (effectiveTimeoutMs > DETACHED_EXEC_THRESHOLD_MS) {
+        return detachedExec(createDetachedExecIo(client, id), execOpts.command, {
+          timeoutMs: effectiveTimeoutMs,
+          ...(execOpts.cwd !== undefined ? { cwd: execOpts.cwd } : {}),
+          ...(execOpts.env !== undefined ? { env: execOpts.env } : {}),
+        })
+      }
       const startedAt = Date.now()
       const timeoutSec = Math.max(
         1,
-        Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil((execOpts.timeoutMs ?? 120_000) / 1000)),
+        Math.min(EXEC_TIMEOUT_MAX_SEC, Math.ceil(effectiveTimeoutMs / 1000)),
       )
       const result = await hardExec(client, id, bashArgv(execOpts.command, execOpts.cwd, execOpts.env), timeoutSec)
       return {
@@ -1419,59 +2198,74 @@ function boxIo(
       }
     },
     async readFile(path: string): Promise<Uint8Array> {
-      const exists = await hardExec(
-        client,
-        id,
-        bashArgv(`test -f ${shQuote(path)} && exit 0 || exit 65`),
-        15,
-      )
-      if (exists.exitCode !== 0) throw new Error(`computer "${id}": no file at ${JSON.stringify(path)}`)
-      const chunks: Uint8Array[] = []
-      for (let offset = 0; ; offset += READ_CHUNK_RAW) {
-        const out = await hardExec(
-          client,
-          id,
-          bashArgv(
-            `dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset / READ_CHUNK_RAW} 2>/dev/null | base64; exit 0`,
-          ),
-          60,
-        )
-        if (out.exitCode !== 0) {
-          throw new Error(`computer "${id}": cannot read ${JSON.stringify(path)} (exit ${out.exitCode})`)
-        }
-        const decoded = Buffer.from(out.stdout.trim(), "base64")
-        if (decoded.length === 0) break
-        chunks.push(new Uint8Array(decoded))
-        if (decoded.length < READ_CHUNK_RAW) break
-      }
-      const total = chunks.reduce((n, c) => n + c.length, 0)
-      const merged = new Uint8Array(total)
-      let cursor = 0
-      for (const chunk of chunks) {
-        merged.set(chunk, cursor)
-        cursor += chunk.length
-      }
-      return merged
+      return readBoxFile(client, id, path)
     },
     async writeFile(path: string, data: Uint8Array): Promise<void> {
-      const dir = path.replace(/\/[^/]*$/, "") || "/"
-      await hardExec(client, id, bashArgv(`mkdir -p ${shQuote(dir)}`), 15)
-      const b64 = Buffer.from(data).toString("base64")
-      if (b64.length > 0) {
-        await hardExec(client, id, bashArgv(`: > ${shQuote(path)}; exit 0`), 15)
-      }
-      for (let offset = 0; offset < b64.length; offset += WRITE_CHUNK_BASE64) {
-        const chunk = b64.slice(offset, offset + WRITE_CHUNK_BASE64)
-        const result = await hardExec(
-          client,
-          id,
-          bashArgv(`printf %s ${shQuote(chunk)} | base64 -d >> ${shQuote(path)} && exit 0 || exit 65`),
-          30,
-        )
-        if (result.exitCode !== 0) {
-          throw new Error(`computer "${id}": cannot write ${JSON.stringify(path)} (exit ${result.exitCode})`)
-        }
-      }
+      return writeBoxFile(client, id, path, data)
     },
+  }
+}
+
+/** Read one file out of the box in controller-sized base64 chunks. */
+async function readBoxFile(client: ComputerControllerClient, id: string, path: string): Promise<Uint8Array> {
+  const exists = await hardExec(
+    client,
+    id,
+    bashArgv(`test -f ${shQuote(path)} && exit 0 || exit 65`),
+    15,
+  )
+  if (exists.exitCode !== 0) throw new Error(`computer "${id}": no file at ${JSON.stringify(path)}`)
+  const chunks: Uint8Array[] = []
+  for (let offset = 0; ; offset += READ_CHUNK_RAW) {
+    const out = await hardExec(
+      client,
+      id,
+      bashArgv(
+        `dd if=${shQuote(path)} bs=${READ_CHUNK_RAW} skip=${offset / READ_CHUNK_RAW} 2>/dev/null | base64; exit 0`,
+      ),
+      60,
+    )
+    if (out.exitCode !== 0) {
+      throw new Error(`computer "${id}": cannot read ${JSON.stringify(path)} (exit ${out.exitCode})`)
+    }
+    const decoded = Buffer.from(out.stdout.trim(), "base64")
+    if (decoded.length === 0) break
+    chunks.push(new Uint8Array(decoded))
+    if (decoded.length < READ_CHUNK_RAW) break
+  }
+  const total = chunks.reduce((n, c) => n + c.length, 0)
+  const merged = new Uint8Array(total)
+  let cursor = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, cursor)
+    cursor += chunk.length
+  }
+  return merged
+}
+
+/** Write one file into the box in controller-sized base64 chunks. */
+async function writeBoxFile(
+  client: ComputerControllerClient,
+  id: string,
+  path: string,
+  data: Uint8Array,
+): Promise<void> {
+  const dir = path.replace(/\/[^/]*$/, "") || "/"
+  await hardExec(client, id, bashArgv(`mkdir -p ${shQuote(dir)}`), 15)
+  const b64 = Buffer.from(data).toString("base64")
+  if (b64.length > 0) {
+    await hardExec(client, id, bashArgv(`: > ${shQuote(path)}; exit 0`), 15)
+  }
+  for (let offset = 0; offset < b64.length; offset += WRITE_CHUNK_BASE64) {
+    const chunk = b64.slice(offset, offset + WRITE_CHUNK_BASE64)
+    const result = await hardExec(
+      client,
+      id,
+      bashArgv(`printf %s ${shQuote(chunk)} | base64 -d >> ${shQuote(path)} && exit 0 || exit 65`),
+      30,
+    )
+    if (result.exitCode !== 0) {
+      throw new Error(`computer "${id}": cannot write ${JSON.stringify(path)} (exit ${result.exitCode})`)
+    }
   }
 }

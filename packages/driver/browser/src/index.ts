@@ -7,6 +7,9 @@
  * crash-loop detector, orphan sweep, keepAlive policy) and the conformance kit.
  */
 
+/** AIP-70 registry spec id for this package (`browser/v1`, AIP-63). */
+export const SPEC_NAME = "browser/v1" as const
+
 export { defineBrowser } from "./define-browser.js"
 export { createBrowserRegistry } from "./registry.js"
 export type { BrowserRegistry } from "./registry.js"

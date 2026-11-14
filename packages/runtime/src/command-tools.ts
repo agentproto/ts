@@ -88,6 +88,7 @@ import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
 import { checkPrOpenScope, openPrForSession, resolvePrOpenWorkspace } from "./pr-open.js"
 import type { GhRunner } from "./pr-provenance-stamp.js"
+import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
 import { loadWorkspacesConfig, type WorkspacesConfig } from "./workspaces-config.js"
 import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
@@ -174,6 +175,10 @@ export interface RegisterCommandToolsOptions {
    *  carries its own per-spawn override, which wins (that is the namespace
    *  its delivery actually pushed to). */
   checkpointRefPrefix?: string
+  /** Resolve `defaults.prProvenance.footer.skipRepos` per call for both
+   *  provenance lanes (`command_execute`'s stamp and `pr_open`). Defaults to
+   *  {@link loadFooterSkipRepos} (reads config); tests inject a stub. */
+  resolveFooterSkipRepos?: () => Promise<readonly string[]> | readonly string[]
 }
 
 export function makeCwdAnchor(workspace: string): (input: string | undefined) => string {
@@ -223,6 +228,9 @@ export function registerCommandTools(
   opts: RegisterCommandToolsOptions,
 ): void {
   const anchorCwd = makeCwdAnchor(opts.workspace)
+  // Shared by both provenance lanes. Resolved per stamp, not captured at
+  // registration, so a config edit takes effect without a restart.
+  const resolveFooterSkipRepos = opts.resolveFooterSkipRepos ?? loadFooterSkipRepos
 
   server.tool(
     "command_execute",
@@ -457,6 +465,7 @@ export function registerCommandTools(
         // The same `gh` seam as `pr_open`, the stamp reads and edits the PR
         // with it (tests drive both lanes through one fake).
         ...(opts.ghRunner ? { run: opts.ghRunner } : {}),
+        skipFooterRepos: resolveFooterSkipRepos,
       })
       if (stamp.stamped) {
         console.error(
@@ -621,6 +630,7 @@ export function registerCommandTools(
         // The caller of pr_open is the OPENER (usually the orchestrator
         // session relaying the box's request) — shown as such on the footer.
         ...(opts.callerSessionId ? { openedBy: opts.callerSessionId } : {}),
+        skipFooterRepos: resolveFooterSkipRepos,
         title: input.title,
         body: input.body,
       })

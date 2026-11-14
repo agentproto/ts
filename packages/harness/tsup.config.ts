@@ -2,16 +2,24 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
 export default createTsupConfig({
   banner: `/**
- * @agentproto/harness v0.1.0-alpha
- * Typed one-call agent-session presets over the agentproto daemon.
+ * @agentproto/harness v2.15.0
+ * AIP-45 AGENT-CLI.md \`defineHarness\` implementation.
  */`,
   entry: {
     index: "src/index.ts",
-    types: "src/types.ts",
+    "manifest/index": "src/manifest/index.ts",
   },
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["@modelcontextprotocol/sdk", "zod"],
+  external: [
+    "zod",
+    "gray-matter",
+    "@agentproto/doctype",
+    "@agentproto/acp",
+    "node:child_process",
+    "node:stream/web",
+    "node:stream",
+  ],
   noExternal: [],
 })

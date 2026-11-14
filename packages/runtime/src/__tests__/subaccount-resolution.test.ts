@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  AuthReauthRequiredError,
   SubaccountError,
   registerSubaccountProvider,
   unregisterSubaccountProvider,
@@ -65,6 +66,51 @@ describe("resolveProfileSubaccount (registry, no provider imported)", () => {
   it("fails loud when no provider is registered for the account", async () => {
     await expect(resolveProfileSubaccount(profile)).rejects.toThrow(/no sub-account provider is registered/)
     await expect(resolveProfileSubaccount(profile)).rejects.toBeInstanceOf(SubscriptionSourceError)
+  })
+
+  it("carries a provider's reauth hint onto the spawn error (also across a duplicate package copy)", async () => {
+    const hint = {
+      command: "agentproto auth reauth fake-proj",
+      profile: "fake-proj",
+      source: "fake-vendor",
+      reason: "expired" as const,
+    }
+    registerSubaccountProvider(
+      fakeProvider({
+        resolve: async () => {
+          throw new AuthReauthRequiredError(hint, "session expired; run `agentproto auth reauth fake-proj`")
+        },
+      }),
+    )
+    const err = await resolveProfileSubaccount(profile).catch(e => e)
+    expect(err).toBeInstanceOf(SubscriptionSourceError)
+    expect(err.code).toBe("auth_source_unresolved")
+    expect(err.reauth).toEqual(hint)
+    expect(err.message).toContain("agentproto auth reauth fake-proj")
+
+    // A provider from another copy of @agentproto/auth: same name, same shape, no instanceof.
+    registerSubaccountProvider(
+      fakeProvider({
+        resolve: async () => {
+          const copy = Object.assign(new Error("expired"), { name: "SubaccountError", reauth: hint })
+          throw copy
+        },
+      }),
+    )
+    const err2 = await resolveProfileSubaccount(profile).catch(e => e)
+    expect(err2.reauth).toEqual(hint)
+  })
+
+  it("leaves reauth unset for a failure that a re-login cannot fix", async () => {
+    registerSubaccountProvider(
+      fakeProvider({
+        resolve: async () => {
+          throw new SubaccountError("project proj_9 not found")
+        },
+      }),
+    )
+    const err = await resolveProfileSubaccount(profile).catch(e => e)
+    expect(err.reauth).toBeUndefined()
   })
 
   it("maps a provider SubaccountError onto the spawn error code, message intact", async () => {

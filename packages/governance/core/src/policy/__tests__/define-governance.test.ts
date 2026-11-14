@@ -14,7 +14,7 @@ describe("defineGovernance (AIP-7, AIP-70 registry name)", () => {
     const policy = definePolicy(definition)
 
     expect(governance).toEqual(policy)
-    expect(governance.schema).toBe("agentgovernance/v1")
+    expect(governance.schema).toBe("governance/v1")
     expect(governance.doctype).toBe("policy")
   })
 })

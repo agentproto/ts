@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { knowledgeFrontmatterSchema } from "./schema.js"
 import type { KnowledgeDefinition, KnowledgeHandle } from "./types.js"
 

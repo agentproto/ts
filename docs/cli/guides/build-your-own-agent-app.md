@@ -289,7 +289,8 @@ a known gap, not a permanent limitation.
 `AGENT.md`'s own declared defaults for that one run, mirrored onto the run
 record (visible in `app_list`/`app_status`). Wire a picker into your UI with
 `@agentproto/app-client/runner-select` — it discovers installed
-harnesses/models via `adapter_list` + `harness_preset_list` (your app's own
+harnesses/models via `adapter_list` (or the canonical `harness_list`) +
+`harness_preset_list` (your app's own
 `callTool`, no extra daemon coupling) so you never hardcode a `<select>`:
 
 ```html

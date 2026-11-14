@@ -744,10 +744,11 @@ describe("createSessionsRegistry", () => {
       text: 'Allow "Bash"?',
       options: ["Allow once", "Reject"],
       source: "structured",
+      kind: "permission",
     })
     expect(awaitingHandler).toHaveBeenCalledWith(
       expect.objectContaining({
-        question: { text: 'Allow "Bash"?', options: ["Allow once", "Reject"], source: "structured" },
+        question: { text: 'Allow "Bash"?', options: ["Allow once", "Reject"], source: "structured", kind: "permission" },
       }),
     )
     reg.shutdown()
@@ -788,6 +789,7 @@ describe("createSessionsRegistry", () => {
       text: "Which environment should I target?",
       options: ["staging", "production"],
       source: "heuristic",
+      kind: "harness",
     })
     expect(turnEndHandler).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -795,6 +797,7 @@ describe("createSessionsRegistry", () => {
           text: "Which environment should I target?",
           options: ["staging", "production"],
           source: "heuristic",
+          kind: "harness",
         },
       }),
     )
@@ -874,6 +877,7 @@ describe("createSessionsRegistry", () => {
         text: "Context is at 25%. Continue fresh to avoid losing continuity?",
         options: ["continue-fresh", "keep-going"],
         recommended: "continue-fresh",
+        kind: "context",
       })
 
       await reg.sendPrompt(desc.id, "  Keep-Going  ") // case/whitespace-insensitive match
@@ -902,6 +906,7 @@ describe("createSessionsRegistry", () => {
         text: "Context is at 30%. Continue fresh to avoid losing continuity?",
         options: ["continue-fresh", "keep-going"],
         recommended: "continue-fresh",
+        kind: "context",
       })
 
       reg.shutdown()
@@ -941,7 +946,12 @@ describe("createSessionsRegistry", () => {
       await reg.sendPrompt(desc.id, "go")
       expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
 
+      // Capture live: the row is killed by the handoff, and a terminal row's
+      // output rings are dropped at exit.
+      const lines: string[] = []
+      const unsub = reg.attach(desc.id, line => { lines.push(line) })
       await reg.sendPrompt(desc.id, "continue-fresh")
+      if (unsub) unsub()
 
       expect(call).toBe(1) // the original session's agent never got a second turn
       expect(answeredHandler).toHaveBeenCalledWith(
@@ -951,9 +961,6 @@ describe("createSessionsRegistry", () => {
           answer: "continue-fresh",
         }),
       )
-      const lines: string[] = []
-      const unsub = reg.attach(desc.id, line => { lines.push(line) })
-      if (unsub) unsub()
       expect(
         lines.some(l => l.includes("continue-fresh requested but no adapter resolver is configured")),
       ).toBe(true)
@@ -1936,7 +1943,7 @@ describe("createSessionsRegistry", () => {
 
       // A retried/duplicate report (either lane of pr-provenance-reconciler.ts
       // re-observing the same PR, or a genuine network retry) must not fire
-      // the hook again — recordOpenedPr's own (adapter, url) dedupe gates it.
+      // the hook again — recordOpenedPr's own url dedupe gates it.
       reg.recordOpenedPr(session.id, {
         adapter: "github",
         number: 42,
@@ -1944,6 +1951,30 @@ describe("createSessionsRegistry", () => {
       })
       expect(onOpenedPr).toHaveBeenCalledTimes(1)
 
+      reg.shutdown()
+    })
+
+    it("the same PR url reported under two adapter labels fires onOpenedPr once", () => {
+      const onOpenedPr = vi.fn()
+      const reg = createSessionsRegistry({ persistPath, onOpenedPr })
+      const session = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        command: "git",
+        args: ["status"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+      const url = "https://github.com/acme/widgets/pull/44"
+
+      reg.recordOpenedPr(session.id, { adapter: "claude-code", number: 44, url })
+      reg.recordOpenedPr(session.id, { adapter: "gh", number: 44, url })
+
+      expect(onOpenedPr).toHaveBeenCalledTimes(1)
+      expect(reg.get(session.id)?.openedPrs).toHaveLength(1)
       reg.shutdown()
     })
 

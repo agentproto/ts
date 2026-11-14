@@ -47,6 +47,11 @@
  * `restartAgentSession`.
  */
 
+import type { MemoryStore } from "@agentproto/memory"
+import { resolveContextContinuityPolicy, type ContextContinuityPolicy } from "./context-continuity.js"
+import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
+import { carryAgentIdentityMeta, stageSpawningCaller } from "./spawning-caller-context.js"
+import { memoryStoreAt as defaultMemoryStoreAt } from "./memory-stores.js"
 import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
 import {
   adapterConfigDirFor,
@@ -54,7 +59,10 @@ import {
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
   isResumable,
+  isProviderBoxSession,
   canResume,
+  carrySessionPin,
+  APP_AGENT_META_KEY,
   SessionRetiredError,
   type AgentSessionLike,
   type SessionDescriptor,
@@ -72,7 +80,7 @@ import {
   cloudSessionMetaFilePath,
   encodeCloudSessionMeta,
   resolveCloudResumeId,
-} from "./cloud-vendors.js"
+} from "@agentproto/cloud-agent"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
@@ -96,12 +104,28 @@ import {
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
 import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
-import { bootSandboxAgentSession, stampDaemonCallerSessionId, uploadBoxLoginCopy } from "./session-spawn.js"
+import {
+  bootSandboxAgentSession,
+  stampDaemonCallerSessionId,
+  stripSessionTokenHeaders,
+  uploadBoxLoginCopy,
+  withSessionToken,
+} from "./session-spawn.js"
+import {
+  formatPlacementAttempts,
+  walkPlacementLadder,
+  type PlacementAttempt,
+  type PlacementRung,
+} from "./placement-ladder.js"
+import { resolveTurnRetryPolicy, type TurnRetryInput } from "./turn-retry-policy.js"
+import { sessionTokenModeOf } from "./identity-defaults.js"
+import { preCompactCommandFor } from "./native-hooks-defaults.js"
+import { revokeSessionTokens } from "./session-credentials.js"
 import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
 import { recordSandboxBoot, recordSessionDetach } from "./sandbox-ledger.js"
 import { createBoxLoginRefresher, type BoxLoginRefreshOutcome } from "./box-login-bridge.js"
-import { findWorkspace, loadWorkspacesConfig } from "./workspaces-config.js"
+import { findWorkspace, loadWorkspacesConfig, workspaceRemotePort } from "./workspaces-config.js"
 import { SANDBOX_BRANCH_PREFIX, resolveSharedBoxWorktreeTeardown } from "./sandbox-workspace-remote.js"
 import { stripOwnCallerStamp } from "./session-continue-fresh.js"
 import {
@@ -120,6 +144,7 @@ import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./suba
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import { checkModelPolicy } from "./model-policy.js"
+import { modelApplyMismatch, modelApplyWarning } from "./model-apply-mismatch.js"
 import { getModelListSource } from "./model-list-store.js"
 import {
   checkModelAdapterEligibility,
@@ -130,6 +155,13 @@ import {
 } from "./catalog-models.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { loadConfig } from "./config.js"
+import {
+  AccountSlotError,
+  carriedAccessSlot,
+  isSlotRef,
+  resolveProfileRef,
+  type AccountSlots,
+} from "./account-slots.js"
 import type { SessionConfig, RouteSpec } from "./session-config.js"
 import type { SessionConfigChangedEvent, SessionConfigAxis } from "./session-event-bus.js"
 import {
@@ -147,6 +179,7 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { restartPosture } from "./canonical-posture.js"
 import {
   formatDeliveryNotice,
   trackedSandboxDeliveryOpts,
@@ -171,6 +204,8 @@ import {
 } from "./sandbox-app-serve.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { AcpMcpServer } from "@agentproto/acp"
+import { handoverLineage } from "./lineage-handover.js"
+import { redactOrchestratorScopeRef } from "./orchestrator-scope-ref.js"
 
 /**
  * Axis overrides a restart-with-override applies (SPEC §4.3, build step 6).
@@ -182,6 +217,8 @@ import type { AcpMcpServer } from "@agentproto/acp"
  * step. `model`/`effort` are forwarded to the driver's own spawn inputs.
  */
 export type RestartOverrides = Partial<SessionConfig> & {
+  /** Session-level policy update, merged with the previous resolved policy. */
+  contextContinuity?: ContextContinuityPolicy
   /** Legacy AIP-45 mode id, forwarded verbatim to the driver's `startSession`
    *  (back-compat — the pre-decomposition apply-path). */
   mode?: string
@@ -329,6 +366,7 @@ export async function cloudRelayEnv(input: {
           findWorkspace(await loadWorkspacesConfig(), input.workspaceSlug)?.remote,
           input.configDir,
           async ref => (await new KeychainStore().read({ path: ref }))?.value,
+          workspaceRemotePort,
         )
       : {}),
   }
@@ -807,6 +845,10 @@ export interface RestartAgentSessionOptions {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Memory store for a root (AIP-72), for the restarted lineage's
+   *  native-dir projection. Defaults to the daemon's shared per-root stores
+   *  (`memory-stores.ts`); tests inject a temp store. */
+  memoryStoreAt?: (root: string) => MemoryStore
   /**
    * Axis overrides applied to this restart (SPEC §4.3, build step 6). Overlaid
    * onto the prior descriptor's axes: an axis present here wins, an axis omitted
@@ -818,6 +860,9 @@ export interface RestartAgentSessionOptions {
    * pure resume, byte-identical to the pre-step-6 path.
    */
   overrides?: RestartOverrides
+  /** Account slot map source for a `slot:<name>` access override. Defaults to
+   *  config.json's `accountSlots`; tests inject a stub. */
+  loadAccountSlots?: () => Promise<AccountSlots>
   /** Resolve an `access` override's `profileRef` → profile metadata + secret.
    *  Defaults to {@link resolveAccessProfileFromStore}; tests inject a stub.
    *  Only consulted when `overrides.access.profileRef` is set. */
@@ -923,6 +968,11 @@ export function restartInPlaceEligible(
     ended &&
     !hasOverrides &&
     (opts.allowDeliberateEnd === true || !isRetired(desc)) &&
+    // A provider-box row cannot resume in place: its `cwd` is an in-box path
+    // (`/home/user/...`), so the local resume would spawn the adapter on the
+    // host and fail with `spawn <npx> ENOENT`. The caller falls through to the
+    // new-id path, whose sandbox gate re-attaches or boots the box.
+    !isProviderBoxSession(desc) &&
     isResumable(desc) &&
     canResume(desc)
   )
@@ -1005,12 +1055,100 @@ export async function restartPreferInPlace(
  * back to a fresh spawn (no continuity) if the adapter rejects the
  * resume id with a "not found" error — same behaviour `session_restart`
  * has always had for a prior session that died before its first turn.
+ *
+ * Orchestrator scope: the fresh row carries `prev`'s mounts, including an
+ * `/mcp/orchestrator?scope=<token>` entry. When `prev` died for real its
+ * scope was revoked, so it is reinstated here BEFORE the adapter dials the
+ * mount, and revoked again if the restart fails. A successful restart then
+ * hands the scope and `prev`'s live children to the fresh row before `prev`
+ * is closed (see `handOverToRestartedRow`).
  */
 export async function restartAgentSession(
   registry: SessionsRegistry,
   resolveAgentAdapter: AgentAdapterResolver,
   prev: SessionDescriptor,
   opts: RestartAgentSessionOptions = {},
+): Promise<RestartAgentSessionResult> {
+  return withReinstatedOrchestratorScopes(registry, prev.id, () =>
+    restartAgentSessionOnce(registry, resolveAgentAdapter, prev, opts),
+  )
+}
+
+/**
+ * Run a revival of `prevId` (a restart, a sandbox migration) with the
+ * orchestrator scopes `prevId` lost on a real exit reinstated first, so the
+ * successor's adapter can dial its `/mcp/orchestrator?scope=<token>` mount.
+ * When `run` throws, the reinstated scopes are revoked again unless a
+ * successor already took them over: a failed revival leaves the scope as it
+ * found it, owned by `prevId`. A no-op for a live `prevId` (nothing revoked)
+ * or a registry without the scope hooks.
+ */
+export async function withReinstatedOrchestratorScopes<T>(
+  registry: Pick<SessionsRegistry, "reinstateOrchestratorScopes">,
+  prevId: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const rollbackScopes = registry.reinstateOrchestratorScopes?.(prevId)
+  try {
+    return await run()
+  } catch (err) {
+    rollbackScopes?.()
+    throw err
+  }
+}
+
+/**
+ * Hand every orchestrator scope `prevId` owns to its successor `nextId`:
+ * same token and parameters, owner moved, so `prevId`'s own exit no longer
+ * revokes the scope the successor carries (nor reaps its children) and the
+ * successor's real exit does. Run BEFORE `prevId` is closed. Best-effort,
+ * like the lineage handover it pairs with.
+ */
+export function handOverOrchestratorScopes(
+  registry: Pick<SessionsRegistry, "transferOrchestratorScopes">,
+  prevId: string,
+  nextId: string,
+): void {
+  if (prevId === nextId) return
+  try {
+    registry.transferOrchestratorScopes?.(prevId, nextId)
+  } catch (err) {
+    console.warn(
+      `orchestrator scope hand-over from ${prevId} to ${nextId} failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
+/**
+ * The restart is a hand-over, not an exit: the fresh row takes `prev`'s
+ * orchestrator scope (same token, same role/depth/tools/limits, owner moved
+ * to the fresh id) and `prev`'s live children (re-parented through the same
+ * `handoverLineage` path `agent_start.succeeds` and continue-fresh use, so
+ * drive rights, `message_parent`, `session_tree` and subtree kills all
+ * follow the one `parentSessionId` pointer). Runs BEFORE `prev` is closed:
+ * its `restarted` exit then owns no scope, so nothing is revoked and no
+ * child is reaped. Children an earlier real exit already reaped stay dead.
+ * Best-effort: a registry without the lineage surface keeps today's shape.
+ */
+function handOverToRestartedRow(registry: SessionsRegistry, prevId: string, nextId: string): void {
+  if (prevId === nextId) return
+  handOverOrchestratorScopes(registry, prevId, nextId)
+  try {
+    handoverLineage({ registry, from: prevId, to: nextId, reason: "restart", actor: "daemon" })
+  } catch (err) {
+    console.warn(
+      `restartAgentSession: hand-over from ${prevId} to ${nextId} failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
+async function restartAgentSessionOnce(
+  registry: SessionsRegistry,
+  resolveAgentAdapter: AgentAdapterResolver,
+  prev: SessionDescriptor,
+  opts: RestartAgentSessionOptions,
 ): Promise<RestartAgentSessionResult> {
   // Sandbox gate — BEFORE any local strategy decision: a sandbox descriptor's
   // `cwd` is a path INSIDE the box (`/home/user`, …), so the local branches
@@ -1124,8 +1262,19 @@ export async function restartAgentSession(
   }
   const effEffort = overrides.effort ?? prev.effort
   const effRoute = reconciled.route ?? prev.route
-  const effPosture = overrides.posture ?? prev.posture
+  const effPosture = overrides.posture ?? restartPosture(prev)
+  // An explicit posture override is a NEW caller pick (its own ceiling), so it
+  // clears the agent-owned ceiling. A bare restart carries the ceiling across
+  // instead of re-baselining it to the resumed posture (which may be narrower
+  // than what the caller allowed).
+  const carryAgentPosture = overrides.posture === undefined && prev.postureSource === "agent"
   const effContextProfile = overrides.contextProfile ?? prev.contextProfile
+  const effContextContinuity = prev.contextContinuity || overrides.contextContinuity
+    ? resolveContextContinuityPolicy(
+        undefined, undefined, undefined,
+        { ...prev.contextContinuity, ...overrides.contextContinuity },
+      )
+    : undefined
   // AIP-66 cloud: a cloud session's recorded harness is the VENDOR's harness
   // (`claude-code`), never the local relay adapter slug (`claude-code-cloud`)
   // — see `cloud-vendors.ts` / `session-spawn.ts`. A restart must re-record
@@ -1141,7 +1290,30 @@ export async function restartAgentSession(
   const effHarness = overrides.harness ?? cloudHarness ?? prev.harness ?? prev.adapterSlug
   const effMode = overrides.mode ?? prev.mode
   // An `access` override is present iff a `profileRef` was explicitly requested.
-  const accessOverrideRef = overrides.access?.profileRef
+  // An account slot (`slot:<name>`) is resolved HERE, against the current
+  // `accountSlots`, so the restart (a turnRetry fallback, `accounts swap
+  // --move-alive`) lands on the profile the slot points at now. An unknown
+  // slot or a missing/disabled target is a 400, never a fallback.
+  let accessOverrideRef = overrides.access?.profileRef
+  // `accessSlot` is recomputed on every restart: the requested slot for a slot
+  // override, none for a literal override, and for a restart that keeps its
+  // access, the prior slot only while it still points at the billed profile.
+  let accessSlot: string | undefined
+  const slotDeps = opts.loadAccountSlots ? { loadAccountSlots: opts.loadAccountSlots } : {}
+  if (accessOverrideRef !== undefined && isSlotRef(accessOverrideRef)) {
+    try {
+      const resolvedRef = await resolveProfileRef(accessOverrideRef, slotDeps)
+      accessOverrideRef = resolvedRef.profileRef
+      accessSlot = resolvedRef.slot
+    } catch (err) {
+      if (err instanceof AccountSlotError) {
+        throw new RestartOverrideError(`restart access override: ${err.message}`)
+      }
+      throw err
+    }
+  } else if (accessOverrideRef === undefined) {
+    accessSlot = await carriedAccessSlot(prev, slotDeps)
+  }
 
   // ── Billing-auth re-resolution ───────────────────────────────────
   // Mirrors session-spawn.ts's resolution exactly (same resolver, same
@@ -1324,9 +1496,14 @@ export async function restartAgentSession(
             `the OLD session's identity).`,
         )
       }
-      return baseMcpServers
+      // Still token-free: an override can carry a token header, and the
+      // descriptor copy never holds one (the adapter copy gets its own below).
+      return stripSessionTokenHeaders(baseMcpServers)
     }
-    const stripped = stripOwnCallerStamp(baseMcpServers, prev.id)
+    // A session token is never carried forward (nor accepted from an
+    // override): the descriptor copy stays token-free, and the adapter copy
+    // gets a FRESH token below (`withSessionToken`).
+    const stripped = stripSessionTokenHeaders(stripOwnCallerStamp(baseMcpServers, prev.id))
     return stampDaemonCallerSessionId(stripped, {
       daemonMcpUrl: opts.daemonMcpUrl,
       callerSessionId: newSessionId,
@@ -1419,7 +1596,59 @@ export async function restartAgentSession(
     const restartMeta: Record<string, string> = {
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
+      // Still the same app's agent: its requires.apps tool grants keep applying.
+      ...(prev.meta?.[APP_AGENT_META_KEY] ? { [APP_AGENT_META_KEY]: prev.meta[APP_AGENT_META_KEY] } : {}),
+      // AIP-72 binding: the spawn role and store root the memory tools
+      // read, and the native-dir inject path + capture flag, so a restarted
+      // lineage keeps its commit gate, its projection and its turn-end capture.
+      ...carryMemoryMeta(prev.meta),
+      // The AIP-42 manifest identity the spawn resolved: the gateway reads it
+      // for the requires.apps grants and create_tool, `session_role_refresh`
+      // for its baseline.
+      ...carryAgentIdentityMeta(prev.meta),
     }
+    const restartAppendsSystemPrompt =
+      !!prev.appendSystemPrompt &&
+      resolved.supportsSystemPrompt === true &&
+      (resolved.systemPromptMaxChars === undefined ||
+        prev.appendSystemPrompt.length <= resolved.systemPromptMaxChars)
+    let memoryProjection: NativeMemoryProjection | undefined
+    try {
+      memoryProjection = await respawnMemoryProjection(prev.meta, {
+        sessionId: restartedSessionId,
+        memoryStoreAt: opts.memoryStoreAt ?? defaultMemoryStoreAt,
+        ...(prev.cwd !== undefined ? { ground: prev.cwd } : {}),
+        ...(prev.operator !== undefined ? { operator: prev.operator } : {}),
+        ...(resolved.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
+        ...(resolved.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
+        ...(restartAppendsSystemPrompt ? { existingSystemPromptChars: prev.appendSystemPrompt!.length } : {}),
+      })
+    } catch (err) {
+      console.warn(
+        `restartAgentSession: native memory not projected for ${restartedSessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+    // SESSION IDENTITY TOKEN (shadow): a fresh token for the restarted id,
+    // on the adapter's copy only; `restartMcpServers` (the descriptor copy)
+    // stays token-free. Mode read now: it applies to sessions spawned after
+    // a config change, restarts included.
+    const restartDefaults = opts.loadDefaultsConfig ? await opts.loadDefaultsConfig() : (await loadConfig()).defaults
+    const adapterMcpServers = withSessionToken(restartMcpServers, {
+      mode: sessionTokenModeOf(restartDefaults),
+      adapter: adapterSlug,
+      daemonMcpUrl: opts.daemonMcpUrl,
+      sessionId: restartedSessionId,
+    })
+    const restartPreCompactCommand = preCompactCommandFor(restartDefaults, { adapter: adapterSlug })
+    // The adapter lists the gateway's tools while it starts, before the
+    // descriptor below exists (spawning-caller-context.ts).
+    const unstageSpawningCaller = stageSpawningCaller(restartedSessionId, {
+      meta: restartMeta,
+      ...(prev.exposedToolOptIn ? { exposedToolOptIn: prev.exposedToolOptIn } : {}),
+      ...(prev.toolDenyGrants ? { toolDenyGrants: prev.toolDenyGrants } : {}),
+    })
     const agentSession = await resolved.startSession({
       cwd,
       ...boundaryStart,
@@ -1432,7 +1661,10 @@ export async function restartAgentSession(
       // Legacy AIP-45 mode: prefer an explicit override; otherwise carry the
       // prior descriptor's mode forward so a plain restart preserves it.
       ...(effMode ? { mode: effMode } : {}),
-      ...(restartMcpServers ? { mcpServers: restartMcpServers } : {}),
+      ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
+      // Projected PreCompact hook, re-read now: the respawn rewrites the
+      // isolated settings.json whole, so the current config decides.
+      ...(restartPreCompactCommand ? { preCompactCommand: restartPreCompactCommand } : {}),
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
       // Re-apply the AGENT.md system-prompt text on the SAME declared channel
       // (the original spawn already warned + prefixed when the adapter had
@@ -1440,12 +1672,7 @@ export async function restartAgentSession(
       // and only when it still fits the channel's char budget: an over-limit
       // text was prefixed at spawn, and re-applying it through the channel
       // would silently exceed the harness's cap.
-      ...(prev.appendSystemPrompt &&
-      resolved.supportsSystemPrompt === true &&
-      (resolved.systemPromptMaxChars === undefined ||
-        prev.appendSystemPrompt.length <= resolved.systemPromptMaxChars)
-        ? { appendSystemPrompt: prev.appendSystemPrompt }
-        : {}),
+      ...(restartAppendsSystemPrompt ? { appendSystemPrompt: prev.appendSystemPrompt! } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
       // Spawn-time guarantees survive a restart: the adapter runs under the
@@ -1456,6 +1683,8 @@ export async function restartAgentSession(
       // the human inbox instead of auto-answering them.
       ...(prev.commandSandbox ? { commandSandbox: prev.commandSandbox } : {}),
       ...(prev.permissionHold ? { permissionHold: true } : {}),
+      // AIP-72 native-dir inject, recomputed for the restarted id.
+      ...(memoryProjection ? { memoryProjection } : {}),
       env: {
         ...cloudRestartEnv,
         [SESSION_ID_ENV]: restartedSessionId,
@@ -1464,6 +1693,12 @@ export async function restartAgentSession(
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
+    }).catch((err: unknown) => {
+      // The adapter never started (a rejected resume id is retried with a
+      // NEW id): drop the credential minted for this attempt's id.
+      revokeSessionTokens(restartedSessionId)
+      unstageSpawningCaller()
+      throw err
     })
     // Same "which path was used" logic the RESULT computes below (see the
     // `resumeVia` comment near the return statement) — computed here, per
@@ -1486,6 +1721,15 @@ export async function restartAgentSession(
       : opts.forceAgentResume
         ? "resumed via ACP"
         : describeResumePath(augmented)
+    // Boot/resume re-assert can be rejected transiently (429) or permanently.
+    // When it is, the descriptor must record the divergence and prefer the
+    // model the adapter reports — otherwise every restart keeps the lie.
+    const modelMismatch = modelApplyMismatch({
+      ...(agentSession.modelApplyRejection ? { rejection: agentSession.modelApplyRejection } : {}),
+      ...(agentSession.availableConfigOptions
+        ? { availableConfigOptions: agentSession.availableConfigOptions }
+        : {}),
+    })
     const desc = registry.spawnAgent({
       id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
@@ -1522,16 +1766,31 @@ export async function restartAgentSession(
         ? { appendSystemPrompt: prev.appendSystemPrompt }
         : {}),
       ...(Object.keys(restartMeta).length > 0 ? { meta: restartMeta } : {}),
-      ...(effModel ? { model: effModel } : {}),
+      ...(modelMismatch
+        ? modelMismatch.reportedModel
+          ? { model: modelMismatch.reportedModel, activeModel: modelMismatch.reportedModel }
+          : {}
+        : effModel
+          ? { model: effModel }
+          : {}),
+      ...(modelMismatch ? { modelApplyRejection: modelMismatch.rejection } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
       // and overlaid with any override so every axis round-trips onto the fresh
       // descriptor and the picker re-opens on it (SPEC §3.8), even the axes
       // whose spawn-env apply-path isn't wired here yet (route/posture/context).
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
+      ...(carryAgentPosture
+        ? {
+            postureSource: "agent" as const,
+            ...(prev.postureCeiling !== undefined ? { postureCeiling: prev.postureCeiling } : {}),
+          }
+        : {}),
       ...(effRoute ? { route: effRoute } : {}),
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
+      ...(effContextContinuity ? { contextContinuity: effContextContinuity } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+      ...(accessSlot ? { accessSlot } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
       // Echoed so the NEXT restart (and every reader) still sees them.
@@ -1575,7 +1834,19 @@ export async function restartAgentSession(
       resumedFrom: prev.id,
       resumeVia,
     })
+    // The registry now serves this caller's context itself.
+    unstageSpawningCaller()
+    if (modelMismatch) registry.emitHarnessWarning(desc.id, [modelApplyWarning(modelMismatch)], prev.label)
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
+    if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
+    if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
+    if (prev.exposedToolOptIn) registry.setExposedToolOptIn(desc.id, prev.exposedToolOptIn)
+    // A restart mints a NEW id, so the list pin must ride across explicitly —
+    // same as `keepAlive` above. `pinned` is what exempts a keepAlive row
+    // from the boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`);
+    // dropping it on restart silently un-pins a long-lived brain. The
+    // superseded row keeps its own pin, same as it keeps `keepAlive`.
+    carrySessionPin(registry, prev, desc.id)
     // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
     // applied post-spawn by the MCP tool handler) — never re-derived by
     // `spawnAgentSession` itself, so a restart that lands on a NEW session
@@ -1823,6 +2094,7 @@ export async function restartAgentSession(
         ? { parentSessionId: prev.parentSessionId, boxSessionId: restartedSessionId }
         : undefined,
     )
+    const agentStartStartedAt = Date.now()
     try {
       const remoteDesc = await host.start({
         adapter: adapterSlug,
@@ -1867,6 +2139,11 @@ export async function restartAgentSession(
       if (boxResumeId && !boxResumed) resumeFallback = true
     } catch (err) {
       if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      console.warn(
+        `[sandbox] restart: agent_start failed (${host.sandboxId}, adapter ${adapterSlug}, ` +
+          `${Date.now() - agentStartStartedAt}ms): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
       await host.stop().catch(() => undefined)
       throw new SessionRestartError(
         "sandbox_box_start_failed",
@@ -2092,8 +2369,21 @@ export async function restartAgentSession(
         ...(resumeBranch ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } } : {}),
       }
     }
-    const booted = await bootSandboxAgentSession({
-      sandbox: providerSlug,
+    // Re-place from rung 1 when the session was ladder-placed: the box that
+    // died may be exactly why the first rung is no longer the right home.
+    // A session without a ladder boots on its one recorded provider.
+    const bootModelFor = (rung?: PlacementRung): string | undefined =>
+      reconciled.model !== undefined ? effModel : (rung?.model ?? effModel)
+    // A ladder rung states its own preflight (the recorded ladder already has
+    // inherited axes filled in); falling back to `prev.preflight` there would
+    // leak the previous rung's probes onto a rung that declared none.
+    const bootPreflightFor = (rung?: PlacementRung): readonly string[] | undefined =>
+      rung ? rung.preflight : prev.preflight
+    const bootOn = (
+      sandbox: PlacementRung["sandbox"],
+      rung?: PlacementRung,
+    ) => bootSandboxAgentSession({
+      sandbox,
       resolveSandboxProvider: opts.resolveSandboxProvider,
       checkpointConfig,
       // CRASH RESUME - restore the checkpoint the dead session recorded.
@@ -2107,14 +2397,16 @@ export async function restartAgentSession(
         : {}),
       adapter: adapterSlug,
       sessionHolder: restartedSessionId,
+      ...(prev.workspaceSlug ? { spawnWorkspaceSlug: prev.workspaceSlug } : {}),
       // Replaced by the fresh checkout's path (`explicitCwd: false`).
       cwd: prev.cwd ?? "",
       explicitCwd: false,
       ...(sandboxMcpServers ? { mcpServers: sandboxMcpServers } : {}),
-      ...(effModel ? { model: effModel } : {}),
+      ...(bootModelFor(rung) ? { model: bootModelFor(rung) } : {}),
       ...(effRoute?.gateway ? { route: effRoute } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(prev.label ? { label: prev.label } : {}),
+      ...(bootPreflightFor(rung)?.length ? { preflight: bootPreflightFor(rung) } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
       // The saved conversation store is extracted into the box before the
       // adapter starts, and its id is the box `agent_start`'s resume target.
@@ -2144,6 +2436,37 @@ export async function restartAgentSession(
       },
       onNotice: text => registry.recordNotice(restartedSessionId, text),
     })
+    const ladder = prev.placement?.ladder
+    let booted: Awaited<ReturnType<typeof bootOn>>
+    let placement: { rung: number; attempts: PlacementAttempt[] } | undefined
+    let bootRung: PlacementRung | undefined
+    let bootProvider = providerSlug
+    if (ladder && ladder.length > 0) {
+      const walk = await walkPlacementLadder(ladder, async (rung, index) => {
+        const res = await bootOn(rung.sandbox, rung)
+        if (res.ok) {
+          bootRung = ladder[index]
+          return { ok: true, value: res }
+        }
+        return { ok: false, code: res.code, message: res.message, ...(res.details ? { details: res.details } : {}) }
+      })
+      if (!walk.ok) {
+        throw new SessionRestartError(
+          "sandbox_box_start_failed",
+          `restartAgentSession: sandbox "${prev.sandboxId}" is gone and ` +
+            (walk.exhausted
+              ? "no rung of the placement ladder "
+              : `the placement ladder stopped on ${walk.failure.code}, so it `) +
+            `could not start a fresh box for workspace "${slug}": ${formatPlacementAttempts(walk.attempts)}: ${walk.failure.message}`,
+          { action: { kind: "fix-config", detail: walk.failure.message } },
+        )
+      }
+      booted = walk.value
+      placement = { rung: walk.rung, attempts: walk.attempts }
+      bootProvider = booted.provider
+    } else {
+      booted = await bootOn(providerSlug)
+    }
     if (booted.ok) movedToFreshBox = true
     if (!booted.ok) {
       throw new SessionRestartError(
@@ -2166,12 +2489,12 @@ export async function restartAgentSession(
     // failure is not fatal; the handoff falls back to the old digest.
     try {
       const freshHandle = opts.resolveSandboxProvider
-        ? await opts.resolveSandboxProvider(providerSlug)
+        ? await opts.resolveSandboxProvider(bootProvider)
         : null
       const freshBox = await freshHandle?.provider.connect?.(
         booted.sandboxId,
         {
-          provider: providerSlug,
+          provider: bootProvider,
           config: sandboxConfigForReattach(booted.sandboxConfig, restartedSessionId),
         },
         { env: {} },
@@ -2211,11 +2534,17 @@ export async function restartAgentSession(
       provider: booted.provider,
       sandboxTeardown: booted.sandboxTeardown,
       ...(booted.pauseAfterIdleMs !== undefined ? { pauseAfterIdleMs: booted.pauseAfterIdleMs } : {}),
+      ...(booted.egressIp ? { egressIp: booted.egressIp } : {}),
       cwd: booted.cwd,
       ...(booted.sandboxConfig ? { sandboxConfig: booted.sandboxConfig } : {}),
       ...(booted.resumeVia ? { resumeVia: "resumed via ACP" as const } : {}),
       ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
+      ...(prev.sandboxRepoRoot ? { sandboxRepoRoot: prev.sandboxRepoRoot } : {}),
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
+      ...(bootModelFor(bootRung) !== effModel ? { model: bootModelFor(bootRung) } : {}),
+      ...(bootRung ? { preflight: bootRung.preflight ?? [] } : {}),
+      ...(bootRung?.turnRetry ? { turnRetry: bootRung.turnRetry } : {}),
+      ...(placement && ladder ? { placement: { ...placement, ladder: [...ladder] } } : {}),
     })
     for (const notice of notices) registry.recordNotice(restartedSessionId, notice)
     return { ok: true, desc: restarted }
@@ -2230,6 +2559,8 @@ export async function restartAgentSession(
       provider: string
       sandboxTeardown: "kill" | "pause"
       pauseAfterIdleMs?: number
+      /** Egress address of the box, stamped on the descriptor. */
+      egressIp?: { slot: string; publicIp: string }
       /** The box-side cwd when it moved (a fresh box's checkout). */
       cwd?: string
       /** The box daemon's own `resumeVia` — set only when ITS adapter
@@ -2242,9 +2573,18 @@ export async function restartAgentSession(
       sandboxPorts?: Record<number, string>
       /** Non-secret re-attach config (with the stable holder) to persist. */
       sandboxConfig?: Record<string, unknown>
+      /** The placement rung's model, when it differs from the restart's. */
+      model?: string
+      /** The placement rung's preflight ids (absent: carry the prior's). */
+      preflight?: string[]
+      /** The placement rung's turnRetry (absent: carry the prior's). */
+      turnRetry?: TurnRetryInput
+      /** Where a ladder re-placement landed (absent: carry the prior's). */
+      placement?: { rung: number; ladder: PlacementRung[]; attempts: PlacementAttempt[] }
     },
   ): SessionDescriptor => {
     const { agentSession, deliveryTarget } = box
+    const boxPreflight = box.preflight ?? prev.preflight
     const desc = registry.spawnAgent({
       id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
@@ -2271,12 +2611,20 @@ export async function restartAgentSession(
         : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(sandboxMcpServers ? { mcpServers: sandboxMcpServers } : {}),
-      ...(effModel ? { model: effModel } : {}),
+      ...((box.model ?? effModel) ? { model: box.model ?? effModel } : {}),
+      ...(boxPreflight && boxPreflight.length > 0 ? { preflight: boxPreflight } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
+      ...(carryAgentPosture
+        ? {
+            postureSource: "agent" as const,
+            ...(prev.postureCeiling !== undefined ? { postureCeiling: prev.postureCeiling } : {}),
+          }
+        : {}),
       ...(effRoute ? { route: effRoute } : {}),
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+      ...(accessSlot ? { accessSlot } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(prev.origin ? { origin: prev.origin } : {}),
       ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
@@ -2285,7 +2633,7 @@ export async function restartAgentSession(
       ...(prev.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
       ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
-      ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
+      ...(box.turnRetry ? { turnRetry: resolveTurnRetryPolicy(box.turnRetry) } : prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
       ...(prev.modelPolicy ? { modelPolicy: prev.modelPolicy } : {}),
       ...(authEcho?.fingerprint
         ? {
@@ -2301,10 +2649,12 @@ export async function restartAgentSession(
       remote: true,
       sandboxId: box.sandboxId,
       sandboxProvider: box.provider,
+      ...(box.egressIp ? { sandboxEgressIp: box.egressIp.publicIp, sandboxEgressSlot: box.egressIp.slot } : {}),
       ...(box.sandboxConfig ? { sandboxConfig: box.sandboxConfig } : {}),
       sandboxTeardown: box.sandboxTeardown,
       ...(box.pauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs: box.pauseAfterIdleMs } : {}),
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
+      ...(prev.sandboxRepoRoot ? { sandboxRepoRoot: prev.sandboxRepoRoot } : {}),
       ...(deliveryTarget && prev.sandboxCheckpointOverride !== undefined
         ? { sandboxCheckpointOverride: prev.sandboxCheckpointOverride }
         : {}),
@@ -2313,7 +2663,18 @@ export async function restartAgentSession(
       resumedFrom: prev.id,
       resumeVia: box.resumeVia ?? "",
     })
+    const carriedPlacement = box.placement ?? prev.placement
+    if (carriedPlacement) registry.recordPlacement(desc.id, carriedPlacement)
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
+    if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
+    if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
+    if (prev.exposedToolOptIn) registry.setExposedToolOptIn(desc.id, prev.exposedToolOptIn)
+    // A restart mints a NEW id, so the list pin must ride across explicitly —
+    // same as `keepAlive` above. `pinned` is what exempts a keepAlive row
+    // from the boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`);
+    // dropping it on restart silently un-pins a long-lived brain. The
+    // superseded row keeps its own pin, same as it keeps `keepAlive`.
+    carrySessionPin(registry, prev, desc.id)
     // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
     // applied post-spawn by the MCP tool handler) — never re-derived by
     // `spawnAgentSession` itself, so a restart that lands on a NEW session
@@ -2462,6 +2823,7 @@ export async function restartAgentSession(
   // timers.
   // Same once `spawnInSandbox` released prev's proxy: its `close()` is a
   // no-op from then on, so the row closes without the box going with it.
+  handOverToRestartedRow(registry, prev.id, desc.id)
   if (sandboxId === undefined || movedToFreshBox || priorProxyReleased) {
     registry.kill(prev.id, "SIGTERM", "restarted")
   }
@@ -2505,7 +2867,12 @@ export async function restartAgentSession(
       // Redacted — see the comment above. Only the never-secret facets.
       overrides.mcpServers.map(s => {
         const { name, transport, ref } = s
-        return { name, transport, ...(ref !== undefined ? { ref } : {}) } as AcpMcpServer
+        // An `/mcp/orchestrator` ref carries the scope-token itself.
+        return {
+          name,
+          transport,
+          ...(ref !== undefined ? { ref: redactOrchestratorScopeRef(ref) } : {}),
+        } as AcpMcpServer
       }),
     )
   }

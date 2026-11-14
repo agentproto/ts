@@ -123,6 +123,7 @@ Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../d
     "port": 18791,
     "bind": "127.0.0.1",
     "allowedOrigins": ["https://guilde.work"], // extends localhost defaults
+    "frameAncestors": ["https://web.telegram.org"], // may frame the app page (never "*")
     "strictOrigins": false,                    // when true, drops localhost defaults
     "authToken": "<random-hex>",               // stable bearer for /mcp, /events, …
     "label": "jeremy@mbp",
@@ -448,7 +449,7 @@ The terminal tools let one agent **orchestrate** other sessions: an agent in a s
 - `@agentproto/adapter-openclaw` — OpenClaw
 - `@agentproto/adapter-antigravity` — Google Antigravity (`agy`, print/headless, multi-model)
 - `@agentproto/adapter-jcode` — jcode (Rust coding agent, print/headless, multi-provider)
-- `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastracode` / `adapter-mastracode-inprocess` — Mastra-based agents
+- `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastra-controller` / `adapter-mastracode` / `adapter-mastracode-inprocess`: Mastra-based agents
 - `@agentproto/adapter-browser` — browser / CDP session adapter
 - `@agentproto/adapter-pi` — pi
 

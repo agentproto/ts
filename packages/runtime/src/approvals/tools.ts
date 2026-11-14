@@ -16,6 +16,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 
+import { CREATED_TOOL_APPROVAL_KIND, describeCreatedToolApproval } from "../create-tool-tool.js"
 import { jsonTolerant } from "../json-tolerant.js"
 import { ApprovalError } from "./types.js"
 import { approvalCardResourceUri } from "./card.js"
@@ -32,6 +33,10 @@ export interface RegisterApprovalToolsOptions {
    *  ⇒ the operator (a human driving the daemon directly, or an
    *  unidentified client). */
   callerSessionId?: string
+  /** The daemon workspace. Needed to raise a `created_tool_call` approval:
+   *  its title and preview are generated from the tool's files there, never
+   *  taken from the caller. Absent ⇒ that kind is refused. */
+  workspace?: string
 }
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }> }
@@ -54,7 +59,7 @@ function withCardMeta(record: ApprovalRecord): Record<string, unknown> {
 }
 
 export function registerApprovalTools(server: McpServer, opts: RegisterApprovalToolsOptions): void {
-  const { engine, callerSessionId } = opts
+  const { engine, callerSessionId, workspace } = opts
   const requester = (): ApprovalRequester => (callerSessionId ? { sessionId: callerSessionId } : { operator: true })
   const notAvailable = jsonContent({ error: "approvals engine not available" })
 
@@ -76,19 +81,40 @@ export function registerApprovalTools(server: McpServer, opts: RegisterApprovalT
       taskId: z.string().optional().describe("Optional link to a task (informational in this lane)."),
       appId: z.string().optional().describe("Optional owning app id."),
       expiresAt: z.iso.datetime().optional().describe("Optional ISO timestamp after which a pending request auto-expires."),
+      wake: z
+        .boolean()
+        .optional()
+        .describe("When true, the daemon re-prompts YOUR session as soon as a human decides, instead of you polling."),
+      reach: z
+        .union([z.literal(false), z.object({ urgency: z.enum(["normal", "digest"]) }).strict()])
+        .optional()
+        .describe(
+          'How the owner is told about it: false = the daemon does not announce it; { urgency: "digest" } = it may be ' +
+            'grouped with others. Default: announced normally.',
+        ),
     },
     async input => {
       if (!engine) return notAvailable
       try {
+        let { title, preview } = input
+        if (input.kind === CREATED_TOOL_APPROVAL_KIND) {
+          // What the human reads for this class comes from the daemon, built
+          // from the real payload and files. The agent's title/preview are
+          // dropped: only `payload` is hashed, so they could say anything.
+          if (!workspace) throw new Error(`${CREATED_TOOL_APPROVAL_KIND}: no workspace on this surface, refusing.`)
+          ;({ title, preview } = await describeCreatedToolApproval(workspace, input.payload))
+        }
         const record = engine.request(
           {
             kind: input.kind,
-            title: input.title,
-            preview: input.preview,
+            title,
+            preview,
             payload: input.payload,
             ...(input.taskId !== undefined ? { taskId: input.taskId } : {}),
             ...(input.appId !== undefined ? { appId: input.appId } : {}),
             ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+            ...(input.wake && callerSessionId ? { wake: { sessionId: callerSessionId } } : {}),
+            ...(input.reach !== undefined ? { reach: input.reach } : {}),
           },
           requester(),
         )

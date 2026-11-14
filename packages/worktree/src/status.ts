@@ -17,9 +17,9 @@
  * so two runs at the same repo state produce byte-identical answers.
  */
 
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, resolve } from "node:path"
+import { basename, dirname, resolve, sep } from "node:path"
 import { z } from "zod"
 import { execArgv, execGit } from "./exec.js"
 import type { ForgeClient, ForgePullRequestRef } from "./forge.js"
@@ -29,7 +29,9 @@ import {
   sessionInWorktree,
   type ComputeProvenanceOptions,
   type ProvenanceInfo,
+  type SessionRef,
 } from "./provenance.js"
+import { mapWithConcurrency } from "./concurrency.js"
 
 // ── tree axis ─────────────────────────────────────────────────────────
 
@@ -75,6 +77,14 @@ export interface ComputeTreeStateOptions {
    * opt in; see `DEFAULT_GC_NOISE_PATHS` in `gc.ts` for gc's default.
    */
   noisePaths?: readonly string[]
+  /**
+   * Noise that only counts as noise when the dirt is an install rewrite: no
+   * `package.json` (any directory) is dirty or untracked in the worktree. A
+   * lockfile that changed ALONGSIDE a `package.json` carries a real dependency
+   * edit and stays ordinary dirt (and so does the `package.json`). Same
+   * worktree-relative path matching as `noisePaths`.
+   */
+  conditionalNoisePaths?: readonly string[]
 }
 
 /** The (current) path of one `status --porcelain=v2` record, `null` for a header/unknown line. */
@@ -110,7 +120,9 @@ export async function computeTreeState(
   // index to refresh its stat cache — in a live worktree that is both a lock
   // contender for the session working there and a false "recent activity"
   // signal for anything reading the index mtime. A read must not write.
-  const noiseSet = new Set(options.noisePaths ?? [])
+  const unconditionalNoise = new Set(options.noisePaths ?? [])
+  const conditionalNoise = new Set(options.conditionalNoisePaths ?? [])
+  const noiseSet = new Set([...unconditionalNoise, ...conditionalNoise])
   // With an allowlist, untracked files must be listed one by one: by default
   // git collapses a wholly-untracked directory to `? dir/`, which no noise
   // path could ever match.
@@ -122,15 +134,24 @@ export async function computeTreeState(
       `git status --porcelain=v2 failed in ${worktreePath} (exit ${res.exitCode}): ${res.stderr.trim() || res.stdout.trim()}`,
     )
   }
+  const lines = res.stdout.split("\n").filter((line) => line.length > 0)
+  // Install-rewrite test for the conditional list: any dirty package.json
+  // (modified, staged, or a new untracked one) makes a lockfile edit real.
+  const packageJsonDirty = lines.some((line) => {
+    const path = porcelainV2Path(line)
+    return path !== null && basename(path) === "package.json"
+  })
   const noise: string[] = []
   const dirtyPaths: string[] = []
   let modified = 0
   let staged = 0
   let untracked = 0
-  for (const line of res.stdout.split("\n")) {
-    if (!line) continue
+  for (const line of lines) {
     const path = porcelainV2Path(line)
-    if (path !== null && noiseSet.has(path)) {
+    if (
+      path !== null &&
+      (unconditionalNoise.has(path) || (conditionalNoise.has(path) && !packageJsonDirty))
+    ) {
       noise.push(path)
       continue
     }
@@ -210,6 +231,8 @@ const integrationStateSchema = z.union([
     offline: z.boolean(),
   }),
   z.object({ ...integrationBase, state: z.literal("open"), pr: z.number(), offline: z.boolean() }),
+  /** The branch's PR(s) were closed without merging and none is open or merged: abandoned or superseded, not integrated. */
+  z.object({ ...integrationBase, state: z.literal("closed-unmerged"), pr: z.number(), offline: z.boolean() }),
   z.object({ ...integrationBase, state: z.literal("pushed-no-pr") }),
   z.object({ ...integrationBase, state: z.literal("unpushed"), aheadBy: z.number() }),
   z.object({ ...integrationBase, state: z.literal("local-only") }),
@@ -293,11 +316,21 @@ export class FileVerdictMemoStore implements VerdictMemoStore {
     return map.get(memoKey(repo, branch, tipSha)) ?? null
   }
 
+  /** Tail of the write chain: concurrent `set`s (a parallel sweep) must not interleave `writeFile`s into a torn file. */
+  private writing: Promise<void> = Promise.resolve()
+
   async set(record: VerdictMemoRecord): Promise<void> {
     const map = await this.load()
     map.set(memoKey(record.repo, record.branch, record.tipSha), record)
-    await mkdir(dirname(this.path), { recursive: true })
-    await writeFile(this.path, JSON.stringify({ entries: [...map.values()] }, null, 2) + "\n", "utf8")
+    const write = this.writing.then(async () => {
+      await mkdir(dirname(this.path), { recursive: true })
+      // tmp + rename so a reader (another process) never sees a half-written file.
+      const tmp = `${this.path}.${process.pid}.tmp`
+      await writeFile(tmp, JSON.stringify({ entries: [...map.values()] }, null, 2) + "\n", "utf8")
+      await rename(tmp, this.path)
+    })
+    this.writing = write.catch(() => {})
+    await write
   }
 }
 
@@ -422,6 +455,14 @@ export interface ReconcileIntegrationInput {
   defaultBranchRef?: string
   /** Injectable clock so callers (the determinism test) can freeze `checkedAt`. */
   now?: () => string
+  /**
+   * Serve a memoised `merged` verdict without asking the forge. A merged PR
+   * stays merged and the containment of a fixed tip in its head is permanent,
+   * so this is safe, and it is what makes a second sweep cheap. Off by
+   * default: the strict reading of PLAN.md §1.3 only consults the memo when
+   * the forge is unreachable (and stamps the answer `offline`).
+   */
+  trustMemoizedMerged?: boolean
 }
 
 function newestMergedFirst(prs: readonly ForgePullRequestRef[]): ForgePullRequestRef[] {
@@ -472,6 +513,18 @@ export async function reconcileIntegration(input: ReconcileIntegrationInput): Pr
   const ancestryOk = await isAncestor(input.repoRoot, input.tipSha, defaultBranchRef).catch(() => false)
   if (ancestryOk) {
     return { state: "fresh", checkedAt: now() }
+  }
+
+  // A memoised `merged` verdict is immutable: a PR that merged stays merged,
+  // and containment of this exact tip in its head is a fact about two fixed
+  // shas. Serving it skips two forge round-trips per worktree on every sweep
+  // after the first. Every other state can still change (open → merged,
+  // closed → reopened), so those always re-ask the forge.
+  const cached = input.trustMemoizedMerged
+    ? await input.memo.get(input.repoName, branch, input.tipSha).catch(() => null)
+    : null
+  if (cached?.verdict.state === "merged" && !cached.verdict.offline) {
+    return { ...cached.verdict, checkedAt: now() }
   }
 
   // Steps 2/3: forge lookup. Any failure here means "forge unreachable" — step 5.
@@ -544,6 +597,13 @@ async function classifyAgainstPulls(
   if (newestMergedFirst(candidatePrs).length > 0) {
     return { state: "diverged", checkedAt: now(), offline: false }
   }
+
+  // Only closed-without-merge PRs remain: the work was abandoned or replaced.
+  // Reported with the newest such PR so a human can open it and read why.
+  const [newestClosed] = candidatePrs.filter((pr) => pr.state === "closed" && !pr.merged).sort((a, b) => b.number - a.number)
+  if (newestClosed) {
+    return { state: "closed-unmerged", pr: newestClosed.number, checkedAt: now(), offline: false }
+  }
   return null
 }
 
@@ -562,7 +622,12 @@ function offlineCopy(verdict: IntegrationState, checkedAt: string): IntegrationS
   if (verdict.state === "merged" && verdict.via === "squash") {
     return { ...verdict, checkedAt, offline: true }
   }
-  if (verdict.state === "partial" || verdict.state === "open" || verdict.state === "diverged") {
+  if (
+    verdict.state === "partial" ||
+    verdict.state === "open" ||
+    verdict.state === "closed-unmerged" ||
+    verdict.state === "diverged"
+  ) {
     return { ...verdict, checkedAt, offline: true }
   }
   return verdict
@@ -574,19 +639,39 @@ const LIVE_SESSION_STATUSES = new Set(["starting", "running"])
 
 /** `services` is always empty in PR-A — service liveness needs the daemon's in-process `ServiceSupervisor` (out of scope, see below). */
 export type LivenessState =
-  | { state: "idle"; sessions: ProvenanceInfo["sessions"]; services: string[] }
-  | { state: "sessions"; sessions: ProvenanceInfo["sessions"]; services: string[] }
-  | { state: "daemon-unreachable"; sessions: ProvenanceInfo["sessions"]; services: string[] }
+  | { state: "idle"; sessions: ProvenanceInfo["sessions"]; services: string[]; daemonSessions?: number }
+  | { state: "sessions"; sessions: ProvenanceInfo["sessions"]; services: string[]; daemonSessions?: number }
+  | { state: "daemon-unreachable"; sessions: ProvenanceInfo["sessions"]; services: string[]; daemonSessions?: number }
 
 /**
- * Live sessions whose `cwd` is contained in this worktree, read off the
- * same persisted sessions snapshot as provenance (PLAN.md §1.5) — no
- * running daemon required, matching `worktree check`'s no-daemon posture
- * (PLAN.md §3.3). Service liveness needs the daemon's in-process
- * `ServiceSupervisor` and is out of scope here (`services` is always `[]`);
- * `daemon-unreachable` fires only when the sessions snapshot itself is
- * present but unreadable (corrupt/permission-denied), not merely absent —
- * "no daemon has ever run" is a legitimate empty registry, not an error.
+ * How many live sessions a liveness read found: the larger of the snapshot
+ * join and the daemon registry's own count (they describe the same sessions,
+ * so summing would double count).
+ */
+export function livenessSessionCount(liveness: LivenessState): number {
+  return Math.max(liveness.sessions.length, liveness.daemonSessions ?? 0)
+}
+
+export interface ComputeLivenessOptions extends ComputeProvenanceOptions {
+  /**
+   * cwds of the sessions the daemon's in-memory registry reports alive right
+   * now (the stronger, fresher source than the on-disk snapshot). A cwd equal
+   * to or under the worktree counts one live session. Omitted = the daemon was
+   * not consulted (or was unreachable): the snapshot alone decides.
+   */
+  liveSessionCwds?: readonly string[]
+}
+
+/**
+ * Live sessions whose `cwd` is contained in this worktree. Two sources:
+ * the persisted sessions snapshot (PLAN.md §1.5), which needs no running
+ * daemon, and, when the caller supplies `liveSessionCwds`, the daemon's own
+ * registry; either one finding a live session makes the state `sessions`.
+ * Service liveness needs the daemon's in-process `ServiceSupervisor` and is
+ * out of scope here (`services` is always `[]`); `daemon-unreachable` fires
+ * only when the sessions snapshot itself is present but unreadable
+ * (corrupt/permission-denied), not merely absent — "no daemon has ever run"
+ * is a legitimate empty registry, not an error.
  *
  * `options.sessionsPath` is passed straight to `readSessionsRegistry`
  * un-defaulted — same as `computeProvenance` — so an omitted path resolves
@@ -599,15 +684,23 @@ export type LivenessState =
  */
 export async function computeLiveness(
   worktreePath: string,
-  options: ComputeProvenanceOptions = {},
+  options: ComputeLivenessOptions = {},
 ): Promise<LivenessState> {
-  const registry = await readSessionsRegistry(options.sessionsPath)
-  if (registry === null) return { state: "daemon-unreachable", sessions: [], services: [] }
+  const registry =
+    options.sessionsRegistry !== undefined ? options.sessionsRegistry : await readSessionsRegistry(options.sessionsPath)
+  const daemonSessions = (options.liveSessionCwds ?? []).filter(
+    (cwd) => cwd === worktreePath || cwd.startsWith(worktreePath + sep),
+  ).length
+  const daemonField = options.liveSessionCwds !== undefined ? { daemonSessions } : {}
+  if (registry === null) {
+    if (daemonSessions > 0) return { state: "sessions", sessions: [], services: [], ...daemonField }
+    return { state: "daemon-unreachable", sessions: [], services: [], ...daemonField }
+  }
   const live = registry
     .filter((s) => sessionInWorktree(s, worktreePath))
     .filter((s) => LIVE_SESSION_STATUSES.has(s.status))
-  if (live.length > 0) return { state: "sessions", sessions: live, services: [] }
-  return { state: "idle", sessions: [], services: [] }
+  if (live.length > 0 || daemonSessions > 0) return { state: "sessions", sessions: live, services: [], ...daemonField }
+  return { state: "idle", sessions: [], services: [], ...daemonField }
 }
 
 // ── gate (PR-F fills this in; PR-A always reports "none") ──────────────
@@ -759,12 +852,21 @@ export interface ComputeWorktreeStatusInput {
   nowMs?: number
   /** See `ComputeTreeStateOptions.noisePaths`. Default none. */
   noisePaths?: readonly string[]
+  /** See `ComputeTreeStateOptions.conditionalNoisePaths`. Default none. */
+  conditionalNoisePaths?: readonly string[]
+  /** See `ComputeLivenessOptions.liveSessionCwds`. */
+  liveSessionCwds?: readonly string[]
+  /** See `ComputeProvenanceOptions.sessionsRegistry`. */
+  sessionsRegistry?: SessionRef[] | null
 }
 
 /** Computes all three axes + provenance + classification for one worktree. */
 export async function computeWorktreeStatus(input: ComputeWorktreeStatusInput): Promise<WorktreeStatusEntry> {
   const [tree, integration, liveness, provenance, base] = await Promise.all([
-    computeTreeState(input.repoRoot, input.worktree.path, input.noisePaths ? { noisePaths: input.noisePaths } : {}),
+    computeTreeState(input.repoRoot, input.worktree.path, {
+      ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
+      ...(input.conditionalNoisePaths ? { conditionalNoisePaths: input.conditionalNoisePaths } : {}),
+    }),
     reconcileIntegration({
       repoRoot: input.repoRoot,
       repoName: input.repoName,
@@ -774,9 +876,17 @@ export async function computeWorktreeStatus(input: ComputeWorktreeStatusInput): 
       memo: input.memo,
       defaultBranchRef: input.defaultBranchRef,
       now: input.now,
+      trustMemoizedMerged: true,
     }),
-    computeLiveness(input.worktree.path, { sessionsPath: input.sessionsPath }),
-    computeProvenance(input.repoRoot, input.worktree.path, { sessionsPath: input.sessionsPath }),
+    computeLiveness(input.worktree.path, {
+      sessionsPath: input.sessionsPath,
+      ...(input.sessionsRegistry !== undefined ? { sessionsRegistry: input.sessionsRegistry } : {}),
+      ...(input.liveSessionCwds !== undefined ? { liveSessionCwds: input.liveSessionCwds } : {}),
+    }),
+    computeProvenance(input.repoRoot, input.worktree.path, {
+      sessionsPath: input.sessionsPath,
+      ...(input.sessionsRegistry !== undefined ? { sessionsRegistry: input.sessionsRegistry } : {}),
+    }),
     computeBaseDivergence(input.repoRoot, input.worktree.head, input.defaultBranchRef ?? "origin/main"),
   ])
   const { reclaimable, class: cls } = classify(tree, integration, liveness, input.nowMs)
@@ -809,27 +919,46 @@ export interface ListWorktreeStatusesInput {
    * forge round-trip instead of one per worktree in the repo. Omitted = all.
    */
   paths?: readonly string[]
+  /** See `ComputeTreeStateOptions.noisePaths`. Default none. */
+  noisePaths?: readonly string[]
+  /** See `ComputeTreeStateOptions.conditionalNoisePaths`. Default none. */
+  conditionalNoisePaths?: readonly string[]
+  /** See `ComputeLivenessOptions.liveSessionCwds`. */
+  liveSessionCwds?: readonly string[]
+  /** Worktrees computed at once. Default {@link DEFAULT_STATUS_CONCURRENCY}; `1` is the old serial behavior. */
+  concurrency?: number
+  /** Called after each worktree finishes (in completion order). */
+  onProgress?: (done: number, total: number, path: string) => void
 }
+
+/** Default fan-out for a status/plan sweep: enough to hide forge latency, few enough not to oversubscribe git. */
+export const DEFAULT_STATUS_CONCURRENCY = 6
 
 /** Enumerates every linked worktree of `repoRoot` (`git worktree list`) and computes its status. */
 export async function listWorktreeStatuses(input: ListWorktreeStatusesInput): Promise<WorktreeStatusEntry[]> {
   const all = await listGitWorktrees(input.repoRoot)
   const only = input.paths ? new Set(input.paths.map((p) => resolve(p))) : null
   const worktrees = only ? all.filter((w) => only.has(resolve(w.path))) : all
-  const results: WorktreeStatusEntry[] = []
-  for (const worktree of worktrees) {
-    results.push(
-      await computeWorktreeStatus({
-        repoRoot: input.repoRoot,
-        repoName: input.repoName,
-        worktree,
-        forge: input.forge,
-        memo: input.memo,
-        defaultBranchRef: input.defaultBranchRef,
-        sessionsPath: input.sessionsPath,
-        now: input.now,
-      }),
-    )
-  }
-  return results
+  // One registry read for the whole sweep (liveness + provenance each used to
+  // re-parse every sessions.json per worktree).
+  const sessionsRegistry = worktrees.length > 1 ? await readSessionsRegistry(input.sessionsPath) : undefined
+  let done = 0
+  return mapWithConcurrency(worktrees, input.concurrency ?? DEFAULT_STATUS_CONCURRENCY, async (worktree) => {
+    const entry = await computeWorktreeStatus({
+      repoRoot: input.repoRoot,
+      repoName: input.repoName,
+      worktree,
+      forge: input.forge,
+      memo: input.memo,
+      defaultBranchRef: input.defaultBranchRef,
+      sessionsPath: input.sessionsPath,
+      now: input.now,
+      ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
+      ...(input.conditionalNoisePaths ? { conditionalNoisePaths: input.conditionalNoisePaths } : {}),
+      ...(input.liveSessionCwds ? { liveSessionCwds: input.liveSessionCwds } : {}),
+      ...(sessionsRegistry !== undefined ? { sessionsRegistry } : {}),
+    })
+    input.onProgress?.(++done, worktrees.length, worktree.path)
+    return entry
+  })
 }

@@ -87,7 +87,27 @@ export function buildRouteAwareLaunchConfig(
   input: RouteAwareLaunchConfigInput,
 ): RouteAwareLaunchConfig {
   const prefix = input.prefix ?? "agent_start"
-  const baseOptions = input.options ?? {}
+  const declaredOptionsKnown = input.declaredOptions !== undefined
+  const declaresBaseUrl =
+    input.declaredOptions?.some((o) => o.id === "base_url") ?? false
+
+  // A persisted row may carry a `base_url` an OLDER build injected on a path
+  // that did not consult the manifest (the lazy resume hook, before it shared
+  // this builder). A derived-from-model adapter derives its endpoint from the
+  // model id and declares no `base_url` option, so replaying that stale option
+  // would crash manifest validation (`unknown_option`) on the next resume.
+  // Strip it before the injection decision so a legacy row stays resumable.
+  let baseOptions = input.options ?? {}
+  if (
+    typeof baseOptions.base_url === "string" &&
+    baseOptions.base_url.length > 0 &&
+    declaredOptionsKnown &&
+    !declaresBaseUrl &&
+    input.routeSelection === "derived-from-model"
+  ) {
+    const { base_url: _undeclaredBaseUrl, ...rest } = baseOptions
+    baseOptions = rest
+  }
 
   const hasExplicitBaseUrlOption =
     typeof baseOptions.base_url === "string" && baseOptions.base_url.length > 0
@@ -111,12 +131,9 @@ export function buildRouteAwareLaunchConfig(
     typeof resolvedBaseUrl === "string" &&
     resolvedBaseUrl.length > 0
   ) {
-    const declaresBaseUrl =
-      input.declaredOptions?.some((o) => o.id === "base_url") ?? false
     // `declaredOptions === undefined` means the resolver reported no option
     // vocabulary at all — absence of information is not evidence of rejection,
     // so keep the pre-D1 behavior for that case.
-    const declaredOptionsKnown = input.declaredOptions !== undefined
     if (declaresBaseUrl || !declaredOptionsKnown) {
       // Adapter accepts base_url, OR we have no manifest option vocabulary
       // to prove it doesn't — honor the resolved/custom URL.

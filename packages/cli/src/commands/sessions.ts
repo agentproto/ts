@@ -63,6 +63,7 @@ import {
   humaniseDelta,
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
+import { harnessFlag } from "../util/harness-flag.js"
 import { waitForPolicy } from "./_policy-wait.js"
 import {
   StatsFlagError,
@@ -92,6 +93,8 @@ import {
   buildSessionRecap,
   defaultTranscriptBaseDir,
   deriveIndexFromTranscript,
+  launchedByOf,
+  launchedByText,
   readAllSessionIndexes,
   readSessionIndex,
   searchSessionIndexes,
@@ -166,9 +169,10 @@ Usage:
                                             [--label <text>] [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
   agentproto sessions export <id-or-name> [--json] [-o|--output <file>]
-                             [--source auto|native|daemon] [--adapter <name>]
+                             [--source auto|native|daemon] [--harness <name>]
   agentproto sessions story <id-or-name> [--json] [--no-color]
-                             [--source auto|native|daemon] [--adapter <name>]
+                             [--source auto|native|daemon] [--harness <name>]
+                             (--adapter is a deprecated alias of --harness)
   agentproto sessions find <query> [--status <status>] [--limit N] [--json]
                              (case-insensitive match on id prefix, label,
                               title, cwd or workspace slug; reads the per-session
@@ -229,13 +233,22 @@ Usage:
                                review lanes after daemon.reviewSessionRetentionDays
                                (7), others only if daemon.sessionRetentionDays
                                is set. --dry-run previews.)
+  agentproto sessions gc --adapter-caches [--dry-run] [--json]
+                              (DELETE the cache content of dead sessions'
+                               ~/.agentproto/adapter-config/<id> dirs: pnpm
+                               store, opencode snapshot/tool-output/log, after
+                               daemon.adapterCacheRetentionDays (1) quiet days.
+                               Resume data is kept. --dry-run previews.)
   agentproto sessions continue-interrupted [--send] [--id <id-or-name>]...
                               [--prompt <text>] [--json]
                               (list sessions the LAST daemon restart cut off
                                mid-turn; --send prompts each to continue —
                                without it, a dry run that sends nothing)
-  agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
+  agentproto sessions wait <id-or-name>... [--until <event>] [--any]
+                              [--policy <policyId>] [--since <seq>]
                               [--timeout <duration>] [--json]
+                              (several ids: waits for all by default, or the
+                               first with --any; --policy takes no ids)
                               (duration: bare integer = ms, unchanged — or an
                                explicit unit: 500ms, 30s, 5m, 2h. default
                                timeout: 900000ms/15m with --until, 60000ms/60s
@@ -288,28 +301,32 @@ Usage:
                                stopped once the new one is up.)
   agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
                               [--prefer-native-terminal]
+                              [--model <provider/model>] [--access-profile <ref>]
                               [--auto-compact-at-tokens <n>]
-                              (respawn from history — clones the old
-                               descriptor's kind/argv/cwd/workspace and starts
-                               a fresh instance, resuming where the adapter
-                               supports it. New id, same freed name. Output
+                              (restart an agent through the daemon so its model,
+                               billing profile, policy and lineage survive.
+                               Supply model + access-profile together when
+                               changing providers, e.g. Zen to Go. PTYs use
+                               their native resume path. New id. Output
                                buffers are NOT carried over.
                                --prefer-native-terminal opts into the adapter's
                                native-terminal restart path when it has one.
                                --auto-compact-at-tokens <n> sets the ABSOLUTE
                                context threshold (tokens) at which an idle
                                session is compacted automatically (clamped
-                               to 200000 max, 0 disables).)
+                               to 600000 max, 0 disables).)
   agentproto sessions mirror <id-or-name> [--no-color]
                               (read-only tail of the session's output — never
                                takes stdin; Ctrl-C exits without touching the
                                session)
   agentproto sessions switch-profile --from <profileRef> --to <profileRef>
-                              [--json] [--dry-run]
-                              (move EVERY session that bills against the
+                              [--json] [--dry-run] [--include-dead]
+                              (move every ALIVE session that bills against the
                                --from auth profile onto the --to one, in one
-                               command. Each session is restarted through the
-                               daemon's restart-with-override route, so the
+                               command; --include-dead also restarts the dead
+                               ones (the old behaviour). Each session is
+                               restarted through the daemon's
+                               restart-with-override route, so the
                                conversation is resumed under a new id, the
                                session's posture is kept, and the cron jobs
                                that targeted the old id are re-armed.
@@ -409,7 +426,8 @@ sessions start flags:
                                   supervisors; "off" disables it (explicit
                                   opt-out). spec: 'all', 'off', or a comma
                                   list of classes
-                                  (rate-limit,upstream-5xx,no-output-stall),
+                                  (rate-limit,upstream-5xx,no-output-stall,
+                                  and opt-in usage-limit),
                                   or a JSON object '{"on":["rate-limit"],
                                   "maxRetries":3,"baseDelayMs":5000,"factor":2,
                                   "maxDelayMs":60000}'. "action":"migrate"
@@ -610,8 +628,22 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   }
 
   // One-shot
-  const page = await fetchSessionsPage(endpoint.url, listQuery)
-  printTable(page.sessions, await resolveAttentionDelaySec())
+  const projected = parseFieldList(values.fields)
+  const page =
+    projected.length > 0
+      ? {
+          projected: true as const,
+          ...(await fetchSessionsPage<Record<string, unknown>>(endpoint.url, listQuery)),
+        }
+      : {
+          projected: false as const,
+          ...(await fetchSessionsPage(endpoint.url, listQuery)),
+        }
+  if (page.projected) {
+    printProjectedTable(page.sessions, projected)
+  } else {
+    printTable(page.sessions, await resolveAttentionDelaySec())
+  }
   if (listQuery && page.total !== undefined) {
     process.stdout.write(`\x1b[2m${page.sessions.length} of ${page.total} matching sessions\x1b[0m\n`)
   }
@@ -659,7 +691,7 @@ function buildSessionListQuery(v: SessionListFlags): string | undefined {
   put("status", v.status)
   if (v.alive) qs.set("onlyAlive", "true")
   put("limit", v.limit)
-  put("fields", v.fields)
+  put("fields", parseFieldList(v.fields).join(","))
   const text = qs.toString()
   return text === "" ? undefined : text
 }
@@ -698,7 +730,9 @@ async function runListStats(
   return 0
 }
 
-const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
+const TURN_RETRY_ALL_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
+/** `usage-limit` is accepted but opt-in: it is not part of `all`. */
+const TURN_RETRY_CLASSES = [...TURN_RETRY_ALL_CLASSES, "usage-limit"]
 const TURN_RETRY_ACTIONS = ["retry", "migrate"]
 
 /** Bounds the DAEMON's schema (`turnRetryInputSchema` in
@@ -723,7 +757,7 @@ export function parseTurnRetryFlag(raw: string): Record<string, unknown> | strin
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "expected a JSON object"
     obj = parsed as Record<string, unknown>
   } else if (trimmed === "all") {
-    obj = { on: [...TURN_RETRY_CLASSES] }
+    obj = { on: [...TURN_RETRY_ALL_CLASSES] }
   } else if (trimmed === "off") {
     // An explicit opt-out, the runtime's empty-`on` shape: a disabled policy
     // (empty `on`) and `null` are equivalent at spawn time.
@@ -1136,7 +1170,7 @@ async function runStart(args: readonly string[]): Promise<number> {
   }
 
   const body: Record<string, unknown> = {}
-  if (slug) body.adapter = slug
+  if (slug) body.harness = slug
   if (values.preset) body.presetId = values.preset
   // Default cwd to the shell directory (like git/npm) when neither --cwd nor
   // --workspace is given, instead of silently using the daemon active
@@ -1533,7 +1567,7 @@ async function runShow(args: readonly string[]): Promise<number> {
   const header = [
     `${desc.id}${name ? `  ${name}` : ""}`,
     `  status:   ${desc.status}${desc.endedReason ? ` (${desc.endedReason})` : ""}`,
-    `  kind:     ${desc.kind}${desc.adapterSlug ? ` · ${desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
+    `  kind:     ${desc.kind}${(desc.harness ?? desc.adapterSlug) ? ` · ${desc.harness ?? desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
     ...(desc.provisioning
       ? [`  provision: ${provisioningLabel(desc.provisioning)} (state ${desc.provisioning.state}, phase ${desc.provisioning.phase})`]
       : []),
@@ -2054,6 +2088,7 @@ async function runGc(args: readonly string[]): Promise<number> {
       "older-than-days": { type: "string" },
       forget: { type: "boolean" },
       retention: { type: "boolean" },
+      "adapter-caches": { type: "boolean" },
       "dry-run": { type: "boolean" },
       json: { type: "boolean" },
     },
@@ -2090,6 +2125,38 @@ async function runGc(args: readonly string[]): Promise<number> {
   const body: Record<string, unknown> = {}
   if (olderThanDays !== undefined) body.olderThanDays = olderThanDays
   if (values.forget) body.forget = true
+
+  if (values["adapter-caches"]) {
+    // Adapter-config cache sweep: deletes the cache content of dead
+    // lineages' ~/.agentproto/adapter-config/<id> dirs, keeping resume data.
+    // Quiet-time threshold from daemon.adapterCacheRetentionDays (1).
+    try {
+      const result = await httpPostJson<{ count: number; paths: number; scanned: number; dryRun: boolean; errors: number }>(
+        `${endpoint.url}/sessions/gc`,
+        { adapterCaches: true, ...(values["dry-run"] ? { dryRun: true } : {}) },
+        endpoint.token,
+      )
+      if (values.json) {
+        process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+      } else {
+        process.stdout.write(
+          `agentproto sessions gc: ${result.dryRun ? "would prune" : "pruned"} ${result.paths} cache ` +
+            `path${result.paths === 1 ? "" : "s"} in ${result.count} adapter-config ` +
+            `dir${result.count === 1 ? "" : "s"} (scanned ${result.scanned}` +
+            `${result.errors > 0 ? `, ${result.errors} failed` : ""}).\n`,
+        )
+      }
+      return 0
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 401/.test(msg)) {
+        process.stderr.write((await explain401(endpoint, "agentproto sessions gc")) + "\n")
+        return 1
+      }
+      process.stderr.write(`agentproto sessions gc: ${msg}\n`)
+      return 1
+    }
+  }
 
   if (values.retention) {
     // On-disk retention pass: deletes old terminal session dirs. Thresholds
@@ -2764,7 +2831,11 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
 }
 
 /**
- * `agentproto sessions wait <id-or-name>` — scriptable blocking wait.
+ * `agentproto sessions wait <id-or-name>...` - scriptable blocking wait.
+ *
+ * With several session ids it fans out concurrently and returns when all of
+ * them match (default) or the first one does (`--any`); a single id keeps
+ * the original path byte-identical.
  *
  * Blocks until the session fires a lifecycle event (default: any) or, when
  * `--policy <policyId>` is set, until the named policy resolves
@@ -2785,17 +2856,28 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
  *      precedent (sessions-registry-agent-host.ts) so a caller can't
  *      mistake a bare "turn-end: success" for one that actually did
  *      something.
- *   5  the session is IDLE right now — no turn in flight, not awaiting
- *      input, nothing queued to run — for an `--until turn-end` /
- *      `awaiting-input` / `any` wait. Distinct from a timeout: this is a
- *      pre-flight read of the session's current descriptor, decided BEFORE
- *      ever blocking, because the daemon's own already-finished-turn check
- *      (`monitorSessionWait`) requires a `since` cursor a fresh CLI process
- *      never has — without this short-circuit an idle session burns the
- *      whole `--timeout` budget waiting for a turn-end that will never come
- *      (nothing new is running) and then reports a lying "timed out...
- *      still running?" message. Exit 5 tells the caller the truth instead:
- *      there's nothing to wait for.
+ *   5  the session is IDLE right now: at least one turn has completed (or
+ *      the session is terminal), no turn is in flight, not awaiting input,
+ *      nothing queued to run, for an `--until turn-end` / `awaiting-input`
+ *      / `any` wait. A freshly spawned session with `turnsCompleted` still
+ *      0 is NOT idle here: its opening turn may start after this pre-flight
+ *      read, and that turn is exactly what the caller is waiting for.
+ *      Distinct from a timeout: this is a pre-flight read of the session's
+ *      current descriptor, decided BEFORE ever blocking, because the
+ *      daemon's own already-finished-turn check (`monitorSessionWait`)
+ *      requires a `since` cursor a fresh CLI process never has; without
+ *      this short-circuit an idle session burns the whole `--timeout` budget
+ *      waiting for a turn-end that will never come (nothing new is running)
+ *      and then reports a lying "timed out... still running?" message.
+ *      Exit 5 tells the caller the truth instead: there's nothing to wait
+ *      for.
+ *
+ * `--since <seq>` passes an EventRing cursor to the daemon. A spawn-then-wait
+ * caller that has no cursor of its own can pass `--since 0` so a turn-end
+ * that fired between the spawn response and this process starting is replayed
+ * instead of being reported as idle. With a cursor present the daemon's own
+ * already-finished-turn check is authoritative, so the idle pre-flight is
+ * skipped.
  *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
@@ -2822,17 +2904,29 @@ export function resolveWaitDefaultTimeout(hasExplicitUntil: boolean): number {
 }
 
 async function runWait(args: readonly string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      until: { type: "string" },
-      policy: { type: "string" },
-      timeout: { type: "string" },
-      json: { type: "boolean" },
-    },
-  })
+  const parsed = (() => {
+    try {
+      return parseArgs({
+        args: [...args],
+        allowPositionals: true,
+        strict: true,
+        options: {
+          until: { type: "string" },
+          policy: { type: "string" },
+          since: { type: "string" },
+          timeout: { type: "string" },
+          any: { type: "boolean" },
+          json: { type: "boolean" },
+        },
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
+      return null
+    }
+  })()
+  if (parsed === null) return 2
+  const { values, positionals } = parsed
 
   const target = positionals[0]
   if (!target && !values.policy) {
@@ -2840,11 +2934,15 @@ async function runWait(args: readonly string[]): Promise<number> {
       "agentproto sessions wait: missing session id or policy id.\n" +
         "  Try: agentproto sessions wait <id-or-name>\n" +
         "       agentproto sessions wait <id-or-name> --until turn-end --timeout 30000\n" +
+        "       agentproto sessions wait <id1> <id2> [--any]\n" +
         "       agentproto sessions wait --policy <policyId> --timeout 60000\n",
     )
     return 2
   }
-  if (positionals.length > 1) {
+  // --policy mode takes no session positionals; a single one is documented
+  // as ignored, but more than that is a usage error rather than a silent
+  // no-op.
+  if (values.policy && positionals.length > 1) {
     process.stderr.write(
       `agentproto sessions wait: unexpected extra positionals: ${positionals
         .slice(1)
@@ -2869,6 +2967,18 @@ async function runWait(args: readonly string[]): Promise<number> {
         `Expected one of: turn-end, awaiting-input, exited, any.\n`,
     )
     return 2
+  }
+
+  let since: number | undefined
+  if (values.since !== undefined) {
+    if (!/^\d+$/.test(values.since)) {
+      process.stderr.write(
+        `agentproto sessions wait: invalid --since "${values.since}". ` +
+          `Expected a non-negative event sequence number (e.g. --since 0).\n`,
+      )
+      return 2
+    }
+    since = Number.parseInt(values.since, 10)
   }
 
   const defaultTimeout = resolveWaitDefaultTimeout(rawUntil !== undefined)
@@ -2909,19 +3019,44 @@ async function runWait(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  return runWaitSession({
+  const shared = {
     endpoint,
-    idOrName: target,
     untilEvent,
     totalTimeout,
     json: values.json === true,
+    ...(since !== undefined ? { since } : {}),
+  }
+  if (positionals.length === 1) {
+    return runWaitSession({ ...shared, idOrName: target })
+  }
+  return runWaitMany({
+    ...shared,
+    idOrNames: positionals,
+    any: values.any === true,
   })
+}
+
+type WaitJsonWriter = (value: Record<string, unknown>) => void
+type WaitTextWriter = (text: string) => void
+
+const writeWaitJson: WaitJsonWriter = value => {
+  process.stdout.write(JSON.stringify(value, null, 2) + "\n")
+}
+const writeWaitText: WaitTextWriter = text => {
+  process.stdout.write(text)
 }
 
 /**
  * Loop GET /sessions/:id/wait with an advancing `since` cursor until the
  * total timeout budget is exhausted or a matching event fires. Mirrors how
  * a client would chain multiple `session_monitor` calls.
+ *
+ * `deadline` lets a fan-out pass ONE precomputed group deadline down to
+ * every sibling, so pre-flight latency is charged against the documented
+ * single `--timeout` budget instead of being added on top per session.
+ * `jsonWriter`/`textWriter` let a multi-id caller capture per-session
+ * output and emit one aggregate document; the defaults write straight to
+ * stdout, which is the single-id path.
  */
 async function runWaitSession(opts: {
   endpoint: DaemonEndpoint
@@ -2929,8 +3064,15 @@ async function runWaitSession(opts: {
   untilEvent: "turn-end" | "awaiting-input" | "exited" | "any"
   totalTimeout: number
   json: boolean
+  since?: number
+  signal?: AbortSignal
+  deadline?: number
+  jsonWriter?: WaitJsonWriter
+  textWriter?: WaitTextWriter
 }): Promise<number> {
-  const { endpoint, idOrName, untilEvent, totalTimeout, json } = opts
+  const { endpoint, idOrName, untilEvent, totalTimeout, json, since, signal } = opts
+  const jsonWriter = opts.jsonWriter ?? writeWaitJson
+  const textWriter = opts.textWriter ?? writeWaitText
 
   // Pre-flight: read the session's current descriptor before blocking at
   // all. `monitorSessionWait`'s already-finished-turn check deliberately
@@ -2941,13 +3083,17 @@ async function runWaitSession(opts: {
   // reporting a timeout that lies about why. `--until exited` is exempt:
   // the daemon's terminal-status check already fires without `since`, so
   // there's nothing to pre-empt here.
+  if (signal?.aborted) return -1
+  const getJson = <T,>(url: string): Promise<T> =>
+    signal ? httpGetJson<T>(url, { signal }) : httpGetJson<T>(url)
   if (untilEvent !== "exited") {
     let desc: SessionDescriptor
     try {
-      desc = await httpGetJson<SessionDescriptor>(
+      desc = await getJson<SessionDescriptor>(
         `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}`,
       )
     } catch (err) {
+      if (signal?.aborted) return -1
       const msg = err instanceof Error ? err.message : String(err)
       if (/HTTP 404/.test(msg)) {
         process.stderr.write(`agentproto sessions wait: no session "${idOrName}".\n`)
@@ -2958,28 +3104,65 @@ async function runWaitSession(opts: {
     }
     // Nothing this wait could ever resolve on by blocking: no turn in
     // flight, not awaiting input (that would be a real match, not idleness —
-    // left to the loop below), nothing queued to run next, and not still
+    // left to the loop below), nothing queued to run next, not still
     // spinning up.
+    //
+    // The `turnsCompleted` gate is load-bearing for a prompted spawn of a
+    // turn-capable session: the spawn response can land, and this pre-flight
+    // read can see the session, before its opening turn has started (busy
+    // false, nothing queued, turnsCompleted 0). That snapshot is not "idle
+    // with nothing to wait for": the first turn is exactly what the caller is
+    // waiting on. Only kinds that can actually run turns get that grace;
+    // terminal/external/command/browser sessions that will never emit a
+    // turn-end must keep the honest exit 5 short-circuit.
+    const terminalStatus =
+      desc.status === "exited" || desc.status === "killed" || desc.status === "error"
+    const kind = (desc as { kind?: string }).kind
+    const turnCapable = kind === undefined ? true : kind === "agent-cli"
+    const active =
+      desc.busy === true ||
+      desc.awaitingInput === true ||
+      Boolean(desc.queuedPrompts) ||
+      desc.status === "starting"
+    // For turn-capable sessions, a snapshot with turnsCompleted==0 and nothing
+    // in-flight may be waiting for the first turn (prompted spawn race). For
+    // non-turn-capable sessions (terminal/external/...), they never produce
+    // turn-end events, so if nothing is active they are idle for --until turn-end.
     const idle =
-      desc.busy !== true &&
-      desc.awaitingInput !== true &&
-      !desc.queuedPrompts &&
-      desc.status !== "starting"
-    if (idle) {
-      return emitWaitIdle(json, {
-        sessionId: desc.id,
-        idOrName,
-        status: desc.status,
-        busy: desc.busy === true,
-        awaitingInput: desc.awaitingInput === true,
-      })
+      !active &&
+      (terminalStatus ||
+        (turnCapable && (desc.turnsCompleted ?? 0) > 0) ||
+        !turnCapable)
+    // A caller-supplied cursor moves the "already finished?" decision to the
+    // daemon (`monitorSessionWait`), which can distinguish a turn-end after
+    // that cursor from stale history — but a terminal/exited session has
+    // no turn to replay for `--until turn-end`, so keep that short-circuit
+    // cursor-independent (and also avoid skipping terminal short-circuit when
+    // --since is passed).
+    if (idle && (since === undefined || terminalStatus)) {
+      return emitWaitIdle(
+        json,
+        {
+          sessionId: desc.id,
+          idOrName,
+          status: desc.status,
+          busy: desc.busy === true,
+          awaitingInput: desc.awaitingInput === true,
+          turnsCompleted: desc.turnsCompleted,
+          lastTurnReason: desc.lastTurnReason,
+          lastTurnErrorMessage: desc.lastTurnErrorMessage,
+          lastTurnEmpty: desc.lastTurnEmpty === true,
+        },
+        jsonWriter,
+        textWriter,
+      )
     }
   }
 
-  const deadline = Date.now() + totalTimeout
+  const deadline = opts.deadline ?? Date.now() + totalTimeout
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
-  let cursor: number | undefined = undefined
+  let cursor: number | undefined = since
 
   // Stated BEFORE blocking, not just on timeout: the incident this whole
   // module exists for was a wrong unit that looked exactly like a stuck
@@ -2996,9 +3179,10 @@ async function runWaitSession(opts: {
   }
 
   for (;;) {
+    if (signal?.aborted) return -1
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
-      return emitWaitTimeout(json, { idOrName, timeoutMs: totalTimeout })
+      return emitWaitTimeout(json, { idOrName, timeoutMs: totalTimeout }, jsonWriter, textWriter)
     }
     const callTimeout = Math.min(sliceMs, remaining)
     const qs = new URLSearchParams({
@@ -3009,8 +3193,9 @@ async function runWaitSession(opts: {
     const url = `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}/wait?${qs.toString()}`
     let result: Record<string, unknown>
     try {
-      result = await httpGetJson<Record<string, unknown>>(url)
+      result = await getJson<Record<string, unknown>>(url)
     } catch (err) {
+      if (signal?.aborted) return -1
       const msg = err instanceof Error ? err.message : String(err)
       if (/HTTP 404/.test(msg)) {
         process.stderr.write(
@@ -3027,6 +3212,7 @@ async function runWaitSession(opts: {
       process.stderr.write(`agentproto sessions wait: ${msg}\n`)
       return 3
     }
+    if (signal?.aborted) return -1
     if (result.timedOut === true) {
       // Advance the cursor from the server's response when available so the
       // next call doesn't replay the same window.
@@ -3044,17 +3230,15 @@ async function runWaitSession(opts: {
     const empty = result.empty === true
     const erroredReason = result.reason === "error"
     if (json) {
-      process.stdout.write(
-        JSON.stringify(
-          { ...result, timeoutMs: totalTimeout, timeout: formatDuration(totalTimeout) },
-          null,
-          2,
-        ) + "\n",
-      )
+      jsonWriter({
+        ...result,
+        timeoutMs: totalTimeout,
+        timeout: formatDuration(totalTimeout),
+      })
     } else {
       const ev = typeof result.event === "string" ? result.event : "event"
       const status = typeof result.status === "string" ? result.status : ""
-      process.stdout.write(
+      textWriter(
         `agentproto sessions wait: ${sid} → ${ev}` +
           (status ? ` (${status})` : "") +
           "\n",
@@ -3079,6 +3263,151 @@ async function runWaitSession(opts: {
     }
     return 0
   }
+}
+
+/**
+ * Wait on several sessions at once. Default: resolve when ALL of them
+ * reached the target event; `--any`: settle only on a real MATCH (exit 0),
+ * aborting the rest only once that match lands. A sibling's non-zero
+ * outcome (timeout 2, not-found 3, empty/errored turn 4, idle 5) is
+ * remembered, not treated as the win condition: it is surfaced only if
+ * every sibling also fails or the shared budget runs out.
+ *
+ * One group deadline is computed here and passed to every sibling, so the
+ * documented single `--timeout` budget is literal across the fan-out.
+ *
+ * Under `--json`, multi-id waits emit ONE document
+ * (`{ results: [...], mode: "all"|"any" }`) with one entry per id instead
+ * of concatenated per-session documents. The single-id path still writes
+ * its own document byte-for-byte as before.
+ */
+async function runWaitMany(opts: {
+  endpoint: DaemonEndpoint
+  idOrNames: string[]
+  untilEvent: "turn-end" | "awaiting-input" | "exited" | "any"
+  totalTimeout: number
+  json: boolean
+  since?: number
+  any: boolean
+}): Promise<number> {
+  const { endpoint, idOrNames, untilEvent, totalTimeout, json, since, any } = opts
+  const deadline = Date.now() + totalTimeout
+  const shared = {
+    endpoint,
+    untilEvent,
+    totalTimeout,
+    json,
+    deadline,
+    ...(since !== undefined ? { since } : {}),
+  }
+  const mode = any ? "any" : "all"
+
+  if (!any) {
+    const entries: Array<Record<string, unknown> | undefined> = new Array(idOrNames.length)
+    const codes = await Promise.all(
+      idOrNames.map((idOrName, i) =>
+        runWaitSession({
+          ...shared,
+          idOrName,
+          ...(json
+            ? {
+                jsonWriter: (value: Record<string, unknown>) => {
+                  entries[i] = { idOrName, ...value }
+                },
+              }
+            : {}),
+        }),
+      ),
+    )
+    if (json) {
+      writeWaitJson({
+        results: idOrNames.map(
+          (idOrName, i) => entries[i] ?? { idOrName, exitCode: codes[i] },
+        ),
+        mode,
+      })
+    }
+    const failure = codes.find(code => code !== 0)
+    if (failure === undefined) return 0
+    return failure === -1 ? 2 : failure
+  }
+
+  const controller = new AbortController()
+  const codes: Array<number | undefined> = new Array(idOrNames.length)
+  const entries: Array<Record<string, unknown> | undefined> = new Array(idOrNames.length)
+  const texts: string[][] = idOrNames.map(() => [])
+
+  return new Promise<number>(resolve => {
+    let settled = false
+    let remaining = idOrNames.length
+
+    const firstFailure = (): number => {
+      const failure = codes.find(code => code !== undefined && code !== 0 && code !== -1)
+      return failure ?? 2
+    }
+
+    const finish = (code: number) => {
+      if (settled) return
+      settled = true
+      const exitCode = code === -1 ? 2 : code
+      if (json) {
+        writeWaitJson({
+          results: idOrNames.map(
+            (idOrName, i) => entries[i] ?? { idOrName, aborted: true },
+          ),
+          mode,
+        })
+      } else if (exitCode === 0) {
+        // Only the real match is surfaced; a sibling's remembered failure
+        // stays silent because it did not decide the group.
+        idOrNames.forEach((_, i) => {
+          if (codes[i] === 0) process.stdout.write(texts[i]?.join("") ?? "")
+        })
+      } else {
+        // Every sibling failed (or the shared budget ran out): surface
+        // their buffered messages together with the failure code.
+        idOrNames.forEach((_, i) => process.stdout.write(texts[i]?.join("") ?? ""))
+      }
+      resolve(exitCode)
+    }
+
+    idOrNames.forEach((idOrName, i) => {
+      runWaitSession({
+        ...shared,
+        idOrName,
+        signal: controller.signal,
+        ...(json
+          ? {
+              jsonWriter: (value: Record<string, unknown>) => {
+                entries[i] = { idOrName, ...value }
+              },
+            }
+          : {}),
+        textWriter: text => {
+          texts[i]?.push(text)
+        },
+      }).then(
+        code => {
+          codes[i] = code
+          if (code === 0) {
+            // A real match settles the group; only now are siblings aborted.
+            controller.abort()
+            finish(0)
+            return
+          }
+          if (json && entries[i] === undefined) entries[i] = { idOrName, exitCode: code }
+          remaining -= 1
+          if (remaining === 0) finish(firstFailure())
+        },
+        () => {
+          codes[i] = 3
+          if (json && entries[i] === undefined) entries[i] = { idOrName, exitCode: 3 }
+          remaining -= 1
+          if (remaining === 0) finish(firstFailure())
+        },
+      )
+    })
+  })
 }
 
 /**
@@ -3119,24 +3448,28 @@ function emitWaitIdle(
     status: string
     busy: boolean
     awaitingInput: boolean
+    turnsCompleted?: number
+    lastTurnReason?: string
+    lastTurnErrorMessage?: string
+    lastTurnEmpty?: boolean
   },
+  jsonWriter: WaitJsonWriter = writeWaitJson,
+  textWriter: WaitTextWriter = writeWaitText,
 ): number {
   if (json) {
-    process.stdout.write(
-      JSON.stringify(
-        {
-          idle: true,
-          sessionId: ctx.sessionId,
-          status: ctx.status,
-          busy: ctx.busy,
-          awaitingInput: ctx.awaitingInput,
-        },
-        null,
-        2,
-      ) + "\n",
-    )
+    jsonWriter({
+      idle: true,
+      sessionId: ctx.sessionId,
+      status: ctx.status,
+      busy: ctx.busy,
+      awaitingInput: ctx.awaitingInput,
+      ...(ctx.turnsCompleted !== undefined ? { turnsCompleted: ctx.turnsCompleted } : {}),
+      ...(ctx.lastTurnReason !== undefined ? { reason: ctx.lastTurnReason } : {}),
+      ...(ctx.lastTurnErrorMessage !== undefined ? { error: ctx.lastTurnErrorMessage } : {}),
+      ...(ctx.lastTurnEmpty === true ? { empty: true } : {}),
+    })
   } else {
-    process.stdout.write(
+    textWriter(
       `agentproto sessions wait: session "${ctx.idOrName}" is idle right now — no turn is ` +
         `in flight and nothing is queued to run (status: ${ctx.status}). There is nothing to ` +
         `wait for.\n`,
@@ -3148,17 +3481,17 @@ function emitWaitIdle(
 function emitWaitTimeout(
   json: boolean,
   ctx: { idOrName: string; timeoutMs: number },
+  jsonWriter: WaitJsonWriter = writeWaitJson,
+  textWriter: WaitTextWriter = writeWaitText,
 ): number {
   if (json) {
-    process.stdout.write(
-      JSON.stringify(
-        { timedOut: true, ...ctx, timeout: formatDuration(ctx.timeoutMs) },
-        null,
-        2,
-      ) + "\n",
-    )
+    jsonWriter({
+      timedOut: true,
+      ...ctx,
+      timeout: formatDuration(ctx.timeoutMs),
+    })
   } else {
-    process.stdout.write(
+    textWriter(
       `agentproto sessions wait: session "${ctx.idOrName}" timed out after ` +
         `${formatDuration(ctx.timeoutMs)}. Pass a longer --timeout ` +
         `(e.g. --timeout 30s) if the task is still running.\n`,
@@ -3343,6 +3676,7 @@ async function runExport(args: readonly string[]): Promise<number> {
     options: {
       json: { type: "boolean" },
       output: { type: "string", short: "o" },
+      harness: { type: "string" },
       adapter: { type: "string" },
       cwd: { type: "string" },
       source: { type: "string" },
@@ -3379,7 +3713,8 @@ async function runExport(args: readonly string[]): Promise<number> {
 
   const fmt = values.json ? "json" : "markdown"
   const qs = new URLSearchParams({ format: fmt })
-  if (values.adapter) qs.set("adapter", values.adapter)
+  const harness = harnessFlag(values, "agentproto sessions export")
+  if (harness) qs.set("harness", harness)
   if (values.cwd) qs.set("cwd", values.cwd)
   if (values.source) qs.set("source", values.source)
 
@@ -3436,6 +3771,7 @@ async function runStory(args: readonly string[]): Promise<number> {
     strict: true,
     options: {
       json: { type: "boolean" },
+      harness: { type: "string" },
       adapter: { type: "string" },
       cwd: { type: "string" },
       source: { type: "string" },
@@ -3472,7 +3808,8 @@ async function runStory(args: readonly string[]): Promise<number> {
   const endpoint = report.found
 
   const qs = new URLSearchParams({ format: "json" })
-  if (values.adapter) qs.set("adapter", values.adapter)
+  const harness = harnessFlag(values, "agentproto sessions story")
+  if (harness) qs.set("harness", harness)
   if (values.cwd) qs.set("cwd", values.cwd)
   if (values.source) qs.set("source", values.source)
 
@@ -3637,15 +3974,15 @@ async function readRuntimeJson(workspacePath: string): Promise<DaemonEndpoint | 
   return out.endpoint
 }
 
-async function fetchSessionsPage(
+async function fetchSessionsPage<T = SessionDescriptor>(
   baseUrl: string,
   query?: string,
-): Promise<{ sessions: SessionDescriptor[]; total?: number }> {
+): Promise<{ sessions: T[]; total?: number }> {
   const body = await httpGetJson(`${baseUrl}/sessions${query ? `?${query}` : ""}`)
   if (!body || !Array.isArray((body as { sessions?: unknown }).sessions)) {
     return { sessions: [] }
   }
-  const { sessions, total } = body as { sessions: SessionDescriptor[]; total?: unknown }
+  const { sessions, total } = body as { sessions: T[]; total?: unknown }
   return typeof total === "number" ? { sessions, total } : { sessions }
 }
 
@@ -3673,6 +4010,20 @@ function queuedCell(s: SessionDescriptor): string {
   return n > 0 ? `${n} queued` : ""
 }
 
+/** Ceiling for the LAUNCHED BY cell: long parent ids and labels must not
+ *  push COMMAND off the terminal. */
+const LAUNCHED_BY_COL_MAX = 40
+
+/** LAUNCHED BY column text: the derived "who launched this" text, with a
+ *  parent's label resolved from the SAME list (only when that row is present
+ *  and its label is non-empty). Empty when no provenance field is set. */
+function launchedByCell(s: SessionDescriptor, rows: readonly SessionDescriptor[]): string {
+  return launchedByText(launchedByOf(s), id => {
+    const match = rows.find(r => r.id === id)
+    return match?.label !== undefined && match.label !== "" ? match.label : undefined
+  })
+}
+
 /** Pinned sessions first; within the pinned group, the daemon's stored
  *  `pinnedOrder` asc (missing `pinnedOrder` last — legacy rows keep their
  *  incoming relative order); the non-pinned group is untouched. A stable
@@ -3692,6 +4043,40 @@ export function sortPinnedFirst(rows: readonly SessionDescriptor[]): SessionDesc
     })
 }
 
+/** `--fields a,b,c` → ["a","b","c"]; blanks dropped, repeats collapsed. */
+function parseFieldList(raw: string | undefined): string[] {
+  const names = (raw ?? "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  return [...new Set(names)]
+}
+
+function projectedCell(value: unknown): string {
+  if (value === undefined || value === null) return "-"
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+/** Plain table for rows the daemon projected with `?fields=`: exactly the
+ *  requested columns in the requested order. Projected rows are not full
+ *  `SessionDescriptor`s, so `printTable` can't render them. */
+function printProjectedTable(rows: readonly Record<string, unknown>[], fields: readonly string[]): void {
+  if (rows.length === 0) {
+    process.stdout.write("No sessions.\n")
+    return
+  }
+  const cells = rows.map(r => fields.map(f => projectedCell(r[f])))
+  const widths = fields.map((f, i) => Math.max(f.length, ...cells.map(c => c[i]!.length)))
+  const line = (parts: readonly string[]): string =>
+    parts
+      .map((p, i) => pad(p, widths[i]!))
+      .join("  ")
+      .trimEnd()
+  process.stdout.write(`\x1b[2m${line(fields.map(f => f.toUpperCase()))}\x1b[0m\n`)
+  for (const c of cells) process.stdout.write(line(c) + "\n")
+}
+
 function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void {
   if (rows.length === 0) {
     process.stdout.write("No sessions.\n")
@@ -3706,6 +4091,11 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
   // A session is only "N queued"-worthy once something actually sits in its
   // prompt FIFO — a column of dashes is noise for the common no-queue case.
   const showQueued = sorted.some(r => (r.queuedPrompts ?? 0) > 0)
+  // LAUNCHED BY earns its width only when some row actually names a launcher
+  // (parent, caller, operator or origin): otherwise the table stays exactly
+  // what it was before the column existed.
+  const launchedByTexts = sorted.map(r => launchedByCell(r, sorted))
+  const showLaunchedBy = launchedByTexts.some(t => t !== "")
   const widths = {
     pin: 3,
     id: Math.max(...sorted.map(r => r.id.length), 4),
@@ -3715,6 +4105,12 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
     queued: showQueued ? Math.max(...sorted.map(r => queuedCell(r).length), 6) : 0,
     status: Math.max(...sorted.map(r => statusLabel(r, attentionDelaySec).length), 8),
     age: 8,
+    launchedBy: showLaunchedBy
+      ? Math.max(
+          "LAUNCHED BY".length,
+          ...launchedByTexts.map(t => (t !== "" ? truncate(t, LAUNCHED_BY_COL_MAX) : "-").length),
+        )
+      : 0,
   }
   const header =
     pad("PIN", widths.pin) +
@@ -3730,12 +4126,15 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
     pad("STATUS", widths.status) +
     "  " +
     pad("AGE", widths.age) +
-    "  COMMAND"
+    "  " +
+    (showLaunchedBy ? pad("LAUNCHED BY", widths.launchedBy) + "  " : "") +
+    "COMMAND"
   process.stdout.write(`\x1b[2m${header}\x1b[0m\n`)
   const now = Date.now()
-  for (const r of sorted) {
+  for (const [i, r] of sorted.entries()) {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
     const tone = statusColour(r, attentionDelaySec)
+    const launchedBy = launchedByTexts[i]!
     process.stdout.write(
       pad(r.pinned === true ? "●" : "", widths.pin) +
         "  " +
@@ -3751,6 +4150,9 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
         "  " +
         pad(age, widths.age) +
         "  " +
+        (showLaunchedBy
+          ? pad(launchedBy !== "" ? truncate(launchedBy, LAUNCHED_BY_COL_MAX) : "-", widths.launchedBy) + "  "
+          : "") +
         truncate(r.command, 60) +
         "\n"
     )
@@ -5230,6 +5632,8 @@ async function runRestart(args: readonly string[]): Promise<number> {
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
       "prefer-native-terminal": { type: "boolean" },
+      model: { type: "string" },
+      "access-profile": { type: "string" },
       "auto-compact-at-tokens": { type: "string" },
     },
   })
@@ -5266,17 +5670,45 @@ async function runRestart(args: readonly string[]): Promise<number> {
     return 1
   }
 
-  // Augment with provider-fs-derived resume id when our own capture
-  // missed it (e.g., the session was killed before printing the
-  // resume hint), then build the body.
-  prev = await augmentWithFsResume(prev)
+  let autoCompactAtTokens: number | undefined
+  try {
+    autoCompactAtTokens = parseAutoCompactTokens(values["auto-compact-at-tokens"])
+  } catch (err) {
+    process.stderr.write(
+      `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 2
+  }
+  const daemonRestart = prev.kind === "agent-cli" && values["prefer-native-terminal"] !== true
+  if (!daemonRestart && (values.model || values["access-profile"])) {
+    process.stderr.write("agentproto sessions restart: model and access-profile overrides require an agent-cli restart.\n")
+    return 2
+  }
+  // The old /sessions/agent respawn dropped the model, wallet, model policy,
+  // parent and other immutable spawn fields. The daemon's restart endpoint
+  // carries and validates them as one operation. Keep the native-terminal path
+  // only for explicit opt-in and original PTY sessions.
   let built: RestartBody
   try {
-    built = buildRestartBody(
-      prev,
-      values["prefer-native-terminal"] === true,
-      parseAutoCompactTokens(values["auto-compact-at-tokens"]),
-    )
+    built = daemonRestart
+      ? {
+          url: `${endpoint.url}/sessions/${encodeURIComponent(prev.id)}/restart`,
+          body: {
+            ...(values.model ? { model: values.model } : {}),
+            ...(values["access-profile"] ? { access: { profileRef: values["access-profile"] } } : {}),
+            ...(prev.contextContinuity || autoCompactAtTokens !== undefined
+              ? { contextContinuity: {
+                  ...prev.contextContinuity,
+                  ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
+                } }
+              : {}),
+          },
+        }
+      : buildRestartBody(
+          await augmentWithFsResume(prev),
+          values["prefer-native-terminal"] === true,
+          autoCompactAtTokens,
+        )
   } catch (err) {
     process.stderr.write(
       `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -5284,8 +5716,9 @@ async function runRestart(args: readonly string[]): Promise<number> {
     return 2
   }
   const body = built.body
-  const url =
-    built.url === "__pty__"
+  const url = built.url.startsWith("http")
+    ? built.url
+    : built.url === "__pty__"
       ? `${endpoint.url}/sessions/terminal`
       : `${endpoint.url}/sessions/agent`
 
@@ -5333,7 +5766,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
   } else {
     const lineage = resumeFallback
       ? "fresh — resume not available"
-      : describeResumePath(prev, {
+      : next.resumeVia || describeResumePath(prev, {
           preferNativeTerminal: values["prefer-native-terminal"] === true,
         }) || "fresh shape"
     process.stdout.write(
@@ -5373,16 +5806,25 @@ export interface ProfileSwitchTarget {
  * to). A session with no billing axis (a PTY/command session) can never
  * carry a profile, so it is reported as skipped rather than restarted (the
  * daemon would refuse it anyway).
+ *
+ * Only ALIVE sessions (running / starting) move by default: restarting a dead
+ * session revives it, which a wallet switch must never do behind the
+ * operator's back (a 2026-11-12 dry-run would have relaunched ~70 dead
+ * sessions). `includeDead: true` (`--include-dead`) restores the old
+ * every-status behaviour.
  */
 export function planProfileSwitch(
   sessions: readonly SessionDescriptor[],
   from: string,
+  opts: { includeDead?: boolean } = {},
 ): { targets: ProfileSwitchTarget[]; skipped: ProfileSwitchTarget[] } {
   const targets: ProfileSwitchTarget[] = []
   const skipped: ProfileSwitchTarget[] = []
   for (const session of sessions) {
     const profileRef = session.accessProfile?.profileRef
     if (!profileRef || profileRef !== from) continue
+    const alive = session.status === "running" || session.status === "starting"
+    if (!alive && opts.includeDead !== true) continue
     const label = session.name || session.label || session.id
     if (session.kind !== "agent-cli") {
       skipped.push({ id: session.id, label, reason: "not an agent session (no billing axis)" })
@@ -5415,6 +5857,7 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
       to: { type: "string" },
       json: { type: "boolean" },
       "dry-run": { type: "boolean" },
+      "include-dead": { type: "boolean" },
       "no-color": { type: "boolean" },
     },
   })
@@ -5451,14 +5894,16 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
     return 1
   }
 
-  const { targets, skipped } = planProfileSwitch(sessions, from)
+  const includeDead = values["include-dead"] === true
+  const { targets, skipped } = planProfileSwitch(sessions, from, { includeDead })
 
   if (targets.length === 0) {
     if (values.json) {
       process.stdout.write(JSON.stringify({ from, to, moved: [], skipped }, null, 2) + "\n")
     } else {
       process.stdout.write(
-        `agentproto sessions switch-profile: no session bills against "${from}": nothing to move.\n`,
+        `agentproto sessions switch-profile: no ${includeDead ? "" : "alive "}session bills against "${from}": nothing to move.` +
+          (includeDead ? "\n" : " (dead sessions are left alone; --include-dead moves them too)\n"),
       )
       for (const row of skipped) {
         process.stdout.write(`  skipped ${row.id} (${row.label}): ${row.reason}\n`)

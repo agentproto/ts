@@ -95,6 +95,47 @@ describe("Approvals HTTP: request / list / get / consume", () => {
     })
   })
 
+  it("POST /approvals keeps a wake target and drops a malformed one", async () => {
+    await withServer([], async (base, engine) => {
+      const post = async (wake: unknown): Promise<string> => {
+        const res = await fetch(`${base}/approvals`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "send", title: "Send", preview: {}, payload: { x: 1 }, wake }),
+        })
+        return ((await res.json()) as { id: string }).id
+      }
+      expect(engine.get(await post({ sessionId: "sess_a", agent: " emploi " }))?.wake).toEqual({
+        sessionId: "sess_a",
+        agent: "emploi",
+      })
+      expect(engine.get(await post({ sessionId: 7 }))?.wake).toBeUndefined()
+      expect(engine.get(await post("sess_a"))?.wake).toBeUndefined()
+    })
+  })
+
+  it("POST /approvals stores reach: false or { urgency }, accepts urgency now, refuses anything else", async () => {
+    await withServer([], async (base, engine) => {
+      const post = (reach: unknown) =>
+        fetch(`${base}/approvals`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "send", title: "Send", preview: {}, payload: { x: 1 }, reach }),
+        })
+      for (const reach of [false, { urgency: "now" }, { urgency: "normal" }, { urgency: "digest" }]) {
+        const res = await post(reach)
+        expect(res.status).toBe(201)
+        expect(engine.get(((await res.json()) as { id: string }).id)?.reach).toEqual(reach)
+      }
+      for (const bad of [true, "now", { urgency: "later" }, { urgency: "now", extra: 1 }, null]) {
+        const res = await post(bad)
+        expect(res.status).toBe(400)
+        expect(((await res.json()) as { error: string }).error).toBe("invalid_reach")
+      }
+      expect(engine.list()).toHaveLength(4)
+    })
+  })
+
   it("GET /approvals/:id 404s on an unknown id", async () => {
     await withServer([], async base => {
       const res = await fetch(`${base}/approvals/apr_ghost`)

@@ -156,6 +156,17 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "mastra-controller",
+    name: "Mastra AgentController",
+    description:
+      "A Mastra AgentController built in-process from a mastra.agent-controller/v1 manifest " +
+      "(the `manifest` option): modes with plan to execute transitions, subagents, permissions. " +
+      "Tool approvals, questions and plan approvals surface as agent prompts.",
+    packageName: "@agentproto/adapter-mastra-controller",
+    hint: "mastra · in-process · modes",
+  },
+  {
+    type: "agent-cli",
     slug: "openclaw",
     name: "OpenClaw",
     description:

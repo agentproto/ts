@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { identityFrontmatterSchema } from "./schema.js"
 import type { IdentityDefinition, IdentityHandle } from "./types.js"
 

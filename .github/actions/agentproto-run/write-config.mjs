@@ -20,7 +20,7 @@
  *     (`model` / `base_url` / `thinking`). `resolveSpawnDefaults` shallow-merges
  *     `defaults.adapters.<slug>.options` into the spawn's effective options
  *     (packages/runtime/src/session-spawn.ts), and `compose.ts` in
- *     `@agentproto/driver-agent-cli` renders each declared option's
+ *     `@agentproto/harness` renders each declared option's
  *     `bin_args_template` (`model` → `--model <id>`) / `env` (`base_url` →
  *     `ANTHROPIC_BASE_URL`) into the adapter subprocess's argv + env
  *     (define-agent-cli.ts merges `composed.env` over the child env). This is

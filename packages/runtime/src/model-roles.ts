@@ -83,15 +83,15 @@ export const MODEL_ROLE_PRESETS: Readonly<Record<string, ModelRolePreset>> = {
     roles: { "review.small": "claude-haiku-5-5", "review.large": "claude-haiku-5-5" },
   },
   "go-free": {
-    description: "OpenCode Go free model (longcat) for every review: zero cost, spawned on the opencode adapter.",
+    description: "OpenCode Go free model (beam) for every review: zero cost, spawned on the opencode adapter.",
     roles: {
-      "review.small": "opencode-go/longcat-2.5-preview-free",
-      "review.large": "opencode-go/longcat-2.5-preview-free",
+      "review.small": "opencode-go/beam-free",
+      "review.large": "opencode-go/beam-free",
     },
   },
   "free-sonnet": {
     description: "OpenCode Go free model for small residuals, Sonnet for large ones and retries.",
-    roles: { "review.small": "opencode-go/longcat-2.5-preview-free", "review.large": "claude-sonnet-5-5" },
+    roles: { "review.small": "opencode-go/beam-free", "review.large": "claude-sonnet-5-5" },
   },
 }
 

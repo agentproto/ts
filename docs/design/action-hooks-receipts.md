@@ -18,83 +18,83 @@ attempt. The AIP-71 local dedupe key is
 
 ### File and role
 
-The durable precedent is `packages/runtime/src/sentinel-webhook-outbox.ts`. It
+The durable precedent is `packages/sentinel/src/sentinel-webhook-outbox.ts`. It
 exists for `webhook` sentinel events whose delivery is external to the daemon:
-`packages/runtime/src/sentinel-webhook-outbox.ts:2` ` * SentinelWebhookOutbox`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` ` * SentinelWebhookOutbox`.
 The module doc states the core invariant, that a row is appended durably before
-the upstream is acknowledged: `packages/runtime/src/sentinel-webhook-outbox.ts:5` ` * Why an outbox: the runtime's `processEvents` marks an event `seen` the`.
+the upstream is acknowledged: `packages/sentinel/src/sentinel-webhook-outbox.ts` ` * Why an outbox: the runtime's `processEvents` marks an event `seen` the`.
 
 ### Public API
 
 The public surface is declared on one interface:
-`packages/runtime/src/sentinel-webhook-outbox.ts:104` `export interface SentinelWebhookOutbox {`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `export interface SentinelWebhookOutbox {`.
 It provides `enqueue` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:118` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`,
 `dispatch` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:122` `  dispatch(): Promise<void>`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  dispatch(): Promise<void>`,
 `resumeDeliveries` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:125` `  resumeDeliveries(): Promise<void>`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  resumeDeliveries(): Promise<void>`,
 `sweep` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:128` `  sweep(): void`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  sweep(): void`,
 `rows` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:129` `  rows(): PersistedOutboxRow[]`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  rows(): PersistedOutboxRow[]`
 and `flushSync` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:131` `  flushSync(): void`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  flushSync(): void`.
 
 ### Record shape
 
 The persisted row is `SentinelWebhookOutboxRow` plus the envelope and original
 event. The base type starts at
-`packages/runtime/src/sentinel-webhook-outbox.ts:54` `export interface SentinelWebhookOutboxRow {`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `export interface SentinelWebhookOutboxRow {`
 and carries `requestId` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:59` `  requestId: string`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  requestId: string`,
 `eventId` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:60` `  eventId: string`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  eventId: string`,
 the exact wire body at
-`packages/runtime/src/sentinel-webhook-outbox.ts:63` `  bodyBytes: string`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  bodyBytes: string`,
 an always-null cursor at
-`packages/runtime/src/sentinel-webhook-outbox.ts:65` `  cursor: null`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  cursor: null`,
 attempt state at
-`packages/runtime/src/sentinel-webhook-outbox.ts:67` `  deliveryState: { attempts: number; lastError?: string; lastAt?: string }`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  deliveryState: { attempts: number; lastError?: string; lastAt?: string }`,
 status at
-`packages/runtime/src/sentinel-webhook-outbox.ts:68` `  status: SentinelWebhookOutboxStatus`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  status: SentinelWebhookOutboxStatus`,
 creation time at
-`packages/runtime/src/sentinel-webhook-outbox.ts:74` `  createdAt: number`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  createdAt: number`
 and terminal time at
-`packages/runtime/src/sentinel-webhook-outbox.ts:76` `  terminalAt?: number`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  terminalAt?: number`.
 The persisted extension at
-`packages/runtime/src/sentinel-webhook-outbox.ts:83` `export type PersistedOutboxRow = SentinelWebhookOutboxRow & {`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `export type PersistedOutboxRow = SentinelWebhookOutboxRow & {`
 keeps the full `envelope` and the original `event` alongside the row.
 
 Rows are keyed in memory by a string built from sentinel and event:
-`packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}``.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}``.
 The persisted JSON is a map keyed by that same string, loaded at construction:
-`packages/runtime/src/sentinel-webhook-outbox.ts:265` `    for (const [key, row] of rows.entries()) out[key] = row`.
+`packages/runtime/src/durable-row-file.ts` `    for (const [key, row] of rows.entries()) out[key] = row`.
 
 ### Storage format and location
 
 The default file is `~/.agentproto/sentinel-webhook-outbox.json`:
-`packages/runtime/src/sentinel-webhook-outbox.ts:199` `  const filePath = opts.filePath ?? resolve(agentprotoHome(), "sentinel-webhook-outbox.json")`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  const filePath = opts.filePath ?? resolve(agentprotoHome(), "sentinel-webhook-outbox.json")`.
 The body is pretty-printed JSON with a trailing newline:
-`packages/runtime/src/sentinel-webhook-outbox.ts:279` `      const body = JSON.stringify(snapshot(), null, 2) + "\n"`.
+`packages/runtime/src/durable-row-file.ts` `      const body = JSON.stringify(snapshot(), null, 2) + "\n"`.
 
 ### Atomicity and locking
 
 Writes use the shared durable file writer:
-`packages/runtime/src/sentinel-webhook-outbox.ts:280` `      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })`.
+`packages/runtime/src/durable-row-file.ts` `      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })`.
 That helper is documented as tmp plus fsync plus rename plus parent directory
 fsync: `packages/runtime/src/durable-file.ts:2` ` * Crash-durable file writes: tmp file → fsync → rename → fsync of the parent`.
 It defaults to mode `0o600`:
 `packages/runtime/src/durable-file.ts:42` `  const mode = opts.mode ?? 0o600`.
 The outbox serializes all writes through one promise chain:
-`packages/runtime/src/sentinel-webhook-outbox.ts:257` `  // All writes ride ONE serialized chain so a slow older snapshot can never`
-and `packages/runtime/src/sentinel-webhook-outbox.ts:270` `  let writeTail: Promise<void> = Promise.resolve()`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  // All writes ride one serialized chain. Enqueue awaits its write (durable`
+and `packages/runtime/src/durable-row-file.ts` `  let writeTail: Promise<void> = Promise.resolve()`.
 Enqueue awaits its own write, so durability precedes the caller's ack:
-`packages/runtime/src/sentinel-webhook-outbox.ts:463` `      enqueueDispatch()` is reached only after the awaited persist, and a failed
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      enqueueDispatch()` is reached only after the awaited persist, and a failed
 persist rolls the row back and rejects, cited in the interface contract at
-`packages/runtime/src/sentinel-webhook-outbox.ts:118` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`.
 Status transitions use a debounced write, while enqueue never debounces:
-`packages/runtime/src/sentinel-webhook-outbox.ts:139` `  /** Debounce interval for the non-critical (status-transition) disk writes.`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  /** Debounce interval for the non-critical (status-transition) disk writes.`.
 
 ### Retry and backoff
 
@@ -108,26 +108,26 @@ The loop sleeps between attempts:
 `packages/runtime/src/webhook-egress/delivery.ts:165` `    if (attempt > 0) await sleep(deliveryBackoffDelay(attempt))`.
 A thrown dispatch is treated as crash-shaped: the row stays `pending`, the
 event stays unacked, and startup re-dispatches it:
-`packages/runtime/src/sentinel-webhook-outbox.ts:376` `      // `resumeDeliveries()` re-runs it by exact bytes next startup.`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      // `resumeDeliveries()` re-runs it by exact bytes next startup.`.
 A final negative outcome is terminal per the retry cap:
-`packages/runtime/src/sentinel-webhook-outbox.ts:362` `        row.status = "dead"`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `        row.status = "dead"`.
 
 ### Retention and compaction
 
 Delivered rows are reaped after 24 hours:
-`packages/runtime/src/sentinel-webhook-outbox.ts:171` `const DELIVERED_REAP_MS = 24 * 60 * 60 * 1000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const DELIVERED_REAP_MS = 24 * 60 * 60 * 1000`.
 Pending rows age out after 7 days:
-`packages/runtime/src/sentinel-webhook-outbox.ts:175` `const PENDING_AGE_OUT_MS = 7 * 24 * 60 * 60 * 1000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const PENDING_AGE_OUT_MS = 7 * 24 * 60 * 60 * 1000`.
 The file is capped at 2000 rows:
-`packages/runtime/src/sentinel-webhook-outbox.ts:178` `const ROW_CAP = 2_000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const ROW_CAP = 2_000`.
 Sweep marks an old pending row dead with reason `age_out`:
-`packages/runtime/src/sentinel-webhook-outbox.ts:483` `          row.status = "dead"`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `          row.status = "dead"`.
 Sweep also reaps delivered rows and trims beyond the cap, starting at
-`packages/runtime/src/sentinel-webhook-outbox.ts:482` `        if (row.status === "pending" && now - row.createdAt >= PENDING_AGE_OUT_MS) {`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `        if (row.status === "pending" && now - row.createdAt >= PENDING_AGE_OUT_MS) {`.
 Terminal eviction picks the oldest terminal row:
-`packages/runtime/src/sentinel-webhook-outbox.ts:334` `      row.status = "dead"` is the expiry path, while the cap eviction helper
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      row.status = "dead"` is the expiry path, while the cap eviction helper
 is `oldestTerminalRowKey`, cited through the enqueue cap branch at
-`packages/runtime/src/sentinel-webhook-outbox.ts:178` `const ROW_CAP = 2_000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const ROW_CAP = 2_000`.
 
 ### How callers use it
 
@@ -233,7 +233,13 @@ Durable fact: `archived` and `archivedAt` are descriptor fields, cited at
 `packages/runtime/src/sessions.ts:1938` `  archivedAt?: string`.
 Replay after a crash is state-safe but not event-safe: the flag converges, but
 each replay re-fires retirement listeners. A reaction targeting archive would
-need its own receipt dedupe, not the primitive.
+need its own receipt dedupe, not the primitive. The `session:archive` action
+provides that dedupe in the handler through the persisted `archived` flag
+(`packages/runtime/src/action-hooks/session-archive-action.ts`), and the archive
+primitive itself is unchanged. The flag is written on the descriptor persist
+debounce (1.5 seconds), so a crash inside that window can lose it while the
+`running` receipt survives; the replay then archives again and the listeners see
+one more `archived` retirement, which they absorb because they converge.
 
 ### Sandbox checkpoint
 
@@ -410,7 +416,7 @@ the prompt, the transcript, or credentials.
 Redaction rule: before writing any error or outcome reference, apply the same
 URL-redaction discipline the outbox uses for delivery errors. The outbox's
 delivery status is documented as carrying no URL, body or secret:
-`packages/runtime/src/sentinel-webhook-outbox.ts:88` `/** Per-sentinel delivery health, derived from the outbox rows. Carries no`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `/** Per-sentinel delivery health, derived from the outbox rows. Carries no`.
 Receipts persist only a redacted reason string and an opaque reference.
 
 ### Relationship to the existing outbox: share the mechanics, keep two stores
@@ -423,7 +429,7 @@ status vocabulary. It does not generalize `sentinel-webhook-outbox.ts`, and the
 webhook outbox does not become an adapter of the receipt store.
 
 The two stores share the durable-row mechanics, extracted from the outbox into
-one module (proposed `packages/runtime/src/durable-row-file.ts`, next to the
+one module (now `packages/runtime/src/durable-row-file.ts`, next to the
 existing `durable-file.ts`). The extraction is a behaviour-preserving refactor
 of the outbox: its public interface, row shape, file format and tests do not
 change, and its existing tests are the guard.
@@ -433,7 +439,7 @@ sentinels:
 
 - The load of a JSON map keyed by an opaque string, and the pretty-printed
   snapshot written through `writeFileDurable` (mode `0o600`, tmp plus fsync
-  plus rename), cited in section 1.
+  plus rename) in `packages/runtime/src/durable-row-file.ts`, cited in section 1.
 - The single serialized write chain and the generation guard that keeps a slow
   older snapshot from overwriting a newer one, cited in section 1.
 - The persist-before-ack rule for a new row, with the rollback of the
@@ -463,10 +469,10 @@ The receipt store owns, and the outbox never sees:
 The outbox keeps, unchanged:
 
 - Its key, built from sentinel and event:
-  `packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string =>`.
+  `packages/sentinel/src/sentinel-webhook-outbox.ts` `  const rowKey = (sentinelId: string, eventId: string): string =>`.
 - Its row shape (`bodyBytes`, `cursor`, `envelope`, `event`, `deliveryState`)
   and its status vocabulary, which is `pending | delivered | dead`
-  (`packages/runtime/src/sentinel-webhook-outbox.ts:52` `export type SentinelWebhookOutboxStatus = "pending"`).
+  (`packages/sentinel/src/sentinel-webhook-outbox.ts` `export type SentinelWebhookOutboxStatus = "pending"`).
   The receipt status is a different vocabulary, `pending | running | done |
   failed | dead`: `done` plays the role of the outbox `delivered`, and
   `running` and `failed` exist only in receipts.
@@ -526,6 +532,16 @@ depth reaches the configured cap, for example 4, the receipt is created in
 `dead` with reason `recursion_cap` and the target is not run. This keeps a
 reaction that emits `turn-end` from creating an unbounded chain.
 
+While a target runs, the runner enters an async reaction context carrying the
+binding id, the depth a spawned session carries and the receipt key. Any spawn
+made inside that context is stamped with origin `reaction:<binding-id>` (or the
+author-set origin) and `meta.reactionDepth`/`meta.causedByEventId`, so the next
+completion derives the next depth. The descriptor meta is string valued, so the
+depth is stored as a decimal string and read back as a number in the session
+facts. The remaining limit is a session started by
+a detached process that does not inherit the async context, for example a spawn
+done by a separate OS process: that session is not stamped.
+
 ## 6. Proposal: boot reconciliation
 
 Boot reconciliation is a pass that runs after the session registry has loaded
@@ -543,8 +559,9 @@ just been revived.
 
 Which receipts are re-driven:
 
-- `pending` receipts whose target is declared idempotent. They never started,
-  so re-driving is safe.
+- Every `pending` receipt, regardless of target idempotency: a persisted
+  `pending` row never started, because the `running` transition is durable
+  before any target runs. Only `running` rows depend on `idempotent`.
 - `running` receipts whose target is declared idempotent and whose idempotency
   is proven by a durable target ledger, as the brain ledger is. The receipt key
   and the target's own dedupe both apply.
@@ -780,11 +797,12 @@ export function createReactionReceiptStore(opts?: ReactionReceiptStoreOptions): 
 Proposed file: `packages/runtime/src/action-hooks/reaction-runner.ts`.
 
 ```ts
-import type { SessionEventBus, SessionEvent } from "../session-event-bus.js"
-import type { ReactionReceiptStore, ReactionReceipt } from "./receipt-store.js"
+import type { SessionEvent, SessionEventBus } from "../session-event-bus.js"
+import type { ReactionReceipt, ReactionReceiptStore } from "./receipt-store.js"
 
 export interface ReactionTarget {
   readonly actionId: string
+  /** true: re-running the same occurrence is safe because the target dedupes by its own durable ledger. */
   readonly idempotent: boolean
   run(input: ReactionTargetInput): Promise<ReactionTargetOutcome>
 }
@@ -814,38 +832,140 @@ export interface ReactionBinding {
   maxAttempts: number
   reactionDepth: number
   target: ReactionTarget
+  /** The AIP-71 occurrence id of this event for this binding, or undefined to ignore the event. */
+  occurrenceIdOf(event: SessionEvent): string | undefined
+  /** Optional filter evaluated BEFORE any receipt exists: false (or a throw, which is logged) means "this binding does not apply to this event", no receipt is created. Omitted means applies. Live events only, never consulted at boot reconciliation. */
+  shouldHandle?(event: SessionEvent): boolean | Promise<boolean>
+  /** Boot reconciliation only: is the trigger of a still `pending` receipt valid? Omitted means valid. false marks the receipt dead with reason "stale_trigger" and never runs it. */
+  isTriggerValid?(receipt: ReactionReceipt): boolean | Promise<boolean>
 }
 
 export interface ReactionRunnerOptions {
   bus: SessionEventBus
   store: ReactionReceiptStore
   bindings: readonly ReactionBinding[]
+  /** Default Date.now. */
   nowMs?: () => number
+  /** Default 4. */
   maxReactionDepth?: number
+  /** Default 4. */
   maxConcurrent?: number
+  /** Default min(30_000 * 2 ** (attempt - 1), 600_000), deterministic, no jitter. */
+  backoffMs?: (attempt: number) => number
+  /** Default 30_000: period of the retry/sweep tick started by start(). */
+  retryIntervalMs?: number
+  /** Injectable for tests. */
+  setInterval?: typeof setInterval
+  /** Injectable for tests. */
+  clearInterval?: typeof clearInterval
+  /** Default console.warn; prefix "[reaction-runner]". */
   log?: (line: string) => void
-}
-
-export interface ReactionRunner {
-  start(): void
-  stop(): void
-  handleEvent(event: SessionEvent, occurrenceId: string): Promise<void>
-  reconcileOnBoot(): Promise<void>
-  status(): ReactionRunnerStatus[]
 }
 
 export interface ReactionRunnerStatus {
   bindingId: string
   pending: number
   running: number
+  failed: number
   dead: number
   lastError?: string
+}
+
+export interface ReactionRunner {
+  /** Idempotent: subscribe each binding's event on the bus and start the retry tick. */
+  start(): void
+  /** Idempotent: unsubscribe and clear the tick; never throws. */
+  stop(): void
+  handleEvent(event: SessionEvent, occurrenceId: string): Promise<void>
+  /** Re-run `failed` receipts whose nextAttemptAt is due, then store.sweep(). */
+  retryDue(): Promise<void>
+  reconcileOnBoot(): Promise<void>
+  status(): ReactionRunnerStatus[]
 }
 
 export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunner
 ```
 
-## 10. Open questions and everything NOT VERIFIED
+## 10. Implemented wiring: event routines and the live binding set
+
+`ReactionRunner` no longer has a fixed binding set. `replaceBindings(next)` swaps
+it, and `handleEvent`, `retryDue`, `reconcileOnBoot` and `status` read the
+current set. A run already in flight keeps the binding it started with, and a
+receipt whose binding is no longer present is left untouched. If that binding
+returns later, its pending receipts resume at the next boot reconcile and
+its failed receipts resume at the next retry tick.
+
+The daemon builds the list from `brainIngestReaction.binding`, the builtin
+`clerkReaction.binding` and every enabled AIP-41 event routine, in input order.
+The clerk binding is bound to `agentproto:clerk-due`. Its target is not
+idempotent: a pass is dispatched at most once per firing, a failed pass is
+retried with backoff, a stale pending receipt dies at boot reconciliation, and a
+`running` receipt is not replayed. It is opt-in per workspace through
+`defaults.reactions.clerk.workspaces`, so with no slug set the legacy clerk
+dispatch remains the only owner. `createReactionWiring.refresh()` refuses a
+routine that cannot convert or whose id is already taken, reports it under
+`reactions.refused` in the `reconcile()` result (and in `routine_reconcile`
+output), and logs each distinct refusal once. `refresh()` never throws: a
+throwing scan or runner keeps the previous live set and reports the failure
+under binding id `*`.
+
+The documented `session.<field>` filter paths are `session.kind`,
+`session.isChild`, `session.workspaceSlug`, `session.origin`, `session.adapter`
+(the descriptor `adapterSlug`) and `session.label`. Undefined fields are omitted,
+so a filter on one never matches.
+The additional filter paths `session.reactionDepth` and
+`session.causedByEventId` follow the same rule.
+
+Known limits: no event context for tool, workflow or agent arms;
+(only a registered action handler receives the occurrence); a session started by a
+detached process that does not inherit the async reaction context, for example
+a spawn done by a separate OS process, is not stamped, so a chain through that
+process is not bounded by the depth cap; the daemon action registry contains
+only the builtin `session:clerk-pass` handler, so every other `action` arm is
+refused until a handler is registered; an event arriving between runner start
+and the first reconcile only reaches builtin bindings.
+
+Rollback: set `enabled: false` on the routine and run `routine_reconcile`.
+
+### Reaction health and trace lines
+
+`ReactionRunner.health()` is a synchronous, side-effect-free read of the
+retained receipt rows plus the in-memory skip counters. It reports
+`generatedAt`, `started`, `maxReactionDepth`, `maxConcurrent`, per-live-binding
+counts (`pending`, `running`, `done`, `failed`, `dead`), `oldestQueuedAgeMs`
+(the oldest pending or failed row), `latencyMs` (`count`, `p50`, `p95`, `max`
+from completed done rows), `maxDepth`, `retries`, `deadReasons`, `lastError`
+and `skipped`; plus `orphans` grouped by a binding id that is no longer live
+and process-wide `totals`. Percentiles use nearest rank, so `p50` and `p95`
+are always members of the sample. Receipts whose binding was removed stay in
+the store and appear under `orphans`, not under `bindings`.
+
+The runner writes one structured line per terminal transition it performs in
+`invokeTarget` and in the recursion cap branch, on a separate `trace` channel
+(default `console.info`):
+
+```
+[reaction-runner] receipt=<receiptKey> binding=<bindingId> status=<done|failed|dead> depth=<n> attempt=<n> latencyMs=<n> queueAgeMs=<n> retryAt=<epoch ms> reason=<text>
+```
+
+`latencyMs` is the time since the attempt that just ended started, and
+`queueAgeMs` is the time from receipt creation to the start of that attempt, so
+it includes the backoff of earlier attempts. `retryAt` is present only on
+`failed`, and `reason` only on `failed` and
+`dead`. The reason is the first 120 characters of the store-redacted
+`lastError`, with whitespace runs replaced by `_` so the line stays parseable.
+
+`GET /reactions` returns the health object plus `wiring` (`active` and
+`refused`) when the HTTP server was built with the reactions option; without
+the option the route 404s. It is a read-only GET; no other method is handled by
+the route.
+
+Limits of the health surface: latency covers the last attempt only, not every attempt of a
+retried receipt; the retained window is the receipt store's retention, with
+done rows reaped after 24 h; `skipped` is memory only and resets at boot; there
+is no MCP tool and no CLI command for this read model yet.
+
+## 11. Open questions and everything NOT VERIFIED
 
 Open questions:
 

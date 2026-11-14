@@ -87,11 +87,12 @@ const requestText = parsed.freeText.replace(/--\S+/g, '').trim()
 
 if (PARSE_ONLY) {
   // Sandbox-capable verbs (the ones the agentproto-workflows cover) route to
-  // the sandboxed lane WHEN a sandbox is configured (reviewerSandbox in
-  // agentic-review.json) and the target fits (review/fix need a PR).
+  // the sandboxed lane WHEN a sandbox is configured (reviewerSandbox or a
+  // reviewerPlacement ladder in agentic-review.json) and the target fits (review/fix need a PR).
   // `/fix --pr` forces pr-delivery — surfaced so the workflow can pass it.
   const SANDBOX_VERBS = new Set(['review', 'fix', 'pr', 'implement'])
-  const sandboxConfigured = Boolean(String(config.reviewerSandbox ?? '').trim())
+  const sandboxConfigured =
+    Boolean(String(config.reviewerSandbox ?? '').trim()) || Boolean(config.reviewerPlacement?.ladder?.length)
   const targetOk =
     parsed.verb === 'pr' || parsed.verb === 'implement' ? true : Boolean(PR_NUMBER)
   const sandboxable = SANDBOX_VERBS.has(parsed.verb) && sandboxConfigured && targetOk
@@ -189,7 +190,7 @@ switch (parsed.verb) {
     if (!PR_NUMBER) { postComment('`/review` only works on a pull request.'); break }
     // Fail closed: review-pr.mjs bills ANTHROPIC_API_KEY (pay-per-token). Reviews
     // run only through the sandboxed subscription lane (ci-reviewer / agent-command.yml).
-    postComment('`/review` runs on the Claude-subscription sandbox lane only; it is unavailable here (no metered-key fallback). Check that `reviewerSandbox` is configured in `.github/agentic-review.json`.')
+    postComment('`/review` runs on the Claude-subscription sandbox lane only; it is unavailable here (no metered-key fallback). Check that `reviewerSandbox` or `reviewerPlacement` is configured in `.github/agentic-review.json`.')
     break
   }
 

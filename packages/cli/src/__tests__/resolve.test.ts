@@ -19,32 +19,32 @@ import { CATALOG } from "../registry/catalog.js"
 
 // Regression test for a real bug: `createProprietaryProtocolArm` (inside
 // @agentproto/driver-agent-cli, a package that deliberately does NOT
-// depend on any specific adapter) re-imports `handle.adapter` a second
+// depend on any specific adapter) re-imports `handle.harness` a second
 // time at session-start. A bare package-name specifier resolves fine from
 // THIS module (packages/cli lists every known adapter as a
 // devDependency) but fails to resolve from driver-agent-cli's own module
 // location, because Node's bare-specifier resolution walks up ancestor
 // `node_modules` starting from the IMPORTING module, not this one.
 // `resolveAdapter` must rewrite `protocol: "proprietary"` handles'
-// `adapter` field to an absolute, fully-resolved URL so the second import
+// `harness` field to an absolute, fully-resolved URL so the second import
 // always succeeds regardless of which module performs it.
 describe("resolveAdapter — proprietary adapter re-import fix", () => {
-  it("rewrites a proprietary handle's `adapter` to an absolute, importable URL", { timeout: 15_000 }, async () => {
+  it("rewrites a proprietary handle's `harness` to an absolute, importable URL", { timeout: 15_000 }, async () => {
     const resolved = await resolveAdapter("mastracode-inprocess")
     expect(resolved.handle.protocol).toBe("proprietary")
-    expect(resolved.handle.adapter).toMatch(/dist\/index\.mjs$/)
+    expect(resolved.handle.harness).toMatch(/dist\/index\.mjs$/)
 
     // The actual failure mode this fix closes: a SECOND import of
-    // `handle.adapter`, from any module, must succeed — not just the one
+    // `handle.harness`, from any module, must succeed — not just the one
     // resolveAdapter() itself already performed above.
-    const mod = (await import(resolved.handle.adapter!)) as Record<string, unknown>
+    const mod = (await import(resolved.handle.harness!)) as Record<string, unknown>
     expect(typeof mod.createAgentCliClient).toBe("function")
   })
 
-  it("leaves a non-proprietary handle's `adapter` field untouched (undefined)", async () => {
+  it("leaves a non-proprietary handle's `harness` field untouched (undefined)", async () => {
     const resolved = await resolveAdapter("mastracode")
     expect(resolved.handle.protocol).toBe("print")
-    expect(resolved.handle.adapter).toBeUndefined()
+    expect(resolved.handle.harness).toBeUndefined()
   })
 })
 
@@ -403,6 +403,13 @@ describe("resolveAdapter — workspace-local resolution (fixture, deterministic)
         const fixture = adapters.find((a) => a.slug === "fixture-workspace-adapter")
         expect(fixture).toBeDefined()
         expect(fixture?.packageName).toBe("@agentproto/adapter-fixture-workspace-adapter")
+        // Nothing was loaded from npm for a workspace-local adapter, but the
+        // reported name must still be the npm-installable adapter- name,
+        // never a harness- one (no @agentproto/harness-* package exists on
+        // npm today, so reinstall hints pointing at one are dead ends).
+        expect(
+          (fixture?.packageName ?? "").startsWith("@agentproto/adapter-")
+        ).toBe(true)
 
         // Sanity: a normal npm-resolved adapter is still present in the same list.
         expect(adapters.find((a) => a.slug === "claude-code")).toBeDefined()
@@ -693,5 +700,105 @@ describe("_looksLikeStaleNegativePackageJsonCacheForTests — manual-walk gate",
         spec,
       ),
     ).toBe(false)
+  })
+})
+
+/**
+ * AIP-70 renamed "adapter" to "harness". Discovery (the `@agentproto` scope
+ * walkers behind `listInstalledAdapters`) accepts BOTH prefixes additively:
+ * an `@agentproto/harness-<slug>` dir is found, the bare `@agentproto/harness`
+ * package (no dash suffix) is never matched, and both `adapter-dup` and
+ * `harness-dup` is listed once.
+ */
+describe("listInstalledAdapters — harness- prefix alias", () => {
+  it("discovers @agentproto/harness-<slug> dirs alongside adapter-<slug>, ignoring the bare harness package", { timeout: 30_000 }, async () => {
+    _resetLastKnownGoodForTests()
+    const root = await fs.mkdtemp(join(tmpdir(), "agentproto-harness-discovery-"))
+    const restoreRoot = _setWorkspaceRootForTests(root)
+    // Fake packages live in TWO places by design:
+    // - the scan root (tmp node_modules), so the namespace walker discovers
+    //   them as directory entries, and
+    // - packages/cli's own node_modules, so the `import()` inside
+    //   resolveAdapter can actually reach them (bare-specifier resolution
+    //   walks up from the importing module, not from the scan root).
+    // Each fake package gets a trivial importable dist entry so resolving
+    // never hangs. The bare `harness` no-match probe is scan-root only: the
+    // real @agentproto/harness workspace package is symlinked into
+    // packages/cli/node_modules and must not be touched.
+    const scanNm = join(root, "node_modules", "@agentproto")
+    const importNm = join(process.cwd(), "node_modules", "@agentproto")
+    const scanOnlyNames = ["harness"]
+    const importableNames = [
+      "harness-foo",
+      // Both spellings for slug foo exist on disk: the canonical harness-
+      // spelling must be the one resolveAdapter() actually loads, mirroring
+      // discovery's first-party precedence.
+      "adapter-foo",
+      "adapter-bar",
+      "adapter-dup",
+      "harness-dup",
+    ]
+    try {
+      for (const name of [...scanOnlyNames, ...importableNames]) {
+        const pkgDir = join(scanNm, name)
+        await fs.mkdir(join(pkgDir, "dist"), { recursive: true })
+        await fs.writeFile(
+          join(pkgDir, "package.json"),
+          JSON.stringify({ name: `@agentproto/${name}`, version: "0.0.1", type: "module" })
+        )
+      }
+      for (const name of importableNames) {
+        const pkgDir = join(importNm, name)
+        await fs.mkdir(join(pkgDir, "dist"), { recursive: true })
+        await fs.writeFile(
+          join(pkgDir, "package.json"),
+          JSON.stringify({
+            name: `@agentproto/${name}`,
+            version: "0.0.1",
+            type: "module",
+            exports: { ".": { import: "./dist/index.mjs" } },
+          })
+        )
+        await fs.writeFile(
+          join(pkgDir, "dist", "index.mjs"),
+          `export const handle = { name: "${name}", protocol: "print", version: "0.0.1" };\n`
+        )
+      }
+
+      const adapters = await listInstalledAdapters({ searchRoot: root })
+      const slugs = adapters.map((a) => a.slug)
+
+      expect(slugs).toContain("foo")
+      expect(slugs).toContain("bar")
+      expect(slugs).toContain("dup")
+      expect(slugs).not.toContain("harness")
+
+      // The listed entry names the package that was actually imported: the
+      // canonical harness- spelling when it exists (resolving must not keep
+      // the adapter- spelling merely because it is an older name), the
+      // adapter- spelling when that is the only one on disk.
+      expect(adapters.find((a) => a.slug === "foo")?.packageName).toBe(
+        "@agentproto/harness-foo"
+      )
+      expect(adapters.find((a) => a.slug === "bar")?.packageName).toBe(
+        "@agentproto/adapter-bar"
+      )
+
+      // The same slug cannot be listed twice when both prefixes exist on disk.
+      expect(slugs.filter((slug) => slug === "dup")).toHaveLength(1)
+      // When both spellings exist, the canonical harness- package must be the
+      // one actually imported (mirroring discovery's harness-wins-within-tier
+      // precedence).
+      expect(adapters.find((a) => a.slug === "dup")?.packageName).toBe(
+        "@agentproto/harness-dup"
+      )
+    } finally {
+      restoreRoot()
+      await fs.rm(root, { recursive: true, force: true })
+      for (const name of importableNames) {
+        await fs.rm(join(importNm, name), { recursive: true, force: true })
+      }
+      _resetLastKnownGoodForTests()
+    }
   })
 })

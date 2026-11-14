@@ -168,6 +168,34 @@ async function readJsonBody(req: IncomingMessage, limit: number): Promise<unknow
   return JSON.parse(Buffer.concat(chunks).toString("utf8"))
 }
 
+/**
+ * The SDK's stateless transport refuses a POST whose `Accept` does not
+ * advertise both `application/json` and `text/event-stream` (406) and answers
+ * in SSE mode by default. For a JSON-only Accept this server switches to a
+ * plain JSON body (`enableJsonResponse`) and widens the header here so the
+ * SDK's check passes, the same coercion the daemon's `serveMcp` applies.
+ * Legacy clients that already accept `text/event-stream` keep the SSE path
+ * untouched. Rewrites both the parsed header and the raw pair:
+ * `@hono/node-server` builds its Headers from `req.rawHeaders`, not
+ * `req.headers`. Returns true when the Accept was JSON-only and had to be
+ * widened.
+ */
+function coerceJsonOnlyAccept(req: IncomingMessage): boolean {
+  const headerValue = req.headers["accept"]
+  const accept = Array.isArray(headerValue) ? headerValue.join(",") : headerValue
+  if (typeof accept !== "string") return false
+  if (!/application\/json/i.test(accept) || /text\/event-stream/i.test(accept)) return false
+  const widened = `${accept}, text/event-stream`
+  req.headers["accept"] = widened
+  const rawHeaders = req.rawHeaders
+  for (let i = 0; i < rawHeaders.length - 1; i += 2) {
+    if (rawHeaders[i]?.toLowerCase() === "accept") {
+      rawHeaders[i + 1] = widened
+    }
+  }
+  return true
+}
+
 export async function startAppMcpHttp(opts: StartAppMcpHttpOptions): Promise<AppMcpHttpHandle> {
   const host = opts.host ?? "127.0.0.1"
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
@@ -225,8 +253,12 @@ export async function startAppMcpHttp(opts: StartAppMcpHttpOptions): Promise<App
       }
       return
     }
+    const jsonResponse = coerceJsonOnlyAccept(req)
     const server = opts.app.build(secrets)
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      ...(jsonResponse ? { enableJsonResponse: true } : {}),
+    })
     res.on("close", () => {
       void transport.close()
       void server.close()

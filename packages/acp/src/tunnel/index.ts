@@ -54,6 +54,9 @@ export type { FrameSink } from "./transport.js"
 export {
   E2eError,
   DEFAULT_E2E_MAX_FRAMES,
+  paddedFrameSize,
+  padFramePlaintext,
+  unpadFramePlaintext,
   holdFrames,
   type E2eKeys,
   type E2eErrorCode,

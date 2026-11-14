@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { packFrontmatterSchema } from "./schema.js"
 import type { PackDefinition, PackHandle, PackStatus } from "./types.js"
 

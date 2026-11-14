@@ -20,6 +20,12 @@ export const SESSION_END_REASONS = [
   // Pre-existing automatic daemon-lifecycle reasons (unchanged).
   "daemon-restart",
   "idle-reaped",
+  // The host guard reaped an idle session through `POST /sessions/:id/reap`
+  // (never the operator `/kill` route). Distinct from `idle-reaped` so the
+  // UI/log can tell a periodic-watchdog retirement from the daemon's own
+  // idle reaper; like `idle-reaped` it leaves the row lazy-resumable and is
+  // excluded from eager resume-on-boot (which gates on `daemon-restart`).
+  "guard-reaped",
   "crashed",
   // Operator-issued kill (HTTP /sessions/:id/kill, agent_kill MCP tool).
   // `operator-stopped` is also the default when the operator's kill omitted
@@ -74,12 +80,13 @@ export function isKnownSessionEndReason(reason: string | undefined): reason is S
 
 // Deliberately narrow: matches Claude Code's own wording for a
 // subscription/usage cap ("You've hit your session limit …" / "…usage
-// limit …") rather than any error mentioning "limit" in passing (a rate
+// limit …" / "…weekly limit …") rather than any error mentioning "limit" in passing (a rate
 // limit on one tool call, a context-window limit, etc.) — those are
 // ordinary turn errors, not "this session is dead until the cap resets".
 // hosted plans (e.g. opencode Go) phrase the same cap as "Go usage limit exceeded"
 // (AI_APICallError on its stderr stream).
-const PROVIDER_LIMIT_ERROR_RE = /\bhit your (?:session|usage) limit\b|\busage limit (?:exceeded|reached)\b/i
+const PROVIDER_LIMIT_ERROR_RE =
+  /\bhit your (?:session|usage|weekly(?: usage)?) limit\b|\b(?:weekly )?usage limit (?:exceeded|reached)\b|\bweekly limit (?:exceeded|reached)\b/i
 
 /**
  * Classify a driver-reported error message as a provider/subscription
@@ -90,6 +97,39 @@ const PROVIDER_LIMIT_ERROR_RE = /\bhit your (?:session|usage) limit\b|\busage li
  */
 export function isProviderLimitError(message: string | undefined): boolean {
   return message !== undefined && PROVIDER_LIMIT_ERROR_RE.test(message)
+}
+
+// Opaque driver failures that carry no cause of their own ("Internal error",
+// "RequestError: Internal error"). Deliberately narrow: a message with any
+// further detail (a status code, a provider cause) is NOT generic, and its
+// own words are the classification — only a bare wrapper is worth a second
+// look at the turn's assistant text.
+const GENERIC_TURN_ERROR_RE = /^\s*(?:[A-Za-z][\w.]*:\s*)?internal error\s*[.!]?\s*$/i
+
+/** True when `message` is an opaque generic turn error. See
+ *  {@link GENERIC_TURN_ERROR_RE}. */
+export function isGenericTurnError(message: string | undefined): boolean {
+  return message !== undefined && GENERIC_TURN_ERROR_RE.test(message)
+}
+
+/**
+ * Recover a provider-limit message from the turn's own assistant text.
+ *
+ * Some adapters (notably Codex via codex-acp) print the subscription cap as a
+ * final assistant message, then fail the turn with a bare "Internal error".
+ * The driver error says nothing, so the text is the only evidence. Only
+ * consulted when the error is {@link isGenericTurnError} — a specific error
+ * is never overridden by prose — and only the narrow
+ * {@link PROVIDER_LIMIT_ERROR_RE} wording matches, as a single line.
+ * Returns `undefined` when no such line exists.
+ */
+export function providerLimitFromTurnText(
+  errorMessage: string | undefined,
+  assistantText: string | undefined,
+): string | undefined {
+  if (!isGenericTurnError(errorMessage) || assistantText === undefined) return undefined
+  const line = assistantText.split(/\r?\n/).find(l => isProviderLimitError(l))
+  return line?.trim() || undefined
 }
 
 /**
@@ -111,10 +151,13 @@ export function tagLimitErrorWithWallet(
   return `${message} [wallet: profile "${accessProfile.profileRef}"${label}${scope}]`
 }
 
-/** End reasons that mean a human/steward closed the session on purpose (or
- *  that it was superseded by a living replacement) — no AUTOMATED path
- *  (sentinel, follow, cron) may revive such a row. An explicit
- *  `session_restart` / human prompt still may. */
+/** End reasons that mean the session was closed on purpose (or that it was
+ *  superseded by a living replacement) — no AUTOMATED path (sentinel, follow,
+ *  cron) may revive such a row. An explicit `session_restart` / human prompt
+ *  still may. `guard-reaped` belongs here: the guard retires an idle row and
+ *  a later explicit prompt can resume it in place, but nothing should wake it
+ *  automatically (least of all the boot pass, which already gates on
+ *  `daemon-restart`). */
 export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
   "operator-completed",
   "operator-stopped",
@@ -122,4 +165,6 @@ export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
   "steward-abandoned",
   // Superseded by a fresh-id restart continuation while still alive.
   "restarted",
+  // The host guard's periodic reap (`POST /sessions/:id/reap`).
+  "guard-reaped",
 ])

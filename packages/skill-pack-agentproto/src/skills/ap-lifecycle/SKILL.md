@@ -61,8 +61,11 @@ watcher you don't want auto-archived out from under you.
 ```json
 { "tool": "session_set_pinned", "args": { "sessionId": "sess_abc123", "pinned": true } }
 ```
-Pins a session so it stays at the top of listings and survives casual GC
-sweeps.
+Pins a session: it stays at the top of listings, survives casual GC sweeps
+and is never stopped by the idle reaper (pinned means never stopped). A
+session that holds an approval (pending, or approved and not yet consumed) is
+also never reaped, and keeps its Bureau tabs until the approval is consumed,
+denied or expired. An explicit `session_kill` still stops a pinned session.
 
 ## MCP: corrections and conversation state
 

@@ -475,7 +475,7 @@ describe("zero-cost list membership and policy checks", () => {
     ["opencode/glm-5.3-flash-free", true],
     ["opencode/big-pickle", true],
     ["big-pickle", true],
-    ["opencode-go/minimax-m3.1-flash-free@opencode", true],
+    ["opencode-go/beam-free@opencode", true],
     ["opencode/gpt-5.1-codex", false],
     ["opencode-go/glm-5.3", false],
     ["anthropic/claude-free-tier-not", false],

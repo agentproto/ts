@@ -316,6 +316,13 @@
   gap: 8px;
 }
 
+/* mode change: a quiet one-line row, not a card */
+.mode-row {
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+  font-family: var(--font-mono-family);
+}
+
 /* subagents strip + working row */
 .subbar {
   display: flex;

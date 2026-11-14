@@ -100,6 +100,32 @@ describe("exit-time sandbox checkpoint gc (runSandboxCheckpointGc)", () => {
     registry.shutdown()
   })
 
+  it("uses the HOST repo root when the session cwd is a path inside the box", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+
+    const { reclaim, calls, settled } = recordingReclaimer()
+    const registry = createSessionsRegistry({ persist: false, runSandboxCheckpointGc: reclaim })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      // The real sandbox descriptor carries the BOX path here.
+      cwd: "/home/user/agentproto",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "fake",
+      sandboxRepoRoot: repo,
+      sandboxDeliveryTarget: {
+        checkoutDir: "/home/user/agentproto",
+        branch: "wt/feat-box",
+        baseSha: "0".repeat(40),
+      },
+    })
+
+    expect(registry.kill(desc.id)).toBe(true)
+    await settled()
+    expect(calls).toEqual([{ cwd: repo, branch: "wt/feat-box" }])
+    registry.shutdown()
+  })
+
   it("a session without a sandbox delivery target never reaches the reclaimer", async () => {
     const repo = await makeRepo()
     cleanupPaths.push(repo)

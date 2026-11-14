@@ -144,21 +144,7 @@ export function registerAppTunnelTools(
         const targetPort = await resolveTargetPort(input, loadHandle)
         const provider = input.provider ?? (input.hostname ? CLOUDFLARE_NAMED_SLUG : "quick")
 
-        let tunnelId: string | undefined
-        let credentialsFile: string | undefined
-        if (normalizeProviderSlug(provider) === CLOUDFLARE_NAMED_SLUG) {
-          const creds = await readCreds(CLOUDFLARE_NAMED_SLUG)
-          tunnelId = typeof creds?.["tunnelId"] === "string" ? creds["tunnelId"] : undefined
-          credentialsFile =
-            typeof creds?.["credentialsFile"] === "string" ? creds["credentialsFile"] : undefined
-          if (!tunnelId) {
-            throw new Error(
-              "cloudflare-named needs registered credentials (tunnelId) — none found. " +
-                "Register them once with `setup_tunnel_provider cloudflare-named` " +
-                "(hostname + tunnelId + optional credentialsFile).",
-            )
-          }
-        }
+        const { tunnelId, credentialsFile } = await resolveRegisteredTunnelConfig(provider, readCreds)
 
         const desc = await registry.create({
           targetPort,
@@ -177,6 +163,32 @@ export function registerAppTunnelTools(
       }
     },
   )
+}
+
+/**
+ * Descriptor fields a provider needs from the daemon's own registered creds
+ * rather than from the caller. Today only `cloudflare-named` (its `tunnelId` +
+ * optional `credentialsFile`); every other provider reads its creds through
+ * the registry. Shared with the AIP-53 `services[].expose` path
+ * (app-service-expose.ts) so both resolve the named tunnel the same way.
+ */
+export async function resolveRegisteredTunnelConfig(
+  provider: string,
+  readCreds: (slug: string) => Promise<Record<string, string> | null>,
+): Promise<{ tunnelId?: string; credentialsFile?: string }> {
+  if (normalizeProviderSlug(provider) !== CLOUDFLARE_NAMED_SLUG) return {}
+  const creds = await readCreds(CLOUDFLARE_NAMED_SLUG)
+  const tunnelId = typeof creds?.["tunnelId"] === "string" ? creds["tunnelId"] : undefined
+  const credentialsFile =
+    typeof creds?.["credentialsFile"] === "string" ? creds["credentialsFile"] : undefined
+  if (!tunnelId) {
+    throw new Error(
+      "cloudflare-named needs registered credentials (tunnelId), none found. " +
+        "Register them once with `setup_tunnel_provider cloudflare-named` " +
+        "(hostname + tunnelId + optional credentialsFile).",
+    )
+  }
+  return { tunnelId, ...(credentialsFile ? { credentialsFile } : {}) }
 }
 
 async function resolveTargetPort(

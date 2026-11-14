@@ -1,5 +1,86 @@
 # @agentproto/sandbox
 
+## 0.16.1
+
+### Patch Changes
+
+- d7b0174: Stop a dead or dropped session from pinning a computer box. `sandbox_attach` rendezvous connects no longer take a session slot nobody can release, a failed `boot`/`connect` releases the slots it took, a throwing MCP `close()` can no longer skip the provider release, and the sandbox gc pass releases dead attachés' slots on boxes that stay in use (`releaseSession`), treats registry-absent sessions as dead (daemon opt-in, grace-limited) and runs its first pass two minutes after daemon start.
+- 0fcf3f4: A placement-ladder rung that has a next rung no longer sits out the computer fleet's 12 minute `503 fleet-capacity` wait. The runtime passes the new `SandboxBootOpts.capacityWaitBudgetMs` (the rung's `agentStartTimeoutMs`, default 5 minutes) to every non-final rung; the computer provider then fails the rung at once when the refusal has no `Retry-After`, or waits once, capped by that budget, when it has one. The refusal reason (for example `no-active-host`) stays in the failure message and in the `[placement]` log line. A plain `sandbox` spawn and the last rung keep the existing wait.
+- Updated dependencies [057c438]
+  - @agentproto/worktree@0.21.1
+
+## 0.16.0
+
+### Minor Changes
+
+- c0dc0c8: Add egress IP health ledger and cooldown-aware slot selection
+
+### Patch Changes
+
+- 9fcc8aa: Regenerate the sandbox frontmatter schema for the AIP-36 v1.4 `network.egressIp` description, documenting the `sandbox_egress_all_cooling` failure mode when every egress slot is cooling. Description-only change; no behavior difference.
+- Updated dependencies [8d3a80e]
+- Updated dependencies [29a0599]
+- Updated dependencies [f12741f]
+- Updated dependencies [440acad]
+- Updated dependencies [0d39c7f]
+- Updated dependencies [7b7e06b]
+- Updated dependencies [35a339d]
+- Updated dependencies [457da84]
+- Updated dependencies [e65057d]
+- Updated dependencies [6c86b8c]
+- Updated dependencies [650fa3a]
+- Updated dependencies [0bc7927]
+- Updated dependencies [9a31444]
+- Updated dependencies [0380c2b]
+  - @agentproto/worktree@0.21.0
+  - @agentproto/workflow-runtime@0.21.0
+
+## 0.15.0
+
+### Minor Changes
+
+- e395b66: Tag e2b sandboxes with tenantId, owner and label metadata
+
+### Patch Changes
+
+- Updated dependencies [ac14e7d]
+- Updated dependencies [467af3b]
+- Updated dependencies [ac14e7d]
+- Updated dependencies [a255a13]
+- Updated dependencies [467af3b]
+  - @agentproto/worktree@0.20.0
+  - @agentproto/workflow-runtime@0.20.3
+
+## 0.14.0
+
+### Minor Changes
+
+- 61e6068: Add common sandbox list and usage surface with W0b fields
+- 1d7b55a: Add auto sandbox provider with capacity overflow from computer to e2b
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+- 61e6068: Add the common sandbox list and usage surface. `@agentproto/sandbox` gains the `SandboxBox` and `SandboxUsageWindow` types plus optional `list()`/`usage()` methods on `SandboxProvider`; `@agentproto/computer-api` gains the `GET /v1/usage` schemas/types and additive W0b list fields; `@agentproto/sandbox-computer` implements `list()`/`usage()` and `ComputerControllerClient.getUsage()`, keeping absent controller fields absent.
+
+### Patch Changes
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [e1fa90e]
+- Updated dependencies [84ac51b]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [e1fa90e]
+- Updated dependencies [f18edbc]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+  - @agentproto/worktree@0.19.1
+  - @agentproto/secrets@2.2.0
+  - @agentproto/workflow-runtime@0.20.2
+
 ## 0.13.0
 
 ### Minor Changes

@@ -10,11 +10,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import type { AgentCliStartOptions } from "@agentproto/driver-agent-cli"
+import type { AgentCliStartOptions } from "@agentproto/harness"
 
 const startSpy = vi.fn<(opts?: AgentCliStartOptions) => Promise<unknown>>()
 
-vi.mock("@agentproto/driver-agent-cli", () => ({
+vi.mock("@agentproto/harness", () => ({
   createAgentCliRuntime: () => ({
     definition: { id: "fake" },
     start: (opts?: AgentCliStartOptions) => startSpy(opts),

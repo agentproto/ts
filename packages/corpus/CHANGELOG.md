@@ -1,5 +1,48 @@
 # @agentproto/corpus
 
+## 1.0.0
+
+### Major Changes
+
+- e301b84: Remove the pre-AIP-70 leftovers: deprecated `SPEC_NAME` exports, the `definePack`/`Pack` model-routing aliases, the runtime re-exports of symbols owned by extracted packages, and the `inference-endpoint` compatibility bin. Import those symbols from their owning packages and use `defineRoutingPack`/`RoutingPack` for model-routing packs.
+- e301b84: Remove the pre-AIP-70 aliases (`SPEC_NAME` exports, `definePack`/`Pack`, runtime re-exports, the duplicate `llm-endpoint` bin) and centralize the Anthropic unified rate-limit parser in `@agentproto/quota`. The CLI `review verify` path and the runtime review ledger and compose paths now treat `agentproto-pack-digest/v1` and `review.pack-digest/v1` as the same digest recipe, so attestations written with either tag compare correctly.
+
+### Patch Changes
+
+- b67f58e: AGENT.md `tools` accepts the AIP-42 structured item `{ kind: mcp, server, allow?, deny? }` and refuses a malformed one (missing `server`, a `/` in a name, an extra key, an unknown `kind`); the item is part of the generated agent schema and exported as `McpToolRef` / `ToolRef`. The operator `tools` item is that same schema, taken from the agent package, and still accepts the deprecated scoped form `{ id, source?, scope? }`. `projectAgentToSpawn` maps each structured item to a per-server `allowTools` / `denyTools` (`servers` on the projection) instead of dropping it with a warning; a deny wins over an allow and over any other item admitting the same tool, and a bare string joins the `agentproto` server. The spec generator gains `--inline-ref <def>` and proves disjoint closed-object `oneOf` branches, so the agent package is now covered by `check:spec-drift`. The vendored specs are re-synced, which regenerates the memory frontmatter schema line; the bridge and `refKey` in the app package take the widened `ToolRef` (a server ref keys as `mcp:<server>`).
+
+  Narrowing: a `server` in an operator or agent `tools` item must now match `^[A-Za-z0-9_.-]+$`, so a URL such as `https://mcp.local` is refused; use a host name such as `mcp-local`. The spawn still carries a single `allowTools` list for the daemon gateway, so a filter on any other server, or a `denyTools` with no allowlist, is exposed on `servers` and reported as a harness warning ("not applied") rather than enforced. The corpus validator and the corpus-cli bundle register the AIP-42 AGENT schema they now `$ref`.
+
+- Updated dependencies [b67f58e]
+- Updated dependencies [6991cfa]
+- Updated dependencies [ec3a660]
+- Updated dependencies [812c17c]
+- Updated dependencies [ec3a660]
+  - @agentproto/operator@1.0.0
+  - @agentproto/routine@0.4.1
+
+## 0.9.0
+
+### Minor Changes
+
+- 8aa0aeb: Add an internal data-format id (`CATALOG_FORMAT`, `CORPUS_FORMAT`, `EVAL_FORMAT`), removing the packages' claims to be AIP registry specs. The legacy `SPEC_NAME` export is retained for compatibility and is now deprecated; it remains a legitimate pending registry-name deviation until it is removed.
+
+### Patch Changes
+
+- Updated dependencies [6b78431]
+- Updated dependencies [52f8616]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+- Updated dependencies [9ae92a7]
+  - @agentproto/operator@0.2.0
+  - @agentproto/playbook@0.2.0
+  - @agentproto/collection@0.2.0
+  - @agentproto/knowledge@0.2.0
+  - @agentproto/registry@0.2.0
+  - @agentproto/routine@0.4.0
+  - @agentproto/workflow@0.8.0
+
 ## 0.8.4
 
 ### Patch Changes

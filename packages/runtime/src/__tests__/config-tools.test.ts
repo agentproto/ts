@@ -14,7 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
-import { registerConfigTools, deriveValueType, type ConfigToolsDeps } from "../config-tools.js"
+import { registerConfigTools, deriveValueType, isOperatorOnlyConfigKey, type ConfigToolsDeps } from "../config-tools.js"
 import { loadConfig, saveConfig, type AgentprotoConfig } from "../config.js"
 import { createRuntimeEvents, type RuntimeEvents } from "../events.js"
 import { WORKTREE_ISOLATION_ENV } from "../worktree-isolation.js"
@@ -120,6 +120,34 @@ describe("config_get", () => {
     await client.close()
   })
 
+  it("returns rows for the sentinel section (autoWatchPrs, autoWatchUrgency, routes, routing.mode)", async () => {
+    const routes = [{ id: "gh-default", match: { subject: "github:*" }, via: ["local-gh"], fallback: "refuse", do: "deliver" }]
+    await writeCfg({ sentinel: { autoWatchPrs: false, routes } } as AgentprotoConfig)
+    const client = await setupClient(makeDeps({}))
+    const res = parse(
+      await client.callTool({
+        name: "config_get",
+        arguments: { keys: ["sentinel.autoWatchPrs", "sentinel.autoWatchUrgency", "sentinel.routes", "sentinel.routing.mode"] },
+      }),
+    )
+    expect(findKey(res, "sentinel.autoWatchPrs")).toMatchObject({ value: false, effective: false })
+    expect(findKey(res, "sentinel.autoWatchUrgency")).toMatchObject({ source: "default", effective: "next-turn" })
+    expect(findKey(res, "sentinel.routes")).toMatchObject({ value: routes })
+    expect(findKey(res, "sentinel.routing.mode")).toMatchObject({ source: "default", effective: "shadow" })
+    await client.close()
+  })
+
+  it("config_set refuses a sentinel route with an unknown action", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const raw = await client.callTool({
+      name: "config_set",
+      arguments: { key: "sentinel.routes", value: [{ id: "x", match: { subject: "github:*" }, via: ["local-gh"], do: "spawn" }] },
+    })
+    expect((raw as { isError?: boolean }).isError).toBe(true)
+    await client.close()
+  })
+
   it("never returns a secret's raw value — only set/fingerprint/last4", async () => {
     const secret = "s".repeat(40)
     await writeCfg({ daemon: { authToken: secret } })
@@ -148,6 +176,64 @@ describe("config_get", () => {
     expect(JSON.stringify(raw)).not.toContain("abc123")
     const row = findKey(parse(raw), "acpAgents.myagent.env")
     expect(row.secret).toEqual({ TOKEN: { set: true } })
+    await client.close()
+  })
+
+  it("never echoes a reach.routes webhook secret, keeps the rest of the route readable", async () => {
+    const secret = "whsec_" + Buffer.alloc(32, 5).toString("base64")
+    const route = [
+      { id: "pygmalion", kind: "webhook" as const, url: "http://127.0.0.1:3000/api/reach", secret, timeoutMs: 4000 },
+      { id: "floor", kind: "telegram" as const },
+    ]
+    await writeCfg({ reach: { routes: { owner: route } } })
+    const client = await setupClient(makeDeps({ reach: { routes: { owner: route } } }))
+    for (const keys of [["reach.routes.owner"], ["reach.routes.*"], undefined]) {
+      const raw = await client.callTool({ name: "config_get", arguments: keys ? { keys } : {} })
+      expect(JSON.stringify(raw)).not.toContain(secret)
+      expect(JSON.stringify(raw)).not.toContain(secret.slice("whsec_".length, 20))
+      const row = findKey(parse(raw), "reach.routes.owner")
+      expect(row.value).toEqual([
+        { id: "pygmalion", kind: "webhook", url: "http://127.0.0.1:3000/api/reach", secret: { set: true }, timeoutMs: 4000 },
+        { id: "floor", kind: "telegram" },
+      ])
+      expect(row.effective).toEqual(row.value)
+      expect(row.writable).toBe(false)
+    }
+    await client.close()
+  })
+
+  it("never echoes a reach.routes chat-sdk accessToken, shows it as { set: true }", async () => {
+    const token = "FAKE-WHATSAPP-ACCESS-TOKEN-0123456789"
+    const route = [
+      {
+        id: "wa",
+        kind: "chat-sdk" as const,
+        platform: "whatsapp" as const,
+        to: "33600000000",
+        whatsapp: { phoneNumberId: "100000000000001", accessToken: token },
+        timeoutMs: 8000,
+      },
+      { id: "floor", kind: "telegram" as const },
+    ]
+    await writeCfg({ reach: { routes: { owner: route } } })
+    const client = await setupClient(makeDeps({ reach: { routes: { owner: route } } }))
+    for (const keys of [["reach.routes.owner"], ["reach.routes.*"], undefined]) {
+      const raw = await client.callTool({ name: "config_get", arguments: keys ? { keys } : {} })
+      expect(JSON.stringify(raw)).not.toContain(token)
+      const row = findKey(parse(raw), "reach.routes.owner")
+      expect(row.value).toEqual([
+        {
+          id: "wa",
+          kind: "chat-sdk",
+          platform: "whatsapp",
+          to: "33600000000",
+          whatsapp: { phoneNumberId: "100000000000001", accessToken: { set: true } },
+          timeoutMs: 8000,
+        },
+        { id: "floor", kind: "telegram" },
+      ])
+      expect(row.effective).toEqual(row.value)
+    }
     await client.close()
   })
 
@@ -402,6 +488,20 @@ describe("config_set", () => {
     await client.close()
   })
 
+  it("rejects approvals.humanTelegramIds (owner-only allow-list)", async () => {
+    await writeCfg({ approvals: { humanTelegramIds: ["4242"] } })
+    const client = await setupClient(makeDeps({}))
+    const res = await client.callTool({
+      name: "config_set",
+      arguments: { key: "approvals.humanTelegramIds", value: ["4242", "999"] },
+    })
+    expect((res as { isError?: boolean }).isError).toBe(true)
+    const text = (res as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? ""
+    expect(text).toContain("is not writable")
+    expect((await loadConfig(configPath)).approvals?.humanTelegramIds).toEqual(["4242"])
+    await client.close()
+  })
+
   it("rejects an unknown key", async () => {
     await writeCfg({})
     const client = await setupClient(makeDeps({}))
@@ -543,6 +643,76 @@ describe("config_set", () => {
     // The unrelated pre-existing issue is left untouched, not silently
     // "fixed" by this write.
     expect(onDisk.worktrees?.isolation).toBe("bogus-legacy-value")
+    await client.close()
+  })
+})
+
+describe("operator-only config keys (AIP-46 §Operator-only configuration)", () => {
+  it("covers the messaging and identity subtrees, operatorDelegates and their ancestors, nothing else", () => {
+    for (const key of [
+      "defaults.messaging.allowSiblings",
+      "defaults.messaging",
+      "defaults.identity.sessionTokens",
+      "defaults.identity.requireProof",
+      "defaults.tasks.operatorDelegates",
+      "defaults.tasks",
+      "defaults",
+    ]) {
+      expect(isOperatorOnlyConfigKey(key)).toBe(true)
+    }
+    for (const key of ["defaults.messagingX", "defaults.tasks.other", "defaults.agentPromptInterrupt", "daemon.label"]) {
+      expect(isOperatorOnlyConfigKey(key)).toBe(false)
+    }
+  })
+
+  it("refuses a session principal's config_set of defaults.identity.requireProof like sessionTokens", async () => {
+    await writeCfg({})
+    const server = new McpServer({ name: "operator-only-proof", version: "0" })
+    registerConfigTools(server, makeDeps({}), {
+      claimedSessionId: "sess_x",
+      isHostSpawned: () => true,
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "operator-only-proof-client", version: "0" })
+    await client.connect(clientTransport)
+
+    for (const [key, value] of [
+      ["defaults.identity.requireProof", ["session:spawn"]],
+      ["defaults.identity.sessionTokens", "off"],
+    ] as const) {
+      const res = await client.callTool({ name: "config_set", arguments: { key, value } })
+      expect(res.isError).toBe(true)
+      expect(JSON.stringify(res.content)).toContain("operator_only")
+      expect(JSON.stringify(res.content)).toContain(key)
+    }
+    expect(await loadConfig(configPath)).toEqual({ version: 1 })
+    await client.close()
+  })
+
+  it("refuses a session principal's config_set of defaults.messaging.grants like peerGroups", async () => {
+    await writeCfg({})
+    const server = new McpServer({ name: "operator-only-grants-proof", version: "0" })
+    registerConfigTools(server, makeDeps({}), {
+      claimedSessionId: "sess_x",
+      isHostSpawned: () => true,
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "operator-only-grants-proof-client", version: "0" })
+    await client.connect(clientTransport)
+
+    const res = await client.callTool({
+      name: "config_set",
+      arguments: {
+        key: "defaults.messaging.grants",
+        value: [{ principal: "*", effect: "allow", actions: [{ action: "session:message" }] }],
+      },
+    })
+    expect(res.isError).toBe(true)
+    expect(JSON.stringify(res.content)).toContain("operator_only")
+    expect(JSON.stringify(res.content)).toContain("defaults.messaging.grants")
+    expect(await loadConfig(configPath)).toEqual({ version: 1 })
     await client.close()
   })
 })

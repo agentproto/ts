@@ -81,6 +81,47 @@ describe("session_mark_completed", () => {
     registry.shutdown()
   })
 
+  it("clears keepAlive when a live session is marked completed", async () => {
+    const { client, registry, close } = await buildHarness()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: idleAgentSession("acp-mc-keepalive-live"),
+      adapterSlug: "claude-code",
+      keepAlive: true,
+    })
+    expect(registry.get(desc.id)?.keepAlive).toBe(true)
+
+    const res = await client.callTool({ name: "session_mark_completed", arguments: { sessionId: desc.id } })
+    expect(JSON.parse(textOf(res))).toMatchObject({ ok: true, verdict: "done" })
+    expect(registry.get(desc.id)?.keepAlive).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("clears keepAlive when an already-terminal session is marked completed", async () => {
+    const { client, registry, close } = await buildHarness()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: idleAgentSession("acp-mc-keepalive-dead"),
+      adapterSlug: "claude-code",
+      keepAlive: true,
+    })
+    registry.kill(desc.id, undefined, "daemon-restart")
+    expect(registry.get(desc.id)?.keepAlive).toBe(true)
+
+    const res = await client.callTool({ name: "session_mark_completed", arguments: { sessionId: desc.id } })
+    expect(JSON.parse(textOf(res))).toMatchObject({ ok: true, action: "resolved", verdict: "done" })
+    expect(registry.get(desc.id)?.keepAlive).toBeUndefined()
+    // The completion resolution keeps the real cause of death intact.
+    expect(registry.get(desc.id)?.endedReason).toBe("daemon-restart")
+
+    await close()
+    registry.shutdown()
+  })
+
   it("carries summary + judgedBy onto the outcome", async () => {
     const { client, registry, close } = await buildHarness()
     const desc = registry.spawnAgent({

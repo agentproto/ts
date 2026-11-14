@@ -23,6 +23,7 @@ import {
   buildAutoCompactResumePrompt,
   buildAutoCompactTranscriptNote,
   clampAutoCompactTokens,
+  resolveAutoCompactTokens,
   compactCommandTakesInstructions,
   createAutoCompactController,
   decideAutoCompact,
@@ -43,10 +44,15 @@ describe("clampAutoCompactTokens", () => {
     expect(AUTO_COMPACT_DEFAULT_TOKENS).toBe(150_000)
   })
 
-  it("clamps a value above the maximum down to 200k", () => {
-    expect(clampAutoCompactTokens(500_000)).toBe(AUTO_COMPACT_MAX_TOKENS)
-    expect(AUTO_COMPACT_MAX_TOKENS).toBe(200_000)
-    expect(clampAutoCompactTokens(200_001)).toBe(200_000)
+  it("clamps a value above the maximum down to 600k", () => {
+    expect(clampAutoCompactTokens(700_000)).toBe(AUTO_COMPACT_MAX_TOKENS)
+    expect(AUTO_COMPACT_MAX_TOKENS).toBe(600_000)
+    expect(clampAutoCompactTokens(600_001)).toBe(600_000)
+  })
+
+  it("accepts a large-window threshold up to the maximum unchanged", () => {
+    expect(clampAutoCompactTokens(550_000)).toBe(550_000)
+    expect(clampAutoCompactTokens(600_000)).toBe(600_000)
   })
 
   it("clamps a value below the floor up to the floor", () => {
@@ -445,8 +451,14 @@ describe("deriveLastTurnOutcome", () => {
 })
 
 describe("context-continuity policy", () => {
-  it("carries the autocompact threshold with the default", () => {
-    expect(CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens).toBe(AUTO_COMPACT_DEFAULT_TOKENS)
+  it("leaves the threshold unset in the defaults so it scales with the window", () => {
+    expect(CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens).toBeUndefined()
+    expect(resolveAutoCompactTokens(undefined, undefined)).toBe(AUTO_COMPACT_DEFAULT_TOKENS)
+    expect(resolveAutoCompactTokens(undefined, 200_000)).toBe(AUTO_COMPACT_DEFAULT_TOKENS)
+    expect(resolveAutoCompactTokens(undefined, 1_000_000)).toBe(550_000)
+    expect(resolveAutoCompactTokens(undefined, 1_000_000, 70)).toBe(AUTO_COMPACT_MAX_TOKENS)
+    expect(resolveAutoCompactTokens(150_000, 1_000_000)).toBe(150_000)
+    expect(resolveAutoCompactTokens(0, 1_000_000)).toBe(0)
   })
 
   it("clamps an out-of-range threshold instead of rejecting the policy", () => {

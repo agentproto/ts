@@ -21,6 +21,7 @@ import {
   type ProvisionProgress,
 } from "../../provision-scheduler.js"
 import { writeWorktreeMarker } from "../../provenance.js"
+import { startProvisionWatchdog, type ProvisionWatchdog } from "../../provision-watchdog.js"
 
 /**
  * A cancelled provisioning is a half-built worktree nobody will ever use:
@@ -146,6 +147,20 @@ export const provisionWorktreeBuiltin = implementTool(
 
     let phase: ProvisionPhase = firstHeavy
     let lease: ProvisionLease | undefined
+    // Boot bounds (stall + hard cap). Armed only once the heavy segment really
+    // runs, so time spent queued behind other provisionings never counts. The
+    // watchdog's signal is merged with the caller's: either one tree-kills the
+    // running deps/setup process via the existing abort path.
+    let watchdog: ProvisionWatchdog | undefined
+    let runSignal = signal
+    const onOutput = (text: string, stream: "stdout" | "stderr"): void => {
+      watchdog?.output(text)
+      try {
+        ctx?.onOutput?.(text, stream)
+      } catch {
+        // An observer must never break provisioning.
+      }
+    }
     try {
       lease = await provisionScheduler.acquire({
         repoKey: resolve(input.repoRoot),
@@ -154,6 +169,14 @@ export const provisionWorktreeBuiltin = implementTool(
         onQueued: (position) => report({ kind: "queued", position, phase: firstHeavy }),
       })
       if (signal?.aborted) throw new ProvisionCancelledError()
+      if ((ctx?.stallTimeoutMs ?? 0) > 0 || (ctx?.maxMs ?? 0) > 0) {
+        watchdog = startProvisionWatchdog({
+          stallTimeoutMs: ctx?.stallTimeoutMs ?? 0,
+          maxMs: ctx?.maxMs ?? 0,
+          ...(input.setupLogPath ? { logPath: input.setupLogPath } : {}),
+        })
+        runSignal = signal ? AbortSignal.any([signal, watchdog.signal]) : watchdog.signal
+      }
       report({ kind: "started", phase })
 
       // Clone gitignored, expensive-to-recreate trees (e.g. node_modules) from
@@ -165,9 +188,10 @@ export const provisionWorktreeBuiltin = implementTool(
       // rather than a full reinstall.
       if (cloneGlobs.length > 0) {
         phase = "clone"
+        watchdog?.phase(phase, false)
         report({ kind: "phase", phase })
         try {
-          await cloneEntries(input.repoRoot, cwd, cloneGlobs, signal)
+          await cloneEntries(input.repoRoot, cwd, cloneGlobs, runSignal)
         } catch (err) {
           if (err instanceof ProvisionCancelledError) throw err
           throw new ToolError({
@@ -179,6 +203,7 @@ export const provisionWorktreeBuiltin = implementTool(
 
       if (depsCmd) {
         phase = "deps"
+        watchdog?.phase(phase, true)
         report({ kind: "phase", phase })
         // The install runs without a TTY: `pnpm`/`npm` would otherwise ABORT
         // with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` instead of
@@ -186,10 +211,11 @@ export const provisionWorktreeBuiltin = implementTool(
         // `nonInteractiveEnv`.
         const result = await execShell(depsCmd, cwd, {
           env: nonInteractiveEnv(process.env),
-          ...(signal ? { signal } : {}),
+          onOutput,
+          ...(runSignal ? { signal: runSignal } : {}),
         })
         // A killed install exits non-zero; that is a cancellation, not a failure.
-        if (signal?.aborted) throw new ProvisionCancelledError()
+        if (runSignal?.aborted) throw new ProvisionCancelledError()
         if (result.exitCode !== 0) {
           throw new ToolError({
             code: "execution_failed",
@@ -200,11 +226,12 @@ export const provisionWorktreeBuiltin = implementTool(
 
       if (copyGlobs.length > 0) {
         phase = "copy"
+        watchdog?.phase(phase, false)
         report({ kind: "phase", phase })
         for (const pattern of copyGlobs) {
           const matches = await expandGlob(input.repoRoot, pattern)
           for (const rel of matches) {
-            if (signal?.aborted) throw new ProvisionCancelledError()
+            if (runSignal?.aborted) throw new ProvisionCancelledError()
             const dest = join(cwd, rel)
             await mkdir(dirname(dest), { recursive: true })
             await copyFile(join(input.repoRoot, rel), dest)
@@ -217,6 +244,7 @@ export const provisionWorktreeBuiltin = implementTool(
       // `runSetup` gate) — reused here rather than re-reading the base tree.
       if (config && hasSetup) {
         phase = "setup"
+        watchdog?.phase(phase, true)
         report({ kind: "phase", phase })
         try {
           await runSetup(
@@ -229,7 +257,8 @@ export const provisionWorktreeBuiltin = implementTool(
             {
               ...(input.setupLogPath ? { logPath: input.setupLogPath } : {}),
               ...(input.retrySetupOnFailure ? { retryOnFailure: true } : {}),
-              ...(signal ? { signal } : {}),
+              onOutput,
+              ...(runSignal ? { signal: runSignal } : {}),
             },
           )
         } catch (err) {
@@ -240,11 +269,19 @@ export const provisionWorktreeBuiltin = implementTool(
         }
       }
     } catch (err) {
+      // A tripped bound surfaces as a plain failure (the worktree is kept for
+      // inspection, like any failed setup), unless the caller cancelled too.
+      const timeout = signal?.aborted ? undefined : watchdog?.tripped()
+      if (timeout) {
+        report({ kind: "done", outcome: "failed" })
+        throw new ToolError({ code: "execution_failed", message: timeout.message })
+      }
       const cancelled = err instanceof ProvisionCancelledError
       report({ kind: "done", outcome: cancelled ? "cancelled" : "failed" })
       if (cancelled) await discardCancelledWorktree(input.repoRoot, cwd, branch)
       throw err
     } finally {
+      watchdog?.stop()
       lease?.release()
     }
 

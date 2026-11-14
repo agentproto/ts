@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { AcpMcpServer } from "@agentproto/acp"
 
@@ -20,6 +20,10 @@ import {
   spawnAgentSession,
   type SpawnAgentSessionDeps,
 } from "../session-spawn.js"
+import {
+  resetSpawnAdmissionCounters,
+  spawnAdmissionReport,
+} from "../action-hooks/spawn-admission-counters.js"
 import {
   createSessionsRegistry,
   type AgentSessionLike,
@@ -117,6 +121,10 @@ function claimsOf(events: ObservedAdmission[]): ObservedAdmission[] {
 }
 
 describe("spawnAgentSession: spawn admission parity", () => {
+  beforeEach(() => {
+    resetSpawnAdmissionCounters()
+  })
+
   it("(1) a fresh spawn reports claim allow only when a key exists and returns the same result", async () => {
     const events: ObservedAdmission[] = []
     const { registry, deps } = baseDeps({
@@ -411,5 +419,61 @@ describe("spawnAgentSession: spawn admission parity", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected success")
     expect(result.deduped).toBeUndefined()
+  })
+
+  it("(9) counts a duplicate explicit key as claim reuse without an observer wired", async () => {
+    const { deps } = baseDeps()
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      idempotencyKey: "counter-retry",
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected success")
+    expect(spawnAdmissionReport().stages.claim.allow).toBe(1)
+
+    const second = await spawnAgentSession(deps, input)
+    expect(second.ok).toBe(true)
+    if (!second.ok) throw new Error("expected success")
+    expect(second.deduped).toBe(true)
+
+    const report = spawnAdmissionReport()
+    expect(report.stages.claim.reuse).toBe(1)
+    expect(report.stages.claim.allow).toBe(1)
+    expect(report.dedupeSources.explicit).toBe(1)
+  })
+
+  it("(10) counts a fresh keyed spawn as claim allow", async () => {
+    const { deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      idempotencyKey: "counter-fresh",
+    })
+    expect(result.ok).toBe(true)
+    expect(spawnAdmissionReport().stages.claim.allow).toBe(1)
+  })
+
+  it("(11) a throwing observer still counts and does not change the result", async () => {
+    const { deps } = baseDeps({
+      onSpawnAdmission: () => {
+        throw new Error("observer boom")
+      },
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      idempotencyKey: "counter-throwing-observer",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.deduped).toBeUndefined()
+    expect(spawnAdmissionReport().stages.claim.allow).toBe(1)
   })
 })

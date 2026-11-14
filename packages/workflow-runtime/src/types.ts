@@ -364,6 +364,25 @@ export interface KnowledgeAppliedRecord {
 export type AgentSandboxRef = string | { provider: string; [k: string]: unknown }
 
 /**
+ * An ordered placement ladder for an {@link AgentStep}: `{ ladder: Rung[] }`,
+ * each rung a `sandbox` (provider slug or inline spec) plus optional `model` /
+ * `access` / `preflight` / `turnRetry` overrides. The host tries rung 1 and
+ * moves down when a box cannot be placed. Structural here, like
+ * {@link AgentSandboxRef}: the injected {@link AgentSessionHost} validates the
+ * shape (the daemon host forwards it to `agent_start.placement`).
+ */
+export interface AgentPlacementRef {
+  ladder: Array<{ sandbox: AgentSandboxRef; [k: string]: unknown }>
+}
+
+/**
+ * A `turnRetry` policy for an {@link AgentStep}'s session (the same input
+ * `agent_start.turnRetry` takes). `null` is the explicit opt-out. Structural:
+ * the host validates and resolves it.
+ */
+export type AgentTurnRetryRef = { on: string[]; [k: string]: unknown } | null
+
+/**
  * The minimal structural contract {@link AgentStep.outputSchema} must
  * satisfy — exactly the `safeParse` shape `execAgentStep` consumes (never
  * `.parse`, `._def`, or any other zod-specific member). A real zod
@@ -435,6 +454,17 @@ export interface AgentStep {
    *  referenced session's placement). Hosts without sandbox support MUST fail
    *  the spawn loudly rather than silently running on the host. */
   sandbox?: Selector<AgentSandboxRef | undefined> | AgentSandboxRef
+  /** Place this step's session with an ordered ladder of sandboxes (see
+   *  {@link AgentPlacementRef}) instead of a single `sandbox`; a selector
+   *  resolving to `undefined` ⇒ no ladder. Mutually exclusive with `sandbox`
+   *  (the host refuses a spawn carrying both). Only meaningful when `adapter`
+   *  is set. Hosts without placement support MUST fail the spawn loudly. */
+  placement?: Selector<AgentPlacementRef | undefined> | AgentPlacementRef
+  /** Automatic turn-retry policy for this step's session (see
+   *  {@link AgentTurnRetryRef}), host or sandbox. A selector resolving to
+   *  `undefined` ⇒ the host default; `null` opts the session out. Only
+   *  meaningful when `adapter` is set. */
+  turnRetry?: Selector<AgentTurnRetryRef | undefined> | AgentTurnRetryRef
   /** Prompt to send. */
   prompt: Selector<string>
   policy?:
@@ -797,6 +827,10 @@ export interface AgentSessionHost {
       workspaceSlug?: string
       stepId?: string
       sandbox?: AgentSandboxRef
+      /** Placement ladder for this spawn (see {@link AgentStep.placement}). */
+      placement?: AgentPlacementRef
+      /** Turn-retry policy for this spawn (see {@link AgentStep.turnRetry}). */
+      turnRetry?: AgentTurnRetryRef
       /** Adapter option id → value for this spawn (see {@link AgentStep.options}). */
       options?: Record<string, boolean | number | string>
       /** Harness pinning for this spawn (see {@link AgentStep.harness}). */

@@ -25,6 +25,7 @@ import {
   createTurnRetryController,
   decideTurnRetry,
   decideTurnRetryAction,
+  extractHttpStatus,
   extractRetryAfterMs,
   isReadOnlyToolName,
   isSandboxSession,
@@ -57,8 +58,22 @@ describe("classifyTurnError", () => {
     ["Invalid API key provided", "auth"],
     // Billing reported with a 429 is still billing — not retryable.
     ["429: insufficient_quota — check your plan", "auth"],
+    // pi's "NNN: body" shape: the leading status is the signal, and the body's
+    // `server_error` type must not turn a billing refusal into a 5xx retry.
+    ['402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "auth"],
+    ['{"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "auth"],
+    ["Insufficient wallet balance", "auth"],
+    ["insufficient available credits", "auth"],
+    ['503: {"type":"server_error","message":"Upstream request failed"}', "upstream-5xx"],
+    ["Insufficient permissions to list funds", "other"],
     ["Go usage limit exceeded", "usage-limit"],
     ["You've hit your session limit · resets 5pm", "usage-limit"],
+    ["Internal error: You've hit your weekly limit · resets 12pm (Europe/Paris)", "usage-limit"],
+    ["You've hit your weekly usage limit", "usage-limit"],
+    ["Weekly limit reached", "usage-limit"],
+    ["weekly usage limit exceeded", "usage-limit"],
+    ["429 Too Many Requests: rate limit exceeded", "rate-limit"],
+    ["429: requests per minute limit reached", "rate-limit"],
     ["context length exceeded: max_tokens 500", "other"],
     ["Internal error: API Error: 400 ...", "other"],
     ["missing_required_parameter: Missing required parameter 'messages[2].reasoning_content'", "other"],
@@ -68,8 +83,34 @@ describe("classifyTurnError", () => {
     expect(classifyTurnError(message)).toBe(expected)
   })
 
+  it("never retries the live OpenCode Zen out-of-funds refusal", () => {
+    const live = '402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}'
+    expect(extractHttpStatus(live)).toBe(402)
+    expect(classifyTurnError(live)).toBe("auth")
+  })
+
   it("the stall marker matches the registry's constant", () => {
     expect(NO_OUTPUT_STALL_MARKER).toBe(NO_OUTPUT_STALL_TURN_ERROR)
+  })
+})
+
+describe("extractHttpStatus", () => {
+  it.each([
+    ["402: out of credits", 402],
+    ['  503: {"type":"server_error"}', 503],
+    ["429 status code (no body)", 429],
+    ["status: 503", 503],
+  ])("%s → %s", (message, expected) => {
+    expect(extractHttpStatus(message)).toBe(expected)
+  })
+
+  it.each([
+    "max_tokens 500",
+    "context length exceeded: max_tokens 500",
+    "request 402 bytes over the limit: see docs",
+    "999: not a status",
+  ])("does not read a bare number as a status: %s", message => {
+    expect(extractHttpStatus(message)).toBeUndefined()
   })
 })
 
@@ -338,6 +379,29 @@ describe("turn retry — retried classes", () => {
     h.done()
   })
 
+  it("retries an EPROTO cut after read-only shell commands (opencode titles the call with its command)", async () => {
+    const shell = (command: string, id: string): AgentStreamEvent[] => [
+      { kind: "tool-call", toolCallId: id, toolName: "bash", arguments: {} } as AgentStreamEvent,
+      { kind: "tool-call", toolCallId: id, toolName: command, arguments: { command }, isUpdate: true } as AgentStreamEvent,
+      { kind: "tool-result", toolCallId: id, result: "ok" } as AgentStreamEvent,
+    ]
+    const h = harness(
+      [
+        fail("EPROTO: The TLS handshake failed. Does the server speak TLS on this port?", [
+          ...shell("git status --short && git diff --stat", "t1"),
+          ...shell('grep -n "turn-retry" /tmp/x.log | tail -20', "t2"),
+          ...toolCall("read", "t3"),
+        ]),
+        ok,
+      ],
+      { on: ["upstream-5xx"], ...FAST },
+    )
+    await h.registry.sendPrompt(h.desc.id, "go")
+    await until(() => h.prompts.length === 2, "continuation")
+    expect(h.phases()).toEqual(["scheduled", "sent"])
+    h.done()
+  })
+
   it("retryAfterToolCalls opts a side-effecting turn back in", async () => {
     const h = harness([fail("429 status code", toolCall("bash", "t1")), ok], {
       on: ["rate-limit"],
@@ -424,6 +488,21 @@ describe("turn retry — never retried", () => {
     await h.registry.sendPrompt(h.desc.id, "go")
     await expectNoRetry(h, ["skipped"])
     expect(h.events[0]?.skipReason).toContain("bash")
+  })
+
+  it("an EPROTO cut after read-only commands and one edit", async () => {
+    const h = harness(
+      [
+        fail("EPROTO: The TLS handshake failed. Does the server speak TLS on this port?", [
+          ...toolCall("git status --short && git diff --stat", "t1"),
+          ...toolCall("edit", "t2"),
+        ]),
+      ],
+      { on: ["upstream-5xx"], ...FAST },
+    )
+    await h.registry.sendPrompt(h.desc.id, "go")
+    await expectNoRetry(h, ["skipped"])
+    expect(h.events[0]?.skipReason).toContain("1 possibly side-effecting tool call(s) (edit)")
   })
 
   it("a user interrupt (turn ends interrupted, even with an error)", async () => {
@@ -875,6 +954,7 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     row?: Partial<SessionDescriptor>
     turnRetry?: Parameters<typeof resolveTurnRetryPolicy>[0]
     setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
+    restartSession?: (prev: SessionDescriptor, overrides: { model?: string }) => Promise<SessionDescriptor>
   }) {
     const sessionEvents = createSessionEventBus()
     const events: SessionTurnRetryEvent[] = []
@@ -938,6 +1018,7 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
       registry,
       sessionEvents,
       migrateSession: opts.migrateSession,
+      ...(opts.restartSession ? { restartSession: opts.restartSession } : {}),
       log: () => {},
       setTimer: opts.setTimer ?? (fn => setTimeout(fn, 0)),
     })
@@ -980,6 +1061,37 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     expect(h.enqueued[0]?.sessionId).toBe("s2")
     // Migration counter booked on old session
     expect(h.row.turnMigrations).toBe(1)
+    h.controller.dispose()
+  })
+
+  it("usage-limit with action migrate moves to a fresh box (new IP) without a backoff retry", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => makeMigrationResult("s2"),
+      turnRetry: { on: ["usage-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go")
+    await until(() => h.phases().includes("migrated"), "usage-limit migration")
+
+    expect(h.phases()).toEqual(["scheduled", "migrated"])
+    expect(h.events[1]).toMatchObject({ errorClass: "usage-limit", migratedTo: "s2" })
+    expect(h.enqueued.map(e => e.sessionId)).toEqual(["s2"])
+    expect(h.row.turnRetryAttempts).toBeUndefined()
+    h.controller.dispose()
+  })
+
+  it("usage-limit whose migration fails gives up instead of re-prompting the capped box", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => {
+        throw new Error("box boot failed")
+      },
+      turnRetry: { on: ["usage-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("usage limit exceeded")
+    await until(() => h.phases().includes("skipped"), "give up after failed migration")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed", "skipped"])
+    expect(h.enqueued).toHaveLength(0)
+    expect(h.row.turnRetryAttempts).toBeUndefined()
     h.controller.dispose()
   })
 
@@ -1138,6 +1250,44 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     expect(h.notices).toContain(
       "[turn-retry] gave up after 1 consecutive retries and 1 migration (rate-limit) — leaving the session idle",
     )
+    h.controller.dispose()
+  })
+
+  it("usage-limit whose migration fails with the retry budget spent still walks the fallback chain", async () => {
+    let land: (() => void) | undefined
+    const restarts: Array<{ model?: string }> = []
+    const h = migrateHarness({
+      migrateSession: async () => {
+        throw new Error("box boot failed")
+      },
+      restartSession: async (prev, overrides) => {
+        restarts.push(overrides)
+        return prev
+      },
+      turnRetry: {
+        on: ["usage-limit"],
+        action: "migrate",
+        maxMigrations: 2,
+        maxRetries: 1,
+        fallback: [{ model: "opencode/big-pickle" }],
+        ...FAST,
+      },
+      setTimer: fn => {
+        land = fn
+        return 0 as unknown as ReturnType<typeof setTimeout>
+      },
+    })
+    h.turnEnd("Free usage limit reached. Free models work in OpenCode (https://opencode.ai)")
+    expect(h.phases()).toEqual(["scheduled"])
+
+    h.row.turnRetryAttempts = 1
+    land!()
+    await until(() => h.enqueued.length === 1, "fallback continuation")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed"])
+    expect(restarts).toEqual([{ model: "opencode/big-pickle" }])
+    expect(h.notices.join("\n")).toContain("the retry budget is spent")
+    expect(h.notices.join("\n")).not.toContain("leaving the session idle")
     h.controller.dispose()
   })
 })

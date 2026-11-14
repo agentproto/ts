@@ -186,15 +186,211 @@ Worked example with the built-ins:
 A denied spawn returns `role_spawn_denied` with the parent/child role
 names and levels, plus (in allowlist mode) the allowed set.
 
+## Delegation gate
+
+AIP-46 makes the spawn authority the *calling session's* bound agent
+`delegatesTo`, a closed allowlist: a caller may spawn only the agents its
+list names. The daemon evaluates it on every nested spawn it can attribute
+to a trusted caller, on both the scoped orchestrator sub-gateway and the
+unscoped `/mcp` path. The calling agent is the owner session's recorded
+`agentSlug`. When there is none (the owner is not bound to the scope yet, or
+the session predates `agentSlug`) the scope's role names it, and on the
+unscoped path the owner's recorded `role` does. AIP-46 also says an agent
+with no list may spawn nothing; this release does not apply that part, an
+agent without a list stays on the level lattice (`undeclared`, below).
+
+Each spawn gets one of five verdicts:
+
+- `allowed` - the caller's agent declares `delegatesTo` and the child is in it.
+- `would_deny` - the caller's agent declares `delegatesTo` and the child is not in it.
+- `undeclared` - the caller's agent declares no `delegatesTo` (a pack role,
+  or a manifest agent whose list is absent, empty or unresolvable); the
+  legacy lattice decides.
+- `unbound` - a trusted caller session exists but names no agent the daemon
+  can resolve.
+- `no_caller` - no trusted caller, so this is a root spawn authorized by the
+  host's own auth, not gated here.
+
+`defaults.spawn.delegationGate` selects the mode:
+
+- `observe` (default) counts every verdict and logs one warning for each
+  `would_deny` pair, changing no decision.
+- `enforce` refuses a `would_deny` child with `delegation_denied`
+  (`details.gate: "agent"`, `details.legacyCode: "role_spawn_denied"`). An
+  `allowed` child skips only `canSpawn`'s open-mode level comparison: the
+  declared list decides which child, but the parent's own hard gates still
+  apply. A parent whose `toolPolicy.delegation` is `"deny"` can spawn
+  nothing, and a parent with `spawnableRoles` set must still name the child
+  there — `delegatesTo` cannot widen a closed allowlist.
+- `off` skips evaluation entirely.
+
+`undeclared`, `unbound` and `no_caller` always fall through to the unchanged
+level lattice, so a pack role without a list and every root spawn behave
+exactly as before. The counters are in memory (a daemon restart resets them);
+`GET /permissions/grants` exposes them under `delegation`.
+
+A manifest agent's `delegates_to` is read once, at spawn: the runtime
+resolves each entry to an agent identity (an agent id, optionally
+`@owner/`-prefixed, or a role name) and records the list on the session
+(`meta.agentDelegatesTo`). The gate evaluates that frozen list for a
+manifest-bound caller and never re-reads the file, so editing the manifest
+and respawning is what applies a change (a restart carries the recorded
+list). An absent or empty list is `undeclared` (the manifest schema
+defaults the field to `[]`, so the runtime cannot tell "declares none"
+apart; AIP-46's deny-by-default for such agents is not applied yet). An
+entry given as a path, `file` or `inline` cannot be resolved yet: the spawn
+carries a warning and the agent is `undeclared`. `session_continue_fresh`
+carries the agent binding to its successor, like a restart: the recorded
+role, manifest id and delegation list, never a fresh read of the file. An
+explicit `agent` or `role` in the continuation request wins instead and
+nothing is carried.
+
+A manifest-bound *child* is matched by its manifest id, the same value the
+session records as `meta.agentSlug`, not by the role its manifest resolves
+to. A caller whose `delegatesTo` names only roles (`"executor"`) will
+therefore see `would_deny` for a child spawned via `agent`/`agentId`; the
+caller must name the manifest id to declare that child.
+
+## Profile gate
+
+AIP-46's "no self-widening" rule also covers billing: a spawn may name an
+auth profile it is allowed to use, not any profile on the machine. The
+daemon evaluates `access.profileRef` and every `access.profileRefs` entry
+on a nested spawn against the CALLING session's set. That set is the
+caller's own recorded `accessProfile.profileRef` plus
+`defaults.spawn.sharedProfiles`, the operator's grant to every session.
+
+Only the profiles the REQUEST names are evaluated. A profile supplied by a
+harness default preset, a session preset, an AGENT.md manifest or a config
+layer is operator or author configuration, not a request, and is not gated.
+The caller is the same trusted identity the delegation gate uses (the
+scope's owner session, else the daemon-derived auto-parent); the
+caller-supplied `parentSessionId` hint is never used. A root spawn and
+every continuation path with no trusted caller (continue-fresh, restart,
+migrate, cron, retries) is `no_caller` and is never gated: the host's own
+auth authorises it. A trusted caller id the registry does not hold is
+`caller_unknown` and is counted but not gated. A caller that is an
+`external` row (a client the daemon did not spawn, such as Claude Desktop or
+a bare CLI) is a label evaluated as anonymous under AIP-46 rule 7: it is
+`external`, counted and never gated.
+
+`defaults.spawn.profileGate` selects the mode:
+
+- `observe` (default) counts every verdict and logs one warning per
+  would-deny caller/requested-profile pair, changing no decision.
+- `enforce` refuses a `would_deny` spawn with `auth_profile_denied`
+  (`details.gate: "profile"`, `details.denied`, `details.callerProfiles`)
+  before any credential is resolved. A session with no recorded profile
+  has an empty set of its own, so under `enforce` it may name only the
+  shared profiles.
+- `off` skips evaluation entirely.
+
+The counters are in memory (a daemon restart resets them);
+`GET /permissions/grants` exposes them under `profileUse`.
+
+## Stdio mount gate
+
+A `stdio` MCP entry in `agent_start.mcpServers` names an arbitrary command
+the agent CLI launches, which is command execution outside
+`.agentproto/allowed-commands.json` unless it is evaluated. The daemon
+evaluates only the `stdio` entries the REQUEST names: a session may mount
+only a command the workspace command allowlist admits, through the same
+evaluator `command_execute` uses (a basename match, plus an argv-prefix
+match when the entry constrains `args`). An `http` or `sse` entry is never a
+stdio mount. Mounts supplied by a preset, an AGENT.md manifest, a bundle, a
+config layer or the daemon's own injected servers are not a request and are
+not evaluated.
+
+The caller is the same trusted identity the other gates use (the scope's
+owner session, else the daemon-derived auto-parent); the caller-supplied
+`parentSessionId` hint is never used. A root spawn and every continuation
+path with no trusted caller (continue-fresh, restart, migrate, cron,
+retries) is `no_caller` and is never gated: the host's own auth authorises
+it. A trusted caller id the registry does not hold is `caller_unknown`, an
+`external` row (Claude Desktop, a bare CLI) is a label evaluated as
+anonymous under AIP-46 rule 7, and a sandboxed spawn launches the server
+inside the box rather than on the host: all three are counted and never
+gated.
+
+`defaults.spawn.stdioMountGate` selects the mode:
+
+- `observe` (default) counts every verdict and logs one warning per
+  would-deny command basename, changing no decision.
+- `enforce` refuses a `would_deny` spawn with `stdio_mount_denied`
+  (`details.gate: "mount"`, `details.denied` as `{ name, command }`)
+  before any tool injection or credential resolution.
+- `off` skips evaluation entirely.
+
+The counters are in memory (a daemon restart resets them);
+`GET /permissions/grants` exposes them under `stdioMounts`. The limits are
+the same as `command_execute`'s: the allowlist is the daemon boot
+workspace's, not a per-session one, and `env` is not evaluated, so a mount
+can still set `PATH` or `NODE_OPTIONS` for an allowlisted command. An
+interpreter allowlisted without an argv constraint (`node`, `python3`)
+admits `node -e ...` exactly as it does for `command_execute`.
+
+## Requiring proof to spawn
+
+AIP-46 §Session principals has three proof levels. A caller is `proven` when
+it presents a credential: a scoped orchestrator's scope token, or a session
+token the daemon minted for the session it names. It is `claimed` when it
+only names a session, and `none` when it names none. On loopback, `none` is
+the operator the daemon trusts (CLI, hooks, desktop), and it is never
+refused. A `kind: "external"` identifier (a bare Claude Desktop or CLI
+label) is evaluated as anonymous, and an id the registry does not hold is
+`caller_unknown`; neither is refused.
+
+`defaults.identity.requireProof` lists the actions that require `proven`. It
+is empty by default and today only `"session:spawn"` is evaluated
+(`session:control` and `auth-profile:use` follow later). A `claimed` caller
+of a listed action is refused `identity_unverified`; a caller whose session
+token was minted for another session than its claim is refused
+`identity_mismatch`. Both happen before any other spawn gate or side effect.
+A scoped orchestrator child is `proven` by its scope token, so nothing
+changes for it.
+
+The list is opt-in because enforcement never outruns delivery (AIP-46 rule
+8): a session whose adapter or placement cannot carry a token (codex,
+opencode, a sandboxed session, one spawned while `sessionTokens` was `off`)
+can never be proven, and would stop being able to spawn the moment the action
+was listed. The gate is also ignored while
+`defaults.identity.sessionTokens` is `"off"`: no token is minted, so nobody
+could be proven, and the reading is counted as `requireProofIgnored` with one
+warning.
+
+Before listing anything, read `GET /identity`. Its `spawnProof` block counts
+every verdict, splits `claimed` by whether a token was ever deliverable
+(`claimedByClass.delivered` / `undelivered`), and reports `wouldRefuse`
+(claimed plus mismatch), `refused`, and `requireProofIgnored` since the
+process started. The counters are in memory and reset on a restart; the
+warning line for a new verdict/class pair is the durable record. A `claimed`
+caller on an `undelivered` adapter cannot spawn while the action is listed,
+so check that split before turning it on.
+
+The same proof gate and the same trusted caller id are used by the
+delegation, auth-profile and stdio mount gates. A session spawning over the
+HTTP routes (`POST /sessions/agent`, `POST /sessions/chat`) now carries its
+trusted caller id into all of them too, so those spawns are judged by the
+three gates instead of reading `no_caller`.
+
+The limits: only `session:spawn` is evaluated today; a session that omits
+both its token and its claim is indistinguishable from the operator under the
+loopback trust model; and the counters live in memory, so a restart starts a
+new reading window.
+
 ## Depth-derived default
 
-Omitting `role` on `agent_start` doesn't leave the child roleless —
-it derives one from spawn depth against a cutoff:
+Omitting `role` (and `agent`) on `agent_start` doesn't leave the child
+roleless; it binds the agent named by `defaults.spawn.defaultAgent.root`
+below the depth cutoff and by `defaults.spawn.defaultAgent.nested` at or
+above it. Today's values are `supervisor` (root) and `executor` (nested):
 `depth < cutoff` → `supervisor`, `depth >= cutoff` → `executor`. The
-cutoff defaults to `1` (root spawns default to `supervisor`; spawns
-made through an orchestrator sub-gateway default to `executor`) and
-is overridable via `defaults.defaultRoleDepthCutoff` in
-`~/.agentproto/config.json`.
+cutoff still defaults to `1` and is overridable via
+`defaults.defaultRoleDepthCutoff` in `~/.agentproto/config.json`; that key
+is deprecated and removed with `role` in `@agentproto/runtime` 6.0.0, while
+it stays the depth boundary between the two defaults. The session records
+the bound agent as `meta.agentSlug`, which a message envelope exposes as
+`from.agentSlug`.
 
 ## Introspection
 
@@ -208,15 +404,20 @@ and the spawn gate use:
 ```json
 {
   "roles": [
-    { "name": "executor", "level": 0, "delegation": "deny", "spawnable": [] },
-    { "name": "supervisor", "level": 100, "delegation": "allow", "spawnable": ["executor", "supervisor"] }
+    { "name": "executor", "level": 0, "delegation": "deny", "spawnable": [], "delegatesTo": [] },
+    { "name": "supervisor", "level": 100, "delegation": "allow", "spawnable": ["executor", "supervisor"], "delegatesTo": ["supervisor", "executor"] }
   ]
 }
 ```
 
 `spawnable` is precomputed with the same `canSpawn` check the daemon
 uses at spawn time, so a caller can discover what it may spawn before
-attempting `agent_start` with `orchestrator`.
+attempting `agent_start` with `orchestrator`. Each row also carries
+`delegatesTo`, the agents the role declares it may spawn, which the
+delegation gate evaluates; the key is omitted when the role declares
+none, while an explicit empty array is kept. Manifest agents are not
+listed: `role_list` shows roles, a manifest agent's list lives on its
+session.
 
 ### The "Roles you may spawn" context line
 

@@ -19,7 +19,24 @@
  */
 
 import { readdir, readFile, stat, realpath } from "node:fs/promises"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+
+/**
+ * Normalise a list of extra worktrees roots (from `worktrees.extraRoots` and
+ * `--worktrees-root`): `~/` expands, everything resolves to an absolute path,
+ * blanks are dropped and duplicates collapse, first occurrence wins.
+ */
+export function normalizeExtraRoots(raw: readonly string[] | undefined, home: string = homedir()): string[] {
+	const out: string[] = []
+	for (const entry of raw ?? []) {
+		const trimmed = entry.trim()
+		if (!trimmed) continue
+		const abs = resolve(trimmed === "~" ? home : trimmed.startsWith("~/") ? join(home, trimmed.slice(2)) : trimmed)
+		if (!out.includes(abs)) out.push(abs)
+	}
+	return out
+}
 
 /**
  * Discover the main repos behind every worktree under `root`:
@@ -35,6 +52,14 @@ export async function discoverWorktreeOwningRepos(root: string): Promise<string[
 	for (const bucket of buckets) {
 		if (!bucket.isDirectory()) continue
 		const bucketDir = join(root, bucket.name)
+		// A worktree sitting directly at the root (`<root>/<slug>`, the layout
+		// of a hand-made pool or a repo's sibling `*-wt-*` dirs) is its own
+		// entry, not a bucket: without this its owning repo was never found.
+		const direct = await mainRepoOfWorktree(bucketDir)
+		if (direct) {
+			mains.add(direct)
+			continue
+		}
 		const entries = await readdir(bucketDir, { withFileTypes: true }).catch(() => [])
 		for (const entry of entries) {
 			if (!entry.isDirectory()) continue
@@ -87,10 +112,11 @@ export async function mainRepoOfWorktree(worktreePath: string): Promise<string |
  * Purely additive: a repo with no worktrees still runs when named.
  */
 export async function resolveAllRepos(
-	root: string,
+	root: string | readonly string[],
 	explicitRepos: readonly string[] = [],
 ): Promise<string[]> {
-	const discovered = await discoverWorktreeOwningRepos(root)
+	const roots = typeof root === "string" ? [root] : root
+	const discovered = [...new Set((await Promise.all(roots.map(discoverWorktreeOwningRepos))).flat())].sort()
 	const all = new Set<string>()
 	for (const repo of discovered) {
 		try {

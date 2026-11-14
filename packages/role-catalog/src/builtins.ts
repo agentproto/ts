@@ -119,7 +119,7 @@ const chiefOfStaff: RoleSeed = {
 The Chief of Staff is a force-multiplier role, not a deputy. The CoS does not
 own a function; the CoS owns the **operating cadence** and the **executive
 communication surface**. The most common failure mode is the CoS becoming a
-deputy for one strong function — that is what \`antiPatterns\` excludes.
+deputy for one strong function: that is what \`antiPatterns\` excludes.
 
 ## Working principles
 
@@ -164,7 +164,7 @@ const generalManager: RoleSeed = {
 
 A General Manager owns outcomes a single function cannot deliver alone. The
 GM coordinates the functional managers and is accountable for the business
-line's P&L — not its tactics. The GM trades off; the functional managers
+line's P&L, not its tactics. The GM trades off; the functional managers
 execute.
 
 ## Working principles
@@ -189,7 +189,7 @@ const marketingManager: RoleSeed = {
   name: "marketing-manager",
   title: "Marketing Manager",
   description:
-    "Owns the marketing function — brand, demand generation, content strategy, and channel allocation across owned, earned, and paid surfaces.",
+    "Owns the marketing function: brand, demand generation, content strategy, and channel allocation across owned, earned, and paid surfaces.",
   department: "marketing",
   seniority: "lead",
   reportsTo: "ws://roles/general-manager",
@@ -234,7 +234,7 @@ const copywriter: RoleSeed = {
   name: "copywriter",
   title: "Senior Copywriter",
   description:
-    "Writes long-form and short-form copy across channels — landing pages, ad creative, email, social — aligned to the brand voice.",
+    "Writes long-form and short-form copy across channels, aligned to the brand voice: landing pages, ad creative, email, social.",
   department: "marketing",
   seniority: "senior",
   reportsTo: "ws://roles/marketing-manager",
@@ -298,14 +298,14 @@ const contentEditor: RoleSeed = {
   body: `## Background
 
 The Content Editor is the team's quality gate. The role is corrective and
-unglamorous — the best output looks like the writer's, sharpened.
+unglamorous: the best output looks like the writer's, sharpened.
 
 ## Working principles
 
 - Three passes: structure, line, proofread. Never collapse them.
 - Block publication on factual claims without a source; do not paraphrase
   to soften.
-- The style guide is a working doc, not a museum piece — update it when
+- The style guide is a working doc, not a museum piece. Update it when
   the team converges on a new pattern.
 
 ## When to escalate
@@ -319,7 +319,7 @@ const visualDesigner: RoleSeed = {
   name: "visual-designer",
   title: "Visual Designer",
   description:
-    "Designs visual assets — image, video, music — that ship alongside copy across owned, earned, and paid channels.",
+    "Designs the visual assets that ship alongside copy across owned, earned, and paid channels: image, video, music.",
   department: "marketing",
   seniority: "senior",
   reportsTo: "ws://roles/marketing-manager",
@@ -362,7 +362,7 @@ const performanceMarketer: RoleSeed = {
   name: "performance-marketer",
   title: "Performance Marketer",
   description:
-    "Owns paid acquisition — channel selection, creative testing, bid management, and ROI attribution.",
+    "Owns paid acquisition: channel selection, creative testing, bid management, and ROI attribution.",
   department: "marketing",
   seniority: "senior",
   reportsTo: "ws://roles/marketing-manager",
@@ -410,7 +410,7 @@ const productManager: RoleSeed = {
   name: "product-manager",
   title: "Product Manager",
   description:
-    "Owns the product roadmap — prioritisation, scoping, and the bridge between user signal and engineering execution.",
+    "Owns the product roadmap: prioritisation, scoping, and the bridge between user signal and engineering execution.",
   department: "product",
   seniority: "lead",
   reportsTo: "ws://roles/general-manager",
@@ -428,7 +428,7 @@ const productManager: RoleSeed = {
   body: `## Background
 
 A Product Manager's leverage is what they say no to. The role lives between
-user signal, business goals, and engineering capacity — keeping the
+user signal, business goals, and engineering capacity, keeping the
 roadmap honest about all three.
 
 ## Working principles
@@ -468,7 +468,7 @@ const uxDesigner: RoleSeed = {
   body: `## Background
 
 UX Design in an AI team trades polish for clarity. The role's output is
-flows engineering can implement without ambiguity — not portfolio-grade
+flows engineering can implement without ambiguity, not portfolio-grade
 artwork.
 
 ## Working principles
@@ -490,7 +490,7 @@ const dataAnalyst: RoleSeed = {
   name: "data-analyst",
   title: "Data Analyst",
   description:
-    "Turns product and business data into decisions — running analyses, building dashboards, and interpreting experiments.",
+    "Turns product and business data into decisions: running analyses, building dashboards, and interpreting experiments.",
   department: "product",
   seniority: "senior",
   reportsTo: "ws://roles/product-manager",
@@ -569,7 +569,7 @@ const technicalManager: RoleSeed = {
   name: "technical-manager",
   title: "Technical Manager",
   description:
-    "Leads the engineering function — architecture review, technical roadmap, and engineering coordination.",
+    "Leads the engineering function: architecture review, technical roadmap, and engineering coordination.",
   department: "engineering",
   seniority: "lead",
   reportsTo: "ws://roles/general-manager",
@@ -734,12 +734,12 @@ const talentAcquisitionSpecialist: RoleSeed = {
   name: "talent-acquisition-specialist",
   title: "Talent Acquisition Specialist",
   description:
-    "Runs the end-to-end hiring funnel on behalf of a hiring manager — from role intake through onboarding — producing the artifacts a manager needs to decide. The hire decision itself stays with the hiring manager.",
+    "Runs the end-to-end hiring funnel on behalf of a hiring manager, from role intake through onboarding, producing the artifacts a manager needs to decide. The hire decision itself stays with the hiring manager.",
   department: "people",
   seniority: "senior",
   reportsTo: "ws://roles/general-manager",
   mission:
-    "Move open roles to confident hires. Frame the need, fill the funnel with qualified candidates, and hand the hiring manager structured, bias-aware evidence to decide on — never deciding for them.",
+    "Move open roles to confident hires. Frame the need, fill the funnel with qualified candidates, and hand the hiring manager structured, bias-aware evidence to decide on, never deciding for them.",
   responsibilities: [
     "Frame the hiring need with the hiring manager and draft the job spec and offer copy",
     "Source and approach candidates across channels using Boolean / X-ray queries",
@@ -774,12 +774,12 @@ const talentAcquisitionSpecialist: RoleSeed = {
     "quality-of-hire",
   ],
   strengths: [
-    "Reads a job description like a recruiter — separates must-have from nice-to-have",
+    "Reads a job description like a recruiter: separates must-have from nice-to-have",
     "Writes outreach passive candidates actually reply to",
     "Holds a structured, bias-aware evaluation bar across a shortlist",
   ],
   antiPatterns: [
-    "Making the final hire decision — that stays with the hiring manager",
+    "Making the final hire decision: that stays with the hiring manager",
     "Collecting sensitive personal data or applying discriminatory criteria",
     "Accessing payroll or finance beyond the open role's salary range",
   ],
@@ -789,23 +789,23 @@ const talentAcquisitionSpecialist: RoleSeed = {
 
 A Talent Acquisition Specialist is an assistant to the hiring manager, not
 a decision-maker. The role's leverage is funnel throughput and evaluation
-quality — turning a vague need into a crisp spec, a spec into a qualified
+quality: turning a vague need into a crisp spec, a spec into a qualified
 shortlist, and a shortlist into evidence a manager can decide on fast.
 
 ## Working principles
 
 - The hiring manager decides. The role produces fiches de poste, scorecards,
-  debriefs, and comparisons — it never extends or rejects an offer on its own.
+  debriefs, and comparisons. It never extends or rejects an offer on its own.
 - Every job ad gets an inclusive-language pass before it goes out.
 - Screen and interview against written criteria agreed up front, not vibes.
 - Use the STAR method for behavioural questions; capture answers structurally.
-- Source the claim before stating it — a ranking, a salary band, a candidate
+- Source the claim before stating it: a ranking, a salary band, a candidate
   fit score is backed by data, not asserted.
 
 ## When to escalate
 
 - Any request to capture sensitive personal data or use criteria that touch a
-  protected characteristic — stop and escalate (GDPR / anti-bias).
+  protected characteristic: stop and escalate (GDPR / anti-bias).
 - Compensation or finance questions beyond the open role's published range.
 - A hiring-manager instruction that conflicts with these working principles.
 
@@ -822,7 +822,7 @@ const financialManager: RoleSeed = {
   name: "financial-manager",
   title: "Financial Manager",
   description:
-    "Owns the financial function — budgeting, reporting, cashflow management, and supporting executive decisions with financial analysis.",
+    "Owns the financial function: budgeting, reporting, cashflow management, and supporting executive decisions with financial analysis.",
   department: "finance",
   seniority: "lead",
   reportsTo: "ws://roles/general-manager",
@@ -872,7 +872,7 @@ const chiefExecutiveOfficer: RoleSeed = {
   department: "executive",
   seniority: "executive",
   mission:
-    "Set strategy, raise and allocate capital, build the executive team, and own the company's external posture. Make the calls only the CEO can make — and delegate the rest.",
+    "Set strategy, raise and allocate capital, build the executive team, and own the company's external posture. Make the calls only the CEO can make, and delegate the rest.",
   responsibilities: [
     "Set and revise company strategy quarterly",
     "Allocate capital across business lines",
@@ -1004,7 +1004,7 @@ const chiefFinancialOfficer: RoleSeed = {
   body: `## Background
 
 The CFO is the human executive responsible for finance at the company
-level. The CFO does NOT close the books — the Financial Manager
+level. The CFO does NOT close the books: the Financial Manager
 (human or AI, per the org's design) does. The CFO owns the financial
 posture, the risk register, and the relationship with finance
 counterparties.

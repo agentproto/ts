@@ -16,18 +16,43 @@
  *    `message_parent`, `POST /sessions/:id/messages`, the box parent relay)
  *    all route through them, and `registry.sendMessage` refuses a message
  *    whose attached decision does not allow it.
- *  - `session.drive` is evaluated with the exact predicate the drive tools
- *    already call (`checkSessionOwnerGate`), but the drive tools do not
- *    route through `decide()` yet, so its decisions are marked
- *    non-authoritative.
+ *  - `session.drive` is AUTHORITATIVE: the five drive tools
+ *    (`agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart`,
+ *    `session_continue_fresh`) route through it via `drive-gate.ts`, and the
+ *    legacy owner-gate rules are evaluated unchanged. An explicit
+ *    `session:prompt` or `session:control` grant may admit a caller the owner
+ *    gate refuses.
  *  - Every other action in the vocabulary is declared (types, enforcement
  *    site) but not routed: `decide()` answers `allow: false,
  *    authoritative: false` and names the site that enforces it today.
+ *
+ * AIP-38 grants are consulted at call time through `PermissionContext.policy`
+ * (`evaluateGrants` from `@agentproto/policy`): an explicit deny removes the
+ * grant-derived reasons of `session.message` (sibling, peer) and refuses
+ * `tool.invoke`. A tree edge, the operator and the system are never removed
+ * by a deny (AIP-46 §Who may message whom rule 3). A matching ALLOW under
+ * `defaults.messaging.grants` (messaging-context.ts) admits a pair the tree
+ * and the switches refuse, with relation `granted`. The context is read per
+ * call, so a revoked grant applies on the next call.
  *
  * Pure module: no registry, no I/O. Callers resolve the principal and the
  * policy (config) and pass them in.
  */
 
+import {
+  evaluateGrants,
+  evaluateToolInvoke,
+  PolicyGrantError,
+  qualifyToolName,
+  type GrantDecision,
+  type GrantInput,
+  type GrantRequest,
+} from "@agentproto/policy"
+
+import {
+  isCommandAllowed,
+  type AllowlistEntry,
+} from "./command-allowlist.js"
 import {
   samePeerGroup,
   sameWorkspace,
@@ -55,6 +80,7 @@ export const PERMISSION_ACTIONS = [
   "cron.schedule",
   "approval.decide",
   "box.relay",
+  "tool.invoke",
 ] as const
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]
@@ -78,12 +104,14 @@ export interface ActionInfo {
 export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInfo>> = {
   "session.spawn": {
     routed: false,
-    enforcedAt: "role.ts canSpawn (scoped gateway only), ?denyTools= on the self-mount",
+    enforcedAt:
+      "delegation-gate.ts (observe by default, enforce behind defaults.spawn.delegationGate), role.ts canSpawn for agents without delegatesTo, ?denyTools= on the self-mount",
     surfaces: ["agent_start", "cron_create (agent action)", "workflow_start", "app_run", "POST /sessions"],
   },
   "session.drive": {
-    routed: false,
-    enforcedAt: "session-owner.ts checkSessionOwnerGate (agent-tools.ts / session-tools.ts)",
+    routed: true,
+    enforcedAt:
+      "permissions.ts decide(), called by the five drive tools through drive-gate.ts (the owner-gate rules are unchanged; explicit session:prompt / session:control grants may admit a caller)",
     surfaces: ["agent_prompt", "agent_interrupt", "agent_kill", "session_restart", "session_continue_fresh"],
   },
   "session.message": {
@@ -118,8 +146,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
     surfaces: ["terminal_start"],
   },
   "mcp.mount.stdio": {
-    routed: false,
-    enforcedAt: "none (agent_start.mcpServers mounted verbatim)",
+    routed: true,
+    enforcedAt:
+      "permissions.ts decide() against the command allowlist, applied by session-spawn.ts behind defaults.spawn.stdioMountGate (observe by default: counts, refuses nothing)",
     surfaces: ["agent_start.mcpServers"],
   },
   "pr.open": {
@@ -128,8 +157,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
     surfaces: ["pr_open"],
   },
   "auth.profile.use": {
-    routed: false,
-    enforcedAt: "none (any spawn may name any profile)",
+    routed: true,
+    enforcedAt:
+      "permissions.ts decide(), applied by session-spawn.ts behind defaults.spawn.profileGate (observe by default: counts, refuses nothing)",
     surfaces: ["agent_start.access", "agent_start.auth"],
   },
   "auth.profile.manage": {
@@ -149,8 +179,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
   },
   "cron.schedule": {
     routed: false,
-    enforcedAt: "/mcp auth only",
-    surfaces: ["cron_create", "cron_delete"],
+    enforcedAt:
+      "tool.invoke on /mcp: tool-deny-gate.ts withToolDenyGate refuses cron_* for a session whose AGENT manifest denies it (deny-only, through the tool.invoke row). The HTTP /cron write routes (POST, PATCH, DELETE, run) are not a tool.invoke: they require the sessions credential (per-boot token or allowlisted Origin, JSON body), which a session does not normally hold, and the job is created as the operator; GET /cron stays open",
+    surfaces: ["cron_create", "cron_update", "cron_delete", "POST /cron", "PATCH /cron/:id", "DELETE /cron/:id"],
   },
   "approval.decide": {
     routed: false,
@@ -161,6 +192,11 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
     routed: false,
     enforcedAt: "parent-relay.ts relay grant (delivery itself goes through session.message)",
     surfaces: ["POST /relay/parent-message"],
+  },
+  "tool.invoke": {
+    routed: false,
+    enforcedAt: "tool-deny-gate.ts: the /mcp server factory (agentproto/<name>) and createImportedCallGuard (<server>/<name>) evaluate a session's AGENT deny grants (deny-only) when its descriptor carries toolDenyGrants",
+    surfaces: [],
   },
 }
 
@@ -191,9 +227,50 @@ export type Principal =
 export interface SessionResource {
   kind: "session"
   session: MessageTreeNode & { allowPromptFrom?: readonly string[] }
+  /** The drive tool calling through `decide()`: picks the refusal text's tool
+   *  name and the AIP-38 action an explicit grant must match. */
+  drive?: { tool: string; action: "session:prompt" | "session:control" }
 }
 
-export type PermissionResource = SessionResource | { kind: "none" }
+/** A tool call. `name` is the registry's full name `<server>/<name>`, or a legacy bare built-in. */
+export interface ToolResource {
+  kind: "tool"
+  name: string
+  /** Actions the tool declares in `implements`. */
+  implements?: string | readonly string[]
+}
+
+/** An auth profile a spawn asks to bill. */
+export interface ProfileResource {
+  kind: "profile"
+  ref: string
+}
+
+/** A command a spawn asks to mount as a `stdio` MCP server. `command` is
+ *  the BASENAME of the entry's `ref`. */
+export interface CommandResource {
+  kind: "command"
+  command: string
+  args: readonly string[]
+}
+
+export type PermissionResource =
+  | SessionResource
+  | ToolResource
+  | ProfileResource
+  | CommandResource
+  | { kind: "none" }
+
+/** AIP-38 grants consulted at call time. Read per call: build a fresh object when the grants change. */
+export interface PermissionPolicy {
+  /** Composed policies and/or bare grants. */
+  inputs: readonly GrantInput[]
+  /** Identity refs of the principal. Default: `session-label://<operator label>` for a session with one. */
+  principals?: (principal: Principal) => readonly string[]
+  now?: GrantRequest["now"]
+  resolveSelector?: GrantRequest["resolveSelector"]
+  evaluateCondition?: GrantRequest["evaluateCondition"]
+}
 
 export interface PermissionContext {
   /** `defaults.messaging.*`, resolved per call (messaging-defaults.ts). */
@@ -205,11 +282,38 @@ export interface PermissionContext {
     /** `defaults.messaging.peerGroups`: workspace families linked regardless
      *  of `allowSameWorkspace`. */
     peerGroups?: readonly (readonly string[])[]
+    /** `defaults.messaging.peerBinding` (default "slug"): "slug" links peers
+     *  by recorded workspace slug; "verified" requires both cwds to resolve
+     *  to the same registered workspace via `workspaceOfCwd`. */
+    peerBinding?: "slug" | "verified"
     agentInterrupt?: "allow" | "deny"
+    /** `defaults.messaging.anonymousSend`: "label" admits an UNVERIFIED
+     *  session sender (an external client such as the shared
+     *  `claude-desktop` identity) to any live session, as relation
+     *  `granted`, rule `messaging.anonymousSend`, capped at `steer`.
+     *  "block" (or unset) keeps the refusal. Verified senders never read it. */
+    anonymousSend?: "block" | "label"
   }
+  /** A reply in flight: `session.message` to the attested sender of a
+   *  message the caller itself received is always admitted (rule
+   *  `messaging.reply`), capped at steer. `originalSenderOf` resolves the
+   *  attested sender id of message `messageId` in `selfId`'s own inbox or
+   *  ledger; a made-up id or another sender never opens the door. */
+  reply?: {
+    messageId: string
+    originalSenderOf: (selfId: string, messageId: string) => string | undefined
+  }
+  /** cwd to registered workspace slug (undefined when unregistered). */
+  workspaceOfCwd?: (cwd: string) => string | undefined
   /** Registry lookups for the drive gate's ancestor and `label:` rules. */
   parentOf?: (id: string) => string | undefined
   operatorLabelOf?: (id: string) => string | undefined
+  /** AIP-38 grants for `session.message` denies and `tool.invoke`. Absent: no grant is consulted. */
+  policy?: PermissionPolicy
+  /** `auth.profile.use`: the profiles the caller may pass on (its own plus `defaults.spawn.sharedProfiles`). */
+  profiles?: { callerAllowed: readonly string[] }
+  /** `mcp.mount.stdio`: the workspace command allowlist. */
+  mounts?: { allowlist: readonly AllowlistEntry[] }
 }
 
 // ── Decision ───────────────────────────────────────────────────────────
@@ -232,6 +336,10 @@ export interface DecisionBody {
   /** `session.message*`: the strongest relation whose grant matched (allow),
    *  or the strongest that held (deny). Reported on the envelope. */
   relation?: MessageRelation
+  /** `session.message*`: set when a peer link is (or, under the verified
+   *  binding, would have been) involved. `true` when both cwds resolve to the
+   *  same registered workspace. */
+  peerVerified?: boolean
 }
 
 /** A decision minted by `decide()`. The brand keeps a caller from
@@ -245,7 +353,59 @@ function mint(body: DecisionBody): Decision {
 // ── Messaging relations ────────────────────────────────────────────────
 
 /** Strongest first. Also the order `resolveRelation` used to test them. */
-const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibling", "peer", "human", "system"]
+const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibling", "granted", "human", "system"]
+
+function verifiedSlugOf(node: MessageTreeNode, ctx: PermissionContext): string | undefined {
+  if (!node.cwd || !ctx.workspaceOfCwd) return undefined
+  return ctx.workspaceOfCwd(node.cwd)?.trim() || undefined
+}
+
+/** Same-workspace and peer-group links by the VERIFIED slugs (cwd to registered workspace). */
+function verifiedLinks(
+  sender: MessageTreeNode,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext,
+): { group: boolean; workspace: boolean } {
+  const a = verifiedSlugOf(sender, ctx)
+  const b = verifiedSlugOf(recipient, ctx)
+  if (!a || !b) return { group: false, workspace: false }
+  return {
+    group: samePeerGroup(
+      { id: sender.id, workspaceSlug: a },
+      { id: recipient.id, workspaceSlug: b },
+      ctx.messaging?.peerGroups,
+    ),
+    workspace: a === b && ctx.messaging?.allowSameWorkspace !== false,
+  }
+}
+
+function slugLinks(
+  sender: MessageTreeNode,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext,
+): { group: boolean; workspace: boolean } {
+  return {
+    group: samePeerGroup(sender, recipient, ctx.messaging?.peerGroups),
+    workspace: sameWorkspace(sender, recipient) && ctx.messaging?.allowSameWorkspace !== false,
+  }
+}
+
+/**
+ * How a no-tree-edge pair is bound as peers under the slug rule: "verified"
+ * when the verified rule (both cwds resolve to one registered workspace)
+ * links them too, "unverified" when only the recorded slugs do, "none" when
+ * the slug rule does not link them.
+ */
+function peerBindingStatus(
+  sender: MessageTreeNode,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext = {},
+): "none" | "verified" | "unverified" {
+  const slug = slugLinks(sender, recipient, ctx)
+  if (!slug.group && !slug.workspace) return "none"
+  const ver = verifiedLinks(sender, recipient, ctx)
+  return ver.group || ver.workspace ? "verified" : "unverified"
+}
 
 /**
  * Every relation that holds between the principal (as a sender) and the
@@ -278,13 +438,17 @@ export function collectMessageRelations(
       // A DENIED sibling edge may still be overridden by an explicit peer
       // group, but never by the same-workspace convenience — the tree edge
       // decides first (see `resolveMessageAcl` in session-message.ts).
-      const peerGroup = samePeerGroup(sender, recipient, ctx.messaging?.peerGroups)
+      const links =
+        ctx.messaging?.peerBinding === "verified"
+          ? verifiedLinks(sender, recipient, ctx)
+          : slugLinks(sender, recipient, ctx)
+      const peerGroup = links.group
       if (out.length === 0) {
-        if (peerGroup || (sameWorkspace(sender, recipient) && ctx.messaging?.allowSameWorkspace !== false)) {
-          out.push("peer")
+        if (peerGroup || links.workspace) {
+          out.push("granted")
         }
       } else if (sibling && peerGroup) {
-        out.push("peer")
+        out.push("granted")
       }
       return out
     }
@@ -311,12 +475,180 @@ function relationGrant(
       return { allow: true, rule: "system" }
     case "sibling":
       return { allow: ctx.messaging?.allowSiblings === true, rule: "messaging.allowSiblings" }
-    case "peer":
-      // `collectMessageRelations` only reports `peer` when the link is
+    case "granted":
+    case "peer": // legacy value, never collected; read as `granted`
+      // `collectMessageRelations` only reports `granted` when the link is
       // allowed (same workspace with the allowance on, or a peer group), so
       // the grant is already established.
       return { allow: true, rule: "messaging.peer" }
   }
+}
+
+// ── AIP-38 grants ──────────────────────────────────────────────────────
+
+/** Relations that exist because of configuration (a grant), not a tree edge. */
+const GRANT_DERIVED_RELATIONS: ReadonlySet<MessageRelation> = new Set<MessageRelation>(["sibling", "granted"])
+
+function policyPrincipals(principal: Principal, policy: PermissionPolicy, ctx: PermissionContext): readonly string[] {
+  if (policy.principals) return policy.principals(principal)
+  if (principal.kind !== "session") return []
+  // Roots only: a label an owner stamped on a child is an address, not an identity.
+  if (ctx.parentOf?.(principal.session.id)) return []
+  const label = ctx.operatorLabelOf?.(principal.session.id)?.trim()
+  return label ? [`session-label://${label}`] : []
+}
+
+function grantRequest(principal: Principal, policy: PermissionPolicy, ctx: PermissionContext) {
+  return {
+    principals: policyPrincipals(principal, policy, ctx),
+    ...(policy.now !== undefined ? { now: policy.now } : {}),
+    ...(policy.resolveSelector ? { resolveSelector: policy.resolveSelector } : {}),
+    ...(policy.evaluateCondition ? { evaluateCondition: policy.evaluateCondition } : {}),
+  }
+}
+
+function describeGrantSource(d: GrantDecision): string {
+  return d.inputIndex === undefined
+    ? "a policy grant"
+    : `policy input ${d.inputIndex}${d.grantIndex !== undefined ? `, grant ${d.grantIndex}` : ""}`
+}
+
+/** One evaluation of the policy for `session:message` to `recipient`. */
+type MessageGrantEvaluation =
+  | { ok: true; decision: GrantDecision }
+  | { ok: false; error: PolicyGrantError }
+  | undefined
+
+/**
+ * Evaluate the AIP-38 policy for a session action (`session:message`,
+ * `session:prompt`, `session:control`) targeting `target`. Both the
+ * explicit-deny path and the explicit-allow admission read this one result,
+ * so they cannot build the request differently. The typed scope values are
+ * the target's label and VERIFIED workspace; an unresolvable one is
+ * `undefined`, which fails closed.
+ */
+function evaluateSessionGrant(
+  action: "session:message" | "session:prompt" | "session:control",
+  principal: Principal,
+  target: MessageTreeNode,
+  ctx: PermissionContext,
+): MessageGrantEvaluation {
+  const policy = ctx.policy
+  if (!policy) return undefined
+  const label = ctx.operatorLabelOf ? ctx.operatorLabelOf(target.id)?.trim() || null : undefined
+  const workspace =
+    ctx.workspaceOfCwd && target.cwd ? ctx.workspaceOfCwd(target.cwd)?.trim() || null : undefined
+  try {
+    return {
+      ok: true,
+      decision: evaluateGrants(policy.inputs, {
+        ...grantRequest(principal, policy, ctx),
+        action,
+        scope: target.id,
+        typed: { label, workspace },
+      }),
+    }
+  } catch (err) {
+    if (err instanceof PolicyGrantError) return { ok: false, error: err }
+    throw err
+  }
+}
+
+function evaluateMessageGrant(
+  principal: Principal,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext,
+): MessageGrantEvaluation {
+  return evaluateSessionGrant("session:message", principal, recipient, ctx)
+}
+
+/**
+ * Does an AIP-38 explicit deny (or a policy that cannot be read) refuse a
+ * `session:message` to the recipient? Only a deny counts on this path: it
+ * removes a grant-derived reason (sibling, peer), never a tree edge.
+ */
+function messageRefusal(
+  evaluation: MessageGrantEvaluation,
+  recipient: MessageTreeNode,
+): { rule: string; reason: string } | undefined {
+  if (!evaluation) return undefined
+  if (!evaluation.ok) {
+    return {
+      rule: "policy.invalid",
+      reason: `the policy grants cannot be read, so the send is refused: ${evaluation.error.message}`,
+    }
+  }
+  const d = evaluation.decision
+  return d.reason === "explicit-deny"
+    ? {
+        rule: "policy.explicit-deny",
+        reason: `an explicit deny (${describeGrantSource(d)}) refuses session:message to "${recipient.id}"`,
+      }
+    : undefined
+}
+
+/**
+ * An explicit allow grant that MATCHES admits the pair. Only a real grant
+ * counts: a composed `default: allow` has `via: "default"` and must not
+ * admit anything. A malformed policy admits nothing.
+ */
+function messageAdmission(
+  evaluation: MessageGrantEvaluation,
+): { source: string } | undefined {
+  if (!evaluation?.ok) return undefined
+  const d = evaluation.decision
+  return d.decision === "allow" && d.reason === "matched-grant" && d.via === "grant"
+    ? { source: describeGrantSource(d) }
+    : undefined
+}
+
+function decideTool(principal: Principal, resource: PermissionResource, ctx: PermissionContext, policy: PermissionPolicy): Decision {
+  const base = { action: "tool.invoke" as const, authoritative: false }
+  if (resource.kind !== "tool") {
+    return mint({ ...base, allow: false, rule: "resource", reason: "tool.invoke needs a tool resource" })
+  }
+  const name = qualifyToolName(resource.name)
+  try {
+    const d = evaluateToolInvoke(policy.inputs, {
+      ...grantRequest(principal, policy, ctx),
+      tool: resource.name,
+      ...(resource.implements !== undefined ? { implements: resource.implements } : {}),
+    })
+    const allow = d.decision === "allow"
+    return mint({
+      ...base,
+      allow,
+      resourceId: name,
+      rule: allow ? (d.via === "default" ? "policy.default-allow" : "policy.matched-grant") : `policy.${d.reason}`,
+      reason: allow
+        ? `${name} is admitted by ${d.via === "default" ? "the composed policy default" : describeGrantSource(d)}`
+        : d.reason === "explicit-deny"
+          ? `an explicit deny (${describeGrantSource(d)}) refuses ${name}`
+          : `no grant admits ${name} (${d.reason})`,
+    })
+  } catch (err) {
+    if (err instanceof PolicyGrantError) {
+      return mint({
+        ...base,
+        allow: false,
+        resourceId: name,
+        rule: "policy.invalid",
+        reason: `the policy grants cannot be read, so the call is refused: ${err.message}`,
+      })
+    }
+    throw err
+  }
+}
+
+/** Rule id of a message admitted only because the sender is unverified. */
+export const ANONYMOUS_SEND_RULE = "messaging.anonymousSend"
+
+/** Rule id of a message admitted only because it answers one the sender received. */
+export const REPLY_RULE = "messaging.reply"
+
+/** A session whose identity was CLAIMED, not proven (an external client). */
+export function isUnverifiedMessageSender(node: MessageTreeNode): boolean {
+  return node.kind === "external" || node.externalHost !== undefined
 }
 
 function decideMessage(
@@ -325,7 +657,24 @@ function decideMessage(
   ctx: PermissionContext,
 ): Decision {
   const relations = collectMessageRelations(principal, recipient, ctx)
-  const base = { action: "session.message" as const, authoritative: true, resourceId: recipient.id, relations }
+  const verifiedMode = ctx.messaging?.peerBinding === "verified"
+  const slugRelations =
+    principal.kind === "session" && verifiedMode
+      ? collectMessageRelations(principal, recipient, { ...ctx, messaging: { ...ctx.messaging, peerBinding: "slug" } })
+      : relations
+  const peerInvolved = relations.includes("granted") || slugRelations.includes("granted")
+  const peerVerified =
+    principal.kind === "session" && peerInvolved
+      ? peerBindingStatus(principal.session, recipient, ctx) === "verified" ||
+        (verifiedMode && relations.includes("granted"))
+      : undefined
+  const base = {
+    action: "session.message" as const,
+    authoritative: true,
+    resourceId: recipient.id,
+    relations,
+    ...(peerVerified !== undefined ? { peerVerified } : {}),
+  }
   if (principal.kind === "session" && principal.session.id === recipient.id) {
     return mint({ ...base, allow: false, rule: "self", reason: "a session cannot message itself" })
   }
@@ -338,7 +687,16 @@ function decideMessage(
     })
   }
   // Union of grants: allow when ANY relation that holds has a matching grant.
-  const granted = RELATION_STRENGTH.filter(r => relations.includes(r)).map(r => ({ r, g: relationGrant(r, ctx) }))
+  // A matching AIP-38 deny removes only the grant-derived reasons (sibling,
+  // peer); a tree edge, the operator and the system stay (AIP-46 rule 3).
+  const candidates = RELATION_STRENGTH.filter(r => relations.includes(r)).map(r => ({ r, g: relationGrant(r, ctx) }))
+  // One policy evaluation feeds both the deny path and the admission path.
+  const evaluation = principal.kind === "session" ? evaluateMessageGrant(principal, recipient, ctx) : undefined
+  const refusal =
+    principal.kind === "session" && relations.some(r => GRANT_DERIVED_RELATIONS.has(r))
+      ? messageRefusal(evaluation, recipient)
+      : undefined
+  const granted = refusal ? candidates.filter(x => !GRANT_DERIVED_RELATIONS.has(x.r)) : candidates
   const hit = granted.find(x => x.g.allow)
   if (hit) {
     const rule = principal.kind === "relay" ? "relay.grant" : hit.g.rule
@@ -354,9 +712,75 @@ function decideMessage(
             ? principal.kind === "operator" && principal.via === "anonymous-local"
               ? "a local caller with no session identity acts as the operator"
               : "the operator may message any session"
-            : hit.r === "peer"
+            : hit.r === "granted"
               ? "sender shares the recipient's workspace or peer group"
               : `sender is the recipient's ${hit.r}`,
+    })
+  }
+  // No relation allowed. An EXPLICIT `session:message` grant under
+  // `defaults.messaging.grants` may still admit the pair (relation
+  // `granted`); a matching deny (already `refusal`) wins over it.
+  if (principal.kind === "session" && !refusal) {
+    const admission = messageAdmission(evaluation)
+    if (admission) {
+      return mint({
+        ...base,
+        allow: true,
+        relation: "granted",
+        rule: "policy.matched-grant",
+        reason: `a configured session:message grant admits the send (${admission.source})`,
+      })
+    }
+  }
+  // An unverified session sender (claimed external identity) outside every
+  // relation: admitted and labelled, never trusted (message-tools.ts adds
+  // the text prefix; decideInterrupt caps it at steer). An explicit
+  // `session:message` deny still wins.
+  if (
+    principal.kind === "session" &&
+    ctx.messaging?.anonymousSend === "label" &&
+    isUnverifiedMessageSender(principal.session) &&
+    !messageRefusal(evaluation, recipient)
+  ) {
+    return mint({
+      ...base,
+      allow: true,
+      relation: "granted",
+      rule: ANONYMOUS_SEND_RULE,
+      reason:
+        "the sender is an unverified (claimed) identity; defaults.messaging.anonymousSend is \"label\", " +
+        "so the message is delivered labelled unverified and capped at steer",
+    })
+  }
+  // A reply to a message the sender itself received, addressed to that
+  // message's attested sender: always possible, whatever the relation and
+  // whether or not the sender is verified. A made-up id, or an original from
+  // someone other than the recipient, does not match. An explicit
+  // `session:message` deny still wins.
+  if (
+    principal.kind === "session" &&
+    ctx.reply &&
+    ctx.reply.originalSenderOf(principal.session.id, ctx.reply.messageId) === recipient.id &&
+    !messageRefusal(evaluation, recipient)
+  ) {
+    return mint({
+      ...base,
+      allow: true,
+      relation: "granted",
+      rule: REPLY_RULE,
+      reason: "the message answers one the sender received from this recipient; delivered capped at steer",
+    })
+  }
+  if (refusal && candidates.some(x => x.g.allow)) {
+    return mint({ ...base, allow: false, relation: strongest(relations), rule: refusal.rule, reason: refusal.reason })
+  }
+  if (verifiedMode && slugRelations.includes("granted") && !relations.includes("granted")) {
+    return mint({
+      ...base,
+      allow: false,
+      relation: "granted",
+      rule: "messaging.peerBinding",
+      reason: "peers need a verified workspace binding (defaults.messaging.peerBinding: verified)",
     })
   }
   const held = strongest(relations)
@@ -403,6 +827,25 @@ function decideInterrupt(principal: Principal, recipient: MessageTreeNode | unde
       })
     }
   }
+  if (principal.kind === "session" && recipient && decideMessage(principal, recipient, ctx).rule === REPLY_RULE) {
+    return mint({
+      ...base,
+      allow: false,
+      rule: REPLY_RULE,
+      reason: "a reply admitted only by messaging.reply is capped at steer",
+    })
+  }
+  if (principal.kind === "session" && isUnverifiedMessageSender(principal.session)) {
+    const viaLabel = recipient && decideMessage(principal, recipient, ctx).rule === ANONYMOUS_SEND_RULE
+    if (viaLabel) {
+      return mint({
+        ...base,
+        allow: false,
+        rule: ANONYMOUS_SEND_RULE,
+        reason: "an unverified sender admitted by defaults.messaging.anonymousSend is capped at steer",
+      })
+    }
+  }
   const allow = ctx.messaging?.agentInterrupt === "allow"
   return mint({
     ...base,
@@ -414,8 +857,11 @@ function decideInterrupt(principal: Principal, recipient: MessageTreeNode | unde
   })
 }
 
-function decideDrive(principal: Principal, target: SessionResource["session"], ctx: PermissionContext): Decision {
-  const base = { action: "session.drive" as const, authoritative: false, resourceId: target.id }
+function decideDrive(principal: Principal, resource: SessionResource, ctx: PermissionContext): Decision {
+  const target = resource.session
+  const action = resource.drive?.action ?? "session:control"
+  const tool = resource.drive?.tool ?? "session.drive"
+  const base = { action: "session.drive" as const, authoritative: true, resourceId: target.id }
   if (principal.kind === "relay") {
     return mint({ ...base, allow: false, rule: "relay", reason: "a relay grant carries only session.message" })
   }
@@ -423,6 +869,9 @@ function decideDrive(principal: Principal, target: SessionResource["session"], c
     return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal" })
   }
   const callerSessionId = principal.kind === "session" ? principal.session.id : undefined
+  // The legacy owner gate, unchanged: the operator, the session itself, its
+  // owner, an ancestor, and `allowPromptFrom` all keep working exactly as
+  // before, and the refusal text names the calling tool byte for byte.
   const r = checkSessionOwnerGate({
     callerSessionId,
     target: {
@@ -430,18 +879,129 @@ function decideDrive(principal: Principal, target: SessionResource["session"], c
       ...(target.parentSessionId ? { parentSessionId: target.parentSessionId } : {}),
       ...(target.allowPromptFrom ? { allowPromptFrom: [...target.allowPromptFrom] } : {}),
     },
-    tool: "session.drive",
+    tool,
     ...(ctx.parentOf ? { parentOf: ctx.parentOf } : {}),
     ...(ctx.operatorLabelOf ? { operatorLabelOf: ctx.operatorLabelOf } : {}),
   })
-  return r.ok
-    ? mint({
+  if (r.ok) {
+    return mint({
+      ...base,
+      allow: true,
+      rule: "owner-gate",
+      reason: callerSessionId ? "caller is the session, an ancestor, or granted by allowPromptFrom" : "the operator may drive any session",
+    })
+  }
+  // The legacy gate refused. An explicit `session:prompt` / `session:control`
+  // grant may still admit a session caller; only a real matching allow counts
+  // (a composed `default: allow` never admits, a malformed policy admits
+  // nothing, and a matching deny beats the allow).
+  if (principal.kind === "session" && ctx.policy) {
+    const admission = messageAdmission(evaluateSessionGrant(action, principal, target, ctx))
+    if (admission) {
+      return mint({
         ...base,
         allow: true,
-        rule: "owner-gate",
-        reason: callerSessionId ? "caller is the session, an ancestor, or granted by allowPromptFrom" : "the operator may drive any session",
+        rule: "policy.matched-grant",
+        reason: `a configured ${action} grant admits the call (${admission.source})`,
       })
-    : mint({ ...base, allow: false, rule: "owner-gate", reason: r.message })
+    }
+  }
+  return mint({ ...base, allow: false, rule: "owner-gate", reason: r.message })
+}
+
+function decideProfile(
+  principal: Principal,
+  resource: PermissionResource,
+  ctx: PermissionContext,
+): Decision {
+  const base = { action: "auth.profile.use" as const, authoritative: true }
+  if (resource.kind !== "profile") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "resource",
+      reason: "auth.profile.use needs a profile resource",
+    })
+  }
+  const ref = resource.ref
+  if (principal.kind === "operator") {
+    return mint({ ...base, allow: true, rule: "operator", reason: "the operator may name any auth profile" })
+  }
+  if (principal.kind === "system") {
+    return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal sender" })
+  }
+  if (principal.kind === "relay") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "relay",
+      reason: "a relay grant carries only session.message, not an auth profile",
+    })
+  }
+  const allowed = ctx.profiles?.callerAllowed ?? []
+  if (allowed.includes(ref)) {
+    return mint({
+      ...base,
+      allow: true,
+      rule: "profile.parent-set",
+      reason: `profile "${ref}" is in the caller's profile set`,
+    })
+  }
+  return mint({
+    ...base,
+    allow: false,
+    rule: "profile.outside-parent-set",
+    reason:
+      `profile "${ref}" is outside the caller's profile set; a session may pass on only its own ` +
+      `profile and the configured shared ones (defaults.spawn.sharedProfiles)`,
+  })
+}
+
+function decideMount(
+  principal: Principal,
+  resource: PermissionResource,
+  ctx: PermissionContext,
+): Decision {
+  const base = { action: "mcp.mount.stdio" as const, authoritative: true }
+  if (resource.kind !== "command") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "resource",
+      reason: "mcp.mount.stdio needs a command resource",
+    })
+  }
+  const command = resource.command
+  if (principal.kind === "operator") {
+    return mint({ ...base, allow: true, rule: "operator", reason: "the operator may mount any command" })
+  }
+  if (principal.kind === "system") {
+    return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal sender" })
+  }
+  if (principal.kind === "relay") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "relay",
+      reason: "a relay grant carries only session.message, not a stdio mount",
+    })
+  }
+  if (isCommandAllowed(ctx.mounts?.allowlist ?? [], command, resource.args)) {
+    return mint({
+      ...base,
+      allow: true,
+      rule: "mount.allowlisted",
+      reason: `the command allowlist admits "${command}"`,
+    })
+  }
+  return mint({
+    ...base,
+    allow: false,
+    rule: "mount.outside-allowlist",
+    reason:
+      `"${command}" is outside the command allowlist; a session may mount only what ` +
+      `.agentproto/allowed-commands.json admits`,
+  })
 }
 
 /**
@@ -449,8 +1009,8 @@ function decideDrive(principal: Principal, target: SessionResource["session"], c
  *
  * `session.message` / `session.message.interrupt` need a `session`
  * resource (the recipient). `session.drive` needs a `session` resource
- * (the target). Every other action is not routed yet and answers
- * `allow: false, authoritative: false`.
+ * (the target). `auth.profile.use` needs a `profile` resource. Every other
+ * action is not routed yet and answers `allow: false, authoritative: false`.
  */
 export function decide(
   principal: Principal,
@@ -468,22 +1028,32 @@ export function decide(
     case "session.message.interrupt":
       return decideInterrupt(principal, recipient, context)
     case "session.drive":
-      if (!recipient) {
-        return mint({ action, allow: false, authoritative: false, rule: "resource", reason: "session.drive needs a target session" })
+      if (resource.kind !== "session") {
+        return mint({ action, allow: false, authoritative: true, rule: "resource", reason: "session.drive needs a target session" })
       }
-      return decideDrive(principal, recipient, context)
-    default: {
-      const info = PERMISSION_ACTION_INFO[action]
-      return mint({
-        action,
-        allow: false,
-        authoritative: false,
-        rule: "not-routed",
-        ...(recipient ? { resourceId: recipient.id } : {}),
-        reason: `${action} is not routed through decide() yet; today it is enforced at: ${info.enforcedAt}`,
-      })
-    }
+      return decideDrive(principal, resource, context)
+    case "auth.profile.use":
+      return decideProfile(principal, resource, context)
+    case "mcp.mount.stdio":
+      return decideMount(principal, resource, context)
+    case "tool.invoke":
+      if (context.policy) return decideTool(principal, resource, context, context.policy)
+      return notRouted(action, recipient)
+    default:
+      return notRouted(action, recipient)
   }
+}
+
+function notRouted(action: PermissionAction, recipient: MessageTreeNode | undefined): Decision {
+  const info = PERMISSION_ACTION_INFO[action]
+  return mint({
+    action,
+    allow: false,
+    authoritative: false,
+    rule: "not-routed",
+    ...(recipient ? { resourceId: recipient.id } : {}),
+    reason: `${action} is not routed through decide() yet; today it is enforced at: ${info.enforcedAt}`,
+  })
 }
 
 /** Thrown by a sink handed a decision that does not allow what it is asked to do. */

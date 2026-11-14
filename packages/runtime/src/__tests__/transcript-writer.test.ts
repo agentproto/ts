@@ -335,6 +335,29 @@ describe("createTranscriptWriter", () => {
     })
   })
 
+  it("records an AIP-45 mode-changed event", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", {
+      kind: "mode-changed",
+      modeId: "execute",
+      previousModeId: "plan",
+      cause: "agent",
+      reason: "plan approved",
+    })
+    await writer.close("sess_1")
+
+    expect(readLines("sess_1")).toEqual([
+      expect.objectContaining({
+        kind: "mode-changed",
+        sessionId: "sess_1",
+        modeId: "execute",
+        previousModeId: "plan",
+        cause: "agent",
+        reason: "plan approved",
+      }),
+    ])
+  })
+
   it("resolves independently across multiple pending permissions in one session", async () => {
     const writer = createTranscriptWriter({ baseDir: tmp })
     writer.recordEvent("sess_1", { kind: "agent-prompt", toolCallId: "perm1", options: [] })

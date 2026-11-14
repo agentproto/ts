@@ -1,6 +1,6 @@
 # @agentproto/runtime
 
-The long-running gateway that turns an agentproto workspace into a live runtime. Composes the MCP server (CRUD verbs), HTTP transport, HEARTBEAT.md autonomy loop, conversation persistence, and the **sessions registry** (agent CLIs, raw spawns, and real PTY-backed terminals).
+The long-running gateway that turns an agentproto workspace into a live runtime. Composes the MCP server (CRUD verbs), HTTP transport, HEARTBEAT.md autonomy loop (deprecated: use cron or routines), conversation persistence, and the **sessions registry** (agent CLIs, raw spawns, and real PTY-backed terminals).
 
 Used directly by [`@agentproto/cli`](../cli/README.md)'s `agentproto serve` verb. Also embeddable when you want to host the same surface inside another Node process (the playground gateway, app-specific deployments, etc.).
 
@@ -40,6 +40,7 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | Health            | `GET /health`                            | Daemon status: workspace, uptime, `startedAt`, version, build identity (`sha`, `builtAt`, `source`), pid, node path, entry point — always public                     |
 | Events (SSE)      | `GET /events`                            | RuntimeEvents stream                                   |
 | MCP               | `POST /mcp` (Streamable HTTP)            | Stateless mode; per-request transport                  |
+| Identity          | `GET /identity`                          | Caller identity counters (session tokens, shadow mode) |
 | Conversations     | `GET /conversations` / `GET /conversations/<id>` | Markdown bodies                                |
 | Adapter discovery | `GET /adapters` / `POST /adapters/:slug/install` | When `listAgentAdapters` / `installAgentAdapter` is wired |
 | App scope mounts   | `POST /apps/:appId/apply` / `DELETE /apps/:appId/apply` / `GET /scopes/:scopeId/apps` | Mirrors MCP `app_apply` / `app_unapply` / `app_list_applied`; needs `appRegistry` |
@@ -65,14 +66,46 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 | `agent_start` / `agent_prompt` / `agent_output` / `agent_kill` / `agent_interrupt` | Long-lived ACP agent lifecycle |
 | `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Raw PTY sessions |
 | `session_list` / `session_tree` / `session_usage` / `session_restart` / `session_migrate` / `session_rename` | Session management (`session_migrate` resumes a sandbox session on a new box) |
+| `session_screencast_frame` | Read-only: the current frame of a session's own open Bureau browser tab as one MCP `image` (same reader as `GET /sessions/:id/screencast.jpg`); one fixed miss message; a caller session may only ask for its own id |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` / `app_apply` / `app_unapply` / `app_list_applied` | App-kit apps |
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane, anchored at the app's `dataDir` (default `<dir>/data`; `app_install {dataDir}`) |
 | `app_state_append` / `app_state_get` / `app_state_list` | App-scoped **state ledger** (`<stateDir>/events.jsonl`, under `~/.agentproto/app-state/`) — append-only, zod-validated event envelope, fold to a stage snapshot; see below |
 | `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets (new) |
 | `review_run` / `review_status` / `review_cancel` / `review_ledger` / `review_export` | [`@agentproto/review`](../review) host: run a REVIEW.md binding over a git range (command lanes as subprocesses, agent lanes as child reviewer sessions), fold a `pass`/`block`/`incomplete` verdict, and record the attestation in the review ledger (`~/.agentproto/reviews`) (new) |
 | `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (new) |
+| `memory_search` / `memory_list` / `memory_read` / `memory_write` / `memory_supersede` / `memory_archive` / `memory_dismiss` | [AIP-72](https://agentproto.sh/docs/aip-72) memory store (`@agentproto/memory`'s `FilesMemoryStore`, default root `~/.agentproto/memory`, config `memory.root`; an agent's AIP-42 `memory.store` wins when it names a files root). Any caller proposes; a commit, supersede, archive or dismiss needs the operator (no `callerSessionId`) or a session spawned with the `supervisor` role; an agent with `memory.enabled: false` writes nothing. This is a write policy on the existing loopback trust model, not a security control: a caller that omits `callerSessionId` is the operator. A spawned agent whose AGENT.md binds memory (`memory.enabled: true`, `store` or `anchors`) also gets a bounded digest of its in-force items in its system prompt, unless its adapter declares `capabilities.memory.inject: native-dir` (new) |
 | `conversation_export` | Export a daemon transcript to a target adapter's native store, e.g. `claude-code` (new) |
 | `llm_endpoint_*` (`start`, `stop`, `status`, `set_upstream_link`, `list_links`) | Local LLM Endpoint proxy sidecar — only when `features.llmEndpoint` is enabled (new) |
+
+### MCP surface profiles
+
+`POST /mcp` accepts `?profile=` to narrow the registered tool surface before
+a client loads it. Profiles compose, order does not matter:
+
+- `core`: the everyday working set (roughly 45 tools: agent lifecycle,
+  session observation, messaging, policies/tasks, memory, files, commands,
+  terminals, imported MCP calls, app run/status, PR open).
+- `orchestrator`: the curated delegation set from
+  `DEFAULT_ORCHESTRATOR_TOOLS` (spawn/drive/observe children, messages,
+  policies, task ledger).
+- `apps`: all `app_*` tools plus every installed app's dynamic
+  `app_ui_<slug>` MCP Apps panel.
+- `admin`: setup, tunnels, auth profiles, devices/join tokens, pairing,
+  remote access, garbage collection, presets/bundles, inbound watchers,
+  sentinels, cron, and local LLM endpoints.
+- `full`: everything. This is the default when no profile is named, so
+  existing callers are unchanged.
+
+```text
+POST /mcp?profile=core,apps
+```
+
+To set a daemon-wide default, add `defaults.mcp.profile` to
+`~/.agentproto/config.json` (same name/comma composition). A per-request
+`?profile=` wins over the config. `?denyTools=a,b` still wins over any
+profile, and `?allowTools=a,b` intersects with it. `tool_help` keeps
+answering for tools outside the active profile and names the profile(s)
+that expose them.
 
 ### App state ledger (`app_state_*`)
 
@@ -110,6 +143,16 @@ and `by ∈ runner | human | policy | system`. Payloads are validated per kind
 - The optional `auth?: AuthOptions` field on `createGateway` is for the *tunnel* bearer (Cloudflare-fronted public surface), independent of the per-boot token. It gates `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route, with a loopback bypass for requests that never crossed a tunnel (127.0.0.1/::1 with no `X-Forwarded-For`).
 - `agentproto serve` wires this from `daemon.authToken` in `~/.agentproto/config.json` (or `--auth-token`) when set, so the gateway can boot already gated with a stable token — no `remote_enable` call, and it survives restarts since it isn't held in memory. `RemoteController`'s `remote_enable` MCP tool is a separate, complementary mechanism: it always mints a fresh in-memory token and opens a Cloudflare quick tunnel, and takes precedence over `daemon.authToken` while active.
 
+
+### Session identity tokens (shadow mode)
+
+A `callerSessionId` (query or `x-agentproto-caller-session-id` header) is a claim, not proof. With `defaults.identity.sessionTokens: "shadow"` (the default) the daemon mints a token per spawned claude-code or hermes session and sends it as `x-agentproto-session-token` on the session's daemon self-mount.
+
+- Only the token's SHA-256 hash is kept, in `$AGENTPROTO_HOME/session-credentials.json` (mode 0600, reloaded at boot). The raw token goes to the adapter's own copy of its mounts and nowhere else: never on `SessionDescriptor.mcpServers`, `sessions.json`, `events.jsonl`, a log or a read route.
+- Every restart, lazy resume and continue-fresh mints a fresh token; a session's tokens are revoked when it retires.
+- On `/mcp` and on the routes that read the caller identity, each request is classified as `verified`, `mismatch`, `invalid_token`, `claim_only` or `anonymous`. `GET /identity` returns `{ mode, counters, byRoute, since }`. Nothing is refused or reclassified: this is the measurement for the enforcement step.
+- `"off"` mints nothing, adds no header and observes nothing. The value applies to sessions spawned after the change.
+- Not covered yet: the scoped `/mcp/orchestrator?scope=` mount (keeps its own scope token), sandbox and device forwards, and adapters that write their mounts to a file (mastracode print arm).
 ## Worktree isolation policy
 
 `agent_start.worktree` isolation is decided by `worktrees.isolation` in
@@ -225,21 +268,28 @@ Only `permission-resolved` (the final decision) transits the chat stream today. 
 
 The daemon, `POST /sessions/browser` and the CLI resolve browser adapters (`camofox`, `bureau`, `chromium`, `chrome-live`) through one table, `defaultBrowserAdapterResolution()`, backed by the `@agentproto/adapter-browser` facade.
 
-chrome-live additionally exposes ONE model — the agent's own, OWNED tab — through `registerBrowserTools`' `browser_navigate` / `browser_extract_text` / `browser_get_dom` / `browser_click` / `browser_fill` / `browser_evaluate` / `browser_scroll` (plus `browser_screenshot` / `browser_screencast_*`, which predate this set; `browser_new_tab` opens a FRESH tab in the agent's window, `browser_list_tabs` lists the agent-owned tab ids, and `browser_upload_file` attaches local files to an `<input type=file>` via CDP `DOM.setFileInputFiles` — absolute paths inside an upload allowlist only: the agent's workspace + `~/.pygmalion/data` by default, extended by `AGENTPROTO_BROWSER_UPLOAD_ALLOW_DIRS`). Every page tool accepts a `tabId` to pick a tab among those. `fetch_page` is the zero-browser fast path: a plain HTTP read, use it first for any public page and escalate to `start_browser` + these only on `blocked: true` or when the page needs JS/interaction.
+The daemon's MCP browser tools no longer drive any of these adapters (P4b deletes the chrome-live implementation; only the HTTP routes above still reach it). Every browser tool forwards to Bureau, the local browser service imported as an MCP, with the calling session id on each call so Bureau's tab ownership applies per agent session:
 
-`projectBrowserTools(instance, { provider })` is a DIFFERENT, currently-unused model: it projects a whole `@agentproto/driver-browser` `BrowserInstance` (no per-agent tab ownership) onto its own `browser_kit_*` MCP tools, for any kit provider — not just chrome-live. The `kit_` prefix exists so the two surfaces can never collide by tool name if this ever gets mounted:
+| Daemon tool | Bureau tool |
+| --- | --- |
+| `browser_navigate`, `browser_click`, `browser_fill`, `browser_evaluate`, `browser_get_dom`, `browser_press_key`, `browser_screenshot` | same name |
+| `browser_list_tabs` | `browser_list_owned_tabs` |
+| `list_browsers` | `browser_list_instances` (Bureau instances, not session descriptors; a `notes` entry says so) |
+| `browser_screencast_start` / `_frame` / `_stop` | `browser_record_start` / `_frame` / `_stop` (pass the owned `tabId`; `fps`, `format` and `encode` are forwarded, `quality`, `everyNthFrame`, `maxWidth` and `maxHeight` are dropped and noted) |
+| `browser_extract_text` | `browser_get_dom`, then the daemon's own `extractPageText` (the `fetch_page` extractor): returns `{ title, text, url }` |
+| `browser_scroll` | `browser_evaluate` with a fixed daemon-built script: `scrollIntoView` for a `selector` (passed as JSON data, never as code), `scrollBy` for `x`/`y`. No caller expression reaches Bureau through this tool. |
 
-```ts
-import { projectBrowserTools } from "@agentproto/runtime"
+`tabId` and an optional `instance` are forwarded; the retired `sessionId` is accepted and ignored (noted in the result). `fetch_page` is the zero-browser fast path: a plain HTTP read, use it first for any public page and escalate to `browser_navigate` + `browser_extract_text` only on `blocked: true` or when the page needs JS/interaction.
 
-const projected = projectBrowserTools(instance, { provider: { id: "camofox", capabilities: provider.manifest.capabilities } })
-projected.register(mcpServer) // browser_kit_navigate, browser_kit_evaluate, browser_kit_click, browser_kit_fill,
-                              // browser_kit_screenshot, browser_kit_get_dom, browser_kit_list_requests,
-                              // browser_kit_get_request_body, browser_kit_cdp_send
-await projected.close()
-```
+Removed, with no Bureau twin: `browser_select`, `browser_wait_for`, `browser_upload_file`, `browser_new_tab`, `start_browser`, `stop_browser`, `browser_status`, `browser_adapter_list`. Bureau gives each caller session its own tab on first use, so `browser_navigate` replaces `start_browser` + `browser_new_tab`.
 
-Tools are gated by capability before any driver is attached. A tool the provider cannot serve returns an error result with `structuredContent.error.code === "browser:unsupported"` and `error.cause.capability` naming the missing capability (for example `cdp` for `browser_kit_list_requests` on a `cdp:false` provider). `browser_download` and `browser_act` are Bureau session-pool features, not driver-port verbs, so they are not projected. `path` on `browser_kit_screenshot` and `browser_kit_get_dom` needs the `writeArtifact` option; without it the call fails with a clear message.
+`defaults.browser.builtin` decides how much of that surface the daemon registers:
+
+- `"proxy"` (default): the tools above, forwarded to the Bureau MCP named by `defaults.browser.proxyImport` (`bureau` when unset). When that import is absent, each tool answers an error naming Bureau and the alias; it never falls back to a local browser.
+- `"off"`: only `fetch_page`. No other browser tool is listed or callable.
+- A legacy `"on"` (the retired chrome-live mode) is still read, as `"proxy"`, with a one-line warning in the daemon log. It never blocks the boot.
+
+The tool list is fixed when `registerBrowserTools` runs, once per `/mcp` session, so a config change applies on the next MCP session rather than mid-session; no daemon restart is needed.
 
 ## License
 

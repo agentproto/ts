@@ -442,6 +442,30 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
     expect(editBodies[1]).toContain("`sess_a`")
   })
 
+  it("does not stamp a supervisor by branch when its child shares the cwd (ts#2542)", async () => {
+    // The executor's body rewrite dropped the footer; the supervisor's turn
+    // ends first and the shared cwd's branch resolves to the PR. Lane B must
+    // leave it for the executor instead of crediting the supervisor.
+    const sup: ReconcilerSession = { id: "sess_super", kind: "agent-cli", cwd: "/wt", harness: "claude-code" }
+    const child = execSession({ id: "sess_exec", parentSessionId: "sess_super", cwd: "/wt" })
+    const { reg, recorded } = fakeRegistry([sup, child])
+    const run: GhRunner = async args => (args[1] === "view" ? { exitCode: 0, stdout: "Body." } : { exitCode: 0, stdout: "" })
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      listToolCalls: async () => [],
+      run,
+    })
+    bus.emit(turnEnd("sess_super"))
+    await flush()
+    expect(recorded).toEqual([])
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(recorded.map(r => r.sessionId)).toEqual(["sess_exec"])
+  })
+
   it("does not let a same-cwd sibling steal a PR another session already stamped via lane B", async () => {
     // sess_a stamps its PR from its record; later sess_b's turn ends while
     // the shared cwd's branch still resolves to sess_a's PR — the shared
@@ -664,6 +688,7 @@ describe("createPrProvenanceReconciler — sandboxed sessions", () => {
     const ghCwds: string[] = []
     const run: GhRunner = async (args, cwd) => {
       ghCwds.push(cwd)
+      if (args.includes("commits")) return { exitCode: 0, stdout: "wip\n\nAgentproto-Session: sess_exec" }
       return okRun(args, cwd)
     }
     const localRepoCwdFor = vi.fn(async (s: ReconcilerSession) => (s.workspaceSlug === "ts" ? "/host/ts" : undefined))
@@ -684,6 +709,33 @@ describe("createPrProvenanceReconciler — sandboxed sessions", () => {
     expect(recorded).toEqual([{ sessionId: "sess_exec", number: 42, url: PR.url }])
     expect(ghCwds.length).toBeGreaterThan(0)
     expect(ghCwds.every(c => c === "/host/ts")).toBe(true)
+  })
+
+  it("does not stamp a sandboxed session that only checked out the PR branch (reviewer, #2447)", async () => {
+    const { reg, recorded } = fakeRegistry([boxSession(), SUPER])
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
+    const edits: string[] = []
+    const run: GhRunner = async (args, cwd) => {
+      if (args[1] === "edit") edits.push(args[4] as string)
+      if (args.includes("commits")) return { exitCode: 0, stdout: "fix\n\nAgentproto-Session: sess_other" }
+      return okRun(args, cwd)
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr,
+      run,
+      localRepoCwdFor: async () => "/host/ts",
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(resolveOpenPr).toHaveBeenCalled()
+    expect(edits).toEqual([])
+    expect(recorded).toEqual([])
   })
 
   it("without a host checkout, skips the branch lane but still records an exact (tool-call) PR", async () => {
@@ -804,5 +856,223 @@ describe("createPrProvenanceReconciler : the checkpoint namespace", () => {
     } finally {
       reconciler.dispose()
     }
+  })
+})
+
+// ─── Footer body-state: rewrites, opt-out, deliberate removal, restart ──────
+
+/**
+ * A registry that mirrors the REAL one's `openedPrs` + `recordPrFooterState`
+ * bookkeeping (the shared `fakeRegistry` above ignores footer state, which is
+ * what keeps the older tests on the legacy "recorded once, never re-checked"
+ * path). New behaviour needs the state to round-trip across turn-ends and
+ * across a fresh reconciler.
+ */
+function footerStateRegistry(sessions: ReconcilerSession[]): {
+  reg: ReconcilerRegistry
+  recorded: Array<{ sessionId: string; number: number; url: string }>
+} {
+  const recorded: Array<{ sessionId: string; number: number; url: string }> = []
+  const reg: ReconcilerRegistry = {
+    get: id => sessions.find(s => s.id === id),
+    list: () => sessions,
+    recordOpenedPr: (sessionId, input) => {
+      recorded.push({ sessionId, number: input.number, url: input.url })
+      const s = sessions.find(x => x.id === sessionId)
+      if (!s) return undefined
+      const existing = s.openedPrs ?? []
+      if (!existing.some(pr => pr.url === input.url)) {
+        s.openedPrs = [...existing, { url: input.url, number: input.number }]
+      }
+      return undefined
+    },
+    recordPrFooterState: (sessionId, url, state) => {
+      const s = sessions.find(x => x.id === sessionId)
+      if (!s) return undefined
+      const existing = s.openedPrs ?? []
+      const index = existing.findIndex(pr => pr.url === url)
+      if (index === -1) return undefined
+      const next = { ...existing[index]! }
+      if (state.stampedAt !== undefined) next.footerStampedAt = state.stampedAt
+      if (state.bodyHash !== undefined) next.footerBodyHash = state.bodyHash
+      if (state.removals !== undefined) next.footerRemovals = state.removals
+      if (state.disabled !== undefined) next.footerDisabled = state.disabled
+      s.openedPrs = existing.map((pr, i) => (i === index ? next : pr))
+      return undefined
+    },
+  }
+  return { reg, recorded }
+}
+
+/** A `gh` that serves, and edits, one mutable PR body. */
+function bodyMachine(initial: string): {
+  run: GhRunner
+  getBody: () => string
+  setBody: (body: string) => void
+  edits: string[]
+} {
+  let body = initial
+  const edits: string[] = []
+  const run: GhRunner = async args => {
+    if (args[0] === "api") return { exitCode: 1, stdout: "" }
+    if (args[1] === "view" && args.includes("headRefName")) return { exitCode: 0, stdout: "wt/x\n" }
+    if (args[1] === "view" && args.includes("commits")) return { exitCode: 0, stdout: "" }
+    if (args[1] === "view") return { exitCode: 0, stdout: body }
+    if (args[1] === "edit") {
+      body = (args[args.indexOf("--body") + 1] as string) ?? ""
+      edits.push(body)
+    }
+    return { exitCode: 0, stdout: "" }
+  }
+  return { run, getBody: () => body, setBody: b => (body = b), edits }
+}
+
+describe("createPrProvenanceReconciler : footer survives an agent rewrite", () => {
+  it("re-stamps a footerless body a rewrite produced, exactly once per edit, then stays quiet", async () => {
+    const session = execSession()
+    const { reg } = footerStateRegistry([session, SUPER])
+    const gh = bodyMachine("Body v1.")
+    const bus = createSessionEventBus()
+    const reconciler = createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run: gh.run,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+    expect(gh.getBody()).toContain(MARKER)
+
+    // The agent rewrites the body from its own text, dropping the footer.
+    gh.setBody("Body v2 with the agent's new text.")
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(2)
+    expect(gh.edits[1]).toContain("Body v2 with the agent's new text.")
+    expect(gh.edits[1]).toContain(MARKER)
+
+    // Unchanged body: no further edit on later turn-ends.
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(2)
+
+    reconciler.dispose()
+  })
+
+  it("never touches a repo listed in defaults.prProvenance.footer.skipRepos, matching it case-insensitively", async () => {
+    const { reg, recorded } = footerStateRegistry([execSession(), SUPER])
+    const gh = bodyMachine("Body v1.")
+    const bus = createSessionEventBus()
+    const reconciler = createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run: gh.run,
+      skipFooterRepos: () => ["O/R"],
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    await flush()
+
+    expect(gh.edits).toHaveLength(0)
+    expect(recorded).toHaveLength(0)
+    reconciler.dispose()
+  })
+
+  it("stops stamping after the footer is deliberately removed twice with no body change", async () => {
+    const session = execSession()
+    const { reg } = footerStateRegistry([session, SUPER])
+    const gh = bodyMachine("Body v1.")
+    const logs: string[] = []
+    const bus = createSessionEventBus()
+    const reconciler = createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run: gh.run,
+      log: line => logs.push(line),
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+
+    // Remove only the footer: the body is otherwise identical to the stamp.
+    gh.setBody("Body v1.")
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain(PR.url)
+
+    // Permanently disabled: even a later genuine rewrite does not re-stamp.
+    gh.setBody("Body v3 rewrite.")
+    bus.emit(exited("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+
+    reconciler.dispose()
+  })
+
+  it("keeps the same behaviour across a daemon restart (fresh reconciler, same openedPrs)", async () => {
+    const session = execSession()
+    const { reg } = footerStateRegistry([session, SUPER])
+    const gh = bodyMachine("Body v1.")
+    const bus1 = createSessionEventBus()
+    const first = createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus1,
+      resolveOpenPr: async () => PR,
+      run: gh.run,
+    })
+    bus1.emit(turnEnd("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(1)
+    first.dispose()
+
+    // A fresh reconciler has NO in-memory state; the descriptor's openedPrs
+    // (footer body hash) is what remembers the stamp.
+    gh.setBody("Body v2 after restart.")
+    const bus2 = createSessionEventBus()
+    const second = createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus2,
+      resolveOpenPr: async () => PR,
+      run: gh.run,
+    })
+    bus2.emit(turnEnd("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(2)
+    expect(gh.edits[1]).toContain("Body v2 after restart.")
+
+    bus2.emit(turnEnd("sess_exec"))
+    await flush()
+    await flush()
+    expect(gh.edits).toHaveLength(2)
+    second.dispose()
   })
 })

@@ -18,6 +18,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerAgentTools } from "../agent-tools.js"
 import {
+  checkOperatorLabelStamp,
   checkSessionOwnerGate,
   checkPromptPolicyEditor,
   matchesSessionGrant,
@@ -459,35 +460,26 @@ describe("session-owner gate over MCP", () => {
     registry.shutdown()
   })
 
-  it("only the human operator may stamp `operatorLabel` (`agent_set_operator_label`)", async () => {
-    const { registry, parent, child } = await twoSessions()
-
-    // The session itself may not stamp its own label.
-    const selfServer = new McpServer({ name: "label-self-server", version: "0.0.0" })
-    registerAgentTools(selfServer, { registry, callerSessionId: child.id })
-    const selfClient = await connectClient(selfServer)
-    const selfRefused = await callTool(selfClient, "agent_set_operator_label", {
-      sessionId: child.id,
-      operatorLabel: "pygmalion-brain-persistent",
+  const spawnRoot = (registry: ReturnType<typeof createSessionsRegistry>, parentSessionId?: string) =>
+    registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+      ...(parentSessionId ? { parentSessionId } : {}),
     })
-    expect(selfRefused.isError).toBe(true)
-    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+  const connectAs = async (
+    registry: ReturnType<typeof createSessionsRegistry>,
+    callerSessionId?: string,
+  ): Promise<Client> => {
+    const server = new McpServer({ name: `label-${callerSessionId ?? "operator"}`, version: "0.0.0" })
+    registerAgentTools(server, { registry, ...(callerSessionId ? { callerSessionId } : {}) })
+    return connectClient(server)
+  }
 
-    // Nor may its owner (unlike `agent_set_prompt_policy`, which the owner may).
-    const parentServer = new McpServer({ name: "label-parent-server", version: "0.0.0" })
-    registerAgentTools(parentServer, { registry, callerSessionId: parent.id })
-    const parentClient = await connectClient(parentServer)
-    const parentRefused = await callTool(parentClient, "agent_set_operator_label", {
-      sessionId: child.id,
-      operatorLabel: "pygmalion-brain-persistent",
-    })
-    expect(parentRefused.isError).toBe(true)
-    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
-
-    // The human operator may.
-    const operatorServer = new McpServer({ name: "label-operator-server", version: "0.0.0" })
-    registerAgentTools(operatorServer, { registry })
-    const operator = await connectClient(operatorServer)
+  it("`agent_set_operator_label`: the human operator may stamp, trim and clear any session's label", async () => {
+    const { registry, child } = await twoSessions()
+    const operator = await connectAs(registry)
     const ok = await callTool(operator, "agent_set_operator_label", {
       sessionId: child.id,
       operatorLabel: "pygmalion-brain-persistent",
@@ -513,13 +505,210 @@ describe("session-owner gate over MCP", () => {
     expect(whitespace.isError).toBeUndefined()
     expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
 
-    // An empty string clears it.
+    await callTool(operator, "agent_set_operator_label", { sessionId: child.id, operatorLabel: "x" })
     const cleared = await callTool(operator, "agent_set_operator_label", {
       sessionId: child.id,
       operatorLabel: "",
     })
     expect(cleared.isError).toBeUndefined()
     expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("`agent_set_operator_label`: a session stamps its direct child and its descendants, never itself", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnRoot(registry)
+    const child = spawnRoot(registry, root.id)
+    const grandchild = spawnRoot(registry, child.id)
+
+    // The owner (parent) labels its child.
+    const asRoot = await connectAs(registry, root.id)
+    const ok = await callTool(asRoot, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "worker-1",
+    })
+    expect(ok.isError).toBeUndefined()
+    expect(registry.get(child.id)?.operatorLabel).toBe("worker-1")
+
+    // An ancestor labels a transitive descendant (same notion of owner as the drive gate).
+    const deep = await callTool(asRoot, "agent_set_operator_label", {
+      sessionId: grandchild.id,
+      operatorLabel: "worker-2",
+    })
+    expect(deep.isError).toBeUndefined()
+    expect(registry.get(grandchild.id)?.operatorLabel).toBe("worker-2")
+
+    // The owner clears it again.
+    const cleared = await callTool(asRoot, "agent_set_operator_label", { sessionId: child.id, operatorLabel: "" })
+    expect(cleared.isError).toBeUndefined()
+    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+
+    // A session may not stamp its own label, nor its owner's.
+    const asChild = await connectAs(registry, child.id)
+    const self = await callTool(asChild, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "mine",
+    })
+    expect(self.isError).toBe(true)
+    expect(self.content?.[0]?.text).toContain("may not stamp its own operatorLabel")
+    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+    const up = await callTool(asChild, "agent_set_operator_label", {
+      sessionId: root.id,
+      operatorLabel: "boss",
+    })
+    expect(up.isError).toBe(true)
+    expect(registry.get(root.id)?.operatorLabel).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("`agent_set_operator_label`: a session may not label a session it does not own, even one it may prompt", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const owner = spawnRoot(registry)
+    const stranger = spawnRoot(registry)
+    const target = spawnRoot(registry, owner.id)
+    // `allowPromptFrom` lets the stranger DRIVE the target; it does not own it.
+    registry.setPromptPolicy(target.id, [stranger.id])
+    const asStranger = await connectAs(registry, stranger.id)
+    const refused = await callTool(asStranger, "agent_set_operator_label", {
+      sessionId: target.id,
+      operatorLabel: "hijack",
+    })
+    expect(refused.isError).toBe(true)
+    expect(refused.content?.[0]?.text).toContain("not owned by the caller")
+    expect(registry.get(target.id)?.operatorLabel).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("`agent_set_operator_label`: the shared claude-desktop identity labels a child declared under a cc: parent", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const declared = spawnRoot(registry, "cc:abc123")
+    registry.setPromptPolicy(declared.id, ["claude-desktop"])
+    const optedOut = spawnRoot(registry, "cc:abc123")
+    const nonCc = spawnRoot(registry)
+    registry.setPromptPolicy(nonCc.id, ["claude-desktop"])
+
+    const desktop = await connectAs(registry, "claude-desktop")
+    const ok = await callTool(desktop, "agent_set_operator_label", {
+      sessionId: declared.id,
+      operatorLabel: "desk-worker",
+    })
+    expect(ok.isError).toBeUndefined()
+    expect(registry.get(declared.id)?.operatorLabel).toBe("desk-worker")
+
+    // No recorded claude-desktop grant (opt-out), or no cc: declared parent: refused.
+    for (const target of [optedOut, nonCc]) {
+      const refused = await callTool(desktop, "agent_set_operator_label", {
+        sessionId: target.id,
+        operatorLabel: "nope",
+      })
+      expect(refused.isError, target.id).toBe(true)
+    }
+
+    // Another identity is not the desktop, even when the child names a cc: parent.
+    const other = await connectAs(registry, "someone-else")
+    const refused = await callTool(other, "agent_set_operator_label", {
+      sessionId: declared.id,
+      operatorLabel: "nope",
+    })
+    expect(refused.isError).toBe(true)
+    registry.shutdown()
+  })
+
+  it("`agent_set_operator_label`: refuses a label another LIVE session already carries (session callers)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnRoot(registry)
+    const other = spawnRoot(registry)
+    const a = spawnRoot(registry, root.id)
+    const b = spawnRoot(registry, root.id)
+    const operator = await connectAs(registry)
+    await callTool(operator, "agent_set_operator_label", { sessionId: other.id, operatorLabel: "taken" })
+
+    const asRoot = await connectAs(registry, root.id)
+    const clash = await callTool(asRoot, "agent_set_operator_label", { sessionId: a.id, operatorLabel: "taken" })
+    expect(clash.isError).toBe(true)
+    expect(clash.content?.[0]?.text).toContain(`already carried by session "${other.id}" (status: running)`)
+    expect(registry.get(a.id)?.operatorLabel).toBeUndefined()
+
+    // A free label works; re-stamping the same session with its own label is not a clash.
+    const first = await callTool(asRoot, "agent_set_operator_label", { sessionId: a.id, operatorLabel: "free" })
+    expect(first.isError).toBeUndefined()
+    const again = await callTool(asRoot, "agent_set_operator_label", { sessionId: a.id, operatorLabel: "free" })
+    expect(again.isError).toBeUndefined()
+    // ...but a sibling may not take it.
+    const sibling = await callTool(asRoot, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "free" })
+    expect(sibling.isError).toBe(true)
+
+    // A DEAD holder keeps its name (the brain between two restarts): still refused,
+    // and the error names the holder's status.
+    registry.kill(other.id)
+    const dead = await callTool(asRoot, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "taken" })
+    expect(dead.isError).toBe(true)
+    expect(dead.content?.[0]?.text).toContain(`session "${other.id}" (status: killed)`)
+    expect(registry.get(b.id)?.operatorLabel).toBeUndefined()
+
+    // The human operator is exempt from the check.
+    const byOperator = await callTool(operator, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "taken" })
+    expect(byOperator.isError).toBeUndefined()
+    await callTool(operator, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "" })
+
+    // Archiving the dead holder frees the name.
+    registry.archiveSession(other.id)
+    const reuse = await callTool(asRoot, "agent_set_operator_label", { sessionId: b.id, operatorLabel: "taken" })
+    expect(reuse.isError).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("`agent_set_operator_label`: a killed holder still blocks the label; a predecessor of the target does not", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnRoot(registry)
+    const brain = spawnRoot(registry)
+    const kid = spawnRoot(registry, root.id)
+    const operator = await connectAs(registry)
+    await callTool(operator, "agent_set_operator_label", { sessionId: brain.id, operatorLabel: "brain" })
+    registry.kill(brain.id)
+    const asRoot = await connectAs(registry, root.id)
+    const refused = await callTool(asRoot, "agent_set_operator_label", { sessionId: kid.id, operatorLabel: "brain" })
+    expect(refused.isError).toBe(true)
+
+    // A predecessor row whose continuation chain ends at the target is the same lineage.
+    const old = spawnRoot(registry, root.id)
+    const successor = spawnRoot(registry, root.id)
+    await callTool(operator, "agent_set_operator_label", { sessionId: old.id, operatorLabel: "lineage" })
+    registry.kill(old.id)
+    ;(registry.get(old.id) as { continuedTo?: string }).continuedTo = successor.id
+    const same = await callTool(asRoot, "agent_set_operator_label", { sessionId: successor.id, operatorLabel: "lineage" })
+    expect(same.isError).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("a label an owner stamped on a child is an address, never a grant", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnRoot(registry)
+    const child = spawnRoot(registry, root.id)
+    const target = spawnRoot(registry)
+    registry.setPromptPolicy(target.id, ["label:bridge"])
+
+    const asRoot = await connectAs(registry, root.id)
+    const stamped = await callTool(asRoot, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "bridge",
+    })
+    expect(stamped.isError).toBeUndefined()
+
+    // The child carries `bridge` yet `label:bridge` in the target's allowPromptFrom ignores it.
+    const asChild = await connectAs(registry, child.id)
+    const driven = await callTool(asChild, "agent_prompt", { sessionId: target.id, prompt: "go" })
+    expect(driven.isError).toBe(true)
+    expect(registry.get(target.id)?.status).not.toBe("killed")
+
+    // The same label on a ROOT (operator-stamped) session is still a valid grant.
+    const operator = await connectAs(registry)
+    const brain = spawnRoot(registry)
+    await callTool(operator, "agent_set_operator_label", { sessionId: brain.id, operatorLabel: "bridge2" })
+    registry.setPromptPolicy(target.id, ["label:bridge2"])
+    const asBrain = await connectAs(registry, brain.id)
+    const ok = await callTool(asBrain, "agent_prompt", { sessionId: target.id, prompt: "go" })
+    expect(ok.isError).toBeUndefined()
     registry.shutdown()
   })
 
@@ -623,5 +812,49 @@ describe("session-owner gate over MCP", () => {
     void registry
     registry.shutdown()
     withBus.shutdown()
+  })
+})
+
+describe("checkOperatorLabelStamp", () => {
+  const parents: Record<string, string | undefined> = { child: "root", grandchild: "child" }
+  const parentOf = (id: string) => parents[id]
+
+  it("operator: allowed; self: refused; parent and ancestor: allowed; others: refused", () => {
+    const target = { id: "child", parentSessionId: "root" }
+    expect(checkOperatorLabelStamp({ callerSessionId: undefined, target, parentOf }).ok).toBe(true)
+    expect(checkOperatorLabelStamp({ callerSessionId: "child", target, parentOf }).ok).toBe(false)
+    expect(checkOperatorLabelStamp({ callerSessionId: "root", target, parentOf }).ok).toBe(true)
+    expect(
+      checkOperatorLabelStamp({ callerSessionId: "root", target: { id: "grandchild", parentSessionId: "child" }, parentOf }).ok,
+    ).toBe(true)
+    expect(checkOperatorLabelStamp({ callerSessionId: "stranger", target, parentOf }).ok).toBe(false)
+  })
+
+  it("`allowPromptFrom: any` or a listed id is not ownership", () => {
+    const target = { id: "child", parentSessionId: "root", allowPromptFrom: ["any", "stranger"] }
+    expect(checkOperatorLabelStamp({ callerSessionId: "stranger", target, parentOf }).ok).toBe(false)
+  })
+})
+
+describe("a label on a session with a parent is never a grant", () => {
+  const labels: Record<string, string | undefined> = { kid: "bridge", boss: "bridge" }
+  const parents: Record<string, string | undefined> = { kid: "root" }
+  const operatorLabelOf = (id: string) => labels[id]
+  const parentOf = (id: string) => parents[id]
+
+  it("matchesSessionGrant: `label:` entries match a root only when parentOf is given", () => {
+    expect(matchesSessionGrant(["label:bridge"], "boss", operatorLabelOf, parentOf)).toBe(true)
+    expect(matchesSessionGrant(["label:bridge"], "kid", operatorLabelOf, parentOf)).toBe(false)
+    expect(matchesSessionGrant(["label:br*"], "kid", operatorLabelOf, parentOf)).toBe(false)
+    // An exact session id entry still names a child.
+    expect(matchesSessionGrant(["kid"], "kid", operatorLabelOf, parentOf)).toBe(true)
+  })
+
+  it("checkSessionOwnerGate: allowPromptFrom `label:` admits the labelled root, not the labelled child", () => {
+    const target = { id: "t", parentSessionId: undefined, allowPromptFrom: ["label:bridge"] }
+    const gate = (callerSessionId: string) =>
+      checkSessionOwnerGate({ callerSessionId, target, tool: "agent_prompt", parentOf, operatorLabelOf }).ok
+    expect(gate("boss")).toBe(true)
+    expect(gate("kid")).toBe(false)
   })
 })

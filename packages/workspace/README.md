@@ -21,6 +21,23 @@ const x = defineWorkspace({
 })
 ```
 
+## Node scope
+
+A session is scoped to the nearest declared node (a folder with a `WORKSPACE.md`) containing its AIP-46 `ground` (AIP-34, "Node scope of a session").
+
+```ts
+import { resolveNodeScope, nodeChain, nodeProjection, composeNodeChainPolicy } from "@agentproto/workspace"
+import { loadNodeTree } from "@agentproto/workspace/checker"
+
+const tree = loadNodeTree("/path/to/tree")
+const scope = resolveNodeScope(tree, "ws://workspaces/@acme/agentik/simone/docs") // { node, subpath: "docs" } or undefined
+const chain = nodeChain(tree, scope.node) // nearest first, up to the tree root, each node with its `wall`
+const memoryNodes = nodeProjection(chain) // AIP-72 section 10: cut after the first sealed or hard node
+const policy = composeNodeChainPolicy(chain) // AIP-38 composition inputs over the whole chain
+```
+
+`undefined` means no declared node contains the ground, so no node scope. A malformed ground throws `NodeScopeError`; a host refuses the call.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

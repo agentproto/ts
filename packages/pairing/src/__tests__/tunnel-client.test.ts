@@ -331,6 +331,32 @@ describe("TunnelClient over a rendezvous with its default 1 MiB message cap", ()
 })
 
 describe("TunnelClient connection lifecycle", () => {
+  it("errors the page-side stream when the E2E channel dies mid-body", async () => {
+    const { client, sockets } = await pairedClient()
+    const res = await client.fetch("/forever")
+    const reader = res.body!.getReader()
+
+    // The body is live: one chunk arrived and the stream is still open.
+    const first = await reader.read()
+    expect(first.done).toBe(false)
+    expect(new TextDecoder().decode(first.value)).toMatch(/^data: /)
+
+    // Kill the E2E channel while the body is mid-flight. The page must see
+    // the stream error (failPending -> controller.error), not a hung reader
+    // and not a silent end-of-body.
+    sockets.at(-1)!.close()
+    const err = await reader.read().then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(TunnelClientError)
+    expect((err as TunnelClientError).code).toBe("disconnected")
+
+    // The client recovers its channel, so a later body is not affected.
+    await vi.waitFor(() => expect(client.state).toBe("open"))
+    expect((await client.fetch("/ping")).status).toBe(200)
+  }, 30_000)
+
   it("reconnects after the WebSocket drops; in-flight requests fail cleanly, new ones wait", async () => {
     const { client, sockets } = await pairedClient()
     const states: StateChange["state"][] = []

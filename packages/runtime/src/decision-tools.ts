@@ -18,8 +18,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 
-import { decide, type ClassifierOutcome, type DecisionBackendIdentity } from "./decision.js"
-import { parseDecisionPolicy } from "./decision-policy.js"
+import { decide, type ClassifierOutcome, type DecisionBackendIdentity } from "@agentproto/decision"
+import { parseDecisionPolicy } from "@agentproto/decision"
 import {
   callJevSystemOne,
   JEV_DEFAULT_MODEL,

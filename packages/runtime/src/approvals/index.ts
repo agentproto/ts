@@ -20,11 +20,33 @@ export {
   type ApprovalRequester,
   type ApprovalRecord,
   type ApprovalDecisionRecord,
+  type ApprovalWakeTarget,
+  type ApprovalReachOption,
+  type ReachReceiptEntry,
   type ApprovalErrorCode,
   type CardTicketErrorCode,
   type CardTicketRecord,
+  type RelayOutboxEntry,
+  type RelayedMarker,
+  type TelegramCardEntry,
 } from "./types.js"
 export { handleApprovals, type ApprovalsHttpAuth } from "./http.js"
+export { wireApprovalWake, type ApprovalWakeRegistry } from "./wake.js"
+export {
+  createBureauApprovalBridge,
+  BUREAU_APPROVAL_KIND,
+  type BureauApprovalBridge,
+  type BureauApprovalBridgeOptions,
+  type BureauImportResolver,
+  type ImportedResultHookCall,
+} from "./bureau-bridge.js"
+export {
+  createApprovalTelegramBridge,
+  type ApprovalTelegramBridge,
+  type ApprovalTelegramBridgeOptions,
+  type ApprovalTelegramAnnounceResult,
+  type ApprovalTelegramAnnounceSkip,
+} from "./telegram-bridge.js"
 export { registerApprovalTools, type RegisterApprovalToolsOptions } from "./tools.js"
 export { registerApprovalCardDecideTool } from "./card-tool.js"
 export { renderApprovalCardHtml, approvalCardResourceUri } from "./card.js"

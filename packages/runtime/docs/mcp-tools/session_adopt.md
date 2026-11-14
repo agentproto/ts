@@ -12,7 +12,16 @@ successor is NOT passed: it is the row's own recorded successor
 (`from.succeededBy`). When no successor was declared, the call is refused -
 declare the succession first (`agent_start { succeeds: "<id>" }` by the
 operator or by the replaced session itself, or a `session_continue_fresh` of
-that session).
+that session), or have the operator pass `to` (below).
+
+## to
+
+Optional, operator only. The live session that takes over `from`. It declares
+the succession (`from.succeededBy = to`, `to.succeeds = from`) and then runs
+the handover, so a replacement spawned WITHOUT `succeeds` can still be
+repaired in one call. Refused for a session caller, for a `to` that is missing
+or not running, when `from` already has a different declared successor, and
+when `to` already succeeds another session.
 
 ## childIds
 

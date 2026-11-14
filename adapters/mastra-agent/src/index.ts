@@ -13,10 +13,11 @@
 import { fileURLToPath } from "node:url"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
+import { collectMastraConfinedReadPaths } from "./confined-read-paths.js"
 
 // Self-locating: the built handle spawns `node <this-dist>/cli.mjs acp`.
 // import.meta.url resolves into dist/ at runtime, where cli.mjs sits next to
@@ -24,7 +25,7 @@ import {
 // from node_modules) or a user runs the published bin.
 const cliEntry = fileURLToPath(new URL("./cli.mjs", import.meta.url))
 
-export const mastraAgent: AgentCliHandle = defineAgentCli({
+export const mastraAgent: AgentCliHandle = defineHarness({
   name: "mastra-agent",
   id: "mastra-agent",
   description:
@@ -32,6 +33,17 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
   version: "0.1.0",
   bin: "node",
   bin_args: [cliEntry, "acp"],
+  ...(process.platform === "darwin"
+    ? { confinedReadPaths: collectMastraConfinedReadPaths(fileURLToPath(new URL("..", import.meta.url))) }
+    : {}),
+  // The conversation-memory SQLite db lives under `~/.agentproto/mastra-agent`.
+  // An OS-confined spawn (workflow step, app boundary) denies writes under
+  // `$HOME`, so libsql fails with SQLITE_CANTOPEN (14) at startup. A confined
+  // spawn gets a per-session-lineage state dir instead (see `resolveMemoryDbPath`).
+  stateHome: {
+    env: "AGENTPROTO_MASTRA_STATE_HOME",
+    defaultDir: ".agentproto/mastra-agent",
+  },
   install: [
     {
       method: "npm",

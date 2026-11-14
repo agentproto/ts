@@ -114,8 +114,11 @@ export function createBackgroundJobRegistry<T>(opts: { idPrefix: string; default
       const promise = run()
       void promise.then(
         async result => {
-          // Save the full result before flipping to `done`, so a `resultPath`
-          // reported by a status view points at a file that actually exists.
+          // Held in memory at once (a caller paging the result it was just
+          // handed must not race the write below); `status` still flips to
+          // `done` only after the file is saved, so a `resultPath` reported by
+          // a status view points at a file that actually exists.
+          job.result = result
           const jobsDir = dir()
           const resultPath = join(jobsDir, `${job.id}.json`)
           try {
@@ -127,7 +130,6 @@ export function createBackgroundJobRegistry<T>(opts: { idPrefix: string; default
           }
           job.status = "done"
           job.endedAt = new Date().toISOString()
-          job.result = result
         },
         err => {
           job.status = "failed"

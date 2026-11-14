@@ -491,6 +491,113 @@ describe("runInstallMcp normal install", () => {
   })
 })
 
+// ── tests: claude-desktop shared Chat-tab identity ──────────────────────────
+
+const DESKTOP_CONFIG_PATH =
+  "/tmp/fake-home/Library/Application Support/Claude/claude_desktop_config.json"
+const DESKTOP_DIR = "/tmp/fake-home/Library/Application Support/Claude"
+
+describe("runInstallMcp - claude-desktop", () => {
+  it("always writes the shared identity URL, even on the default port", async () => {
+    mockMultiPath({
+      files: { [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: {} }) },
+      dirs: [DESKTOP_DIR],
+    })
+
+    const code = await runInstallMcp(["--agent", "claude-desktop", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === DESKTOP_CONFIG_PATH)
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto).toEqual({
+      command: "agentproto",
+      args: ["mcp-bridge"],
+      env: {
+        AGENTPROTO_MCP_URL:
+          "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop",
+      },
+    })
+  })
+
+  it("also writes the shared identity into the Claude-3p profile when it has a config", async () => {
+    const THIRD = "/tmp/fake-home/Library/Application Support/Claude-3p/claude_desktop_config.json"
+    mockMultiPath({
+      files: {
+        [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: {} }),
+        [THIRD]: JSON.stringify({
+          mcpServers: { agentproto: { command: "npx", args: ["-y", "mcp-remote", "http://127.0.0.1:18790/mcp"] }, other: { command: "x" } },
+        }),
+      },
+      dirs: [DESKTOP_DIR],
+    })
+
+    const code = await runInstallMcp(["--agent", "claude-desktop", "--yes"])
+    expect(code).toBe(0)
+
+    const write = mockFs.writeFile.mock.calls.find(c => c[0] === THIRD)
+    expect(write).toBeDefined()
+    const written = JSON.parse(write![1] as string)
+    expect(written.mcpServers.agentproto.env.AGENTPROTO_MCP_URL).toBe(
+      "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop",
+    )
+    expect(written.mcpServers.other).toEqual({ command: "x" })
+  })
+
+  it("does not create a Claude-3p config that does not exist", async () => {
+    mockMultiPath({
+      files: { [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: {} }) },
+      dirs: [DESKTOP_DIR],
+    })
+
+    await runInstallMcp(["--agent", "claude-desktop", "--yes"])
+
+    expect(mockFs.writeFile.mock.calls.some(c => String(c[0]).includes("Claude-3p"))).toBe(false)
+  })
+
+  it("--dry-run prints the exact entry and writes nothing", async () => {
+    mockMultiPath({
+      files: { [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: {} }) },
+      dirs: [DESKTOP_DIR],
+    })
+    const { chunks, restore } = captureStdout()
+
+    const code = await runInstallMcp(["--agent", "claude-desktop", "--dry-run"])
+    restore()
+
+    expect(code).toBe(0)
+    const printed = JSON.parse(chunks.join(""))
+    expect(printed).toEqual({
+      mcpServers: {
+        agentproto: {
+          command: "agentproto",
+          args: ["mcp-bridge"],
+          env: {
+            AGENTPROTO_MCP_URL:
+              "http://127.0.0.1:18790/mcp?callerSessionId=claude-desktop&host=claude-desktop",
+          },
+        },
+      },
+    })
+    expect(mockFs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it("--dry-run prints nothing when Claude Desktop is not a target", async () => {
+    mockDirExists("/tmp/fake-home/.cursor")
+    mockFileExists("/tmp/fake-home/.cursor/mcp.json", "{}")
+    const { chunks: stdout, restore: restoreOut } = captureStdout()
+    const { chunks: stderr, restore: restoreErr } = captureStderr()
+
+    const code = await runInstallMcp(["--dry-run"])
+    restoreOut()
+    restoreErr()
+
+    expect(code).toBe(0)
+    expect(stdout.join("")).toBe("")
+    expect(stderr.join("")).toContain("Claude Desktop is not a target")
+  })
+})
+
 // ── tests: windsurf ──────────────────────────────────────────────────────────
 
 describe("runInstallMcp — windsurf", () => {
@@ -844,6 +951,32 @@ describe("runInstallMcp --app", () => {
 // ── tests: --uninstall (integration through runInstallMcp) ──────────────────
 
 describe("runInstallMcp --uninstall", () => {
+  it("also removes the agentproto entry from the Claude-3p profile", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const third = "/tmp/fake-home/Library/Application Support/Claude-3p/claude_desktop_config.json"
+    const state = {
+      entries: [
+        { agent: "claude-desktop", configPath: DESKTOP_CONFIG_PATH, transport: "stdio" as const, registeredAt: "2025-01-01T00:00:00Z" },
+      ],
+    }
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [DESKTOP_CONFIG_PATH]: JSON.stringify({ mcpServers: { agentproto: { command: "agentproto" } } }),
+        [third]: JSON.stringify({ mcpServers: { agentproto: { command: "agentproto" }, other: { command: "x" } } }),
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    const write = mockFs.writeFile.mock.calls.find(c => c[0] === third)
+    expect(write).toBeDefined()
+    const written = JSON.parse(write![1] as string)
+    expect(written.mcpServers.agentproto).toBeUndefined()
+    expect(written.mcpServers.other).toEqual({ command: "x" })
+  })
+
   it("removes entries and clears state", async () => {
     const statePath = "/tmp/fake-home/.agentproto/install-state.json"
     const configPath = "/tmp/fake-home/.cursor/mcp.json"

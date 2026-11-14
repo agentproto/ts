@@ -1,5 +1,31 @@
 # @agentproto/agencies
 
+## 1.0.0
+
+### Major Changes
+
+- e301b84: Remove the pre-AIP-70 leftovers: deprecated `SPEC_NAME` exports, the `definePack`/`Pack` model-routing aliases, the runtime re-exports of symbols owned by extracted packages, and the `inference-endpoint` compatibility bin. Import those symbols from their owning packages and use `defineRoutingPack`/`RoutingPack` for model-routing packs.
+- e301b84: Remove the pre-AIP-70 aliases (`SPEC_NAME` exports, `definePack`/`Pack`, runtime re-exports, the duplicate `llm-endpoint` bin) and centralize the Anthropic unified rate-limit parser in `@agentproto/quota`. The CLI `review verify` path and the runtime review ledger and compose paths now treat `agentproto-pack-digest/v1` and `review.pack-digest/v1` as the same digest recipe, so attestations written with either tag compare correctly.
+
+### Patch Changes
+
+- Updated dependencies [e301b84]
+  - @agentproto/governance@1.0.0
+
+## 0.2.0
+
+### Minor Changes
+
+- 16d10ed: Add an internal data-format id (`AGENCIES_FORMAT`, `AGENT_CLI_FORMAT`), so the packages no longer present their format ids as AIP registry spec names. The legacy `SPEC_NAME` export is retained for compatibility and is now deprecated; it remains a legitimate pending registry-name deviation until it is removed.
+
+### Patch Changes
+
+- Updated dependencies [6b78431]
+- Updated dependencies [9fbf379]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/governance@0.2.0
+
 ## 0.1.6
 
 ### Patch Changes

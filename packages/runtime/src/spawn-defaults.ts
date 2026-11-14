@@ -23,12 +23,22 @@
  */
 
 import type { SpawnBrowserMode } from "./browser-mount.js"
+import type { Grant } from "@agentproto/policy"
+import type { DelegationGateMode } from "./delegation-gate.js"
+import type { ProfileGateMode } from "./profile-gate.js"
+import type { StdioMountGateMode } from "./stdio-mount-gate.js"
+import type { CommandProbeSpec } from "./sandbox-preflight.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
+import { reauthCommand, type ReauthHint } from "@agentproto/auth"
 import { providerEnvVar } from "./providers-store.js"
-import type { ContextContinuityPolicy } from "./context-continuity.js"
+import {
+  layerContextSettings,
+  type ContextContinuityPolicy,
+  type ContextSettings,
+} from "./context-continuity.js"
 import type { DeferredToolsConfig } from "./deferred-tools.js"
 import type { SandboxCheckpointConfig } from "./sandbox-delivery.js"
 import type { BoxLoginDecl } from "./box-login-bridge.js"
@@ -50,6 +60,11 @@ export interface McpDefaultsConfig {
    *  per-mount `?deferred=1|0` query override on `/mcp` — this is only
    *  the BOOT-TIME default for connections that specify neither. */
   deferredTools?: DeferredToolsConfig
+  /** Gateway-wide MCP surface profile (see `tool-profiles.ts`), e.g.
+   *  `"core"`, `"core,apps"`, `"admin"`. Absent ⇒ `full` (every tool, the
+   *  pre-profile behaviour). A per-mount `?profile=` query wins over this
+   *  boot-time default. */
+  profile?: string
 }
 
 /**
@@ -113,14 +128,18 @@ export interface DefaultsAdapterConfig {
   options?: Record<string, boolean | number | string>
   auth?: DefaultsAdapterAuthConfig
   contextContinuity?: ContextContinuityPolicy
+  /** AIP-46 name of the block; same keys as contextContinuity, which stays an
+   *  alias. Within one layer, a key set here wins over the same key in
+   *  contextContinuity. */
+  contextSettings?: ContextSettings
   /** Capability bundle ids (`bundle_list`) auto-attached to spawns of this
    *  adapter — unioned with the global `defaults.bundles`. See
    *  {@link resolveBundleDefaults}. */
   bundles?: string[]
   /** Explicitly mount the daemon's own scoped `/mcp` for spawns of this
-   *  adapter — the only way an adapter outside `shouldInjectDaemonSelfMount`'s
-   *  allowlist (opencode, codex, gemini, …) gets it by default. Overridden
-   *  per-spawn by `agent_start.daemonMount`. */
+   *  adapter -- mainly useful for sandbox spawns or after an `mcpServers: []`
+   *  opt-out, since the universal on-host default now covers all adapters.
+   *  Overridden per-spawn by `agent_start.daemonMount`. */
   daemonMount?: boolean
   /** Context profile (`full` | `lean` | an adapter-declared id) applied to
    *  spawns of this adapter that name none themselves. `"full"` opts an
@@ -133,18 +152,46 @@ export interface DefaultsAdapterConfig {
 export interface SpawnDefaultsConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
+  /** Per-harness defaults, keyed by harness slug (canonical). Read through
+   *  {@link harnessDefaultsFor} / {@link harnessDefaultsMap}, never directly:
+   *  they merge in the deprecated `adapters` block. */
+  harnesses?: Record<string, DefaultsAdapterConfig>
+  /** @deprecated Old name of {@link SpawnDefaultsConfig.harnesses}, still
+   *  read (a field set under `harnesses` wins) with a deprecation warning;
+   *  removed in the next major of @agentproto/runtime. */
   adapters?: Record<string, DefaultsAdapterConfig>
   /** Capability bundle ids auto-attached to every spawn — see
    *  {@link DefaultsAdapterConfig.bundles} for the per-adapter union partner. */
   bundles?: string[]
+  /** Browser integration (TARGET-STATE: Bureau owns the browser). */
+  browser?: {
+    /** How much of the built-in browser surface the daemon registers:
+     *  `"off"` keeps only `fetch_page` (a plain HTTP read); `"proxy"` (the
+     *  default) forwards the daemon browser tools to the `proxyImport`
+     *  Bureau server. `"on"` is the retired chrome-live mode, still accepted
+     *  and read as `"proxy"` with a warning. Read in the per-`/mcp`-session
+     *  registration pass, so a change applies on the next MCP session. */
+    builtin?: "off" | "proxy" | "on"
+    /** Alias of the imported MCP that is a Bureau server; the daemon browser
+     *  tools forward to it, `"bureau"` when unset. A set value also makes the
+     *  built-in `browser` bundle mount that import. */
+    proxyImport?: string
+  }
   contextContinuity?: ContextContinuityPolicy
+  /** AIP-46 name of the block; same keys as contextContinuity, which stays an
+   *  alias. Within one layer, a key set here wins over the same key in
+   *  contextContinuity. */
+  contextSettings?: ContextSettings
   /** Depth cutoff for the role-derived default (see `resolveRole` in
    *  `role.ts`) applied when an `agent_start` call omits `role`:
    *  `depth < cutoff` → supervisor, `depth >= cutoff` → executor.
    *  Default 1 (root spawns keep today's unrestricted behaviour; any
    *  spawn made THROUGH an orchestrator defaults to executor). Tune
    *  this up (e.g. to a large number) to restore the old permissive
-   *  behaviour for existing deep spawns wholesale. */
+   *  behaviour for existing deep spawns wholesale.
+   *  @deprecated removed in `@agentproto/runtime` 6.0.0 (with `role`);
+   *  still honoured as the depth boundary between `defaults.spawn.
+   *  defaultAgent.root` and `.nested`. */
   defaultRoleDepthCutoff?: number
   /** Trust-boundary cap on pack-carried roles (see `role-registry.ts`'s
    *  `loadRoleRegistry`): a role pack whose `toolPolicy.delegation` is
@@ -176,6 +223,16 @@ export interface SpawnDefaultsConfig {
    *  EXPLICIT `interrupt` on the call (true OR false) always wins over this
    *  default. */
   agentPromptInterrupt?: boolean
+  /** Installed-app hosting defaults (AIP-53). */
+  apps?: {
+    /** Tunnel provider slug used for a `services[].expose` (AIP-53
+     *  Exposure). Host config, never the app's. Unset: `cloudflare-provisioned`
+     *  when its creds are registered, else `cloudflare-managed` when
+     *  registered, else `cloudflare-quick` (reported as not stable). */
+    exposeProvider?: string
+    /** Which installed-app `exposes.tools` the /mcp gateway registers. Default "read". */
+    exposedTools?: "off" | "read" | "all"
+  }
   /** Inter-session messaging policy (AIP-46 §Session messages). */
   messaging?: {
     /** Let `message_send` / `message_reply` reach a sibling session (same
@@ -189,6 +246,16 @@ export interface SpawnDefaultsConfig {
      *  (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). Default []:
      *  no cross-workspace link. Independent of `allowSameWorkspace`. */
     peerGroups?: string[][]
+    /** Explicit AIP-38 `session:message`, `session:prompt` and
+     *  `session:control` grants. A matching allow admits a message pair or a
+     *  drive call the legacy gate refuses; a matching deny wins. Default []:
+     *  nothing changes. */
+    grants?: Grant[]
+    /** `defaults.messaging.peerBinding` - "slug" (default): peers by recorded
+     *  workspace slug (existing behaviour). "verified": peers only when both
+     *  cwds resolve to the same registered workspace (`findWorkspaceByPath`).
+     *  The tree is never affected; decisions report `peerVerified`. */
+    peerBinding?: "slug" | "verified"
     /** Whether a SESSION sender may use urgency `interrupt` (cancel the
      *  recipient's in-flight turn). Default "deny": downgraded to `steer`
      *  and reported as such. Human (HTTP/CLI) senders always may. */
@@ -197,6 +264,71 @@ export interface SpawnDefaultsConfig {
      *  sender is told it is stuck (typed notice) and it is flagged `stale`
      *  in `pendingPrompts`. Default 5. */
     pendingPromptStaleMinutes?: number
+    /** `defaults.messaging.anonymousSend` - "label" (default): anonymous and
+     *  unverified senders reach any live session, labelled and capped at
+     *  steer. "block": unverified session senders keep the refusal. */
+    anonymousSend?: "block" | "label"
+  }
+  /** Caller identity (ts#2165 step 5). */
+  identity?: {
+    /** `defaults.identity.sessionTokens` - "shadow" (default): a per-session
+     *  token is minted at spawn and callers are classified (`GET /identity`)
+     *  without refusing anything. "enforce": minted the same way, and an
+     *  invalid token, a mismatching claim or a claim without token naming a
+     *  token-delivered session is refused. "off": no token, no observation. */
+    sessionTokens?: "off" | "shadow" | "enforce"
+    /** `defaults.identity.requireProof` - actions a caller must be proven to
+     *  invoke. Empty (default): nothing is refused. Only `"session:spawn"` is
+     *  evaluated. Ignored while `sessionTokens` is `"off"` (rule 8). */
+    requireProof?: Array<"session:spawn">
+  }
+  /** Hooks projected into a harness's own settings (`native-hooks-defaults.ts`). */
+  nativeHooks?: {
+    /** `defaults.nativeHooks.preCompactCheckpoint` - "on": a local claude-code
+     *  spawn gets a synchronous PreCompact (auto) hook that writes a daemon
+     *  checkpoint before the harness compacts. "off" (default): no hook. */
+    preCompactCheckpoint?: "off" | "on"
+    /** `defaults.nativeHooks.command` - the agentproto CLI the hook runs.
+     *  Unset means the serving CLI by absolute path. */
+    command?: string
+  }
+  /** Action hook reactions (AIP-71). */
+  reactions?: {
+    /** Completed sessions of these workspace slugs are ingested into the
+     *  workspace brain by the durable brain-ingest reaction instead of the
+     *  legacy exit subscriber. Default []: every workspace stays with the
+     *  legacy subscriber. */
+    brainIngest?: {
+      workspaces?: string[]
+      /** File-size ceiling for a session's `events.jsonl` before the brain
+       *  refuses to materialize it. Default 32 MB. Applies to both the
+       *  legacy exit subscriber and the brain-ingest reaction (they share
+       *  the reader). */
+      maxTranscriptBytes?: number
+      /** Running ceiling on accumulated message text while the brain reader
+       *  parses a transcript. Default 8 MB. */
+      maxTranscriptTextBytes?: number
+      /** Ceiling on the files one brain's in-memory fallback search index
+       *  holds (the on-disk index has none); above it results are flagged
+       *  partial. Default 100,000. */
+      maxIndexDocs?: number
+    }
+    /** Debounced clerk passes for these workspace slugs are dispatched by the
+     *  durable clerk reaction instead of the legacy dispatch. Default []:
+     *  every workspace stays on the legacy dispatch. */
+    clerk?: {
+      workspaces?: string[]
+    }
+  }
+  /** PR provenance footer policy (the daemon reconciler and the
+   *  `command_execute` stamper). */
+  prProvenance?: {
+    footer?: {
+      /** `owner/name` repos whose pull requests never receive or refresh an
+       *  agentproto provenance footer. Read per stamp, so a change takes
+       *  effect without a daemon restart. Default []: stamp every repo. */
+      skipRepos?: string[]
+    }
   }
   /** Task-ledger policy. */
   tasks?: {
@@ -216,6 +348,28 @@ export interface SpawnDefaultsConfig {
   spawn?: {
     /** Default `agent_start.browser` (`"headless"` | `false`). Default off. */
     browser?: SpawnBrowserMode
+    /** Which agent a spawn that names none binds: `root` below the depth
+     *  cutoff (default `supervisor`), `nested` at or above it (default
+     *  `executor`). A role name, built-in or pack-carried. */
+    defaultAgent?: { root?: string; nested?: string }
+    /** AIP-46 delegation gate for nested spawns: `off` skips evaluation,
+     *  `observe` (default) counts what it would refuse without changing a
+     *  decision, `enforce` refuses a child the caller's agent does not
+     *  declare in `delegatesTo`. */
+    delegationGate?: DelegationGateMode
+    /** AIP-46 auth-profile gate for spawns that name an access profile:
+     *  `off` skips evaluation, `observe` (default) counts what it would
+     *  refuse without changing a decision, `enforce` refuses a profile
+     *  outside the caller's set. */
+    profileGate?: ProfileGateMode
+    /** Command-allowlist gate for stdio MCP servers a spawn mounts: `off`
+     *  skips evaluation, `observe` (default) counts what it would refuse
+     *  without changing a decision, `enforce` refuses a mount whose command
+     *  the workspace allowlist does not admit. */
+    stdioMountGate?: StdioMountGateMode
+    /** Profile ids any session may name at spawn, in addition to its own
+     *  recorded profile. Default []. */
+    sharedProfiles?: string[]
   }
   /** Daemon-wide sandbox safety-net policy. */
   sandbox?: {
@@ -225,6 +379,10 @@ export interface SpawnDefaultsConfig {
      *  `resolveSandboxCheckpointConfig`. Overridden per-spawn by
      *  `agent_start.sandboxCheckpoint`. */
     checkpoint?: SandboxCheckpointConfig
+    /** Config-declared preflight probes (one shell command in the box, read as
+     *  yes/no), referenced by id from `agent_start.preflight` or a placement
+     *  rung. See `sandbox-preflight.ts`'s `CommandProbeSpec`. */
+    preflight?: { probes?: CommandProbeSpec[] }
   }
 }
 
@@ -241,8 +399,12 @@ export interface ResolveSpawnDefaultsInput {
    *  through entirely to the per-adapter config default. */
   auth?: DefaultsAdapterAuthConfig
   /** Explicit-call context-continuity policy — wins over global and
-   *  per-adapter config defaults. */
+   *  per-adapter config defaults, key by key. */
   contextContinuity?: ContextContinuityPolicy
+  /** Explicit-call AIP-46 name of the same block: layers per setting over
+   *  the adapter and daemon blocks, and wins over contextContinuity key by
+   *  key. */
+  contextSettings?: ContextSettings
 }
 
 export interface ResolvedSpawnDefaults {
@@ -330,12 +492,42 @@ export function forwardedSubaccountAuthInputs(auth: ResolvedSpawnAuthMaterial): 
   }
 }
 
+/**
+ * One harness's defaults: `defaults.harnesses.<slug>` layered over the
+ * deprecated `defaults.adapters.<slug>`, field by field (a field set under
+ * `harnesses` wins; `auth` and the other blocks are replaced whole, not
+ * deep-merged). `undefined` when neither key names the slug.
+ */
+export function harnessDefaultsFor(
+  defaults: Pick<SpawnDefaultsConfig, "harnesses" | "adapters"> | undefined,
+  slug: string,
+): DefaultsAdapterConfig | undefined {
+  const legacy = defaults?.adapters?.[slug]
+  const canonical = defaults?.harnesses?.[slug]
+  if (legacy === undefined) return canonical
+  if (canonical === undefined) return legacy
+  return { ...legacy, ...canonical }
+}
+
+/** Every harness's merged defaults (see {@link harnessDefaultsFor}). */
+export function harnessDefaultsMap(
+  defaults: Pick<SpawnDefaultsConfig, "harnesses" | "adapters"> | undefined,
+): Record<string, DefaultsAdapterConfig> {
+  const slugs = new Set([...Object.keys(defaults?.adapters ?? {}), ...Object.keys(defaults?.harnesses ?? {})])
+  const out: Record<string, DefaultsAdapterConfig> = {}
+  for (const slug of slugs) {
+    const merged = harnessDefaultsFor(defaults, slug)
+    if (merged !== undefined) out[slug] = merged
+  }
+  return out
+}
+
 export function resolveSpawnDefaults(
   defaults: SpawnDefaultsConfig | undefined,
   adapterSlug: string,
   input: ResolveSpawnDefaultsInput,
 ): ResolvedSpawnDefaults {
-  const adapterDefaults = defaults?.adapters?.[adapterSlug]
+  const adapterDefaults = harnessDefaultsFor(defaults, adapterSlug)
 
   const options: Record<string, boolean | number | string> = {
     ...defaults?.options,
@@ -364,8 +556,14 @@ export function resolveSpawnDefaults(
       : undefined
   const forwardedExtraEnv = sanitizeAuthExtraEnv(input.auth?.extraEnv)
 
-  const contextContinuity =
-    input.contextContinuity ?? adapterDefaults?.contextContinuity ?? defaults?.contextContinuity
+  const contextContinuity = layerContextSettings(
+    defaults?.contextContinuity,
+    defaults?.contextSettings,
+    adapterDefaults?.contextContinuity,
+    adapterDefaults?.contextSettings,
+    input.contextContinuity,
+    input.contextSettings,
+  )
 
   return {
     skills,
@@ -411,7 +609,7 @@ export function resolveBundleDefaults(
   adapterSlug: string,
   input: { bundles?: string[]; daemonMount?: boolean },
 ): ResolvedBundleDefaults {
-  const adapterDefaults = defaults?.adapters?.[adapterSlug]
+  const adapterDefaults = harnessDefaultsFor(defaults, adapterSlug)
   const bundleIds =
     input.bundles !== undefined
       ? input.bundles
@@ -432,7 +630,8 @@ export const BUILTIN_EXECUTOR_CONTEXT_PROFILE: Readonly<Record<string, string>> 
 
 /**
  * Context profile a spawn runs with: the caller's explicit `contextProfile`,
- * else `defaults.adapters.<slug>.contextProfile`, else the built-in executor
+ * else `defaults.harnesses.<slug>.contextProfile` (or the deprecated
+ * `defaults.adapters.<slug>`), else the built-in executor
  * default. Pure — `undefined` means "no profile" (the adapter's full intake).
  */
 export function resolveDefaultContextProfile(input: {
@@ -442,7 +641,7 @@ export function resolveDefaultContextProfile(input: {
   explicit?: string
 }): string | undefined {
   if (input.explicit !== undefined && input.explicit !== "") return input.explicit
-  const configured = input.defaults?.adapters?.[input.adapterSlug]?.contextProfile
+  const configured = harnessDefaultsFor(input.defaults, input.adapterSlug)?.contextProfile
   if (configured !== undefined) return configured === "" || configured === "full" ? undefined : configured
   return input.roleName === "executor" ? BUILTIN_EXECUTOR_CONTEXT_PROFILE[input.adapterSlug] : undefined
 }
@@ -1079,13 +1278,18 @@ export const FILE_BASED_AUTH_SOURCES: ReadonlySet<string> = new Set(["codex", "g
  */
 export class SubscriptionSourceError extends Error {
   readonly code: "unsupported_auth_source" | "auth_source_unresolved"
+  /** Set when logging in again fixes it: the exact `agentproto auth reauth ...`
+   *  command, mirrored in the message and surfaced as `details.reauth`. */
+  readonly reauth?: ReauthHint
   constructor(
     code: "unsupported_auth_source" | "auth_source_unresolved",
     message: string,
+    reauth?: ReauthHint,
   ) {
     super(message)
     this.name = "SubscriptionSourceError"
     this.code = code
+    if (reauth !== undefined) this.reauth = reauth
   }
 }
 
@@ -1153,6 +1357,11 @@ export async function resolveSubscriptionCredential(
           `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`
       throw new SubscriptionSourceError("unsupported_auth_source", message)
     }
+    const claudeReauth: ReauthHint = {
+      command: reauthCommand(CLAUDE_CODE_OAUTH_SOURCE),
+      source: CLAUDE_CODE_OAUTH_SOURCE,
+      reason: "missing",
+    }
     let token: string
     try {
       token = await resolveSourceToken(input.source)
@@ -1160,15 +1369,18 @@ export async function resolveSubscriptionCredential(
       throw new SubscriptionSourceError(
         "auth_source_unresolved",
         `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
-          `found — run \`claude\` and /login (or \`claude setup-token\`) first ` +
-          `(${err instanceof Error ? err.message : String(err)}).`,
+          `found — run \`${claudeReauth.command}\` (or \`claude\` and /login, or \`claude setup-token\`) ` +
+          `to log in again (${err instanceof Error ? err.message : String(err)}).`,
+        claudeReauth,
       )
     }
     if (!token) {
       throw new SubscriptionSourceError(
         "auth_source_unresolved",
         `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
-          `found — run \`claude\` and /login (or \`claude setup-token\`) first.`,
+          `found — run \`${claudeReauth.command}\` (or \`claude\` and /login, or \`claude setup-token\`) ` +
+          `to log in again.`,
+        claudeReauth,
       )
     }
     return { credential: token, source: CLAUDE_CODE_OAUTH_SOURCE }

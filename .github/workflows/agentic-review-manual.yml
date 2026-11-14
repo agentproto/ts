@@ -40,9 +40,21 @@ jobs:
           cache: pnpm
 
       - name: Build the workspace CLI and OpenCode adapter
+        env:
+          # Same remote cache as ci.yml: a cold workspace build is ~7 min, a cache
+          # restore is seconds. No TURBO_SCM_BASE: this builds a filtered closure,
+          # not an --affected set.
+          TURBO_API: https://turbo-cache.agentik.net
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
         run: |
           pnpm install --frozen-lockfile
           pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-opencode...
+
+      # pr-review/entry.mjs imports lib/sandbox-agent.mjs, which imports the
+      # built @agentproto/git-cas for its CAS push prompts.
+      - name: Build git-cas
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
 
       - name: Resolve review inputs
         id: review
@@ -60,21 +72,50 @@ jobs:
           echo "model=$(printf '%s' "$CONFIG" | jq -r .reviewerModel)" >> "$GITHUB_OUTPUT"
 
       - name: Run the normal PR workflow with MiMo free
+        id: manual-review
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The paid usage-limit fallback rung (opencode-go/*) needs its own key and
+          # the owner-only allowlist; without both, placement drops the paid id
+          # ("not listed in AGENT_ALLOWED_METERED_MODELS"). Same wiring as the
+          # reviewer-agentproto step in ci.yml.
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
+          # Credential ladder, same as the reviewer lanes in ci.yml: a key whose
+          # quota or credit is exhausted moves the run to the next key, then to
+          # Go flash on a Go key (run-with-rotation.mjs).
+          OPENCODE_API_KEY_HODL: ${{ secrets.OPENCODE_API_KEY_HODL }}
+          OPENCODE_API_KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          OPENCODE_API_KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_GO_API_KEY_HODL: ${{ secrets.OPENCODE_GO_API_KEY_HODL }}
+          OPENCODE_GO_API_KEY_WS01: ${{ secrets.OPENCODE_GO_API_KEY_WS01 }}
+          OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: ${{ steps.review.outputs.adapter }}
+          credential-ladder: |
+            OPENCODE_API_KEY_HODL opencode
+            OPENCODE_API_KEY_WS03 opencode
+            OPENCODE_API_KEY_DEFAULT opencode
+            OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           auth-mode: ${{ steps.review.outputs.auth-mode }}
           # Credential chosen by the resolved model's route, same rule as ci.yml.
           # NB this dispatch path does NOT run the metered-model guard (it is an
           # owner-only manual trigger); it resolves whatever AGENT_REVIEW_PRESETS
           # names, so a metered preset here relies on the owner's own dispatch.
-          api-key: ${{ (startsWith(steps.review.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ (startsWith(steps.review.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.review.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.review.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.review.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet leg of the `auto` sandbox: see the primary attempt in ci.yml.
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
           cli-source: workspace
           workflow-input: |
@@ -112,6 +153,13 @@ jobs:
           cache: pnpm
 
       - name: Build the workspace CLI and Claude cloud relay
+        env:
+          # Same remote cache as ci.yml: a cold workspace build is ~7 min, a cache
+          # restore is seconds. No TURBO_SCM_BASE: this builds a filtered closure,
+          # not an --affected set.
+          TURBO_API: https://turbo-cache.agentik.net
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
         run: |
           pnpm install --frozen-lockfile
           pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-claude-code-cloud...

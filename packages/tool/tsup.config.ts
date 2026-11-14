@@ -16,7 +16,7 @@ export default createTsupConfig({
     "ajv",
     "zod",
     "gray-matter",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
     "@agentproto/manifest",
   ],
   noExternal: [],

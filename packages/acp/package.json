@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/acp",
-  "version": "0.11.3",
+  "version": "0.15.0",
   "description": "@agentproto/acp — AIP-44 ACP.md reference implementation. An agentproto profile of the Agent Client Protocol (agentclientprotocol.com). Wraps @agentclientprotocol/sdk with createAcpClient (drives subprocess agents) and createAcpServer (exposes AIP-9 operators to ACP-speaking IDEs).",
   "keywords": [
     "agentproto",
@@ -75,8 +75,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.21.1",
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentclientprotocol/sdk": "^1.5.0",
+    "@agentproto/doctype": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.7"
   },

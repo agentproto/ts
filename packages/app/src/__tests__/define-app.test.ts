@@ -365,6 +365,42 @@ describe("defineApp — category", () => {
 })
 
 describe("defineApp — services (production hosting surface)", () => {
+  it("carries services[].expose frozen, and rejects expose without a port", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      services: [{ name: "miniapp", command: "node", port: 8788, expose: { auth: "service", hostname: "session-chat" } }],
+    })
+    expect(app.services![0]!.expose).toEqual({ auth: "service", hostname: "session-chat" })
+    expect(Object.isFrozen(app.services![0]!.expose)).toBe(true)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], services: [{ name: "api", entry: "a", expose: {} }] }),
+    ).toThrow(/invalid services declaration . services\[0\]\.expose requires a port/)
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        // @ts-expect-error -- closed enum
+        services: [{ name: "api", entry: "a", port: 1, expose: { auth: "open" } }],
+      }),
+    ).toThrow(/invalid services declaration.*services\[0\]\.expose\.auth/)
+  })
+
+  it("carries services[].activation frozen, and rejects on-demand without a port", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      services: [
+        { name: "miniapp", command: "node", port: 8788, activation: { mode: "on-demand", idleStopMs: 60_000 } },
+      ],
+    })
+    expect(app.services![0]!.activation).toEqual({ mode: "on-demand", idleStopMs: 60_000 })
+    expect(Object.isFrozen(app.services![0]!.activation)).toBe(true)
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        services: [{ name: "api", entry: "a", activation: { mode: "on-demand" } }],
+      }),
+    ).toThrow(/invalid services declaration . services\[0\]\.activation\.mode 'on-demand' requires a port/)
+  })
+
   it("carries services through to the handle, frozen", () => {
     const app = defineApp({
       agents: [agent("solo", [])],
@@ -720,6 +756,13 @@ describe("defineApp — ui.toolScope (AIP-53 link-token scoping)", () => {
         ui: { html: "<html></html>", tools: ["conversation_read"], toolScope: { conversation_read: {} } },
       }),
     ).toThrow(AppDefinitionError)
+  })
+
+  it("accepts an empty toolScope entry for permissions_respond, whose permission id the daemon checks against the linked session", () => {
+    const app = defineApp({
+      ui: { html: "<html></html>", tools: ["permissions_respond"], toolScope: { permissions_respond: {} } },
+    })
+    expect(app.ui?.toolScope).toEqual({ permissions_respond: {} })
   })
 
   it("throws when toolScope's own value isn't an object", () => {

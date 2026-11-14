@@ -14,7 +14,7 @@ inputs:
     type: string
     description: >-
       Delivery placement — "host" (gh CLI, default), "sandbox" (inferred from
-      reviewConfig.reviewerSandbox + repo), or "local" (no PR, no posting —
+      reviewConfig.reviewerPlacement / reviewerSandbox + repo), or "local" (no PR, no posting —
       emit a structured verdict as the final message; see "Local placement"
       below).
     default: host
@@ -28,7 +28,7 @@ inputs:
     default: main
   repo:
     type: string
-    description: owner/repo slug — required for the sandbox bootstrap clone (reviewerSandbox mode).
+    description: owner/repo slug — required for the sandbox bootstrap clone (reviewerPlacement / reviewerSandbox mode).
     default: ""
   lastReviewedSha:
     type: string
@@ -91,8 +91,14 @@ continuity. When `lastReviewedSha` is empty, it's a first (full-diff) review.
 
 1. Read the diff with `git diff origin/<baseRef>...HEAD`.
 2. Inspect changed files with `read_file` / shell grep as needed.
-3. Call `gh pr review <prNumber>` FIRST (mandatory) with:
-   - `event`: --approve, --request-changes, or --comment
+3. Call `gh pr review <prNumber>` FIRST (mandatory) with a flag that matches
+   the verdict deterministically:
+   - `--approve` when the verdict is approve (low-severity findings stay under
+     an approve)
+   - `--request-changes` only for real correctness problems (bugs, broken
+     contracts, security)
+   - never `--comment` for a final verdict (GitHub does not count it as an
+     approval)
    - `body`: structured markdown review
 4. Write a changeset to `.changeset/pr-<prNumber>-agentic.md` if the PR
    touches published packages.
@@ -126,7 +132,7 @@ booted writes), connects over MCP
 (`scripts/lib/daemon-mcp.mjs`), calls `workflow_run_file` against this
 WORKFLOW.md with `input: { placement: "local", baseRef, prNumber: 0,
 reviewConfig }` (`reviewConfig` = `.github/agentic-review.json` with
-`reviewerSandbox` stripped — a local run is always a HOST spawn on the dev's
+`reviewerSandbox` / `reviewerPlacement` stripped — a local run is always a HOST spawn on the dev's
 daemon), polls `workflow_status` to a terminal state, and parses the JSON
 verdict off the last session's output tail
 (`scripts/agentflow/primitives/review.mjs#reviewViaDaemon`). No diff cap: the

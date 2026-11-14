@@ -42,6 +42,7 @@ import type {
 import { refKey } from "./refs.js"
 import { emitApp } from "./emit.js"
 import { normalizeManifestFields } from "./manifest-fields.js"
+import { validateExposedToolsAgainstBundle } from "./exposed-tools.js"
 
 export class AppDefinitionError extends Error {
   constructor(message: string) {
@@ -49,6 +50,16 @@ export class AppDefinitionError extends Error {
     this.name = "AppDefinitionError"
   }
 }
+
+/**
+ * Tools that may carry an EMPTY `ui.toolScope` entry (`{}`): each takes an
+ * opaque id (no session argument to pin from a `$link.<claim>`), and the
+ * daemon itself checks, before dispatching under a link token, that the id
+ * belongs to the linked session (`@agentproto/runtime`'s app-tools.ts,
+ * `LINK_OWNERSHIP_CHECKS`, which must cover exactly this list). Any other
+ * tool still needs at least one claim-pinned argument.
+ */
+export const TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS: readonly string[] = Object.freeze(["permissions_respond"])
 
 export function defineApp(def: AppDefinition): AppHandle {
   if (def.id !== undefined && def.id.trim() === "") {
@@ -126,7 +137,13 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const exposes = Object.freeze({
     agents: Object.freeze([...fields.exposes.agents]),
     workflows: Object.freeze([...fields.exposes.workflows]),
+    ...(fields.exposes.prefix !== undefined ? { prefix: fields.exposes.prefix } : {}),
+    ...(fields.exposes.tools !== undefined
+      ? { tools: Object.freeze(fields.exposes.tools.map(t => Object.freeze({ ...t }))) }
+      : {}),
+    ...(fields.exposes.resources !== undefined ? { resources: Object.freeze([...fields.exposes.resources]) } : {}),
   })
+  validateExposedToolsAgainstBundle(exposes, { tools }, msg => new AppDefinitionError(msg))
   const accepts = Object.freeze({ ...fields.accepts })
   const uiExtensions =
     def.ui === undefined || def.ui.extensions === undefined
@@ -181,7 +198,10 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       // An empty entry (`{}`) would make `toolId` callable with NO argument
       // constraint at all under a scoped link token — defeating the whole
       // point of scoping it rather than just leaving it out of `toolScope`.
-      if (Object.keys(argMap).length === 0) {
+      // Exception: a tool in `TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS`, whose only
+      // addressing argument is an opaque id the daemon resolves and checks
+      // against the link's session itself (nothing to pin from a claim).
+      if (Object.keys(argMap).length === 0 && !TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS.includes(toolId)) {
         throw new AppDefinitionError(
           `\`ui.toolScope.${toolId}\` is empty — a scoped tool needs at least one argName -> "$link.<claim>" constraint, or it shouldn't be in \`toolScope\` at all.`,
         )
@@ -217,7 +237,15 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   // entry whose `entry` would be destructive if run MUST NOT cause
   // defineApp/emit/load to execute it.
   const services: readonly AppService[] | undefined = fields.services
-    ? Object.freeze(fields.services.map(s => Object.freeze({ ...s })))
+    ? Object.freeze(
+        fields.services.map(s =>
+          Object.freeze({
+            ...s,
+            ...(s.expose !== undefined ? { expose: Object.freeze({ ...s.expose }) } : {}),
+            ...(s.activation !== undefined ? { activation: Object.freeze({ ...s.activation }) } : {}),
+          }),
+        ),
+      )
     : undefined
   // AIP-53 `setup[]` — the post-install configuration pipeline. Rule 10
   // runs PURELY here (no I/O; app never executes a step — see

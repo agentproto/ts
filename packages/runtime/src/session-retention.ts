@@ -59,7 +59,7 @@ const MAX_RESULT_IDS = 500
 const DAY_MS = 86_400_000
 
 /** Statuses a session dir may be deleted in. Anything else is kept. */
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["exited", "killed", "error", "completed", "unknown"])
+export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["exited", "killed", "error", "completed", "unknown"])
 
 /** The slice of the sessions registry the pass needs. Structural so the pass
  *  stays unit-testable against a fake. */
@@ -205,7 +205,7 @@ async function newestMtimeMs(dir: string): Promise<number | undefined> {
 const yieldToLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
 /** The ids the registry says must never be deleted. */
-function protectedIds(all: readonly SessionDescriptor[]): Set<string> {
+export function protectedIds(all: readonly SessionDescriptor[]): Set<string> {
   const byId = new Map(all.map(d => [d.id, d]))
   const out = new Set<string>()
   for (const d of all) {

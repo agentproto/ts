@@ -13,7 +13,15 @@
  * from full-screen apps) — a JSON string can't hold raw bytes safely.
  */
 
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
+import {
+  closeSync,
+  createWriteStream,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  type WriteStream,
+} from "node:fs"
 import { join } from "node:path"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 
@@ -29,6 +37,72 @@ export interface TerminalTranscriptWriter {
 
 export function terminalLogPath(sessionId: string, baseDir?: string): string {
   return join(sessionTranscriptDir(sessionId, baseDir), "terminal.jsonl")
+}
+
+/** Hard cap on how much of `terminal.jsonl` a tail read will scan. Chunks are
+ *  base64-wrapped JSON, so the encoded window is larger than the decoded
+ *  payload it contains; this bounds the read for a file with many tiny chunks
+ *  while still covering a full 64 KiB ring in normal use. */
+const TERMINAL_LOG_TAIL_MAX_READ = 1024 * 1024
+
+/**
+ * Read back at most `maxBytes` of decoded PTY output from the end of a
+ * session's durable `terminal.jsonl`. The window is grown from the end until
+ * it holds enough decoded bytes, reaches the start of the file, or hits
+ * {@link TERMINAL_LOG_TAIL_MAX_READ}; the first line of a partial window is
+ * torn and skipped. Returns an empty buffer when the log is missing/unreadable.
+ */
+export function readTerminalLogTail(
+  sessionId: string,
+  maxBytes: number,
+  baseDir?: string,
+): Buffer {
+  const empty = Buffer.alloc(0)
+  if (maxBytes <= 0) return empty
+  let fd: number
+  try {
+    fd = openSync(terminalLogPath(sessionId, baseDir), "r")
+  } catch {
+    return empty
+  }
+  try {
+    const size = fstatSync(fd).size
+    if (size === 0) return empty
+    let windowBytes = Math.min(size, Math.max(16 * 1024, maxBytes * 2))
+    for (;;) {
+      const len = Math.min(size, windowBytes)
+      const buf = Buffer.alloc(len)
+      readSync(fd, buf, 0, len, size - len)
+      const lines = buf.toString("utf8").split("\n")
+      if (len < size) lines.shift() // torn first record of the window
+      const chunks: Buffer[] = []
+      let total = 0
+      for (const line of lines) {
+        if (!line.trim()) continue
+        let rec: { bytes?: unknown }
+        try {
+          rec = JSON.parse(line) as { bytes?: unknown }
+        } catch {
+          continue // torn line
+        }
+        if (typeof rec.bytes !== "string") continue
+        const chunk = Buffer.from(rec.bytes, "base64")
+        chunks.push(chunk)
+        total += chunk.byteLength
+      }
+      if (total >= maxBytes || len === size || len >= TERMINAL_LOG_TAIL_MAX_READ) {
+        const joined = Buffer.concat(chunks, total)
+        return joined.byteLength > maxBytes
+          ? joined.subarray(joined.byteLength - maxBytes)
+          : joined
+      }
+      windowBytes = Math.min(size, Math.max(len * 2, len + 1))
+    }
+  } catch {
+    return empty
+  } finally {
+    closeSync(fd)
+  }
 }
 
 export function createTerminalTranscriptWriter(opts?: {

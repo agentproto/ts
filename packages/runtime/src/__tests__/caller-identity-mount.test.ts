@@ -29,7 +29,11 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import { startHttpServer } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
-import { buildDaemonSelfMountEntry, stampDaemonCallerSessionId } from "../session-spawn.js"
+import {
+  buildDaemonSelfMountEntry,
+  stampDaemonCallerSessionId,
+  stripSessionTokenHeaders,
+} from "../session-spawn.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 
@@ -149,5 +153,78 @@ describe("caller identity on a daemon mount", () => {
     } finally {
       await http.stop()
     }
+  })
+})
+
+describe("caller identity on an imported-MCP passthrough mount", () => {
+  const TOKEN_HEADER = "x-agentproto-session-token"
+  const DAEMON = "http://127.0.0.1:18790/mcp"
+
+  it("stamps an imported mount with both the query and the header", () => {
+    const stamped = stampDaemonCallerSessionId(
+      [{ name: "imported", transport: "http", ref: `${DAEMON}/imported/imp1` }],
+      { daemonMcpUrl: DAEMON, callerSessionId: "sess_imp" },
+    )!
+    expect(stamped[0]?.ref).toBe(`${DAEMON}/imported/imp1?callerSessionId=sess_imp`)
+    expect(stamped[0]?.headers?.[CALLER_IDENTITY_HEADER]).toBe("sess_imp")
+  })
+
+  it("adds the missing header to an imported mount that already carries our query", () => {
+    const stamped = stampDaemonCallerSessionId(
+      [{ name: "imported", transport: "http", ref: `${DAEMON}/imported/imp1?callerSessionId=sess_imp` }],
+      { daemonMcpUrl: DAEMON, callerSessionId: "sess_imp" },
+    )!
+    expect(stamped[0]?.ref).toBe(`${DAEMON}/imported/imp1?callerSessionId=sess_imp`)
+    expect(stamped[0]?.headers?.[CALLER_IDENTITY_HEADER]).toBe("sess_imp")
+  })
+
+  it("never adds the session token to an imported mount", () => {
+    const stamped = stampDaemonCallerSessionId(
+      [
+        { name: "agentproto", transport: "http", ref: DAEMON },
+        { name: "imported", transport: "http", ref: `${DAEMON}/imported/imp1` },
+      ],
+      { daemonMcpUrl: DAEMON, callerSessionId: "sess_imp", sessionToken: "apst_test" },
+    )!
+    const agentproto = stamped.find(e => e.name === "agentproto")
+    const imported = stamped.find(e => e.name === "imported")
+    expect(agentproto?.headers?.[TOKEN_HEADER]).toBe("apst_test")
+    expect(imported?.headers?.[TOKEN_HEADER]).toBeUndefined()
+    expect(JSON.stringify(stripSessionTokenHeaders(stamped))).not.toContain("apst_test")
+  })
+
+  it("leaves a foreign origin, an unrelated path, and a foreign pin untouched", () => {
+    const foreignOrigin = {
+      name: "foreign",
+      transport: "http" as const,
+      ref: "https://example.com/mcp/imported/imp1",
+    }
+    const unrelatedPath = {
+      name: "other",
+      transport: "http" as const,
+      ref: `${DAEMON}/tools/imported/imp1`,
+    }
+    const foreignPin = {
+      name: "pinned",
+      transport: "http" as const,
+      ref: `${DAEMON}/imported/imp1?callerSessionId=sess_other`,
+    }
+    // A path that merely starts with the passthrough prefix, and the bare
+    // `/imported` collection (no import id), are not the passthrough.
+    const lookalikePath = {
+      name: "lookalike",
+      transport: "http" as const,
+      ref: `${DAEMON}/importedfoo`,
+    }
+    const bareCollection = {
+      name: "bare",
+      transport: "http" as const,
+      ref: `${DAEMON}/imported`,
+    }
+    const stamped = stampDaemonCallerSessionId(
+      [foreignOrigin, unrelatedPath, foreignPin, lookalikePath, bareCollection],
+      { daemonMcpUrl: DAEMON, callerSessionId: "sess_imp" },
+    )!
+    expect(stamped).toEqual([foreignOrigin, unrelatedPath, foreignPin, lookalikePath, bareCollection])
   })
 })

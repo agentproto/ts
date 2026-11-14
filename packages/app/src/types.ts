@@ -262,10 +262,14 @@ export interface AppDevDefinition {
  *
  * This is NOT a dev launcher: `dev.launch` stays dev-only and is never
  * executed by app. A `services` entry names the production hosting
- * surface — the host (later work item) spawns ONE keep-alive service-owner
- * session per entry at install time that runs `entry`. One process per
- * entry, one port; there is no dependency graph, no scaling and no
- * scheduler behind this field. app's loader/`defineApp` only carries it.
+ * surface — the host (later work item) spawns ONE supervised process per
+ * entry that runs `entry`/`command`. One process per entry, one port; there
+ * is no dependency graph, no replica count and no scheduler behind this
+ * field. By default the process is kept alive from install/boot; an entry
+ * may opt into `activation: { mode: "on-demand" }` so the host owns the
+ * listening side and runs the process only while it is being used (scale
+ * to zero, see {@link AppServiceActivation}). app's loader/`defineApp` only
+ * carries the declaration.
  */
 export interface AppService {
   /** Service identifier — kebab-case, unique across the array. */
@@ -285,8 +289,57 @@ export interface AppService {
    *  host, not by app. */
   readonly cwd?: string
   /** Optional TCP port the service listens on (1..65535). Omitted = a
-   *  service that does not listen (no port). */
+   *  service that does not listen (no port). Bookkeeping for a keep-alive
+   *  service; for an `on-demand` one it is the port the HOST listens on,
+   *  and the process is given another one in `PORT`. */
   readonly port?: number
+  /** Ask the host for a public URL reaching `port` (AIP-53 Exposure).
+   *  Requires `port`. The host picks the tunnel provider. */
+  readonly expose?: AppServiceExpose
+  /** When the host runs the process (AIP-53 Activation). Omitted =
+   *  `{ mode: "always" }`: kept alive from install/boot. */
+  readonly activation?: AppServiceActivation
+}
+
+/**
+ * AIP-53 `services[].activation`: when the host runs the service process.
+ *
+ *   - `always` (default): the host starts the process at install/boot and
+ *     keeps it running, restarting it on an unexpected exit.
+ *   - `on-demand`: the host owns the declared `port` (and the `expose`
+ *     tunnel target). It starts the process on the first inbound
+ *     connection, proxies HTTP and WebSocket traffic to it, and stops it
+ *     after `idleStopMs` without traffic. Requires `port`. The process gets
+ *     the port it must bind in `PORT`.
+ *
+ * Only a service whose work is driven entirely by inbound requests may be
+ * `on-demand`: one that polls, schedules or otherwise acts on its own would
+ * be stopped while idle and must stay `always`.
+ */
+export interface AppServiceActivation {
+  readonly mode: "always" | "on-demand"
+  /** `on-demand` only. Milliseconds without an open request or connection
+   *  before the process is stopped. Integer 1000..86400000, default
+   *  300000 (`DEFAULT_SERVICE_IDLE_STOP_MS`). */
+  readonly idleStopMs?: number
+  /** `on-demand` only. Milliseconds a request waits for a cold start before
+   *  the host answers 503. Integer 1000..300000, default
+   *  30000 (`DEFAULT_SERVICE_START_TIMEOUT_MS`). */
+  readonly startTimeoutMs?: number
+}
+
+/**
+ * AIP-53 `services[].expose`: the service wants a public URL through a
+ * tunnel keyed `app.<a>.<s>.<h>` (AIP-53 Tunnel key). The host passes the
+ * public origin to the process as `AGENTPROTO_PUBLIC_URL`.
+ */
+export interface AppServiceExpose {
+  /** `guard` (default): the host's access guard sits in front of the
+   *  tunnel. `service`: no guard, the service authenticates every request. */
+  readonly auth?: "guard" | "service"
+  /** Hostname request (DNS label or FQDN, lowercase). The provider may
+   *  assign another name. */
+  readonly hostname?: string
 }
 
 /**
@@ -514,6 +567,15 @@ export interface AppRequirement {
    * call anything (dependency only).
    */
   readonly workflows?: readonly string[]
+  /**
+   * Provider tools granted to the consumer's own agents: the MCP names the
+   * provider's `exposes.tools` entries compute (`<prefix>_<n>`, e.g.
+   * `bureau_navigate`), never their ids. A session the host runs from one of
+   * the consumer's AGENT.md files sees them on the gateway at the provider's
+   * declared access, as if its AGENT.md had opted in by name. No other caller
+   * gains anything. Omitted or empty = nothing granted.
+   */
+  readonly tools?: readonly string[]
 }
 
 /** One entry of `requires.apps` — a bare id (dependency only) or an
@@ -539,10 +601,36 @@ export interface AppRequirements {
   readonly apps: readonly string[]
 }
 
+/** How much an exposed tool can change the world; drives MCP annotations and
+ *  which callers may see it. */
+export type AppExposedToolAccess = "read" | "write" | "approve"
+
+/** One `exposes.tools` entry: a tool the app offers to MCP clients. */
+export interface AppExposedTool {
+  /** Id of a bundled TOOL.md, or `imported:<alias>/<tool>` (needs `mcpName`). */
+  readonly id: string
+  readonly access: AppExposedToolAccess
+  /** Written for a model, at most 300 characters. */
+  readonly description: string
+  /** JSON Schema for the input. Default: the TOOL.md `inputs`. */
+  readonly inputSchema?: Readonly<Record<string, unknown>>
+  /** Replaces the derived name part (the prefix stays imposed). */
+  readonly mcpName?: string
+  /** `access: approve` only: the argument carrying the approval nonce. */
+  readonly approvalArg?: string
+}
+
 /** A2A-visible surfaces. Ids must exist in the app's agents / workflows. */
 export interface AppExposes {
   readonly agents: readonly string[]
   readonly workflows: readonly string[]
+  /** MCP name prefix (`^[a-z][a-z0-9]{1,15}$`); required when `tools` is non-empty. */
+  readonly prefix?: string
+  /** Tools offered to MCP clients. Absent = the app exposes nothing new. */
+  readonly tools?: readonly AppExposedTool[]
+  /** `ui://` resources of the app's imported MCP servers that the /mcp gateway
+   *  may relay on `resources/read`. Any other URI is answered as unknown. */
+  readonly resources?: readonly string[]
 }
 
 /** What the app accepts from other agents over A2A. */
@@ -614,7 +702,7 @@ export interface AppDefinition {
    * app depends on (`["@acme/shared"]`, same as `requires: { apps: [...] }`)
    * or the object form `{ browser?, fs?, gpu?, secrets?, apps? }` — where each
    * `apps` entry may be a bare id (dependency only) or an
-   * {@link AppRequirement} object (`{ id, version?, workflows? }`) declaring
+   * {@link AppRequirement} object (`{ id, version?, workflows?, tools? }`) declaring
    * the version range the provider must satisfy and which of its exposed
    * workflows this consumer may call via `app_call`.
    */

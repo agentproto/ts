@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 
 import { runAppInstall } from "../commands/app.js"
+import { isWorktreeRepointRefusal } from "../commands/maintain.js"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -36,6 +37,19 @@ describe("app install flag validation", () => {
     const git = await stderrOf(["https://example.com/repo.git", "--sha256", "abc"])
     expect(git.code).toBe(2)
     expect(git.err).toContain("pin a git URL with --sha")
+  })
+
+  it("rejects --repoint on a URL or a .agentapp (local dir only)", async () => {
+    const git = await stderrOf(["https://example.com/repo.git", "--repoint"])
+    expect(git.code).toBe(2)
+    expect(git.err).toContain("--repoint only applies to a local app dir")
+    expect((await stderrOf(["./x.agentapp", "--repoint"])).code).toBe(2)
+  })
+
+  it("maintain/steward recognise the daemon's worktree re-point refusal, and nothing else", () => {
+    expect(isWorktreeRepointRefusal(new Error('app_install: worktree-repoint-refused: "@a/b" is installed from ...'))).toBe(true)
+    expect(isWorktreeRepointRefusal(new Error("app_install: unknown daemon tool id(s)"))).toBe(false)
+    expect(isWorktreeRepointRefusal("worktree-repoint-refused")).toBe(false)
   })
 
   it("rejects git-only flags and --sha256 on a local dir", async () => {

@@ -130,6 +130,13 @@ export interface ProvisionRunContext {
   /** Cancels this provisioning (queued or running). */
   signal?: AbortSignal
   onProgress?: (progress: ProvisionProgress) => void
+  /** Live tail of the deps/setup processes' stdout+stderr, chunk by chunk. */
+  onOutput?: (text: string, stream: "stdout" | "stderr") => void
+  /** Boot bounds (see `provision-watchdog.ts`). Omitted = no watchdog, the
+   *  interactive default; the daemon always resolves and passes both. `0`
+   *  disables that one bound. */
+  stallTimeoutMs?: number
+  maxMs?: number
 }
 
 const contextStore = new AsyncLocalStorage<ProvisionRunContext>()

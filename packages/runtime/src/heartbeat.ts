@@ -1,6 +1,13 @@
 /**
  * HEARTBEAT.md autonomy loop.
  *
+ * @deprecated A third scheduler next to cron and routines, with no known user
+ * (only `projects/agentproto/playground/workspace/HEARTBEAT.md` in the
+ * monorepo). Prefer a cron job that prompts a session (`cron add
+ * --target-session <id> --prompt ...`), or a `ROUTINE.md`: both give pause
+ * and resume, run history and auto-pause on repeated failures, which this loop
+ * lacks. Kept working for existing workspaces; do not build on it.
+ *
  * A workspace can ship a `HEARTBEAT.md` at its root. Frontmatter:
  *
  *   schema: heartbeat/v1

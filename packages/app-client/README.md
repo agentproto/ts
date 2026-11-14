@@ -114,7 +114,8 @@ function ItemList() {
 plain ES5 `<script>` block (`injectRunnerSelect(html)` inlines it into a
 served page, the same way a host injects the `window.McpApp` bridge) that
 defines `window.AgentprotoUI.mountRunnerSelect`. It discovers the host's
-installed harnesses/models via `adapter_list` + `harness_preset_list` (an
+installed harnesses/models via `adapter_list` (or the canonical
+`harness_list`) + `harness_preset_list` (an
 app's own `callTool` — no daemon coupling), so an app UI never has to
 hardcode a harness/model `<select>` again:
 

@@ -17,11 +17,15 @@ import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import {
   startAppServiceProcess,
+  isAppServiceSupervised,
+  registerAppServiceSupervisor,
+  stopAppServiceSupervisor,
   resolveServiceCommand,
   killServiceProcess,
   appServiceLogPath,
   DEFAULT_APP_SERVICE_RESTART_POLICY,
   readProcessStartTicks,
+  parsePsLstart,
   assessRecordedServicePid,
   cleanupLegacyServicePidFile,
 } from "../app-service-process.js"
@@ -66,6 +70,8 @@ function startFixture(opts?: {
   policy?: Partial<typeof DEFAULT_APP_SERVICE_RESTART_POLICY>
   logFile?: string
   dir?: string
+  env?: Record<string, string>
+  singleAttempt?: Parameters<typeof startAppServiceProcess>[0]["singleAttempt"]
 }): { fx: Fixture; start: () => ReturnType<typeof startAppServiceProcess> } {
   const registry = createSessionsRegistry({ persist: false })
   const fx: Fixture = {
@@ -86,6 +92,8 @@ function startFixture(opts?: {
       service: opts?.service ?? { name: "web", command: "node", args: ["server.js"] },
       ...(opts?.policy ? { restart: opts.policy } : {}),
       ...(opts?.logFile !== undefined ? { logFile: opts.logFile } : {}),
+      ...(opts?.env !== undefined ? { env: opts.env } : {}),
+      ...(opts?.singleAttempt !== undefined ? { singleAttempt: opts.singleAttempt } : {}),
       spawnChild: (_spec, o) => {
         void _spec
         const pid = FAKE_PID_BASE + fx.spawned.length
@@ -367,6 +375,30 @@ describe("cleanup kills the process group", () => {
   })
 })
 
+describe("parsePsLstart (macOS start-time identity)", () => {
+  it("parses a C-locale lstart line to epoch seconds, ignoring padding", () => {
+    const expected = Math.floor(new Date("Thu Oct 29 02:07:01 2026").getTime() / 1000)
+    expect(parsePsLstart("Thu Oct 29 02:07:01 2026")).toBe(expected)
+    expect(parsePsLstart("  Thu Oct 29 02:07:01 2026  \n")).toBe(expected)
+    expect(parsePsLstart("Thu Oct  9 02:07:01 2026")).toBe(
+      Math.floor(new Date("Thu Oct 9 02:07:01 2026").getTime() / 1000),
+    )
+  })
+
+  it("returns undefined for empty or unparsable output", () => {
+    expect(parsePsLstart("")).toBeUndefined()
+    expect(parsePsLstart("   \n")).toBeUndefined()
+    expect(parsePsLstart("not a date")).toBeUndefined()
+  })
+
+  it.skipIf(process.platform !== "darwin")("reads this process' own start second via ps", () => {
+    const ticks = readProcessStartTicks(process.pid)
+    const startedAt = Math.floor(Date.now() / 1000 - process.uptime())
+    expect(ticks).toBeDefined()
+    expect(Math.abs(ticks! - startedAt)).toBeLessThanOrEqual(2)
+  })
+})
+
 describe("recorded-pid identity assessment (audit F-4)", () => {
   it("assessRecordedServicePid verdicts", async () => {
     // invalid pid → never signal
@@ -485,5 +517,92 @@ describe("cleanupLegacyServicePidFile (pre-managed-process upgrade)", () => {
     expect(result.reason).toContain("does not match")
     expect(existsSync(file)).toBe(true)
     expect(() => process.kill(child!.pid!, 0)).not.toThrow()
+  })
+})
+
+describe("startAppServiceProcess: AGENTPROTO_PUBLIC_URL (AIP-53 expose)", () => {
+  const saved = process.env.AGENTPROTO_PUBLIC_URL
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AGENTPROTO_PUBLIC_URL
+    else process.env.AGENTPROTO_PUBLIC_URL = saved
+  })
+
+  it("an exposed service gets its own origin on every restart; any other never inherits the daemon's", () => {
+    process.env.AGENTPROTO_PUBLIC_URL = "https://daemon-leak.example.test"
+    const exposed = startFixture({ env: { AGENTPROTO_PUBLIC_URL: "https://session-chat.example.test" } })
+    expect(exposed.start().ok).toBe(true)
+    exposed.fx.exit(0, 1)
+    exposed.fx.queue[0]!.fire()
+    expect(exposed.fx.spawnEnvs.map(e => e.AGENTPROTO_PUBLIC_URL)).toEqual([
+      "https://session-chat.example.test",
+      "https://session-chat.example.test",
+    ])
+
+    const plain = startFixture()
+    expect(plain.start().ok).toBe(true)
+    expect(plain.fx.spawnEnvs[0]).not.toHaveProperty("AGENTPROTO_PUBLIC_URL")
+  })
+})
+
+describe("startAppServiceProcess: singleAttempt (on-demand activation)", () => {
+  const exits: Array<{ sessionId: string; deliberate: boolean }> = []
+  // Own service name: the module-level supervisor registry is shared by the
+  // keep-alive tests above, which leave their `web` runners registered.
+  const SERVICE: AppService = { name: "single-web", command: "node", args: ["server.js"] }
+  const singleAttempt = { onExit: (info: { sessionId: string; deliberate: boolean }) => void exits.push(info) }
+  afterEach(() => void (exits.length = 0))
+
+  it("reports an unexpected exit once, and never schedules a restart", () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    const id = res.handle.sessionId
+    fx.exit(0, 1)
+    expect(exits).toEqual([{ sessionId: id, deliberate: false }])
+    expect(fx.restarts).toEqual([])
+    expect(fx.spawned).toHaveLength(1)
+    expect(fx.errors).toEqual([])
+  })
+
+  it("does not take the supervisor slot of <appId>:<name>", async () => {
+    const { start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    expect(isAppServiceSupervised(APP_ID, SERVICE.name)).toBe(false)
+    expect(await stopAppServiceSupervisor(APP_ID, SERVICE.name)).toBe(false)
+    // ...so a host can hold it without the runner stopping it.
+    const host = { sessionId: "", pid: undefined, startTicks: undefined, disposed: false, stop: async () => undefined }
+    const unregister = registerAppServiceSupervisor(APP_ID, SERVICE.name, host)
+    expect(isAppServiceSupervised(APP_ID, SERVICE.name)).toBe(true)
+    unregister()
+    expect(isAppServiceSupervised(APP_ID, SERVICE.name)).toBe(false)
+  })
+
+  it("stop() is not an exit: onExit stays silent", async () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    await res.handle.stop()
+    fx.exit(0, 143)
+    expect(exits).toEqual([])
+  })
+
+  it("flags an operator kill of the row as deliberate", () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    const id = res.handle.sessionId
+    expect(fx.registry.kill(id, "SIGTERM", "operator-stopped")).toBe(true)
+    fx.exit(0, 143)
+    expect(exits).toEqual([{ sessionId: id, deliberate: true }])
+  })
+
+  it("reports a spawn error (ENOENT) as an exit", () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    fx.spawned[0]!.child.emit("error", new Error("spawn node ENOENT"))
+    expect(exits).toHaveLength(1)
+    expect(fx.restarts).toEqual([])
   })
 })

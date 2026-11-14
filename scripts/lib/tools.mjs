@@ -654,13 +654,51 @@ function allTools(ctx) {
         const target = base ?? currentBranch
         execSync('git config user.name "github-actions[bot]"', { cwd: ROOT })
         execSync('git config user.email "github-actions[bot]@users.noreply.github.com"', { cwd: ROOT })
-        execSync(`git checkout -b "${branch}"`, { cwd: ROOT, stdio: 'pipe' })
+
+        const localExists = (() => {
+          try {
+            execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: ROOT, stdio: 'pipe' })
+            return true
+          } catch {
+            return false
+          }
+        })()
+        let remoteTip = ''
+        try {
+          remoteTip = execFileSync('git', ['ls-remote', 'origin', `refs/heads/${branch}`], {
+            cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
+          }).trim().split('\t')[0] ?? ''
+        } catch {
+          remoteTip = ''
+        }
+        // A remote branch we did not create is not ours to extend: expect it to
+        // be ABSENT so casPush refuses with head_moved instead of writing over
+        // someone else's tip. A branch we are already on (or that already
+        // exists locally) is ours: lease on the remote tip we just saw.
+        const expected = remoteTip && (branch === currentBranch || localExists)
+          ? { sha: remoteTip }
+          : { absent: true }
+
+        if (branch !== currentBranch) {
+          execFileSync('git', localExists ? ['checkout', branch] : ['checkout', '-b', branch], { cwd: ROOT, stdio: 'pipe' })
+        }
         execSync('git add -A', { cwd: ROOT })
         const staged = run('git diff --cached --name-only')
         if (!staged) return '(nothing to commit — no PR opened)'
         const msg = commitMessage ?? title
         execFileSync('git', ['commit', '-m', msg], { cwd: ROOT, stdio: 'pipe' })
-        execSync(`git push -u origin "${branch}"`, { cwd: ROOT, stdio: 'pipe' })
+
+        const { casPush } = await import('../../packages/git-cas/dist/index.mjs')
+        const push = await casPush(
+          { cwd: ROOT, branch, expected },
+          { log: (line) => console.error(line) },
+        )
+        if (push.outcome === 'head_moved') {
+          return `(head_moved: branch ${branch} is at ${push.actual ?? 'absent'}, not the expected ${push.expected ?? 'absent'}; the work was NOT pushed and no PR was opened; do not pull, rebase, merge or retry)`
+        }
+        if (push.outcome === 'rejected_other') {
+          return `(rejected_other/${push.reason}: ${push.detail}; the work was NOT pushed and no PR was opened)`
+        }
         const sha = run('git rev-parse HEAD')
         let stampedBody = body
         // Lazy — see the top-of-file note: loading these statically would crash

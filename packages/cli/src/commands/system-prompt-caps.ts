@@ -12,7 +12,7 @@
  * without a daemon restart.
  */
 import { hermesSystemPromptPluginStatus } from "@agentproto/adapter-hermes"
-import type { AgentCliDefinition } from "@agentproto/driver-agent-cli"
+import type { AgentCliDefinition } from "@agentproto/harness"
 
 export interface SystemPromptCaps {
   /** True when `start({ appendSystemPrompt })` really lands the text in the

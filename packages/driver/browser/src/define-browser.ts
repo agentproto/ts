@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { browserManifestSchema } from "./provider.js"
 import type { BrowserDefinition, BrowserProvider } from "./provider.js"
 

@@ -18,7 +18,7 @@ export default createTsupConfig({
   // default externalization of package.json `dependencies` is not enough for
   // the native optional dep, which must never be bundled).
   external: [
-    "@agentproto/driver-agent-cli",
+    "@agentproto/harness",
     "@agentproto/adapter-claude-sdk",
     "@agentclientprotocol/sdk",
     "@agentproto/provider-presets",

@@ -9,7 +9,11 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { normalizeWorkflowInputsSchema, validateWorkflowInput } from "../validate-input.js"
+import {
+  applyWorkflowInputDefaults,
+  normalizeWorkflowInputsSchema,
+  validateWorkflowInput,
+} from "../validate-input.js"
 
 describe("normalizeWorkflowInputsSchema", () => {
   it("passes an already-canonical JSON Schema object through unchanged", () => {
@@ -114,5 +118,39 @@ describe("validateWorkflowInput", () => {
     expect(result.valid).toBe(false)
     if (result.valid) throw new Error("unreachable")
     expect(result.fields).toEqual(["url"])
+  })
+})
+
+describe("applyWorkflowInputDefaults", () => {
+  const inputs = {
+    query: { type: "string", default: "AI Engineer" },
+    sources: { type: "string", default: "wttj,linkedin" },
+    limit: { type: "number", default: 25 },
+    dry: { type: "boolean", default: false },
+    free: { type: "string" },
+  }
+
+  it("fills every declared default when the caller passes no input", () => {
+    expect(applyWorkflowInputDefaults(inputs, undefined)).toEqual({
+      query: "AI Engineer",
+      sources: "wttj,linkedin",
+      limit: 25,
+      dry: false,
+    })
+  })
+
+  it("keeps explicit values (false, 0 and empty string included), fills only the missing keys", () => {
+    const out = applyWorkflowInputDefaults(inputs, { query: "", limit: 0, dry: false, extra: 1 })
+    expect(out).toEqual({ query: "", sources: "wttj,linkedin", limit: 0, dry: false, extra: 1 })
+  })
+
+  it("never mutates the caller's input", () => {
+    const given = { limit: 5 }
+    applyWorkflowInputDefaults(inputs, given)
+    expect(given).toEqual({ limit: 5 })
+  })
+
+  it("returns a non-object input untouched (validation then rejects it)", () => {
+    expect(applyWorkflowInputDefaults(inputs, "nope")).toBe("nope")
   })
 })

@@ -589,6 +589,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         to: record.to,
         messageKind: record.kind,
         urgency: record.urgency,
+        ...(record.replyAddress ? { replyAddress: record.replyAddress } : {}),
       })
     },
     recordMirrorEvents(sessionId, records) {
@@ -715,6 +716,22 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             sessionId,
             toolCallId: evt.toolCallId,
             options: evt.options,
+            // AIP-45 typed request: kept so a reader (and a sandbox relay
+            // re-yielding this record) still knows what was asked.
+            ...(evt.request !== undefined ? { request: evt.request } : {}),
+            ...(evt.question !== undefined ? { question: evt.question } : {}),
+            ...(evt.planApproval !== undefined ? { planApproval: evt.planApproval } : {}),
+          })
+          break
+        case "mode-changed":
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, {
+            kind: "mode-changed",
+            sessionId,
+            modeId: evt.modeId,
+            previousModeId: evt.previousModeId,
+            cause: evt.cause,
+            ...(evt.reason !== undefined ? { reason: evt.reason } : {}),
           })
           break
         // Durable counterpart to "agent-prompt" — recorded when

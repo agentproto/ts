@@ -36,6 +36,7 @@ import {
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { resetStdioMountObservations, stdioMountReport } from "../stdio-mount-gate.js"
 import { createEventRing } from "../event-ring.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
@@ -219,10 +220,27 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
         headers: { "x-agentproto-caller-session-id": desc.id },
       },
     ]
+    // Two copies of the mounts (ts#2165 step 5, shadow): the adapter's copy
+    // carries a daemon-minted session token, the descriptor's never does.
     expect(startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ mcpServers: expectedEntry }),
+      expect.objectContaining({
+        mcpServers: [
+          {
+            ...expectedEntry[0],
+            headers: {
+              ...expectedEntry[0]!.headers,
+              "x-agentproto-session-token": expect.stringMatching(/^apst_/),
+            },
+          },
+        ],
+      }),
     )
-    expect(desc.mcpServers).toEqual(expectedEntry)
+    // The stored descriptor keeps the real header values (restart re-mounts
+    // from it); the tool result only carries them redacted.
+    expect(deps.registry.get(desc.id)?.mcpServers).toEqual(expectedEntry)
+    expect(desc.mcpServers).toEqual([
+      { ...expectedEntry[0], headers: { "x-agentproto-caller-session-id": "[redacted]" } },
+    ])
 
     await client.close()
   })
@@ -274,10 +292,27 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
         headers: { "x-agentproto-caller-session-id": desc.id },
       },
     ]
+    // Two copies of the mounts (ts#2165 step 5, shadow): the adapter's copy
+    // carries a daemon-minted session token, the descriptor's never does.
     expect(startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ mcpServers: expectedEntry }),
+      expect.objectContaining({
+        mcpServers: [
+          {
+            ...expectedEntry[0],
+            headers: {
+              ...expectedEntry[0]!.headers,
+              "x-agentproto-session-token": expect.stringMatching(/^apst_/),
+            },
+          },
+        ],
+      }),
     )
-    expect(desc.mcpServers).toEqual(expectedEntry)
+    // The stored descriptor keeps the real header values (restart re-mounts
+    // from it); the tool result only carries them redacted.
+    expect(deps.registry.get(desc.id)?.mcpServers).toEqual(expectedEntry)
+    expect(desc.mcpServers).toEqual([
+      { ...expectedEntry[0], headers: { "x-agentproto-caller-session-id": "[redacted]" } },
+    ])
 
     await client.close()
   })
@@ -745,6 +780,74 @@ function freePort(): Promise<number> {
     })
   })
 }
+
+describe("orchestrator sub-gateway - stdio mount gate allowlist", () => {
+  // A nested supervisor spawns through the scoped /mcp/orchestrator surface,
+  // which builds its own session tools: the workspace allowlist loader must
+  // reach that spawn, or every scoped stdio mount reads as outside it.
+  async function spawnStdioMountThroughScopedGateway(loadCommandAllowlist?: () => Promise<
+    Array<{ command: string; args?: string[] }>
+  >) {
+    const deps = makeFactoryDeps()
+    const owner = deps.registry.spawn({
+      kind: "command",
+      workspaceSlug: "default",
+      argv: ["true"],
+      cwd: "/tmp",
+    })
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(async () => ({
+        sessionId: "hermes_stdio_gate_test",
+        // eslint-disable-next-line require-yield
+        async *send(): AsyncIterable<AgentStreamEvent> { return },
+        async cancel() {},
+        async close() {},
+      })),
+      commandPreview: "hermes",
+    })
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      ...deps,
+      resolveAgentAdapter,
+      ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
+    })
+    const scope = { ...createScopeTokenRegistry().mint(), ownerSessionId: owner.id }
+    const server = await factory(scope)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "stdio-gate-test", version: "0.0.1" })
+    await client.connect(clientTransport)
+    await client.callTool({
+      name: "agent_start",
+      arguments: {
+        adapter: "hermes",
+        cwd: process.cwd(),
+        mcpServers: [
+          { name: "srv", transport: "stdio", ref: "/usr/local/bin/node", args: ["server.js"] },
+        ],
+      },
+    })
+    await client.close()
+  }
+
+  it("judges a scoped caller's stdio mount against the allowlist the host wired", async () => {
+    resetStdioMountObservations()
+    await spawnStdioMountThroughScopedGateway(async () => [{ command: "node" }])
+    const report = stdioMountReport("observe")
+    expect(report.counts.allowed).toBe(1)
+    expect(report.counts.would_deny).toBe(0)
+    resetStdioMountObservations()
+  })
+
+  it("reads a scoped caller's stdio mount as outside the allowlist when the host wired none", async () => {
+    resetStdioMountObservations()
+    await spawnStdioMountThroughScopedGateway()
+    const report = stdioMountReport("observe")
+    expect(report.counts.would_deny).toBe(1)
+    expect(report.counts.allowed).toBe(0)
+    resetStdioMountObservations()
+  })
+})
 
 function noopConversations(): ConversationStore {
   return {

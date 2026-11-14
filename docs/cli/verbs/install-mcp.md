@@ -1,7 +1,7 @@
 # `agentproto install-mcp`
 
 ```text
-agentproto install-mcp [--agent <name>...] [--all] [--yes]
+agentproto install-mcp [--agent <name>...] [--all] [--yes] [--dry-run]
                        [--skip-daemon] [--update] [--uninstall]
 agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
 ```
@@ -30,8 +30,14 @@ never clobber MCP servers you added yourself.
 An agent counts as detected when its binary is on `PATH` **or** its config
 file/dir exists (windsurf, like cursor, has no relevant CLI binary — detection
 is config-path-only). stdio registrations run `agentproto mcp-bridge` (see
-[`mcp-bridge.md`](./mcp-bridge.md)); they only carry an `AGENTPROTO_MCP_URL`
-env var when the daemon isn't on the default port `18790`.
+[`mcp-bridge.md`](./mcp-bridge.md)). They carry an `AGENTPROTO_MCP_URL` env
+var when the daemon isn't on the default port `18790`; Claude Desktop always
+gets one, because its URL pins the shared Chat-tab identity:
+`http://127.0.0.1:<port>/mcp?callerSessionId=claude-desktop&host=claude-desktop`.
+Every Claude Desktop chat therefore shares one `claude-desktop` inbox, which
+is pull-only through `inbox_list` and labelled `unverified` (nothing proves a
+client that claims the id is Claude Desktop). Use the Code tab's daemon-spawned
+session when you need an attested identity.
 
 Hermes is edited surgically — a real hermes config carries sibling MCP servers
 under `mcp_servers:`, so the entry is upserted in place and the file is backed
@@ -79,6 +85,7 @@ them separately (the tracked state entry carries an `appId`).
 | `--all` | — | Target every detected agent — which is already the default. Accepted for explicitness, but it changes nothing: with `--agent` also present, `--agent` wins and `--all` is ignored. |
 | `--app <appId>` | — | Scoped mode — see above. Requires the app to be installed and declare the book/library contract; exits `1` otherwise. |
 | `--yes` | `false` | Non-interactive. Also authorises the background `agentproto serve` fallback when the daemon can't be started via `daemon start`. |
+| `--dry-run` | `false` | Print the exact MCP entry as JSON on stdout and write nothing (no config file, install state or daemon start). Only for the `claude-desktop` target; exits `2` with `--app`, and prints nothing when Claude Desktop is not a target. |
 | `--skip-daemon` | `false` | Skip daemon discovery/start; take the port from `~/.agentproto/config.json` (`daemon.port`, default `18790`). |
 | `--update` | `false` | Re-run registration for previously-registered agents — e.g. after a port change. Agents no longer detected are skipped, not removed. |
 | `--uninstall` | `false` | Remove only the entries listed in `install-state.json`, then clear it. |
@@ -106,6 +113,9 @@ agentproto install-mcp --agent claude --agent codex
 
 # Re-point existing registrations after `config set daemon.port 18791`
 agentproto install-mcp --update
+
+# Print the entry Claude Desktop would get, without touching its config
+agentproto install-mcp --dry-run --agent claude-desktop
 
 # Back out everything agentproto added
 agentproto install-mcp --uninstall

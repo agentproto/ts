@@ -89,7 +89,7 @@ export const SANDBOX_CATALOG: AdapterCatalog = [
     name: "e2b",
     description:
       /* sync-templates:start */
-      "Runs the agentproto daemon inside an e2b Firecracker microVM (agentproto-workstation template, baked @agentproto/cli 1.20.0).",
+      "Runs the agentproto daemon inside an e2b Firecracker microVM (agentproto-workstation template, baked @agentproto/cli 1.31.0).",
       /* sync-templates:end */
     packageName: "@agentproto/sandbox-e2b",
     hint: "e2b · cloud",
@@ -133,6 +133,23 @@ export const SANDBOX_CATALOG: AdapterCatalog = [
     hint: "daytona · cloud (not yet published)",
   },
 ]
+
+/** Slugs of the concrete box-owning providers, in catalog order. `local` is a
+ *  same-filesystem passthrough with no control plane to enumerate, and `auto`
+ *  is a selector rather than an owner, so neither is ever swept or listed by
+ *  default. Placeholders still resolve to null and are reported as not
+ *  scanned by the caller. */
+export const DEFAULT_SANDBOX_PROVIDER_SLUGS: readonly string[] = SANDBOX_CATALOG.map(
+  entry => entry.slug,
+).filter(slug => slug !== "local" && slug !== "auto")
+
+/** Providers a bare `sandbox_gc` sweeps. Only the `computer` controller
+ *  scopes its boxes to this daemon's tenant, so only it can be swept by
+ *  default: a shared account (e2b) holds boxes from other daemons, machines,
+ *  CI and tools, and every one of those would look like an orphan here.
+ *  `sandbox_list` still defaults to every concrete provider because reading
+ *  is safe; sweeping is not. */
+export const DEFAULT_SANDBOX_GC_PROVIDER_SLUGS: readonly string[] = ["computer"]
 
 /** Extract the safe descriptor from a resolved handle. No secrets. */
 export function toSandboxInfo(handle: SandboxProviderHandle): SandboxAdapterInfo {
@@ -179,7 +196,7 @@ export function sandboxAdapterBootPackages(
 }
 
 /**
- * Expand semantic `config.installAdapters` slugs into concrete npm specs.
+ * Expand semantic `config.installHarnesses` slugs into concrete npm specs.
  * Each slug becomes `@agentproto/adapter-<slug>@latest` plus the
  * `SANDBOX_ADAPTER_BOOT_PACKAGES` extras that slug declares. A slug unknown
  * to the catalog still expands (the box's boot-time npm install is the
@@ -241,6 +258,9 @@ export function makeSandboxResolver(
       const creds = await credsStore.read(slug)
       const handle = await resolveSandboxProvider(slug, {
         creds,
+        // A composite slug (`auto`) resolves its nested providers with THEIR
+        // own creds rows, not the composite's (which has none).
+        credsFor: nested => credsStore.read(nested),
         ...(opts?.importPackage ? { importPackage: opts.importPackage } : {}),
       })
       if (!handle) throw new Error(`unknown sandbox adapter slug: ${slug}`)

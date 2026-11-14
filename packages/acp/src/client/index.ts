@@ -27,6 +27,11 @@ import type {
   StreamEvent,
 } from "../types.js"
 import { ACP_META_FEEDBACK } from "../types.js"
+import {
+  elicitationToQuestion,
+  resolutionToElicitationResponse,
+  type ElicitationResponse,
+} from "./elicitation.js"
 
 export type { SessionConfigOption, SessionMode }
 
@@ -44,10 +49,15 @@ type RequestPermissionResponse =
   | { outcome: { outcome: "selected"; optionId: string; _meta?: Record<string, unknown> } }
   | { outcome: { outcome: "cancelled" } }
 
-/** A `session/request_permission` RPC parked by permission-hold mode. */
+/**
+ * An agent RPC parked by permission-hold mode: a `session/request_permission`
+ * or a form `elicitation/create`. `settle` resolves it from the host's
+ * resolution and returns false (leaving it parked) when the resolution does
+ * not fit this request, e.g. `answers` for a plain permission.
+ */
 interface HeldPermission {
   sessionId: string
-  resolve: (response: RequestPermissionResponse) => void
+  settle: (resolution: AcpPermissionResolution) => boolean
 }
 
 /**
@@ -148,6 +158,11 @@ export interface AcpClientOptions {
    * bypassed while this is set. Undefined/false (the default) is unchanged:
    * requests go straight to `handlers.requestPermission`. Used by the
    * daemon's cross-session permission inbox.
+   *
+   * Also advertises `clientCapabilities.elicitation.form` and holds every
+   * form `elicitation/create` the same way, surfaced as an `agent-prompt`
+   * with `request: "question"` and `question.fields`; answer it with
+   * `respondPermission(requestId, { answers })`.
    */
   permissionHold?: boolean
   /** Protocol version to negotiate. Defaults to the SDK's current. */
@@ -196,6 +211,27 @@ export interface AcpClientOptions {
    * `completed`: its work was done inside the cycle.
    */
   orphanedPromptTimeoutMs?: number
+  /**
+   * Bounded retry for a connect-time model apply (`session/set_config_option`
+   * `configId:"model"`) the server rejects TRANSIENTLY — a 429 / rate limit /
+   * "Couldn't confirm model" from the wrapper's validation probe. The probe
+   * hits the provider API, so a resume storm after a daemon restart can hit a
+   * rate limit and silently leave a resumed session on the adapter's default
+   * model; a short retry turns that into the requested model instead of a
+   * downgrade. Non-transient rejections (an unknown/gated id) are never
+   * retried. Attempts are capped so a burst of eager resumes cannot hang boot.
+   *
+   * Defaults: 3 attempts total, 1500ms base delay, jittered. Override in
+   * tests or for a tighter/looser boot budget.
+   */
+  modelApplyRetry?: {
+    /** Total attempts including the first. Default 3. */
+    maxAttempts?: number
+    /** First retry delay; doubles per attempt. Default 1500ms. */
+    baseDelayMs?: number
+    /** Ceiling on any single retry delay. Default 8000ms. */
+    maxDelayMs?: number
+  }
 }
 
 export const DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS = 60_000
@@ -352,6 +388,11 @@ export interface AcpClient {
    * found and resolved, false when the id is unknown or already resolved
    * (idempotent — a duplicate response is a no-op). No-op returning false
    * when `permissionHold` was never enabled.
+   *
+   * For a held form elicitation, `{ answers }` (or the `submit` option)
+   * accepts, the `skip` option declines and `{ cancelled }` cancels.
+   * `{ answers }` on a plain permission request returns false and leaves it
+   * parked.
    */
   respondPermission(
     requestId: string,
@@ -491,8 +532,16 @@ interface SessionState {
   configOptions: SessionConfigOption[]
   /** Snapshot of `AcpClientSession.availableModes` — see there. */
   modes: SessionMode[]
-  /** Snapshot of `AcpClientSession.currentModeId` — see there. */
+  /** Starts as the `AcpClientSession.currentModeId` snapshot, then tracks
+   *  every applied mode change, so a `current_mode_update` can report the
+   *  mode it replaced (`mode-changed`'s `previousModeId`). */
   currentModeId: string | undefined
+  /** Mode of the caller's own `setSessionMode` while it is in flight, so its
+   *  `current_mode_update` echo is reported `cause: "caller"`. */
+  pendingCallerModeId?: string
+  /** Count of `current_mode_update`s applied, so `setSessionMode` can tell
+   *  whether the agent reported a mode while its RPC was in flight. */
+  modeUpdates?: number
   /** Listeners registered via `AcpClientSession.onOutOfTurnEvent`. */
   outOfTurnListeners: Set<(event: StreamEvent) => void>
   /** See `AcpClientOptions.orphanedPromptTimeoutMs`. */
@@ -519,20 +568,8 @@ export async function createAcpClient(
   ): boolean => {
     const held = pendingPermissions.get(requestId)
     if (!held) return false
+    if (!held.settle(resolution)) return false
     pendingPermissions.delete(requestId)
-    held.resolve(
-      "cancelled" in resolution
-        ? { outcome: { outcome: "cancelled" } }
-        : {
-            outcome: {
-              outcome: "selected",
-              optionId: resolution.optionId,
-              ...(resolution.feedback
-                ? { _meta: { [ACP_META_FEEDBACK]: resolution.feedback } }
-                : {}),
-            },
-          },
-    )
     return true
   }
 
@@ -549,7 +586,7 @@ export async function createAcpClient(
       const held = pendingPermissions.get(id)
       if (!held) continue
       pendingPermissions.delete(id)
-      held.resolve({ outcome: { outcome: "cancelled" } })
+      held.settle({ cancelled: true })
     }
   }
 
@@ -619,20 +656,39 @@ export async function createAcpClient(
   ): Promise<{ modelApplyRejection?: { requested: string; reason: string } }> => {
     let modelApplyRejection: { requested: string; reason: string } | undefined
     if (params.model) {
-      try {
-        await connection.setSessionConfigOption({
-          configId: "model",
-          value: params.model,
-          sessionId,
-        } as never)
-        options.onActivity?.()
-      } catch (err) {
-        const reason = configOptionErrorDetail(err)
-        modelApplyRejection = { requested: params.model, reason }
-        console.warn(
-          `[acp] set_config_option model="${params.model}" rejected by server ` +
-            `— keeping the agent's default model. Reason: ${reason}`,
-        )
+      const retry = {
+        maxAttempts: Math.max(1, options.modelApplyRetry?.maxAttempts ?? 3),
+        baseDelayMs: Math.max(0, options.modelApplyRetry?.baseDelayMs ?? 1500),
+        maxDelayMs: Math.max(0, options.modelApplyRetry?.maxDelayMs ?? 8000),
+      }
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await connection.setSessionConfigOption({
+            configId: "model",
+            value: params.model,
+            sessionId,
+          } as never)
+          options.onActivity?.()
+          break
+        } catch (err) {
+          const reason = configOptionErrorDetail(err)
+          const retryable = isTransientModelApplyFailure(reason) && attempt < retry.maxAttempts
+          if (retryable) {
+            const delay = jitteredBackoff(attempt, retry.baseDelayMs, retry.maxDelayMs)
+            console.warn(
+              `[acp] set_config_option model="${params.model}" rejected transiently ` +
+                `(attempt ${attempt}/${retry.maxAttempts}) — retrying in ${delay}ms. Reason: ${reason}`,
+            )
+            await sleep(delay)
+            continue
+          }
+          modelApplyRejection = { requested: params.model, reason }
+          console.warn(
+            `[acp] set_config_option model="${params.model}" rejected by server ` +
+              `— keeping the agent's default model. Reason: ${reason}`,
+          )
+          break
+        }
       }
     }
     if (params.effort) {
@@ -779,7 +835,7 @@ export async function createAcpClient(
     async close() {
       // Never leave a held permission RPC dangling — resolve all as cancelled.
       for (const [, held] of pendingPermissions) {
-        held.resolve({ outcome: { outcome: "cancelled" } })
+        held.settle({ cancelled: true })
       }
       pendingPermissions.clear()
       sessions.clear()
@@ -805,6 +861,11 @@ function clientCapabilitiesFromOptions(
       writeTextFile: caps.fs?.writeTextFile ?? false,
     },
     terminal: caps.terminal ?? false,
+    // Form elicitation (a harness question, e.g. claude-code's
+    // AskUserQuestion) is parked like a permission, so it is only advertised
+    // when permission hold is on: without it nobody can answer, and the
+    // harness keeps its own fallback.
+    ...(options.permissionHold ? { elicitation: { form: {} } } : {}),
     ...(caps.asyncTasks === false
       ? {}
       : {
@@ -1091,11 +1152,25 @@ function buildSession(
       }
     },
     async setSessionMode(modeId) {
+      state.pendingCallerModeId = modeId
+      const updatesBefore = state.modeUpdates ?? 0
       try {
         await connection.setSessionMode({ sessionId, modeId })
         onActivity?.()
+        if (state.pendingCallerModeId === modeId) state.pendingCallerModeId = undefined
+        // The agent reported a mode while the RPC was in flight: that report
+        // (echo or not) is the current mode, already delivered.
+        if ((state.modeUpdates ?? 0) !== updatesBefore) return { applied: true }
+        // No report before the response: report the caller's switch here
+        // (AIP-45 SHOULD). A later echo then finds the mode current, a no-op.
+        const previousModeId = state.currentModeId
+        state.currentModeId = modeId
+        if (previousModeId !== undefined && previousModeId !== modeId) {
+          deliver(state, { kind: "mode-changed", sessionId, modeId, previousModeId, cause: "caller" })
+        }
         return { applied: true }
       } catch (err) {
+        if (state.pendingCallerModeId === modeId) state.pendingCallerModeId = undefined
         // Non-fatal by design — same reasoning as `setConfigOption` above:
         // a mode id the wrapper doesn't (or no longer) recognize must never
         // propagate as a thrown error. The caller decides what to do with
@@ -1278,7 +1353,75 @@ function holdPermissionRequest(
   }
 
   return new Promise<RequestPermissionResponse>(resolve => {
-    ctx.pendingPermissions.set(requestId, { sessionId, resolve })
+    ctx.pendingPermissions.set(requestId, {
+      sessionId,
+      settle(resolution) {
+        if ("answers" in resolution) return false
+        resolve(
+          "cancelled" in resolution
+            ? { outcome: { outcome: "cancelled" } }
+            : {
+                outcome: {
+                  outcome: "selected",
+                  optionId: resolution.optionId,
+                  ...(resolution.feedback
+                    ? { _meta: { [ACP_META_FEEDBACK]: resolution.feedback } }
+                    : {}),
+                },
+              },
+        )
+        return true
+      },
+    })
+  })
+}
+
+/**
+ * Permission-hold path for a form `elicitation/create`: map the schema to an
+ * AIP-45 multi-field question, surface it as an `agent-prompt`
+ * (`request: "question"`) and park the RPC under a minted request id in the
+ * same `pendingPermissions` map, so respond / teardown / cancel behave
+ * exactly like a held permission. A url-mode (or unrenderable) request is
+ * answered `cancel` straight away: there is no surface for it yet.
+ */
+function holdElicitationRequest(
+  rawParams: unknown,
+  sessions: Map<string, SessionState>,
+  ctx: PermissionHoldContext,
+): Promise<ElicitationResponse> {
+  const params = (rawParams ?? {}) as { mode?: unknown; sessionId?: unknown; _meta?: unknown }
+  const mapped = params.mode === "form" ? elicitationToQuestion(params) : undefined
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId : ""
+  const state = sessions.get(sessionId)
+  if (!mapped || !state) {
+    if (mapped) {
+      console.warn(
+        `[acp] permission-hold: no session state for elicitation on sessionId="${sessionId}"; cancelling it.`,
+      )
+    }
+    return Promise.resolve({ action: "cancel" })
+  }
+  const requestId = ctx.nextRequestId()
+  deliver(state, {
+    kind: "agent-prompt",
+    sessionId,
+    toolCallId: requestId,
+    options: mapped.options,
+    text: mapped.question.prompt,
+    request: "question",
+    question: mapped.question,
+    ...(params._meta !== undefined ? { _meta: params._meta } : {}),
+  })
+  return new Promise<ElicitationResponse>(resolve => {
+    ctx.pendingPermissions.set(requestId, {
+      sessionId,
+      settle(resolution) {
+        const response = resolutionToElicitationResponse(mapped, resolution)
+        if (!response) return false
+        resolve(response)
+        return true
+      },
+    })
   })
 }
 
@@ -1353,7 +1496,10 @@ function buildClientHandlers(
 
     const update = (params as { update?: Record<string, unknown> }).update
     if (!update) return
-    const event = translateSessionUpdate(sid, update)
+    const event =
+      update.sessionUpdate === "current_mode_update"
+        ? translateModeUpdate(sid, state, update)
+        : translateSessionUpdate(sid, update)
     state.observeTurnUpdate?.(event)
     if (event) deliver(state, event)
   }
@@ -1386,6 +1532,16 @@ function buildClientHandlers(
       }
       if (partial.requestPermission) return partial.requestPermission(params)
       throw new Error("AcpClient.requestPermission: no handler configured")
+    },
+    async createElicitation(params) {
+      onActivity?.()
+      if (hold.permissionHold) {
+        return holdElicitationRequest(params, sessions, hold) as never
+      }
+      if (partial.createElicitation) return partial.createElicitation(params)
+      // Not advertised without hold; a harness that asks anyway gets a
+      // cancel rather than a request nobody will answer.
+      return { action: "cancel" }
     },
     async readTextFile(params) {
       if (partial.readTextFile) return partial.readTextFile(params)
@@ -1473,6 +1629,35 @@ function toolCallEnrichment(
     toolName: title ?? "",
     arguments: args,
     isUpdate: true,
+  }
+}
+
+/**
+ * ACP `current_mode_update` → AIP-45 `mode-changed`, `previousModeId` from
+ * the tracked mode. `cause` is `"caller"` when the update echoes the
+ * caller's in-flight `setSessionMode`, else `"agent"`. Null for a no-op, or
+ * when no previous mode is known (the wrapper reported no mode state).
+ */
+function translateModeUpdate(
+  sessionId: string,
+  state: SessionState,
+  update: Record<string, unknown>,
+): StreamEvent | null {
+  const modeId = update.currentModeId
+  if (typeof modeId !== "string" || modeId === "") return null
+  const previousModeId = state.currentModeId
+  state.currentModeId = modeId
+  state.modeUpdates = (state.modeUpdates ?? 0) + 1
+  const byCaller = state.pendingCallerModeId === modeId
+  if (byCaller) state.pendingCallerModeId = undefined
+  if (previousModeId === undefined || previousModeId === modeId) return null
+  return {
+    kind: "mode-changed",
+    sessionId,
+    modeId,
+    previousModeId,
+    cause: byCaller ? "caller" : "agent",
+    ...(update._meta !== undefined ? { _meta: update._meta } : {}),
   }
 }
 
@@ -1710,6 +1895,31 @@ export function enrichInternalAcpError<T>(err: T): T | Error {
   })
   if (typeof wrapped.stack === "string") enriched.stack = wrapped.stack
   return enriched
+}
+
+/**
+ * A model-apply rejection worth retrying: the wrapper's `setModel` validation
+ * probe hits the provider API, so a resume storm can trip a 429 / rate limit
+ * (or its own "Couldn't confirm model" translation of one). Anything else —
+ * an unknown id, a gated value — is permanent and must not be retried.
+ */
+function isTransientModelApplyFailure(reason: string): boolean {
+  return (
+    /\b429\b|rate[\s_-]?limit|too many requests|couldn'?t confirm model|temporarily unavailable/i.test(
+      reason,
+    )
+  )
+}
+
+/** Exponential backoff with +/-25% jitter, capped. */
+function jitteredBackoff(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
+  if (baseDelayMs === 0) return 0
+  const exponential = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1))
+  return Math.round(exponential * (0.75 + Math.random() * 0.5))
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms <= 0 ? Promise.resolve() : new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /**

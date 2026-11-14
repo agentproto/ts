@@ -110,6 +110,19 @@ describe("buildBook — step tally + partitioning", () => {
     expect(chapter.notices.map(s => s.id)).toEqual(["p", "e", "q"])
   })
 
+  it("keeps a mode-change row visible as a notice, not folded into steps", () => {
+    const chapter = buildBook([
+      userTurn("turn-1", "go"),
+      assistantTurn("turn-2", [
+        text("t", "Narration."),
+        { kind: "mode-changed", id: "m", text: "Mode: plan -> execute" },
+        tool("a1"),
+      ]),
+    ])[0]!
+    expect(chapter.notices.map(s => s.id)).toEqual(["m"])
+    expect(chapter.steps.count).toBe(1)
+  })
+
   it("counts a lone errored tool toward failed", () => {
     const chapter = buildBook([
       assistantTurn("turn-1", [tool("only", "error")]),

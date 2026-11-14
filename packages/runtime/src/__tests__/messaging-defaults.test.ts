@@ -26,8 +26,10 @@ describe("resolveMessagingDefaults", () => {
           allowSiblings: true,
           allowSameWorkspace: false,
           peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
+          grants: [{ principal: "session-label://brain", actions: [{ action: "session:message" }] }],
           agentInterrupt: "allow",
           pendingPromptStaleMinutes: 12,
+          anonymousSend: "block",
         },
       },
     }))
@@ -36,9 +38,18 @@ describe("resolveMessagingDefaults", () => {
       allowSiblings: true,
       allowSameWorkspace: false,
       peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
+      grants: [{ principal: "session-label://brain", actions: [{ action: "session:message" }] }],
+      peerBinding: "slug",
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
+      anonymousSend: "block",
     })
+  })
+
+  it("defaults the explicit message grants to none", async () => {
+    const result = await resolveMessagingDefaults(async () => ({}))
+    expect(result.grants).toEqual([])
+    expect(DEFAULT_MESSAGING_DEFAULTS.grants).toEqual([])
   })
 
   it("defaults the peer groups to none (no cross-workspace link)", async () => {
@@ -47,6 +58,16 @@ describe("resolveMessagingDefaults", () => {
     }))
     expect(result.peerGroups).toEqual([])
     expect(DEFAULT_MESSAGING_DEFAULTS.peerGroups).toEqual([])
+  })
+
+  it("P5 resolves peerBinding: slug by default, verified when configured", async () => {
+    const empty = await resolveMessagingDefaults(async () => ({}))
+    expect(empty.peerBinding).toBe("slug")
+    expect(DEFAULT_MESSAGING_DEFAULTS.peerBinding).toBe("slug")
+    const verified = await resolveMessagingDefaults(async () => ({
+      defaults: { messaging: { peerBinding: "verified" } },
+    }))
+    expect(verified.peerBinding).toBe("verified")
   })
 
   it("defaults the same-workspace allowance to ON", async () => {

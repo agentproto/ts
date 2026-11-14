@@ -103,11 +103,15 @@ describe("computerSandboxProvider boot deadline", () => {
     await controller.stop()
   })
 
-  it("aborts a create that exceeds the deadline instead of provisioning a leaked box", async () => {
+  it("aborts a create that exceeds the deadline instead of provisioning a leaked box, and logs the phase", async () => {
     controller.options.createDelayMs = 250
+    const lines: string[] = []
 
     const err = await computerSandboxProvider
-      .boot(spec(controller.url, { bootDeadlineMs: 50 }), bootOpts)
+      .boot(spec(controller.url, { bootDeadlineMs: 50 }), {
+        env: {},
+        log: line => lines.push(line),
+      })
       .catch((e: unknown) => e)
 
     expect(err).toMatchObject({ code: "sandbox_boot_timeout", phase: "create" })
@@ -115,6 +119,9 @@ describe("computerSandboxProvider boot deadline", () => {
     // registered a computer. No box exists to reclaim.
     expect(controller.createBodies).toHaveLength(0)
     expect(controller.states.size).toBe(0)
+    // The daemon log must name the create deadline instead of the spawn
+    // silently hanging (2026-10-29: no host log line at all).
+    expect(lines.some(line => line.includes("create timed out") && line.includes("no computer was created"))).toBe(true)
   })
 
   it("reclaims the box when the cancel lands right after create resolves", async () => {

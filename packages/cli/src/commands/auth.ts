@@ -57,6 +57,8 @@ import {
   setAuthProfileEnabled,
   setAuthProfileModels,
   AuthProfileValidationError,
+  deriveAuthState,
+  type ProfileAuthStatus,
   type SubaccountAccountRef,
   type SubaccountProvider,
   type AuthProviderHandle,
@@ -101,6 +103,9 @@ import {
   setAdapterAuthMode,
 } from "../util/agentproto-config.js"
 import { discoverDaemon } from "./_daemon-helpers.js"
+import { harnessFlags } from "../util/harness-flag.js"
+import { describeExpiry, profileStatuses } from "../reauth/auth-status.js"
+import { runAuthReauth } from "../reauth/run.js"
 
 export async function runAuth(args: readonly string[]): Promise<number> {
   const sub = args[0]
@@ -128,6 +133,8 @@ export async function runAuth(args: readonly string[]): Promise<number> {
       return runAuthProfile(rest)
     case "subaccounts":
       return runAuthSubaccounts(rest)
+    case "reauth":
+      return runAuthReauth(rest)
     case "discover":
       return runAuthDiscover(rest)
     case undefined:
@@ -149,6 +156,8 @@ Usage:
   agentproto auth login   [--host <url>] [--label <name>] [--no-browser]
                           [--scope <scopes>]
   agentproto auth status  [--host <url>] [--json]
+                          — host tokens, plus each profile's expiresAt and
+                            state (ok | expiring | expired | unknown)
   agentproto auth logout  [--host <url>]
   agentproto auth provider <set|list|rm> …   — LLM provider API keys
   agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
@@ -163,6 +172,9 @@ Usage:
                                  [--subaccount <kind>:<id>] [--route <route>]...
                                  [--credential-ref <slot>] [--json]
                           list [--endpoint <e>] [--json]
+                               (each row carries expiresAt + state + the
+                                parent account; a sub-account profile shows
+                                its parent's, never a token)
                           rm <id>
                           import <origin> <endpoint> [--id <id>] [--label <text>]
                           set-models <id> <all|allow> [<ids…>]
@@ -175,6 +187,10 @@ Usage:
                           [--endpoint <e>] [--json]
                           — orgs / workspaces / projects of an account, each
                             usable as its own billing wallet
+  agentproto auth reauth <profile|parent> [--check] [--json]
+                          — log the PARENT account behind a profile in again
+                            (one login fixes every sub-account under it),
+                            then verify it; --check only reports its state
   agentproto auth discover [--endpoint <e>] [--json]
                           — scan this host for credentials you can import
 
@@ -192,7 +208,8 @@ Examples:
 
   agentproto auth provider set anthropic sk-ant-…
   agentproto auth provider set openrouter sk-or-… --base-url https://…
-  agentproto auth provider set anthropic sk-ant-… --adapter claude-code
+  agentproto auth provider set anthropic sk-ant-… --harness claude-code
+      (--adapter <slug> is a deprecated alias of --harness)
   agentproto auth provider list [--json]
   agentproto auth provider rm openai
 
@@ -215,15 +232,16 @@ reach the provider. Explicit env (FOO_API_KEY=… serve) always wins.
 
 Usage:
   agentproto auth provider set <provider> <api-key> [--base-url <url>]
-                             [--adapter <slug>...]
+                             [--harness <slug>...]
   agentproto auth provider list [--json]
   agentproto auth provider rm  <provider>
 
-\`set\` also opts the matching adapter(s) into api-key billing (writes
-\`defaults.adapters.<slug>.auth.mode\`) and asks a running daemon to reload the
+\`set\` also opts the matching harness(es) into api-key billing (writes
+\`defaults.harnesses.<slug>.auth.mode\`) and asks a running daemon to reload the
 provider store, so no manual JSON edit or daemon restart is required. Without
---adapter, enabled adapters whose declared provider matches are updated, plus
-the canonical adapter for anthropic/openai/google/xai.
+--harness, enabled harnesses whose declared provider matches are updated, plus
+the canonical harness for anthropic/openai/google/xai. --adapter is a
+deprecated alias of --harness.
 
 Known providers (env var): ${Object.entries(PROVIDER_ENV_VARS)
   .map(([p, e]) => {
@@ -271,6 +289,7 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
     allowPositionals: true,
     options: {
       "base-url": { type: "string" },
+      harness: { type: "string", multiple: true },
       adapter: { type: "string", multiple: true },
     },
   })
@@ -293,7 +312,7 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
 
   const explicit = [
     ...new Set(
-      (values.adapter ?? [])
+      harnessFlags(values, "agentproto auth provider set")
         .flatMap(value => value.split(","))
         .map(value => value.trim())
         .filter(Boolean)
@@ -317,13 +336,13 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
     if (changed.length > 0) {
       process.stdout.write(
         `  ✓ api-key auth enabled for ${changed.join(", ")} ` +
-          `(defaults.adapters.<slug>.auth.mode)\n`,
+          `(defaults.harnesses.<slug>.auth.mode)\n`,
       )
     }
     if (kept.length > 0) {
       process.stdout.write(
         `  kept the existing auth mode for ${kept.join(", ")} ` +
-          `(delete its defaults.adapters.<slug>.auth block to switch)\n`,
+          `(delete its defaults.harnesses.<slug>.auth block to switch)\n`,
       )
     }
   }
@@ -383,7 +402,7 @@ function catalogSlugForAdapterId(id: string): string | undefined {
 /**
  * Which adapters should receive the api-key auth block.
  *
- * Explicit `--adapter` slugs are always honored. Otherwise we look at the
+ * Explicit `--harness` slugs are always honored. Otherwise we look at the
  * adapters already enabled in config, resolve each, and keep the ones whose
  * declared `provider` matches. If that yields nothing (fresh machine, auth
  * before install), fall back to the canonical adapter map above.
@@ -1364,8 +1383,23 @@ async function runProfileList(args: readonly string[]): Promise<number> {
       }
     }),
   )
+  // Expiry/state come from the PARENT account (a sub-account profile shows its
+  // parent's), never from a token of its own; no token is ever emitted.
+  const statuses = await profileStatuses(profiles)
+  const withAuth = rows.map(r => {
+    const st = statuses.get(r.id)
+    return st
+      ? {
+          ...r,
+          expiresAt: st.expiresAt,
+          state: st.state,
+          ...(st.parent ? { parent: st.parent } : {}),
+          ...(st.note !== undefined ? { authNote: st.note } : {}),
+        }
+      : r
+  })
   if (values.json) {
-    process.stdout.write(JSON.stringify({ profiles: rows }, null, 2) + "\n")
+    process.stdout.write(JSON.stringify({ profiles: withAuth }, null, 2) + "\n")
     return 0
   }
   if (rows.length === 0) {
@@ -1377,7 +1411,7 @@ async function runProfileList(args: readonly string[]): Promise<number> {
     return 0
   }
   process.stdout.write(`Auth profiles (${authProfilesPath()}):\n`)
-  for (const p of rows) {
+  for (const p of withAuth) {
     const flag = p.disabled ? "✗ disabled" : "✓"
     const key = (() => {
       if (p.keyStatus === "self-refreshing") return `self-refreshing (source: ${p.source})`
@@ -1393,10 +1427,18 @@ async function runProfileList(args: readonly string[]): Promise<number> {
       `  ${flag}  ${p.id}  ${p.endpoint}  ${p.method}` +
         (p.label ? `  "${p.label}"` : "") +
         `  ${key}\n` +
+        (statuses.has(p.id) ? `       auth: ${authSummary(p.id, statuses.get(p.id)!)}\n` : "") +
         (models ? `       ${models}\n` : ""),
     )
   }
   return 0
+}
+
+/** `expired (expired 2d ago)  parent: <who>  -> agentproto auth reauth <id>` */
+function authSummary(id: string, st: ProfileAuthStatus): string {
+  const who = st.parent?.label ?? st.parent?.id
+  const fix = st.state === "expired" ? `  -> agentproto auth reauth ${id}` : ""
+  return `${st.state} (${describeExpiry(st)})${who ? `  parent: ${who}` : ""}${fix}`
 }
 
 async function runProfileRm(args: readonly string[]): Promise<number> {
@@ -1807,9 +1849,25 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
   })
   const file = await loadCredentials()
   const entries = Object.entries(file.hosts)
-  if (entries.length === 0) {
+  // Profiles that carry a login (a `source`): their parent account's expiry.
+  const loginProfiles = (await listAuthProfiles()).filter(p => p.source !== undefined)
+  const statuses = await profileStatuses(loginProfiles)
+  const profileRows = loginProfiles.map(p => {
+    const st = statuses.get(p.id)!
+    return {
+      id: p.id,
+      endpoint: p.endpoint,
+      source: p.source,
+      ...(p.subaccount ? { subaccount: p.subaccount } : {}),
+      expiresAt: st.expiresAt,
+      state: st.state,
+      ...(st.parent ? { parent: st.parent } : {}),
+      ...(st.note !== undefined ? { note: st.note } : {}),
+    }
+  })
+  if (entries.length === 0 && profileRows.length === 0) {
     if (values.json) {
-      process.stdout.write(`{"hosts": []}\n`)
+      process.stdout.write(`{"hosts": [], "profiles": []}\n`)
     } else {
       process.stdout.write(
         `agentproto auth: no credentials. Try: agentproto auth login --host wss://guilde.work\n`
@@ -1831,8 +1889,10 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
             obtainedAt: c.obtainedAt,
             expiresAt: c.expiresAt,
             expired: isExpired(c),
+            state: isExpired(c) ? "expired" : deriveAuthState(c.expiresAt ? Date.parse(c.expiresAt) : undefined),
             deviceLabel: c.deviceLabel ?? null,
           })),
+          profiles: profileRows,
         },
         null,
         2
@@ -1849,6 +1909,14 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
         `         label:   ${c.deviceLabel ?? "(none)"}\n` +
         `         ${formatExpiry(c)}  (obtained ${c.obtainedAt})\n`
     )
+  }
+  if (profileRows.length > 0) {
+    process.stdout.write(`Profiles with a login:\n`)
+    for (const r of profileRows) {
+      process.stdout.write(
+        `  ${r.state === "expired" ? "✗" : "✓"}  ${r.id}  ${r.endpoint}  ${authSummary(r.id, statuses.get(r.id)!)}\n`,
+      )
+    }
   }
   return 0
 }

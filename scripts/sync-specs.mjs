@@ -15,6 +15,8 @@
  *   node scripts/sync-specs.mjs --source <dir>  # custom source root
  *   node scripts/sync-specs.mjs --check         # exit 1 if vendored tree drifts from source
  *   node scripts/sync-specs.mjs --dry-run       # report planned changes, no writes
+ *   node scripts/sync-specs.mjs --prune-ratified # write mode: drop allowlist entries
+ *                                                # whose vendored value now equals canonical
  *
  * The target (`ts/specs/resources/`) is fully replaced — files removed
  * upstream are removed here too, so the vendored copy never drifts.
@@ -65,6 +67,7 @@ const args = process.argv.slice(2)
 let source = DEFAULT_SOURCE
 let sourceExplicit = false
 let mode = "write" // "write" | "check" | "dry"
+let pruneRatified = false
 for (let i = 0; i < args.length; i++) {
   const a = args[i]
   if (a === "--source") {
@@ -72,6 +75,7 @@ for (let i = 0; i < args.length; i++) {
     sourceExplicit = true
   } else if (a === "--check") mode = "check"
   else if (a === "--dry-run") mode = "dry"
+  else if (a === "--prune-ratified") pruneRatified = true
   // Internal, undocumented overrides — used by scripts/sync-specs.test.mjs
   // to exercise the allowlist logic against isolated fixtures instead of
   // this repo's real specs/resources tree.
@@ -81,7 +85,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "--lock") LOCK_PATH = path.resolve(args[++i])
   else if (a === "--help" || a === "-h") {
     process.stdout.write(
-      "Usage: sync-specs.mjs [--source <dir>] [--source-sha <sha>] [--check | --dry-run]\n"
+      "Usage: sync-specs.mjs [--source <dir>] [--source-sha <sha>] [--check | --dry-run] [--prune-ratified]\n"
     )
     process.exit(0)
   } else {
@@ -150,6 +154,47 @@ function deepEqual(a, b) {
     ak.length === bk.length &&
     ak.every(k => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]))
   )
+}
+
+/**
+ * Write mode only: an allowlist entry whose PRE-sync vendored value already
+ * deep-equals canonical has been ratified upstream. Drop the entry (and
+ * persist the allowlist with its existing 2-space + trailing-newline shape)
+ * so the next `--check` does not fail on "now matches canonical".
+ *
+ * A vendored copy that LACKS the field is the silent-overwrite case, not a
+ * ratification: keep the entry so the integrity check still fails.
+ */
+function pruneRatifiedEntries(allowlist, canonicalRoot) {
+  const removed = []
+  const kept = []
+  for (const entry of allowlist.entries) {
+    const targetPath = path.join(TARGET, entry.file)
+    const canonicalPath = path.join(canonicalRoot, entry.file)
+    if (!existsSync(targetPath) || !existsSync(canonicalPath)) {
+      kept.push(entry)
+      continue
+    }
+    const target = JSON.parse(readFileSync(targetPath, "utf8"))
+    const canonical = JSON.parse(readFileSync(canonicalPath, "utf8"))
+    const vendored = getAtPath(target, entry.field)
+    const upstream = getAtPath(canonical, entry.field)
+    if (vendored.found && upstream.found && deepEqual(vendored.value, upstream.value)) {
+      removed.push(entry)
+    } else {
+      kept.push(entry)
+    }
+  }
+  if (removed.length === 0) return removed
+
+  allowlist.entries = kept
+  writeFileSync(ALLOWLIST_PATH, `${JSON.stringify(allowlist, null, 2)}\n`)
+  for (const entry of removed) {
+    process.stdout.write(
+      `sync-specs: ratified upstream, allowlist entry removed: ${entry.file} ${entry.field}\n`
+    )
+  }
+  return removed
 }
 
 /**
@@ -283,6 +328,8 @@ if (!existsSync(source)) {
   )
   process.exit(1)
 }
+
+if (mode === "write" && pruneRatified) pruneRatifiedEntries(allowlist, source)
 
 /** A `*.schema.json` file anywhere, or a `vectors/`-directory's `*.json`
  *  fixtures and its `README.md` — the two file shapes this script vendors. */

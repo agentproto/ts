@@ -1,5 +1,77 @@
 # @agentproto/adapter-opencode
 
+## 1.9.7
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [ae6751d]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/harness@3.1.0
+
+## 1.9.6
+
+### Patch Changes
+
+- f99040c: Resolve a pinned opencode console org across every login stored in `opencode.db`, not only the active one. The active login is tried first, expired logins are skipped, a login whose `/api/orgs` call fails does not hide the org held by another, and the final error names the logins tried without their tokens. With a single usable login the behaviour is unchanged.
+- c79fa57: `agentproto auth subaccounts list` for the opencode console now also lists the orgs of the other stored logins, not only the active one. A non-active login that is expired or whose `/api/orgs` call fails is skipped; an expired active login still fails the listing.
+- f99040c: Resolve a pinned opencode console org across every login stored in `opencode.db`, not only the active one. The active login is tried first, expired logins are skipped, and a failed `/api/orgs` call on one login no longer hides an org held by another; the final error names the logins tried without exposing their tokens.
+- Updated dependencies [2d5f4b9]
+- Updated dependencies [1b66f60]
+- Updated dependencies [7f8bf00]
+- Updated dependencies [1b66f60]
+  - @agentproto/model-catalog@0.15.0
+  - @agentproto/harness@3.0.1
+
+## 1.9.5
+
+### Patch Changes
+
+- 68c476e: Stop per-session adapter config dirs (`~/.agentproto/adapter-config/<id>`) from growing without bound. When a spawn redirects a base dir (opencode's credential `XDG_DATA_HOME`), the tool caches known to derive from it (pnpm store, uv managed Pythons) are now symlinked to the operator's own location instead of being rebuilt per session; confined spawns keep per-session caches. The driver records each dir's disposable paths in `.agentproto-cache.json` (`credentialDataHome.disposable`; opencode lists `snapshot`, `tool-output`, `log`), and a new adapter-cache sweep deletes them once every session of the lineage is dead and quiet for `daemon.adapterCacheRetentionDays` (default 1), keeping the resume store. Runs with the periodic retention sweep, and on demand via `session_gc adapterCaches:true` and `agentproto sessions gc --adapter-caches`.
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+- 11b18bf: AIP-72 memory follow-ups. The spawn digest now follows section 9 resolution step 3: an adapter whose `capabilities.memory.inject` is `none`, or that declares no memory capability, gets no digest; only `system-prompt` (with a usable channel) and the `native-dir` fallback carry it. codex, hermes, opencode and pi, which have a system-prompt channel, now declare `memory: { inject: "system-prompt", capture: "none" }` so they keep the digest. `session_restart` now carries the spawn role (`meta.role`), so the memory commit gate gives the same answer before and after a restart. `@agentproto/memory` documents the unfilled `tags` default in `validateMemory` and scopes the `renderMemory` status-rewrite note to files it wrote.
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [c53688d]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [dd134f4]
+- Updated dependencies [30961a9]
+  - @agentproto/harness@3.0.0
+  - @agentproto/model-catalog@0.14.1
+
+## 1.9.4
+
+### Patch Changes
+
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- eec7251: Give confined opencode spawns a writable state home so the MCP mount stays alive
+- eec7251: Give confined opencode spawns a writable state home (`XDG_STATE_HOME` pointed at the per-session config dir) so the MCP client's state store can be created under an app boundary and the daemon MCP mount stays alive.
+- Updated dependencies [7a90c4b]
+- Updated dependencies [d3ce829]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [8d53429]
+- Updated dependencies [84ac51b]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [8d53429]
+- Updated dependencies [5ab8114]
+- Updated dependencies [d3ce829]
+  - @agentproto/harness@2.16.0
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/auth@1.4.0
+
 ## 1.9.3
 
 ### Patch Changes

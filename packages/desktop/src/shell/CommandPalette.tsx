@@ -77,7 +77,7 @@ export function CommandPalette({
     const sessionEntries: PaletteEntry[] = sessions.map((s) => ({
       key: `session:${s.id}`,
       label: sessionTitle(s),
-      sublabel: s.adapterSlug ?? s.kind,
+      sublabel: s.harness ?? s.adapterSlug ?? s.kind,
       onRun: () => onSelectSession(s.id),
     }))
     const actionEntries: PaletteEntry[] = actions.map((a) => ({

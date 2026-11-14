@@ -16,9 +16,10 @@ import { z } from "zod"
 import { jsonTolerant } from "./json-tolerant.js"
 import { turnRetryInputSchema } from "./turn-retry-policy.js"
 import { modelPolicyInputSchema } from "./model-policy.js"
-import { clerkHooksInputSchema } from "./clerk-hook-config.js"
+import { clerkHooksInputSchema } from "@agentproto/clerk"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import { sandboxCheckpointOverrideSchema } from "./sandbox-checkpoint-schema.js"
+import { placementInputSchema } from "./placement-ladder.js"
 import {
   attachFieldSchema,
   commandSandboxSchema,
@@ -103,18 +104,20 @@ export const mcpServerMountsOverrideSchema = z
   })
 
 export const agentStartInputShape = {
+  harness: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `Harness slug (e.g. 'claude-code', 'hermes'); omit when \`presetId\` supplies one.`
+    ),
   adapter: z
     .string()
     .min(1)
     .optional()
     .describe(
-      `Adapter slug (e.g. 'claude-code', 'hermes'); omit when \`presetId\` supplies one.`
+      `Deprecated alias of \`harness\` (same values); removed in the next major of @agentproto/runtime. Using it adds a warning.`
     ),
-  harness: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(`Alias for \`adapter\` — same values, whichever your caller produces.`),
   presetId: z
     .string()
     .min(1)
@@ -163,6 +166,17 @@ export const agentStartInputShape = {
     .describe(
       `Parent-lineage hint: nest this spawn under that session; ignored through the scoped gateway.`
     ),
+  parent: z
+    .string()
+    .regex(/^(?:cc:)?[A-Za-z0-9._-]{1,128}$/)
+    .optional()
+    .describe(
+      "Declared parent for a caller the daemon cannot identify (Claude Code on a static MCP URL): " +
+        "`cc:<session_id>` or a live session id. The child's `message_parent` then reports to it. " +
+        "Declared, not proven (same trust as `replyTo`). Also accepted, as `cc:<session_id>` only, from the shared "+
+        "unverified `claude-desktop` identity (Claude Desktop MCP entries): pass your own Claude Code session id " +
+        "(hook payload `session_id`) so follow-ups wake you. Refused for any other call that carries an identity."
+    ),
   succeeds: z
     .string()
     .min(1)
@@ -206,7 +220,7 @@ export const agentStartInputShape = {
   notifyParentOnCrash: mcpBool
     .optional()
     .describe(
-      `Notify this session's parent in-band if it later crashes. Default false.`
+      `Notify this session's parent in-band if it later crashes. Default true for an executor with a declared or attached parent, false otherwise; pass false to opt out.`
     ),
   sentinel: mcpBool
     .optional()
@@ -285,11 +299,18 @@ export const agentStartInputShape = {
       z.object({
         profileRef: z.string().min(1).optional(),
         profileRefs: z.array(z.string().min(1)).min(1).optional(),
+        delegateProfileRefs: z.array(z.string().min(1)).min(1).optional(),
       }),
     )
   )
     .optional()
-    .describe("Named auth profile to bill at initial spawn; resolved from the local keychain."),
+    .describe(
+      "Named auth profile to bill at initial spawn; resolved from the local keychain. Any ref may be an " +
+        "account slot `slot:<name>` (config.json accountSlots), resolved on the host at spawn. " +
+        "`delegateProfileRefs` (sandbox + orchestrator spawns only): extra host profiles the box " +
+        "supervisor's own nested spawns may bill, resolved on the HOST per nested spawn (the box " +
+        "never holds them); its own profile is always allowed.",
+    ),
   posture: z
     .string()
     .optional()
@@ -350,6 +371,21 @@ export const agentStartInputShape = {
         "lookup. DAEMON-INTERNAL: only the host daemon's own spawn path sets it when it boots a " +
         "box (a root-gateway call into the box daemon); a session caller that supplies it is " +
         "refused (see parent-relay.ts).",
+    ),
+  credentialRelay: jsonTolerant(
+    opaque(
+      z.object({
+        url: z.string().min(1),
+        token: z.string().min(1),
+      }),
+    )
+  )
+    .optional()
+    .describe(
+      "A CREDENTIAL relay: where this box session's nested spawns ask the HOST to resolve an auth " +
+        "profile the box does not hold. DAEMON-INTERNAL, exactly like `remoteParent`: only the host " +
+        "daemon's spawn path sets it when it boots a box; a session caller that supplies it is " +
+        "refused (see credential-relay.ts).",
     ),
   notifyUrl: z
     .string()
@@ -427,11 +463,53 @@ export const agentStartInputShape = {
     .describe(
       `Context-continuity policy: warning, compaction, fresh-continuation and hard-stop thresholds. ${help("contextContinuity")}`
     ),
+  contextSettings: jsonTolerant(
+    opaque(contextContinuityInputSchema)
+  )
+    .optional()
+    .describe(
+      `Context settings (AIP-46): the absolute compaction threshold, the floor and the reservation of compaction to the operator, plus the host's percent bands. Each setting layers on its own over the adapter and daemon blocks. Same keys as contextContinuity, which stays an alias. ${help("contextSettings")}`
+    ),
+  agent: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-42 agent to run: an AGENT.md path, an agent id (<cwd>/.agents/<id>/AGENT.md), or a role name (executor, supervisor, pack roles). Replaces agentId, agentPath and role, which stay as aliases. ${help("agent")}`
+    ),
+  agentId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-42 agent by id: loads <cwd>/.agents/<id>/AGENT.md as spawn defaults. Alias of agent. ${help("agentId")}`
+    ),
+  agentPath: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-42 agent by AGENT.md path (absolute or relative to cwd); wins over agentId. Alias of agent. ${help("agentPath")}`
+    ),
+  operator: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-46 operator ref this session is bound to: operator:<slug>[@<owner>/<workspace>] or ws://operators/<slug>. ${help("operator")}`
+    ),
+  operatorDigest: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `Host's digest of the operator body, recorded for stale detection. Needs operator. ${help("operatorDigest")}`
+    ),
   role: z
     .string()
     .optional()
     .describe(
-      `Delegation gate: 'executor' = leaf (cannot delegate), 'supervisor' = may delegate. ${help("role")}`
+      `Deprecated alias of agent. Delegation gate: 'executor' = leaf (cannot delegate), 'supervisor' = may delegate. ${help("role")}`
     ),
   allowPromptFrom: z
     .array(z.string().min(1))
@@ -484,6 +562,16 @@ export const agentStartInputShape = {
   sandboxCheckpoint: jsonTolerant(sandboxCheckpointOverrideSchema)
     .optional()
     .describe(`Per-spawn sandbox checkpoint override: false disables, or an object. ${help("sandboxCheckpoint")}`),
+  preflight: jsonTolerant(z.array(z.string().min(1)))
+    .optional()
+    .describe(
+      `Sandbox preflight probe ids run on the booted box before the agent starts (e.g. ["model-answers"]); a failing probe destroys the box and fails the spawn with sandbox_preflight_failed. Requires \`sandbox\`. ${help("preflight")}`
+    ),
+  placement: jsonTolerant(opaque(placementInputSchema))
+    .optional()
+    .describe(
+      `Placement ladder: { ladder: [{ sandbox, model?, access?, preflight?, turnRetry?, agentStartTimeoutMs? }, ...] }. \`agentStartTimeoutMs\` caps the box's own agent_start for that rung (default 5 min); on expiry the rung fails and the next is tried. Rungs are tried in order; a rung is skipped on a failed preflight, a capacity / overflow / egress-pool refusal or a boot failure before the agent started. Omitted rung axes inherit the top-level values. Mutually exclusive with \`sandbox\`. ${help("placement")}`
+    ),
   resumeFrom: jsonTolerant(
     opaque(
       z
@@ -543,6 +631,8 @@ export const agentStartInputShape = {
               .optional(),
             base: z.string().min(1).optional(),
             async: z.boolean().optional(),
+            stallTimeoutMs: z.number().int().min(0).optional(),
+            maxMs: z.number().int().min(0).optional(),
           })
           .strict(),
       ]),
@@ -619,6 +709,7 @@ export const detachedAgentStartSchema = agentStartInputSchema.omit({
   // later as a root call, so accepting it here would launder a session's
   // hand-made remote parent past the agent_start caller check.
   remoteParent: true,
+  credentialRelay: true,
 })
 
 export type DetachedAgentStartInput = z.infer<typeof detachedAgentStartSchema>

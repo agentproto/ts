@@ -19,7 +19,7 @@ sandbox:
     access is whatever Mastra Code's own tool policy grants for the session,
     with the host process's OS permissions.
 protocol: proprietary
-adapter: "@agentproto/adapter-mastracode-inprocess"
+harness: "@agentproto/adapter-mastracode-inprocess"
 tags: ["mastracode", "mastra", "proprietary", "in-process", "agent-runtime", "coding"]
 ---
 

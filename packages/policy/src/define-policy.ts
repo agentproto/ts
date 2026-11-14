@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { policyFrontmatterSchema } from "./schema.js"
 import type { PolicyDefinition, PolicyHandle } from "./types.js"
 

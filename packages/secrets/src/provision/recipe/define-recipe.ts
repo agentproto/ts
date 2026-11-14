@@ -8,7 +8,7 @@
  * fails with the same diagnostic as a malformed `.md`.
  */
 
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { provisionRecipeFrontmatterSchema } from "./schema.js"
 import type {
   ProvisionRecipe,

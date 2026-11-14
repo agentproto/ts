@@ -1,5 +1,70 @@
 # @agentproto/adapter-mastracode
 
+## 0.4.7
+
+### Patch Changes
+
+- Updated dependencies [1c3c800]
+- Updated dependencies [ae6751d]
+  - @agentproto/model-catalog@0.15.1
+  - @agentproto/harness@3.1.0
+
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [2d5f4b9]
+- Updated dependencies [1b66f60]
+- Updated dependencies [7f8bf00]
+- Updated dependencies [1b66f60]
+  - @agentproto/model-catalog@0.15.0
+  - @agentproto/harness@3.0.1
+
+## 0.4.5
+
+### Patch Changes
+
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [c53688d]
+- Updated dependencies [3f90a9d]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [dd134f4]
+- Updated dependencies [30961a9]
+  - @agentproto/harness@3.0.0
+  - @agentproto/model-catalog@0.14.1
+  - @agentproto/provider-kit@0.6.0
+
+## 0.4.4
+
+### Patch Changes
+
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- Updated dependencies [7a90c4b]
+- Updated dependencies [d3ce829]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [8d53429]
+- Updated dependencies [84ac51b]
+- Updated dependencies [76003b9]
+- Updated dependencies [8d53429]
+- Updated dependencies [d3ce829]
+  - @agentproto/harness@2.16.0
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/provider-kit@0.5.0
+
 ## 0.4.3
 
 ### Patch Changes

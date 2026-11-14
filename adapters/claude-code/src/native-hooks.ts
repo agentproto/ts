@@ -7,7 +7,7 @@
  * installs a hook or writes any config.
  */
 
-import type { NativeHookCapability } from "@agentproto/driver-agent-cli"
+import type { NativeHookCapability } from "@agentproto/harness"
 
 export const claudeCodeNativeHooks: readonly NativeHookCapability[] = [
   {

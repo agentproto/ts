@@ -178,7 +178,7 @@ describe("app registry: installed app whose dir was removed", () => {
       (e: unknown) => e as Error,
     )
     expect(err).toBeInstanceOf(Error)
-    expect(err!.message).not.toMatch(/has no adapter/)
+    expect(err!.message).not.toMatch(/has no harness/)
     expect(err!.message).toContain('agent "worker": could not read AGENT.md')
     expect(err!.message).toMatch(/ENOENT/)
     expect(err!.message).toContain(`installed app dir "${dir}" no longer exists`)

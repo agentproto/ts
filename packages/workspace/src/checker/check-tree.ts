@@ -20,7 +20,7 @@ import { readFileSync, readdirSync, realpathSync, statSync, type Dirent } from "
 import { dirname, join, relative, sep } from "node:path"
 import matter from "gray-matter"
 import { parseWorkspaceManifest, type WorkspaceManifest } from "../manifest/index.js"
-import { parseTypesManifest, resolveTypeEntry, type TypesManifestFrontmatter } from "../types-registry.js"
+import { parseTypesManifest, resolveTypeEntry, validateTypesRegistry, type TypesManifestFrontmatter } from "../types-registry.js"
 import { computeEffectiveStatus } from "../effective-status.js"
 import type { WorkspaceStatus } from "../schema.js"
 import { parseWorkManifest, workFrontmatterSchema } from "@agentproto/work/manifest"
@@ -83,7 +83,7 @@ interface InternalNode {
   parentDir?: string
 }
 
-function walkForManifests(root: string): string[] {
+export function walkForManifests(root: string): string[] {
   const found: string[] = []
   const stack = [root]
   while (stack.length > 0) {
@@ -258,6 +258,12 @@ export function checkWorkspaceTree(rootDir: string, opts: CheckOptions = {}): Ch
         err instanceof Error ? err.message : String(err)
       }).`,
     })
+  }
+
+  if (types) {
+    for (const issue of validateTypesRegistry(types.types)) {
+      findings.push({ level: "error", path: typesPath, message: issue.message })
+    }
   }
 
   const countByType = new Map<string, number>()

@@ -58,8 +58,28 @@ import { restartAgentSession } from "./session-restart-core.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { authProfileAsAdapterHint, type AuthProfileLookup } from "./adapter-slug-hint.js"
 import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-schema.js"
+import { isCronCreator, type CronCreator } from "./cron-creator.js"
+import { createSessionMessage } from "./session-message.js"
+
+export type { CronCreator }
 
 // ── Public types ─────────────────────────────────────────────────────
+
+/** How loudly a job's SUCCESS is heard by its followers. Absent means
+ *  `always` (the pre-existing behaviour). `onFailure` downgrades a successful
+ *  `kind:"command"` run to an fyi digest; a failing command still crashes and
+ *  wakes. */
+export type CronNotify = "always" | "onFailure"
+
+export function isCronNotify(value: unknown): value is CronNotify {
+  return value === "always" || value === "onFailure"
+}
+
+function normalizeCronNotify(value: unknown): CronNotify | undefined {
+  if (value === undefined || value === null) return undefined
+  if (isCronNotify(value)) return value
+  throw new Error(`cron notify must be "always" or "onFailure" (got ${JSON.stringify(value)})`)
+}
 
 export type CronAction =
   | {
@@ -200,7 +220,7 @@ function hostAdapterSlugOf(action: CronAction): string | undefined {
         ? action.inputs
         : undefined
   if (!fields || fields.sandbox !== undefined) return undefined
-  const slug = fields.adapter ?? fields.harness
+  const slug = fields.harness ?? fields.adapter
   return typeof slug === "string" && slug.length > 0 ? slug : undefined
 }
 
@@ -254,6 +274,9 @@ export interface CronJob {
   /** When false, the job fires once then deactivates (one-shot). Default true. */
   recurring: boolean
   action: CronAction
+  /** How loudly this job's success is heard: absent means `always`. Only a
+   *  `kind:"command"` job's successful exit uses it. */
+  notify?: CronNotify
   createdAt: string
   /** When false, the job will not fire. */
   active: boolean
@@ -305,6 +328,15 @@ export interface CronJob {
    * absent for unowned jobs (which never expire).
    */
   expiresAt?: string
+  /**
+   * Who created the job and how well that creator was proven (AIP-46
+   * §Session principals), recorded once at creation and never changed by
+   * `update`, a pause, a resume or a re-arm. Distinct from {@link ownedBy},
+   * which governs the job's lifetime and moves to a successor session.
+   * Absent on jobs persisted before this field existed ("not recorded").
+   * Not yet used to restrict what a fired job may do.
+   */
+  createdBy?: CronCreator
 }
 
 /** Real outcome of a single cron run, as recorded in the ledger. */
@@ -338,6 +370,8 @@ export interface CronUpdate {
   recurring?: boolean
   active?: boolean
   action?: CronAction
+  /** Set/replace; `null` clears it (back to `always`). */
+  notify?: CronNotify | null
   maxConsecutiveFailures?: number
   runTimeoutMs?: number
   /** Set/replace the expiry; `null` clears it (the job never expires). */
@@ -427,6 +461,8 @@ export interface CronScheduler {
     timezone?: string
     recurring?: boolean
     action: CronAction
+    /** Omitted means `always`. See {@link CronJob.notify}. */
+    notify?: CronNotify
     maxConsecutiveFailures?: number
     runTimeoutMs?: number
     /** Creating session id — see {@link CronJob.ownedBy}. Defaults the job's
@@ -434,6 +470,8 @@ export interface CronScheduler {
     ownedBy?: string
     /** ISO expiry — see {@link CronJob.expiresAt}. */
     expiresAt?: string
+    /** The creating principal — see {@link CronJob.createdBy}. */
+    createdBy?: CronCreator
   }): Promise<CronJob>
 
   list(): CronJob[]
@@ -581,6 +619,12 @@ function loadJobs(persistPath: string): Map<string, JobState> {
     // Ensure required fields have defaults for forward-compat.
     job.recurring = job.recurring ?? true
     job.active = job.active ?? true
+    // A persisted unknown notify value falls back to the absent (= always)
+    // meaning instead of making the whole job file suspect.
+    if (job.notify !== undefined && !isCronNotify(job.notify)) job.notify = undefined
+    // A malformed persisted creator is dropped (the job reads as "not recorded")
+    // rather than making the whole job file suspect.
+    if (job.createdBy !== undefined && !isCronCreator(job.createdBy)) delete job.createdBy
     if (job.finished === undefined && !job.recurring && !job.active && !!job.lastRunAt) {
       job.finished = true
     }
@@ -1088,12 +1132,40 @@ export function createCronScheduler(opts: {
       ok: true,
       sessionId,
       summary: sessionId
-        ? `spawned session ${sessionId} (adapter=${action.adapter ?? action.harness ?? "preset"})`
+        ? `spawned session ${sessionId} (harness=${action.harness ?? action.adapter ?? "preset"})`
         : `agent_start: ${summary}`,
     }
   }
 
   // ── Fire a job ────────────────────────────────────────────────────
+
+  /**
+   * Tell the job's own session that it was auto-paused, once per pause (the
+   * caller sits inside the `active -> paused` transition). The addressee is
+   * the owner session, else a session creator; a job made by the operator or
+   * the system has no session to tell and is surfaced by `daemon_health`
+   * (`cron.pausedJobs`) and the `cron:unhealthy` webhook instead. `fyi`
+   * urgency: it lands in the inbox without waking anything. Best effort, a
+   * delivery failure never affects the run ledger.
+   */
+  const notifyAutoPause = (job: CronJob, reason: string): void => {
+    const to = job.ownedBy ?? (job.createdBy?.kind === "session" ? job.createdBy.sessionId : undefined)
+    if (!to) return
+    try {
+      const msg = createSessionMessage({
+        to,
+        from: { relation: "system" },
+        kind: "notice",
+        urgency: "fyi",
+        correlationId: `cron-paused:${job.id}`,
+        text: `Cron job ${job.label ?? job.id} was auto-paused and will not fire again until resumed (cron_update active:true): ${reason}`,
+        data: { jobId: job.id, ...(job.label ? { label: job.label } : {}), pausedReason: reason },
+      })
+      void registry.sendMessage(msg, { source: "cron", origin: job.id }).catch(() => {})
+    } catch {
+      /* oversized data / bad message: best effort */
+    }
+  }
 
   /** Metrics suffix for a run summary, e.g. " (120 output tokens, 4210ms)". */
   const metricsSuffix = (obs: CronTurnObservation, includeTokens: boolean): string => {
@@ -1182,6 +1254,7 @@ export function createCronScheduler(opts: {
           reason: job.pausedReason,
           ts: endedAt,
         })
+        notifyAutoPause(job, job.pausedReason)
       }
     }
     persistNow()
@@ -1298,8 +1371,9 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    async create({ label, schedule, timezone, recurring = true, action: rawAction, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt }) {
+    async create({ label, schedule, timezone, recurring = true, action: rawAction, notify: rawNotify, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt, createdBy }) {
       assertCronActionAllowed(rawAction)
+      const notify = normalizeCronNotify(rawNotify)
       // Normalizes the `agent:<label>` spelling into the action's `agent`
       // field and refuses an action that names two (or zero) targets.
       const action = normalizeCronAction(rawAction)
@@ -1327,6 +1401,7 @@ export function createCronScheduler(opts: {
         ...(timezone ? { timezone } : {}),
         recurring,
         action,
+        ...(notify ? { notify } : {}),
         createdAt: createdAt.toISOString(),
         active: true,
         finished: false,
@@ -1335,6 +1410,7 @@ export function createCronScheduler(opts: {
         ...(runTimeoutMs !== undefined ? { runTimeoutMs } : {}),
         ...(ownedBy ? { ownedBy } : {}),
         ...(effectiveExpiresAt ? { expiresAt: effectiveExpiresAt } : {}),
+        ...(createdBy !== undefined ? { createdBy } : {}),
       }
       jobs.set(id, { job, cronInstance })
       persistNow()
@@ -1370,6 +1446,8 @@ export function createCronScheduler(opts: {
       if (!state) throw new Error(`cron job not found: ${id}`)
       if (state.running) throw new Error(`cron job is running: ${id}`)
       const job = state.job
+      const notify =
+        patch.notify === undefined ? job.notify : (normalizeCronNotify(patch.notify) ?? undefined)
       const schedule = patch.schedule ?? job.schedule
       const timezone = patch.timezone === null ? undefined : (patch.timezone ?? job.timezone)
       const action = normalizeCronAction(patch.action ?? job.action)
@@ -1388,6 +1466,7 @@ export function createCronScheduler(opts: {
       job.schedule = schedule
       job.timezone = timezone
       job.action = action
+      job.notify = notify
       job.recurring = patch.recurring ?? job.recurring
       if (patch.label !== undefined) job.label = patch.label === null ? undefined : patch.label
       if (patch.maxConsecutiveFailures !== undefined) job.maxConsecutiveFailures = patch.maxConsecutiveFailures

@@ -70,6 +70,7 @@ commands, cron, task boards, completion policies, apps, and workflows.
 | ap-run-command | One-shot allowlisted shell command runs. |
 | ap-terminal | Real PTY sessions for interactive TUIs. |
 | ap-cron | Cron jobs: command, agent spawn, or session re-prompt. |
+| ap-reactions | React when a session completes: event routines, AGENT.md `on` maps, `session:archive`, receipts, `GET /reactions`. |
 | ap-tasks | Task boards with claims and rev-CAS updates. |
 | ap-import-mcp | Import and call external MCP servers. |
 | ap-tunnels | Publish local ports as public HTTPS tunnels. |

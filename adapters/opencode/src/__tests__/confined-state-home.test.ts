@@ -83,7 +83,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 })
 
 const { createAgentCliRuntime } = await import(
-  "../../../../packages/driver/agent-cli/src/define-agent-cli.js"
+  "../../../../packages/harness/src/define-agent-cli.js"
 )
 
 /** The driver refuses a confined spawn when no OS sandbox backend exists. */

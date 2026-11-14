@@ -3,6 +3,7 @@ import type { SessionDescriptor } from "../sessions.js"
 import {
   SessionListFilterError,
   applySessionListFilters,
+  collapseLineageChains,
   hasSessionListFilters,
   isNoiseSession,
   isReviewOrWorkflowSession,
@@ -297,5 +298,90 @@ describe("isReviewOrWorkflowSession", () => {
   it("isNoiseSession still covers review/workflow", () => {
     expect(isNoiseSession({ kind: "agent-cli", status: "killed", label: "review:pr-1", origin: "review" })).toBe(true)
     expect(isNoiseSession({ kind: "agent-cli", status: "killed", label: "chat", origin: "review" })).toBe(true)
+  })
+})
+
+describe("collapseLineageChains", () => {
+  it("no lineage links ⇒ every row, order preserved", () => {
+    const set = [{ id: "a" }, { id: "b" }, { id: "c" }]
+    expect(collapseLineageChains(set)).toEqual(set)
+  })
+
+  it("resumedFrom: hides the restarted-from predecessor (session_restart)", () => {
+    const collapsed = collapseLineageChains([
+      { id: "brain_1" },
+      { id: "brain_2", resumedFrom: "brain_1", continuedFrom: "brain_1" },
+    ])
+    expect(collapsed.map(s => s.id)).toEqual(["brain_2"])
+  })
+
+  it("continuedFrom alone: hides the continue-fresh'd predecessor (no resumedFrom)", () => {
+    const collapsed = collapseLineageChains([
+      { id: "brain_1" },
+      { id: "brain_2", continuedFrom: "brain_1" },
+    ])
+    expect(collapsed.map(s => s.id)).toEqual(["brain_2"])
+  })
+
+  it("succeeds alone: hides the handed-over predecessor (agent_start.succeeds, no resume at all)", () => {
+    const collapsed = collapseLineageChains([
+      { id: "brain_1" },
+      { id: "brain_2", succeeds: "brain_1" },
+    ])
+    expect(collapsed.map(s => s.id)).toEqual(["brain_2"])
+  })
+
+  it("transitive: a restart chain of N hops collapses to just the tail", () => {
+    const collapsed = collapseLineageChains([
+      { id: "brain_1" },
+      { id: "brain_2", resumedFrom: "brain_1", continuedFrom: "brain_1" },
+      { id: "brain_3", resumedFrom: "brain_2", continuedFrom: "brain_2" },
+      { id: "brain_4", resumedFrom: "brain_3", continuedFrom: "brain_3" },
+    ])
+    expect(collapsed.map(s => s.id)).toEqual(["brain_4"])
+  })
+
+  it("a predecessor missing from the set is never hidden (successor not shown ⇒ predecessor stays)", () => {
+    const collapsed = collapseLineageChains([{ id: "brain_1" }])
+    expect(collapsed.map(s => s.id)).toEqual(["brain_1"])
+    // resumedFrom pointing at an id absent from this set: nothing to collapse.
+    const other = collapseLineageChains([{ id: "brain_2", resumedFrom: "ghost" }])
+    expect(other.map(s => s.id)).toEqual(["brain_2"])
+  })
+
+  it("a STILL-RUNNING succeeds predecessor is never hidden — only succeeds skips the retire step", () => {
+    // `agent_start.succeeds` records the handover pointers without ever
+    // retiring `from` (handoverLineage only re-parents children + sets the
+    // pointers), so the predecessor can legitimately still be alive.
+    const collapsed = collapseLineageChains([
+      { id: "brain_1", status: "running" },
+      { id: "brain_2", succeeds: "brain_1" },
+    ])
+    expect(collapsed.map(s => s.id).sort()).toEqual(["brain_1", "brain_2"])
+  })
+
+  it("a starting succeeds predecessor is also kept (same liveness check as running)", () => {
+    const collapsed = collapseLineageChains([
+      { id: "brain_1", status: "starting" },
+      { id: "brain_2", succeeds: "brain_1" },
+    ])
+    expect(collapsed.map(s => s.id).sort()).toEqual(["brain_1", "brain_2"])
+  })
+
+  it("an ENDED succeeds predecessor still collapses (terminal status, no liveness guard)", () => {
+    const collapsed = collapseLineageChains([
+      { id: "brain_1", status: "exited" },
+      { id: "brain_2", succeeds: "brain_1" },
+    ])
+    expect(collapsed.map(s => s.id)).toEqual(["brain_2"])
+  })
+
+  it("a self-link does not erase the only row in the set (corrupt/legacy sidecar)", () => {
+    const resumed = collapseLineageChains([{ id: "brain_1", resumedFrom: "brain_1" }])
+    expect(resumed.map(s => s.id)).toEqual(["brain_1"])
+    const continued = collapseLineageChains([{ id: "brain_1", continuedFrom: "brain_1" }])
+    expect(continued.map(s => s.id)).toEqual(["brain_1"])
+    const succeeded = collapseLineageChains([{ id: "brain_1", succeeds: "brain_1" }])
+    expect(succeeded.map(s => s.id)).toEqual(["brain_1"])
   })
 })

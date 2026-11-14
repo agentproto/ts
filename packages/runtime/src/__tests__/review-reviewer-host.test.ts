@@ -599,7 +599,7 @@ describe("review lanes never bill OpenRouter (fail closed)", () => {
     expect(
       await reviewerOpenRouterViolation(
         "opencode-default-go",
-        { adapter: "opencode", model: "opencode-go/longcat-2.5-preview-free", access: { profileRef: "opencode-go-local" } },
+        { adapter: "opencode", model: "opencode-go/beam-free", access: { profileRef: "opencode-go-local" } },
         lookup,
       ),
     ).toBeUndefined()
@@ -803,6 +803,17 @@ describe("createDaemonReviewerHost — an exhausted auth profile is never re-spa
     expect(b.fallbacks).toEqual([
       { preset: "go2", error: expect.stringMatching(/^skipped: auth profile 'opencode-go-local' is exhausted until /) },
     ])
+    registry.shutdown()
+  })
+
+  it("an \"Insufficient account funds\" refusal (word between insufficient and funds) cools the wallet too", async () => {
+    const funds = 'error:402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}'
+    const { host, registry, spawnedWith } = setup([funds, "review"], undefined, { harnessProfiles: GO_PROFILES })
+    const a = await lane(host, { preset: "go", fallbackPresets: ["fb"] })
+    expect(a).toMatchObject({ status: "ended", preset: "fb" })
+    const b = await lane(host, { preset: "go2", fallbackPresets: ["fb"] })
+    expect(b).toMatchObject({ status: "ended", preset: "fb" })
+    expect(spawnedWith).toHaveLength(3) // go, fb, fb: go2 never spawned
     registry.shutdown()
   })
 

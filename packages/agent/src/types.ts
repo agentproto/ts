@@ -8,7 +8,7 @@
  */
 
 /**
- * AIP-27 ref primitive — string shorthand or { ref | file | inline }.
+ * AIP-54 ref primitive: string shorthand or { ref | file | inline }.
  */
 export type AnyRef =
   | string
@@ -19,6 +19,21 @@ export type AnyRef =
         [k: string]: unknown
       }
     }
+/**
+ * Structured server ref (AIP-42 mcpToolRef): offers the tools of one server,
+ * optionally narrowed. A tool is named `<server>/<name>`; `allow`/`deny` hold
+ * the `<name>` part only, and a denied name is never offered.
+ */
+export interface McpToolRef {
+  kind: "mcp"
+  server: string
+  allow?: string[]
+  deny?: string[]
+}
+/**
+ * AIP-14/AIP-54 ref, or a structured server ref.
+ */
+export type ToolRef = AnyRef | McpToolRef
 export type ActionRef =
   | string
   | {
@@ -125,9 +140,9 @@ export interface AgentDefinition {
         }
       }
   /**
-   * AIP-14 tool refs.
+   * AIP-14 tool refs, or structured server refs { kind: mcp, server, allow?, deny? }. A tool is named <server>/<name> (AIP-54 tool-body); deny wins.
    */
-  tools?: AnyRef[]
+  tools?: ToolRef[]
   /**
    * Explicit action allow-list. POLICY checks union of this + tools' implements.
    */
@@ -152,7 +167,7 @@ export interface AgentDefinition {
   delegates_to?: AnyRef[]
   memory?: MemoryConfig
   /**
-   * AIP-27 ref primitive — string shorthand or { ref | file | inline }.
+   * AIP-54 ref primitive: string shorthand or { ref | file | inline }.
    */
   governance?:
     | string
@@ -164,7 +179,7 @@ export interface AgentDefinition {
         }
       }
   /**
-   * AIP-27 ref primitive — string shorthand or { ref | file | inline }.
+   * AIP-54 ref primitive: string shorthand or { ref | file | inline }.
    */
   policy?:
     | string
@@ -208,6 +223,22 @@ export interface AgentDefinition {
  * Memory configuration.
  */
 export interface MemoryConfig {
+  /**
+   * AIP-72 memory items for this agent. When false, the agent MUST NOT write
+   * any memory item, and the host projects none into its sessions.
+   */
+  enabled?: boolean
+  /**
+   * The AIP-72 memory store the agent's items are read from and proposed
+   * to: a workspace-relative path to a reference-layout directory, or a
+   * host-resolved store id. Host default when omitted.
+   */
+  store?: string
+  /**
+   * Scope anchors in formatted form (`global`, `project:<slug>`,
+   * `agent:<slug>`...) added to the ones the host resolves for a session.
+   */
+  anchors?: string[]
   scope?: "per-conversation" | "per-thread" | "per-workspace" | "none"
   retention_turns?: number
   semantic?: {

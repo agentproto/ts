@@ -26,7 +26,7 @@
  * it, then SIGKILLs anything that survived a grace poll.
  */
 
-import { spawn, type ChildProcess } from "node:child_process"
+import { execFileSync, spawn, type ChildProcess } from "node:child_process"
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, type WriteStream } from "node:fs"
 import { dirname, join, resolve as nodeResolve } from "node:path"
 import type { AppService } from "@agentproto/app"
@@ -69,6 +69,29 @@ export async function stopAppServiceSupervisor(appId: string, name: string): Pro
   supervisors.delete(key)
   await sup.stop()
   return true
+}
+
+/**
+ * Enter an on-demand host in the supervisor registry under
+ * `<appId>:<name>` (the slot `startAppServiceProcess` takes for a keep-alive
+ * runner), so the kill paths (`stopAppServiceSupervisor`) reach it too.
+ * Stops a prior holder of the slot; returns the unregister function (a
+ * no-op once a newer holder replaced this one).
+ */
+export function registerAppServiceSupervisor(appId: string, name: string, handle: AppServiceProcess): () => void {
+  const key = supervisorKey(appId, name)
+  const prior = supervisors.get(key)
+  if (prior !== undefined && prior !== handle) void prior.stop().catch(() => undefined)
+  supervisors.set(key, handle)
+  return () => {
+    if (supervisors.get(key) === handle) supervisors.delete(key)
+  }
+}
+
+/** Is a live (not stopped) supervisor registered for `<appId>:<name>`? */
+export function isAppServiceSupervised(appId: string, name: string): boolean {
+  const sup = supervisors.get(supervisorKey(appId, name))
+  return sup !== undefined && !sup.disposed
 }
 
 /** Is this registry row id a dead-but-restarting managed service attempt? */
@@ -207,11 +230,11 @@ export interface AppServiceProcess {
   readonly sessionId: string
   /** Process-group leader pid of the current attempt, when known. */
   readonly pid: number | undefined
-  /** The process' `/proc/<pid>/stat` start ticks at spawn time — the
-   *  UNFORGEABLE identity token persisted with the owner record so a later
-   *  boot reconcile signals the recorded pid ONLY if it still names the
-   *  same live process (a recycled pid has different start ticks; see
-   *  `isSameProcess`). */
+  /** The process' start ticks at spawn time (see `readProcessStartTicks`):
+   *  the UNFORGEABLE identity token persisted with the owner record so a
+   *  later boot reconcile signals the recorded pid ONLY if it still names
+   *  the same live process (a recycled pid has different start ticks; see
+   *  `assessRecordedServicePid`). */
   readonly startTicks: number | undefined
   /** True once stop() ran — no further spawn/restart will happen. */
   readonly disposed: boolean
@@ -251,6 +274,9 @@ export type SpawnServiceChild = (
  *  canceler, invoked when the handle is stopped before the restart fires. */
 export type ScheduleRestart = (fn: () => void, delayMs: number) => () => void
 
+/** Mirrors `APP_SERVICE_PUBLIC_URL_ENV` (app-service-expose.ts). */
+const PUBLIC_URL_ENV = "AGENTPROTO_PUBLIC_URL"
+
 export interface StartAppServiceProcessDeps {
   registry: SessionsRegistry
   appId: string
@@ -260,7 +286,8 @@ export interface StartAppServiceProcessDeps {
    *  `serviceOwnerLabel(appId, service.name)`. */
   label?: string
   workspaceSlug?: string
-  /** Extra env on top of the daemon's process.env (e.g. PORT). */
+  /** Extra env on top of the daemon's process.env (e.g. PORT, or the
+   *  `AGENTPROTO_PUBLIC_URL` of an exposed service). Kept for every restart. */
   env?: Record<string, string>
   /** Append the child's stdout/stderr to this file in addition to the
    *  registry ring buffer (durable service log). Omitted = ring buffer only. */
@@ -277,6 +304,12 @@ export interface StartAppServiceProcessDeps {
   onRespawn?: (attempt: number, info: { sessionId: string; pid?: number; startTicks?: number }) => void
   /** Where a restart-exhausted / failed runner reports for ops. */
   onError?: (message: string) => void
+  /** On-demand activation (AIP-53): run ONE attempt. There is no restart
+   *  loop, and the runner does not enter the supervisor registry (the
+   *  on-demand host owns that slot). `onExit` fires when the child dies or
+   *  fails to spawn without `stop()` having been called; `deliberate` is true
+   *  when an operator killed the attempt's registry row. */
+  singleAttempt?: { onExit: (info: { sessionId: string; deliberate: boolean }) => void }
 }
 
 export type StartAppServiceProcessResult =
@@ -323,10 +356,17 @@ export function startAppServiceProcess(
   }
   let handleRef: AppServiceProcess | undefined
 
-  const baseEnv = (): Record<string, string> => ({
-    ...(process.env as Record<string, string>),
-    ...(deps.env ?? {}),
-  })
+  const baseEnv = (): Record<string, string> => {
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ...(deps.env ?? {}),
+    }
+    // AIP-53 Exposure: the public origin is the host's per-service contract.
+    // A service without a live tunnel runs WITHOUT it, even when the daemon's
+    // own environment happens to carry one.
+    if (deps.env?.[PUBLIC_URL_ENV] === undefined) delete env[PUBLIC_URL_ENV]
+    return env
+  }
 
   const handle = (): AppServiceProcess => ({
     // The CURRENT attempt's row id; between a child's death and its next
@@ -380,6 +420,11 @@ export function startAppServiceProcess(
     settled.add(child)
     const diedId = current.id
     current = undefined
+    if (deps.singleAttempt !== undefined) {
+      disposed = true
+      deps.singleAttempt.onExit({ sessionId: diedId, deliberate: deliberatelyKilled.has(child) })
+      return
+    }
     if (deliberatelyKilled.has(child)) {
       // An explicit operator kill of the service's session row: honour it —
       // stop supervising (no restart timer, no re-upsert of the owner record).
@@ -523,12 +568,14 @@ export function startAppServiceProcess(
 
   const self = handle()
   handleRef = self
-  registeredKey = supervisorKey(deps.appId, deps.service.name)
-  // Defensively stop a prior runner for the same service (e.g. an owner row
-  // was lost) so its restart timer cannot leak alongside the new runner.
-  const prior = supervisors.get(registeredKey)
-  if (prior !== undefined) void prior.stop().catch(() => undefined)
-  supervisors.set(registeredKey, self)
+  if (deps.singleAttempt === undefined) {
+    registeredKey = supervisorKey(deps.appId, deps.service.name)
+    // Defensively stop a prior runner for the same service (e.g. an owner row
+    // was lost) so its restart timer cannot leak alongside the new runner.
+    const prior = supervisors.get(registeredKey)
+    if (prior !== undefined) void prior.stop().catch(() => undefined)
+    supervisors.set(registeredKey, self)
+  }
   launchAttempt()
   return { ok: true, handle: self }
 }
@@ -541,13 +588,27 @@ function defaultSchedule(fn: () => void, delayMs: number): () => void {
 // ── process identity (survives pid recycling) ───────────────────────────────
 
 /**
- * The process' start ticks from `/proc/<pid>/stat` (field 22) — stable for
- * the lifetime of the machine's pid space, so a recycled pid never shares it
- * with its previous owner. `undefined` on a dead pid or a platform without
- * `/proc` — callers treat undefined as "identity unverifiable".
+ * The process' start ticks, stable for the lifetime of the machine's pid
+ * space, so a recycled pid never shares it with its previous owner.
+ * `undefined` on a dead pid or a platform where identity cannot be read at
+ * all; callers treat undefined as "identity unverifiable".
+ *
+ * Linux reads `/proc/<pid>/stat` field 22 directly (process-start jiffies).
+ * Darwin has no `/proc`; `ps -o lstart=` reports the process' start time at
+ * one-second resolution, which is parsed to epoch seconds, coarser than
+ * jiffies. A recycled pid is told apart from its previous owner unless the
+ * new process starts within the SAME wall-clock second as the old one; that
+ * tie reads as a match and would be signalled. macOS allocates pids
+ * sequentially, so a recycle inside one second is not a realistic case, but
+ * the guarantee is weaker than the Linux jiffies one.
  */
 export function readProcessStartTicks(pid: number): number | undefined {
   if (!Number.isInteger(pid) || pid <= 0) return undefined
+  if (process.platform === "darwin") return readProcessStartTicksDarwin(pid)
+  return readProcessStartTicksLinux(pid)
+}
+
+function readProcessStartTicksLinux(pid: number): number | undefined {
   try {
     const raw = readFileSync(`/proc/${pid}/stat`, "utf8")
     // The comm field may contain spaces AND parentheses — split on the LAST
@@ -558,6 +619,32 @@ export function readProcessStartTicks(pid: number): number | undefined {
     // After comm, field 3 is the first entry; starttime is field 22 → index 19.
     const ticks = Number.parseInt(fields[19] ?? "", 10)
     return Number.isFinite(ticks) ? ticks : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Epoch seconds from a C-locale `ps -o lstart=` line; `undefined` if unparsable. */
+export function parsePsLstart(raw: string): number | undefined {
+  const text = raw.trim()
+  if (text.length === 0) return undefined
+  const ms = Date.parse(text)
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
+}
+
+function readProcessStartTicksDarwin(pid: number): number | undefined {
+  try {
+    // LC_ALL=C: `lstart` month/day names are localized otherwise and
+    // Date.parse would fail. The timeout bounds a wedged `ps`, which runs
+    // synchronously on the spawn and reconcile paths.
+    const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 2000,
+      maxBuffer: 4096,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    return parsePsLstart(raw)
   } catch {
     return undefined
   }

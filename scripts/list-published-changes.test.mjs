@@ -115,7 +115,7 @@ test('isPublishedPath: a src/ test still counts if files[] ships src itself', ()
 test('buildPackageIndex: nested packages are indexed; a template inside a package belongs to that package', () => {
   const root = mkdtempSync(join(tmpdir(), 'published-changes-'))
   const pkgs = {
-    'packages/driver/agent-cli': { name: '@agentproto/driver-agent-cli', files: ['dist'] },
+    'packages/driver/core': { name: '@agentproto/driver', files: ['dist'] },
     'packages/create-app': { name: 'create-app', files: ['dist', 'templates'] },
     'packages/create-app/templates/react-ts': { name: '__APP_SLUG__', private: true },
   }
@@ -125,13 +125,13 @@ test('buildPackageIndex: nested packages are indexed; a template inside a packag
   }
   try {
     const index = buildPackageIndex(root)
-    assert.deepEqual(index.map((p) => p.dir).sort(), ['packages/create-app', 'packages/driver/agent-cli'])
+    assert.deepEqual(index.map((p) => p.dir).sort(), ['packages/create-app', 'packages/driver/core'])
     assert.deepEqual(
       filterPublishedChanges(
-        ['packages/driver/agent-cli/src/x.ts', 'packages/create-app/templates/react-ts/src/App.tsx'],
+        ['packages/driver/core/src/x.ts', 'packages/create-app/templates/react-ts/src/App.tsx'],
         index,
       ),
-      ['packages/driver/agent-cli/src/x.ts', 'packages/create-app/templates/react-ts/src/App.tsx'],
+      ['packages/driver/core/src/x.ts', 'packages/create-app/templates/react-ts/src/App.tsx'],
     )
   } finally {
     rmSync(root, { recursive: true, force: true })

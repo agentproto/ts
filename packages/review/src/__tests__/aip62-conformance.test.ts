@@ -309,7 +309,7 @@ describe("AIP-70 document tags", () => {
     expect(parsed.success).toBe(true)
   })
 
-  it("buildAttestation keeps writing the legacy tags", () => {
+  it("buildAttestation writes the canonical tags", () => {
     const built = buildAttestation({
       runId: "review-6f0b9a52-3f43-4c1c-a4d5-0f3f6c1f5a10",
       reviewId: "demo",
@@ -318,9 +318,9 @@ describe("AIP-70 document tags", () => {
       target: { repoRemote: "github.com/acme/repo", baseSha: "a".repeat(40), headSha: "c".repeat(40) },
       lanes: [{ id: "types", kind: "command", status: "pass", blocking: true, findings: [], durationMs: 10 }],
       attestor: { daemon: "host:18790", presets: ["kimi"] },
-      packs: [{ ref: "./pack", id: "pack", version: "1.0.0", alg: "agentproto-pack-digest/v1", sha256: "a".repeat(64) }],
+      packs: [{ ref: "./pack", id: "pack", version: "1.0.0", alg: "review.pack-digest/v1", sha256: "a".repeat(64) }],
     })
-    expect(built.schema).toBe("agentproto.review.attestation/v1")
-    expect(built.packs?.[0]?.alg).toBe("agentproto-pack-digest/v1")
+    expect(built.schema).toBe("review.attestation/v1")
+    expect(built.packs?.[0]?.alg).toBe("review.pack-digest/v1")
   })
 })

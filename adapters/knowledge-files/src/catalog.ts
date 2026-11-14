@@ -23,8 +23,9 @@ export const KNOWLEDGE_FILES_CATALOG: AdapterCatalog = [
     slug: FILES_BM25_SLUG,
     name: "files (BM25)",
     description:
-      "Knowledge retrieval from local workspace files via an in-process " +
-      "BM25 index. No embeddings, no network, no API key — works the " +
+      "Knowledge retrieval from local workspace files via a BM25 index " +
+      "(on disk in SQLite FTS5 when available, in process otherwise). No " +
+      "embeddings, no network, no API key; works the " +
       "instant a workspace has files to index.",
     packageName: "@agentproto/adapter-knowledge-files",
     hint: "files · bm25",

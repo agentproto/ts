@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/playbook",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "@agentproto/playbook — AIP-12 PLAYBOOK.md reference implementation. A markdown format for prompt-overlay fragments that ride on top of an operator's persona, plus a contract for how runtimes evolve them via reflective deltas without violating locked persona traits.",
   "keywords": [
     "agentproto",
@@ -54,7 +54,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.7"
   },

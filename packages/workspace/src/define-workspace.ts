@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { workspaceFrontmatterSchema } from "./schema.js"
 import type { WorkspaceDefinition, WorkspaceHandle } from "./types.js"
 

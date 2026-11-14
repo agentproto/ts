@@ -17,10 +17,14 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { RuntimeWorkflow } from "@agentproto/workflow-runtime"
 
 import { registerAgentTools } from "../agent-tools.js"
+import { registerMessageTools } from "../message-tools.js"
+import { renderSessionMessage } from "../session-message.js"
+import type { ActionGrant } from "@agentproto/policy"
 import {
   createSessionsRegistry,
   SessionNotAliveError,
@@ -140,6 +144,39 @@ describe("external session registration + liveness", () => {
     expect(registry.get("desktop-1")?.status).toBe("running")
   })
 
+  it("revives a row the daemon ended itself (daemon-restart) when the live session touches it", () => {
+    registry.touchExternal({ id: "cc:abc", host: "claude-code" })
+    const desc = registry.get("cc:abc")!
+    desc.status = "killed"
+    desc.endedAt = new Date(clock).toISOString()
+    desc.endedReason = "daemon-restart"
+
+    registry.touchExternal({ id: "cc:abc" })
+    const revived = registry.get("cc:abc")
+    expect(revived?.status).toBe("running")
+    expect(revived?.endedAt).toBeUndefined()
+    expect(revived?.endedReason).toBeUndefined()
+  })
+
+  it("keeps an operator-killed external row ended after a touch", () => {
+    registry.touchExternal({ id: "cc:abc", host: "claude-code" })
+    registry.kill("cc:abc", "SIGTERM", "operator-stopped")
+    expect(registry.get("cc:abc")?.status).toBe("killed")
+    registry.touchExternal({ id: "cc:abc" })
+    expect(registry.get("cc:abc")?.status).toBe("killed")
+    expect(registry.get("cc:abc")?.endedReason).toBe("operator-stopped")
+  })
+
+  it("keeps a retired external row ended after a touch", () => {
+    registry.touchExternal({ id: "cc:abc", host: "claude-code" })
+    const desc = registry.get("cc:abc")!
+    desc.status = "killed"
+    desc.endedAt = new Date(clock).toISOString()
+    desc.retiredAt = new Date(clock).toISOString()
+    registry.touchExternal({ id: "cc:abc" })
+    expect(registry.get("cc:abc")?.status).toBe("killed")
+  })
+
   it("defaults the window to 30 minutes", () => {
     expect(DEFAULT_EXTERNAL_SESSION_LIVENESS_MS).toBe(30 * 60_000)
     const r2 = createSessionsRegistry({ persist: false, transcriptDir: tmp, externalNow: () => clock })
@@ -208,12 +245,20 @@ describe("delivery to an external inbox", () => {
     expect(registry.listInbox("desktop-1")).toEqual([])
   })
 
-  it("throws session_not_alive only after liveness expiry, and a fresh sighting restores delivery", async () => {
+  it("keeps delivering to an expired external row (no process to restart), and a fresh sighting revives it", async () => {
     clock += WINDOW + 1_000
-    await expect(registry.sendMessage(fyi("desktop-1", "late"))).rejects.toBeInstanceOf(SessionNotAliveError)
+    expect(registry.get("desktop-1")?.status).toBe("exited")
+    await expect(registry.sendMessage(fyi("desktop-1", "late"))).resolves.toMatchObject({ delivered: { via: "inbox" } })
+    expect(registry.listInbox("desktop-1")!.map(m => m.text)).toEqual(["late"])
 
     registry.touchExternal({ id: "desktop-1" })
+    expect(registry.get("desktop-1")?.status).toBe("running")
     await expect(registry.sendMessage(fyi("desktop-1", "back"))).resolves.toMatchObject({ delivered: { via: "inbox" } })
+  })
+
+  it("throws session_not_alive for an external row that was deliberately ended", async () => {
+    registry.kill("desktop-1")
+    await expect(registry.sendMessage(fyi("desktop-1", "late"))).rejects.toBeInstanceOf(SessionNotAliveError)
   })
 })
 
@@ -392,7 +437,7 @@ describe("workflow caller notifications", () => {
     })
   })
 
-  it("a caller that has expired never breaks the run", async () => {
+  it("a caller that has expired never breaks the run, and still gets the item in its inbox", async () => {
     let clock = Date.parse("2026-01-01T00:00:00.000Z")
     const r2 = createSessionsRegistry({
       persist: false,
@@ -411,7 +456,7 @@ describe("workflow caller notifications", () => {
     })
     const run = await runner.startFromFile({ path: writeWorkflowFile("wf-gone"), callerSessionId: "gone" })
     await waitStatus(runner, run.runId, "done")
-    expect(r2.listInbox("gone")).toEqual([])
+    expect(r2.listInbox("gone")!.map(m => m.correlationId)).toEqual([`workflow:${run.runId}`])
     r2.shutdown()
   })
 })
@@ -441,14 +486,23 @@ describe("/mcp gateway registration", () => {
     })
   }
 
-  async function withGateway(fn: (base: string, registry: SessionsRegistry) => Promise<void>): Promise<void> {
+  async function withGateway(
+    fn: (base: string, registry: SessionsRegistry) => Promise<void>,
+    factory?: (
+      registry: SessionsRegistry,
+      callerSessionId?: string,
+    ) => Promise<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>,
+  ): Promise<void> {
     const tmp = mkdtempSync(join(tmpdir(), "external-http-"))
     const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
     const port = await freePort()
     const http = await startHttpServer({
       port,
       auth: { mode: "none" },
-      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      mcpServerFactory: async (_deny, callerSessionId) =>
+        factory
+          ? factory(registry, callerSessionId)
+          : (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
       conversations,
       events: createRuntimeEvents(),
       heartbeat,
@@ -484,6 +538,68 @@ describe("/mcp gateway registration", () => {
     })
   })
 
+  it("labels a message sent from the shared external identity unverified", async () => {
+    const grant = {
+      principal: "*",
+      effect: "allow" as const,
+      actions: [{ action: "session:message" }] as [ActionGrant],
+    }
+    await withGateway(
+      async (base, registry) => {
+        registry.touchExternal({ id: "desktop-peer", host: "claude-desktop" })
+
+        const client = new Client({ name: "t", version: "0" })
+        const transport = new StreamableHTTPClientTransport(
+          new URL(`${base}/mcp?callerSessionId=claude-desktop&host=claude-desktop`),
+        )
+        await client.connect(transport)
+        const result = (await client.callTool({
+          name: "message_send",
+          arguments: { to: "desktop-peer", text: "hello from the chat tab" },
+        })) as { content: Array<{ text: string }>; isError?: boolean }
+        await client.close()
+
+        expect(result.isError).not.toBe(true)
+        expect(registry.get("claude-desktop")).toMatchObject({ kind: "external", externalHost: "claude-desktop" })
+        const inbox = registry.listInbox("desktop-peer") ?? []
+        expect(inbox).toHaveLength(1)
+        expect(inbox[0]!.from).toMatchObject({ sessionId: "claude-desktop", unverified: true })
+        expect(renderSessionMessage(inbox[0]!)).toContain('unverified="true"')
+      },
+      async (registry, callerSessionId) => {
+        const { server } = await createMcpServer({ specs: [], name: "t", version: "0" })
+        registerMessageTools(server, { registry, callerSessionId, messagingGrants: [grant] })
+        return server
+      },
+    )
+  })
+
+  it("keeps no_caller_identity for a tool call that carries no callerSessionId", async () => {
+    await withGateway(
+      async (base, registry) => {
+        registry.touchExternal({ id: "desktop-peer", host: "claude-desktop" })
+
+        const client = new Client({ name: "t", version: "0" })
+        const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`))
+        await client.connect(transport)
+        const result = (await client.callTool({
+          name: "message_send",
+          arguments: { to: "desktop-peer", text: "should not land" },
+        })) as { content: Array<{ text: string }>; isError?: boolean }
+        await client.close()
+
+        expect(result.isError).toBe(true)
+        expect(JSON.parse(result.content[0]!.text)).toMatchObject({ error: "no_caller_identity" })
+        expect(registry.listInbox("desktop-peer")).toEqual([])
+      },
+      async (registry, callerSessionId) => {
+        const { server } = await createMcpServer({ specs: [], name: "t", version: "0" })
+        registerMessageTools(server, { registry, callerSessionId })
+        return server
+      },
+    )
+  })
+
   it("does not register without ?host=", async () => {
     await withGateway(async (base, registry) => {
       await initialize(`${base}/mcp?callerSessionId=desktop-9`)
@@ -504,6 +620,73 @@ describe("/mcp gateway registration", () => {
       await initialize(`${base}/mcp?callerSessionId=desktop-9&host=${encodeURIComponent("evil host!")}`)
       expect(registry.get("a b/../c")).toBeUndefined()
       expect(registry.get("desktop-9")).toBeUndefined()
+    })
+  })
+
+  const post = (url: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    })
+
+  it("404s the cc: inbox before a touch, then registers name/cwd/hostSessionId", async () => {
+    await withGateway(async (base, registry) => {
+      expect((await fetch(`${base}/sessions/cc%3Achat-1/inbox`)).status).toBe(404)
+      const res = await post(`${base}/sessions/cc%3Achat-1/touch`, {
+        host: "claude-desktop",
+        name: "Chat one",
+        cwd: "/work/repo",
+        hostSessionId: "host-1",
+      })
+      expect(res.status).toBe(200)
+      expect(((await res.json()) as { session: Record<string, unknown> }).session).toMatchObject({
+        id: "cc:chat-1",
+        kind: "external",
+        externalHost: "claude-desktop",
+        externalHostSessionId: "host-1",
+        name: "Chat one",
+        cwd: "/work/repo",
+      })
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", name: "Renamed" })
+      expect(registry.get("cc:chat-1")?.name).toBe("Renamed")
+    })
+  })
+
+  it("records the permissionMode reported on a touch and ignores a malformed one", async () => {
+    await withGateway(async (base, registry) => {
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", permissionMode: "bypassPermissions" })
+      expect(registry.get("cc:chat-1")?.externalPermissionMode).toBe("bypassPermissions")
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", permissionMode: "bad mode!" })
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop" })
+      expect(registry.get("cc:chat-1")?.externalPermissionMode).toBe("bypassPermissions")
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", permissionMode: "auto" })
+      expect(registry.get("cc:chat-1")?.externalPermissionMode).toBe("auto")
+    })
+  })
+
+  it("refuses an untrusted touch, a missing host, and a daemon-owned row", async () => {
+    await withGateway(async (base, registry) => {
+      expect(
+        (await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop" }, { "x-forwarded-for": "203.0.113.7" }))
+          .status,
+      ).toBe(403)
+      expect((await post(`${base}/sessions/cc%3Achat-1/touch`, {})).status).toBe(400)
+      const spawned = registry.spawnAgent({
+        workspaceSlug: "w",
+        cwd: "/tmp",
+        agentSession: { sessionId: "acp-x", pid: 1, async *send() { yield { kind: "turn-end", reason: "completed" } }, async cancel() {}, async close() {} },
+        adapterSlug: "mock",
+      })
+      expect((await post(`${base}/sessions/${spawned.id}/touch`, { host: "claude-desktop" })).status).toBe(409)
+      expect(registry.get("cc:chat-1")).toBeUndefined()
+    })
+  })
+
+  it("registers cc:<id> from the identity header on a host-carrying /mcp request", async () => {
+    await withGateway(async (base, registry) => {
+      await initialize(`${base}/mcp?host=claude-desktop`, { "x-agentproto-caller-session-id": "cc:header-1" })
+      expect(registry.get("cc:header-1")).toMatchObject({ kind: "external", externalHost: "claude-desktop" })
     })
   })
 })

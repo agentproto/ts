@@ -22,10 +22,10 @@ import { join } from "node:path"
 import {
   CREDENTIAL_DATA_SUBDIR,
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import {
   DEFAULT_ANTHROPIC_MODEL,
   getModelsByProvider,
@@ -94,7 +94,7 @@ function buildOpencodeModelMenu(): Array<{ id: string; provider: string }> {
 /** Inline config the `lean` mode layers over the user's global opencode config. */
 export const LEAN_INLINE_CONFIG = { mcp: { agentproto: { enabled: false } } } as const
 
-export const opencode: AgentCliHandle = defineAgentCli({
+export const opencode: AgentCliHandle = defineHarness({
   name: "opencode",
   id: "opencode",
   description:
@@ -147,7 +147,16 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // block over env keys and inline config — so an engaged profile would bill
   // the ACTIVE ORG, not its own credential. An engaged spawn therefore runs in
   // a login-less data dir (`<configDir>/auth-data`).
-  credentialDataHome: { env: "XDG_DATA_HOME" },
+  //
+  // `disposable`: what a dead session's data home may lose. `snapshot/` is
+  // opencode's shadow git of the worktree (undo/revert only, re-created on
+  // the next step; 63 GB over 641 dead sessions on one host, 2026-10-27),
+  // `tool-output/` the spilled full outputs of long tool results, `log/` its
+  // logs. `opencode.db` (the conversation a resume reloads) is never listed.
+  credentialDataHome: {
+    env: "XDG_DATA_HOME",
+    disposable: ["opencode/snapshot", "opencode/tool-output", "opencode/log"],
+  },
   // opencode keeps mutable runtime state (the lock/state store its MCP client
   // registers ACP-provided servers through, plus logs) in
   // `$XDG_STATE_HOME/opencode`. A confined spawn (workflow agent step under an
@@ -342,6 +351,9 @@ export const opencode: AgentCliHandle = defineAgentCli({
     // itself eagerly for this adapter (G5, sess_cfa279bb). Explicit false so
     // the intent is visible; absent would mean the same thing.
     deferredToolDiscovery: false,
+    // AIP-72 section 9: no native memory projection here, the in-force
+    // memory digest rides the declared system-prompt channel at spawn.
+    memory: { inject: "system-prompt", capture: "none" },
   },
   // `modes[]` carries ONE entry, the `context` axis (`lean`). opencode's
   // operation profiles (default / plan / build) are POSTURE, which no longer
@@ -548,5 +560,8 @@ export {
   readOpencodeConsoleAccount,
   listOpencodeConsoleOrgs,
   resolveOpencodeConsoleOrg,
+  OpencodeAccountExpiredError,
+  OpencodeOrgOwnerNotFoundError,
 } from "./subaccounts.js"
+export { createOpencodeReauthAdapter, opencodeReauth } from "./reauth.js"
 export type { AgentCliHandle, AgentCliRuntime }

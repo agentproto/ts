@@ -29,6 +29,7 @@ vi.mock("../providers-store.js", async importOriginal => {
 })
 
 import { resolveResumeAuth, RestartOverrideError } from "../session-restart-core.js"
+import { buildRouteAwareLaunchConfig } from "../launch-config.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type {
   AgentSessionLike,
@@ -36,7 +37,7 @@ import type {
   AgentSessionResumer,
   SessionDescriptor,
 } from "../sessions.js"
-import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
+import type { AdapterAuthDescriptor, DeclaredAdapterOption } from "../spawn-defaults.js"
 import type { AuthProfile } from "@agentproto/auth"
 
 let acpCounter = 0
@@ -226,18 +227,34 @@ type CapturedAuth = {
   enforce: "always" | "when-configured"
 }
 
+type CapturedStart = {
+  auth?: CapturedAuth
+  options?: Record<string, boolean | number | string>
+}
+
 function makeLazyResumeHook(
   authDescriptor: AdapterAuthDescriptor | undefined,
   deps: {
     loadDefaultsConfig?: () => Promise<import("../spawn-defaults.js").SpawnDefaultsConfig | undefined>
     defaultModel?: string
+    declaredOptions?: readonly DeclaredAdapterOption[]
+    routeSelection?: "free" | "derived-from-model"
+    resolveAccessProfile?: (
+      ref: string,
+    ) => Promise<{ profile: AuthProfile; credential?: string } | undefined>
   } = {},
-): { hook: AgentSessionResumer; captured: { auth?: CapturedAuth }[] } {
-  const captured: { auth?: CapturedAuth }[] = []
+): { hook: AgentSessionResumer; captured: CapturedStart[] } {
+  const captured: CapturedStart[] = []
   const adapter = {
     ...(authDescriptor ? { authDescriptor } : {}),
     ...(deps.defaultModel ? { defaultModel: deps.defaultModel } : {}),
-    startSession: async (o: { resumeSessionId?: string; auth?: CapturedAuth }) => {
+    ...(deps.declaredOptions ? { declaredOptions: deps.declaredOptions } : {}),
+    ...(deps.routeSelection ? { routeSelection: deps.routeSelection } : {}),
+    startSession: async (o: {
+      resumeSessionId?: string
+      auth?: CapturedAuth
+      options?: Record<string, boolean | number | string>
+    }) => {
       const authSpec = o.auth
       const engaged = !!authSpec && (authSpec.enforce === "always" || authSpec.explicit === true)
       if (authSpec && engaged && !authSpec.credential) {
@@ -245,13 +262,20 @@ function makeLazyResumeHook(
           `missing_auth_credential: auth mode "${authSpec.mode}" requires an explicit credential`,
         )
       }
-      captured.push({ auth: authSpec })
+      // Mirror composeSpawn's manifest validation: an option the adapter does
+      // not declare fails the spawn with `unknown_option`.
+      for (const id of Object.keys(o.options ?? {})) {
+        if (!deps.declaredOptions?.some(option => option.id === id)) {
+          throw new Error(`unknown_option at config.options.${id}`)
+        }
+      }
+      captured.push({ auth: authSpec, options: o.options })
       return fakeAgentSession(o.resumeSessionId)
     },
   }
-  // Mirror index.ts's resumeAgent closure exactly (resolveResumeAuth → thread
-  // auth/base_url into startSession, catch → null so a failed resume never
-  // starts a session on ambient env).
+  // Mirror index.ts's resumeAgent closure: resolveResumeAuth → build the launch
+  // config through the SAME route-aware builder spawn/restart use (never a raw
+  // base_url injection) → startSession, catch → null.
   const hook: AgentSessionResumer = async ({ resumeSessionId, descriptor }) => {
     try {
       const { authSpec } = await resolveResumeAuth(
@@ -266,11 +290,28 @@ function makeLazyResumeHook(
             : {}),
           prefix: "resume",
           ...(deps.loadDefaultsConfig ? { loadDefaultsConfig: deps.loadDefaultsConfig } : {}),
+          ...(deps.resolveAccessProfile
+            ? { resolveAccessProfile: deps.resolveAccessProfile }
+            : {}),
         },
       )
+      const launchConfig = buildRouteAwareLaunchConfig({
+        adapter: descriptor.adapterSlug!,
+        ...(descriptor.model ? { model: descriptor.model } : {}),
+        ...(descriptor.route ? { route: descriptor.route } : {}),
+        ...(authSpec ? { authSpec } : {}),
+        ...(deps.declaredOptions ? { declaredOptions: deps.declaredOptions } : {}),
+        ...(deps.routeSelection ? { routeSelection: deps.routeSelection } : {}),
+        ...(authDescriptor?.provider ? { adapterProvider: authDescriptor.provider } : {}),
+        ...(authDescriptor?.modelDerivedApiKey !== undefined
+          ? { modelDerivedApiKey: authDescriptor.modelDerivedApiKey }
+          : {}),
+        prefix: "resume",
+      })
       return await adapter.startSession({
         resumeSessionId,
         ...(authSpec ? { auth: authSpec as unknown as CapturedAuth } : {}),
+        ...(launchConfig.options ? { options: launchConfig.options } : {}),
       })
     } catch {
       return null
@@ -339,6 +380,70 @@ describe("lazy in-place resume — billing-auth threading (wired hook)", () => {
       mode: "subscription",
       credential: "sk-ant-oat01-fresh4321",
       setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      explicit: true,
+    })
+    expect(reg.get(id)?.status).toBe("running")
+    reg.shutdown()
+  })
+
+  it("resumes a persisted opencode-Go row without injecting an undeclared base_url", async () => {
+    // The real regression: #2385 preserved the billing route/access profile
+    // across restarts, so a resumed row carries `route: {gateway:"opencode-go"}`.
+    // resolveResumeAuth then resolves the gateway preset's base_url, and the
+    // old lazy-resume hook injected it unconditionally as
+    // `options.base_url` — an option the opencode manifest does not declare.
+    // The next eager/lazy resume failed with `unknown_option` instead of
+    // reattaching to the conversation.
+    const id = seedKilledRow(persistPath, {
+      adapterSlug: "opencode",
+      adapterSessionId: "ses_opencode_go",
+      model: "opencode-go/beam-free",
+      route: { gateway: "opencode-go" },
+      accessProfile: {
+        profileRef: "opencode-developerws003",
+        label: "opencode-console: DeveloperWs003",
+        endpoint: "opencode-go",
+        method: "api-key",
+      },
+      auth: {
+        mode: "api-key",
+        fingerprint: "api-key · …OLD",
+        provider: "opencode",
+        credentialSource: "explicit-config",
+        setEnv: "OPENCODE_API_KEY",
+      },
+    })
+    const profile: AuthProfile = {
+      id: "opencode-developerws003",
+      endpoint: "opencode-go",
+      method: "api-key",
+      credentialRef: "agentproto.auth.opencode-go.key",
+    }
+    const { hook, captured } = makeLazyResumeHook(
+      { modelDerivedApiKey: true },
+      {
+        declaredOptions: [
+          { id: "model", type: "string" },
+          { id: "effort", type: "string" },
+          { id: "small_model", type: "string" },
+        ],
+        routeSelection: "derived-from-model",
+        resolveAccessProfile: async () => ({
+          profile,
+          credential: "sk-opencode-go-fresh",
+        }),
+      },
+    )
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: hook })
+
+    await reg.sendPrompt(id, "ping")
+
+    expect(captured).toHaveLength(1)
+    expect(captured[0]?.options?.base_url).toBeUndefined()
+    expect("base_url" in (captured[0]?.options ?? {})).toBe(false)
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      credential: "sk-opencode-go-fresh",
       explicit: true,
     })
     expect(reg.get(id)?.status).toBe("running")

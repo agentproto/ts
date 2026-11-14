@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { continueAgentSessionFresh } from "../session-continue-fresh.js"
+import {
+  CONTINUED_SOURCES_MAX,
+  continueAgentSessionFresh,
+  resetContinueFreshMemoForTests,
+} from "../session-continue-fresh.js"
 import type { SessionDescriptor } from "../sessions.js"
 import type { SpawnAgentSessionDeps } from "../session-spawn.js"
 
@@ -13,9 +17,12 @@ vi.mock("../session-spawn.js", async importOriginal => {
 
 import { spawnAgentSession } from "../session-spawn.js"
 
+// Unique id per call: continue-fresh is memoised per source id, so tests must
+// not share a source.
+let prevSeq = 0
 const makePrev = (): SessionDescriptor =>
   ({
-    id: "sess_prev",
+    id: `sess_prev_${++prevSeq}`,
     kind: "agent-cli",
     workspaceSlug: "ws",
     command: "claude",
@@ -55,6 +62,10 @@ const fakeRegistry = {
   get: vi.fn(),
   markRetired: vi.fn(),
   setPromptPolicy: vi.fn(),
+  setOperator: vi.fn(),
+  setToolDenyGrants: vi.fn(),
+  setExposedToolOptIn: vi.fn(),
+  setPinned: vi.fn(),
 } as unknown as SpawnAgentSessionDeps["registry"]
 
 const wireMarkRetired = (): void => {
@@ -69,10 +80,15 @@ const fakeResolveAdapter = vi.fn()
 
 describe("continueAgentSessionFresh", () => {
   beforeEach(() => {
+    resetContinueFreshMemoForTests()
     vi.mocked(spawnAgentSession).mockReset()
     vi.mocked(fakeResolveAdapter).mockReset()
     fakeRegistry.get = vi.fn()
     fakeRegistry.setPromptPolicy = vi.fn()
+    fakeRegistry.setOperator = vi.fn()
+    fakeRegistry.setToolDenyGrants = vi.fn()
+    fakeRegistry.setExposedToolOptIn = vi.fn()
+    fakeRegistry.setPinned = vi.fn(() => ({ id: "sess_new" }) as SessionDescriptor)
     wireMarkRetired()
   })
 
@@ -170,7 +186,7 @@ describe("continueAgentSessionFresh", () => {
       {
         name: "agentproto",
         transport: "http",
-        ref: "http://127.0.0.1:18790/mcp?callerSessionId=sess_prev",
+        ref: `http://127.0.0.1:18790/mcp?callerSessionId=${prev.id}`,
       },
       {
         name: "pinned",
@@ -199,6 +215,37 @@ describe("continueAgentSessionFresh", () => {
         ref: "http://127.0.0.1:18790/mcp?callerSessionId=someone-else",
       },
       { name: "local", transport: "stdio", ref: "some-command" },
+    ])
+  })
+
+  it("strips the retired id from an imported passthrough mount too, so the spawn re-stamps it", async () => {
+    const prev = makePrev()
+    prev.mcpServers = [
+      {
+        name: "chrome-devtools",
+        transport: "http",
+        ref: `http://127.0.0.1:18790/mcp/imported/imp1?callerSessionId=${prev.id}`,
+        headers: { "x-agentproto-caller-session-id": prev.id },
+      },
+    ]
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.mcpServers).toEqual([
+      {
+        name: "chrome-devtools",
+        transport: "http",
+        ref: "http://127.0.0.1:18790/mcp/imported/imp1",
+      },
     ])
   })
 
@@ -260,8 +307,8 @@ describe("continueAgentSessionFresh", () => {
       { baseDir: "/tmp/checkpoints" },
     )
 
-    expect(result.continuedFrom).toBe("sess_prev")
-    expect(newDesc.continuedFrom).toBe("sess_prev")
+    expect(result.continuedFrom).toBe(prev.id)
+    expect(newDesc.continuedFrom).toBe(prev.id)
     expect(newDesc.checkpointId).toBeDefined()
   })
 
@@ -285,6 +332,138 @@ describe("continueAgentSessionFresh", () => {
       "sess_peer",
       "label:pygmalion-brain-persistent",
     ])
+  })
+
+  it("carries the source's pin onto the fresh session (the only boot-resume exemption)", async () => {
+    // `pinned` is what exempts a keepAlive row from the boot-resume idle
+    // cutoff (`eager-resume.ts` `staleKeepAlive`). Before the fix, a
+    // continue-fresh minted a new descriptor with no pin, so every
+    // continuation silently un-pinned a long-lived brain.
+    const prev = { ...makePrev(), pinned: true, pinnedOrder: 3 } as SessionDescriptor
+    const fresh = { id: "sess_new" } as SessionDescriptor
+    const setPinned = vi.fn(() => fresh)
+    fakeRegistry.setPinned = setPinned
+    vi.mocked(spawnAgentSession).mockResolvedValue({ ok: true, descriptor: fresh })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(setPinned).toHaveBeenCalledWith("sess_new", true)
+    // The pin ORDER rides along so the successor keeps the source's slot.
+    expect(fresh.pinnedOrder).toBe(3)
+  })
+
+  it("does not pin the fresh session when the source row was never pinned", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setPinned).not.toHaveBeenCalled()
+  })
+
+  it("copies operator and operatorDigest from the source row onto the fresh session (AIP-46 operator binding, rule 5)", async () => {
+    const prev = {
+      ...makePrev(),
+      operator: "operator:cto",
+      operatorDigest: "sha256:aaa",
+    } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setOperator).toHaveBeenCalledWith("sess_new", "operator:cto", "sha256:aaa")
+    // Never read from the request the spawn core receives.
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.operator).toBeUndefined()
+    expect(input.operatorDigest).toBeUndefined()
+  })
+
+  it("copies toolDenyGrants from the source row onto the fresh session, never from the request", async () => {
+    const grants = [
+      { principal: "*", effect: "deny", actions: [{ action: "tool:invoke", scope: "agentproto/cron_create" }] },
+    ]
+    const prev = { ...makePrev(), toolDenyGrants: grants } as unknown as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setToolDenyGrants).toHaveBeenCalledWith("sess_new", grants)
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect((input as unknown as Record<string, unknown>).toolDenyGrants).toBeUndefined()
+  })
+
+  it("copies exposedToolOptIn from the source row onto the fresh session, and stamps none when the source has none", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const prev = { ...makePrev(), exposedToolOptIn: ["jobkit_leads_upsert"] } as unknown as SessionDescriptor
+    await continueAgentSessionFresh({ registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }, prev, {
+      baseDir: "/tmp/checkpoints",
+    })
+    expect(fakeRegistry.setExposedToolOptIn).toHaveBeenCalledWith("sess_new", ["jobkit_leads_upsert"])
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect((input as unknown as Record<string, unknown>).exposedToolOptIn).toBeUndefined()
+
+    vi.mocked(fakeRegistry.setExposedToolOptIn).mockClear()
+    await continueAgentSessionFresh({ registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }, makePrev(), {
+      baseDir: "/tmp/checkpoints",
+    })
+    expect(fakeRegistry.setExposedToolOptIn).not.toHaveBeenCalled()
+  })
+
+  it("stamps no toolDenyGrants on the fresh session when the source row has none", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setToolDenyGrants).not.toHaveBeenCalled()
+  })
+
+  it("stamps no operator on the fresh session when the source row has none", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setOperator).not.toHaveBeenCalled()
   })
 
   it("stamps handoff with matching from/to harness on a same-harness continuation", async () => {
@@ -384,6 +563,148 @@ describe("continueAgentSessionFresh", () => {
     ).rejects.toThrow("agent_spawn_failed")
   })
 
+  it("continues a source at most once: a sequential duplicate gets the first result and does not spawn again", async () => {
+    const prev = makePrev()
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+
+    const first = await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+    const second = await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+
+    expect(spawnAgentSession).toHaveBeenCalledOnce()
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.checkpoint.checkpointId).toBe(first.checkpoint.checkpointId)
+  })
+
+  it("continues a source at most once: concurrent calls share one spawn", async () => {
+    const prev = makePrev()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    vi.mocked(spawnAgentSession).mockImplementation(async () => {
+      await gate
+      return { ok: true, descriptor: { id: "sess_new" } as SessionDescriptor }
+    })
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+
+    const a = continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+    const b = continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+    release()
+    const [ra, rb] = await Promise.all([a, b])
+
+    expect(spawnAgentSession).toHaveBeenCalledOnce()
+    expect(rb.descriptor.id).toBe(ra.descriptor.id)
+    expect(rb.checkpoint.checkpointId).toBe(ra.checkpoint.checkpointId)
+  })
+
+  it("allows a retry after a failed continuation", async () => {
+    const prev = makePrev()
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+    vi.mocked(spawnAgentSession).mockResolvedValueOnce({
+      ok: false,
+      code: "agent_spawn_failed",
+      message: "adapter died",
+    })
+    await expect(continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })).rejects.toThrow(
+      "agent_spawn_failed",
+    )
+
+    vi.mocked(spawnAgentSession).mockResolvedValueOnce({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const retry = await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+
+    expect(retry.descriptor.id).toBe("sess_new")
+    expect(spawnAgentSession).toHaveBeenCalledTimes(2)
+  })
+
+  it("refuses a second continuation with different options instead of returning the first successor", async () => {
+    const prev = makePrev()
+    vi.mocked(spawnAgentSession).mockResolvedValueOnce({
+      ok: true,
+      descriptor: { id: "sess_codex" } as SessionDescriptor,
+    })
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+
+    const first = await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints", harness: "codex" })
+    await expect(
+      continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints", harness: "gemini" }),
+    ).rejects.toMatchObject({
+      code: "already_continued",
+      details: { continuedFrom: prev.id, continuedTo: "sess_codex" },
+    })
+
+    expect(spawnAgentSession).toHaveBeenCalledOnce()
+    expect(first.descriptor.id).toBe("sess_codex")
+  })
+
+  it("continues distinct source ids independently", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+
+    await continueAgentSessionFresh(deps, makePrev(), { baseDir: "/tmp/checkpoints" })
+    await continueAgentSessionFresh(deps, makePrev(), { baseDir: "/tmp/checkpoints" })
+
+    expect(spawnAgentSession).toHaveBeenCalledTimes(2)
+  })
+
+  it("evicts only the oldest settled entry, never an in-flight continuation", async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let pendingStarted!: () => void
+    const started = new Promise<void>(resolve => {
+      pendingStarted = resolve
+    })
+    let spawns = 0
+    vi.mocked(spawnAgentSession).mockImplementation(async () => {
+      spawns += 1
+      if (spawns === CONTINUED_SOURCES_MAX + 1) {
+        pendingStarted()
+        await gate
+      }
+      return { ok: true, descriptor: { id: `sess_new_${spawns}` } as SessionDescriptor }
+    })
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+
+    const sources: SessionDescriptor[] = []
+    for (let i = 0; i < CONTINUED_SOURCES_MAX; i += 1) {
+      const prev = makePrev()
+      sources.push(prev)
+      await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+    }
+    expect(spawns).toBe(CONTINUED_SOURCES_MAX)
+
+    const pendingPrev = makePrev()
+    const a = continueAgentSessionFresh(deps, pendingPrev, { baseDir: "/tmp/checkpoints" })
+    const b = continueAgentSessionFresh(deps, pendingPrev, { baseDir: "/tmp/checkpoints" })
+    await started
+    expect(spawns).toBe(CONTINUED_SOURCES_MAX + 1)
+    release()
+    const [ra, rb] = await Promise.all([a, b])
+    expect(rb.descriptor.id).toBe(ra.descriptor.id)
+    expect(spawns).toBe(CONTINUED_SOURCES_MAX + 1)
+
+    // The in-flight continuation displaced the oldest SETTLED entry.
+    const oldest = sources[0]!
+    await continueAgentSessionFresh(deps, oldest, { baseDir: "/tmp/checkpoints" })
+    expect(spawns).toBe(CONTINUED_SOURCES_MAX + 2)
+
+    // The newest settled entry is still memoised.
+    const newest = sources[CONTINUED_SOURCES_MAX - 1]!
+    await continueAgentSessionFresh(deps, newest, { baseDir: "/tmp/checkpoints" })
+    expect(spawns).toBe(CONTINUED_SOURCES_MAX + 2)
+  })
+
   it("throws when no adapter resolver is configured", async () => {
     const prev = makePrev()
     await expect(
@@ -392,5 +713,61 @@ describe("continueAgentSessionFresh", () => {
         prev,
       ),
     ).rejects.toThrow("no adapter resolver")
+  })
+})
+
+describe("continueAgentSessionFresh: account slots", () => {
+  beforeEach(() => {
+    resetContinueFreshMemoForTests()
+    vi.mocked(spawnAgentSession).mockReset()
+    vi.mocked(spawnAgentSession).mockResolvedValue({ ok: true, descriptor: { id: "sess_new" } as SessionDescriptor })
+    fakeRegistry.get = vi.fn()
+    fakeRegistry.setPinned = vi.fn(() => ({ id: "sess_new" }) as SessionDescriptor)
+    wireMarkRetired()
+  })
+
+  it("session_continue_fresh accepts a slot access override (handed to the spawn, which resolves it)", async () => {
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints", access: { profileRef: "slot:claude-secondary" } },
+    )
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.access).toEqual({ profileRef: "slot:claude-secondary" })
+  })
+
+  it("carries a still-valid accessSlot as the slot ref, and the real profile once the slot moved", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { addAuthProfile } = await import("@agentproto/auth")
+    const prevHome = process.env.HOME
+    const home = await mkdtemp(join(tmpdir(), "agp-continue-slot-"))
+    process.env.HOME = home
+    try {
+      await addAuthProfile({ id: "anthropic-main", endpoint: "anthropic", method: "oauth-bearer" })
+      await mkdir(join(home, ".agentproto"), { recursive: true })
+      const writeSlots = (slots: Record<string, string>) =>
+        writeFile(join(home, ".agentproto", "config.json"), JSON.stringify({ accountSlots: slots }))
+      await writeSlots({ "claude-primary": "anthropic-main" })
+      await continueAgentSessionFresh(
+        { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+        { ...makePrev(), accessSlot: "claude-primary" },
+        { baseDir: "/tmp/checkpoints" },
+      )
+      expect(vi.mocked(spawnAgentSession).mock.calls[0]![1].access).toEqual({ profileRef: "slot:claude-primary" })
+
+      await writeSlots({ "claude-primary": "someone-else" })
+      await continueAgentSessionFresh(
+        { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+        { ...makePrev(), accessSlot: "claude-primary" },
+        { baseDir: "/tmp/checkpoints" },
+      )
+      expect(vi.mocked(spawnAgentSession).mock.calls[1]![1].access).toEqual({ profileRef: "anthropic-main" })
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      await rm(home, { recursive: true, force: true })
+    }
   })
 })

@@ -3,7 +3,7 @@
 The `agentproto-plugin` skill pack — source of truth for the skills that
 teach an agent to operate the `agentproto` CLI/daemon itself. The agentproto
 skills are organized as a 3-layer family: an L0 master map (`agentproto`),
-18 L1 primitives (`ap-*`, one daemon action each), 4 L2 groupers that route
+19 L1 primitives (`ap-*`, one daemon action each), 4 L2 groupers that route
 to primitives without duplicating mechanics (`drive-agents`,
 `supervise-long-missions`, `cheap-coders`, `extend-agentproto`), and 5 L3
 end-to-end playbooks (`pb-*`), plus two standalone guides kept from the

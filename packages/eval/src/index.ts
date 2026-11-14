@@ -43,12 +43,6 @@ import {
 export const EVAL_FORMAT = "agentproto.eval/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
-/**
- * @deprecated Not an AIP spec name; use {@link EVAL_FORMAT} instead.
- * Kept for backward compatibility.
- */
-export const SPEC_NAME = "agenteval/v1" as const
-
 export { scoreSchema, type Score } from "./score.js"
 
 export {

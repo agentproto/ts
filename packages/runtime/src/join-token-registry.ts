@@ -551,6 +551,16 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
         )
       } catch (err) {
         if (signal.aborted) break
+        // The handshake helper rejects on timeout without closing the
+        // transport it was handed, and an identity-load failure before the
+        // handshake never touches it at all. This accept loop re-parks
+        // forever, so an unclosed sink is one leaked socket per failed
+        // attempt. Close it before backing off.
+        try {
+          sink.close("handshake failed")
+        } catch {
+          /* already closing */
+        }
         log(`[join-tokens] "${record.name}": handshake failed: ${errMsg(err)}`)
         await sleep(backoff, signal)
         backoff = Math.min(backoff * 2, reconnectMaxMs)
@@ -586,15 +596,19 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
 
 // ── helpers ────────────────────────────────────────────────────
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+export function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
     if (signal.aborted) return resolve()
-    const timer = setTimeout(resolve, ms)
-    if (typeof timer.unref === "function") timer.unref()
-    signal.addEventListener("abort", () => {
+    const onAbort = (): void => {
       clearTimeout(timer)
       resolve()
-    })
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    if (typeof timer.unref === "function") timer.unref()
+    signal.addEventListener("abort", onAbort, { once: true })
   })
 }
 

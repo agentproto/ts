@@ -33,6 +33,16 @@
 
 import { spawn } from "node:child_process"
 
+import {
+  computeLevel,
+  levelFromDecision,
+  type Classifier,
+  type ClassifyContext,
+  type Envelope,
+  type Floor,
+  type Level,
+} from "@agentproto/delivery"
+
 import type { FollowEvent } from "./session-follow-store.js"
 
 // ── Decisions ─────────────────────────────────────────────────────────
@@ -173,6 +183,8 @@ export interface TriageEvent {
   /** `turn-end` reason (`cancelled`, `error`, …) or `exited` reason
    *  (`operator-stopped`, …). */
   reason?: string
+  /** The level-3 pin, carried by the envelope the producer built. */
+  floor?: Floor
 }
 
 /**
@@ -197,6 +209,8 @@ export interface TriageFacts {
 export interface TriageResult {
   decision: TriageDecision
   rule: string
+  /** The computed level (3 only when the envelope carries a floor). */
+  level?: Level
 }
 
 /** Rule ids — the vocabulary the JSONL ledger is written in. */
@@ -211,6 +225,19 @@ export const TRIAGE_RULES = {
   default: "default",
 } as const
 
+/**
+ * The floor a follow event pins, if any: awaiting input and a turn-end that
+ * carries a question are `awaiting-human`; a crash is `crash`. This is the
+ * single source of the always-wake set. `computeLevel` turns it into level 3.
+ */
+export function followFloor(event: FollowEvent, awaitingInput?: boolean): Floor | undefined {
+  if (event === "crashed") return "crash"
+  if (event === "awaiting-input" || (event === "turn-end" && awaitingInput === true)) {
+    return "awaiting-human"
+  }
+  return undefined
+}
+
 /** Exit reasons that mean "somebody asked this session to stop" — the
  *  operator or the follower itself. Deliberately narrower than
  *  `DELIBERATE_END_REASONS` (session-end-reason.ts): a steward-completed /
@@ -221,7 +248,7 @@ const OPERATOR_EXIT_REASONS: ReadonlySet<string> = new Set(["operator-stopped", 
  * The deterministic rules. Pure: same event + same facts ⇒ same decision.
  *
  * Order matters and is fixed:
- *  1. always-wake (never overridable),
+ *  1. a floored event (never overridable),
  *  2. the six operator-tunable rules, in declaration order,
  *  3. default → `wake`.
  */
@@ -231,13 +258,9 @@ export function classifyFollowEvent(
   facts: TriageFacts = {},
   reportWindowMs: number = DEFAULT_FOLLOW_TRIAGE_REPORT_WINDOW_MS,
 ): TriageResult {
-  // 1. Always wake: a session waiting on the human, a crash, or a turn-end
-  //    that carries a question. Never downgraded, never dropped.
-  if (
-    event.event === "awaiting-input" ||
-    event.event === "crashed" ||
-    (event.event === "turn-end" && event.awaitingInput === true)
-  ) {
+  // 1. A floored event (a session waiting on the human, a crash, or a
+  //    turn-end that carries a question) is never downgraded or dropped.
+  if ((event.floor ?? followFloor(event.event, event.awaitingInput)) !== undefined) {
     return { decision: "wake", rule: TRIAGE_RULES.alwaysWake }
   }
 
@@ -410,22 +433,151 @@ async function runUrlClassifier(
   }
 }
 
+function decisionForLevel(level: Level): TriageDecision {
+  if (level >= 2) return "wake"
+  if (level === 1) return "fyi"
+  return "drop"
+}
+
+/**
+ * Apply a decision through `computeLevel`: the envelope's floor always wins,
+ * so this is the ONE place a level-3 pin is honoured. Every other path reads
+ * the level this returns, never a separate must-wake branch.
+ */
+export function levelOfDecision(
+  event: Pick<TriageEvent, "floor" | "event" | "awaitingInput">,
+  decision: TriageDecision,
+  cap: Level = 3,
+): Level {
+  const hint = levelFromDecision(decision)
+  return computeLevel(
+    { floor: event.floor ?? followFloor(event.event, event.awaitingInput), levelHint: hint },
+    hint,
+    cap,
+  )
+}
+
+/**
+ * The deterministic verdict plus its computed level. Pure: same event + same
+ * facts ⇒ same result. A floored event always comes back as level 3 and is
+ * named `always-wake`, whatever the tunable rules would otherwise say.
+ */
+export function evaluateFollowEvent(
+  event: TriageEvent,
+  rules: FollowTriageRules,
+  facts: TriageFacts = {},
+  reportWindowMs: number = DEFAULT_FOLLOW_TRIAGE_REPORT_WINDOW_MS,
+  cap: Level = 3,
+): TriageResult & { level: Level } {
+  const base = classifyFollowEvent(event, rules, facts, reportWindowMs)
+  const level = levelOfDecision(event, base.decision, cap)
+  return {
+    decision: decisionForLevel(level),
+    rule: level === 3 ? TRIAGE_RULES.alwaysWake : base.rule,
+    level,
+  }
+}
+
 /**
  * Classify one event, consulting the classifier hook when one is
- * configured. The classifier may refine a rule decision, but it can never
- * override an always-wake event, and any failure falls back to the rules.
+ * configured. The hook may refine a non-floored decision; a floored event
+ * is decided by `computeLevel` and any failure falls back to the rules.
  */
 export async function triageFollowEvent(
   event: TriageEvent,
   config: FollowTriageConfig,
   facts: TriageFacts = {},
-): Promise<TriageResult> {
-  const base = classifyFollowEvent(event, config.rules, facts, config.reportWindowMs)
+): Promise<TriageResult & { level: Level }> {
+  const base = evaluateFollowEvent(event, config.rules, facts, config.reportWindowMs)
   if (!config.classifier) return base
-  // Always-wake events are a hard invariant of the rules — the classifier
-  // does not get to silence a session that is waiting on the human.
-  if (base.rule === TRIAGE_RULES.alwaysWake) return base
+  // The floor is already computed into `base.level`; a classifier can never
+  // silence an event that is waiting on the human.
+  if (base.level === 3) return base
   const outcome = await runFollowTriageClassifier(event, config.classifier)
   if (!outcome.decision) return base
-  return { decision: outcome.decision, rule: `classifier:${base.rule}` }
+  const level = levelOfDecision(event, outcome.decision)
+  return { decision: decisionForLevel(level), rule: `classifier:${base.rule}`, level }
+}
+
+// ── The session-lifecycle classifier ──────────────────────────────────
+
+/** Stable classifier id, recorded in the delivery ledger as `rule`. */
+export const SESSION_LIFECYCLE_CLASSIFIER_ID = "session-lifecycle"
+
+/** The CloudEvents type each follow event maps to. Kept in lockstep with the
+ *  `session` sentinel provider's vocabulary (`session.awaiting_input`,
+ *  `session.turn.ended`, `session.exited`). */
+const FOLLOW_ENVELOPE_TYPES: Record<FollowEvent, string> = {
+  "turn-end": "session.turn.ended",
+  "awaiting-input": "session.awaiting_input",
+  exited: "session.exited",
+  crashed: "session.crashed",
+  "pr-opened": "session.pr_opened",
+  "pr-merged": "session.pr_merged",
+  "task-changed": "session.task_changed",
+}
+
+const ENVELOPE_TYPE_TO_EVENT = new Map<string, FollowEvent>(
+  Object.entries(FOLLOW_ENVELOPE_TYPES).map(([event, type]) => [type, event as FollowEvent]),
+)
+
+/** The delivery envelope `type` for a follow event. */
+export function followEnvelopeType(event: FollowEvent): string {
+  return FOLLOW_ENVELOPE_TYPES[event]
+}
+
+/** Rebuild the rule-layer event from the producer's envelope. */
+export function triageEventFromEnvelope(env: Envelope, follower: string): TriageEvent {
+  const event = ENVELOPE_TYPE_TO_EVENT.get(env.type)
+  if (event === undefined) {
+    throw new Error(`not a session-lifecycle envelope type: ${env.type}`)
+  }
+  const data = env.data
+  const fromData = (key: string): string | undefined =>
+    typeof data[key] === "string" ? (data[key] as string) : undefined
+  return {
+    follower,
+    event,
+    sessionId: fromData("sessionId") ?? env.about?.sessionId ?? env.subject.replace(/^session:/, ""),
+    ts: env.time,
+    ...(fromData("label") ? { label: fromData("label")! } : {}),
+    ...(fromData("detail") ? { detail: fromData("detail")! } : {}),
+    ...(fromData("key") ? { key: fromData("key")! } : {}),
+    ...(fromData("boardId") ? { boardId: fromData("boardId")! } : {}),
+    ...(fromData("taskId") ? { taskId: fromData("taskId")! } : {}),
+    ...(typeof data.awaitingInput === "boolean" ? { awaitingInput: data.awaitingInput } : {}),
+    ...(typeof data.empty === "boolean" ? { empty: data.empty } : {}),
+    ...(fromData("reason") ? { reason: fromData("reason")! } : {}),
+    ...(env.floor !== undefined ? { floor: env.floor } : {}),
+  }
+}
+
+export interface SessionLifecycleClassifierOptions {
+  rules: FollowTriageRules
+  /** The engine facts, closed over here (never threaded through
+   *  `ClassifyContext`, which no longer carries them). */
+  facts?: TriageFacts
+  reportWindowMs?: number
+  /** Follower whose events these are; defaults to `ctx.targetId`. */
+  follower?: string
+}
+
+/** Build the `session-lifecycle` classifier over the follow rules. */
+export function createSessionLifecycleClassifier(
+  options: SessionLifecycleClassifierOptions,
+): Classifier {
+  const facts = options.facts ?? {}
+  const reportWindowMs = options.reportWindowMs ?? DEFAULT_FOLLOW_TRIAGE_REPORT_WINDOW_MS
+  const classify = (env: Envelope, ctx: ClassifyContext): Level =>
+    evaluateFollowEvent(
+      triageEventFromEnvelope(env, options.follower ?? ctx.targetId),
+      options.rules,
+      facts,
+      reportWindowMs,
+    ).level
+  return {
+    id: SESSION_LIFECYCLE_CLASSIFIER_ID,
+    types: Object.values(FOLLOW_ENVELOPE_TYPES),
+    classify,
+  }
 }

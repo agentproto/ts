@@ -132,3 +132,239 @@ test("broken external ref fails closed (no warn-and-stub)", (t) => {
   assert.match(res.stderr, /aip-999|NOPE/)
   assert.ok(!res.stderr.includes("replacing with empty schema"), res.stderr)
 })
+
+// ── oneOf branches that are `$ref`s ──────────────────────────────────
+// json-schema-to-zod renders a `$ref` as `z.any()`. As a `oneOf` branch that
+// matches every value, so the library's "exactly one branch passes" check
+// counted an array twice and rejected it (AGENT.md `on:` arrays, AIP-42).
+// The scaffolder resolves the refs of a `oneOf` branch before it decides
+// whether the branches are disjoint.
+function writeDraft(tmp, name, schema) {
+  writeFileSync(
+    join(tmp, "specs", "resources", "aip-99", "draft", `${name}.schema.json`),
+    JSON.stringify({ type: "object", required: ["id"], ...schema }),
+  )
+}
+
+test("a oneOf of $ref and array-of-$ref renders a union over the resolved ref", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "HOOKS", {
+    properties: {
+      id: { type: "string" },
+      on: {
+        type: "object",
+        additionalProperties: {
+          oneOf: [
+            { $ref: "#/$defs/actionRef" },
+            { type: "array", items: { $ref: "#/$defs/actionRef" } },
+          ],
+        },
+      },
+    },
+    $defs: {
+      actionRef: {
+        oneOf: [
+          { type: "string", minLength: 1 },
+          { type: "object", properties: { action: { type: "string" } } },
+        ],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "HOOKS"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+  assert.match(res.stdout, /z\.union\(\[z\.union\(\[z\.string\(\)\.min\(1\), z\.object\(/, res.stdout)
+  assert.match(res.stdout, /z\.array\(z\.union\(\[z\.string\(\)\.min\(1\), z\.object\(/, res.stdout)
+})
+
+test("a oneOf of $ref objects sharing a const discriminator renders a discriminatedUnion", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CHECKS", {
+    properties: {
+      id: { type: "string" },
+      checks: {
+        type: "array",
+        items: { oneOf: [{ $ref: "#/$defs/cmd" }, { $ref: "#/$defs/agent" }] },
+      },
+    },
+    $defs: {
+      cmd: { type: "object", properties: { kind: { const: "command" }, run: { type: "string" } } },
+      agent: { type: "object", properties: { kind: { const: "agent" }, preset: { type: "string" } } },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CHECKS"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+  assert.match(res.stdout, /z\.discriminatedUnion\("kind", \[z\.object\(/, res.stdout)
+})
+
+test("a oneOf whose $ref branches overlap keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "OVERLAP", {
+    properties: {
+      id: { type: "string" },
+      name: { oneOf: [{ $ref: "#/$defs/short" }, { $ref: "#/$defs/long" }] },
+    },
+    $defs: {
+      short: { type: "string", maxLength: 3 },
+      long: { type: "string", minLength: 3 },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "OVERLAP"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+  assert.ok(!res.stdout.includes("z.union("), res.stdout)
+})
+
+test("a recursive $ref in a oneOf branch is left as z.any(), not expanded forever", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "TREE", {
+    properties: {
+      id: { type: "string" },
+      tree: {
+        oneOf: [
+          { type: "string" },
+          { type: "array", items: { $ref: "#/$defs/node" } },
+        ],
+      },
+    },
+    $defs: {
+      node: {
+        oneOf: [{ type: "string" }, { type: "array", items: { $ref: "#/$defs/node" } }],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "TREE"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes('"tree": z.union([z.string(), z.array(z.any())])'), res.stdout)
+})
+
+// ── --inline-ref <def>: inline one $def, leave the other $refs as z.any() ──
+test("--inline-ref inlines only the named def and leaves the other refs as z.any()", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "PARTIAL", {
+    properties: {
+      id: { type: "string" },
+      named: { $ref: "#/$defs/wanted" },
+      other: { $ref: "#/$defs/skipped" },
+    },
+    $defs: {
+      wanted: { type: "string", minLength: 4 },
+      skipped: { type: "string", minLength: 9 },
+    },
+  })
+  const argv = ["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "PARTIAL"]
+  const plain = run(argv)
+  assert.equal(plain.status, 0, plain.stderr)
+  assert.ok(plain.stdout.includes('"named": z.any()'), plain.stdout)
+
+  const res = run([...argv, "--inline-ref", "wanted"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes('"named": z.string().min(4)'), res.stdout)
+  assert.ok(res.stdout.includes('"other": z.any()'), res.stdout)
+})
+
+test("--inline-ref inlines the refs held inside the named def", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "NESTED", {
+    properties: {
+      id: { type: "string" },
+      items: { type: "array", items: { $ref: "#/$defs/outer" } },
+    },
+    $defs: {
+      outer: { oneOf: [{ $ref: "#/$defs/inner" }, { type: "number" }] },
+      inner: { type: "string", minLength: 2 },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "NESTED", "--inline-ref", "outer"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("z.string().min(2)"), res.stdout)
+  assert.ok(!res.stdout.includes("z.any()"), res.stdout)
+})
+
+// ── oneOf of closed objects that cannot both match ───────────────────
+test("a oneOf of a closed object and an object requiring a key it does not declare renders a union", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CLOSED", {
+    properties: {
+      id: { type: "string" },
+      item: {
+        oneOf: [
+          { type: "string" },
+          {
+            type: "object",
+            properties: { ref: { type: "string" } },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["server"],
+            properties: { server: { type: "string" } },
+            additionalProperties: false,
+          },
+        ],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CLOSED"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+  assert.match(res.stdout, /"item": z\.union\(\[z\.string\(\), z\.object\(/, res.stdout)
+})
+
+test("a oneOf of open objects is not provably disjoint and keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "OPENOBJ", {
+    properties: {
+      id: { type: "string" },
+      item: {
+        oneOf: [
+          { type: "object", properties: { a: { type: "string" } } },
+          { type: "object", required: ["b"], properties: { b: { type: "string" } } },
+        ],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "OPENOBJ"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+})
+
+test("a oneOf of a const and its own primitive type is not disjoint and keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CONSTOVERLAP", {
+    properties: {
+      id: { type: "string" },
+      pick: { oneOf: [{ const: "x" }, { type: "string" }] },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CONSTOVERLAP"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+})
+
+test("a oneOf of integer and number is not disjoint and keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "NUMOVERLAP", {
+    properties: {
+      id: { type: "string" },
+      n: { oneOf: [{ type: "integer" }, { type: "number" }] },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "NUMOVERLAP"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+})
+
+test("a oneOf of a string-const and a number type stays a plain union", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CONSTDISJOINT", {
+    properties: {
+      id: { type: "string" },
+      pick: { oneOf: [{ const: "x" }, { type: "number" }] },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CONSTDISJOINT"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+})

@@ -209,8 +209,9 @@ move).
 `alg` names the digest RECIPE (not the hash function — that's always
 sha256): which bytes get hashed, in what order, with what separators. It
 travels inside a *signed* attestation, so it's versioned from day one even
-though only one version exists — `agentproto-pack-digest/v1`
+though only one version exists: `review.pack-digest/v1`
 (`PACK_DIGEST_ALG`, `computePackDigestSha256` in `packages/review/src/packs.ts`).
+The pre-AIP-70 `agentproto-pack-digest/v1` tag is still accepted when reading.
 Exact byte layout, reproducible from raw files with no need to re-run
 `resolvePacks`:
 
@@ -306,7 +307,7 @@ verdict:
 
 ```ts
 {
-  schema: "agentproto.review.attestation/v1",
+  schema: "review.attestation/v1", // agentproto.review.attestation/v1 is still accepted on read
   runId, reviewId, manifestSha, binding,
   target: { repoRemote, baseSha, headSha },
   rangeSha,                       // sha256("<baseSha>..<headSha>")

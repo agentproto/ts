@@ -22,9 +22,11 @@ import { z } from "zod"
 import { KeychainStore, getAuthProfile, type AuthProfile } from "@agentproto/auth"
 import {
   QuotaReaderRegistry,
+  createAnthropicOAuthQuotaReader,
   createMoonshotQuotaReader,
   createOpenRouterQuotaReader,
   type QuotaProfile,
+  type QuotaReadFailure,
   type QuotaStatus,
 } from "@agentproto/quota"
 
@@ -32,15 +34,17 @@ import {
  * Build the registry `quota_status` reads through. Registration order is
  * precedence: the first reader whose `supports()` claims a profile wins.
  *
- * Anthropic (`quotaFromAnthropicHeaders`) and Codex (`quotaFromCodexRateLimits`)
- * are pure PARSERS on this surface — a caller feeds them a captured header set
- * / `rate_limits` payload directly — not fetching `QuotaReader`s, so there is
- * nothing to register for them here.
+ * Anthropic subscriptions (`oauth-bearer`) are read by a fetching reader that
+ * probes once and parses the `anthropic-ratelimit-unified-*` headers. Codex
+ * (`quotaFromCodexRateLimits`) is still a pure PARSER on this surface — a
+ * caller feeds it a captured `rate_limits` payload directly — so there is
+ * nothing to register for it here.
  */
 export function createQuotaReaderRegistry(): QuotaReaderRegistry {
   return new QuotaReaderRegistry()
     .register(createOpenRouterQuotaReader())
     .register(createMoonshotQuotaReader())
+    .register(createAnthropicOAuthQuotaReader())
 }
 
 /** One module-level default: the readers are stateless, construction is cheap. */
@@ -81,6 +85,10 @@ export type QuotaStatusErrorCode =
   | "profile_ref_required"
   | "profile_not_found"
   | "no_reader"
+  | "credential_missing"
+  | "credential_rejected"
+  | "rate_limited"
+  | "provider_unreachable"
   | "reader_returned_nothing"
 
 export type QuotaStatusResult =
@@ -133,12 +141,20 @@ export async function readQuotaStatus(
     }
   }
 
+  let failure: QuotaReadFailure | undefined
   const status = await registry.read(quotaProfile, {
+    reportFailure: (f) => {
+      failure ??= f
+    },
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     ...(deps.now ? { now: deps.now } : {}),
     resolveCredential: deps.resolveCredential ?? keychainSecret,
   })
   if (!status) {
+    const reported = failure as QuotaReadFailure | undefined
+    if (reported && reported.code !== "no_usable_figures") {
+      return { ok: false, error: reported.code, message: reported.message }
+    }
     return {
       ok: false,
       error: "reader_returned_nothing",

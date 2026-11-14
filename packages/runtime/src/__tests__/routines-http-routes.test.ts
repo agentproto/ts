@@ -21,6 +21,7 @@ function makeMockRegistrar(definitions: unknown[] = []): RoutineRegistrar {
     reconcile: async () => ({ registered: [], skipped: [], removed: [], errors: [] }),
     trigger: async () => ({ ok: true, summary: "mock" }),
     list: () => definitions as ReturnType<RoutineRegistrar["list"]>,
+    eventBindings: () => [],
   }
 }
 

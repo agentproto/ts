@@ -46,7 +46,7 @@
  * configured with.
  */
 
-import { existsSync, realpathSync } from "node:fs"
+import { existsSync, realpathSync, statSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -107,6 +107,13 @@ export interface SandboxZones {
   readOnly: string[]
   writable: string[]
   hidden?: string[]
+  /**
+   * Files/dirs denied for read AND write even inside a readable or writable
+   * zone (secrets found inside an operator-granted read tree). Unlike
+   * `hidden`, no zone can re-open them: Seatbelt emits the deny last, bwrap
+   * mounts `/dev/null` (file) or an empty tmpfs (dir) over them last.
+   */
+  unreadable?: string[]
 }
 
 export interface CommandSandbox {
@@ -380,6 +387,10 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
       `(allow file-read* file-write* (subpath "${sbplQuote(canon(extra))}"))`,
     )
   }
+  // Last, so no zone or extra path allow above can re-open them.
+  for (const u of zones?.unreadable ?? []) {
+    parts.push(`(deny file-read* file-write* (subpath "${sbplQuote(canon(u))}"))`)
+  }
   if (policy.network === "deny") parts.push("(deny network*)")
   return parts.join("")
 }
@@ -455,6 +466,18 @@ export function buildBwrapArgs(argv: string[], policy: SandboxPolicy): string[] 
   for (const extra of policy.extraWritePaths ?? []) {
     const p = resolve(extra)
     out.push("--bind-try", p, p)
+  }
+  // Mounted last so no earlier bind can re-expose them.
+  for (const u of zones?.unreadable ?? []) {
+    const p = resolve(u)
+    let isDir = false
+    try {
+      isDir = statSync(p).isDirectory()
+    } catch {
+      continue
+    }
+    if (isDir) out.push("--tmpfs", p)
+    else out.push("--ro-bind", "/dev/null", p)
   }
   if (policy.network === "deny") out.push("--unshare-net")
   out.push("--", ...argv)

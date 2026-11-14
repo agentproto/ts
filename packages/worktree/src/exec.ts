@@ -21,6 +21,35 @@ export interface ExecOptions {
   signal?: AbortSignal
   /** Grace between SIGTERM and SIGKILL on abort. Default 5000ms. */
   killGraceMs?: number
+  /** Live tap on the child's output: called with every stdout/stderr chunk as
+   *  it arrives (the full text is still collected into the result). A throwing
+   *  observer is swallowed: it must never break the run it watches. */
+  onOutput?: (text: string, stream: "stdout" | "stderr") => void
+}
+
+/** Collect a child's output into the result strings, tapping `opts.onOutput`. */
+function collectOutput(child: ChildProcess, opts: ExecOptions): () => { stdout: string; stderr: string } {
+  let stdout = ""
+  let stderr = ""
+  const tap = (text: string, stream: "stdout" | "stderr"): void => {
+    if (!opts.onOutput) return
+    try {
+      opts.onOutput(text, stream)
+    } catch {
+      // An observer must never break the command.
+    }
+  }
+  child.stdout?.on("data", (d: Buffer) => {
+    const text = d.toString("utf8")
+    stdout += text
+    tap(text, "stdout")
+  })
+  child.stderr?.on("data", (d: Buffer) => {
+    const text = d.toString("utf8")
+    stderr += text
+    tap(text, "stderr")
+  })
+  return () => ({ stdout, stderr })
 }
 
 /** Merge caller-supplied vars onto the inherited env (caller wins). */
@@ -83,17 +112,14 @@ export function execArgv(
       detached: opts.signal !== undefined && process.platform !== "win32",
     })
     const detach = killOnAbort(child, opts)
-    let stdout = ""
-    let stderr = ""
-    child.stdout?.on("data", (d) => (stdout += d.toString("utf8")))
-    child.stderr?.on("data", (d) => (stderr += d.toString("utf8")))
+    const output = collectOutput(child, opts)
     child.on("error", (err) => {
       detach()
       reject(err)
     })
     child.on("close", (code) => {
       detach()
-      resolvePromise({ exitCode: code ?? -1, stdout, stderr })
+      resolvePromise({ exitCode: code ?? -1, ...output() })
     })
   })
 }
@@ -117,17 +143,14 @@ export function execShell(cmd: string, cwd: string, opts: ExecOptions = {}): Pro
       detached: opts.signal !== undefined && process.platform !== "win32",
     })
     const detach = killOnAbort(child, opts)
-    let stdout = ""
-    let stderr = ""
-    child.stdout?.on("data", (d) => (stdout += d.toString("utf8")))
-    child.stderr?.on("data", (d) => (stderr += d.toString("utf8")))
+    const output = collectOutput(child, opts)
     child.on("error", (err) => {
       detach()
       reject(err)
     })
     child.on("close", (code) => {
       detach()
-      resolvePromise({ exitCode: code ?? -1, stdout, stderr })
+      resolvePromise({ exitCode: code ?? -1, ...output() })
     })
   })
 }

@@ -29,7 +29,7 @@ import { createRuntimeEvents } from "../events.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "../approvals/engine.js"
 import { registerApprovalTools } from "../approvals/tools.js"
-import { registerApprovalCardDecideTool } from "../approvals/card-tool.js"
+import { registerApprovalCardDecideTool, registerApprovalCardListTool } from "../approvals/card-tool.js"
 import { approvalCardResourceUri, renderApprovalCardHtml } from "../approvals/card.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
@@ -62,11 +62,12 @@ async function mcpServerFactory(
   registerApprovalTools(server, { engine, ...(callerSessionId ? { callerSessionId } : {}) })
   if (surface === "approval-cards" && !callerSessionId) {
     registerApprovalCardDecideTool(server, engine)
+    registerApprovalCardListTool(server, engine)
     for (const pending of engine.list({ status: "pending" })) {
       registerUiResource(server, {
         name: `approval-${pending.id}`,
         uri: approvalCardResourceUri(pending.id),
-        html: () => renderApprovalCardHtml(engine, pending.id),
+        html: () => renderApprovalCardHtml(pending.id),
       })
     }
   }
@@ -141,6 +142,7 @@ describe("approval-cards MCP surface: who gets the card", () => {
       const client = await connect(base)
       const { tools } = await client.listTools()
       expect(tools.map(t => t.name)).not.toContain("approval_card_decide")
+      expect(tools.map(t => t.name)).not.toContain("approval_card_list")
 
       await expect(client.readResource({ uri: approvalCardResourceUri(id) })).rejects.toThrow()
       await client.close()
@@ -158,12 +160,13 @@ describe("approval-cards MCP surface: who gets the card", () => {
 
       const { tools } = await requestClient.listTools()
       expect(tools.map(t => t.name)).not.toContain("approval_card_decide")
+      expect(tools.map(t => t.name)).not.toContain("approval_card_list")
       await expect(requestClient.readResource({ uri: approvalCardResourceUri(id) })).rejects.toThrow()
       await requestClient.close()
     })
   })
 
-  it("?surface=approval-cards (no callerSessionId): lists the tool, serves the resource, ticket flow works", async () => {
+  it("?surface=approval-cards (no callerSessionId): lists the tools, serves the template, ticket flow works", async () => {
     await withServer(async base => {
       const requestClient = await connect(base)
       const requested = await requestClient.callTool({
@@ -176,11 +179,18 @@ describe("approval-cards MCP surface: who gets the card", () => {
       const cardClient = await connect(base, "?surface=approval-cards")
       const { tools } = await cardClient.listTools()
       expect(tools.map(t => t.name)).toContain("approval_card_decide")
+      const list = tools.find(t => t.name === "approval_card_list")
+      expect((list?._meta as { ui?: { visibility?: string[] } } | undefined)?.ui?.visibility).toEqual(["app"])
 
       const read = await cardClient.readResource({ uri: approvalCardResourceUri(id) })
       const content = read.contents[0]
       if (!content || !("text" in content)) throw new Error("resource read returned no text content")
-      const ticket = content.text.match(/var TICKET = "([^"]+)"/)?.[1]
+      expect(content.text).not.toContain("var TICKET")
+
+      const listed = (await cardClient.callTool({ name: "approval_card_list", arguments: { approvalId: id } })) as {
+        structuredContent?: { approvals: Array<{ id: string; ticket?: string }> }
+      }
+      const ticket = listed.structuredContent?.approvals.find(a => a.id === id)?.ticket
       expect(ticket).toBeTruthy()
 
       const decided = await cardClient.callTool({

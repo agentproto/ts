@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { ioFrontmatterSchema } from "./schema.js"
 import type { IoDefinition, IoHandle } from "./types.js"
 

@@ -17,10 +17,10 @@
 import { fileURLToPath } from "node:url"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 // Self-locating: the built handle spawns `node <this-pkg>/bin/…
 // claude-code-cloud-acp.mjs`. From dist/index.mjs the bin sits one level up,
@@ -46,7 +46,7 @@ export const CLOUD_REFUSED_SPAWN_FIELDS = [
   "inference",
 ] as const
 
-export const claudeCodeCloud: AgentCliHandle = defineAgentCli({
+export const claudeCodeCloud: AgentCliHandle = defineHarness({
   name: "claude-code-cloud",
   id: "claude-code-cloud",
   description:
@@ -198,6 +198,7 @@ export {
   ptyOutputTail,
   sendPrompt,
   startCloudSession,
+  trustClaudeFolder,
   CLAUDE_CODE_GATEWAY_ENV_UNSET,
   type AuthStatus,
   type CloudCliRunner,

@@ -13,11 +13,11 @@
  *
  * Non-frontmatter values that can't appear in YAML (zod schemas,
  * function bodies) are filtered out by `filterSerializable` from
- * `@agentproto/define-doctype`; the resulting frontmatter matches
+ * `@agentproto/doctype`; the resulting frontmatter matches
  * what `parseToolManifest` would consume on the way back in.
  */
 
-import { filterSerializable } from "@agentproto/define-doctype"
+import { filterSerializable } from "@agentproto/doctype"
 import matter from "gray-matter"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"

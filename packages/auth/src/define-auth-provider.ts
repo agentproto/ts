@@ -7,7 +7,7 @@
  * fails with the same diagnostic as a malformed `.md`.
  */
 
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { authProviderFrontmatterSchema } from "./schema.js"
 import type { AuthProviderDefinition, AuthProviderHandle } from "./types.js"
 

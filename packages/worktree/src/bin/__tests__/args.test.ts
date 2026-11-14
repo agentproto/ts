@@ -28,7 +28,7 @@ describe("parseArgs", () => {
       "pnpm test",
       "--base",
       "origin/main",
-      "--adapter",
+      "--harness",
       "hermes",
       "--deps-cmd",
       "pnpm install --prefer-offline",
@@ -52,13 +52,26 @@ describe("parseArgs", () => {
       gateCmd: "pnpm test",
       deleteBranch: false,
       base: "origin/main",
-      adapter: "hermes",
+      harness: "hermes",
       depsCmd: "pnpm install --prefer-offline",
       copyGlobs: ["envs/**/.env.local", "secrets/*.json"],
       linkPaths: ["node_modules", "projects/agentproto/ts"],
       writeFiles: [{ path: "pnpm-workspace.yaml", content: "virtualStoreDir: /tmp/vstore\n", mode: "append" }],
     })
     expect(yes).toBe(true)
+  })
+
+  it("--harness sets the harness with no warning; the deprecated --adapter does the same and warns", () => {
+    const base = ["run", "--repo", "/tmp/repo", "--slug", "s", "--task", "t", "--gate", "true"]
+    const canonical = parseArgs([...base, "--harness", "hermes"])
+    expect(canonical.input.harness).toBe("hermes")
+    expect(canonical.warnings).toEqual([])
+    const legacy = parseArgs([...base, "--adapter", "hermes"])
+    expect(legacy.input.harness).toBe("hermes")
+    expect(legacy.input.adapter).toBeUndefined()
+    expect(legacy.warnings).toEqual([
+      "worktree-agent: `--adapter` is deprecated and will be removed in the next major of @agentproto/runtime; use `--harness`",
+    ])
   })
 
   it("throws CliUsageError when --write-file isn't valid JSON", () => {

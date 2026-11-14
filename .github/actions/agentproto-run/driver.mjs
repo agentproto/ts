@@ -25,11 +25,14 @@
  *   PORT              daemon HTTP port                             default '18790'
  *   ACTION_PATH       dir holding this script's own node_modules
  *                     (where `agentproto` was npm-installed)        default this dir
+ *   DRIVER_RESULT_FILE where to write `{ exitCode, status, errorTexts,
+ *                     artifacts, stepsDone, emptyTurn? }` for
+ *                     run-with-rotation.mjs (credential rotation)   optional
  */
 
 import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
-import { appendFile, mkdir, readFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -40,7 +43,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 // artifact-ledger helpers are on disk two levels up from `.github/actions/*/`.
 import { parseArtifactMarkers } from "../../../scripts/lib/artifact-ledger.mjs"
 import { detectAdapterCrash } from "./crash-signals.mjs"
+import { errorLinesFromText } from "./credential-rotation.mjs"
 import { describeRunProgress } from "../../../scripts/lib/workflow-progress.mjs"
+import { buildReviewSummary } from "../../../scripts/lib/review-run-summary.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -67,6 +72,20 @@ const idleTimeoutMinutes = Number(
   process.env.IDLE_TIMEOUT_MINUTES ?? String(Math.min(timeoutMinutes, 15)),
 )
 const port = Number(process.env.PORT ?? "18790")
+// Opt-in supervising session (pr-review's supervised loop): spawn one idle
+// session before the run and pass its id as the run's `supervisorSessionId`,
+// so every step session the run spawns records a NON-EMPTY `parentSessionId`.
+// The supervisor does no model work (no initial prompt) - it is pure lineage.
+const supervise = (process.env.SUPERVISOR ?? "").trim() === "true"
+/** Set once the idle supervisor is spawned; retired on every exit path. */
+let supervisorToRetire
+// What this run's failure said, for run-with-rotation.mjs: the run and step
+// errors, each session's last turn error, and the adapter's `[error]` lines.
+// Read only through DRIVER_RESULT_FILE; never printed as a whole.
+// `stepsDone` and `artifacts` tell it whether the run already did something a
+// second run would repeat (a host review posted with `gh` leaves no artifact
+// marker, but its step is done).
+const failureEvidence = { errorTexts: [], artifacts: 0, stepsDone: 0 }
 
 let workflowInput
 try {
@@ -139,6 +158,12 @@ await mkdir(cwd, { recursive: true })
 const providerKeyEnv = (process.env.PROVIDER_KEY_ENV ?? "").trim()
 const providerKey = process.env.PROVIDER_KEY ?? ""
 const daemonEnv = { ...process.env }
+// The action exports every COMPUTER_* input unconditionally; an unset one
+// arrives as "" and would be read by the computer provider as a real (empty)
+// value (e.g. tenantId ""). Drop empties so "empty = not set" holds.
+for (const name of Object.keys(daemonEnv)) {
+  if (name.startsWith("COMPUTER_") && daemonEnv[name].trim() === "") delete daemonEnv[name]
+}
 if (providerKeyEnv && providerKey) {
   daemonEnv[providerKeyEnv] = providerKey
   console.log(`driver: injected provider key env ${providerKeyEnv} into the daemon process env`)
@@ -331,9 +356,48 @@ async function main() {
   )
   await client.connect(transport)
 
+  // Supervising session (see `supervise` above). Best-effort: a spawn failure
+  // must NOT cost the review its run - log it and start the run unparented
+  // rather than fail the whole lane over lineage metadata.
+  let supervisorSessionId
+  if (supervise) {
+    try {
+      const spawned = parseToolResult(
+        await Promise.race([
+          client.callTool({
+            name: "agent_start",
+            arguments: {
+              adapter,
+              cwd,
+              label: "review-supervisor",
+              // A long review/fix loop must not have its parent reaped mid-run.
+              keepAlive: true,
+            },
+          }),
+          sleep(60_000).then(() => {
+            throw new Error("agent_start did not answer within 60s")
+          }),
+        ]),
+      )
+      supervisorSessionId = spawned?.id ?? spawned?.sessionId ?? spawned?.descriptor?.id
+      if (supervisorSessionId) {
+        supervisorToRetire = { client, id: supervisorSessionId }
+        console.log(`driver: supervising session ${supervisorSessionId}`)
+      }
+      else console.error("driver: agent_start returned no session id - running unparented")
+    } catch (err) {
+      console.error(`driver: supervisor spawn failed (${err.message}) - running unparented`)
+    }
+  }
+
   const startResult = await client.callTool({
     name: "workflow_run_file",
-    arguments: { path: workflowPath, input: workflowInput, cwd },
+    arguments: {
+      path: workflowPath,
+      input: workflowInput,
+      cwd,
+      ...(supervisorSessionId ? { supervisorSessionId } : {}),
+    },
   })
   const started = parseToolResult(startResult)
   if (started.error) throw new Error(`workflow_run_file failed: ${started.error}`)
@@ -485,8 +549,11 @@ async function main() {
     for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
       if (typeof step?.sessionId === "string" && step.sessionId) sessionIds.add(step.sessionId)
       if (typeof step?.error === "string" && step.error) stepErrors.push(step.error)
+      if (step?.status === "done") failureEvidence.stepsDone += 1
     }
   }
+  if (typeof run.error === "string" && run.error) failureEvidence.errorTexts.push(run.error)
+  failureEvidence.errorTexts.push(...stepErrors)
   const SESSION_ID_RE = /sess_[A-Za-z0-9-]+/g
   for (const text of [run.error, ...stepErrors]) {
     for (const match of String(text ?? "").matchAll(SESSION_ID_RE)) sessionIds.add(match[0])
@@ -569,6 +636,10 @@ async function main() {
   for (const sid of [...sessionIds].slice(0, 8)) {
     const desc = listedSessions.find((s) => s?.id === sid)
     if (desc) {
+      for (const field of ["lastTurnErrorMessage", "lastError", "endedReason"]) {
+        if (typeof desc[field] === "string" && desc[field]) failureEvidence.errorTexts.push(desc[field])
+      }
+      if (desc.lastTurnEmpty === true) failureEvidence.emptyTurn = true
       console.log(
         `driver: session ${sid} descriptor: status=${desc.status} adapter=${desc.adapterSlug ?? "?"} ` +
           `label=${desc.label ?? ""} remote=${desc.remote === true} sandboxId=${desc.sandboxId ?? ""}`,
@@ -617,6 +688,7 @@ async function main() {
         text = rawText
       }
       console.log(`driver: ---- agent_output ${sid} ----\n${text}\n---- end agent_output ${sid} ----`)
+      failureEvidence.errorTexts.push(...errorLinesFromText(text))
       if (text.trim().length > 0) sawAgentOutput = true
     } catch (err) {
       console.error(
@@ -647,6 +719,7 @@ async function main() {
       for (const rec of parseArtifactMarkers(harvestText, { sessionId: sid })) {
         if (artifacts.some((a) => JSON.stringify(a) === JSON.stringify(rec))) continue
         artifacts.push(rec)
+        failureEvidence.artifacts = artifacts.length
         console.log(`driver: harvested artifact ${rec.kind} id=${rec.id} from session ${sid}`)
       }
     } catch (err) {
@@ -670,6 +743,7 @@ async function main() {
         // megabytes, and the post-mortem needs the END of the conversation.
         const lines = transcript.split("\n")
         const tail = lines.slice(-200).join("\n")
+        failureEvidence.errorTexts.push(...errorLinesFromText(transcript))
         console.log(
           `driver: ---- agent_export ${sid} (last ${Math.min(lines.length, 200)}/${lines.length} lines) ----\n` +
             `${tail}\n---- end agent_export ${sid} ----`,
@@ -706,6 +780,68 @@ async function main() {
   // and THEN hung no longer looks (to the postcheck's live-head recount) like
   // nothing was posted — which is what arms a duplicate fallback review.
   const finalStatus = timedOut ? "timed-out" : silentNoop || adapterCrashed ? "failed" : run.status
+
+  // Stage/verdict summary - the check run's title + summary, and the job's
+  // step summary. Read the FULL status so step outputs (the typed review
+  // verdicts) are present; the polled status is compact by design. A failure
+  // here is cosmetic only: fall back to the compact run.
+  let fullRun = run
+  try {
+    const full = parseToolResult(
+      await client.callTool({ name: "workflow_status", arguments: { runId, full: true } }),
+    )
+    if (full?.status) fullRun = full
+  } catch (err) {
+    console.error(`driver: full workflow_status for the summary failed: ${err.message}`)
+  }
+  // One event-log page (cap 500) gives the per-EXECUTION stage rows: the run
+  // record dedupes a loop step to one row per id, while the AIP-58 log has
+  // every review/fix iteration.
+  let runEvents
+  try {
+    const page = parseToolResult(
+      await client.callTool({ name: "run_events", arguments: { runId } }),
+    )
+    runEvents = Array.isArray(page?.events) ? page.events : undefined
+  } catch (err) {
+    console.error(`driver: run_events for the summary failed: ${err.message}`)
+  }
+  const summary = buildReviewSummary(
+    { ...fullRun, status: finalStatus === "timed-out" ? "failed" : finalStatus },
+    {
+      maxFixIterations: reviewConfig?.commands?.fix?.maxFixIterations ?? reviewConfig?.maxFixIterations ?? 3,
+      ...(runEvents ? { events: runEvents } : {}),
+    },
+  )
+  await writeGithubOutput("summary-title", summary.title)
+  await writeGithubOutput("summary-verdict", summary.verdict)
+  // Multi-line value: the `name<<EOF` form (never the single-line `name=value`
+  // form, which truncates at the first newline).
+  const summaryFile = process.env.GITHUB_STEP_SUMMARY
+  if (summaryFile) {
+    try {
+      await appendFile(summaryFile, `${summary.summary}\n`, "utf8")
+    } catch (err) {
+      console.error(`driver: could not append the step summary: ${err.message}`)
+    }
+  }
+  const outputFile = process.env.GITHUB_OUTPUT
+  if (outputFile) {
+    await appendFile(outputFile, `summary<<__SUMMARY_EOF__\n${summary.summary}\n__SUMMARY_EOF__\n`, "utf8")
+  }
+  console.log(`driver: summary: ${summary.title} (reviews=${summary.reviews}, fixes=${summary.fixes})`)
+
+  // Retire the idle supervisor (fast path). The outer `finally` retires it too,
+  // for any path that throws before reaching here.
+  if (supervisorSessionId) {
+    try {
+      await client.callTool({ name: "agent_kill", arguments: { sessionId: supervisorSessionId } })
+      supervisorToRetire = undefined
+    } catch (err) {
+      console.error(`driver: supervisor kill failed: ${err.message}`)
+    }
+  }
+
   await writeGithubOutput("run-id", runId)
   await writeGithubOutput("status", finalStatus)
   // Single-line JSON (no newline) — safe for the `name=value` GITHUB_OUTPUT form.
@@ -713,6 +849,8 @@ async function main() {
   console.log(`driver: provenance=${JSON.stringify(provenance)}`)
   await writeGithubOutput("artifacts", JSON.stringify(artifacts))
   console.log(`driver: artifacts=${JSON.stringify(artifacts)}`)
+  failureEvidence.status = finalStatus
+  failureEvidence.artifacts = artifacts.length
   return finalStatus === "done" ? 0 : 1
 }
 
@@ -721,13 +859,33 @@ try {
   exitCode = await main()
 } catch (err) {
   console.error(`driver: ${err instanceof Error ? err.message : String(err)}`)
+  failureEvidence.errorTexts.push(err instanceof Error ? err.message : String(err))
   exitCode = 1
 } finally {
+  // Safety net: an early throw must not leave the idle supervisor behind.
+  if (supervisorToRetire) {
+    try {
+      await supervisorToRetire.client.callTool({
+        name: "agent_kill",
+        arguments: { sessionId: supervisorToRetire.id },
+      })
+    } catch (err) {
+      console.error(`driver: supervisor cleanup failed: ${err.message}`)
+    }
+  }
   killDaemon()
   // SIGTERM makes the daemon say goodbye to the home daemon it joined
   // (AGENTPROTO_JOIN) so the reviewer's final output is captured before this
   // runner disappears — exiting right away would cut that short. Bounded; a
   // daemon with no join exits in well under a second.
   await waitForDaemonExit(35_000)
+  const resultFile = (process.env.DRIVER_RESULT_FILE ?? "").trim()
+  if (resultFile) {
+    try {
+      await writeFile(resultFile, JSON.stringify({ exitCode, ...failureEvidence }), "utf8")
+    } catch (err) {
+      console.error(`driver: could not write ${resultFile}: ${err.message}`)
+    }
+  }
 }
 process.exit(exitCode)

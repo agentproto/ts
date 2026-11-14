@@ -213,12 +213,27 @@ interface AppRegistryState {
  *  is computed live on every `listIssues()` call: an installed app whose
  *  `dir` no longer exists on disk (e.g. installed from a worktree that was
  *  later removed), so its agents and workflows cannot load until it is
- *  reinstalled from a live checkout. */
+ *  reinstalled from a live checkout. A `dir-missing` record the daemon
+ *  healed on its own is no longer an issue; the repair is reported apart,
+ *  as an {@link AppRegistryRepair}. */
 export interface AppRegistryIssue {
   readonly kind: "dropped" | "incomplete" | "dir-missing"
   readonly appId: string | null
   readonly dir: string | null
   readonly problems: readonly string[]
+}
+
+/** A self-heal the daemon applied: `appId`'s `dir` was missing and was
+ *  re-pointed from `from` to `to` (`repairWorktreeMissingApps`,
+ *  app-tools.ts). Informational, kept apart from {@link AppRegistryIssue} so
+ *  a healed registry does not read as degraded, yet the repair stays visible
+ *  (`daemon_health.appRegistryRepairs`, `app_list`'s `registryRepair`). */
+export interface AppRegistryRepair {
+  readonly kind: "dir-repointed"
+  readonly appId: string
+  readonly from: string
+  readonly to: string
+  readonly at: string
 }
 
 export interface AppRegistry {
@@ -229,6 +244,12 @@ export interface AppRegistry {
   upsertApp(
     input: Omit<InstalledApp, "installedAt" | "updatedAt">,
   ): InstalledApp
+  /** Record (in memory, for `listRepairs`) that `appId`'s `dir` was
+   *  re-pointed from `from` to `to` by a self-heal. One per app: a later
+   *  repair of the same app replaces the earlier one. */
+  recordRepoint(appId: string, from: string, to: string): void
+  /** Self-heals applied since the registry loaded (see {@link AppRegistryRepair}). */
+  listRepairs(): AppRegistryRepair[]
   getApp(appId: string): InstalledApp | undefined
   listApps(): InstalledApp[]
   /** Remove an installed-app record. Returns the removed record, or
@@ -386,6 +407,7 @@ export function createAppRegistry(opts?: {
   // leaves `stateDir` unset so its ledgers stay under the app's dataDir.
   const stateRoot = shouldPersist ? join(dirname(persistPath), APP_STATE_ROOT_SUBDIR) : undefined
   const issues: AppRegistryIssue[] = []
+  const repairs = new Map<string, AppRegistryRepair>()
   const loadedApps: InstalledApp[] = []
   for (const rawApp of state.apps as unknown[]) {
     const { app, problems } = normalizeInstalledApp(rawApp)
@@ -442,6 +464,12 @@ export function createAppRegistry(opts?: {
       }
       persist()
       return record
+    },
+    recordRepoint(appId, from, to) {
+      repairs.set(appId, { kind: "dir-repointed", appId, from, to, at: new Date().toISOString() })
+    },
+    listRepairs() {
+      return [...repairs.values()]
     },
     getApp(appId) {
       return state.apps.find(a => a.appId === appId)

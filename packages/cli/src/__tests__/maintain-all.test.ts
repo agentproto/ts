@@ -6,7 +6,7 @@
  * effects. Real git fixtures for the worktrees-root layout.
  */
 
-import { describe, it, expect, afterEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -16,12 +16,25 @@ import { runMaintain } from "../commands/maintain.js"
 
 const cleanupPaths: string[] = []
 let restoreCwd: string | null = null
+let home: string
+const originalHome = process.env.HOME
+
+beforeEach(async () => {
+	// `maintain --all` now reads `worktrees.extraRoots` from
+	// `~/.agentproto/config.json`; point HOME at an empty temp dir so a
+	// developer's real config cannot change the discovered repo count.
+	home = await mkdtemp(join(tmpdir(), "maintain-all-home-"))
+	process.env.HOME = home
+})
 
 afterEach(async () => {
 	if (restoreCwd) {
 		process.chdir(restoreCwd)
 		restoreCwd = null
 	}
+	if (originalHome === undefined) delete process.env.HOME
+	else process.env.HOME = originalHome
+	await rm(home, { recursive: true, force: true }).catch(() => {})
 	// Discovery must never reach a real daemon on this host: the runtime.json
 	// registry under HOME is the one discoverDaemon reads when no URL env is
 	// set, and pointing the env at an unroutable port keeps the daemon phase

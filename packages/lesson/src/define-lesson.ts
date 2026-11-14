@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { lessonFrontmatterSchema } from "./schema.js"
 import type { LessonDefinition, LessonHandle } from "./types.js"
 

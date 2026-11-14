@@ -70,7 +70,9 @@ jobs:
         run: |
           SHA=$(git -C .canonical-specs rev-parse HEAD)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          node scripts/sync-specs.mjs --source .canonical-specs/specs/resources --source-sha "$SHA"
+          OUT=$(node scripts/sync-specs.mjs --source .canonical-specs/specs/resources --source-sha "$SHA" --prune-ratified)
+          echo "$OUT"
+          printf '%s\n' "$OUT" > /tmp/sync-specs.log
 
       # The pin moving is the signal: sync-specs rewrites the lock to the
       # canonical HEAD, so a prose-only canonical change (no specs/resources
@@ -78,7 +80,7 @@ jobs:
       - name: Detect drift
         id: drift
         run: |
-          if git diff --quiet -- specs/resources specs/canonical.lock.json && [ -z "$(git ls-files --others --exclude-standard -- specs/resources)" ]; then
+          if git diff --quiet -- specs/resources specs/canonical.lock.json specs/spec-drift-allowlist.json && [ -z "$(git ls-files --others --exclude-standard -- specs/resources)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Pin already at ${{ steps.sync.outputs.sha }} and no specs/resources drift — nothing to sync."
           else
@@ -92,6 +94,17 @@ jobs:
             git status --short -- specs >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Install schema codegen deps
+        if: steps.drift.outputs.changed == 'true'
+        run: pnpm install --filter @agentproto/ts --frozen-lockfile --ignore-scripts
+
+      - name: Regenerate drifted schema.ts
+        id: regen
+        if: steps.drift.outputs.changed == 'true'
+        run: |
+          node scripts/check-spec-drift.mjs --write > /tmp/regen-spec-codegen.log 2>&1
+          cat /tmp/regen-spec-codegen.log
+
       - name: Check the synced tree
         if: steps.drift.outputs.changed == 'true'
         run: node scripts/sync-specs.mjs --check --source .canonical-specs/specs/resources
@@ -104,6 +117,29 @@ jobs:
         continue-on-error: true
         run: node scripts/check-aip-refs.mjs --source .canonical-specs
 
+      - name: Summarize auto-fixes
+        id: fixes
+        if: steps.drift.outputs.changed == 'true'
+        run: |
+          REMOVED=$(sed -n 's/^sync-specs: ratified upstream, allowlist entry removed: //p' /tmp/sync-specs.log | paste -sd, -)
+          REGEN=$(sed -n 's/^spec-codegen: rewrote //p' /tmp/regen-spec-codegen.log | paste -sd, -)
+          {
+            if [ -n "$REMOVED$REGEN" ]; then
+              echo "Auto-fixes applied by this sync:"
+            fi
+            if [ -n "$REMOVED" ]; then
+              echo "- Removed allowlist entries (ratified upstream): $REMOVED"
+            fi
+            if [ -n "$REGEN" ]; then
+              echo "- Regenerated schema.ts: $REGEN"
+            fi
+          } > /tmp/auto-fixes.md
+          {
+            echo "line<<EOF"
+            cat /tmp/auto-fixes.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Open sync PR
         if: steps.drift.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
@@ -114,6 +150,8 @@ jobs:
           add-paths: |
             specs/resources/**
             specs/canonical.lock.json
+            specs/spec-drift-allowlist.json
+            packages/*/src/schema.ts
           commit-message: "specs: sync vendored specs with agentproto/agentproto@${{ steps.sync.outputs.sha }}"
           title: "specs: sync vendored specs with canonical agentproto/agentproto"
           body: |
@@ -123,6 +161,8 @@ jobs:
             `false` means a prose-only change, pin bump only).
 
             `check-aip-refs` against the new pin: ${{ steps.refs.outcome }}.
+
+            ${{ steps.fixes.outputs.line }}
 
             - Review the schema diff like any spec change: a renumbering or a new
               required field may need matching code changes in the ts packages.

@@ -159,6 +159,12 @@ export interface ChromeLiveProviderConfig {
   /** How long to wait for the user to click "Allow". Default 60s. */
   consentTimeoutMs?: number
   /**
+   * Keep-alive ping cadence (ms) for the browser websocket, sent as a silent
+   * `Browser.getVersion` over the existing connection, never a new socket, so
+   * it never re-triggers Chrome's consent dialog. Default 25s; `0` disables.
+   */
+  heartbeatIntervalMs?: number
+  /**
    * Read `GET /json/version` and connect to the advertised
    * `webSocketDebuggerUrl` (Chrome 155+ exposes a per-launch browser UUID:
    * `ws://127.0.0.1:9222/devtools/browser/<uuid>`; the id-less URL answers
@@ -508,8 +514,10 @@ export interface ChromeLiveScreencastFrame {
   height?: number
 }
 
-/** Buffer for frames — generous but bounded: what a recording session turns into mp4. */
+/** Buffer for frames: bounded twice over, by frame count and by approximate bytes. */
 const MAX_SCREENCAST_FRAMES = 2000
+/** 2000 JPEGs alone could reach hundreds of MB, so the buffered bytes are capped as well. */
+const MAX_SCREENCAST_BUFFER_BYTES = 64 * 1024 * 1024
 
 export const chromeLiveDriverCapabilities: BrowserDriverCapabilities = {
   ...chromeDriverCapabilities,
@@ -582,6 +590,28 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     await this.conn.send<void>("Network.setCookies", { cookies: toCdpCookieParams(cookies) }, this.sessionId)
   }
 
+  /**
+   * Same bootstrap as the base driver, plus: never let a click on a file input
+   * open the OS file chooser. Without this, an agent that clicks an "Upload"
+   * button before `uploadFileOwnedTarget` leaves a native macOS dialog open on
+   * the user's screen (nothing closes it: `DOM.setFileInputFiles` attaches the
+   * files without ever touching the dialog). With
+   * `Page.setInterceptFileChooserDialog` Chrome reports the click as a
+   * `Page.fileChooserOpened` event instead of showing the dialog; the upload
+   * itself is unchanged (it targets the input element directly). Best effort:
+   * a Chrome that refuses it keeps the old behaviour. Goes through
+   * `this.conn.send` (our own session), like `setCookies`: the
+   * `isRefusedLiveCommand` guard is for the agent's `cdp_send`.
+   */
+  override async bootstrap(): Promise<void> {
+    await super.bootstrap()
+    try {
+      await this.conn.send<void>("Page.setInterceptFileChooserDialog", { enabled: true }, this.sessionId)
+    } catch {
+      // keep the previous behaviour (native dialog) rather than fail the tab
+    }
+  }
+
   override async send<TResult = unknown, TParams = unknown>(command: CDPCommand<TParams>): Promise<TResult> {
     if (isRefusedLiveCommand(command.method)) {
       throw new ToolError({
@@ -648,6 +678,7 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
   private screencastFormat: "jpeg" | "png" = "jpeg"
   private screencastIndex = 0
   private readonly screencastBuffer: ChromeLiveScreencastFrame[] = []
+  private screencastBufferBytes = 0
   private screencastSessionId?: string
   private screencastUnsubscribe?: Unsubscribe
 
@@ -656,18 +687,32 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     const ev = event.params as {
       data?: string
       sessionId?: string
-      metadata?: { deviceWidth?: number; deviceHeight?: number; pageScaleFactor?: number }
+      metadata?: {
+        deviceWidth?: number
+        deviceHeight?: number
+        pageScaleFactor?: number
+        /** Capture time, epoch seconds (Network.TimeSinceEpoch). */
+        timestamp?: number
+        monotonicTimestamp?: number
+      }
     }
     if (!ev.data) return
+    this.screencastBufferBytes += this.screencastFrameBytes(ev.data)
     this.screencastBuffer.push({
       data: ev.data,
       format: this.screencastFormat,
-      timestampMs: Date.now(),
+      // CDP's `metadata.timestamp` is epoch seconds at capture; prefer it so
+      // the mp4's pacing reflects capture time, not host-scheduling jitter.
+      timestampMs:
+        typeof ev.metadata?.timestamp === "number" ? Math.round(ev.metadata.timestamp * 1000) : Date.now(),
       index: this.screencastIndex++,
       ...(ev.metadata?.deviceWidth !== undefined ? { width: ev.metadata.deviceWidth } : {}),
       ...(ev.metadata?.deviceHeight !== undefined ? { height: ev.metadata.deviceHeight } : {}),
     })
-    if (this.screencastBuffer.length > MAX_SCREENCAST_FRAMES) this.screencastBuffer.shift()
+    if (this.screencastBuffer.length > MAX_SCREENCAST_FRAMES) this.dropOldestScreencastFrame()
+    while (this.screencastBufferBytes > MAX_SCREENCAST_BUFFER_BYTES && this.screencastBuffer.length > 2) {
+      this.dropOldestScreencastFrame()
+    }
     // Chrome throttles screencast delivery until each frame is acked: the ack
     // echoes the FRAME's own id (params.sessionId — not the flat session's).
     if (ev.sessionId) {
@@ -675,6 +720,15 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
         .send<void>("Page.screencastFrameAck", { sessionId: ev.sessionId }, this.screencastSessionId)
         .catch(() => {})
     }
+  }
+
+  private screencastFrameBytes(data: string): number {
+    return (data.length * 3) / 4
+  }
+
+  private dropOldestScreencastFrame(): void {
+    const dropped = this.screencastBuffer.shift()
+    if (dropped) this.screencastBufferBytes -= this.screencastFrameBytes(dropped.data)
   }
 
   /**
@@ -711,6 +765,7 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
     if (this.screencastActive) return
     this.screencastIndex = 0
     this.screencastBuffer.length = 0
+    this.screencastBufferBytes = 0
     this.screencastFormat = opts?.format ?? "jpeg"
     const params = {
       format: this.screencastFormat,
@@ -790,6 +845,7 @@ export class ChromeLiveDriver extends ChromeCdpDriver {
       this.screencastSessionId = undefined
     }
     this.screencastBuffer.length = 0
+    this.screencastBufferBytes = 0
     this.screencastIndex = 0
   }
 }
@@ -808,6 +864,8 @@ interface LiveEntry {
   state: "open" | "dropped" | "stopped"
   /** Every target this provider created on this endpoint and that is still open. */
   targets: Set<string>
+  /** The helper session kept per opener tab (see `openFromAnchor`). */
+  openers: Map<string, string>
   /** The agent window, when `Browser.getWindowForTarget` answers. */
   windowId?: number
   drivers: Set<ChromeLiveDriver>
@@ -832,6 +890,14 @@ const HEALTH_TIMEOUT_MS = 5_000
 const DISCOVERY_TIMEOUT_MS = 1_500
 /** Grace before SIGKILL when stopping a Chrome this provider auto-launched. */
 const OWNED_STOP_GRACE_MS = 5_000
+/**
+ * Keep-alive ping cadence for the browser websocket. Chrome (the remote
+ * debugging toggle especially) drops a debugging websocket that has been
+ * silent for a while; a periodic `Browser.getVersion` over the SAME connection
+ * (no new socket, so no new "Allow" dialog) keeps it from being reaped. `0`
+ * disables the heartbeat.
+ */
+const HEARTBEAT_INTERVAL_MS = 25_000
 
 function errnoCode(err: unknown): string | undefined {
   for (let e: unknown = err, depth = 0; e && depth < 4; depth++) {
@@ -857,6 +923,7 @@ const DESCRIPTION =
 
 export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}): ChromeLiveProvider {
   const consentTimeoutMs = config.consentTimeoutMs ?? CHROME_LIVE_DEFAULT_CONSENT_TIMEOUT_MS
+  const heartbeatIntervalMs = config.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS
   const entries = new Map<string, LiveEntry>()
   const connecting = new Map<string, Promise<LiveEntry>>()
   const discovering = new Map<number, Promise<string>>()
@@ -959,10 +1026,23 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       conn,
       state: "open",
       targets: new Set(),
+      openers: new Map(),
       drivers: new Set(),
       lock: Promise.resolve(),
       ...(ctx.log ? { log: ctx.log } : {}),
       ...(owned ? { ownedChrome: owned } : {}),
+    }
+    // Keep the browser websocket alive so Chrome's idle reaper (the remote
+    // debugging toggle especially) doesn't drop a connection that simply went
+    // quiet between agent turns. Sent over the SAME socket, never a new one,
+    // so this never re-triggers the "Allow" consent dialog. A dropped connection
+    // is still surfaced by `onClose` below; this only prevents silent idle drops.
+    let heartbeat: NodeJS.Timeout | undefined
+    if (heartbeatIntervalMs > 0) {
+      heartbeat = setInterval(() => {
+        void conn.send("Browser.getVersion").catch(() => {})
+      }, heartbeatIntervalMs)
+      heartbeat.unref?.()
     }
     // Our sessions are flat: a closed tab of ours shows up as detachedFromTarget on the browser session.
     conn.onEvent((event) => {
@@ -971,6 +1051,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       if (targetId) forget(entry, targetId)
     })
     conn.onClose((reason) => {
+      if (heartbeat) clearInterval(heartbeat)
       if (entry.state !== "open") return
       entry.state = "dropped"
       if (entries.get(url) === entry) entries.delete(url)
@@ -995,7 +1076,67 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
 
   function forget(entry: LiveEntry, targetId: string): void {
     entry.targets.delete(targetId)
+    entry.openers.delete(targetId)
     if (entry.targets.size === 0) delete entry.windowId
+  }
+
+  /**
+   * Makes a page that still exists in Chrome one of this entry's targets, for `attach({ targetId })`.
+   * Throws "no target with given id found" (what the host maps to target-gone) when it does not.
+   */
+  async function adoptTarget(entry: LiveEntry, targetId: string): Promise<string> {
+    if (!(await pageTargets(entry)).has(targetId)) throw new Error(`[chrome-live] no target with given id found (${targetId})`)
+    entry.targets.add(targetId)
+    const windowId = await windowOf(entry, targetId)
+    if (windowId !== undefined) entry.windowId ??= windowId
+    return targetId
+  }
+
+  /** Page targets alive now, by id (their `openerId` tells which tab opened them). */
+  async function pageTargets(entry: LiveEntry): Promise<Map<string, { openerId?: string }>> {
+    const { targetInfos } = await entry.conn.send<{ targetInfos: Array<{ targetId: string; type: string; openerId?: string }> }>("Target.getTargets")
+    return new Map(targetInfos.filter((t) => t.type === "page").map((t) => [t.targetId, { ...(t.openerId ? { openerId: t.openerId } : {}) }]))
+  }
+
+  /**
+   * Opens a blank tab from `anchor` (one of ours) with `window.open(..., "noopener")`, run as a user gesture so
+   * the popup blocker lets it through, and returns its target id (found by `openerId`, which Chrome sets even for
+   * a `noopener` tab). `undefined` when the anchor cannot run script or no such tab appears: the caller falls back.
+   */
+  async function openFromAnchor(entry: LiveEntry, anchor: string): Promise<string | undefined> {
+    try {
+      const known = await pageTargets(entry)
+      if (!known.has(anchor)) return undefined
+      // One helper session per opener, kept: detaching it would make Chrome report a detach for the anchor, and
+      // the connection handler (`Target.detachedFromTarget` -> `forget`) would stop tracking the agent's own tab.
+      let sessionId = entry.openers.get(anchor)
+      if (sessionId === undefined) {
+        ;({ sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId: anchor, flatten: true }))
+        entry.openers.set(anchor, sessionId)
+      }
+      let opened: { result?: { value?: unknown } } | undefined
+      try {
+        opened = await entry.conn.send<{ result?: { value?: unknown } }>(
+          "Runtime.evaluate",
+          { expression: 'window.open("about:blank", "_blank", "noopener") !== null', userGesture: true, returnByValue: true },
+          sessionId,
+        )
+      } catch (err) {
+        entry.openers.delete(anchor)
+        throw err
+      }
+      // window.open returned null (blocked, or a page that cannot open one): no tab to wait for.
+      if (opened?.result?.value !== true) return undefined
+      for (let i = 0; i < 20; i++) {
+        for (const [id, info] of await pageTargets(entry)) {
+          if (!known.has(id) && info.openerId === anchor) return id
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      return undefined
+    } catch {
+      return undefined
+    }
   }
 
   async function createTab(entry: LiveEntry, url: string): Promise<string> {
@@ -1007,8 +1148,21 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       if (windowId !== undefined) entry.windowId = windowId
       return targetId
     }
-    // CDP cannot address a window in createTarget: it opens the tab in the last active window.
-    // Activating one of our tabs first makes that the agent window; the windowId check catches a race.
+    // CDP cannot address a window in createTarget: it opens the tab in the last active window, which
+    // another window (the user's, another agent's, one on another Space) can keep. A blank tab opened FROM
+    // one of ours with window.open always lands in the opener's window, whatever has the focus.
+    if (url === "about:blank") {
+      for (const anchor of [...entry.targets]) {
+        const opened = await openFromAnchor(entry, anchor)
+        if (opened === undefined) continue
+        entry.targets.add(opened)
+        const windowId = await windowOf(entry, opened)
+        if (windowId === undefined || entry.windowId === undefined || windowId === entry.windowId) return opened
+        await entry.conn.send("Target.closeTarget", { targetId: opened }).catch(() => {})
+        forget(entry, opened)
+      }
+    }
+    // Fallback: activate one of our tabs first so it becomes the agent window; the windowId check catches a race.
     for (let attempt = 0; attempt < 2; attempt++) {
       const anchor = entry.targets.values().next().value as string
       await entry.conn.send("Target.activateTarget", { targetId: anchor })
@@ -1344,7 +1498,11 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         if (offered && !dedicated) entry.log?.("[chrome-live] ignoring the session payload: cookies are read-only on your own Chrome profile")
         const run = entry.lock.then(async () => {
           const url = attachOpts?.initialUrl ?? "about:blank"
-          const targetId = await createTab(entry, url)
+          // `targetId`: re-attach to a tab of ours that is still open (after the host process restarted, the
+          // connection dropped...) instead of opening a fresh one. Never a tab the caller did not open: the
+          // host checks ownership before it asks.
+          const adopted = attachOpts?.targetId !== undefined
+          const targetId = adopted ? await adoptTarget(entry, attachOpts.targetId as string) : await createTab(entry, url)
           let driver: ChromeLiveDriver | undefined
           try {
             const { sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true })
@@ -1387,7 +1545,14 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
             }
             if (attachOpts?.initialUrl) driver.target.url = attachOpts.initialUrl
           } catch (err) {
-            if (driver) await driver.close()
+            // A tab we only re-attached to is not ours to close on a failed attach.
+            if (adopted) {
+              forget(entry, targetId)
+              if (driver) {
+                entry.drivers.delete(driver)
+                mine.delete(driver)
+              }
+            } else if (driver) await driver.close()
             else {
               await entry.conn.send("Target.closeTarget", { targetId }).catch(() => {})
               forget(entry, targetId)
@@ -1546,6 +1711,10 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         kind: "prompt",
         prompt: "Full browser websocket URL instead of the port (leave blank for ws://127.0.0.1:<port>/devtools/browser)",
         type: "text",
+        // Empty is a valid answer: it falls back to the port (CHROME_LIVE_PORT,
+        // then 9222) via `endpoint()`. Declaring the empty default marks the step
+        // optional so `agentproto browser start` does not treat it as required.
+        default: "",
         persist: { env: CHROME_LIVE_WS_URL_ENV },
       },
     ],

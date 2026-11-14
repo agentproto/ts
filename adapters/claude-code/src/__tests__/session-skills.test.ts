@@ -10,7 +10,7 @@ import { existsSync } from "node:fs"
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { applySessionSkills, readSessionSkillsMetadata } from "@agentproto/driver-agent-cli"
+import { applySessionSkills, readSessionSkillsMetadata } from "@agentproto/harness"
 import { claudeCode } from "../index.js"
 
 describe("claude-code session-skills metadata", () => {

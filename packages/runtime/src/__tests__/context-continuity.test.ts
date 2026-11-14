@@ -5,7 +5,9 @@ import {
   computeContextPct,
   contextContinuityNextAction,
   contextContinuityStateForPct,
+  describeBandLayers,
   isContextContinuityHardStopped,
+  layerContextSettings,
   resolveContextContinuityPolicy,
   validateContextContinuityPolicy,
   type ContextContinuityPolicy,
@@ -230,9 +232,87 @@ describe("computeContextContinuityStatus", () => {
     expect(isContextContinuityHardStopped(status.contextPct, policy)).toBe(false)
   })
 
+  it("does not flag autocompact for 200k used on a 1M window (default threshold scales)", () => {
+    const status = computeContextContinuityStatus("sess_1m", policy, 1_000_000, 200_000)
+    expect(status.autoCompactAtTokens).toBe(550_000)
+    expect(status.autoCompactAboveThreshold).toBe(false)
+  })
+
+  it("flags autocompact at 55% of a 1M window", () => {
+    const status = computeContextContinuityStatus("sess_1m", policy, 1_000_000, 550_000)
+    expect(status.autoCompactAboveThreshold).toBe(true)
+  })
+
+  it("keeps the 150k default on a 200k window", () => {
+    const below = computeContextContinuityStatus("sess_200k", policy, 200_000, 149_000)
+    expect(below.autoCompactAtTokens).toBe(150_000)
+    expect(below.autoCompactAboveThreshold).toBe(false)
+    expect(computeContextContinuityStatus("sess_200k", policy, 200_000, 150_000).autoCompactAboveThreshold).toBe(true)
+  })
+
+  it("honours an explicit absolute threshold regardless of window size", () => {
+    const explicit = resolveContextContinuityPolicy(undefined, undefined, undefined, {
+      autoCompactAtTokens: 150_000,
+    })
+    const status = computeContextContinuityStatus("sess_1m", explicit, 1_000_000, 200_000)
+    expect(status.autoCompactAtTokens).toBe(150_000)
+    expect(status.autoCompactAboveThreshold).toBe(true)
+  })
+
+  it("keeps 0 (disabled) on a 1M window", () => {
+    const off = resolveContextContinuityPolicy(undefined, undefined, undefined, { autoCompactAtTokens: 0 })
+    expect(computeContextContinuityStatus("sess_1m", off, 1_000_000, 900_000).autoCompactAboveThreshold).toBe(false)
+  })
+
   it("takes no rail action when contextSize is entirely absent", () => {
     const status = computeContextContinuityStatus("sess_1", policy, undefined, 500)
     expect(status.nextAction).toBe("none")
     expect(isContextContinuityHardStopped(status.contextPct, policy)).toBe(false)
+  })
+})
+
+describe("layerContextSettings", () => {
+  it("returns undefined when no layer is given", () => {
+    expect(layerContextSettings()).toBeUndefined()
+    expect(layerContextSettings(undefined, undefined)).toBeUndefined()
+  })
+
+  it("returns a copy of a single layer", () => {
+    const layer: ContextContinuityPolicy = { mode: "auto", warnAtPct: 50 }
+    const out = layerContextSettings(layer)
+    expect(out).toEqual(layer)
+    expect(out).not.toBe(layer)
+  })
+
+  it("later layers win per key, and an undefined key or layer is skipped", () => {
+    const out = layerContextSettings(
+      { mode: "manual", warnAtPct: 40, hardStopAtPct: 95 },
+      undefined,
+      { mode: "auto", hardStopAtPct: undefined, compactAtPct: 60 },
+    )
+    expect(out).toEqual({
+      mode: "auto",
+      warnAtPct: 40,
+      hardStopAtPct: 95,
+      compactAtPct: 60,
+    })
+  })
+})
+
+describe("describeBandLayers", () => {
+  it("names each layer that sets a percent band, with its values, lowest layer first", () => {
+    expect(
+      describeBandLayers([
+        { name: "daemon defaults", block: { warnAtPct: 70, hardStopAtPct: 95, autoCompactAtTokens: 0 } },
+        { name: "adapter mock", block: undefined },
+        { name: "request", block: { warnAtPct: 80 } },
+      ]),
+    ).toBe("daemon defaults sets warnAtPct=70, hardStopAtPct=95; request sets warnAtPct=80")
+  })
+
+  it("says so when no layer sets a percent band", () => {
+    expect(describeBandLayers([{ name: "request", block: { autoCompactAtTokens: 1000 } }])).toBe(
+      "no layer sets a percent band",
+    )
   })
 })

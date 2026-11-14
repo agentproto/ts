@@ -62,9 +62,12 @@ function bakedReport(latest) {
     return {
       cli: "0.17.0",
       packages: {
+        "@agentproto/adapter-claude-code": "2.0.0",
         "@agentproto/adapter-hermes": "0.4.10",
         "@agentproto/adapter-mastra-agent": "0.6.0",
+        "@agentproto/adapter-openclaw": "0.2.0",
         "@agentproto/adapter-opencode": "1.1.10",
+        "@anthropic-ai/claude-code": "2.0.0",
         "opencode-ai": "1.18.28",
       },
     }
@@ -90,9 +93,12 @@ function fakeBinaries(root, { dirty = false, latest = false } = {}) {
   write("npm", `
 case "$2" in
   @agentproto/cli@latest) echo '"0.17.0"' ;;
+  @agentproto/adapter-claude-code@latest) echo '"2.0.0"' ;;
   @agentproto/adapter-hermes@latest) echo '"0.4.10"' ;;
   @agentproto/adapter-mastra-agent@latest) echo '"0.6.0"' ;;
+  @agentproto/adapter-openclaw@latest) echo '"0.2.0"' ;;
   @agentproto/adapter-opencode@latest) echo '"1.1.10"' ;;
+  @anthropic-ai/claude-code@latest) echo '"2.0.0"' ;;
   opencode-ai@latest) echo '"1.18.28"' ;;
   *) exit 9 ;;
 esac`)

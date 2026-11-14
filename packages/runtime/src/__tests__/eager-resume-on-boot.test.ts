@@ -12,7 +12,7 @@ import {
 import { runEagerResumePass } from "../eager-resume.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createCompletionPolicySupervisor } from "../supervisor.js"
-import { cloudMetaOf, encodeCloudSessionMeta } from "../cloud-vendors.js"
+import { cloudMetaOf, encodeCloudSessionMeta } from "@agentproto/cloud-agent"
 
 /**
  * Opt-in eager resume-on-boot (session-survivability plan §5, PR-4).
@@ -207,6 +207,17 @@ describe("registry.resumeOnBoot (per-row eager resume)", () => {
     reg.shutdown()
   })
 
+  it("skips a guard-reaped row at boot (never resumes the guard's idle teardown)", async () => {
+    writeSessions(persistPath, [{ id: "reaped", status: "killed", endedReason: "guard-reaped" }])
+    const resumer = makeRecordingResumer([])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+
+    expect(await reg.resumeOnBoot("reaped")).toEqual({ status: "skipped", reason: "retired" })
+    expect(resumer).not.toHaveBeenCalled()
+    expect(reg.get("reaped")?.status).toBe("killed")
+    reg.shutdown()
+  })
+
   it("skips a naturally-exited row without touching the adapter", async () => {
     writeSessions(persistPath, [{ id: "done", status: "exited", exitCode: 0 }])
     const resumer = makeRecordingResumer([])
@@ -341,7 +352,14 @@ describe("runEagerResumePass (bounded boot pass)", () => {
       { id: "stopped", keepAlive: true, status: "killed" },
     ])
     const reg = createSessionsRegistry({ persistPath, resumeAgent: makeRecordingResumer([]) })
-    const summary = await runEagerResumePass({ registry: reg, concurrency: 2, policy: "keepalive" })
+    const summary = await runEagerResumePass({
+      registry: reg,
+      concurrency: 2,
+      policy: "keepalive",
+      // Pin "now" 10 min after the fixture start so the keepAlive idle cutoff
+      // does not age this row out of the pass (default is 30 min).
+      now: Date.parse("2026-07-23T00:10:00Z"),
+    })
     expect(summary).toMatchObject({ candidates: 1, resumed: 1 })
     expect(reg.get("persistent")?.status).toBe("running")
     expect(reg.get("idle")?.status).toBe("killed")
@@ -429,6 +447,95 @@ describe("runEagerResumePass (bounded boot pass)", () => {
     expect(summary.candidates).toBe(2)
     expect(summary.resumed).toBe(1)
     expect(summary.failed).toBe(1)
+    reg.shutdown()
+  })
+
+  it("does not eager-resume a keepAlive row idle past the cutoff, even with an operatorLabel; pinned rows still come back", async () => {
+    const now = Date.parse("2026-11-01T12:00:00Z")
+    // Default cutoff is 30 minutes: 31 min idle is stale, 29 min is fresh.
+    const stale = "2026-11-01T11:29:00Z"
+    const fresh = "2026-11-01T11:31:00Z"
+    writeSessions(persistPath, [
+      { id: "stale-keepalive", keepAlive: true, lastTurnEndedAt: stale },
+      // Legacy row persisted before `lastTurnEndedAt` existed, but with an old
+      // activity stamp — the fallback chain still ages it.
+      { id: "stale-legacy", keepAlive: true, lastActivityAt: stale },
+      { id: "stale-pinned", keepAlive: true, pinned: true, lastTurnEndedAt: stale },
+      // An operatorLabel is identity only (agent_start stamps it on every
+      // operator spawn, executors included), so it must NOT exempt a stale row.
+      {
+        id: "stale-operator-label",
+        keepAlive: true,
+        operatorLabel: "pygmalion-brain-persistent",
+        lastTurnEndedAt: stale,
+      },
+      { id: "fresh-keepalive", keepAlive: true, lastTurnEndedAt: fresh },
+      // The cutoff is keepAlive-only: an ordinary stale ghost is still the
+      // eager pass's business, exactly as before.
+      { id: "ordinary-stale", lastTurnEndedAt: stale },
+    ])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeRecordingResumer([]) })
+
+    const summary = await runEagerResumePass({ registry: reg, concurrency: 4, now })
+
+    expect(summary).toEqual({ enabled: true, candidates: 3, resumed: 3, failed: 0, skipped: 0 })
+    // Every stale keepAlive row stays dead-but-lazy-resumable, untouched.
+    expect(reg.get("stale-keepalive")?.status).toBe("killed")
+    expect(reg.get("stale-legacy")?.status).toBe("killed")
+    expect(reg.get("stale-operator-label")?.status).toBe("killed")
+    // Only an explicit pin is exempt from the cutoff.
+    expect(reg.get("stale-pinned")?.status).toBe("running")
+    expect(reg.get("fresh-keepalive")?.status).toBe("running")
+    expect(reg.get("ordinary-stale")?.status).toBe("running")
+    reg.shutdown()
+  })
+
+  it("keepAliveMaxIdleMs: 0 disables the cutoff (legacy resume-everything behavior)", async () => {
+    writeSessions(persistPath, [
+      { id: "stale-keepalive", keepAlive: true, lastTurnEndedAt: "2020-01-01T00:00:00Z" },
+    ])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeRecordingResumer([]) })
+
+    const summary = await runEagerResumePass({
+      registry: reg,
+      concurrency: 2,
+      keepAliveMaxIdleMs: 0,
+      now: Date.parse("2026-11-01T12:00:00Z"),
+    })
+
+    expect(summary.resumed).toBe(1)
+    expect(reg.get("stale-keepalive")?.status).toBe("running")
+    reg.shutdown()
+  })
+
+  it("never revives a row an operator/judge already marked completed", async () => {
+    writeSessions(persistPath, [
+      {
+        id: "completed",
+        keepAlive: true,
+        lastTurnEndedAt: "2026-11-01T11:59:00Z",
+        outcome: {
+          status: "completed",
+          verdict: "done",
+          source: "declared",
+          summary: "PR merged",
+          recordedAt: "2026-11-01T11:30:00Z",
+          termination: { reason: "operator-completed", previousReason: "daemon-restart" },
+        } as unknown as SessionDescriptor["outcome"],
+      },
+    ])
+    const resumer = makeRecordingResumer([])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+
+    const summary = await runEagerResumePass({
+      registry: reg,
+      concurrency: 2,
+      now: Date.parse("2026-11-01T12:00:00Z"),
+    })
+
+    expect(summary.candidates).toBe(0)
+    expect(resumer).not.toHaveBeenCalled()
+    expect(reg.get("completed")?.status).toBe("killed")
     reg.shutdown()
   })
 

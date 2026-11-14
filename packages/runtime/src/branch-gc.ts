@@ -31,6 +31,31 @@ export interface BranchGcLineCoverageView {
   inBase: number
   pct: number
   missing: Array<{ file: string; line: string }>
+  /** Every file with an added line not in base. Absent on an older result. */
+  missingFiles?: string[]
+}
+
+/** The `dep-bump` pass's proof, mirrors `DepBumpProof`. */
+export interface BranchGcDepBumpView {
+  dependencies: number
+  versions: number
+  lockfileLines: number
+  changesetLines: number
+  packageFiles: string[]
+  goneOnBase?: string[]
+}
+
+/** The `history-covered` pass's proof, mirrors `HistoryCoveredProof`. */
+export interface BranchGcHistoryCoveredView {
+  filesChecked: number
+  linesMatched: number
+  files: Array<{ file: string; lines: number; oldest: string; newest: string; movedTo?: string[] }>
+}
+
+/** The `verified-pr` pass's proof, mirrors `VerifiedPrProof`. */
+export interface BranchGcVerifiedPrView {
+  prs: number[]
+  files: Array<{ file: string; why: "pr-touched" | "changeset" | "gone-on-base" | "manifest-proven"; pr?: number }>
 }
 
 /** One classified ref — mirrors `BranchGcPlanEntry` structurally. */
@@ -55,11 +80,17 @@ export interface BranchGcPlanEntryView {
   residualFiles?: string[]
   residualFileCount?: number
   lineCoverage?: BranchGcLineCoverageView
+  /** `git cherry` summary of an unmerged tip: commits with no patch-equivalent on the compare base. */
+  cherry?: { total: number; unmatched: number }
   ageDays: number
   class: BranchGcClass
   reclaimReason?: BranchGcReclaimReason
   mergedPr?: number
+  /** How a `pr-merged` tip matched `mergedPr`: its exact head, an ancestor of that head, or patch-equivalent commits. */
+  mergedPrMatch?: "head" | "ancestor" | "patch"
   forgePr?: number
+  /** The forge's PR for this branch NAME (open, else newest merged, else newest closed unmerged, else `none`); absent when the forge could not answer. */
+  headPr?: { state: "open" | "merged" | "closed-unmerged" | "none"; number?: number }
   holdReason?: BranchGcHoldReason
   holdDetail?: string
   pushed?: string
@@ -68,9 +99,27 @@ export interface BranchGcPlanEntryView {
     agree: boolean | null
     reviewer: string
     operator?: { by: string; note?: string }
+    /** The gate's verdict, when the verdict has a gate. Absent on an older result. */
+    gateVerdict?: BranchGcTriageVerdict
+    /** The PRs the verdict cites (`landedIn`, else `#N` in the gate): what the `verified-pr` pass checks. Absent on an older result. */
+    citedPrs?: number[]
+    /** How many earlier verdicts for this tip the stored one replaced; absent on a first verdict. */
+    revision?: number
   }
-  /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`), or that an operator bypassed that guard. */
+  /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`), or that an operator or the `verified-pr` pass got it past that guard. */
   verdictGuard?: string
+  /** Set when the `verified-pr` pass reclaimed a guard-refused verdict. */
+  verifiedPr?: BranchGcVerifiedPrView
+  /** Set when the guard refused and the `verified-pr` pass did too: the condition that failed. */
+  verifiedPrRefusal?: string
+  /** Set when the `dep-bump` pass reclaimed a guard-refused verdict. */
+  depBump?: BranchGcDepBumpView
+  /** Set when the guard, `verified-pr` and `dep-bump` all refused: the first line `dep-bump` could not explain. */
+  depBumpRefusal?: string
+  /** Set when the `history-covered` pass reclaimed a guard-refused verdict. */
+  historyCovered?: BranchGcHistoryCoveredView
+  /** Set when the `history-covered` pass refused too: the first file or line it could not find in base's history. */
+  historyRefusal?: string
 }
 
 export interface BranchGcPlanView {
@@ -87,6 +136,8 @@ export interface BranchGcPlanView {
   includeReviewed: boolean
   /** Absent on a result from before the line-coverage guard. */
   minLineCoverage?: number
+  /** true = the `verified-pr` pass was off. Absent on an older result. */
+  requireOperatorBelowGuard?: boolean
   /** `git ls-remote <remote> refs/pull/<N>/head` for the forge-mirror shortcut. Absent on an older result. */
   forgeMirrorCheck?: { available: boolean; reason?: string }
   generatedAt: string
@@ -100,6 +151,14 @@ export interface BranchGcPlanView {
 export interface BranchGcSummaryView {
   byClass: Record<BranchGcKind, Record<BranchGcClass, number>>
   byStatus: Record<BranchGcKind, Record<string, number>>
+  /** The same counts keyed by branch name across kinds (a local branch and
+   *  its remote twin count once). Absent on a result from before it existed. */
+  distinct?: {
+    branches: number
+    refs: number
+    byClass: Record<BranchGcClass, number>
+    byStatus: Record<string, number>
+  }
 }
 
 export interface BranchGcOutcomeView {
@@ -121,8 +180,20 @@ export interface BranchGcOutcomeView {
   from?: BranchGcClass
   to?: BranchGcClass
   message?: string
-  /** `refused-guard`: why the agreeing verdict was refused. */
+  /** `refused-guard`: why the agreeing verdict was refused. `deleted`: `"verified-pr"`, `"dep-bump"` or `"history-covered"` when that pass reclaimed it. */
   guard?: string
+  /** `deleted` by the `verified-pr` pass: its proof. */
+  verifiedPr?: BranchGcVerifiedPrView
+  /** `refused-guard`: why the `verified-pr` pass refused too. */
+  verifiedPrRefusal?: string
+  /** `deleted` by the `dep-bump` pass: its proof. */
+  depBump?: BranchGcDepBumpView
+  /** `refused-guard`: why the `dep-bump` pass refused too. */
+  depBumpRefusal?: string
+  /** `deleted` by the `history-covered` pass: its proof. */
+  historyCovered?: BranchGcHistoryCoveredView
+  /** `refused-guard`: why the `history-covered` pass refused too. */
+  historyRefusal?: string
 }
 
 /** Per-scope tally of apply outcomes. `skipped` = everything that was not
@@ -271,6 +342,177 @@ export function sliceBranchGcResult(
   }
 }
 
+/** One plan entry as the `branch_gc` tool returns it by default: what a human
+ *  needs to decide, without the reviewer payload (coverage, residual files,
+ *  missing lines, cherry) that makes a full entry several KB. */
+export interface BranchGcCompactEntry {
+  name: string
+  kind: BranchGcKind
+  sha: string
+  class: BranchGcClass
+  status: BranchGcStatus
+  reclaimReason?: BranchGcReclaimReason
+  mergedPr?: number
+  mergedPrMatch?: BranchGcPlanEntryView["mergedPrMatch"]
+  holdReason?: BranchGcHoldReason
+  lineCoverage?: { pct: number }
+  verdictGuard?: string
+  headPr?: BranchGcPlanEntryView["headPr"]
+  verifiedPrRefusal?: string
+  depBumpRefusal?: string
+  historyRefusal?: string
+}
+
+export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactEntry {
+  return {
+    name: e.name,
+    kind: e.kind,
+    sha: e.sha,
+    class: e.class,
+    status: e.status,
+    ...(e.reclaimReason !== undefined ? { reclaimReason: e.reclaimReason } : {}),
+    ...(e.mergedPr !== undefined ? { mergedPr: e.mergedPr } : {}),
+    ...(e.mergedPrMatch !== undefined ? { mergedPrMatch: e.mergedPrMatch } : {}),
+    ...(e.holdReason !== undefined ? { holdReason: e.holdReason } : {}),
+    ...(e.lineCoverage !== undefined ? { lineCoverage: { pct: e.lineCoverage.pct } } : {}),
+    ...(e.verdictGuard !== undefined ? { verdictGuard: e.verdictGuard } : {}),
+    ...(e.headPr !== undefined ? { headPr: e.headPr } : {}),
+    ...(e.verifiedPrRefusal !== undefined ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}),
+    ...(e.depBumpRefusal !== undefined ? { depBumpRefusal: e.depBumpRefusal } : {}),
+    ...(e.historyRefusal !== undefined ? { historyRefusal: e.historyRefusal } : {}),
+  }
+}
+
+export interface BranchGcReplyInput {
+  /** Whole rows instead of the compact projection; alone (no other option),
+   *  the unchanged full result. */
+  full?: boolean
+  /** Entries only: keep only these keys of each FULL entry. */
+  fields?: string[]
+  /** Entries only: keep only entries of these classes. */
+  classes?: BranchGcClass[]
+  limit?: number
+  /** Which list to page. Default: `entries` for a plan, `outcomes` for an
+   *  apply (mirroring `branch_gc_status`). */
+  section?: BranchGcResultSection
+  /** Offset into the selected list (decoded from a `branch_gc` cursor). */
+  offset?: number
+}
+
+/**
+ * A `branch_gc` cursor names the run it pages AND the slice it was created
+ * for (`section`, `classes`, `limit`, and `full` so every page has the same
+ * row shape), so the next page is read from that
+ * run's stored result with the exact same filtered list instead of
+ * re-running the gc. Not interchangeable with `branch_gc_status`'s
+ * `o:<n>` cursor ({@link sliceBranchGcResult}): each tool rejects the other.
+ */
+export function encodeBranchGcCursor(
+  jobId: string,
+  offset: number,
+  section: BranchGcResultSection,
+  classes: BranchGcClass[],
+  limit: number,
+  full = false,
+): string {
+  return Buffer.from(JSON.stringify({ j: jobId, o: offset, s: section, c: classes, l: limit, ...(full ? { f: true } : {}) })).toString(
+    "base64url",
+  )
+}
+
+export function decodeBranchGcCursor(cursor: string): {
+  jobId: string
+  offset: number
+  section?: BranchGcResultSection
+  classes?: BranchGcClass[]
+  limit?: number
+  full?: boolean
+} {
+  try {
+    const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+      j?: unknown
+      o?: unknown
+      s?: unknown
+      c?: unknown
+      l?: unknown
+      f?: unknown
+    }
+    if (typeof v.j === "string" && typeof v.o === "number" && Number.isInteger(v.o) && v.o >= 0) {
+      const section = v.s === "entries" || v.s === "outcomes" ? v.s : undefined
+      const classes = Array.isArray(v.c) ? (v.c.filter(c => c === "reclaim" || c === "review" || c === "hold") as BranchGcClass[]) : undefined
+      const limit = typeof v.l === "number" && Number.isInteger(v.l) && v.l >= 1 ? v.l : undefined
+      return {
+        jobId: v.j,
+        offset: v.o,
+        ...(section !== undefined ? { section } : {}),
+        ...(classes !== undefined ? { classes } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(v.f === true ? { full: true } : {}),
+      }
+    }
+  } catch {
+    // Fall through to the error below.
+  }
+  throw new Error("branch_gc: invalid `cursor`")
+}
+
+/**
+ * Pure: the `branch_gc` tool reply. A real repo's full result is ~800k chars
+ * on one line, which no MCP client can read, so by default ONE list is
+ * projected down and paged (`page`, with a `nextCursor` naming `jobId` and
+ * the slice it belongs to): plan entries are compact
+ * ({@link compactBranchGcEntry}); apply outcomes are paged as-is. The
+ * summary, the plan metadata, the restore log and `applySummary` stay whole;
+ * the list that was not selected stays on disk. `full: true` alone returns
+ * the result unchanged.
+ */
+export function branchGcReply(result: BranchGcResult, opts: BranchGcReplyInput, jobId: string): object {
+  const section: BranchGcResultSection = opts.section ?? (result.mode === "apply" ? "outcomes" : "entries")
+  const shaped =
+    opts.fields !== undefined ||
+    opts.classes !== undefined ||
+    opts.limit !== undefined ||
+    opts.section !== undefined ||
+    opts.offset !== undefined
+  if (opts.full === true && !shaped) return result
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? BRANCH_GC_PAGE_DEFAULT), 1), BRANCH_GC_PAGE_MAX)
+  const start = opts.offset ?? 0
+  let total: number
+  let pageRows: object[]
+  let cursorClasses: BranchGcClass[] = []
+  if (section === "outcomes") {
+    if (result.mode !== "apply") throw new Error("branch_gc: `section: outcomes` is only available on an apply result")
+    total = result.outcomes.length
+    pageRows = result.outcomes.slice(start, start + limit)
+  } else {
+    cursorClasses = opts.classes ?? []
+    const rows = result.plan.entries.filter(e => !opts.classes?.length || opts.classes.includes(e.class))
+    total = rows.length
+    pageRows = rows
+      .slice(start, start + limit)
+      .map(e =>
+        opts.fields !== undefined
+          ? Object.fromEntries(Object.entries(e).filter(([key]) => opts.fields!.includes(key)))
+          : opts.full === true
+            ? e
+            : compactBranchGcEntry(e),
+      )
+  }
+  const next = start + limit
+  const page: BranchGcResultPage = {
+    section,
+    total,
+    returned: pageRows.length,
+    ...(next < total ? { nextCursor: encodeBranchGcCursor(jobId, next, section, cursorClasses, limit, opts.full === true) } : {}),
+  }
+  const { outcomes: _outcomes, ...rest } = result as BranchGcResult & { outcomes?: unknown }
+  if (section === "outcomes") {
+    const { entries: _entries, ...planMeta } = result.plan
+    return { ...rest, plan: planMeta, outcomes: pageRows, jobId, page }
+  }
+  return { ...rest, plan: { ...result.plan, entries: pageRows }, jobId, page }
+}
+
 /** Input to the injected runner. `apply` defaults to false at the tool/route
  *  boundary — a bare call is a dry run — and an apply requires `scopes`. */
 export interface BranchGcRunInput {
@@ -282,6 +524,8 @@ export interface BranchGcRunInput {
   includeReviewed: boolean
   /** `includeReviewed` refuses an agreeing verdict below this line coverage (percent). Engine default 95. */
   minLineCoverage?: number
+  /** Turn the `verified-pr` pass off: below the line guard only an operator approval reclaims. Engine default false. */
+  requireOperatorBelowGuard?: boolean
   anchor?: string
 }
 
@@ -298,8 +542,12 @@ export interface BranchGcVerdictRecordView {
   name: string
   sha: string
   recordedAt: string
+  /** How many earlier verdicts for this tip this record replaced; absent on a first verdict. */
+  revision?: number
   triage: { verdict: BranchGcTriageVerdict; confidence: number; reason: string; salvage?: string }
   gate?: { agree: boolean; verdict: BranchGcTriageVerdict; reason: string; evidence: string[] }
+  /** The PR(s) a superseded verdict says landed the work. */
+  landedIn?: Array<{ pr: number; commit?: string }>
   reviewer: string
   /** Human operator approval overriding the line-coverage guard for this exact tip. */
   operator?: { by: string; note?: string }
@@ -317,3 +565,81 @@ export interface BranchGcVerdictLookupInput {
 /** Injected port: the stored verdict for this exact tip, or `null` — a read-only
  *  lookup, so a caller can check one tip without re-running a whole `branch_gc` plan. */
 export type BranchGcVerdictReader = (input: BranchGcVerdictLookupInput) => Promise<BranchGcVerdictRecordView | null>
+
+export interface BranchGcOperatorApprovalInput {
+  repoRoot: string
+  /** A full tip sha, or a branch name whose current tip has a stored verdict. */
+  target: string
+  /** The approving human. Must differ from the stored verdict's reviewer. */
+  by: string
+  note?: string
+  /** Check and report what would be recorded, without writing. */
+  dryRun?: boolean
+}
+
+export type BranchGcOperatorApprovalResult =
+  | {
+      ok: true
+      status: "recorded" | "would-record" | "already-approved"
+      target: string
+      name: string
+      sha: string
+      refs: string[]
+      verdict: Omit<BranchGcVerdictRecordView, "repo" | "recordedAt">
+      record?: BranchGcVerdictRecordView
+    }
+  | {
+      ok: false
+      refusal: "no-ref" | "ambiguous" | "no-verdict" | "not-agreed" | "tip-moved" | "by-is-reviewer"
+      target: string
+      message: string
+    }
+
+/** Injected port behind `POST /branches/gc/approve`: copy the stored verdict
+ *  for one tip and add the operator block. The route is the trust boundary;
+ *  this port only checks the verdict (stored, agreeing, current tip, `by`). */
+export type BranchGcOperatorApprover = (input: BranchGcOperatorApprovalInput) => Promise<BranchGcOperatorApprovalResult>
+
+export interface BranchGcRestoreInput {
+  /** Path of a `branch-gc-restore/v1` log written by an apply. */
+  logPath: string
+  /** The repo to restore into: the log's own `repoRoot` must be this repo, or the restore refuses. */
+  repoRoot: string
+  /** Only entries whose sha equals or starts with one of these. Default every entry. */
+  shas?: string[]
+  /** Re-create remote-kind refs as local branches instead of pushing them back. */
+  localOnly?: boolean
+  dryRun?: boolean
+  /** Keep the operator approval of restored tips (default: dropped, so the next run re-judges them). */
+  keepApproval?: boolean
+}
+
+/** One re-created (or refused) ref, mirrors `BranchGcRestoreOutcome`. */
+export interface BranchGcRestoreOutcomeView {
+  kind: BranchGcKind
+  name: string
+  sha: string
+  target: string
+  result:
+    | "restored"
+    | "would-restore"
+    | "already-present"
+    | "contained"
+    | "refused-conflict"
+    | "missing-commit"
+    | "invalid-entry"
+    | "failed"
+  command?: string
+  message?: string
+  approvalRevoked?: boolean
+}
+
+export interface BranchGcRestoreResultView {
+  logPath: string
+  repoRoot: string
+  outcomes: BranchGcRestoreOutcomeView[]
+  unmatched: string[]
+}
+
+/** Injected port behind `branch_gc_restore`: re-create refs from a restore log. */
+export type BranchGcRestorer = (input: BranchGcRestoreInput) => Promise<BranchGcRestoreResultView>

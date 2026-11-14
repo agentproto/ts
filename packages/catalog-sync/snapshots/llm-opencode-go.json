@@ -46,9 +46,23 @@
           "cache_write": 0.125
         }
       },
+      "crouton-alpha-free": {
+        "id": "crouton-alpha-free",
+        "name": "Crouton Alpha Free",
+        "release_date": "2026-11-03",
+        "status": "deprecated",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "deepseek-v4-pro": {
         "id": "deepseek-v4-pro",
-        "name": "DeepSeek V4 Pro (New)",
+        "name": "DeepSeek V4 Pro",
         "family": "deepseek-thinking",
         "release_date": "2026-04-24",
         "cost": {
@@ -68,11 +82,26 @@
           "cache_read": 0.003
         }
       },
+      "gemini-4-argon": {
+        "id": "gemini-4-argon",
+        "name": "Gemini 4 Argon",
+        "family": "gemini",
+        "release_date": "2026-10-13",
+        "provider": {
+          "npm": "@ai-sdk/google"
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1
+        }
+      },
       "gemini-4-argon-contributor": {
         "id": "gemini-4-argon-contributor",
         "name": "Gemini 4 Argon Contributor",
         "family": "gemini",
         "release_date": "2026-10-13",
+        "status": "deprecated",
         "provider": {
           "npm": "@ai-sdk/google"
         },
@@ -170,6 +199,17 @@
           "cache_read": 0.035
         }
       },
+      "hy4": {
+        "id": "hy4",
+        "name": "Hy4",
+        "family": "Hy",
+        "release_date": "2026-11-04",
+        "cost": {
+          "input": 0.834,
+          "output": 2.501,
+          "cache_read": 0.042
+        }
+      },
       "hy4-preview": {
         "id": "hy4-preview",
         "name": "Hy4 preview",
@@ -179,6 +219,16 @@
           "input": 0.834,
           "output": 2.501,
           "cache_read": 0.042
+        }
+      },
+      "iceman-contributor-free": {
+        "id": "iceman-contributor-free",
+        "name": "Iceman Contributor Free",
+        "release_date": "2026-10-24",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
         }
       },
       "kimi-k2.7-code": {
@@ -200,7 +250,20 @@
         "cost": {
           "input": 3,
           "output": 15,
-          "cache_read": 0.3
+          "cache_read": 0.3,
+          "cache_write": 3
+        }
+      },
+      "kimi-k3.1-pro": {
+        "id": "kimi-k3.1-pro",
+        "name": "Kimi K3.1 Pro",
+        "family": "kimi-k3",
+        "release_date": "2026-10-23",
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.2,
+          "cache_write": 2
         }
       },
       "longcat-2.0": {
@@ -214,11 +277,23 @@
           "cache_read": 0.006
         }
       },
+      "longcat-2.5-free": {
+        "id": "longcat-2.5-free",
+        "name": "LongCat 2.5 Free",
+        "family": "longcat",
+        "release_date": "2026-11-02",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "longcat-2.5-preview-free": {
         "id": "longcat-2.5-preview-free",
         "name": "LongCat 2.5 Preview Free",
         "family": "longcat",
         "release_date": "2026-09-25",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,
@@ -272,7 +347,7 @@
       "minimax-m2.7": {
         "id": "minimax-m2.7",
         "name": "MiniMax-M2.7",
-        "family": "minimax-m2.7",
+        "family": "minimax",
         "release_date": "2026-03-18",
         "status": "deprecated",
         "provider": {
@@ -289,7 +364,7 @@
         "id": "minimax-m3",
         "name": "MiniMax-M3",
         "family": "minimax-m3",
-        "release_date": "2026-05-31",
+        "release_date": "2026-06-01",
         "provider": {
           "npm": "@ai-sdk/anthropic"
         },
@@ -299,11 +374,23 @@
           "cache_read": 0.06
         }
       },
+      "minimax-m3.1-flash": {
+        "id": "minimax-m3.1-flash",
+        "name": "MiniMax M3.1 Flash",
+        "family": "minimax",
+        "release_date": "2026-10-19",
+        "cost": {
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.015
+        }
+      },
       "minimax-m3.1-flash-free": {
         "id": "minimax-m3.1-flash-free",
         "name": "MiniMax M3.1 Flash Free",
         "family": "minimax",
         "release_date": "2026-10-19",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,

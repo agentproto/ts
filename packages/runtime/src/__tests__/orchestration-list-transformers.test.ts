@@ -138,6 +138,7 @@ function fakeRoutineRegistrar(routines: RoutineFrontmatter[]) {
     reconcile: async () => ({ registered: [], skipped: [], removed: [], errors: [] }),
     trigger: async () => ({ ok: true, summary: "stub" }),
     list: () => routines,
+    eventBindings: () => [],
   }
 }
 
@@ -350,6 +351,7 @@ describe("cron_list transformer migration", () => {
         "lastOk",
         "lastRunAt",
         "nextRunAt",
+        "notify",
         "recurring",
         "schedule",
       ])

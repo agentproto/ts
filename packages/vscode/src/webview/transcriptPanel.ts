@@ -383,7 +383,12 @@ export async function handleWebviewMessage(
         )
         return
       }
-      await client.respondPermission(perm.id, { decision: msg.decision, optionId: msg.optionId })
+      await client.respondPermission(perm.id, {
+        decision: msg.decision,
+        ...(msg.answers ? { answers: msg.answers } : {}),
+        ...(msg.optionId ? { optionId: msg.optionId } : {}),
+        ...(msg.feedback ? { feedback: msg.feedback } : {}),
+      })
       return
     }
   }
@@ -1312,6 +1317,32 @@ export function buildHtml(
       flex-wrap: wrap;
       gap: 8px;
     }
+    /* Multi-field question form (AIP-45 question.fields). */
+    .question-field {
+      border: 0;
+      margin: 0 0 10px;
+      padding: 0;
+    }
+    .question-field legend {
+      margin-bottom: 6px;
+    }
+    .question-header {
+      font-size: 0.8em;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      color: var(--vscode-descriptionForeground);
+    }
+    .question-choice {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin: 3px 0;
+    }
+    .question-choice-desc {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.88em;
+    }
     .question-option {
       display: inline-flex;
       align-items: center;
@@ -1348,6 +1379,51 @@ export function buildHtml(
     }
     .question-option.secondary:hover {
       opacity: 1;
+    }
+    /* Typed prompts (AIP-45): the question text, a plan body, and a reply box. */
+    .question-prompt {
+      margin-bottom: 10px;
+      white-space: pre-wrap;
+    }
+    .question-plan {
+      margin-bottom: 10px;
+      max-height: 320px;
+      overflow: auto;
+    }
+    .question-ref {
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 10px;
+    }
+    .question-text {
+      box-sizing: border-box;
+      flex: 1;
+      min-width: 0;
+      padding: 5px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font: inherit;
+      font-size: 0.9em;
+    }
+    .question-reply {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .seg.question > .question-text {
+      display: block;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+    /* A mode switch: a quiet one-line divider, never a card. */
+    .seg.mode-row {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.85em;
+      padding: 2px 0 2px 10px;
+      border-left: 2px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      margin: 6px 0;
     }
     /* Resolved: the ask is already answered — a calmer card. */
     .seg.question.resolved {
@@ -3556,6 +3632,203 @@ export function buildHtml(
               return;
             }
             node.className = 'seg question';
+            // A reply to this ask: the permission it answers is found by
+            // toolCallId on the host, and only ids + the user's own text go back.
+            const reply = (answer) => {
+              vscode.postMessage(Object.assign({ type: 'resolveQuestion', toolCallId: seg.toolCallId }, answer));
+            };
+            const optionButton = (label, optionId, extraClass, hint) => {
+              const btn = el('button', 'question-option' + (extraClass ? ' ' + extraClass : ''), label);
+              btn.type = 'button';
+              if (hint) btn.title = hint;
+              if (optionId && seg.toolCallId) {
+                btn.addEventListener('click', () => reply({ decision: 'approve', optionId }));
+              } else {
+                btn.disabled = true;
+                btn.title = optionId ? 'no pending permission to answer' : 'option id unavailable';
+              }
+              return btn;
+            };
+            // Text box + submit, shared by a free-text answer and a plan rejection.
+            const textRow = (placeholder) => {
+              const input = el('input', 'question-text');
+              input.type = 'text';
+              input.placeholder = placeholder;
+              input.disabled = !seg.toolCallId;
+              return input;
+            };
+            if (seg.request === 'question' && seg.question && seg.question.fields && seg.question.fields.length) {
+              // A multi-field form (AIP-45 question.fields): radios for single
+              // choice, checkboxes for multi choice, an "Other" box when free
+              // text is allowed, text / number / checkbox for the rest. Submit
+              // posts the answers keyed by field id; Skip is a deny.
+              const q = seg.question;
+              const fields = q.fields;
+              const form = el('form', 'question-form');
+              const lone = fields.length === 1 && fields[0].prompt === q.prompt;
+              if (!lone) form.appendChild(el('div', 'question-prompt', q.prompt));
+              const readers = [];
+              fields.forEach((f, fi) => {
+                const box = el('fieldset', 'question-field');
+                box.dataset.fieldId = f.id;
+                const legend = el('legend', 'question-prompt');
+                if (f.header) legend.appendChild(el('span', 'question-header', f.header));
+                legend.appendChild(document.createTextNode((f.header ? ' ' : '') + f.prompt + (f.required ? ' *' : '')));
+                box.appendChild(legend);
+                const name = 'q-' + seg.id + '-' + fi;
+                let other = null;
+                if (f.input === 'single' || f.input === 'multi') {
+                  const inputs = [];
+                  for (const c of f.choices || []) {
+                    const label = el('label', 'question-choice');
+                    const input = el('input');
+                    input.type = f.input === 'single' ? 'radio' : 'checkbox';
+                    input.name = name;
+                    input.value = c.value;
+                    input.disabled = !seg.toolCallId;
+                    label.appendChild(input);
+                    label.appendChild(el('span', undefined, c.label + (f.recommended === c.value ? ' (recommended)' : '')));
+                    if (c.description) label.appendChild(el('span', 'question-choice-desc', c.description));
+                    if (c.preview) label.title = c.preview;
+                    box.appendChild(label);
+                    inputs.push(input);
+                  }
+                  if (f.allowFreeText) {
+                    other = el('input', 'question-text');
+                    other.type = 'text';
+                    other.placeholder = 'Other (optional)';
+                    other.disabled = !seg.toolCallId;
+                    box.appendChild(other);
+                  }
+                  readers.push(() => {
+                    const selected = inputs.filter((i) => i.checked).map((i) => i.value);
+                    const text = other ? other.value.trim() : '';
+                    if (!selected.length && !text) return null;
+                    return Object.assign({}, selected.length ? { selected } : {}, text ? { text } : {});
+                  });
+                } else if (f.input === 'boolean') {
+                  const label = el('label', 'question-choice');
+                  const input = el('input');
+                  input.type = 'checkbox';
+                  input.disabled = !seg.toolCallId;
+                  label.appendChild(input);
+                  label.appendChild(el('span', undefined, 'Yes'));
+                  box.appendChild(label);
+                  readers.push(() => ({ value: input.checked }));
+                } else {
+                  const input = el('input', 'question-text');
+                  input.type = f.input === 'number' ? 'number' : 'text';
+                  input.disabled = !seg.toolCallId;
+                  box.appendChild(input);
+                  readers.push(() => {
+                    const text = input.value.trim();
+                    if (!text) return null;
+                    if (f.input === 'number') {
+                      const n = Number(text);
+                      return Number.isFinite(n) ? { value: n } : null;
+                    }
+                    return { text };
+                  });
+                }
+                form.appendChild(box);
+              });
+              const row = el('div', 'question-options');
+              const submit = el('button', 'question-option primary question-submit', 'Submit');
+              submit.type = 'button';
+              const skip = el('button', 'question-option secondary question-skip', 'Skip');
+              skip.type = 'button';
+              submit.disabled = !seg.toolCallId;
+              skip.disabled = !seg.toolCallId;
+              const send = () => {
+                if (!seg.toolCallId) return;
+                const answers = {};
+                fields.forEach((f, fi) => {
+                  const a = readers[fi]();
+                  if (a) answers[f.id] = a;
+                });
+                const missing = fields.find((f) => f.required && !answers[f.id]);
+                if (missing) return;
+                reply({ decision: 'approve', answers });
+              };
+              submit.addEventListener('click', send);
+              // Enter in a text box submits the form.
+              form.addEventListener('submit', (e) => { e.preventDefault(); send(); });
+              skip.addEventListener('click', () => reply({ decision: 'deny' }));
+              row.appendChild(submit);
+              row.appendChild(skip);
+              form.appendChild(row);
+              node.appendChild(form);
+              return;
+            }
+            if (seg.request === 'question' && seg.question) {
+              const q = seg.question;
+              node.appendChild(el('div', 'question-prompt', q.prompt));
+              const row = el('div', 'question-options');
+              const claimed = new Set();
+              for (const c of q.choices || []) {
+                claimed.add(c.optionId);
+                row.appendChild(optionButton(c.label, c.optionId, undefined, c.description));
+              }
+              if (q.freeTextOptionId) claimed.add(q.freeTextOptionId);
+              // Any other offered option (e.g. a decline) stays answerable.
+              for (const item of seg.optionItems || []) {
+                if (item.id && !claimed.has(item.id)) row.appendChild(optionButton(item.label, item.id, 'secondary'));
+              }
+              if (row.childNodes.length) node.appendChild(row);
+              if (q.freeTextOptionId) {
+                const optionId = q.freeTextOptionId;
+                const input = textRow('Type your answer');
+                const send = el('button', 'question-option primary question-send', 'Send');
+                send.type = 'button';
+                send.disabled = !seg.toolCallId;
+                const submit = () => {
+                  const text = input.value.trim();
+                  if (!text) return;
+                  reply({ decision: 'approve', optionId, feedback: text });
+                };
+                send.addEventListener('click', submit);
+                input.addEventListener('keydown', (e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); submit(); }
+                });
+                const line = el('div', 'question-reply');
+                line.appendChild(input);
+                line.appendChild(send);
+                node.appendChild(line);
+              }
+              return;
+            }
+            if (seg.request === 'plan-approval' && seg.plan) {
+              const p = seg.plan;
+              node.appendChild(el('div', 'question-label',
+                p.targetModeId ? 'Plan awaiting approval · approving switches to ' + p.targetModeId + ' mode' : 'Plan awaiting approval'));
+              if (p.html) {
+                const body = el('div', 'question-plan');
+                body.innerHTML = p.html;
+                node.appendChild(body);
+              }
+              if (p.planRef) node.appendChild(el('div', 'question-ref', p.planRef));
+              const input = textRow('Reason for rejecting (optional)');
+              node.appendChild(input);
+              const row = el('div', 'question-options');
+              const approve = el('button', 'question-option primary plan-approve', 'Approve');
+              const reject = el('button', 'question-option secondary plan-reject', 'Reject');
+              approve.type = 'button';
+              reject.type = 'button';
+              if (seg.toolCallId) {
+                approve.addEventListener('click', () => reply({ decision: 'approve', optionId: p.approveOptionId }));
+                reject.addEventListener('click', () => {
+                  const reason = input.value.trim();
+                  reply(Object.assign({ decision: 'deny', optionId: p.rejectOptionId }, reason ? { feedback: reason } : {}));
+                });
+              } else {
+                approve.disabled = true;
+                reject.disabled = true;
+              }
+              row.appendChild(approve);
+              row.appendChild(reject);
+              node.appendChild(row);
+              return;
+            }
             node.appendChild(el('div', 'question-label', 'Awaiting your decision'));
             // Chips render from the presenter's ordered {id?, label} items —
             // the daemon's own optionId rides with its label, so no reverse
@@ -3591,6 +3864,10 @@ export function buildHtml(
             }
             return;
           }
+          case 'mode-changed':
+            node.className = 'seg mode-row';
+            node.textContent = seg.text || '';
+            return;
           case 'error':
             node.className = 'seg error';
             node.innerHTML = seg.text || '';

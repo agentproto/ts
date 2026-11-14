@@ -60,6 +60,9 @@ export interface SessionAwaitingQuestion {
    *  daemon-recommended option (exact match against `options[i]`), shown as
    *  the recommended quick-pick/button. Absent when the daemon has none. */
   recommended?: string
+  /** Mirrors `@agentproto/runtime` SessionAwaitingQuestion.kind: what kind of
+   *  wait this is. Absent = unclassified. Not read by the extension yet. */
+  kind?: "permission" | "context" | "harness"
 }
 
 /** Mirrors @agentproto/runtime SessionWatcherInfo — one live waiter behind
@@ -452,6 +455,8 @@ export interface SessionDescriptor {
   /** Named auth-profile echo for the `access` axis (SPEC §3.6) — mirrors the
    *  daemon's SessionAccessProfileEcho. Non-secret. */
   accessProfile?: SessionAccessProfileEcho
+  /** Spawn-time model allow-list, carried across restarts by the daemon. */
+  modelPolicy?: { allow?: string[]; block?: string[] }
   costUsd?: number
   tokensIn?: number
   tokensOut?: number
@@ -712,6 +717,10 @@ export interface PendingPermission {
   toolName?: string
   text: string
   options: Array<{ optionId: string; name?: string; kind?: string }>
+  /** AIP-45 typed request; absent or "tool-permission" for a plain permission. */
+  request?: string
+  question?: unknown
+  planApproval?: unknown
   requestedAt: string
 }
 
@@ -1273,6 +1282,19 @@ export interface SessionEventRecord {
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
   options?: unknown
+  /** `agent-prompt` records (AIP-45): what is being asked. Absent or
+   *  "tool-permission" is the legacy permission ask. */
+  request?: string
+  /** `agent-prompt` with `request: "question"`: the typed question payload. */
+  question?: unknown
+  /** `agent-prompt` with `request: "plan-approval"`: the typed plan payload. */
+  planApproval?: unknown
+  /** `mode-changed` records (AIP-45): the mode now in force, the one it
+   *  replaced, and who switched it ("caller" | "agent"). The reason, when
+   *  stated, rides in `reason`. */
+  modeId?: string
+  previousModeId?: string
+  cause?: string
   /** `session-message` records: the daemon-attested envelope of a typed
    *  message from another session (AIP-46 §Session messages). */
   message?: {
@@ -1376,7 +1398,8 @@ export interface WorkspacesConfig {
 
 // ── Worktree GC (mirrors @agentproto/runtime worktree-gc.ts — the client takes
 //    no runtime import; keep in sync by hand). `reclaim` = safe to remove
-//    (merged, clean, no open PR, no live session); `salvage` = dirty, only
+//    (merged/in-base, no open PR, no live session; clean, or dirty only with
+//    dirt a fresh proof shows carries no work); `salvage` = dirty, only
 //    removed with salvageDirty; `hold` = kept (open PR or a live session). ──
 export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
 
@@ -1387,8 +1410,18 @@ export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
  *  worktree list` entry at all (see `WorktreeGcPlanEntryView.orphan`).
  *  `prunable` is the mirror image: `git worktree list --porcelain` itself
  *  already reported the entry dead (registration intact, working directory
- *  gone) — see `WorktreeGcPlanEntryView.prunable`. */
-export type WorktreeGcReclaimReason = "dep-bump" | "orphan" | "prunable"
+ *  gone) — see `WorktreeGcPlanEntryView.prunable`. `squash-merged`,
+ *  `patch-merged` and `content-merged` come from `branch gc`'s in-base
+ *  ladder. `dirty-no-work` marks an integrated tree whose dirt is proven to
+ *  carry no work; see `WorktreeGcPlanEntryView.dirtyNoWork`. */
+export type WorktreeGcReclaimReason =
+  | "dep-bump"
+  | "orphan"
+  | "prunable"
+  | "squash-merged"
+  | "patch-merged"
+  | "content-merged"
+  | "dirty-no-work"
 
 export interface WorktreeGcPlanEntryView {
   path: string
@@ -1396,6 +1429,9 @@ export interface WorktreeGcPlanEntryView {
   head: string
   class: WorktreeGcClass
   reclaimReason?: WorktreeGcReclaimReason
+  /** Set only with `reclaimReason: "dirty-no-work"`: the sub-cases that
+   *  explained the dirt and how many paths removal puts back first. */
+  dirtyNoWork?: { cases: string[]; paths: number }
   /** `true` only for an orphan-scan entry — `tree`/`integration`/`liveness`
    *  carry the literal `"orphan"` placeholder rather than a real axis read. */
   orphan?: boolean
@@ -1418,12 +1454,15 @@ export interface WorktreeGcOutcomeView {
     | "skipped-dirty"
     | "aborted-reclassified"
     | "aborted-vanished"
+    | "skipped-stale"
+    | "removed-keep-branch"
     | "failed"
   reclaimReason?: WorktreeGcReclaimReason
   salvageDir?: string
   from?: WorktreeGcClass
   to?: WorktreeGcClass
   message?: string
+  reason?: string
 }
 
 export type WorktreeGcResult =
