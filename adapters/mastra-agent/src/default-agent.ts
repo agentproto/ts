@@ -37,7 +37,11 @@ import { DaemonStateEmitter } from "./state-signals.js"
 import type { MastraMemoryLike } from "./memory.js"
 import { buildSqliteMemory, buildSqliteStore } from "./memory.js"
 import { resolveMastraModel } from "./model-resolver.js"
-import { DEFAULT_PERMISSION_RULES, toolCategoryResolver } from "./tool-categories.js"
+import {
+  AUTONOMOUS_PERMISSION_RULES,
+  DEFAULT_PERMISSION_RULES,
+  toolCategoryResolver,
+} from "./tool-categories.js"
 import { resolveModes } from "./modes.js"
 import { makeUnwiredToolStub, makeWorkspaceTools } from "./workspace-tools.js"
 
@@ -298,6 +302,12 @@ export function makeAgentFactory(
     // decide whether the daemon toolsets (curated sub-agent tools + the
     // generic MCP proxy, both modes-on only) are even in play.
     const modesEnabled = opts.modes !== false && !envFlag(process.env.AGENTPROTO_MASTRA_NO_MODES)
+    // AGENT.md `autonomy: 10` ("full autonomy", AIP-42): keep the modes-on
+    // toolsets (daemon tools, MCP proxy, so `bureau_*` and `jobkit_*` stay
+    // reachable) but run ONE mode with no `submit_plan` gate and no tool
+    // approvals. Without it an unattended workflow step parks on the first
+    // plan or permission request, with nobody to answer.
+    const autonomous = modesEnabled && (frontmatter.autonomy ?? 5) >= 10
 
     // Daemon sub-agent-spawning tools (WP-5) — cheap to build (no network
     // call happens until a tool executes; discovery runs lazily), so moving
@@ -388,7 +398,9 @@ export function makeAgentFactory(
       body,
     })
 
-    const { modes, defaultModeId } = modesEnabled
+    const { modes, defaultModeId } = autonomous
+      ? { modes: [{ id: "main", metadata: { default: true } }], defaultModeId: "main" }
+      : modesEnabled
       ? resolveModes(body)
       : { modes: [{ id: "main", metadata: { default: true } }], defaultModeId: "main" }
 
@@ -470,10 +482,14 @@ export function makeAgentFactory(
       // `subagent` (WP-5's in-process reviewer, see `REVIEWER_SUBAGENT`), and
       // seeds real per-category tool-approval policy instead.
       disableBuiltinTools: modesEnabled
-        ? DISABLED_BUILTIN_TOOL_IDS.filter((id) => !REENABLED_BUILTIN_TOOL_IDS.includes(id))
+        ? DISABLED_BUILTIN_TOOL_IDS.filter(
+            (id) => !REENABLED_BUILTIN_TOOL_IDS.includes(id) || (autonomous && id === "submit_plan"),
+          )
         : [...DISABLED_BUILTIN_TOOL_IDS],
       toolCategoryResolver,
-      initialState: modesEnabled ? { permissionRules: DEFAULT_PERMISSION_RULES } : { yolo: true },
+      initialState: modesEnabled
+        ? { permissionRules: autonomous ? AUTONOMOUS_PERMISSION_RULES : DEFAULT_PERMISSION_RULES }
+        : { yolo: true },
       // `Session` construction hard-requires a `Workspace` instance
       // (`createSession` throws "A session requires a valid workspace
       // instance" without one) — but a *filesystem/sandbox*-backed Workspace

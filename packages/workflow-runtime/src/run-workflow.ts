@@ -1008,8 +1008,11 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
             : {}),
         }
       : undefined
-  if (step.policy && ctx.agents!.onAwaitingInput) {
-    await ctx.agents!.onAwaitingInput(sessionId, step.policy)
+  // A step with no explicit `policy` (every WORKFLOW.md step that omits it)
+  // still gets the default `{ awaiting: "fail" }`, as `buildAgentStep` does:
+  // a session parked on an approval must fail the step, never read as done.
+  if (ctx.agents!.onAwaitingInput) {
+    await ctx.agents!.onAwaitingInput(sessionId, step.policy ?? { awaiting: "fail" })
   }
 
   if (ctx.agents!.readCostUsd) {

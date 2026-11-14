@@ -165,6 +165,28 @@ export function validateAgainstJsonSchema(
 }
 
 /**
+ * Fill the declared top-level `default`s into a run's `input` (a missing or
+ * `undefined` key only; an explicit value, `null` and `false` included, is
+ * kept). Without this a declared default is documentation: `{{input.query}}`
+ * in a prompt stays a literal placeholder when the caller passes no input
+ * (scout-run, 2026-11-13). Returns a new object, never mutates `input`.
+ */
+export function applyWorkflowInputDefaults(inputsField: unknown, input: unknown): Record<string, unknown> | undefined {
+  const properties = normalizeWorkflowInputsSchema(inputsField).properties
+  const base = isPlainObject(input) ? input : input === undefined || input === null ? {} : undefined
+  if (base === undefined || !isPlainObject(properties)) return input as undefined
+  const filled: Record<string, unknown> = { ...base }
+  let changed = false
+  for (const [key, spec] of Object.entries(properties)) {
+    if (filled[key] === undefined && isPlainObject(spec) && spec["default"] !== undefined) {
+      filled[key] = spec["default"]
+      changed = true
+    }
+  }
+  return changed || isPlainObject(input) ? filled : (input as undefined)
+}
+
+/**
  * Validate a run's `input` against a WORKFLOW.md's declared `inputs`
  * (shorthand or canonical JSON Schema — see
  * {@link normalizeWorkflowInputsSchema}). The caller is responsible for
