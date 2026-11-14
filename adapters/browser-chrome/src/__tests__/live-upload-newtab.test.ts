@@ -21,6 +21,19 @@ async function fake(options?: Parameters<typeof startFakeChrome>[0]): Promise<Fa
   return f
 }
 
+describe("chrome-live: no native file chooser", () => {
+  it("intercepts the file chooser dialog on every agent tab, on that tab's own session", async () => {
+    const f = await fake()
+    const instance = await createChromeLiveProvider({ port: f.port, env: {} }).launch({}, {})
+    await instance.navigateOwnedTarget("https://example.test/apply")
+    const intercept = f.commands.filter((c) => c.method === "Page.setInterceptFileChooserDialog")
+    expect(intercept).toHaveLength(1)
+    expect(intercept[0]?.params).toEqual({ enabled: true })
+    expect(intercept[0]?.sessionId).toBeDefined()
+    await instance.stop()
+  })
+})
+
 describe("chrome-live: uploadFileOwnedTarget", () => {
   it("attaches absolute paths to the file input through DOM.setFileInputFiles", async () => {
     const f = await fake()
