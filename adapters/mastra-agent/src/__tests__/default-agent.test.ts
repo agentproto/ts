@@ -3,7 +3,7 @@
  * default mode, submit_plan suspend/approve/reject, direct mode switching,
  * tool-approval resolution, and `makeAgentFactory`'s modes-on / parity wiring.
  */
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Agent } from "@mastra/core/agent"
@@ -15,7 +15,11 @@ import { afterEach, describe, expect, it } from "vitest"
 import { DISABLED_BUILTIN_TOOL_IDS, makeAgentFactory, stripTrailingReasoningRule } from "../default-agent.js"
 import { buildSqliteStore } from "../memory.js"
 import { DEFAULT_MODE_ID, DEFAULT_MODES } from "../modes.js"
-import { DEFAULT_PERMISSION_RULES, toolCategoryResolver } from "../tool-categories.js"
+import {
+  AUTONOMOUS_PERMISSION_RULES,
+  DEFAULT_PERMISSION_RULES,
+  toolCategoryResolver,
+} from "../tool-categories.js"
 import { makeWorkspaceTools } from "../workspace-tools.js"
 import { createScriptedModel, type ScriptedModel } from "./support/scripted-model.js"
 
@@ -268,5 +272,43 @@ describe("stripTrailingReasoningRule", () => {
       { role: "user", content: [reasoning("weird but not ours to touch")] },
     ] as CompatPrompt
     expect(apply(prompt)).toBeUndefined()
+  })
+})
+
+describe("makeAgentFactory — autonomous agent (AGENT.md autonomy: 10)", () => {
+  async function agentFile(cwd: string, autonomy: number | undefined): Promise<string> {
+    const file = join(cwd, "AGENT.md")
+    const line = autonomy === undefined ? "" : `autonomy: ${autonomy}\n`
+    await writeFile(
+      file,
+      `---\nschema: agent/v1\nid: "@t/auto"\ndescription: test\nmodel: mock/auto\n${line}tools:\n  - run_command\n---\nDo the job.\n`,
+    )
+    return file
+  }
+
+  it("runs one mode, no plan gate and no approvals, but keeps the modes-on toolsets", async () => {
+    const cwd = await makeTmpDir()
+    const factory = makeAgentFactory({ cwd, agentFile: await agentFile(cwd, 10) })
+    const { controller } = await factory()
+    await controller.init()
+
+    expect(controller.listModes().map((m) => m.id)).toEqual(["main"])
+    const session = await controller.createSession({ resourceId: "factory-autonomous" })
+    expect(session.mode.get()).toBe("main")
+    expect(session.permissions.getRules()).toEqual(AUTONOMOUS_PERMISSION_RULES)
+    expect(session.resolveToolApproval("run_command")).toBe("allow")
+    expect(session.resolveToolApproval("write_file")).toBe("allow")
+  })
+
+  it("an agent below autonomy 10 keeps the plan gate and the approvals", async () => {
+    const cwd = await makeTmpDir()
+    const factory = makeAgentFactory({ cwd, agentFile: await agentFile(cwd, 5) })
+    const { controller } = await factory()
+    await controller.init()
+
+    expect(controller.listModes().map((m) => m.id).sort()).toEqual(["build", "plan", "review"])
+    const session = await controller.createSession({ resourceId: "factory-nonauto" })
+    expect(session.mode.get()).toBe("plan")
+    expect(session.resolveToolApproval("run_command")).toBe("ask")
   })
 })
