@@ -750,8 +750,9 @@ agentproto sessions unpin ses_abc12
 
 POSTs `/sessions/:id/pin`. A pinned session sorts to the top of the
 `sessions` table and the VS Code "Pinned" group, marked with a `PIN`
-indicator. Pinning is list-visibility only — it has no effect on
-keep-alive, the idle reaper, or notifications.
+indicator. A pinned session is never stopped by the idle reaper
+(pinned means never stopped). Pinning does not set keep-alive and sends no
+notification. Unpin it to make it reapable again.
 
 ### `POST /sessions/:id/archive` (HTTP)
 

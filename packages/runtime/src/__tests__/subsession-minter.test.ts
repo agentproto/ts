@@ -365,6 +365,61 @@ describe("wireSubsessionLifecycle", () => {
     expect(subsessions.reinstateSession).toHaveBeenCalledWith("sess_1")
   })
 
+  describe("a session that holds an approval", () => {
+    const decided = (approvalId: string, decision: "approved" | "denied") =>
+      ({ type: "approval:decided", approvalId, decision, channel: "ui_card", ts: "t" }) as never
+    const consumed = (approvalId: string) => ({ type: "approval:consumed", approvalId, ts: "t" }) as never
+
+    function setupHeld() {
+      const sessionEvents = createSessionEventBus()
+      const subsessions = {
+        revokeSession: vi.fn(async (_id: string) => {}),
+        reinstateSession: vi.fn((_id: string) => {}),
+      }
+      const held = new Set(["sess_1"])
+      wireSubsessionLifecycle({
+        sessionEvents,
+        registry: { get: () => ({ endedReason: "idle-reaped" }) },
+        subsessions,
+        holdsApproval: id => held.has(id),
+        approvalSession: id => (id === "apr_1" ? "sess_1" : undefined),
+      })
+      return { sessionEvents, subsessions, held }
+    }
+
+    it("keeps its tabs (no revoke) at exit, an approved card stays alive", () => {
+      const { sessionEvents, subsessions } = setupHeld()
+      sessionEvents.emit(exited("sess_1"))
+      sessionEvents.emit(decided("apr_1", "approved"))
+      expect(subsessions.revokeSession).not.toHaveBeenCalled()
+    })
+
+    it("revokes once the approval is consumed", () => {
+      const { sessionEvents, subsessions, held } = setupHeld()
+      sessionEvents.emit(exited("sess_1"))
+      held.delete("sess_1")
+      sessionEvents.emit(consumed("apr_1"))
+      expect(subsessions.revokeSession).toHaveBeenCalledTimes(1)
+      expect(subsessions.revokeSession).toHaveBeenCalledWith("sess_1")
+    })
+
+    it("revokes once the approval is denied, and not while another one is still held", () => {
+      const { sessionEvents, subsessions, held } = setupHeld()
+      sessionEvents.emit(exited("sess_1"))
+      sessionEvents.emit(decided("apr_1", "denied"))
+      expect(subsessions.revokeSession).not.toHaveBeenCalled()
+      held.delete("sess_1")
+      sessionEvents.emit(decided("apr_1", "denied"))
+      expect(subsessions.revokeSession).toHaveBeenCalledTimes(1)
+    })
+
+    it("a session without a held approval is still revoked at exit", () => {
+      const { sessionEvents, subsessions } = setupHeld()
+      sessionEvents.emit(exited("sess_other"))
+      expect(subsessions.revokeSession).toHaveBeenCalledWith("sess_other")
+    })
+  })
+
   it("never reinstates a retired or unknown session", () => {
     const { sessionEvents, subsessions } = setup({
       archived: { archived: true },

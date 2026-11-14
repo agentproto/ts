@@ -156,6 +156,7 @@ function isReapable(
   nowMs: number,
   thresholds: ReapThresholds,
   byId: ReadonlyMap<string, SessionDescriptor>,
+  holdsApproval?: (sessionId: string) => boolean,
 ): boolean {
   if (desc.kind !== "agent-cli") return false
   if (desc.status !== "running") return false
@@ -164,6 +165,8 @@ function isReapable(
   if (desc.awaitingPermission === true) return false
   if (desc.archived === true) return false
   if (desc.keepAlive === true) return false
+  if (desc.pinned === true) return false
+  if (holdsApproval?.(desc.id) === true) return false
   const sandboxed = isBoxSession(desc)
   if (sandboxed && isSandboxWorkInFlight(desc, byId)) return false
   let thresholdMs = thresholdFor(desc, thresholds)
@@ -211,8 +214,12 @@ export function runIdleReapPass(opts: {
    *  the workspace buckets, each reaps only rows for the workspace IT serves.
    *  Return false to exclude a row. Omitted ⇒ every row is served. */
   isServed?: (desc: SessionDescriptor) => boolean
+  /** True when the session requested an approval that is pending, or approved
+   *  and not consumed (`sessionHoldsApproval`). Such a session is never reaped:
+   *  its Bureau tab renders the approval card. Omitted ⇒ no session holds one. */
+  holdsApproval?: (sessionId: string) => boolean
 }): IdleReapSummary {
-  const { registry, isServed } = opts
+  const { registry, isServed, holdsApproval } = opts
   const thresholds: ReapThresholds = {
     general: positive(opts.idleReapAfterMs),
     sandbox: positive(opts.sandboxIdleReapAfterMs),
@@ -230,7 +237,7 @@ export function runIdleReapPass(opts: {
   const all = registry.list({ includeArchived: true })
   const byId = new Map<string, SessionDescriptor>(all.map(d => [d.id, d]))
   const candidates = all.filter(
-    d => (isServed?.(d) ?? true) && isReapable(d, nowMs, thresholds, byId),
+    d => (isServed?.(d) ?? true) && isReapable(d, nowMs, thresholds, byId, holdsApproval),
   )
 
   const summary: IdleReapSummary = {
