@@ -7777,21 +7777,20 @@ export function registerSessionTools(
   )
 
   // ── session_set_pinned ──────────────────────────────────────────
-  // A quiet, structural list-visibility flag — lets an operator favorite a
-  // session so it sorts to the top of the CLI table / VS Code webview list.
+  // A quiet favorite flag — sorts a session to the top of the CLI table / VS
+  // Code webview list, and exempts it from the idle reaper.
   // Modeled EXACTLY on session_set_keepalive (itself modeled on
   // session_rename): resolve + subtree-scope + delegate to the registry,
   // which flips the field and persists. Deliberately does NOT touch
-  // keepAlive, reaper eligibility, or any notification path — see
-  // `SessionDescriptor.pinned`'s doc for why pin is distinct from those.
+  // keepAlive or any notification path — see `SessionDescriptor.pinned`'s doc.
   server.tool(
     "session_set_pinned",
     "Set or clear a session's list-visibility pin. When `pinned` is true, " +
       "the session sorts to the top of `agentproto sessions` and the VS Code " +
       "sessions webview's dedicated Pinned group. Set false to clear it. " +
-      "Persists across daemon restarts. Purely a sort/display flag — does " +
-      "NOT touch the idle-reaper, keepAlive, or emit any notification, and " +
-      "does NOT touch the running agent.",
+      "Persists across daemon restarts. A pinned session is never stopped " +
+      "by the idle reaper (pinned means never stopped); it does not set " +
+      "keepAlive, emit any notification, or touch the running agent.",
     {
       ...sessionRefSchema(z),
       pinned: mcpBool.describe(
@@ -7862,8 +7861,8 @@ export function registerSessionTools(
   // /sessions/pinned/order`. Modeled on session_set_pinned: resolve each id,
   // subtree-scope ALL of them, then delegate to the registry, which assigns
   // positions 0..n-1 in the given order, persists, and emits
-  // `session:pinned-reordered`. Pure sort/display state — never touches the
-  // live agent, keepAlive, or the idle-reaper.
+  // `session:pinned-reordered`. Pure ordering state — never touches the
+  // live agent or keepAlive.
   server.tool(
     "session_reorder_pinned",
     "Manually reorder pinned sessions. `ids` is the desired order — each " +

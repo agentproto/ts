@@ -123,6 +123,28 @@ describe("runIdleReapPass — candidate selection", () => {
     expect(reaped).toEqual([])
   })
 
+  it("does NOT reap a pinned:true row (pinned means never stopped)", () => {
+    const { registry, reaped } = stubRegistry([row({ id: "pin", pinned: true })])
+    const summary = runIdleReapPass({ registry, idleReapAfterMs: THIRTY_MIN, now })
+    expect(summary.reaped).toBe(0)
+    expect(reaped).toEqual([])
+    // An unpinned twin is still reaped, so the exemption is the pin and nothing else.
+    const twin = stubRegistry([row({ id: "pin", pinned: false })])
+    expect(runIdleReapPass({ registry: twin.registry, idleReapAfterMs: THIRTY_MIN, now }).reaped).toBe(1)
+  })
+
+  it("does NOT reap a session that holds an approval, reaps the others", () => {
+    const { registry, reaped } = stubRegistry([row({ id: "holder" }), row({ id: "other" })])
+    const summary = runIdleReapPass({
+      registry,
+      idleReapAfterMs: THIRTY_MIN,
+      now,
+      holdsApproval: id => id === "holder",
+    })
+    expect(summary.ids).toEqual(["other"])
+    expect(reaped.map(r => r.id)).toEqual(["other"])
+  })
+
   it("does NOT reap a keepAlive:true row, independent of the crash-reaper's own guards", () => {
     const { registry, reaped } = stubRegistry([row({ id: "pinned", keepAlive: true })])
     const summary = runIdleReapPass({ registry, idleReapAfterMs: THIRTY_MIN, now })
