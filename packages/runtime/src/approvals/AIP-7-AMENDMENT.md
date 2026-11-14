@@ -38,8 +38,11 @@ works and needs no origin configuration.
 A Telegram-opened app page can read and decide ONE approval with an AIP-53
 link-session token whose `approvalId` claim names it (see
 `docs/cli/guides/app-agent-tools.md`). The token reaches exactly
-`GET /approvals/:id` and `POST /approvals/:id/decision/telegram` for that id,
-and decides through the `telegram` channel in place of the bot secret. It is
+`GET /approvals/:id`, `POST /approvals/:id/decision/telegram` and the two files
+routes `GET /approvals/:id/attachments` and
+`GET /approvals/:id/attachments/:name` (action `files`, read only) for that id
+and no other, and decides through the `telegram` channel in place of the bot
+secret. It is
 honoured only when the token's verified `telegramUserId` is listed in
 `approvals.humanTelegramIds`, an owner-only config key (`writable: false`,
 digits only, applied on restart). The list is empty by default, which keeps

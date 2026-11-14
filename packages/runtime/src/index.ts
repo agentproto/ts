@@ -334,6 +334,7 @@ import { createTaskLedger } from "./task-ledger.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
 import { approvalAttachmentDir } from "./approvals/telegram-attachments.js"
+import type { ApprovalRecord } from "./approvals/types.js"
 import { createApprovalTelegramBridge } from "./approvals/telegram-bridge.js"
 import {
   createReachRouter,
@@ -5298,6 +5299,13 @@ export async function createGateway(
   const approvalsHumanTelegramIds = (daemonConfig.approvals?.humanTelegramIds ?? []).filter(
     id => typeof id === "string" && /^\d+$/.test(id),
   )
+  // The folder an approval's `preview.attachments` are relative to: only for
+  // an approval opened by an installed app, inside that app's data root. One
+  // resolver for the Telegram bridge and the approval page's files routes.
+  const approvalFolder = (record: ApprovalRecord): Promise<string | undefined> | undefined => {
+    const app = record.appId ? appRegistry.getApp(record.appId) : undefined
+    return app ? approvalAttachmentDir(record.preview, appDataDir(app)) : undefined
+  }
   // REACH (reach/router.ts): with a `reach.routes.owner` that has at least
   // one adapter able to deliver, the router decides who announces each
   // approval and the bridge only posts when the route reaches its `telegram`
@@ -5338,10 +5346,7 @@ export async function createGateway(
         sendAttachments: permissionTelegramCfg?.telegramAttachments === true,
         // `preview.attachments` is only resolved for an approval opened by an
         // installed app, inside that app's data root.
-        attachmentDir: record => {
-          const app = record.appId ? appRegistry.getApp(record.appId) : undefined
-          return app ? approvalAttachmentDir(record.preview, appDataDir(app)) : undefined
-        },
+        attachmentDir: approvalFolder,
         onError: err => {
           console.warn(`[approval-telegram-bridge] ${err instanceof Error ? err.message : String(err)}`)
         },
@@ -5457,6 +5462,7 @@ export async function createGateway(
     // Digits only, even if a hand edit slipped past the config validation
     // (an invalid config only warns at load).
     approvalsHumanTelegramIds,
+    approvalsAttachmentDir: approvalFolder,
     ...(workflowRunner ? { workflowRunner } : {}),
     appRegistry,
     performAppInstall: performInstall,
