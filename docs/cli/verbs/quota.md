@@ -14,10 +14,14 @@ rate limit / balance is left right now?" — read through the daemon's
 `agentproto usage rollup` ([`usage.md`](./usage.md)) estimates what
 agentproto **spent** from its own local snapshots. `quota status` is the
 other half: what the **provider** currently reports is left on that key,
-fetched live on every call — `basis` is always `provider`, never a local
-estimate. A profile with no registered reader, or a reader that returns
-nothing (bad credential, unreachable provider, a response with no usable
-figures), is an explicit error — never a fabricated `0%`.
+fetched live on every call — `basis` is `provider` (documented surface) or
+`probe` (Anthropic subscriptions: one `max_tokens: 1` request whose
+`anthropic-ratelimit-unified-*` reply headers are read, so each read spends about
+one token of the subscription), never a local estimate. A profile with no registered reader, or a reader that returns
+nothing, is an explicit error — never a fabricated `0%`: `no_reader`,
+`credential_missing`, `credential_rejected` (401/403), `rate_limited` (429),
+`provider_unreachable`, or `reader_returned_nothing` (a response with no usable
+figures). A window the provider did not send (e.g. no `5h`) is simply absent.
 
 ## `status --profile <ref>`
 
