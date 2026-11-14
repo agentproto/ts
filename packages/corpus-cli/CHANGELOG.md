@@ -1,5 +1,12 @@
 # @agentproto/corpus-cli
 
+## 0.11.5
+
+### Patch Changes
+
+- @agentproto/corpus@1.0.1
+- @agentproto/corpus-presets@0.2.19
+
 ## 0.11.4
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @agentproto/corpus
 
+## 1.0.1
+
+### Patch Changes
+
+- Updated dependencies [4616de7]
+- Updated dependencies [c6d6c8f]
+  - @agentproto/operator@1.1.0
+  - @agentproto/routine@1.0.0
+
 ## 1.0.0
 
 ### Major Changes

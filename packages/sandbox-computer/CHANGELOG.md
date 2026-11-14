@@ -1,5 +1,18 @@
 # @agentproto/sandbox-computer
 
+## 0.8.0
+
+### Minor Changes
+
+- 6a3a05e: The computer boot skips `npm i -g` when the image already carries the requested toolchain. It reads the baked `agentproto` version and the version of each `installPackages` entry in the CLI's own global tree, and skips the install when `cliVersion` and every extra are satisfied (`latest` or no tag accepts the baked version, an exact version must equal it; ranges and other dist-tags install). Previously any `installPackages` entry, such as the `@agentproto/adapter-opencode@latest` the runtime injects, forced a full install on every boot even on a fresh image, which cost 20 s to minutes and failed outright on a bad egress path. Anything missing, different or unreadable still installs the CLI and all extras together. The decision is logged in the boot diagnostics, the 300 s boot deadline is unchanged, and the new `forceInstall` option (`COMPUTER_FORCE_INSTALL=1`) restores the install on every boot.
+
+### Patch Changes
+
+- 709ebe5: Collect a bounded, redacted in-box diagnostic snapshot (`ip -br addr`, `ip route`, `/etc/resolv.conf`, `getent hosts registry.npmjs.org`, the last 40 lines of the daemon log, and the agentproto process table) when a computer reached running but the daemon never became healthy or attach failed, before the box is destroyed. The snapshot rides the thrown error as `bootDiagnostics` and is appended to its message and the boot log, so a boot failure with `egressIp` set is diagnosable after teardown.
+- e039ae5: Long in-box commands now run through a detached exec transport: the command is written to a script, started with `setsid nohup`, and polled with short execs instead of one synchronous controller request. A command that outlives Cloudflare's 100 second request cut no longer fails with a 524. The boot CLI install, configured setup commands, and any `exec` whose effective timeout exceeds 90 seconds use it — an omitted timeout defaults to 120 seconds, so it detaches too; a short command with a short explicit timeout keeps the single request path.
+- Updated dependencies [c6d6c8f]
+  - @agentproto/sandbox@1.0.0
+
 ## 0.7.1
 
 ### Patch Changes

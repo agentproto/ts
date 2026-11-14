@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/reach-chat-sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "@agentproto/reach-chat-sdk - the chat-sdk REACH adapter kind: reaches a human through a Chat SDK messenger adapter. First platform WhatsApp (Cloud API), tell only, outbound only. Optional for @agentproto/runtime, loaded only when a route has a chat-sdk entry.",
   "keywords": [
     "agentproto",

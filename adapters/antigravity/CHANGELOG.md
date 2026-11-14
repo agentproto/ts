@@ -1,5 +1,13 @@
 # @agentproto/adapter-antigravity
 
+## 0.3.15
+
+### Patch Changes
+
+- Updated dependencies [c6d6c8f]
+- Updated dependencies [f001d73]
+  - @agentproto/harness@4.0.0
+
 ## 0.3.14
 
 ### Patch Changes
