@@ -298,6 +298,7 @@ import { createImportedCallGuard } from "./imported-call-gate.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { IMPORTED_MCPS_PATH, loadImportedMcps } from "./mcp-imports.js"
 import { resolveImportConnection } from "./mcp-import-resolve.js"
+import { sessionHoldsApproval } from "./approvals/session-hold.js"
 import { createSubsessionMinter, wireSubsessionLifecycle } from "./subsession-minter.js"
 import { createPermissionTelegramBridge } from "./permission-telegram-bridge.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
@@ -3909,7 +3910,17 @@ export async function createGateway(
   })
   // Revoke this session's tokens when it ends, reinstate it when it is revived
   // in place (`session:resumed`).
-  wireSubsessionLifecycle({ sessionEvents, registry: sessions, subsessions })
+  wireSubsessionLifecycle({
+    sessionEvents,
+    registry: sessions,
+    subsessions,
+    // A session holding an approval keeps its Bureau tabs (the card lives in one).
+    holdsApproval: id => sessionHoldsApproval(approvalsEngine, id),
+    approvalSession: id => {
+      const by = approvalsEngine.get(id)?.requestedBy
+      return by && "sessionId" in by ? by.sessionId : undefined
+    },
+  })
   // Per-call human approval for imported tools named by a `hold` rule in
   // `.agentproto/hooks.json` (e.g. agentpush `send_message`). No rule, no change.
   mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace, subsessions }))
@@ -5629,6 +5640,7 @@ export async function createGateway(
           registry: sessions,
           idleReapAfterMs,
           sandboxIdleReapAfterMs,
+          holdsApproval: id => sessionHoldsApproval(approvalsEngine, id),
         })
         if (summary.reaped > 0) {
           // One line per sweep that actually reaped something (silent otherwise

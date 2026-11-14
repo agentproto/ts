@@ -300,15 +300,48 @@ export function wireSubsessionLifecycle(o: {
   sessionEvents: Pick<SessionEventBus, "on">
   registry: { get(id: string): Pick<SessionDescriptor, "archived" | "endedReason" | "continuedTo" | "retiredAt"> | undefined }
   subsessions: Pick<SubsessionMinter, "revokeSession" | "reinstateSession">
+  /**
+   * True while the session holds an approval (pending, or approved and not
+   * consumed). Its revoke is then deferred: the revoke closes the Bureau tabs
+   * the token owns, and the approval card lives in one of them. The deferred
+   * revoke runs when the approval is decided-as-denied, consumed or expired and
+   * nothing else is held. Omitted ⇒ revoke at exit, as before.
+   */
+  holdsApproval?: (sessionId: string) => boolean
+  /** Looks up the approval's requester to find which session to re-check. */
+  approvalSession?: (approvalId: string) => string | undefined
 }): void {
-  // A revocation failure never throws into the exit path.
-  o.sessionEvents.on("session:exited", ev => {
-    void o.subsessions.revokeSession(ev.sessionId).catch(err => {
+  const revoke = (sessionId: string): void => {
+    // A revocation failure never throws into the exit path.
+    void o.subsessions.revokeSession(sessionId).catch(err => {
       const message = err instanceof Error ? err.message : String(err)
-      console.warn(`[subsessions] revoke for ${ev.sessionId} failed: ${message}`)
+      console.warn(`[subsessions] revoke for ${sessionId} failed: ${message}`)
     })
+  }
+  /** Exited sessions whose revoke waits on an approval. */
+  const deferred = new Set<string>()
+  o.sessionEvents.on("session:exited", ev => {
+    if (o.holdsApproval?.(ev.sessionId) === true) {
+      deferred.add(ev.sessionId)
+      return
+    }
+    revoke(ev.sessionId)
   })
+  const settle = (approvalId: string): void => {
+    const sessionId = o.approvalSession?.(approvalId)
+    if (sessionId === undefined || !deferred.has(sessionId)) return
+    if (o.holdsApproval?.(sessionId) === true) return
+    deferred.delete(sessionId)
+    revoke(sessionId)
+  }
+  o.sessionEvents.on("approval:decided", ev => {
+    // An approval is released by `approval:consumed`; a denial ends it now.
+    if (ev.decision === "denied") settle(ev.approvalId)
+  })
+  o.sessionEvents.on("approval:consumed", ev => settle(ev.approvalId))
+  o.sessionEvents.on("approval:expired", ev => settle(ev.approvalId))
   o.sessionEvents.on("session:resumed", ev => {
+    deferred.delete(ev.sessionId)
     const desc = o.registry.get(ev.sessionId)
     if (!desc || isRetired(desc)) return
     o.subsessions.reinstateSession(ev.sessionId)

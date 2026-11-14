@@ -7144,11 +7144,12 @@ export function buildSpawnSessionHttpArgs(
  *                                    returns {ok, sessionId}. 409 when not
  *                                    reapable.
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
- *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
- *                                    {pinned: boolean}; returns {ok, sessionId,
- *                                    pinned}. Pure sort/display state — the
- *                                    HTTP twin of the `session_set_pinned`
- *                                    MCP verb, never touches keepAlive/reaper.
+ *   POST   /sessions/:id/pin      → set/clear the pin, body {pinned: boolean};
+ *                                    returns {ok, sessionId, pinned}. Sorts the
+ *                                    session to the top and exempts it from the
+ *                                    idle reaper; the HTTP twin of the
+ *                                    `session_set_pinned` MCP verb, never
+ *                                    touches keepAlive.
  *   POST   /sessions/:id/prompt-policy → (re-)grant allowPromptFrom on an
  *                                    ALREADY-LIVE session, body
  *                                    {allowPromptFrom: string[]}; returns

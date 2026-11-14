@@ -2259,16 +2259,15 @@ export interface SessionDescriptor {
    *  `session_set_keepalive` (`registry.setKeepAlive`). Absent (not `false`)
    *  for every session that hasn't opted in. */
   keepAlive?: boolean
-  /** Server-persisted, list-visibility-only favorite flag — set/cleared via
-   *  `session_set_pinned` (`registry.setPinned`) or `POST /sessions/:id/pin`.
-   *  Purely a sort/display concern: pinned sessions sort to the top of the
-   *  session list (CLI table, VS Code webview's dedicated "Pinned" group).
-   *  Deliberately orthogonal to — and must NEVER be confused with —
-   *  `keepAlive` (idle-reaper exemption, operational), the VS Code
-   *  extension's client-side-only "watch" eye (toast notifications, never
-   *  persisted here), or `watchers` (live supervisor wait count). No side
-   *  effects on reaping, notifications, or anything else. Absent (not
-   *  `false`) for every session that hasn't been pinned. */
+  /** Server-persisted favorite flag, set/cleared via `session_set_pinned`
+   *  (`registry.setPinned`) or `POST /sessions/:id/pin`. Pinned sessions sort to
+   *  the top of the session list (CLI table, VS Code webview's "Pinned" group)
+   *  AND are never idle-reaped (`idle-reaper.ts`: pinned means "never
+   *  stopped"). It does not set `keepAlive` (a separate, explicit opt-out), and
+   *  only the idle sweep honours it: an operator kill, a crash or the host
+   *  guard still end a pinned session. Distinct from the VS Code extension's
+   *  client-side-only "watch" eye and from `watchers` (live supervisor wait
+   *  count). Absent (not `false`) for every session that hasn't been pinned. */
   pinned?: boolean
   /** Who may drive this session through the daemon MCP drive tools besides
    *  its owner (the session that spawned it, or the operator for a root
@@ -5456,19 +5455,18 @@ export interface SessionsRegistry {
    *  watcher in this codebase). Returns false when the session is unknown
    *  or has no `meta.agentManifestPath` to watch. */
   setAgentRoleWatch(id: string, enabled: boolean): boolean
-  /** Set or clear a session's list-visibility pin (the `session_set_pinned`
-   *  MCP verb / `POST /sessions/:id/pin`). `true` flips
-   *  `SessionDescriptor.pinned` on — pure sort/display state for the CLI
-   *  table and the VS Code webview's list, which sort a pinned session to
-   *  the top. Pinning a session that isn't pinned yet APPENDS it to the
+  /** Set or clear a session's pin (the `session_set_pinned` MCP verb /
+   *  `POST /sessions/:id/pin`). `true` flips `SessionDescriptor.pinned` on: the
+   *  CLI table and the VS Code webview's list sort a pinned session to the
+   *  top, and the idle reaper never stops it. Pinning a session that isn't pinned yet APPENDS it to the
    *  end of the pinned group (`pinnedOrder` = max pinned order over the
    *  currently pinned + 1, missing treated as -1); re-pinning an already
    *  pinned session keeps its order. `false` clears the pin and deletes
    *  `pinnedOrder`. Persists via the same `schedulePersist` every
    *  descriptor mutation uses and emits `session:pinned-changed` so a
    *  live UI resorts without waiting for its next snapshot poll. NEVER
-   *  touches `keepAlive`, reaper eligibility, or any notification path —
-   *  pin is quiet, structural state only. Throws when the id is unknown. */
+   *  touches `keepAlive` or any notification path. Unpinning makes the
+   *  session reapable again. Throws when the id is unknown. */
   setPinned(id: string, pinned: boolean): SessionDescriptor
   /** Manually reorder the pinned group (the `session_reorder_pinned` MCP
    *  verb / `POST /sessions/pinned/order`). Every id must exist and be
