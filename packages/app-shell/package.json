@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/app-shell",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/app-shell: a framework-free shell for agent apps: CSS design tokens, component styles, kit persistence and sidebar/topbar markup. Plain ESM and CSS, no runtime dependency; works from a single-file HTML build or a React/Vite app.",
   "keywords": [
     "agentproto",

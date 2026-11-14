@@ -1,5 +1,20 @@
 # @agentproto/sentinel
 
+## 0.6.0
+
+### Minor Changes
+
+- bf69bc9: Add the `delivery.apply.types` switch so a classified level can drive delivery (wake/fyi/drop; an applied level 3 is delivered as a wake and never downgraded or dropped) per event type, shadow by default, for both session follows and sentinels.
+- 65633db: Sentinel signal routing, shadow only: a `sentinel.routes` rule table (match subject/types/from, `via` providers, `fallback`, `do: deliver | forward | drop`, `target`, `mode`) resolved most-specific-first, then list order, with visible `builtin:` defaults; an explicit `provider` still wins. `sentinel_watch` and `POST /sentinels` stamp the decision as `route` on the sentinel and log one line to `~/.agentproto/sentinel-routing.jsonl`, but the provider actually used is unchanged. New read-only `sentinel_routes` MCP tool, `GET /sentinels/routes[/explain]` and `agentproto sentinel routes [list|explain <subject>]`. `sentinel.autoWatchPrs`, `sentinel.autoWatchUrgency`, `sentinel.routes` and `sentinel.routing.mode` are now registered config keys.
+- 3f92da0: Record a shadow `grant` verdict (`allow`, `deny`, `unknown` or `error`) on every delivery ledger line. The check observes publish and wake capabilities but never changes delivery; a throwing or slow decision leaves delivery untouched and is recorded as `error`.
+
+### Patch Changes
+
+- 900e930: Stop the PR auto-linker creating two identical sentinels for one PR: concurrent links for the same (PR, target session) are now guarded in flight, and `recordOpenedPr` dedupes on the PR url alone instead of (adapter, url).
+- Updated dependencies [bf69bc9]
+- Updated dependencies [3f92da0]
+  - @agentproto/delivery@0.3.0
+
 ## 0.5.0
 
 ### Minor Changes

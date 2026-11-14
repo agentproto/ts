@@ -1,5 +1,15 @@
 # @agentproto/adapter-jcode
 
+## 0.4.8
+
+### Patch Changes
+
+- Updated dependencies [5600477]
+- Updated dependencies [c6d6c8f]
+- Updated dependencies [f001d73]
+  - @agentproto/model-catalog@0.15.2
+  - @agentproto/harness@4.0.0
+
 ## 0.4.7
 
 ### Patch Changes

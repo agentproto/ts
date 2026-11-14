@@ -1,5 +1,12 @@
 # @agentproto/adapter-ai-sdk
 
+## 0.1.17
+
+### Patch Changes
+
+- Updated dependencies [a0ecdcb]
+  - @agentproto/driver@0.4.2
+
 ## 0.1.16
 
 ### Patch Changes

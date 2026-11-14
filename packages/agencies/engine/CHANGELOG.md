@@ -1,5 +1,11 @@
 # @agentproto/agencies-engine
 
+## 0.1.16
+
+### Patch Changes
+
+- @agentproto/governance-engine@1.0.1
+
 ## 0.1.15
 
 ### Patch Changes
