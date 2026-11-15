@@ -263,6 +263,22 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "google",
     provider: "opencode",
   },
+  "opencode/gemini-4-carbon": {
+    inputPer1M: 2,
+    outputPer1M: 10,
+    cacheReadMultiplier: 0.05,
+    addedAt: "2026-11-10",
+    vendor: "google",
+    provider: "opencode",
+  },
+  "opencode/gemini-4-hydrogen": {
+    inputPer1M: 1.5,
+    outputPer1M: 7.5,
+    cacheReadMultiplier: 0.05,
+    addedAt: "2026-11-12",
+    vendor: "google",
+    provider: "opencode",
+  },
   "opencode/glm-5": {
     inputPer1M: 1,
     outputPer1M: 3.2,

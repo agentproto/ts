@@ -1,6 +1,279 @@
 {
   "data": [
     {
+      "id": "recraft/recraft-v4.1-flash-v2",
+      "canonical_slug": "recraft/recraft-v4.1-flash-v2-20261113",
+      "hugging_face_id": null,
+      "name": "Recraft: Recraft V4.1 Flash V2",
+      "created": 1794608385,
+      "description": "Recraft V4.1 Flash V2 is a text-to-image model from Recraft, an updated version of [Recraft V4.1 Flash](/recraft/recraft-v4.1-flash) in the speed tier of the V4.1 family. It is suited for rapid...",
+      "context_length": 65536,
+      "architecture": {
+        "modality": "text->image",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "image_token": "0.00000167664670658683",
+        "image_output": "0.00000167664670658683"
+      },
+      "top_provider": {
+        "context_length": 65536,
+        "max_completion_tokens": 58982,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/recraft/recraft-v4.1-flash-v2-20261113/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
+      "id": "recraft/recraft-v4.1-flash-v2:free",
+      "canonical_slug": "recraft/recraft-v4.1-flash-v2-20261113",
+      "hugging_face_id": null,
+      "name": "Recraft: Recraft V4.1 Flash V2 (free)",
+      "created": 1794608385,
+      "description": "Recraft V4.1 Flash V2 is a text-to-image model from Recraft, an updated version of [Recraft V4.1 Flash](/recraft/recraft-v4.1-flash) in the speed tier of the V4.1 family. It is suited for rapid...",
+      "context_length": 65536,
+      "architecture": {
+        "modality": "text->image",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 65536,
+        "max_completion_tokens": 58982,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": "2026-11-28",
+      "links": {
+        "details": "/api/v1/models/recraft/recraft-v4.1-flash-v2-20261113/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
+      "id": "tencent/hy-world-2.1-panorama",
+      "canonical_slug": "tencent/hy-world-2.1-panorama-20261112",
+      "hugging_face_id": null,
+      "name": "Tencent: HY-World 2.1 Panorama",
+      "created": 1794608245,
+      "description": "HY-World 2.1 Panorama is a 360-degree panorama generation model from Tencent, part of the Hunyuan World family. It turns a single text prompt into one high-resolution equirectangular panorama suitable for...",
+      "context_length": 4096,
+      "architecture": {
+        "modality": "text->image",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "image_token": "0.0000016",
+        "image_output": "0.0000016"
+      },
+      "top_provider": {
+        "context_length": 4096,
+        "max_completion_tokens": 3686,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/tencent/hy-world-2.1-panorama-20261112/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
+      "id": "bytedance-seed/seedream-5-5",
+      "canonical_slug": "bytedance-seed/seedream-5-5-20261112",
+      "hugging_face_id": null,
+      "name": "ByteDance Seed: Seedream 5.5",
+      "created": 1794517601,
+      "description": "Seedream 5.5 is an image generation and editing model from ByteDance Seed. It is suited for creating images from text prompts and for editing or combining existing images, using up...",
+      "context_length": 0,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Media",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "image": "0.008",
+        "image_token": "0.00000479041916167665",
+        "image_output": "0.00000479041916167665"
+      },
+      "top_provider": {
+        "context_length": 0,
+        "max_completion_tokens": 0,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "frequency_penalty",
+        "max_tokens",
+        "temperature",
+        "top_p"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/bytedance-seed/seedream-5-5-20261112/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
+      "id": "minimax/minimax-h3-image-highspeed",
+      "canonical_slug": "minimax/minimax-h3-image-highspeed-20261110",
+      "hugging_face_id": null,
+      "name": "MiniMax: MiniMax H3 Image Highspeed",
+      "created": 1794363447,
+      "description": "MiniMax H3 Image Highspeed is the faster version of MiniMax's H3 Image model. It takes the same inputs and limits as MiniMax H3 Image: it creates images from text prompts...",
+      "context_length": 4096,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000023",
+        "completion": "0",
+        "image_token": "0.0000076",
+        "image_output": "0.0000076"
+      },
+      "top_provider": {
+        "context_length": 4096,
+        "max_completion_tokens": 3686,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "max_tokens",
+        "temperature",
+        "top_p"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/minimax/minimax-h3-image-highspeed-20261110/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
+      "id": "minimax/minimax-h3-image",
+      "canonical_slug": "minimax/minimax-h3-image-20261110",
+      "hugging_face_id": "MiniMaxAI/MiniMax-H3-Image",
+      "name": "MiniMax: MiniMax H3 Image",
+      "created": 1794340143,
+      "description": "MiniMax H3 Image is MiniMax's image generation and editing model. It creates images from text prompts and edits or composes images from 1 to 16 reference images, with output up...",
+      "context_length": 4096,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000023",
+        "completion": "0",
+        "image_token": "0.0000038",
+        "image_output": "0.0000038"
+      },
+      "top_provider": {
+        "context_length": 4096,
+        "max_completion_tokens": 3686,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "max_tokens",
+        "temperature",
+        "top_p"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/minimax/minimax-h3-image-20261110/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
       "id": "openai/gpt-image-2.6-sunburst",
       "canonical_slug": "openai/gpt-image-2.6-sunburst-20261104",
       "hugging_face_id": null,
@@ -294,9 +567,9 @@
       "pricing": {
         "prompt": "0",
         "completion": "0",
-        "image": "0.01",
-        "image_token": "0.00000718562874251497",
-        "image_output": "0.00000718562874251497"
+        "image": "0.02",
+        "image_token": "0.0000143712574850299",
+        "image_output": "0.0000143712574850299"
       },
       "top_provider": {
         "context_length": 65536,
@@ -782,7 +1055,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1225,
+            "elo": 1224,
             "win_rate": 51.9,
             "rank": 4
           },
@@ -855,15 +1128,15 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1290,
-            "win_rate": 60.3,
+            "elo": 1291,
+            "win_rate": 60.4,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1238,
-            "win_rate": 57.2,
+            "elo": 1235,
+            "win_rate": 57,
             "rank": 2
           },
           {
@@ -1656,7 +1929,7 @@
       "default_parameters": {},
       "supported_voices": null,
       "knowledge_cutoff": null,
-      "expiration_date": null,
+      "expiration_date": "2027-02-10",
       "links": {
         "details": "/api/v1/models/openai/gpt-image-2/endpoints"
       },
@@ -1718,7 +1991,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1085,
+            "elo": 1082,
             "win_rate": 46.6,
             "rank": 7
           }
@@ -1980,8 +2253,8 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1349,
-            "win_rate": 69.6,
+            "elo": 1344,
+            "win_rate": 68.8,
             "rank": 1
           },
           {
@@ -1994,8 +2267,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1290,
-            "win_rate": 63.5,
+            "elo": 1285,
+            "win_rate": 62.3,
             "rank": 1
           }
         ]
@@ -2134,15 +2407,15 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1215,
-            "win_rate": 54.4,
+            "elo": 1216,
+            "win_rate": 54.5,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1205,
-            "win_rate": 53.2,
+            "elo": 1203,
+            "win_rate": 53.1,
             "rank": 5
           },
           {
@@ -2839,7 +3112,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1259,
+            "elo": 1258,
             "win_rate": 65.1,
             "rank": 4
           },
@@ -3012,15 +3285,15 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1004,
+            "elo": 1005,
             "win_rate": 35.7,
             "rank": 12
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1046,
-            "win_rate": 38.7,
+            "elo": 1045,
+            "win_rate": 38.6,
             "rank": 12
           },
           {
@@ -3033,8 +3306,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1034,
-            "win_rate": 38.7,
+            "elo": 1032,
+            "win_rate": 38.6,
             "rank": 8
           }
         ]
@@ -3279,7 +3552,7 @@
             "arena": "models",
             "category": "image",
             "elo": 1177,
-            "win_rate": 49,
+            "win_rate": 49.1,
             "rank": 8
           },
           {
@@ -3292,7 +3565,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1114,
+            "elo": 1112,
             "win_rate": 46.7,
             "rank": 6
           }
@@ -3379,7 +3652,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1226,
+            "elo": 1225,
             "win_rate": 62.1,
             "rank": 5
           },
@@ -3393,7 +3666,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1230,
+            "elo": 1228,
             "win_rate": 66,
             "rank": 3
           }
@@ -3481,7 +3754,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1166,
+            "elo": 1165,
             "win_rate": 51,
             "rank": 11
           },
@@ -3553,7 +3826,7 @@
       },
       "supported_voices": null,
       "knowledge_cutoff": null,
-      "expiration_date": null,
+      "expiration_date": "2026-12-11",
       "links": {
         "details": "/api/v1/models/openai/gpt-5-image/endpoints"
       },
@@ -3576,7 +3849,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1174,
+            "elo": 1173,
             "win_rate": 53.9,
             "rank": 9
           },
@@ -3907,7 +4180,7 @@
       ]
     }
   ],
-  "total_count": 66,
+  "total_count": 72,
   "links": {
     "next": null
   }

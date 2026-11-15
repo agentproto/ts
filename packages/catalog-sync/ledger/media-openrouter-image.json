@@ -39,6 +39,10 @@
     "hash": "65839b7d8e405cef49bdd05ff68a0fe6649bf04eccb811273093d1729da508e9",
     "fetchedAt": "2026-11-02"
   },
+  "bytedance-seed/seedream-5-5": {
+    "hash": "a4bdbcf348d0f4f82c44958790da06d7b9784ffd022a5f5fa322d9ebda5aa183",
+    "fetchedAt": "2026-11-15"
+  },
   "google/gemini-2.5-flash-image": {
     "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
     "fetchedAt": "2026-11-02"
@@ -68,8 +72,8 @@
     "fetchedAt": "2026-11-02"
   },
   "krea/k3-edit": {
-    "hash": "a5ad3b01e43ab516810a6b7b72d6e09c4c53c43a8cfb88c5684f601fa60ff0c4",
-    "fetchedAt": "2026-11-05"
+    "hash": "de59f82cb20d738253b3e98fdfbdcd5f888a2db7f4c6406ddfa5536fe1711ddd",
+    "fetchedAt": "2026-11-15"
   },
   "krea/krea-2-large": {
     "hash": "de59f82cb20d738253b3e98fdfbdcd5f888a2db7f4c6406ddfa5536fe1711ddd",
@@ -102,6 +106,14 @@
   "microsoft/mai-image-2.6-flash": {
     "hash": "15f8a3d3156d89ebb0cd4d2f9d5cc7af8c7b74898a6ada4a675c26588ce3dc03",
     "fetchedAt": "2026-11-02"
+  },
+  "minimax/minimax-h3-image": {
+    "hash": "30dd0538e59856e50d6d5f423706cd966a71ac8f1dc8a7ffa4b8d347175a2e17",
+    "fetchedAt": "2026-11-15"
+  },
+  "minimax/minimax-h3-image-highspeed": {
+    "hash": "60fac959a7f2fda0f129d985fb61d556ef29b642f73fd3e0e8b4d1d2a12c93bf",
+    "fetchedAt": "2026-11-15"
   },
   "openai/gpt-5-image": {
     "hash": "de00a558ffeeb3b579f43797dc2f04cad0d1fddf6c6402058d56dccd6aa9e824",
@@ -203,6 +215,10 @@
     "hash": "92307cc81202595d2a39a621563ebead19748480245771852e59e3adfbed8315",
     "fetchedAt": "2026-11-02"
   },
+  "recraft/recraft-v4.1-flash-v2": {
+    "hash": "92307cc81202595d2a39a621563ebead19748480245771852e59e3adfbed8315",
+    "fetchedAt": "2026-11-15"
+  },
   "recraft/recraft-v4.1-pro": {
     "hash": "fef7ee50756ddd309f292e357d2b065146b845e076f4c2ac4e8fc04d5f189f90",
     "fetchedAt": "2026-11-02"
@@ -246,6 +262,10 @@
   "tencent/hy-image-v3.5-preview": {
     "hash": "034a46836d071cff189de97d7111bda199cf6e67499d2163ccfb1a32e5faa912",
     "fetchedAt": "2026-11-02"
+  },
+  "tencent/hy-world-2.1-panorama": {
+    "hash": "034a46836d071cff189de97d7111bda199cf6e67499d2163ccfb1a32e5faa912",
+    "fetchedAt": "2026-11-15"
   },
   "x-ai/grok-imagine-image-2.0": {
     "hash": "d931f861318d02f4070d77351cc2256ca68f56efbf2921a57cee3635f1c1f1ce",

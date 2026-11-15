@@ -73,9 +73,9 @@
       },
       "deepseek-v4.1-flash": {
         "id": "deepseek-v4.1-flash",
-        "name": "DeepSeek V4.1 Flash",
+        "name": "DeepSeek V4.1 Flash 1017",
         "family": "deepseek-flash",
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "cost": {
           "input": 0.15,
           "output": 0.6,

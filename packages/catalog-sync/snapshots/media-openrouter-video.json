@@ -1531,57 +1531,6 @@
       ]
     },
     {
-      "id": "bytedance/seedance-1-5-pro",
-      "canonical_slug": "bytedance/seedance-1-5-pro-20260320",
-      "hugging_face_id": null,
-      "name": "ByteDance: Seedance 1.5 Pro",
-      "created": 1774277608,
-      "description": "ByteDance's next-generation audio-visual generation model with a 4.5B parameter Dual-Branch Diffusion Transformer architecture. Seedance 1.5 Pro generates video and audio simultaneously in a single unified pass — eliminating the timing...",
-      "context_length": 0,
-      "architecture": {
-        "modality": "text+image->video",
-        "input_modalities": [
-          "text",
-          "image"
-        ],
-        "output_modalities": [
-          "video"
-        ],
-        "tokenizer": "Other",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      },
-      "top_provider": {
-        "context_length": 0,
-        "max_completion_tokens": 0,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "frequency_penalty"
-      ],
-      "default_parameters": {
-        "temperature": null,
-        "top_p": null,
-        "top_k": null,
-        "frequency_penalty": null,
-        "presence_penalty": null,
-        "repetition_penalty": null
-      },
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": "2026-11-11",
-      "links": {
-        "details": "/api/v1/models/bytedance/seedance-1-5-pro-20260320/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/videos"
-      ]
-    },
-    {
       "id": "google/veo-3.1",
       "canonical_slug": "google/veo-3.1-20260320",
       "hugging_face_id": null,
@@ -1637,7 +1586,7 @@
       ]
     }
   ],
-  "total_count": 33,
+  "total_count": 32,
   "links": {
     "next": null
   }

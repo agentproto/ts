@@ -200,7 +200,11 @@ describe.runIf(backendAvailable)("wrapAgentCliSpawn confined argv + path merging
           label: "test",
         })
         const full = [bin, ...args].join(" ")
-        expect(full).toMatch(/deny network/)
+        if (resolveCommandSandbox()?.id === "bwrap") {
+          expect(args).toContain("--unshare-net")
+        } else {
+          expect(full).toContain("(deny network*)")
+        }
       },
     )
   })
