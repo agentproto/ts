@@ -87,6 +87,12 @@ import type {
 import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
+import {
+  createAccountHealthStore,
+  isPerAddressCapMessage,
+  parseExhaustionUntil,
+  type AccountHealthStore,
+} from "./account-health.js"
 import { egressHealthLedger, isEgressHealthErrorClass, type EgressHealthLedger } from "./egress-health.js"
 import { getModelListSource } from "./model-list-store.js"
 import { isReadOnlyToolName } from "./read-only-tool-call.js"
@@ -545,6 +551,11 @@ export function createTurnRetryController(opts: {
    *  descriptor knows its egress address cools that address down here too.
    *  Defaults to the daemon-wide on-disk ledger. */
   egressHealth?: EgressHealthLedger
+  /** Persistent per-account circuit breaker. A turn classified `usage-limit` on
+   *  a session's billing profile closes that profile until the provider's own
+   *  reset (or a strike backoff); a clean turn on it reopens it. Defaults to
+   *  `~/.agentproto/account-health.json`. */
+  accountHealth?: AccountHealthStore
   /** Extra async eligibility gate for rotation targets (adapter/route + profile allow-list). */
   checkRotationTarget?: RotationTargetCheck
   /** Box-migration orchestration for `turnRetry.action: "migrate"`. Absent ⇒ a
@@ -575,6 +586,7 @@ export function createTurnRetryController(opts: {
   const now = opts.now ?? Date.now
   const cooldowns = opts.cooldowns ?? createModelCooldowns(now)
   const egressHealth = opts.egressHealth ?? egressHealthLedger
+  const accountHealth = opts.accountHealth ?? createAccountHealthStore()
   const setTimer =
     opts.setTimer ??
     ((fn: () => void, ms: number) => {
@@ -586,6 +598,9 @@ export function createTurnRetryController(opts: {
   const log = opts.log ?? ((line: string) => console.warn(line))
   const pending = new Map<string, PendingRetry>()
   const halted = new Set<string>()
+  /** In-flight health writes by session, so a step that reads the health file
+   *  right after a failure (the slot advance) sees the mark. */
+  const healthWrites = new Map<string, Promise<void>>()
 
   // A pending retry never survives a daemon restart — drop stale landing
   // times so no row advertises a retry nobody will send.
@@ -1338,6 +1353,36 @@ export function createTurnRetryController(opts: {
     })
   }
 
+  /** A turn that ended in a usage cap or an empty wallet closes the account it
+   *  was billed to, for every session and whether or not this one has a retry
+   *  policy: the daemon must stop starting work on a wallet it knows is spent.
+   *  A per-address cap ("Free usage limit reached") says nothing about the
+   *  account and is left to the model cooldown. Fire and forget; a failed write
+   *  only logs. */
+  const noteAccountHealth = (desc: SessionDescriptor, trigger: TurnRetryTrigger): void => {
+    const profileRef = desc.accessProfile?.profileRef
+    if (!profileRef || trigger.kind !== "turn-end" || trigger.reason !== "error" || trigger.interrupted) return
+    const message = trigger.error ?? desc.lastTurnErrorMessage
+    if (classifyTurnError(message) !== "usage-limit" || isPerAddressCapMessage(message)) return
+    const until = parseExhaustionUntil(message, now())
+    const marked = accountHealth
+      .mark(profileRef, {
+        reason: echo(message) ?? "usage limit",
+        ...(until !== undefined ? { until, untilBasis: "observed" as const } : {}),
+      })
+      .then(view => {
+        registry.recordNotice(
+          desc.id,
+          `[turn-retry] account "${profileRef}" marked exhausted until ${view.until} (${view.untilBasis})`,
+        )
+      })
+      .catch(err => log(`[turn-retry] ${desc.id}: account health write failed: ${err instanceof Error ? err.message : String(err)}`))
+    healthWrites.set(desc.id, marked)
+    void marked.finally(() => {
+      if (healthWrites.get(desc.id) === marked) healthWrites.delete(desc.id)
+    })
+  }
+
   const handle = (id: string, trigger: TurnRetryTrigger): void => {
     const desc = registry.get(id)
     if (desc) noteEgressThrottle(desc, trigger)
@@ -1532,6 +1577,22 @@ export function createTurnRetryController(opts: {
   const unsubs = [
     sessionEvents.on("session:turn-end", ev => {
       const desc = registry.get(ev.sessionId)
+      if (desc && ev.reason === "error") {
+        noteAccountHealth(desc, {
+          kind: "turn-end",
+          reason: ev.reason,
+          ...(ev.error !== undefined ? { error: ev.error } : {}),
+          ...(ev.interrupted ? { interrupted: true } : {}),
+        })
+      } else if (
+        desc?.accessProfile?.profileRef &&
+        !ev.interrupted &&
+        ev.error === undefined &&
+        !NON_CLEAN_REASONS.has(ev.reason ?? "")
+      ) {
+        // A clean turn proves the account works: drop any closed/probing entry.
+        void accountHealth.clear(desc.accessProfile.profileRef).catch(() => undefined)
+      }
       if (desc && !desc.turnRetry && ev.reason === "error") {
         // No retry policy to run, but the failure still says something about the box's egress address.
         noteEgressThrottle(desc, {
