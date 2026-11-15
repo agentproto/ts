@@ -379,9 +379,9 @@
       },
       "deepseek-v4.1-flash": {
         "id": "deepseek-v4.1-flash",
-        "name": "DeepSeek V4.1 Flash",
+        "name": "DeepSeek V4.1 Flash 1017",
         "family": "deepseek-flash",
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "cost": {
           "input": 0.3,
           "output": 1.2,
@@ -392,7 +392,7 @@
         "id": "deepseek-v4.1-flash-free",
         "name": "DeepSeek V4.1 Flash Free",
         "family": "deepseek-flash",
-        "release_date": "2026-09-10",
+        "release_date": "2026-10-17",
         "cost": {
           "input": 0,
           "output": 0,
@@ -555,6 +555,34 @@
           "input": 2,
           "output": 10,
           "cache_read": 0.1
+        }
+      },
+      "gemini-4-carbon": {
+        "id": "gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "family": "gemini",
+        "release_date": "2026-11-10",
+        "provider": {
+          "npm": "@ai-sdk/google"
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1
+        }
+      },
+      "gemini-4-hydrogen": {
+        "id": "gemini-4-hydrogen",
+        "name": "Gemini 4 Hydrogen",
+        "family": "gemini",
+        "release_date": "2026-11-12",
+        "provider": {
+          "npm": "@ai-sdk/google"
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 7.5,
+          "cache_read": 0.075
         }
       },
       "glm-4.6": {
