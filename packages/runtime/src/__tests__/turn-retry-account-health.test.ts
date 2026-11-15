@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { createTurnRetryController } from "../turn-retry.js"
+import { createTurnRetryController, decideTurnRetry, isCreditExhaustedMessage } from "../turn-retry.js"
 import { resolveTurnRetryPolicy } from "../turn-retry-policy.js"
 import { createAccountHealthStore } from "../account-health.js"
 
@@ -25,6 +25,9 @@ const H = 3_600_000
 const GO_WEEKLY =
   "AI_APICallError: OpenCode Go usage limit reached (weekly, resets in 1d 9h). To keep going now, turn on Extra Usage or upgrade to Go Plus at https://opencode.ai/console/org_X/go."
 const GO_NO_TIME = "Go usage limit exceeded"
+/** Real opencode Go refusal of 2026-11-14 (providerID=opencode-go; org id elided). */
+const GO_EMPTY = "AI_APICallError: Insufficient balance. Top up at https://opencode.ai/console/org_X/billing?credits=1."
+const ZEN_EMPTY = '402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}'
 const FREE_CAP =
   "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"
 
@@ -160,5 +163,105 @@ describe("turnRetry controller writes account health", () => {
     await h.registry.sendPrompt(h.desc.id, "go")
     await until(async () => (await h.store.get("opencode-ws01")) === undefined, "health cleared")
     h.done()
+  })
+})
+
+describe("an empty wallet is an exhausted account (brique 2)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agp-health-credit-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  })
+
+  it.each([GO_EMPTY, ZEN_EMPTY, "402 Payment Required"])("%s closes the account on a backoff", async message => {
+    const store = createAccountHealthStore({ dir, now: () => T0 })
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const controller = createTurnRetryController({
+      registry: {
+        get: registry.get,
+        list: registry.list,
+        enqueuePrompt: registry.enqueuePrompt,
+        patchTurnRetry: registry.patchTurnRetry,
+        setModel: registry.setModel,
+        interruptSession: registry.interruptSession,
+        recordNotice: registry.recordNotice,
+      },
+      sessionEvents,
+      accountHealth: store,
+      now: () => T0,
+      log: () => {},
+    })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: scripted([fail(message)]),
+      adapterSlug: "opencode",
+      model: "opencode-go/deepseek-v4.1-flash",
+      accessProfile: { profileRef: "opencode-ws003", endpoint: "opencode-go", method: "api-key" },
+      turnRetry: resolveTurnRetryPolicy({ on: ["usage-limit"] }),
+    })
+    await registry.sendPrompt(desc.id, "go")
+    await until(async () => (await store.get("opencode-ws003")) !== undefined, "health mark")
+    expect(await store.get("opencode-ws003")).toMatchObject({ state: "exhausted", untilBasis: "estimated", strikes: 1 })
+    controller.dispose()
+    registry.shutdown()
+  })
+
+  it("a rejected key (401) does not close the account: it is broken, not spent", async () => {
+    const store = createAccountHealthStore({ dir, now: () => T0 })
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const controller = createTurnRetryController({
+      registry: {
+        get: registry.get,
+        list: registry.list,
+        enqueuePrompt: registry.enqueuePrompt,
+        patchTurnRetry: registry.patchTurnRetry,
+        setModel: registry.setModel,
+        interruptSession: registry.interruptSession,
+        recordNotice: registry.recordNotice,
+      },
+      sessionEvents,
+      accountHealth: store,
+      now: () => T0,
+      log: () => {},
+    })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: scripted([fail("401 Unauthorized: invalid x-api-key")]),
+      adapterSlug: "opencode",
+      accessProfile: { profileRef: "opencode-ws003", endpoint: "opencode-go", method: "api-key" },
+      turnRetry: resolveTurnRetryPolicy({ on: ["usage-limit"] }),
+    })
+    await registry.sendPrompt(desc.id, "go")
+    await new Promise(resolve => setTimeout(resolve, 60))
+    expect(await store.list()).toEqual([])
+    controller.dispose()
+    registry.shutdown()
+  })
+
+  it("an opted-in session diverts an empty wallet to rotate / fallback instead of skipping it as auth", () => {
+    const row = {
+      id: "s1",
+      kind: "agent-cli",
+      status: "running",
+      turnRetry: resolveTurnRetryPolicy({ on: ["usage-limit"] }),
+    } as Parameters<typeof decideTurnRetry>[0]
+    expect(decideTurnRetry(row, { kind: "turn-end", reason: "error", error: GO_EMPTY })).toMatchObject({
+      action: "divert",
+      errorClass: "usage-limit",
+    })
+  })
+
+  it("isCreditExhaustedMessage tells a wallet from a plan window or a bad key", () => {
+    expect(isCreditExhaustedMessage(GO_EMPTY)).toBe(true)
+    expect(isCreditExhaustedMessage(ZEN_EMPTY)).toBe(true)
+    expect(isCreditExhaustedMessage(GO_WEEKLY)).toBe(false)
+    expect(isCreditExhaustedMessage("401 Unauthorized")).toBe(false)
+    expect(isCreditExhaustedMessage("Insufficient permissions to list funds")).toBe(false)
   })
 })

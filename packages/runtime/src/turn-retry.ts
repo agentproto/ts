@@ -67,8 +67,9 @@
  * NEVER retries: an interrupted turn (user Stop, `interrupt:true` prompt), a
  * killed / exited / errored session (kill, `maxCostUsd` cost-cap kill — the
  * process-death path belongs to `restartPolicy`), a session with a failed
- * governance policy (the windowed `costBudget` trips one), an auth/billing
- * error (401/402/403), a provider usage cap unless `usage-limit` is opted
+ * governance policy (the windowed `costBudget` trips one), an auth error
+ * (401/403, a bad key: the account is broken, not spent), a provider usage cap
+ * or empty wallet (402, "insufficient balance": both `usage-limit`) unless `usage-limit` is opted
  * into (and then never on the same config), or a turn that already made a
  * tool call outside the read-only allowlist (unless `retryAfterToolCalls`).
  *
@@ -138,8 +139,22 @@ export function extractHttpStatus(message: string): number | undefined {
   return undefined
 }
 
+/** A key or credential the provider refuses: the account is BROKEN, not spent.
+ *  Never retried, never rotated away from in silence (the operator is told). */
 const AUTH_RE =
-  /\bunauthori[sz]ed\b|\bforbidden\b|\bpayment required\b|\binvalid[ _-]?(?:api[ _-]?key|x-api-key|token|credentials?)\b|\bauthentication (?:failed|error|required)\b|\binsufficient(?:[ _-](?!(?:to|for|of|in|on|at|and|or|the)\b)[a-z]+){0,2}[ _-](?:credits?|balance|quota|funds)\b|\bcredit balance\b|\bpermission[ _-]denied\b/i
+  /\bunauthori[sz]ed\b|\bforbidden\b|\binvalid[ _-]?(?:api[ _-]?key|x-api-key|token|credentials?)\b|\bauthentication (?:failed|error|required)\b|\bpermission[ _-]denied\b/i
+/** An empty wallet: the account is fine but has no credit left. Same meaning as
+ *  a provider usage cap ("this account is closed until it is topped up or
+ *  reset"), so it classifies as `usage-limit`, not `auth`.
+ *
+ *  Forms seen in the wild: OpenCode Go
+ *  `AI_APICallError: Insufficient balance. Top up at https://opencode.ai/console/<org>/billing?credits=1.`
+ *  (sessions of 2026-11-14, `providerID=opencode-go`), OpenCode Zen
+ *  `402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}`,
+ *  Anthropic `Your credit balance is too low`, OpenAI `insufficient_quota`,
+ *  OpenRouter / Moonshot `Insufficient credits` / `Insufficient wallet balance`. */
+const CREDIT_EXHAUSTED_RE =
+  /\bpayment required\b|\binsufficient(?:[ _-](?!(?:to|for|of|in|on|at|and|or|the)\b)[a-z]+){0,2}[ _-](?:credits?|balance|quota|funds)\b|\bcredit balance\b|\b(?:out of|no) (?:credits?|funds)(?: left| remaining)?\b|\btop up\b[^.]{0,40}\bcredits?\b/i
 const RATE_LIMIT_RE =
   /\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b|\bresource[ _-]exhausted\b|\bthrottl(?:ed|ing)\b/i
 const UPSTREAM_5XX_RE =
@@ -162,15 +177,20 @@ const NETWORK_RE =
 
 /**
  * Classify a turn's error text. Order matters: the stall marker is exact;
- * a usage cap and auth/billing are checked BEFORE rate-limit because some
- * providers report "insufficient quota" with a 429.
+ * a usage cap and an empty wallet (both `usage-limit`: the account is closed
+ * until it resets or is topped up) are checked, then auth (401/403/bad key:
+ * the account is broken), all BEFORE rate-limit because some providers report
+ * "insufficient quota" with a 429.
  */
 export function classifyTurnError(message: string | undefined): TurnErrorClass {
   if (!message) return "other"
   if (message === NO_OUTPUT_STALL_MARKER) return "no-output-stall"
   if (isProviderLimitError(message)) return "usage-limit"
   const status = extractHttpStatus(message)
-  if (status === 401 || status === 402 || status === 403 || AUTH_RE.test(message)) return "auth"
+  // An empty wallet is checked BEFORE auth: a billing refusal can ride a 401,
+  // 403 or 429 status, and it is the account being spent, not broken.
+  if (status === 402 || CREDIT_EXHAUSTED_RE.test(message)) return "usage-limit"
+  if (status === 401 || status === 403 || AUTH_RE.test(message)) return "auth"
   if (status === 429 || RATE_LIMIT_RE.test(message)) return "rate-limit"
   if (
     (status !== undefined && status >= 500 && status <= 599) ||
@@ -181,6 +201,13 @@ export function classifyTurnError(message: string | undefined): TurnErrorClass {
     return "upstream-5xx"
   }
   return "other"
+}
+
+/** True when the message says the account's wallet is empty (HTTP 402,
+ *  "insufficient balance / credits / funds", "payment required"). */
+export function isCreditExhaustedMessage(message: string | undefined): boolean {
+  if (!message) return false
+  return extractHttpStatus(message) === 402 || CREDIT_EXHAUSTED_RE.test(message)
 }
 
 /** Provider "retry after" hint in ms, when the message carries one
@@ -281,7 +308,7 @@ export function decideTurnRetry(
   if (desc.status !== "running") return skip(`session ${desc.status}`)
   if (trigger.kind === "turn-end" && trigger.interrupted) return skip("turn was interrupted")
   if (opts.halted) return skip("a governance policy failed for this session")
-  if (errorClass === "auth") return skip("auth/billing error — retrying cannot fix it")
+  if (errorClass === "auth") return skip("auth error (rejected key or credential) — retrying cannot fix it")
   if (errorClass === "usage-limit" && !policy.on.includes("usage-limit")) {
     return skip("provider usage cap, resets on its own schedule")
   }
@@ -1325,6 +1352,16 @@ export function createTurnRetryController(opts: {
     if (trigger.kind === "turn-end" && trigger.interrupted) return
     if (!desc.model) return
     const message = trigger.kind === "stall" ? NO_OUTPUT_STALL_MARKER : (trigger.error ?? desc.lastTurnErrorMessage)
+    // A cap tied to the ACCOUNT (an empty wallet, a Go plan window) is recorded
+    // on the account (`noteAccountHealth`), not on the model: another account of
+    // a multi-account slot runs the same model fine, and a model cooldown would hide it.
+    if (
+      errorClass === "usage-limit" &&
+      desc.accessProfile?.profileRef !== undefined &&
+      !isPerAddressCapMessage(message)
+    ) {
+      return
+    }
     const hint = errorClass === "rate-limit" ? extractRetryAfterMs(message) : undefined
     cooldowns.mark(desc.model, {
       durationMs: hint !== undefined && hint > 0 ? hint : (desc.turnRetry?.cooldownMs ?? TURN_ROTATE_DEFAULTS.cooldownMs),
@@ -1342,6 +1379,8 @@ export function createTurnRetryController(opts: {
     const message = trigger.error ?? desc.lastTurnErrorMessage
     const errorClass = classifyTurnError(message)
     if (!isEgressHealthErrorClass(errorClass)) return
+    // An empty wallet is a fact about the account, not about this box's address.
+    if (isCreditExhaustedMessage(message)) return
     const retryAfter = errorClass === "rate-limit" ? extractRetryAfterMs(message) : undefined
     egressHealth.mark({
       publicIp: desc.sandboxEgressIp,

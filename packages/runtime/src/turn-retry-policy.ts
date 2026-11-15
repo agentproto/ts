@@ -23,6 +23,26 @@ import { checkModelPolicy, type ModelPolicy } from "./model-policy.js"
 export const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall", "usage-limit"] as const
 export type TurnRetryClass = (typeof TURN_RETRY_CLASSES)[number]
 
+/** Names AIP-46 `FailureClass` uses for a class this host calls otherwise, accepted
+ *  on input (`on`, `rotateOn`) and mapped to the canonical class when the policy
+ *  is resolved. `usage-limit` stays canonical: it is what descriptors, events
+ *  (`session:turn-retry`) and stored presets already carry, so the alias is
+ *  purely additive. (AIP-46 `auth-failed` is this host's `auth`, which is never
+ *  a retry class and so never appears in `on`.) */
+export const TURN_RETRY_CLASS_ALIASES = { "quota-exhausted": "usage-limit" } as const satisfies Record<string, TurnRetryClass>
+export type TurnRetryClassInput = TurnRetryClass | keyof typeof TURN_RETRY_CLASS_ALIASES
+const TURN_RETRY_CLASS_INPUTS = [...TURN_RETRY_CLASSES, ...Object.keys(TURN_RETRY_CLASS_ALIASES)] as [
+  TurnRetryClassInput,
+  ...TurnRetryClassInput[],
+]
+
+/** The canonical class of an accepted class name (an alias maps, a class is itself). */
+export function canonicalTurnRetryClass(name: TurnRetryClassInput): TurnRetryClass {
+  return name in TURN_RETRY_CLASS_ALIASES
+    ? TURN_RETRY_CLASS_ALIASES[name as keyof typeof TURN_RETRY_CLASS_ALIASES]
+    : (name as TurnRetryClass)
+}
+
 /** What a matching failure does. `retry` (the default) re-prompts the same
  *  live session after backoff; `migrate` moves a SANDBOX session to a fresh
  *  box (new IP) and re-prompts it there — see `turn-retry.ts`. */
@@ -200,7 +220,7 @@ export function validateTurnRetryRotate(
  *  to a session that never retries (the spawn-time default is skipped for
  *  an explicit `turnRetry`, even a disabling one). */
 export const turnRetryObjectSchema = z.object({
-  on: z.array(z.enum(TURN_RETRY_CLASSES)),
+  on: z.array(z.enum(TURN_RETRY_CLASS_INPUTS)),
   action: z.enum(TURN_RETRY_ACTIONS).optional(),
   maxRetries: z.number().int().positive().optional(),
   baseDelayMs: z.number().int().nonnegative().optional(),
@@ -212,7 +232,7 @@ export const turnRetryObjectSchema = z.object({
     .array(z.object({ model: z.string().min(1), profileRef: z.string().min(1).optional() }))
     .max(16)
     .optional(),
-  rotateOn: z.array(z.enum(TURN_RETRY_CLASSES)).min(1).optional(),
+  rotateOn: z.array(z.enum(TURN_RETRY_CLASS_INPUTS)).min(1).optional(),
   cooldownMs: z.number().int().positive().optional(),
   fallback: z
     .array(
@@ -238,7 +258,14 @@ export type TurnRetryInput = TurnRetryPolicyInput | null
 /** Fill defaults and dedupe `on`. `maxDelayMs` is raised to `baseDelayMs`
  *  when given lower, so the curve is never inverted. An empty `on` resolves
  *  to a policy that matches nothing — the explicit "never retry" shape. */
-export function resolveTurnRetryPolicy(input: TurnRetryPolicyInput): TurnRetryPolicy {
+export function resolveTurnRetryPolicy(raw: TurnRetryPolicyInput): TurnRetryPolicy {
+  // Accept the AIP-46 class names beside this host's own, once, at the boundary.
+  const { rotateOn: rawRotateOn, ...rest } = raw
+  const input = {
+    ...rest,
+    on: raw.on.map(canonicalTurnRetryClass),
+    ...(rawRotateOn ? { rotateOn: rawRotateOn.map(canonicalTurnRetryClass) } : {}),
+  }
   const baseDelayMs = input.baseDelayMs ?? TURN_RETRY_DEFAULTS.baseDelayMs
   return {
     on: [...new Set(input.on)],
