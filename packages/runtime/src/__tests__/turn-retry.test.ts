@@ -57,7 +57,7 @@ describe("classifyTurnError", () => {
     ["402 Payment Required", "usage-limit"],
     ["Invalid API key provided", "auth"],
     // Billing reported with a 429 is still billing — not retryable.
-    ["429: insufficient_quota — check your plan", "usage-limit"],
+    ["429: insufficient_quota, check your plan", "usage-limit"],
     // pi's "NNN: body" shape: the leading status is the signal, and the body's
     // `server_error` type must not turn a billing refusal into a 5xx retry.
     ['402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "usage-limit"],

@@ -317,7 +317,7 @@ export function decideTurnRetry(
   if (desc.status !== "running") return skip(`session ${desc.status}`)
   if (trigger.kind === "turn-end" && trigger.interrupted) return skip("turn was interrupted")
   if (opts.halted) return skip("a governance policy failed for this session")
-  if (errorClass === "auth") return skip("auth error (rejected key or credential) — retrying cannot fix it")
+  if (errorClass === "auth") return skip("auth error (rejected key or credential), retrying cannot fix it")
   if (errorClass === "usage-limit" && !policy.on.includes("usage-limit")) {
     return skip("provider usage cap, resets on its own schedule")
   }
