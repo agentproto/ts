@@ -1,5 +1,13 @@
 # @agentproto/delivery-github
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [bf69bc9]
+- Updated dependencies [3f92da0]
+  - @agentproto/delivery@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

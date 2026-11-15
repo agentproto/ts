@@ -1,5 +1,20 @@
 # @agentproto/adapter-claude-code
 
+## 2.8.0
+
+### Minor Changes
+
+- 2e8f699: Add a `mcp_timeout` option (positive integer, milliseconds) that sets `MCP_TIMEOUT` in the claude process env, raising the MCP server startup connection timeout for slow cold-starting stdio servers.
+
+### Patch Changes
+
+- b490b1a: Bump the pinned `@agentclientprotocol/claude-agent-acp` wrapper from 0.81.2 to 0.106.0 so the claude-code adapter can spawn claude-fable-5-2 (needs Claude Code 2.1.290+; 0.81.2 bundled 2.1.280).
+- Updated dependencies [5600477]
+- Updated dependencies [c6d6c8f]
+- Updated dependencies [f001d73]
+  - @agentproto/model-catalog@0.15.2
+  - @agentproto/harness@4.0.0
+
 ## 2.7.2
 
 ### Patch Changes

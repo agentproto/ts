@@ -1,5 +1,11 @@
 # @agentproto/mcp-app-host
 
+## 0.1.5
+
+### Patch Changes
+
+- 35da910: Decline `ui/request-display-mode` for a mode missing from `hostContext.availableDisplayModes` instead of passing it to the embedder's handler
+
 ## 0.1.4
 
 ### Patch Changes

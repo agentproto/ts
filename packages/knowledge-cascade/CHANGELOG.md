@@ -1,5 +1,11 @@
 # @agentproto/knowledge-cascade
 
+## 0.2.10
+
+### Patch Changes
+
+- @agentproto/corpus@1.0.1
+
 ## 0.2.9
 
 ### Patch Changes

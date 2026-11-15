@@ -1,5 +1,14 @@
 # @agentproto/pairing-host
 
+## 0.4.1
+
+### Patch Changes
+
+- bb22cd4: A pairing loop whose park times out with no peer (an offline client, an offer nobody accepts, or a revoked pairing's tombstone whose client never returns) no longer logs `[pairing] handshake for <key> failed: handshake timed out` on every cycle. The 60 s log gate could not absorb it because one park cycle is 110 s plus 30 s of backoff, so every cycle of every loop logged a line: six tombstones produced about 37k lines in five days on one daemon. Loop timing and tombstones are unchanged; a peer that hangs up mid-handshake or sends a bad hello is still logged, gated and naming the step.
+- 7e86016: One public-base resolver (`resolvePublicBase`) so app pages and their links no longer point at 127.0.0.1 behind a tunnel or the rendezvous. Order: `AGENTPROTO_PUBLIC_HTTP_ORIGIN` (a path prefix is now accepted), a daemon-signed `x-agentproto-public-base` header, `X-Forwarded-Host`/`X-Forwarded-Proto`, a non-loopback `Host`, loopback. An `X-Forwarded-Host` with no `X-Forwarded-Proto` now defaults to https for a DNS name (http for localhost, `*.local`, IP literals and single-label hosts), instead of http. The signed header is HMAC-keyed per process, so a client-sent copy is ignored. Pairing channels inject it with the pair page's `<fp>.<domain>/d/<fp>` base (`PairingChannelContext.daemonFingerprint`, `buildDaemonTunnelServerOptions({ publicBase })`), and link-guard now forwards `x-forwarded-proto` plus a signed base for a public Host while stripping client copies. `/mcp` builds panel html per request against that base (`mcpServerFactory` gains a ninth `requestBaseUrl` argument, `injectMcpAppBridge(html, baseUrl?)`, `makeInstalledAppUiApps(..., baseUrl?)`), and the terminal panel derives its WebSocket base from it.
+  - @agentproto/secrets@2.2.1
+  - @agentproto/acp@0.15.0
+
 ## 0.4.0
 
 ### Minor Changes
