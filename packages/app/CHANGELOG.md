@@ -1,5 +1,33 @@
 # @agentproto/app-kit
 
+## 2.6.0
+
+### Minor Changes
+
+- 42ffebb: A tool authored by `create_tool` can now be run by an agent, in the same session that created it: the new daemon verb `created_tool_call` is in every session's tool list from the start. Every call needs a human-approved, single-use `created_tool_call` approval bound to the tool id, the exact arguments and a hash of the tool's TOOL.md, DRIVER.md and every file in its bundle directory (`.agentproto/tools/<id>/`, where the driver's script must live: an argv, `cwd` or relative-path `..` pointing elsewhere is refused, and an absolute `bin` is refused inside the workspace or hashed when outside it), requested by the calling session; the TOOL.md `approval` class does not lift it. Only tools carrying the `create_tool` authoring marker run this way. `agentproto agent create --grant <action>` (repeatable) and `create_agent`'s `grants` write `actions.granted`; nothing is granted by default, and `create_agent` only lets a calling agent grant actions its own manifest holds.
+
+  The bundle is read once, hashed, and run from a private snapshot, so a script edited after the approval is refused and cannot swap in during the run. `approval_request` for this kind ignores the caller's `title` and `preview`: the daemon builds them from the real tool id, driver command, args, files and hash, and refuses a payload whose hash is not the tool's current one.
+
+- 936d50e: Exposed imported tools keep their result, widget link and `ui://` view on the `/mcp` gateway. An `imported:` entry of `exposes.tools` now returns the import's `CallToolResult` unchanged (image blocks, `structuredContent`, `isError`, `_meta`), carries the imported tool's `_meta.ui` on `tools/list`, and passes only the input keys its `inputSchema` declares. The new APP.md key `exposes.resources` (distinct `ui://` URIs, validated by `parseExposedTools`) is the per-app allowlist the gateway relays on `resources/read`; any other URI is answered as unknown.
+- 6998655: Apps expose imported MCP tools at write and approve access, and `requires.apps[].tools` grants provider tools to the consumer's own agents.
+
+  - `exposes.tools` accepts an `imported:<alias>/<tool>` entry at `access: write` or `approve`, with the same visibility as a bundled entry: hidden in mode `read`, visible in mode `all`, to an AGENT.md opt-in, or through a grant. The caller session reaches the imported server.
+  - The gateway re-checks `exposes.tools` per entry (`checkExposedTools`): an invalid entry is skipped and logged on its own, the app's other tools stay.
+  - `POST /apps/:appId/tool-call` runs a `write` or `approve` exposed tool only for a caller session with an opt-in, a grant or mode `all`; reads work as before. It applies the gateway's deny rules to every exposed tool, reads included: the caller's tool deny grants and the request's `?denyTools=` / `?allowTools=`, through the same check `/mcp` uses. `agentproto mcp-app` forwards `$AGENTPROTO_SESSION_ID` as the caller.
+  - `requires.apps[].tools` (AIP-53 Requirements) lists provider tool MCP names (`bureau_navigate`). Sessions the daemon runs from the consumer's own AGENT.md files (`app_run`, or a manifest path the app declares) get them at the provider's access class. An unexposed name refuses the consumer's install; a missing or unmet provider is reported as `unmetRequires` (`not-installed`, `version-mismatch`, `tool-not-exposed`) by `app_install` and `app_list` and grants nothing. The loader refuses a non-MCP-name `tools` entry, two `apps` entries with the same id, and an unknown `requires` key.
+
+- 8fc52f6: APP.md gains `exposes.prefix` and `exposes.tools` (`{ id, access: read|write|approve, description, inputSchema?, mcpName?, approvalArg? }`), validated at load: `read` is refused on a mutator-tagged or `mutates` tool, `approval*` ids and colliding MCP names are refused. `exposedToolName` is the single place that computes the MCP name (`<prefix>_<name>`, never `:` or `/`). `agentproto mcp-app` registers only `--access read` tools by default (`--access read,write` to opt in), with their real input schema and `readOnlyHint`/`destructiveHint`, and still forwards the original tool id to the daemon. An app without `exposes.tools` keeps the old behavior with a stderr warning. Daemon registration of these tools is not part of this change.
+- 4616de7: The daemon's /mcp gateway now registers the `exposes.tools` of every installed app as `<prefix>_<name>` tools, right after `app_install` and without a restart. `access: read` tools are visible to every caller; `write` and `approve` tools only to a session whose AGENT.md lists the exact MCP name in an `{ kind: mcp, server: agentproto, allow: [...] }` entry (`exposedToolOptIn`, carried across restart and continue-fresh). Exposed tools go through the same deny gate and `?denyTools` filters as the built-in ones. `defaults.apps.exposedTools` (`read` default, `off`, `all`) is the kill-switch, read per request and honored by `POST /apps/:appId/tool-call` too. `app_install` refuses a prefix already held by another app or reserved by a daemon tool family (reinstalling the same appId is allowed); `exposes` is persisted in the app registry. `approval*` ids are never exposed. The transitional rule that every exposed id must be in `ui.tools` is lifted. `mcp-app` now warns on an unknown `--access` value instead of failing, and a malformed or empty `exposes.tools` no longer silently falls back to the legacy behavior.
+- 4945451: An AIP-53 link-session token can read `GET /sessions/:id/capabilities` for its own session, next to the three existing read routes. Under a link token, `permissions_respond` is dispatched only when the permission `id` is pending for the linked session: an unknown id or one from another session is refused. `defineApp` now accepts an empty `ui.toolScope` entry only for the tools the daemon checks this way (`TOOL_SCOPE_OWNERSHIP_CHECKED_TOOLS`, `permissions_respond` today), and the daemon refuses an empty entry for any other tool under a link token.
+
+### Patch Changes
+
+- Updated dependencies [a0ecdcb]
+  - @agentproto/driver@0.4.2
+  - @agentproto/driver-cli@0.3.2
+  - @agentproto/driver-http@0.2.2
+  - @agentproto/bridge@0.3.2
+
 ## 2.5.0
 
 ### Minor Changes

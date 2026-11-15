@@ -54,16 +54,24 @@ describe("classifyTurnError", () => {
     ["Endpoint unavailable", "upstream-5xx"],
     ["401 Unauthorized", "auth"],
     ["status: 403", "auth"],
-    ["402 Payment Required", "auth"],
+    ["402 Payment Required", "usage-limit"],
     ["Invalid API key provided", "auth"],
     // Billing reported with a 429 is still billing — not retryable.
-    ["429: insufficient_quota — check your plan", "auth"],
+    ["429: insufficient_quota, check your plan", "usage-limit"],
     // pi's "NNN: body" shape: the leading status is the signal, and the body's
     // `server_error` type must not turn a billing refusal into a 5xx retry.
-    ['402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "auth"],
-    ['{"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "auth"],
-    ["Insufficient wallet balance", "auth"],
-    ["insufficient available credits", "auth"],
+    ['402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "usage-limit"],
+    ['{"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "usage-limit"],
+    ["Insufficient wallet balance", "usage-limit"],
+    ["insufficient available credits", "usage-limit"],
+    // Real opencode Go refusal of 2026-11-14 (providerID=opencode-go, org id elided): the wallet is empty.
+    ["AI_APICallError: Insufficient balance. Top up at https://opencode.ai/console/org_X/billing?credits=1.", "usage-limit"],
+    ["Your credit balance is too low to access the Anthropic API", "usage-limit"],
+    // Real opencode Go plan-window cap of 2026-11-14/15 (already a usage cap, with its reset time).
+    ["AI_APICallError: OpenCode Go usage limit reached (weekly, resets in 1d 9h). To keep going now, turn on Extra Usage or upgrade to Go Plus at https://opencode.ai/console/org_X/go.", "usage-limit"],
+    // A rejected key stays auth: the account is broken, not spent.
+    ["AI_APICallError: Invalid API key", "auth"],
+    ["401: invalid x-api-key", "auth"],
     ['503: {"type":"server_error","message":"Upstream request failed"}', "upstream-5xx"],
     ["Insufficient permissions to list funds", "other"],
     ["Go usage limit exceeded", "usage-limit"],
@@ -83,10 +91,10 @@ describe("classifyTurnError", () => {
     expect(classifyTurnError(message)).toBe(expected)
   })
 
-  it("never retries the live OpenCode Zen out-of-funds refusal", () => {
+  it("classifies the live OpenCode Zen out-of-funds refusal as an empty account (usage-limit)", () => {
     const live = '402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}'
     expect(extractHttpStatus(live)).toBe(402)
-    expect(classifyTurnError(live)).toBe("auth")
+    expect(classifyTurnError(live)).toBe("usage-limit")
   })
 
   it("the stall marker matches the registry's constant", () => {
@@ -443,11 +451,18 @@ describe("turn retry — never retried", () => {
     await expectNoRetry(h, [])
   })
 
-  it.each(["401 Unauthorized", "402 Payment Required", "403 Forbidden"])("auth error %s", async message => {
+  it.each(["401 Unauthorized", "403 Forbidden"])("auth error %s", async message => {
     const h = harness([fail(message)], { on: ["rate-limit", "upstream-5xx", "no-output-stall"], ...FAST })
     await h.registry.sendPrompt(h.desc.id, "go")
     await expectNoRetry(h, ["skipped"])
     expect(h.events[0]?.errorClass).toBe("auth")
+  })
+
+  it("an empty wallet (402) is a usage cap, not retried on the same config unless opted in", async () => {
+    const h = harness([fail("402 Payment Required")], { on: ["rate-limit", "upstream-5xx", "no-output-stall"], ...FAST })
+    await h.registry.sendPrompt(h.desc.id, "go")
+    await expectNoRetry(h, ["skipped"])
+    expect(h.events[0]?.errorClass).toBe("usage-limit")
   })
 
   it("a class not listed in `on`", async () => {

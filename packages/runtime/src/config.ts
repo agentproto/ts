@@ -951,8 +951,11 @@ export interface AgentprotoConfig {
   activeProfile?: string
   /** Account slots (AIP-46 access axis): slot name (no dot) -> real auth
    *  profile id. A `profileRef` of `slot:<name>` resolves through this map at
-   *  the moment of use (`resolveProfileRef`, `account-slots.ts`). */
-  accountSlots?: Record<string, string>
+   *  the moment of use (`resolveProfileRef`, `account-slots.ts`). A value is
+   *  one profile id, or an ordered list of profile ids: the slot then resolves
+   *  to the first account that is enabled, may run the model and is not
+   *  `exhausted` in `account-health.json`. */
+  accountSlots?: Record<string, string | string[]>
   /** Default `skills` + `options` auto-applied to every `agent_start`
    *  spawn — global and per-adapter. See `resolveSpawnDefaults` in
    *  `spawn-defaults.ts` for the merge precedence with an explicit call.

@@ -67,8 +67,9 @@
  * NEVER retries: an interrupted turn (user Stop, `interrupt:true` prompt), a
  * killed / exited / errored session (kill, `maxCostUsd` cost-cap kill — the
  * process-death path belongs to `restartPolicy`), a session with a failed
- * governance policy (the windowed `costBudget` trips one), an auth/billing
- * error (401/402/403), a provider usage cap unless `usage-limit` is opted
+ * governance policy (the windowed `costBudget` trips one), an auth error
+ * (401/403, a bad key: the account is broken, not spent), a provider usage cap
+ * or empty wallet (402, "insufficient balance": both `usage-limit`) unless `usage-limit` is opted
  * into (and then never on the same config), or a turn that already made a
  * tool call outside the read-only allowlist (unless `retryAfterToolCalls`).
  *
@@ -77,6 +78,7 @@
  * daemon restart is the continue-interrupted path's job, not this one's.
  */
 
+import type { AuthProfile } from "@agentproto/auth"
 import type { SessionDescriptor } from "./sessions.js"
 import type {
   SessionEventBus,
@@ -87,11 +89,25 @@ import type {
 import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
+import {
+  createAccountHealthStore,
+  isPerAddressCapMessage,
+  parseExhaustionUntil,
+  type AccountHealthStore,
+} from "./account-health.js"
 import { egressHealthLedger, isEgressHealthErrorClass, type EgressHealthLedger } from "./egress-health.js"
 import { getModelListSource } from "./model-list-store.js"
 import { isReadOnlyToolName } from "./read-only-tool-call.js"
 import { checkModelPolicy } from "./model-policy.js"
-import { isSlotRef, resolveProfileRef, slotRef, type ResolvedProfileRef } from "./account-slots.js"
+import {
+  isSlotRef,
+  loadAccountSlots,
+  resolveProfileRef,
+  slotMembers,
+  slotRef,
+  type AccountSlots,
+  type ResolvedProfileRef,
+} from "./account-slots.js"
 import {
   TURN_ROTATE_DEFAULTS,
   type TurnRetryClass,
@@ -132,8 +148,22 @@ export function extractHttpStatus(message: string): number | undefined {
   return undefined
 }
 
+/** A key or credential the provider refuses: the account is BROKEN, not spent.
+ *  Never retried, never rotated away from in silence (the operator is told). */
 const AUTH_RE =
-  /\bunauthori[sz]ed\b|\bforbidden\b|\bpayment required\b|\binvalid[ _-]?(?:api[ _-]?key|x-api-key|token|credentials?)\b|\bauthentication (?:failed|error|required)\b|\binsufficient(?:[ _-](?!(?:to|for|of|in|on|at|and|or|the)\b)[a-z]+){0,2}[ _-](?:credits?|balance|quota|funds)\b|\bcredit balance\b|\bpermission[ _-]denied\b/i
+  /\bunauthori[sz]ed\b|\bforbidden\b|\binvalid[ _-]?(?:api[ _-]?key|x-api-key|token|credentials?)\b|\bauthentication (?:failed|error|required)\b|\bpermission[ _-]denied\b/i
+/** An empty wallet: the account is fine but has no credit left. Same meaning as
+ *  a provider usage cap ("this account is closed until it is topped up or
+ *  reset"), so it classifies as `usage-limit`, not `auth`.
+ *
+ *  Forms seen in the wild: OpenCode Go
+ *  `AI_APICallError: Insufficient balance. Top up at https://opencode.ai/console/<org>/billing?credits=1.`
+ *  (sessions of 2026-11-14, `providerID=opencode-go`), OpenCode Zen
+ *  `402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}`,
+ *  Anthropic `Your credit balance is too low`, OpenAI `insufficient_quota`,
+ *  OpenRouter / Moonshot `Insufficient credits` / `Insufficient wallet balance`. */
+const CREDIT_EXHAUSTED_RE =
+  /\bpayment required\b|\binsufficient(?:[ _-](?!(?:to|for|of|in|on|at|and|or|the)\b)[a-z]+){0,2}[ _-](?:credits?|balance|quota|funds)\b|\bcredit balance\b|\b(?:out of|no) (?:credits?|funds)(?: left| remaining)?\b|\btop up\b[^.]{0,40}\bcredits?\b/i
 const RATE_LIMIT_RE =
   /\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b|\bresource[ _-]exhausted\b|\bthrottl(?:ed|ing)\b/i
 const UPSTREAM_5XX_RE =
@@ -156,15 +186,20 @@ const NETWORK_RE =
 
 /**
  * Classify a turn's error text. Order matters: the stall marker is exact;
- * a usage cap and auth/billing are checked BEFORE rate-limit because some
- * providers report "insufficient quota" with a 429.
+ * a usage cap and an empty wallet (both `usage-limit`: the account is closed
+ * until it resets or is topped up) are checked, then auth (401/403/bad key:
+ * the account is broken), all BEFORE rate-limit because some providers report
+ * "insufficient quota" with a 429.
  */
 export function classifyTurnError(message: string | undefined): TurnErrorClass {
   if (!message) return "other"
   if (message === NO_OUTPUT_STALL_MARKER) return "no-output-stall"
   if (isProviderLimitError(message)) return "usage-limit"
   const status = extractHttpStatus(message)
-  if (status === 401 || status === 402 || status === 403 || AUTH_RE.test(message)) return "auth"
+  // An empty wallet is checked BEFORE auth: a billing refusal can ride a 401,
+  // 403 or 429 status, and it is the account being spent, not broken.
+  if (status === 402 || CREDIT_EXHAUSTED_RE.test(message)) return "usage-limit"
+  if (status === 401 || status === 403 || AUTH_RE.test(message)) return "auth"
   if (status === 429 || RATE_LIMIT_RE.test(message)) return "rate-limit"
   if (
     (status !== undefined && status >= 500 && status <= 599) ||
@@ -175,6 +210,13 @@ export function classifyTurnError(message: string | undefined): TurnErrorClass {
     return "upstream-5xx"
   }
   return "other"
+}
+
+/** True when the message says the account's wallet is empty (HTTP 402,
+ *  "insufficient balance / credits / funds", "payment required"). */
+export function isCreditExhaustedMessage(message: string | undefined): boolean {
+  if (!message) return false
+  return extractHttpStatus(message) === 402 || CREDIT_EXHAUSTED_RE.test(message)
 }
 
 /** Provider "retry after" hint in ms, when the message carries one
@@ -275,7 +317,7 @@ export function decideTurnRetry(
   if (desc.status !== "running") return skip(`session ${desc.status}`)
   if (trigger.kind === "turn-end" && trigger.interrupted) return skip("turn was interrupted")
   if (opts.halted) return skip("a governance policy failed for this session")
-  if (errorClass === "auth") return skip("auth/billing error — retrying cannot fix it")
+  if (errorClass === "auth") return skip("auth error (rejected key or credential), retrying cannot fix it")
   if (errorClass === "usage-limit" && !policy.on.includes("usage-limit")) {
     return skip("provider usage cap, resets on its own schedule")
   }
@@ -521,6 +563,9 @@ interface PendingRetry {
    *  retry. `attempt` then counts migrations, booked against
    *  `turnMigrations` rather than `turnRetryAttempts`. */
   mode?: "retry" | "migrate"
+  /** The implicit slot step already ran for this failure (it is tried once,
+   *  before rotation and before the `fallback` list). */
+  slotStepTried?: boolean
 }
 
 export interface TurnRetryController {
@@ -545,6 +590,11 @@ export function createTurnRetryController(opts: {
    *  descriptor knows its egress address cools that address down here too.
    *  Defaults to the daemon-wide on-disk ledger. */
   egressHealth?: EgressHealthLedger
+  /** Persistent per-account circuit breaker. A turn classified `usage-limit` on
+   *  a session's billing profile closes that profile until the provider's own
+   *  reset (or a strike backoff); a clean turn on it reopens it. Defaults to
+   *  `~/.agentproto/account-health.json`. */
+  accountHealth?: AccountHealthStore
   /** Extra async eligibility gate for rotation targets (adapter/route + profile allow-list). */
   checkRotationTarget?: RotationTargetCheck
   /** Box-migration orchestration for `turnRetry.action: "migrate"`. Absent ⇒ a
@@ -555,7 +605,7 @@ export function createTurnRetryController(opts: {
   /** Move a session to another harness (`session_continue_fresh`). */
   handoffSession?: FallbackHandoffFn
   /** Profile lookup for fallback eligibility (missing/disabled = skip). */
-  getAuthProfile?: (id: string) => Promise<{ disabled?: boolean } | undefined>
+  getAuthProfile?: (id: string) => Promise<Pick<AuthProfile, "disabled" | "models"> | undefined>
   /** Harness installed check for fallback eligibility. */
   isHarnessInstalled?: (harness: string) => Promise<boolean>
   /** Extra async fallback eligibility (route/adapter/profile allow-list). */
@@ -566,7 +616,10 @@ export function createTurnRetryController(opts: {
   /** Account slot resolution for a `slot:<name>` fallback access, run at
    *  fallback time (never at spawn) so a swap made while the session lived is
    *  honoured. Defaults to {@link resolveProfileRef} over config.json. */
-  resolveProfileRef?: (ref: string) => Promise<ResolvedProfileRef>
+  resolveProfileRef?: (ref: string, deps?: { model?: string }) => Promise<ResolvedProfileRef>
+  /** Slot map source, to tell an account slot (several accounts) from a
+   *  single-account slot. Defaults to config.json's `accountSlots`. */
+  loadAccountSlots?: () => Promise<AccountSlots>
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   log?: (line: string) => void
@@ -575,6 +628,7 @@ export function createTurnRetryController(opts: {
   const now = opts.now ?? Date.now
   const cooldowns = opts.cooldowns ?? createModelCooldowns(now)
   const egressHealth = opts.egressHealth ?? egressHealthLedger
+  const accountHealth = opts.accountHealth ?? createAccountHealthStore()
   const setTimer =
     opts.setTimer ??
     ((fn: () => void, ms: number) => {
@@ -586,6 +640,9 @@ export function createTurnRetryController(opts: {
   const log = opts.log ?? ((line: string) => console.warn(line))
   const pending = new Map<string, PendingRetry>()
   const halted = new Set<string>()
+  /** In-flight health writes by session, so a step that reads the health file
+   *  right after a failure (the slot advance) sees the mark. */
+  const healthWrites = new Map<string, Promise<void>>()
 
   // A pending retry never survives a daemon restart — drop stale landing
   // times so no row advertises a retry nobody will send.
@@ -735,7 +792,15 @@ export function createTurnRetryController(opts: {
   const baseConfigOf = (desc: SessionDescriptor): TurnRetryFallbackEffective =>
     desc.fallbackBase ? { ...desc.fallbackBase } : configOf(desc, true)
 
-  const resolveSlot = opts.resolveProfileRef ?? ((ref: string) => resolveProfileRef(ref))
+  const resolveSlot =
+    opts.resolveProfileRef ??
+    ((ref: string, deps?: { model?: string }) =>
+      resolveProfileRef(ref, {
+        accountHealth,
+        ...(opts.getAuthProfile ? { getAuthProfile: opts.getAuthProfile } : {}),
+        ...(opts.loadAccountSlots ? { loadAccountSlots: opts.loadAccountSlots } : {}),
+        ...(deps?.model !== undefined ? { model: deps.model } : {}),
+      }))
 
   /** Merge an overlay over the BASE config (never over the previous step). */
   const mergeOverlay = (
@@ -818,11 +883,122 @@ export function createTurnRetryController(opts: {
 
   const applyingFallback = new Set<string>()
 
+  /** Run only the implicit slot step, under the same single-flight guard as the
+   *  fallback walk (a duplicate trigger is ignored, not doubled). */
+  const applyingSlotStepOnly = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    if (applyingFallback.has(desc.id) || !(await canAdvanceSlot(desc, p))) return false
+    applyingFallback.add(desc.id)
+    try {
+      return await advanceSlot(desc, p)
+    } finally {
+      applyingFallback.delete(desc.id)
+    }
+  }
+
+  /** Single-flight entry point: one fallback walk per session at a time. A
+   *  duplicate trigger while a step is in flight is ignored with a notice. */
+  /** The session sits on an account slot (a slot listing several accounts,
+   *  one of them the account it bills) and failed on an account cap: the next
+   *  account of the same slot, same model, is a move that needs no preset
+   *  line. A single-account slot is not a multi-account slot (its re-pointing is the
+   *  `fallback` list's job, as before). Never for `auth` (a broken account is
+   *  an alert, not a silent swap). */
+  const canAdvanceSlot = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    if (
+      p.errorClass !== "usage-limit" ||
+      desc.accessSlot === undefined ||
+      desc.accessProfile?.profileRef === undefined ||
+      opts.restartSession === undefined
+    ) {
+      return false
+    }
+    try {
+      const slots = await (opts.loadAccountSlots ?? (() => loadAccountSlots()))()
+      const target = slots[desc.accessSlot]
+      return target !== undefined && slotMembers(target).length > 1
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Implicit step BEFORE `turnRetry.fallback`: the account the session bills is
+   * now `exhausted` (the health write of the failing turn), so re-resolve its
+   * slot for the same model and restart, with context, on the next account.
+   * Returns true when the session moved (continuation sent). False when the
+   * slot has nothing else (every account spent, or the failure was not an
+   * account cap): the caller goes on to rotate / the fallback list.
+   */
+  const advanceSlot = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    if (p.slotStepTried || !(await canAdvanceSlot(desc, p))) return false
+    p.slotStepTried = true
+    const id = desc.id
+    const slot = desc.accessSlot!
+    const current = desc.accessProfile!.profileRef
+    // The failing turn's health write must have landed before the slot is read.
+    await healthWrites.get(id)
+    let next: ResolvedProfileRef
+    try {
+      next = await resolveSlot(slotRef(slot), { ...(desc.model !== undefined ? { model: desc.model } : {}) })
+    } catch (err) {
+      registry.recordNotice(
+        id,
+        `[turn-retry] slot "${slot}" has no other account: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      return false
+    }
+    if (next.profileRef === current) {
+      registry.recordNotice(
+        id,
+        `[turn-retry] slot "${slot}" has no other open account (still resolves to "${current}")`,
+      )
+      return false
+    }
+    let targetDesc: SessionDescriptor
+    try {
+      if (p.kind === "stall") await registry.interruptSession?.(id)
+      targetDesc = await opts.restartSession!(desc, { access: { profileRef: slotRef(slot) } })
+    } catch (err) {
+      registry.recordNotice(
+        id,
+        `[turn-retry] slot "${slot}": moving to "${next.profileRef}" failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      return false
+    }
+    const targetId = targetDesc.id
+    // The chain position is the session's, not the account's: carry it over.
+    registry.patchTurnRetry(targetId, {
+      fallbackStep: desc.fallbackStep ?? null,
+      fallbackBase: desc.fallbackBase ?? null,
+      turnRetryAttempts: null,
+      turnMigrations: null,
+    })
+    const from = configOf(desc)
+    const to: TurnRetryFallbackEffective = { ...from, accessProfileRef: next.profileRef }
+    sessionEvents.emit({
+      type: "session:fallback",
+      sessionId: id,
+      from,
+      to,
+      transition: "restart",
+      failure: { errorClass: p.errorClass, ...(p.error ? { error: p.error } : {}) },
+      ...(targetId !== id ? { newSessionId: targetId } : {}),
+      ...(desc.label ? { label: desc.label } : {}),
+      ts: new Date(now()).toISOString(),
+    })
+    registry.recordNotice(
+      id,
+      `[turn-retry] slot "${slot}": account "${current}" is exhausted, continuing on "${next.profileRef}" (same model ${desc.model ?? "?"})`,
+    )
+    sendFallbackPrompt(targetId, p)
+    return true
+  }
+
   /** Single-flight entry point: one fallback walk per session at a time. A
    *  duplicate trigger while a step is in flight is ignored with a notice. */
   const applyFallback = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
     const chain = desc.turnRetry?.fallback
-    if (!chain?.length) return false
+    if (!chain?.length && !(await canAdvanceSlot(desc, p))) return false
     if (applyingFallback.has(desc.id)) {
       registry.recordNotice(
         desc.id,
@@ -832,6 +1008,7 @@ export function createTurnRetryController(opts: {
     }
     applyingFallback.add(desc.id)
     try {
+      if (await advanceSlot(desc, p)) return true
       return await walkFallback(desc, p)
     } finally {
       applyingFallback.delete(desc.id)
@@ -863,7 +1040,11 @@ export function createTurnRetryController(opts: {
         try {
           target = {
             ...requested,
-            accessProfileRef: (await resolveSlot(requested.accessProfileRef)).profileRef,
+            accessProfileRef: (
+              await resolveSlot(requested.accessProfileRef, {
+                ...(requested.model !== undefined ? { model: requested.model } : {}),
+              })
+            ).profileRef,
           }
         } catch (err) {
           rejected.push(`fallback[${step}]: ${err instanceof Error ? err.message : String(err)}`)
@@ -1062,6 +1243,13 @@ export function createTurnRetryController(opts: {
     }
     const nowIso = new Date(now()).toISOString()
     registry.patchTurnRetry(id, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
+    // An account cap on a slot: the next account of the slot, same model,
+    // beats rotating the model on the account that just ran dry.
+    try {
+      if (await applyingSlotStepOnly(desc, p)) return
+    } catch (err) {
+      log(`[turn-retry] ${id}: slot step failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
     try {
       const rotated = await rotateIfConfigured(desc, p, { allowRestart: true })
       if (rotated) {
@@ -1310,6 +1498,16 @@ export function createTurnRetryController(opts: {
     if (trigger.kind === "turn-end" && trigger.interrupted) return
     if (!desc.model) return
     const message = trigger.kind === "stall" ? NO_OUTPUT_STALL_MARKER : (trigger.error ?? desc.lastTurnErrorMessage)
+    // A cap tied to the ACCOUNT (an empty wallet, a Go plan window) is recorded
+    // on the account (`noteAccountHealth`), not on the model: another account of
+    // a multi-account slot runs the same model fine, and a model cooldown would hide it.
+    if (
+      errorClass === "usage-limit" &&
+      desc.accessProfile?.profileRef !== undefined &&
+      !isPerAddressCapMessage(message)
+    ) {
+      return
+    }
     const hint = errorClass === "rate-limit" ? extractRetryAfterMs(message) : undefined
     cooldowns.mark(desc.model, {
       durationMs: hint !== undefined && hint > 0 ? hint : (desc.turnRetry?.cooldownMs ?? TURN_ROTATE_DEFAULTS.cooldownMs),
@@ -1327,6 +1525,8 @@ export function createTurnRetryController(opts: {
     const message = trigger.error ?? desc.lastTurnErrorMessage
     const errorClass = classifyTurnError(message)
     if (!isEgressHealthErrorClass(errorClass)) return
+    // An empty wallet is a fact about the account, not about this box's address.
+    if (isCreditExhaustedMessage(message)) return
     const retryAfter = errorClass === "rate-limit" ? extractRetryAfterMs(message) : undefined
     egressHealth.mark({
       publicIp: desc.sandboxEgressIp,
@@ -1335,6 +1535,36 @@ export function createTurnRetryController(opts: {
       ...(retryAfter !== undefined && retryAfter > 0 ? { durationMs: retryAfter } : {}),
       ...(desc.sandboxEgressSlot ? { slot: desc.sandboxEgressSlot } : {}),
       source: desc.id,
+    })
+  }
+
+  /** A turn that ended in a usage cap or an empty wallet closes the account it
+   *  was billed to, for every session and whether or not this one has a retry
+   *  policy: the daemon must stop starting work on a wallet it knows is spent.
+   *  A per-address cap ("Free usage limit reached") says nothing about the
+   *  account and is left to the model cooldown. Fire and forget; a failed write
+   *  only logs. */
+  const noteAccountHealth = (desc: SessionDescriptor, trigger: TurnRetryTrigger): void => {
+    const profileRef = desc.accessProfile?.profileRef
+    if (!profileRef || trigger.kind !== "turn-end" || trigger.reason !== "error" || trigger.interrupted) return
+    const message = trigger.error ?? desc.lastTurnErrorMessage
+    if (classifyTurnError(message) !== "usage-limit" || isPerAddressCapMessage(message)) return
+    const until = parseExhaustionUntil(message, now())
+    const marked = accountHealth
+      .mark(profileRef, {
+        reason: echo(message) ?? "usage limit",
+        ...(until !== undefined ? { until, untilBasis: "observed" as const } : {}),
+      })
+      .then(view => {
+        registry.recordNotice(
+          desc.id,
+          `[turn-retry] account "${profileRef}" marked exhausted until ${view.until} (${view.untilBasis})`,
+        )
+      })
+      .catch(err => log(`[turn-retry] ${desc.id}: account health write failed: ${err instanceof Error ? err.message : String(err)}`))
+    healthWrites.set(desc.id, marked)
+    void marked.finally(() => {
+      if (healthWrites.get(desc.id) === marked) healthWrites.delete(desc.id)
     })
   }
 
@@ -1389,7 +1619,8 @@ export function createTurnRetryController(opts: {
         const canFallBack =
           (plan.errorClass === "auth" || plan.errorClass === "usage-limit") &&
           !plan.toolCallsBlocked &&
-          (desc.turnRetry?.fallback?.length ?? 0) > 0 &&
+          ((desc.turnRetry?.fallback?.length ?? 0) > 0 ||
+            (plan.errorClass === "usage-limit" && desc.accessSlot !== undefined)) &&
           desc.status === "running" &&
           !(trigger.kind === "turn-end" && trigger.interrupted) &&
           !halted.has(id)
@@ -1446,7 +1677,10 @@ export function createTurnRetryController(opts: {
             }),
           )
         }
-        if (plan.action === "exhausted" && desc.turnRetry?.fallback?.length) {
+        if (
+          plan.action === "exhausted" &&
+          (desc.turnRetry?.fallback?.length || (plan.errorClass === "usage-limit" && desc.accessSlot !== undefined))
+        ) {
           const p: PendingRetry = {
             kind: trigger.kind,
             errorClass: plan.errorClass as TurnRetryClass,
@@ -1532,6 +1766,22 @@ export function createTurnRetryController(opts: {
   const unsubs = [
     sessionEvents.on("session:turn-end", ev => {
       const desc = registry.get(ev.sessionId)
+      if (desc && ev.reason === "error") {
+        noteAccountHealth(desc, {
+          kind: "turn-end",
+          reason: ev.reason,
+          ...(ev.error !== undefined ? { error: ev.error } : {}),
+          ...(ev.interrupted ? { interrupted: true } : {}),
+        })
+      } else if (
+        desc?.accessProfile?.profileRef &&
+        !ev.interrupted &&
+        ev.error === undefined &&
+        !NON_CLEAN_REASONS.has(ev.reason ?? "")
+      ) {
+        // A clean turn proves the account works: drop any closed/probing entry.
+        void accountHealth.clear(desc.accessProfile.profileRef).catch(() => undefined)
+      }
       if (desc && !desc.turnRetry && ev.reason === "error") {
         // No retry policy to run, but the failure still says something about the box's egress address.
         noteEgressThrottle(desc, {

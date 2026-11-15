@@ -85,6 +85,7 @@ export { createWorkspaceOfCwd } from "./workspace-binding.js"
 export { loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerAccountSlotTools } from "./account-slot-tools.js"
+import { registerAccountHealthTools, summarizeAccountHealth } from "./account-health-tools.js"
 import { registerUserPresetTools } from "./user-preset-tools.js"
 import { registerModelListTools } from "./model-list-tools.js"
 import { loadModelListSource } from "./model-list-store.js"
@@ -4484,6 +4485,7 @@ export async function createGateway(
       appRegistryIssues: () => appRegistry.listIssues(),
       appRegistryRepairs: () => appRegistry.listRepairs(),
       modelCooldowns: () => modelCooldowns.list(),
+      accountHealth: () => summarizeAccountHealth(),
       pausedCronJobs: () =>
         cronScheduler
           .list()
@@ -4764,6 +4766,9 @@ export async function createGateway(
     // Account slots (accountSlots in config.json): account_slots_list /
     // account_slots_swap. `moveAlive` restarts alive sessions through the same
     // restart-with-override path as `session_restart`, cron targets re-armed.
+    // account_health_list / account_health_clear: which accounts are closed,
+    // until when and why (the circuit breaker of account-health.ts).
+    registerAccountHealthTools(server)
     registerAccountSlotTools(server, {
       registry: sessions,
       ...(opts.resolveAgentAdapter
@@ -6235,19 +6240,43 @@ export { evaluateCostBudget } from "./cost-budget.js"
 export type { CostBudgetDecision } from "./cost-budget.js"
 export {
   ACCOUNT_SLOT_NAME_RE,
+  AccountSlotExhaustedError,
   AccountSlotError,
   SLOT_REF_PREFIX,
   isSlotRef,
   loadAccountSlots,
+  planAccountSlotPrefer,
   planAccountSlotSwap,
   resolveProfileRef,
+  sessionsToMoveOnPrefer,
   sessionsToMoveOnSwap,
+  slotMembers,
   slotNameOf,
   slotRef,
   type AccountSlotErrorCode,
+  type AccountSlotPreferPlan,
   type AccountSlotRow,
   type AccountSlotSwapPlan,
+  type AccountSlotTarget,
   type AccountSlots,
   type ResolvedProfileRef,
 } from "./account-slots.js"
-export { runAccountSlotSwap, type AccountSlotSwapResult } from "./account-slot-tools.js"
+export {
+  runAccountSlotPrefer,
+  runAccountSlotSwap,
+  type AccountSlotPreferResult,
+  type AccountSlotSwapResult,
+} from "./account-slot-tools.js"
+export {
+  ACCOUNT_BACKOFF_MS,
+  accountHealthOf,
+  clearAccountHealth,
+  createAccountHealthStore,
+  listAccountHealth,
+  markAccountExhausted,
+  parseExhaustionUntil,
+  type AccountHealthStore,
+  type AccountHealthView,
+  type AccountUntilBasis,
+} from "./account-health.js"
+export { listAccountHealthRows, summarizeAccountHealth, type AccountHealthRow } from "./account-health-tools.js"

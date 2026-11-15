@@ -309,7 +309,11 @@ may also be an account slot, `slot:<name>`, resolved through config.json
 gate and before host auth resolution, so a box receives the credential of the
 profile the slot points at now. An unknown slot, or one pointing at a missing
 or disabled profile, refuses the spawn with `account_slot_unresolved`; there
-is no fallback. The descriptor records the real profile in `accessProfile`
+is no fallback. A slot can also be an ordered list of accounts
+(`accountSlots.<name>` as a list): it resolves to the first account that is
+enabled, may run the model and is not exhausted (`account_health_list`); with
+every account spent the spawn is refused with `account_slot_exhausted` and
+`details.retryAfter`. The descriptor records the real profile in `accessProfile`
 (billing is unchanged) and the slot asked for in `accessSlot`. Slots are also
 accepted by session presets, harness presets, `turnRetry.fallback[].access`
 (resolved when the fallback fires, so a swap made while the session lives is
@@ -571,8 +575,10 @@ in-band error (`lastTurnErrorMessage`), or from the stall watchdog:
   example opencode retrying a 429 internally and silently. That turn is still
   running, so the retry interrupts it before re-prompting. Needs the daemon's
   stall watchdog to be on (`turnStallAfterMs`).
-- `usage-limit` (opt-in, never in the default set or in `"all"`): a provider
-  usage cap ("Free usage limit reached", "usage limit exceeded"). A cap does
+- `usage-limit` (opt-in, never in the default set or in `"all"`; also accepted
+  as `quota-exhausted`, the AIP-46 `FailureClass` name, resolved to
+  `usage-limit`): a provider usage cap ("Free usage limit reached", "usage limit
+  exceeded") or an empty wallet ("insufficient balance", HTTP 402). A cap does
   not recover with backoff, so there is NO same-config retry. The session goes
   straight to `rotate` (when configured), then the `fallback` chain; with
   `"action": "migrate"` on a sandbox session it first moves to a fresh box,
@@ -595,9 +601,11 @@ Never retried, whatever `on` says:
 - a killed, exited or errored session. That includes the `maxCostUsd` kill. A
   dead process is `restartPolicy`'s job;
 - a session with a failed governance policy, such as a tripped `costBudget`;
-- auth and billing errors (401/402/403, invalid key, insufficient quota) and,
-  unless `usage-limit` is listed in `on`, provider usage caps ("usage limit
-  exceeded");
+- auth errors (401/403, a rejected or invalid key: the account is broken, not
+  spent) and, unless `usage-limit` is listed in `on`, provider usage caps
+  ("usage limit exceeded") and empty wallets (402, "insufficient balance /
+  credits / funds / quota", "credit balance is too low": both classify as
+  `usage-limit`, an account closed until it resets or is topped up);
 - a turn that already made a tool call that is not provably read-only.
   Read-only means a harness read tool (read, grep, glob, ls, find, search,
   webfetch, websearch, todo, think) or a shell command line made only of
@@ -648,6 +656,16 @@ land as `migrated` (with `migratedTo`) and `migrate-failed` (with
 CLI: `agentproto sessions start --turn-retry all` (or a comma list of
 classes, or a JSON object). User presets and harness presets
 (`harness_preset_create`) accept the same `turnRetry` field.
+
+### Multi-account slots and the account health breaker
+
+A turn that ends in an account cap (`usage-limit`, an empty wallet included)
+closes the account it was billed to in `~/.agentproto/account-health.json`
+(`until` from the provider's own message, a quota reader, or a 30 min / 2 h / 6 h
+/ 24 h strike backoff; `account_health_list`, `account_health_clear`, `agentproto
+accounts health`). When the session sits on a slot, the daemon first
+restarts it, with context, on the next account of the same slot and model, before
+`rotate` and before the `fallback` list.
 
 ### Rotating to another model
 

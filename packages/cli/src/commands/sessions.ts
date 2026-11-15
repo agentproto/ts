@@ -732,7 +732,8 @@ async function runListStats(
 
 const TURN_RETRY_ALL_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
 /** `usage-limit` is accepted but opt-in: it is not part of `all`. */
-const TURN_RETRY_CLASSES = [...TURN_RETRY_ALL_CLASSES, "usage-limit"]
+/** `quota-exhausted` is the AIP-46 name of `usage-limit`; the daemon maps it. */
+const TURN_RETRY_CLASSES = [...TURN_RETRY_ALL_CLASSES, "usage-limit", "quota-exhausted"]
 const TURN_RETRY_ACTIONS = ["retry", "migrate"]
 
 /** Bounds the DAEMON's schema (`turnRetryInputSchema` in

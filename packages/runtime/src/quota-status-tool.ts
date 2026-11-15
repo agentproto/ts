@@ -20,6 +20,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { KeychainStore, getAuthProfile, type AuthProfile } from "@agentproto/auth"
+import { createAccountHealthStore, reconcileHealthFromQuota, type AccountHealthStore } from "./account-health.js"
 import {
   QuotaReaderRegistry,
   createAnthropicOAuthQuotaReader,
@@ -78,6 +79,10 @@ export interface QuotaStatusDeps {
   /** The calling session's own access-profile ref, when it has one. Used only
    *  when the caller omitted `profileRef`. */
   currentProfileRef?: () => string | undefined
+  /** Account health store a successful read reconciles into (a window at 0 %
+   *  closes the account until its `resetsAt`; headroom reopens it). Defaults
+   *  to `~/.agentproto/account-health.json`. */
+  accountHealth?: AccountHealthStore
 }
 
 /** Explicit negatives — never a thrown error, never a fabricated figure. */
@@ -163,6 +168,13 @@ export async function readQuotaStatus(
         "unreachable provider, or a response with no usable figures). Unknown, not zero.",
     }
   }
+  await reconcileHealthFromQuota(
+    deps.accountHealth ?? createAccountHealthStore(),
+    profile.id,
+    status.windows.map(w => ({ remainingPct: w.remainingPct, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })),
+    (deps.now ?? (() => new Date()))().getTime(),
+    status.basis === "probe" ? "probe" : "provider",
+  )
   return { ok: true, status }
 }
 
@@ -176,8 +188,10 @@ export function registerQuotaStatusTool(
       "status: `basis` (where the figures came from), `windows` (" +
       "remainingPct 0-100, used/limit/remaining/unit, resetsAt), and " +
       "`credits` when the provider reports a balance. Omit `profileRef` to " +
-      "read the calling session's own access profile. Read-only and " +
-      "side-effect-free; unknowns are omitted, never fabricated. `refresh` " +
+      "read the calling session's own access profile. Never bills and has no " +
+      "provider-side effect; unknowns are omitted, never fabricated. A reading " +
+      "with a window at 0 and a `resetsAt` also closes that account in the local " +
+      "account health file (and headroom reopens it): see account_health_list. `refresh` " +
       "is a documented hint only — there is no cache, every call is live.",
     {
       profileRef: z
