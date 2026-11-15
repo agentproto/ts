@@ -78,6 +78,7 @@
  * daemon restart is the continue-interrupted path's job, not this one's.
  */
 
+import type { AuthProfile } from "@agentproto/auth"
 import type { SessionDescriptor } from "./sessions.js"
 import type {
   SessionEventBus,
@@ -98,7 +99,15 @@ import { egressHealthLedger, isEgressHealthErrorClass, type EgressHealthLedger }
 import { getModelListSource } from "./model-list-store.js"
 import { isReadOnlyToolName } from "./read-only-tool-call.js"
 import { checkModelPolicy } from "./model-policy.js"
-import { isSlotRef, resolveProfileRef, slotRef, type ResolvedProfileRef } from "./account-slots.js"
+import {
+  isSlotRef,
+  loadAccountSlots,
+  resolveProfileRef,
+  slotMembers,
+  slotRef,
+  type AccountSlots,
+  type ResolvedProfileRef,
+} from "./account-slots.js"
 import {
   TURN_ROTATE_DEFAULTS,
   type TurnRetryClass,
@@ -554,6 +563,9 @@ interface PendingRetry {
    *  retry. `attempt` then counts migrations, booked against
    *  `turnMigrations` rather than `turnRetryAttempts`. */
   mode?: "retry" | "migrate"
+  /** The implicit slot step already ran for this failure (it is tried once,
+   *  before rotation and before the `fallback` list). */
+  slotStepTried?: boolean
 }
 
 export interface TurnRetryController {
@@ -593,7 +605,7 @@ export function createTurnRetryController(opts: {
   /** Move a session to another harness (`session_continue_fresh`). */
   handoffSession?: FallbackHandoffFn
   /** Profile lookup for fallback eligibility (missing/disabled = skip). */
-  getAuthProfile?: (id: string) => Promise<{ disabled?: boolean } | undefined>
+  getAuthProfile?: (id: string) => Promise<Pick<AuthProfile, "disabled" | "models"> | undefined>
   /** Harness installed check for fallback eligibility. */
   isHarnessInstalled?: (harness: string) => Promise<boolean>
   /** Extra async fallback eligibility (route/adapter/profile allow-list). */
@@ -604,7 +616,10 @@ export function createTurnRetryController(opts: {
   /** Account slot resolution for a `slot:<name>` fallback access, run at
    *  fallback time (never at spawn) so a swap made while the session lived is
    *  honoured. Defaults to {@link resolveProfileRef} over config.json. */
-  resolveProfileRef?: (ref: string) => Promise<ResolvedProfileRef>
+  resolveProfileRef?: (ref: string, deps?: { model?: string }) => Promise<ResolvedProfileRef>
+  /** Slot map source, to tell an account slot (several accounts) from a
+   *  single-account slot. Defaults to config.json's `accountSlots`. */
+  loadAccountSlots?: () => Promise<AccountSlots>
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   log?: (line: string) => void
@@ -777,7 +792,15 @@ export function createTurnRetryController(opts: {
   const baseConfigOf = (desc: SessionDescriptor): TurnRetryFallbackEffective =>
     desc.fallbackBase ? { ...desc.fallbackBase } : configOf(desc, true)
 
-  const resolveSlot = opts.resolveProfileRef ?? ((ref: string) => resolveProfileRef(ref))
+  const resolveSlot =
+    opts.resolveProfileRef ??
+    ((ref: string, deps?: { model?: string }) =>
+      resolveProfileRef(ref, {
+        accountHealth,
+        ...(opts.getAuthProfile ? { getAuthProfile: opts.getAuthProfile } : {}),
+        ...(opts.loadAccountSlots ? { loadAccountSlots: opts.loadAccountSlots } : {}),
+        ...(deps?.model !== undefined ? { model: deps.model } : {}),
+      }))
 
   /** Merge an overlay over the BASE config (never over the previous step). */
   const mergeOverlay = (
@@ -860,11 +883,122 @@ export function createTurnRetryController(opts: {
 
   const applyingFallback = new Set<string>()
 
+  /** Run only the implicit slot step, under the same single-flight guard as the
+   *  fallback walk (a duplicate trigger is ignored, not doubled). */
+  const applyingSlotStepOnly = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    if (applyingFallback.has(desc.id) || !(await canAdvanceSlot(desc, p))) return false
+    applyingFallback.add(desc.id)
+    try {
+      return await advanceSlot(desc, p)
+    } finally {
+      applyingFallback.delete(desc.id)
+    }
+  }
+
+  /** Single-flight entry point: one fallback walk per session at a time. A
+   *  duplicate trigger while a step is in flight is ignored with a notice. */
+  /** The session sits on an account slot (a slot listing several accounts,
+   *  one of them the account it bills) and failed on an account cap: the next
+   *  account of the same slot, same model, is a move that needs no preset
+   *  line. A single-account slot is not a multi-account slot (its re-pointing is the
+   *  `fallback` list's job, as before). Never for `auth` (a broken account is
+   *  an alert, not a silent swap). */
+  const canAdvanceSlot = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    if (
+      p.errorClass !== "usage-limit" ||
+      desc.accessSlot === undefined ||
+      desc.accessProfile?.profileRef === undefined ||
+      opts.restartSession === undefined
+    ) {
+      return false
+    }
+    try {
+      const slots = await (opts.loadAccountSlots ?? (() => loadAccountSlots()))()
+      const target = slots[desc.accessSlot]
+      return target !== undefined && slotMembers(target).length > 1
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Implicit step BEFORE `turnRetry.fallback`: the account the session bills is
+   * now `exhausted` (the health write of the failing turn), so re-resolve its
+   * slot for the same model and restart, with context, on the next account.
+   * Returns true when the session moved (continuation sent). False when the
+   * slot has nothing else (every account spent, or the failure was not an
+   * account cap): the caller goes on to rotate / the fallback list.
+   */
+  const advanceSlot = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    if (p.slotStepTried || !(await canAdvanceSlot(desc, p))) return false
+    p.slotStepTried = true
+    const id = desc.id
+    const slot = desc.accessSlot!
+    const current = desc.accessProfile!.profileRef
+    // The failing turn's health write must have landed before the slot is read.
+    await healthWrites.get(id)
+    let next: ResolvedProfileRef
+    try {
+      next = await resolveSlot(slotRef(slot), { ...(desc.model !== undefined ? { model: desc.model } : {}) })
+    } catch (err) {
+      registry.recordNotice(
+        id,
+        `[turn-retry] slot "${slot}" has no other account: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      return false
+    }
+    if (next.profileRef === current) {
+      registry.recordNotice(
+        id,
+        `[turn-retry] slot "${slot}" has no other open account (still resolves to "${current}")`,
+      )
+      return false
+    }
+    let targetDesc: SessionDescriptor
+    try {
+      if (p.kind === "stall") await registry.interruptSession?.(id)
+      targetDesc = await opts.restartSession!(desc, { access: { profileRef: slotRef(slot) } })
+    } catch (err) {
+      registry.recordNotice(
+        id,
+        `[turn-retry] slot "${slot}": moving to "${next.profileRef}" failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      return false
+    }
+    const targetId = targetDesc.id
+    // The chain position is the session's, not the account's: carry it over.
+    registry.patchTurnRetry(targetId, {
+      fallbackStep: desc.fallbackStep ?? null,
+      fallbackBase: desc.fallbackBase ?? null,
+      turnRetryAttempts: null,
+      turnMigrations: null,
+    })
+    const from = configOf(desc)
+    const to: TurnRetryFallbackEffective = { ...from, accessProfileRef: next.profileRef }
+    sessionEvents.emit({
+      type: "session:fallback",
+      sessionId: id,
+      from,
+      to,
+      transition: "restart",
+      failure: { errorClass: p.errorClass, ...(p.error ? { error: p.error } : {}) },
+      ...(targetId !== id ? { newSessionId: targetId } : {}),
+      ...(desc.label ? { label: desc.label } : {}),
+      ts: new Date(now()).toISOString(),
+    })
+    registry.recordNotice(
+      id,
+      `[turn-retry] slot "${slot}": account "${current}" is exhausted, continuing on "${next.profileRef}" (same model ${desc.model ?? "?"})`,
+    )
+    sendFallbackPrompt(targetId, p)
+    return true
+  }
+
   /** Single-flight entry point: one fallback walk per session at a time. A
    *  duplicate trigger while a step is in flight is ignored with a notice. */
   const applyFallback = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
     const chain = desc.turnRetry?.fallback
-    if (!chain?.length) return false
+    if (!chain?.length && !(await canAdvanceSlot(desc, p))) return false
     if (applyingFallback.has(desc.id)) {
       registry.recordNotice(
         desc.id,
@@ -874,6 +1008,7 @@ export function createTurnRetryController(opts: {
     }
     applyingFallback.add(desc.id)
     try {
+      if (await advanceSlot(desc, p)) return true
       return await walkFallback(desc, p)
     } finally {
       applyingFallback.delete(desc.id)
@@ -905,7 +1040,11 @@ export function createTurnRetryController(opts: {
         try {
           target = {
             ...requested,
-            accessProfileRef: (await resolveSlot(requested.accessProfileRef)).profileRef,
+            accessProfileRef: (
+              await resolveSlot(requested.accessProfileRef, {
+                ...(requested.model !== undefined ? { model: requested.model } : {}),
+              })
+            ).profileRef,
           }
         } catch (err) {
           rejected.push(`fallback[${step}]: ${err instanceof Error ? err.message : String(err)}`)
@@ -1104,6 +1243,13 @@ export function createTurnRetryController(opts: {
     }
     const nowIso = new Date(now()).toISOString()
     registry.patchTurnRetry(id, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
+    // An account cap on a slot: the next account of the slot, same model,
+    // beats rotating the model on the account that just ran dry.
+    try {
+      if (await applyingSlotStepOnly(desc, p)) return
+    } catch (err) {
+      log(`[turn-retry] ${id}: slot step failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
     try {
       const rotated = await rotateIfConfigured(desc, p, { allowRestart: true })
       if (rotated) {
@@ -1473,7 +1619,8 @@ export function createTurnRetryController(opts: {
         const canFallBack =
           (plan.errorClass === "auth" || plan.errorClass === "usage-limit") &&
           !plan.toolCallsBlocked &&
-          (desc.turnRetry?.fallback?.length ?? 0) > 0 &&
+          ((desc.turnRetry?.fallback?.length ?? 0) > 0 ||
+            (plan.errorClass === "usage-limit" && desc.accessSlot !== undefined)) &&
           desc.status === "running" &&
           !(trigger.kind === "turn-end" && trigger.interrupted) &&
           !halted.has(id)
@@ -1530,7 +1677,10 @@ export function createTurnRetryController(opts: {
             }),
           )
         }
-        if (plan.action === "exhausted" && desc.turnRetry?.fallback?.length) {
+        if (
+          plan.action === "exhausted" &&
+          (desc.turnRetry?.fallback?.length || (plan.errorClass === "usage-limit" && desc.accessSlot !== undefined))
+        ) {
           const p: PendingRetry = {
             kind: trigger.kind,
             errorClass: plan.errorClass as TurnRetryClass,
