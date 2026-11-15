@@ -1302,7 +1302,12 @@ async function restartAgentSessionOnce(
   const slotDeps = opts.loadAccountSlots ? { loadAccountSlots: opts.loadAccountSlots } : {}
   if (accessOverrideRef !== undefined && isSlotRef(accessOverrideRef)) {
     try {
-      const resolvedRef = await resolveProfileRef(accessOverrideRef, slotDeps)
+      const resolvedRef = await resolveProfileRef(accessOverrideRef, {
+        ...slotDeps,
+        // A multi-account slot skips an account that may not run the model the restarted
+        // session will use.
+        ...((overrides.model ?? prev.model) !== undefined ? { model: (overrides.model ?? prev.model)! } : {}),
+      })
       accessOverrideRef = resolvedRef.profileRef
       accessSlot = resolvedRef.slot
     } catch (err) {

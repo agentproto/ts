@@ -187,10 +187,12 @@ import {
   type SessionConfigAxes,
 } from "./session-preset-resolver.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
+import type { AccountHealthStore } from "./account-health.js"
 import {
   AccountSlotError,
   accessNamesSlot,
   isSlotRef,
+  AccountSlotExhaustedError,
   resolveAccessSlots,
   resolveProfileRef,
   type AccountSlots,
@@ -769,12 +771,41 @@ export interface AccessProfileAuthError {
     | "access_profile_not_found"
     | "access_profile_ineligible"
     | "account_slot_unresolved"
+    | "account_slot_exhausted"
     | "unsupported_auth_mode"
     | "unsupported_auth_source"
     | "auth_source_unresolved"
     | "auth_profile_denied"
   message: string
   details?: Record<string, unknown>
+}
+
+/** The typed refusal for an unresolvable account slot. A multi-account slot whose every
+ *  account is exhausted gets its own code (`account_slot_exhausted`) and the
+ *  nearest return time, so a caller can say "back at ..." instead of "failed". */
+function slotRefusalOf(
+  err: AccountSlotError,
+  prefix: string,
+): {
+  ok: false
+  code: "account_slot_exhausted" | "account_slot_unresolved"
+  message: string
+  details: Record<string, unknown>
+} {
+  if (err instanceof AccountSlotExhaustedError) {
+    return {
+      ok: false,
+      code: "account_slot_exhausted",
+      message: `${prefix}${err.message}`,
+      details: { slotCode: err.code, slot: err.slot, retryAfter: err.retryAfter, accounts: err.accounts },
+    }
+  }
+  return {
+    ok: false,
+    code: "account_slot_unresolved",
+    message: `${prefix}${err.message}`,
+    details: { slotCode: err.code, slot: err.slot },
+  }
 }
 
 /**
@@ -845,15 +876,14 @@ export async function resolveAccessProfileAuth(input: {
     let ref = candidate
     if (isSlotRef(candidate)) {
       try {
-        ref = (await resolveProfileRef(candidate)).profileRef
+        ref = (
+          await resolveProfileRef(candidate, {
+            ...(model ?? defaultModel ? { model: (model ?? defaultModel)! } : {}),
+          })
+        ).profileRef
       } catch (err) {
         if (!(err instanceof AccountSlotError)) throw err
-        return {
-          ok: false,
-          code: "account_slot_unresolved",
-          message: err.message,
-          details: { slotCode: err.code, slot: err.slot },
-        }
+        return slotRefusalOf(err, "")
       }
     }
     const profile = await getAuthProfile(ref)
@@ -1640,6 +1670,10 @@ export interface SpawnAgentSessionDeps {
    *  config.json's `accountSlots`; tests inject a stub so they never read the
    *  real file. */
   loadAccountSlots?: () => Promise<AccountSlots>
+  /** Account health source for slot resolution (an `exhausted` account is
+   *  skipped). Defaults to `~/.agentproto/account-health.json`; tests inject a
+   *  temp-dir store. */
+  accountHealth?: AccountHealthStore
   /** Required — callers must check for its absence themselves (the MCP
    *  tool and HTTP route each have their own "not enabled" response
    *  shape for the missing-resolver case). */
@@ -2360,6 +2394,7 @@ export type SpawnAgentSessionResult =
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "account_slot_unresolved"
+        | "account_slot_exhausted"
         | "harness_preset_profile_unavailable"
         | "inference_endpoint_unresolved"
         | "inference_fit_check_failed"
@@ -2668,7 +2703,10 @@ async function spawnAgentSessionOnce(
   // preset, AGENT.md manifest, config). The profile gate evaluates only what
   // the caller asked for, never operator or author configuration.
   let requestedAccess = input.access
-  const slotDeps = deps.loadAccountSlots ? { loadAccountSlots: deps.loadAccountSlots } : {}
+  const slotDeps = {
+    ...(deps.loadAccountSlots ? { loadAccountSlots: deps.loadAccountSlots } : {}),
+    ...(deps.accountHealth ? { accountHealth: deps.accountHealth } : {}),
+  }
   // The MCP servers the REQUEST names, captured before any later layer
   // (preset, manifest, bundle, checkpoint resume) can merge or replace
   // `input.mcpServers` and before the daemon injects its own mounts. The
@@ -2971,18 +3009,14 @@ async function spawnAgentSessionOnce(
   // keychain) and the credential-relay allowlist. An unknown slot, or one
   // pointing at a missing or disabled profile, refuses the spawn.
   const slotRefusal = (err: unknown) =>
-    err instanceof AccountSlotError
-      ? {
-          ok: false as const,
-          code: "account_slot_unresolved" as const,
-          message: `agent_start: ${err.message}`,
-          details: { slotCode: err.code, slot: err.slot },
-        }
-      : undefined
+    err instanceof AccountSlotError ? slotRefusalOf(err, "agent_start: ") : undefined
   let accessSlotByProfile: Map<string, string> | undefined
   if (accessNamesSlot(input.access)) {
     try {
-      const resolvedAccess = await resolveAccessSlots(input.access!, slotDeps)
+      const resolvedAccess = await resolveAccessSlots(input.access!, {
+        ...slotDeps,
+        ...(input.model !== undefined ? { model: input.model } : {}),
+      })
       input = { ...input, access: resolvedAccess.access }
       accessSlotByProfile = resolvedAccess.slotByProfile
     } catch (err) {
@@ -2993,7 +3027,12 @@ async function spawnAgentSessionOnce(
   }
   if (accessNamesSlot(requestedAccess)) {
     try {
-      requestedAccess = (await resolveAccessSlots(requestedAccess!, slotDeps)).access
+      requestedAccess = (
+        await resolveAccessSlots(requestedAccess!, {
+          ...slotDeps,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+        })
+      ).access
     } catch (err) {
       const refusal = slotRefusal(err)
       if (refusal) return refusal
@@ -8011,7 +8050,7 @@ export async function bootSandboxAgentSession(opts: {
       ...(opts.capacityWaitBudgetMs !== undefined ? { capacityWaitBudgetMs: opts.capacityWaitBudgetMs } : {}),
     })
   } catch (err) {
-    // Every pool address is cooling down for this model: nothing was booted,
+    // Every slot address is cooling down for this model: nothing was booted,
     // so a placement ladder can advance without paying for a box.
     if (isSandboxEgressAllCoolingError(err)) {
       return {
@@ -8106,7 +8145,7 @@ export async function bootSandboxAgentSession(opts: {
             `agent_start: sandbox boot failed (provider "${providerSlug}") — ` +
             `${err instanceof Error ? err.message : String(err)}`,
           // The provider's own typed code (capacity, overflow refused, egress
-          // pool exhausted, ...), so a placement ladder records why a rung was
+          // slot exhausted, ...), so a placement ladder records why a rung was
           // skipped without matching the message.
           ...(bootErrorClass(err) ? { details: { errorClass: bootErrorClass(err) } } : {}),
         }

@@ -83,6 +83,12 @@ export interface RegisterDaemonHealthToolsOptions {
    *  `AppRegistry.listIssues`). Surfaced as `appRegistryIssues` — empty when
    *  the registry is clean — so a bad record is reported, not thrown on. */
   modelCooldowns?: () => readonly ModelCooldownEntry[]
+  /** Accounts closed right now (`account-health.ts`) and when they return, so
+   *  a spent wallet is visible beside the cooling models. Surfaced as
+   *  `accountHealth`; empty when every account is open. */
+  accountHealth?: () => Promise<
+    readonly { profileRef: string; until: string; untilBasis: string; reason: string }[]
+  >
   /** Message-delivery warnings (see `SessionsRegistry.wakeWarnings`); empty when clean. */
   warnings?: () => readonly { kind: string; sessionId: string; message: string }[]
   appRegistryIssues?: () => readonly {
@@ -127,6 +133,7 @@ export function registerDaemonHealthTools(
     {},
     async () => {
       const pausedJobs = opts.pausedCronJobs?.() ?? []
+      const accountHealth = await (opts.accountHealth?.() ?? Promise.resolve([])).catch(() => [])
       return text({
         alive: true,
         status: "ok",
@@ -149,6 +156,7 @@ export function registerDaemonHealthTools(
         appRegistryIssues: opts.appRegistryIssues?.() ?? [],
         appRegistryRepairs: opts.appRegistryRepairs?.() ?? [],
         modelCooldowns: opts.modelCooldowns?.() ?? [],
+        accountHealth,
         cron: { paused: pausedJobs.length, pausedJobs },
         ...(opts.sandboxSessions ? { sandboxSessions: opts.sandboxSessions() } : {}),
       })

@@ -19,17 +19,23 @@ import { z } from "zod"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { catchErrors } from "@agentproto/tool"
 import {
+  slotMembers,
+  applyAccountSlotPrefer,
   applyAccountSlotSwap,
   listAccountSlotRows,
   loadAccountSlots,
+  planAccountSlotPrefer,
   planAccountSlotSwap,
+  sessionsToMoveOnPrefer,
   sessionsToMoveOnSwap,
   slotRef,
+  type AccountSlotPreferPlan,
   type AccountSlotRow,
   type AccountSlots,
   type AccountSlotSwapPlan,
   type ResolveProfileRefDeps,
 } from "./account-slots.js"
+import type { AccountHealthStore } from "./account-health.js"
 import type { SessionDescriptor } from "./sessions.js"
 
 export interface AccountSlotToolsDeps {
@@ -44,6 +50,10 @@ export interface AccountSlotToolsDeps {
   loadAccountSlots?: () => Promise<AccountSlots>
   /** Write a swap. Defaults to config.json. */
   applySwap?: (plan: AccountSlotSwapPlan) => Promise<void>
+  /** Write a prefer. Defaults to config.json. */
+  applyPrefer?: (plan: AccountSlotPreferPlan) => Promise<void>
+  /** Account health source for the per-account state in `account_slots_list`. */
+  accountHealth?: Pick<AccountHealthStore, "get">
   getAuthProfile?: ResolveProfileRefDeps["getAuthProfile"]
 }
 
@@ -99,13 +109,66 @@ export async function runAccountSlotSwap(
   return result
 }
 
+export interface AccountSlotPreferResult {
+  slot: string
+  dryRun: boolean
+  /** The slot in order, before and after. */
+  before: string[]
+  after: string[]
+  moved: Array<{ from: string; to?: string; label: string; rearmedCrons?: string[] }>
+  failed: Array<{ id: string; label: string; error: string }>
+}
+
+/** `accounts prefer`, testable without an MCP server. */
+export async function runAccountSlotPrefer(
+  deps: AccountSlotToolsDeps,
+  input: { slot: string; profile: string; moveAlive?: boolean; dryRun?: boolean },
+): Promise<AccountSlotPreferResult> {
+  const slots = await (deps.loadAccountSlots ?? (() => loadAccountSlots()))()
+  const plan = planAccountSlotPrefer(slots, input.slot, input.profile)
+  if (input.moveAlive && !input.dryRun && !deps.restartSession) {
+    throw new Error("account_slots_prefer: moveAlive needs session restart, which this daemon does not wire.")
+  }
+  const members = (t: AccountSlots[string] | undefined): string[] => (t === undefined ? [] : slotMembers(t))
+  const toMove = input.moveAlive ? sessionsToMoveOnPrefer(deps.registry.list(), plan) : []
+  const result: AccountSlotPreferResult = {
+    slot: plan.slot,
+    dryRun: input.dryRun === true,
+    before: members(plan.before[plan.slot]),
+    after: members(plan.after[plan.slot]),
+    moved: [],
+    failed: [],
+  }
+  const labelOf = (s: SessionDescriptor) => s.name || s.label || s.id
+  if (input.dryRun) {
+    result.moved = toMove.map(s => ({ from: s.id, label: labelOf(s) }))
+    return result
+  }
+  await (deps.applyPrefer ?? (p => applyAccountSlotPrefer(p)))(plan)
+  for (const s of toMove) {
+    try {
+      const next = await deps.restartSession!(s, { access: { profileRef: slotRef(plan.slot) } })
+      result.moved.push({
+        from: s.id,
+        to: next.id,
+        label: labelOf(s),
+        ...(next.rearmedCrons && next.rearmedCrons.length > 0 ? { rearmedCrons: next.rearmedCrons } : {}),
+      })
+    } catch (err) {
+      result.failed.push({ id: s.id, label: labelOf(s), error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  return result
+}
+
 export function registerAccountSlotTools(server: McpServer, deps: AccountSlotToolsDeps): void {
   const listSchema = z.object({})
   registerBuiltinTool<z.infer<typeof listSchema>, { slots: AccountSlotRow[] }>(server, {
     id: "account_slots_list",
     description:
-      "List the account slots of config.json `accountSlots` (slot name -> real auth-profile id), whether " +
-      "each target profile is usable (`problem`: missing / disabled), and the ALIVE sessions on each slot " +
+      "List the account slots of config.json `accountSlots` (slot name -> real auth-profile id, or an ordered " +
+      "list of ids: then `accounts` lists each account in order with its `health`, exhausted or probing), whether each target " +
+      "profile is usable (`problem`: missing / disabled), and the ALIVE sessions on each slot " +
       "(`via: slot` when the session asked for `slot:<name>`, `via: profile` when it names the profile " +
       "literally). A `profileRef` of `slot:<name>` resolves through this map at spawn, restart and " +
       "turnRetry fallback. No secret is returned.",
@@ -115,6 +178,7 @@ export function registerAccountSlotTools(server: McpServer, deps: AccountSlotToo
       return {
         slots: await listAccountSlotRows(slots, deps.registry.list(), {
           ...(deps.getAuthProfile ? { getAuthProfile: deps.getAuthProfile } : {}),
+          ...(deps.accountHealth ? { accountHealth: deps.accountHealth } : {}),
         }),
       }
     },
@@ -147,6 +211,36 @@ export function registerAccountSlotTools(server: McpServer, deps: AccountSlotToo
     handler: input =>
       runAccountSlotSwap(deps, {
         family: input.family,
+        ...(input.moveAlive !== undefined ? { moveAlive: input.moveAlive } : {}),
+        ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+      }),
+    transformers: [catchErrors()],
+  })
+
+  const preferSchema = z.object({
+    slot: z.string().min(1).describe("The slot to reorder (e.g. `opencode-go`)."),
+    profile: z.string().min(1).describe("The real auth-profile id to put at the head of the slot."),
+    moveAlive: z
+      .boolean()
+      .optional()
+      .describe(
+        "Also restart (with context) the ALIVE sessions on the slot that are not on the new head account, " +
+          "onto `slot:<slot>`. Dead sessions are never touched.",
+      ),
+    dryRun: z.boolean().optional().describe("Compute the new order and the sessions that would move; write nothing."),
+  })
+  registerBuiltinTool<z.infer<typeof preferSchema>, AccountSlotPreferResult>(server, {
+    id: "account_slots_prefer",
+    description:
+      "Put an account at the head of an account slot in config.json `accountSlots` (the rest keep their " +
+      "order): new spawns on `slot:<slot>` prefer it while it is not exhausted. A profile outside the slot is " +
+      "added at the head. `moveAlive` also restarts the alive sessions on the slot that bill another account. " +
+      "`dryRun` reports without writing. Use account_slots_swap for a single-account primary/secondary pair.",
+    inputSchema: preferSchema,
+    handler: input =>
+      runAccountSlotPrefer(deps, {
+        slot: input.slot,
+        profile: input.profile,
         ...(input.moveAlive !== undefined ? { moveAlive: input.moveAlive } : {}),
         ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
       }),

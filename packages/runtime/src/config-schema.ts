@@ -671,13 +671,22 @@ const appsConfigSchema = z
 const accountSlotNameSchema = z
   .string()
   .regex(ACCOUNT_SLOT_NAME_RE, 'slot names use letters, digits, "_" and "-" (no dot)')
-/** `accountSlots` value: a real auth-profile id, never another slot. Whether
- *  the profile exists and is enabled is checked at USE time
- *  (`resolveProfileRef`), not here. */
-const accountSlotTargetSchema = z
+/** One real auth-profile id, never another slot. Whether the profile exists
+ *  and is enabled is checked at USE time (`resolveProfileRef`), not here. */
+const accountSlotProfileSchema = z
   .string()
   .min(1)
   .refine(v => !v.startsWith(SLOT_REF_PREFIX), "a slot must name a real auth profile id, not another slot")
+/** `accountSlots` value: one real auth-profile id (a slot with one account), or an
+ *  ORDERED, non-empty, duplicate-free list of them (a multi-account slot: the first healthy,
+ *  eligible account wins). A multi-account slot holds real profiles only, never `slot:`. */
+const accountSlotTargetSchema = z.union([
+  accountSlotProfileSchema,
+  z
+    .array(accountSlotProfileSchema)
+    .min(1, "a multi-account slot needs at least one account")
+    .refine(list => new Set(list).size === list.length, "a multi-account slot lists each account once"),
+])
 
 /**
  * Top-level mirror of `AgentprotoConfig`. `.passthrough()` at every level
@@ -1479,10 +1488,13 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "wallets",
     label: "Account slots",
     help:
-      "Slot name (no dot) -> real auth-profile id. A profileRef of slot:<name> (agent_start access, presets, " +
-      "turnRetry.fallback, harness presets, ...) resolves through this map at the moment of use; an unknown slot " +
-      "or a missing/disabled profile is an error, never a silent fallback. Swap a family's primary and secondary " +
-      "with `agentproto accounts swap <family>`.",
+      "Slot name (no dot) -> real auth-profile id, or an ordered list of accounts (a list of ids). A profileRef of " +
+      "slot:<name> (agent_start access, presets, turnRetry.fallback, harness presets, ...) resolves through this " +
+      "map at the moment of use. A multi-account slot resolves to its first account that is enabled, may run the model and is " +
+      "not exhausted (see `agentproto accounts health`); with every account exhausted the spawn fails with " +
+      "account_slot_exhausted and the nearest return time. An unknown slot or a missing/disabled profile is an " +
+      "error, never a silent fallback. Swap a family's primary and secondary with `agentproto accounts swap " +
+      "<family>`; reorder a multi-account slot with `agentproto accounts prefer <slot> <profile>`.",
     default: {},
   },
   {
@@ -1493,8 +1505,8 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "wallets",
     label: "Account slot",
     help:
-      "The real auth-profile id this slot points at (e.g. accountSlots.claude-primary = anthropic-sub-hodl). " +
-      "Read at each spawn, restart and turnRetry fallback.",
+      "The real auth-profile id this slot points at (e.g. accountSlots.claude-primary = anthropic-sub-hodl), or " +
+      "an ordered list of ids (a multi-account slot). Read at each spawn, restart and turnRetry fallback.",
   },
 
   // ── remote (tunnel + pairing) ──

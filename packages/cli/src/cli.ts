@@ -127,6 +127,8 @@ Usage:
   agentproto quota    status --profile <ref> [--refresh] [--json]
                                            live provider quota for a named auth profile
   agentproto accounts slots [--json]       account slots (accountSlots) + alive sessions on each
+  agentproto accounts prefer <slot> <profile> [--move-alive]  put an account at the head of a slot
+  agentproto accounts health [--clear <profile>]  which accounts are exhausted, and until when
   agentproto accounts swap <family> [--move-alive] [--dry-run]
                                            swap <family>-primary and <family>-secondary
   agentproto brain    query "<query>" [--workspace <slug>] [--topk <n>] [--json]

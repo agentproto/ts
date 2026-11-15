@@ -23,6 +23,7 @@
 
 import { parseAnthropicUnifiedRateLimitHeaders } from "@agentproto/quota"
 import { resolveClaudeCodeOauthToken } from "./claude-code-oauth-source.js"
+import { createAccountHealthStore, reconcileHealthFromQuota, type AccountHealthStore } from "./account-health.js"
 import {
   readProfileQuota,
   recordProfileQuota,
@@ -105,6 +106,9 @@ export interface AnthropicReaderConfig {
   resolveToken?: (source: string) => Promise<string>
   /** Store options (temp `dir` for tests). */
   store?: QuotaStoreOptions
+  /** Where a live read reconciles account health (a window at 0 closes the
+   *  account until its `resetsAt`). Defaults to the real health file. */
+  accountHealth?: AccountHealthStore
   /** Stamp for `fetchedAt`. Injected so tests are deterministic; defaults to
    *  the wall clock. */
   now?: () => Date
@@ -136,6 +140,7 @@ export class AnthropicRemainingQuotaReader implements RemainingQuotaReader {
   private readonly model: string
   private readonly resolveToken: (source: string) => Promise<string>
   private readonly store?: QuotaStoreOptions
+  private readonly accountHealth: AccountHealthStore
   private readonly now: () => Date
 
   constructor(config?: AnthropicReaderConfig) {
@@ -146,6 +151,7 @@ export class AnthropicRemainingQuotaReader implements RemainingQuotaReader {
     this.model = config?.model ?? DEFAULT_MODEL
     this.resolveToken = config?.resolveToken ?? resolveClaudeCodeOauthToken
     this.store = config?.store
+    this.accountHealth = config?.accountHealth ?? createAccountHealthStore()
     this.now = config?.now ?? (() => new Date())
   }
 
@@ -164,6 +170,14 @@ export class AnthropicRemainingQuotaReader implements RemainingQuotaReader {
       if (headers) {
         const parsed = parseAnthropicRateLimitHeaders(headers)
         await this.persist(profile.profileRef, parsed).catch(() => {})
+        // A live read that finds a window at 0 closes the account until that
+        // window's reset (the most trusted `until`); headroom reopens it.
+        await reconcileHealthFromQuota(
+          this.accountHealth,
+          profile.profileRef,
+          Object.values(parsed).map(w => ({ remainingPct: w.remaining > 0 ? 100 : 0, resetsAt: w.resetsAt })),
+          this.now().getTime(),
+        )
         const live = pickWindow(parsed, window)
         if (live) return live
       }
