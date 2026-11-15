@@ -565,3 +565,22 @@ for that.
 
 ### llm:anthropic
 - Added: claude-fable-5-2
+
+## 2026-11-15
+
+### llm:openrouter
+- Added: baidu/ernie-light-dt-1.0-intl, google/gemini-4-carbon, google/gemini-4-carbon:batch, google/gemini-4-hydrogen, google/gemini-4-hydrogen:batch, kt/midm-k-3.0-pro, moonshotai/kimi-k3.1-pro:batch, motif-technologies/motif-3, thinkingmachines/inkling-2-small, unbiased/pareto-26.10-preview
+- Removed: bytedance-seed/seed-1.6, bytedance-seed/seed-1.6-flash, bytedance-seed/seed-2.0-code, liquid/lfm-2.5-2.6b, qwen/qwen-2.5-7b-instruct, qwen/qwen3-vl-30b-a3b-thinking, stepfun/step-3.5-flash, tencent/hunyuan-a13b-instruct, z-ai/glm-5.2:batch
+
+### llm:requesty
+- Added: google/gemini-4-hydrogen, google/gemini-4-hydrogen:flex, vertex/gemini-4-carbon, vertex/gemini-4-carbon@eu, vertex/gemini-4-carbon@us, vertex/gemini-4-hydrogen, vertex/gemini-4-hydrogen@eu, vertex/gemini-4-hydrogen@us
+- Removed: alibaba/qwen3-30b-a3b-instruct-2507, alibaba/qwen3-coder-plus, alibaba/qwen3-max, azure/gpt-4o-mini@germanywestcentral, azure/gpt-4o-mini@westeurope, azure/gpt-5.5@germanywestcentral, azure/gpt-5.5@westeurope, fireworks/glm-5.2-fast, moonshot/kimi-k2.5, tencent/deepseek-v4.1-flash, vertex/claude-sonnet-4, vertex/claude-sonnet-4@europe-west1, vertex/claude-sonnet-4@us-east5
+
+### llm:opencode-zen
+- Added: opencode/gemini-4-carbon, opencode/gemini-4-hydrogen
+
+### llm:huggingface
+- Added: CohereLabs/command-a-plus-05-2026-bf16, CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, CohereLabs/command-a-vision-07-2025, google/gemma-3-12b-it, moonshotai/Kimi-K3.1-Pro, thinkingmachines/Inkling-2-Small
+
+### image:openrouter
+- Added: bytedance-seed/seedream-5-5, minimax/minimax-h3-image, minimax/minimax-h3-image-highspeed, recraft/recraft-v4.1-flash-v2, tencent/hy-world-2.1-panorama
