@@ -250,3 +250,30 @@ describe("harness_preset_list compact projection (tool-transformer migration)", 
     }
   })
 })
+
+describe("harness preset with no profileRef / defaultModel", () => {
+  it("create then list: accepted, projected without invented fields, not disabled", async () => {
+    const { client } = await setup({})
+    const created = await client.callTool({
+      name: "harness_preset_create",
+      arguments: { id: "ccc-login", harnessSlug: "claude-code-cloud", name: "Harness login", isDefault: true },
+    })
+    expect((created as { isError?: boolean }).isError).toBeFalsy()
+
+    const res = parseToolJson(await client.callTool({ name: "harness_preset_list", arguments: {} }))
+    expect(res.presets).toHaveLength(1)
+    expect(res.presets[0]).toMatchObject({ id: "ccc-login", isDefault: true, profileDisabled: false })
+    expect("profileRef" in res.presets[0]).toBe(false)
+    expect("defaultModel" in res.presets[0]).toBe(false)
+    expect(res.presets[0].profileMissing).toBeUndefined()
+  })
+
+  it("create still refuses an explicit profileRef that does not exist", async () => {
+    const { client } = await setup({})
+    const created = await client.callTool({
+      name: "harness_preset_create",
+      arguments: { id: "bad", harnessSlug: "hermes", name: "Bad", profileRef: "nope" },
+    })
+    expect((created as { isError?: boolean }).isError).toBe(true)
+  })
+})

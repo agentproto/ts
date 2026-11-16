@@ -50,10 +50,13 @@ export interface HarnessPreset {
   /** Human-readable display name (e.g. `Cheap`). */
   name: string
   /** The {@link AuthProfile} id this preset bills through — must exist and be
-   *  enabled at write time. */
-  profileRef: string
-  /** Model id applied at spawn when the caller named none (e.g. `z-ai/glm-5.2`). */
-  defaultModel: string
+   *  enabled at write time. Absent = the harness bills on its OWN login (e.g.
+   *  `claude-code-cloud`, or `claude-code`/`codex` on their CLI login): a spawn
+   *  through this default passes no `access`. */
+  profileRef?: string
+  /** Model id applied at spawn when the caller named none (e.g. `z-ai/glm-5.2`).
+   *  Absent = the harness/vendor picks its own default (spawn sends no model). */
+  defaultModel?: string
   /** Whether this is THE default preset for its `harnessSlug`. At most one per
    *  harness — enforced on write. */
   isDefault: boolean
@@ -67,8 +70,8 @@ const harnessPresetSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   harnessSlug: z.string().min(1),
   name: z.string().min(1),
-  profileRef: z.string().min(1),
-  defaultModel: z.string().min(1),
+  profileRef: z.string().min(1).optional(),
+  defaultModel: z.string().min(1).optional(),
   isDefault: z.boolean(),
   turnRetry: turnRetryInputSchema.optional(),
 }) satisfies z.ZodType<HarnessPreset>
@@ -177,6 +180,10 @@ async function validateProfileBinding(
   // A `slot:<name>` profileRef is stored as the slot (the spawn resolves it
   // again at use time, so a later swap is followed) and validated here against
   // the profile it points at now.
+  // No profileRef = the harness bills on its own login; nothing to check.
+  // (No reliable manifest signal says a harness has NO own login and needs a
+  // profile, so a profile-less preset is accepted for every harness.)
+  if (preset.profileRef === undefined) return
   let profileRef = preset.profileRef
   if (isSlotRef(preset.profileRef)) {
     try {
@@ -204,7 +211,7 @@ async function validateProfileBinding(
       `profileRef "${profileRef}" is disabled; a disabled profile cannot back a harness preset.`,
     )
   }
-  if (!profileServicesModel(profile, preset.defaultModel)) {
+  if (preset.defaultModel !== undefined && !profileServicesModel(profile, preset.defaultModel)) {
     throw new HarnessPresetValidationError(
       `defaultModel "${preset.defaultModel}" is not in profile "${profileRef}"'s model allowlist.`,
     )

@@ -197,7 +197,11 @@ export async function resolveReviewerPreset(
 ): Promise<Pick<SpawnAgentSessionInput, "adapter" | "model" | "access" | "preset"> | undefined> {
   const harness = await (lookups.getHarnessPreset ?? getHarnessPreset)(preset)
   if (harness) {
-    return { adapter: harness.harnessSlug, model: harness.defaultModel, access: { profileRef: harness.profileRef } }
+    return {
+      adapter: harness.harnessSlug,
+      ...(harness.defaultModel !== undefined ? { model: harness.defaultModel } : {}),
+      ...(harness.profileRef !== undefined ? { access: { profileRef: harness.profileRef } } : {}),
+    }
   }
   const user = await (lookups.getUserPreset ?? getUserPreset)(preset)
   const adapter = user?.harness ?? user?.adapter

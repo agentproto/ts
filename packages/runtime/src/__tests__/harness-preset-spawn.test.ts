@@ -18,7 +18,7 @@ import type { CatalogProvider } from "@agentproto/model-catalog"
 // wants "no default" sets this to undefined.
 const presetState = vi.hoisted(() => ({
   value: undefined as
-    | { id: string; harnessSlug: string; name: string; profileRef: string; defaultModel: string; isDefault: boolean }
+    | { id: string; harnessSlug: string; name: string; profileRef?: string; defaultModel?: string; isDefault: boolean }
     | undefined,
 }))
 vi.mock("../harness-preset-store.js", async importOriginal => {
@@ -129,6 +129,73 @@ describe("spawnAgentSession — harness default preset fallback", () => {
     expect(result.descriptor.accessProfile).toMatchObject({ profileRef: "openrouter-cheap" })
     // The default preset was consulted under the harness slug.
     expect(getDefaultHarnessPreset).toHaveBeenCalledWith("hermes")
+  })
+
+  it("claude-code-cloud default with no profile and no model: no access, no model", async () => {
+    presetState.value = {
+      id: "ccc-login",
+      harnessSlug: "claude-code-cloud",
+      name: "Harness login",
+      isDefault: true,
+    }
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const deps = depsWithProvider("anthropic", startSession)
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", harness: "claude-code-cloud", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`expected spawn, got ${result.code}`)
+    expect(result.descriptor.accessProfile).toBeUndefined()
+    const arg = (startSession.mock.calls[0] as unknown[])[0] as Record<string, unknown>
+    expect(arg.model).toBeUndefined()
+  })
+
+  it("claude-code default with no profile but a model: model sent, no access", async () => {
+    presetState.value = {
+      id: "cc-login",
+      harnessSlug: "claude-code",
+      name: "Harness login",
+      defaultModel: "claude-opus-5-5",
+      isDefault: true,
+    }
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const deps = depsWithProvider("anthropic", startSession)
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", harness: "claude-code", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`expected spawn, got ${result.code}`)
+    expect(result.descriptor.accessProfile).toBeUndefined()
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-opus-5-5" }))
+  })
+
+  it("an explicit profileRef that is missing is still refused", async () => {
+    presetState.value = {
+      id: "hm-gone",
+      harnessSlug: "hermes",
+      name: "Gone",
+      profileRef: "no-such-profile",
+      isDefault: true,
+    }
+    const deps = depsWithProvider("openrouter", vi.fn(async () => fakeAgentSession()))
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("harness_preset_profile_unavailable")
+  })
+
+  it("an explicit profileRef that is disabled is still refused", async () => {
+    presetState.value = {
+      id: "hm-off",
+      harnessSlug: "hermes",
+      name: "Off",
+      profileRef: "openrouter-cheap",
+      isDefault: true,
+    }
+    authProfileState.profiles["openrouter-cheap"] = eligibleProfile({ disabled: true })
+    const deps = depsWithProvider("openrouter", vi.fn(async () => fakeAgentSession()))
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("harness_preset_profile_unavailable")
   })
 
   it("prefers the spawn's `harness` slug over `adapter` when looking up the default", async () => {

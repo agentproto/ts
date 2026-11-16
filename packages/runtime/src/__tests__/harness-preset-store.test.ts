@@ -101,6 +101,34 @@ describe("harness-preset store", () => {
     ).rejects.toBeInstanceOf(HarnessPresetValidationError)
   })
 
+  it("accepts a preset with no profileRef and no defaultModel (harness login)", async () => {
+    const saved = await addHarnessPreset(
+      { id: "ccc-login", harnessSlug: "claude-code-cloud", name: "Harness login", isDefault: true },
+      depsFor([]),
+    )
+    expect(saved.profileRef).toBeUndefined()
+    expect(saved.defaultModel).toBeUndefined()
+    expect(await getDefaultHarnessPreset("claude-code-cloud")).toMatchObject({ id: "ccc-login" })
+  })
+
+  it("accepts no profileRef with a defaultModel (claude-code on its own login)", async () => {
+    const saved = await addHarnessPreset(
+      { id: "cc-login", harnessSlug: "claude-code", name: "Login", defaultModel: "claude-opus-5-5", isDefault: true },
+      depsFor([]),
+    )
+    expect(saved.defaultModel).toBe("claude-opus-5-5")
+    expect((await getHarnessPreset("cc-login"))?.profileRef).toBeUndefined()
+  })
+
+  it("still refuses an explicit profileRef that is missing or disabled", async () => {
+    await expect(
+      addHarnessPreset(preset({ defaultModel: undefined }), depsFor([])),
+    ).rejects.toBeInstanceOf(HarnessPresetValidationError)
+    await expect(
+      addHarnessPreset(preset({ defaultModel: undefined }), depsFor([profile({ id: "openrouter-cheap", disabled: true })])),
+    ).rejects.toBeInstanceOf(HarnessPresetValidationError)
+  })
+
   it("rejects a disabled profile", async () => {
     const deps = depsFor([profile({ id: "openrouter-cheap", disabled: true })])
     await expect(addHarnessPreset(preset(), deps)).rejects.toBeInstanceOf(

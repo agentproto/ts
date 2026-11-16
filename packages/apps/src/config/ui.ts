@@ -1583,7 +1583,7 @@ function renderHarnesses() {
       html += '<dt>Billing</dt><dd>' + chips + '</dd>';
     }
     if (def) {
-      html += row("Default preset", escHtml(def.name) + ' &rarr; <a class="link" data-goto="wallets/' + encodeURIComponent(def.profileRef) + '">' + escHtml(def.profileRef) + '</a> / ' + escHtml(def.defaultModel));
+      html += row("Default preset", escHtml(def.name) + ' &rarr; ' + (def.profileRef ? '<a class="link" data-goto="wallets/' + encodeURIComponent(def.profileRef) + '">' + escHtml(def.profileRef) + '</a>' : 'harness login') + ' / ' + escHtml(def.defaultModel || 'vendor default'));
     } else if (slugPresets.length > 0) {
       html += row("Presets", String(slugPresets.length) + " (no default)");
     }
