@@ -331,7 +331,7 @@ import { createAppReadGrantResolver } from "./app-read-grants.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
-import { createActivityProjector, type PrStateResolver } from "./activities.js"
+import { createActivityProjector, type PrResolution, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
 import { createBureauApprovalBridge } from "./approvals/bureau-bridge.js"
@@ -519,6 +519,7 @@ export type {
   ActivityPolicyLister,
   ActivityWorkflowLister,
   PrStateResolver,
+  PrResolution,
 } from "./activities.js"
 // The app-UI injection pipeline (bridge + display-mode toggle +
 // runner-select), exported so a host — or a local harness that stands in for

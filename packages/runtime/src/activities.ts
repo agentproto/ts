@@ -93,7 +93,17 @@ export interface ActivityTaskLister {
  * deliberately does not take (the {@link OpenPrResolver} pattern). Omitted →
  * `pr` activities stay pending on the forge forever (the v1 behaviour).
  */
-export type PrStateResolver = (prUrl: string) => Promise<PrResolvedState | null>
+export type PrStateResolver = (prUrl: string) => Promise<PrResolvedState | PrResolution | null>
+
+/** A resolved PR state plus, for a merged PR, the forge's real merge time.
+ *  A resolver may return this instead of the bare state so the projector
+ *  can stamp the `pr-merged` activity with WHEN it merged, not when the
+ *  daemon first noticed. */
+export interface PrResolution {
+  state: PrResolvedState
+  /** ISO 8601 merge time (merged PRs only). */
+  mergedAt?: string
+}
 
 export interface ActivityProjector {
   /** Recompute the full projection from the owners and filter it. Never
@@ -167,6 +177,7 @@ export function createActivityProjector(opts: {
   // own enrichment — but losing it only regresses records to pending-on-forge
   // until the next settlement pass, never to wrong data.
   const prStates = new Map<string, PrResolvedState>()
+  const prMergedAt = new Map<string, string>()
 
   // Per-record-source containment INSIDE each owner: one malformed row (a
   // legacy persisted policy, a poisoned session, a bad run) is warned about
@@ -186,7 +197,10 @@ export function createActivityProjector(opts: {
           try {
             out.push(
               ...turnToActivities(session, { now }),
-              ...prToActivities(session, { resolvedPrState: url => prStates.get(url) }),
+              ...prToActivities(session, {
+                resolvedPrState: url => prStates.get(url),
+                resolvedPrMergedAt: url => prMergedAt.get(url),
+              }),
             )
           } catch (err) {
             console.warn(
@@ -324,8 +338,12 @@ export function createActivityProjector(opts: {
     if (!resolvePrState || urls.length === 0) return
     let moved = false
     for (const url of urls) {
-      const state = await resolvePrState(url).catch((): null => null)
-      if (state === null || prStates.get(url) === state) continue
+      const resolved = await resolvePrState(url).catch((): null => null)
+      if (resolved === null) continue
+      const state = typeof resolved === "string" ? resolved : resolved.state
+      const mergedAt = typeof resolved === "string" ? undefined : resolved.mergedAt
+      if (state === "merged" && mergedAt) prMergedAt.set(url, mergedAt)
+      if (prStates.get(url) === state) continue
       prStates.set(url, state)
       moved = true
     }

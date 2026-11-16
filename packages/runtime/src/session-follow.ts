@@ -86,6 +86,11 @@ export const FOLLOW_EXCERPT_MAX = 300
 export const FOLLOW_DIGEST_MAX_LINES = 40
 /** Cap on retained events when queued digests merge (newest wins). */
 export const FOLLOW_DIGEST_MERGE_MAX_ENTRIES = 50
+/** A PR event whose real time is older than this is catch-up, not news: the
+ *  projector re-asks the forge after every daemon restart (its verdict memo is
+ *  in-memory), so PRs that merged days ago settle "now". Those are dropped,
+ *  not delivered as new. */
+export const FOLLOW_STALE_EVENT_MS = 24 * 60 * 60_000
 const ANCESTOR_WALK_CAP = 32
 const SEEN_PR_CAP = 500
 
@@ -110,6 +115,11 @@ export interface SessionFollowRegistry {
 }
 
 export interface WireSessionFollowOptions {
+  /** Injectable clock (tests). Default `Date.now`. */
+  now?: () => number
+  /** PR events older than this are ignored as catch-up. Default
+   *  {@link FOLLOW_STALE_EVENT_MS}. */
+  staleEventMs?: number
   registry: SessionFollowRegistry
   sessionEvents: SessionEventBus
   store: SessionFollowStore
@@ -313,7 +323,10 @@ function prSignalOf(activity: ActivityRecord | undefined, ts: string, seenPrs: S
   const title = typeof activity.title === "string" ? activity.title : activity.id
   if (activity.state === "done") {
     seenPrs.add(activity.id)
-    return { sessionId, event: "pr-merged", awaitingInput: false, empty: false, ts, detail: title, key: activity.id }
+    // The forge's real merge time when the resolver gave one; the emission
+    // time otherwise (unknown merge time, assumed fresh).
+    const mergedAt = typeof activity.endedAt === "string" && !Number.isNaN(Date.parse(activity.endedAt)) ? activity.endedAt : ts
+    return { sessionId, event: "pr-merged", awaitingInput: false, empty: false, ts: mergedAt, detail: title, key: activity.id }
   }
   if (activity.state === "cancelled" || activity.state === "failed") return undefined
   // Still open (pending/active/…): only the FIRST sighting is "opened".
@@ -480,6 +493,28 @@ export function excerptOf(text: string | undefined): string | undefined {
   return flat.length <= FOLLOW_EXCERPT_MAX ? flat : `…${flat.slice(flat.length - (FOLLOW_EXCERPT_MAX - 1))}`
 }
 
+function formatAge(ms: number): string {
+  const min = Math.floor(Math.max(0, ms) / 60_000)
+  if (min < 1) return "à l'instant"
+  if (min < 60) return `il y a ${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 48) return `il y a ${h} h`
+  return `il y a ${Math.floor(h / 24)} j`
+}
+
+/** `[il y a 18 j, 29/10 05:27Z]` — the real event time. A pr-merged reads
+ *  `[fusionnée il y a 18 j, 29/10 05:28Z]` (its ts is the forge merge time).
+ *  Exported for tests. */
+export function eventTimeTag(entry: { event: string; ts: string }, now: number): string {
+  const t = Date.parse(entry.ts)
+  if (Number.isNaN(t)) return "[heure inconnue]"
+  const d = new Date(t)
+  const p = (n: number): string => String(n).padStart(2, "0")
+  const stamp = `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}Z`
+  const prefix = entry.event === "pr-merged" ? "fusionnée " : ""
+  return `[${prefix}${formatAge(now - t)}, ${stamp}]`
+}
+
 /** Compose the digest text. Exported for tests. `mode:"fyi"` renders the
  *  header of a digest that must NOT wake the follower. */
 export function formatFollowDigest(
@@ -489,6 +524,7 @@ export function formatFollowDigest(
   mode: "wake" | "fyi" = "wake",
   omitted = 0,
   coalesced = 1,
+  now: number = Date.now(),
 ): string {
   const coalescedNote =
     coalesced > 1 ? ` Coalesced from ${coalesced} queued digests.` : ""
@@ -528,7 +564,7 @@ export function formatFollowDigest(
     const label = d?.label ?? entry.label
     const who = `${label ?? entry.sessionId} (${entry.sessionId})`
     const cwd = d?.cwd ?? entry.cwd
-    const parts = [`[session-follow] ${who} ${entry.event}`]
+    const parts = [`[session-follow] ${who} ${entry.event} ${eventTimeTag(entry, now)}`]
     if (cwd) parts.push(basename(cwd) || cwd)
     const text = excerptOf(resolveText(entry))
     if (text) parts.push(text)
@@ -597,6 +633,8 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   const setTimer = opts.setTimer ?? ((fn: () => void, ms: number): unknown => setTimeout(fn, ms))
   const clearTimer =
     opts.clearTimer ?? ((h: unknown): void => clearTimeout(h as ReturnType<typeof setTimeout>))
+  const nowMs = opts.now ?? ((): number => Date.now())
+  const staleEventMs = opts.staleEventMs ?? FOLLOW_STALE_EVENT_MS
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "follows-parked.jsonl")
   const ledgerPath = opts.ledgerPath ?? resolve(agentprotoHome(), DELIVERY_LEDGER_FILE)
   const daemonTriage: FollowTriageConfig =
@@ -951,6 +989,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
               "wake",
               merged.omitted,
               (existing.coalescedCount ?? 1) + 1,
+              nowMs(),
             ),
             digest: merged,
           }
@@ -1226,11 +1265,11 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
             )
             return
           }
-          text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
+          text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi", 0, 1, nowMs())
           deliveredEntries = fyiEntries
           urgency = "fyi"
         } else {
-          text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id))
+          text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id), "wake", 0, 1, nowMs())
           deliveredEntries = wakeEntries
           if (fyiEntries.length > 0) {
             text += `\n[session-follow] ${fyiEntries.length} other event(s) in info (not shown)`
@@ -1243,7 +1282,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         log(
           `[session-follow] ${triage.enabled ? "triage" : "apply"} failed for ${followerId}: ${describeError(err)}`,
         )
-        text = formatFollowDigest(entries, textFor, id => registry.get(id))
+        text = formatFollowDigest(entries, textFor, id => registry.get(id), "wake", 0, 1, nowMs())
         deliveredEntries = entries
         urgency = batch.urgency
         try {
@@ -1296,11 +1335,11 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       }
       if (entries.every(entry => entry.fyi === true)) {
         // Every event is informational: reuse the all-fyi path (inbox only).
-        text = formatFollowDigest(entries, textFor, id => registry.get(id), "fyi")
+        text = formatFollowDigest(entries, textFor, id => registry.get(id), "fyi", 0, 1, nowMs())
         urgency = "fyi"
       } else {
         // A mixed digest keeps today's urgency and lists every line.
-        text = formatFollowDigest(entries, textFor, id => registry.get(id))
+        text = formatFollowDigest(entries, textFor, id => registry.get(id), "wake", 0, 1, nowMs())
       }
     }
     // Floor: an entry whose computed level is 3 is never delivered at `fyi`,
@@ -1365,6 +1404,16 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       if (follows.length === 0) return
       const signal = signalOf(ev, seenPrs)
       if (!signal) return
+      // Catch-up guard: a PR event whose real time is long past (a restart
+      // re-settling old PRs) is not news. Only pr-* signals can carry a
+      // time that differs from "now".
+      if (
+        (signal.event === "pr-merged" || signal.event === "pr-opened") &&
+        nowMs() - Date.parse(signal.ts) > staleEventMs
+      ) {
+        log(`[session-follow] ignored stale ${signal.event} for ${signal.sessionId} (event time ${signal.ts})`)
+        return
+      }
       const desc = registry.get(signal.sessionId)
       // Resolve the source's declared urgency ONCE, at event time. Only a
       // non-crashed exit can be an informational success.

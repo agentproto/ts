@@ -427,6 +427,20 @@ describe("PR settlement via resolvePrState", () => {
     projector.dispose()
   })
 
+  it("stamps the done record with the forge merge time when the resolver reports one", async () => {
+    const { bus, seen, projector } = harness({
+      sessions: [prSession()],
+      resolvePrState: async () => ({ state: "merged", mergedAt: "2026-10-29T05:28:51Z" }),
+    })
+    bus.emit(exited("sess_a"))
+    await settleTick()
+    expect(seen.map(ev => [ev.activity.state, ev.activity.endedAt])).toEqual([["done", "2026-10-29T05:28:51Z"]])
+    expect(projector.list({ includeTerminal: true }).find(r => r.id === "pr:sess_a:412")?.endedAt).toBe(
+      "2026-10-29T05:28:51Z",
+    )
+    projector.dispose()
+  })
+
   it("settles to cancelled when the forge reports closed", async () => {
     const { bus, seen, projector } = harness({
       sessions: [prSession()],
