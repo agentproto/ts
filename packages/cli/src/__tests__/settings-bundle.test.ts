@@ -131,6 +131,10 @@ function fakeApplyDeps(overrides: Partial<SettingsApplyDeps> = {}): SettingsAppl
     listInstalledAdapters: async () => [fakeAdapter()],
     getHarnessPreset: async (id: string) => harnessPresets.get(id),
     addHarnessPreset: async (preset: HarnessPreset) => {
+      if (preset.profileRef === undefined) {
+        harnessPresets.set(preset.id, preset)
+        return preset
+      }
       const profile = authProfiles.get(preset.profileRef)
       if (!profile) throw new Error(`profileRef "${preset.profileRef}" references no existing auth profile.`)
       if (profile.disabled) throw new Error(`profileRef "${preset.profileRef}" is disabled`)
