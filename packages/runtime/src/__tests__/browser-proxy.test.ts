@@ -322,10 +322,11 @@ describe("relayed tools forward to Bureau with the caller identity", () => {
       tool: "list_browsers",
       input: { onlyAlive: true, instance: "inst-1" },
       target: "browser_list_instances",
-      expectedArgs: { instance: "inst-1" },
+      expectedArgs: {},
       expectedNotes: [
         "Bureau browser_list_instances returns instances, not the daemon's browser-session descriptors",
         'dropped "onlyAlive" (no Bureau equivalent)',
+        'dropped "instance" (no Bureau equivalent)',
       ],
     },
   ]

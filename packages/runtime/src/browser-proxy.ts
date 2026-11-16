@@ -223,9 +223,11 @@ const MAPPINGS: Record<ProxiedBrowserToolName, BrowserToolMapping> = {
   },
   list_browsers: {
     target: "browser_list_instances",
-    forward: ["instance"],
+    // Bureau's browser_list_instances takes no argument at all (and rejects
+    // an undeclared one), so `instance` is dropped and noted, not forwarded.
+    forward: [],
     consumed: [],
-    dropped: ["onlyAlive"],
+    dropped: ["onlyAlive", "instance"],
     extraNotes: [
       "Bureau browser_list_instances returns instances, not the daemon's browser-session descriptors",
     ],
