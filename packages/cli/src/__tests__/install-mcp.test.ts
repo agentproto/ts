@@ -1463,3 +1463,44 @@ other_key:
     expect(removeHermesMcpServer(realish, "agentproto")).toBe(realish)
   })
 })
+
+// ── tests: --import ─────────────────────────────────────────────────────────
+
+describe("runInstallMcp --import", () => {
+  it("writes an entry named after the alias that runs mcp-bridge --import for cursor", async () => {
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({ files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) }, dirs: ["/tmp/fake-home/.cursor"] })
+
+    const code = await runInstallMcp(["--import", "bureau", "--agent", "cursor", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === cursorConfigPath)
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto).toBeUndefined()
+    expect(written.mcpServers.bureau.command).toBe("agentproto")
+    expect(written.mcpServers.bureau.args).toEqual(["mcp-bridge", "--import", "bureau"])
+  })
+
+  it("writes a [mcp_servers.bureau] table for codex", async () => {
+    const codexPath = "/tmp/fake-home/.codex/config.toml"
+    mockMultiPath({ files: { [codexPath]: "" }, dirs: ["/tmp/fake-home/.codex"] })
+
+    const code = await runInstallMcp(["--import", "bureau", "--agent", "codex", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === codexPath)
+    expect(configWrite![1] as string).toContain('[mcp_servers.bureau]')
+    expect(configWrite![1] as string).toContain('args = ["mcp-bridge","--import","bureau"]')
+  })
+
+  it("refuses an agent that cannot hold several entries, and a bad alias", async () => {
+    const { chunks, restore } = captureStderr()
+    mockBinaryOnPath(["aider"])
+    expect(await runInstallMcp(["--import", "bureau", "--agent", "aider", "--yes"])).toBe(2)
+    expect(await runInstallMcp(["--import", "a/b", "--yes"])).toBe(2)
+    expect(await runInstallMcp(["--import", "bureau", "--app", "x", "--yes"])).toBe(2)
+    restore()
+    expect(chunks.join("")).toContain("--import is not supported for aider")
+    expect(chunks.join("")).toContain('invalid --import value "a/b"')
+  })
+})

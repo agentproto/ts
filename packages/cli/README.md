@@ -31,6 +31,7 @@ agentproto tunnel       <create|list|stop|revoke|status>                   publi
 agentproto provider-preset list [--json]                            provider gateway definitions
 agentproto preset       <list|show|add|delete>                       saved user spawn configurations
 agentproto mcp-bridge                                               stdio MCP proxy to daemon /mcp
+agentproto mcp-bridge --import <alias|importId>                     stdio proxy to ONE imported MCP (e.g. bureau), native tool names
 agentproto install-mcp  [--agent <name>...] [--all] [--yes]         register daemon MCP with coding CLIs
 agentproto onboard      [--yes] [--no-skills] [--skills <slug>]     first-run setup
 agentproto cron         <add|list|remove|run>                       recurring daemon jobs

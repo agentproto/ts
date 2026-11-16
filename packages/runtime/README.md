@@ -275,7 +275,8 @@ The daemon's MCP browser tools no longer drive any of these adapters (P4b delete
 
 | Daemon tool | Bureau tool |
 | --- | --- |
-| `browser_navigate`, `browser_click`, `browser_fill`, `browser_evaluate`, `browser_get_dom`, `browser_press_key`, `browser_screenshot` | same name |
+| `browser_navigate`, `browser_click`, `browser_fill`, `browser_evaluate`, `browser_get_dom`, `browser_screenshot` | same name |
+| `browser_press_key` | same name; Bureau takes only `key` and `modifiers`, so `selector` and `count` are refused with an error, never dropped |
 | `browser_list_tabs` | `browser_list_owned_tabs` |
 | `list_browsers` | `browser_list_instances` (Bureau instances, not session descriptors; a `notes` entry says so) |
 | `browser_screencast_start` / `_frame` / `_stop` | `browser_record_start` / `_frame` / `_stop` (pass the owned `tabId`; `fps`, `format` and `encode` are forwarded, `quality`, `everyNthFrame`, `maxWidth` and `maxHeight` are dropped and noted) |
@@ -284,7 +285,7 @@ The daemon's MCP browser tools no longer drive any of these adapters (P4b delete
 
 `tabId` and an optional `instance` are forwarded; the retired `sessionId` is accepted and ignored (noted in the result). `fetch_page` is the zero-browser fast path: a plain HTTP read, use it first for any public page and escalate to `browser_navigate` + `browser_extract_text` only on `blocked: true` or when the page needs JS/interaction.
 
-Removed, with no Bureau twin: `browser_select`, `browser_wait_for`, `browser_upload_file`, `browser_new_tab`, `start_browser`, `stop_browser`, `browser_status`, `browser_adapter_list`. Bureau gives each caller session its own tab on first use, so `browser_navigate` replaces `start_browser` + `browser_new_tab`.
+Removed from the daemon: `browser_select`, `browser_wait_for`, `browser_upload_file`, `browser_new_tab`, `start_browser`, `stop_browser`, `browser_status`, `browser_adapter_list`. Bureau itself has `browser_new_tab` and `browser_upload_file`: call them on the `bureau` MCP server or through `mcp_imported_call({ alias: "bureau", ... })`. Bureau gives each caller session its own tab on first use, so `browser_navigate` replaces `start_browser` + `browser_new_tab`.
 
 `defaults.browser.builtin` decides how much of that surface the daemon registers:
 
