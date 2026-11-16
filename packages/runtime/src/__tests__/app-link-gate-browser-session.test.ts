@@ -85,4 +85,34 @@ describe("link read gate: browserSessionId claim", () => {
       expect(appLinkSessionReadAuth(req, `/sessions/sess_b1/${s}`, "GET", keyPath)).toBeUndefined()
     }
   })
+
+  it("grants the live relay pair to either claim, GET for both and HEAD for the replay only", async () => {
+    const claimSets: Record<string, string>[] = [{ sessionId: "sess_a1" }, { browserSessionId: "sess_a1" }]
+    for (const claims of claimSets) {
+      const req = await setup(claims)
+      const live = "/sessions/sess_a1/live.mjpeg"
+      const replay = "/sessions/sess_a1/live/live_x1/replay.mp4"
+      expect(appLinkSessionReadAuth(req, live, "GET", keyPath)).toBeDefined()
+      expect(appLinkTunnelBypass(req, live, "GET", keyPath)).toBe(true)
+      expect(appLinkSessionReadAuth(req, replay, "GET", keyPath)).toBeDefined()
+      expect(appLinkSessionReadAuth(req, replay, "HEAD", keyPath)).toBeDefined()
+      expect(appLinkTunnelBypass(req, replay, "HEAD", keyPath)).toBe(true)
+      expect(appLinkSessionReadAuth(req, live, "HEAD", keyPath)).toBeUndefined()
+      expect(appLinkSessionReadAuth(req, live, "POST", keyPath)).toBeUndefined()
+      expect(appLinkSessionReadAuth(req, replay, "POST", keyPath)).toBeUndefined()
+      expect(appLinkSessionReadAuth(req, "/sessions/sess_a1/screencast.jpg", "HEAD", keyPath)).toBeUndefined()
+      for (const p of [
+        "/sessions/sess_a2/live.mjpeg",
+        "/sessions/sess_a2/live/live_x1/replay.mp4",
+        "/sessions/sess_a1/live",
+        "/sessions/sess_a1/live/replay.mp4",
+        "/sessions/sess_a1/live/a/b/replay.mp4",
+      ]) {
+        expect(appLinkSessionReadAuth(req, p, "GET", keyPath), p).toBeUndefined()
+        expect(appLinkTunnelBypass(req, p, "GET", keyPath), p).toBe(false)
+      }
+      resetAppLinkSigningKeyCacheForTests()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

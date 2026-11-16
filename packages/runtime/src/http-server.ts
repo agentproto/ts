@@ -73,6 +73,7 @@ import {
   serveSessionScreencast,
   type SessionScreencastReader,
 } from "./session-screencast.js"
+import { createSessionLiveRelay, type SessionLiveRelay } from "./session-live-relay.js"
 import { classifyAttestation, createAttestationLogGate } from "./claude-session-attest-log.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -1613,6 +1614,11 @@ export interface RuntimeHttpServerOptions {
    *  capture cap. Omitted → the server builds its own from
    *  `appToolCallDeps.callImportedTool`. */
   sessionScreencast?: SessionScreencastReader
+  /** The live relay behind `GET /sessions/:id/live.mjpeg` and
+   *  `GET|HEAD /sessions/:id/live/:streamId/replay.mp4`
+   *  (session-live-relay.ts). Omitted -> the server builds its own from
+   *  `appToolCallDeps.callImportedTool`. */
+  sessionLiveRelay?: SessionLiveRelay
   /** Optional — backs `POST /apps/:appId/link-auth` (AIP-53 link-token
    *  scoping, app-link-auth.ts): the Telegram bot credential store a
    *  link's `initData` is verified against. Omitted ⇒ the route reports
@@ -1881,7 +1887,8 @@ export async function startHttpServer(
    * /apps/:appId/link-auth`) is accepted ONLY for that token's own `POST
    * /apps/:appId/tool-call` and its own session's read routes
    * (`GET /sessions/:id`, `/events`, `/events/stream`, `/capabilities`,
-   * `/screencast`, `/screencast.jpg`, `/screencast.mjpg`), and for
+   * `/screencast`, `/screencast.jpg`, `/screencast.mjpg`, `/live.mjpeg`,
+   * `/live/:streamId/replay.mp4`), and for
    * `GET /approvals/:id` + `POST /approvals/:id/decision/telegram`, where
    * the approvals handler enforces the `approvalId` claim and the
    * `approvals.humanTelegramIds` allow-list itself.
@@ -2179,8 +2186,19 @@ export async function startHttpServer(
    * (list, get, SSE stream) stay open for read-only telemetry from
    * existing tools that haven't learned about the token yet.
    */
+  // The daemon live relay of a session's Bureau tab (session-live-relay.ts):
+  // one cap and one remembered-streams map per server.
+  const sessionLiveRelay =
+    opts.sessionLiveRelay ??
+    createSessionLiveRelay({
+      callImportedTool: opts.appToolCallDeps?.callImportedTool,
+    })
+
+  /** The screencast spellings and the live relay pair: the `/sessions/:id`
+   *  reads that carry the pixels of a browser tab, so gated like a mutating
+   *  route whatever the method. */
   function isScreencastSessionsRoute(path: string): boolean {
-    return /^\/sessions\/[^/]+\/screencast(?:\.(?:jpg|mjpg))?$/.test(path)
+    return /^\/sessions\/[^/]+\/(?:screencast(?:\.(?:jpg|mjpg))?|live\.mjpeg|live\/[^/]+\/replay\.mp4)$/.test(path)
   }
 
   function isMutatingSessionsRoute(method: string, path: string): boolean {
@@ -3900,6 +3918,19 @@ export async function startHttpServer(
             }
           }
           if (isIdentityGatedSessionRoute(req.method ?? "GET", path) && (await enforceCallerIdentity(req, res, path))) {
+            return
+          }
+          const liveMjpeg = req.method === "GET" ? /^\/sessions\/([^/]+)\/live\.mjpeg$/.exec(path) : null
+          if (liveMjpeg) {
+            await sessionLiveRelay.serveLive(req, res, liveMjpeg[1] as string)
+            return
+          }
+          const liveReplay =
+            req.method === "GET" || req.method === "HEAD"
+              ? /^\/sessions\/([^/]+)\/live\/([^/]+)\/replay\.mp4$/.exec(path)
+              : null
+          if (liveReplay) {
+            await sessionLiveRelay.serveReplay(req, res, liveReplay[1] as string, liveReplay[2] as string)
             return
           }
           const bureauScreencast =
