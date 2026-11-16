@@ -49,11 +49,11 @@ import {
   describeClaudeSessionAttestation,
   exitOnStdinClose,
   parseBridgeArgs,
-  stampOrigin,
   urlForLog,
   watchParentExit,
   withSurface,
 } from "./mcp-bridge.logic.js"
+import { forwardBridgeTool } from "./mcp-bridge-call.js"
 
 export async function runMcpBridge(args: readonly string[]): Promise<number> {
   const parsed = parseBridgeArgs(args)
@@ -126,7 +126,7 @@ export async function runMcpBridge(args: readonly string[]): Promise<number> {
   // host gets a source node in the tree (#575). Never overrides an explicit
   // origin; only session-creating tools (mcp-bridge.logic.ts).
   server.setRequestHandler(CallToolRequestSchema, (req) =>
-    client.callTool(stampOrigin(req.params, server.getClientVersion()?.name))
+    forwardBridgeTool(client, url, req.params, server.getClientVersion()?.name)
   )
 
   // Pass-through: resources (ui:// panels for MCP Apps hosts).

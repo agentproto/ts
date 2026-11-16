@@ -135,7 +135,9 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
       ok: false,
       status: 400,
       error: "no_follower",
-      message: "provide `follower` (no calling session identity to default to)",
+      message: "no calling session identity: provide an explicit agentproto `follower`, " +
+        "or have the host/bridge attach this chat's per-call identity. Do not guess a previous session id. " +
+        "External chats also need a host wake handler; an inbox alone cannot start a Desktop turn",
     }
   }
   const sel = body.selector
@@ -198,6 +200,8 @@ export function followView(follow: SessionFollow): SessionFollow {
 export interface RegisterSessionFollowToolsOptions {
   store: SessionFollowStore
   hasSession: (sessionId: string) => boolean
+  /** External sessions receive an inbox digest; only their host can wake them. */
+  sessionKind?: (sessionId: string) => string | undefined
   /** Trusted `?callerSessionId=` of the connecting `/mcp` client. */
   callerSessionId?: string
 }
@@ -232,7 +236,8 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       "(unread count prefixed on your next message) and never starts a turn — use it " +
       "for high-volume follows you only need to skim. Your own events are never delivered to " +
       "you; your descendants' only with `excludeFollowerChildren: false`. Upserts by `key` when given. Survives daemon " +
-      "restarts.",
+      "restarts. Desktop/external chats require per-call host identity and a host " +
+      "wake handler; registering an external inbox alone does not start a Desktop turn.",
     {
       follower: z.string().optional().describe("Session to wake. Defaults to the calling session."),
       key: z.string().optional().describe("Stable key: re-posting the same key updates that follow in place."),
@@ -269,9 +274,17 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
         { store, hasSession, ...(callerSessionId ? { defaultFollower: callerSessionId } : {}) },
         input,
       )
-      return result.ok
-        ? ok({ created: result.created, follow: followView(result.follow) })
-        : fail(result.error, `session_follow: ${result.message}`)
+      if (!result.ok) return fail(result.error, `session_follow: ${result.message}`)
+      const external = opts.sessionKind?.(result.follow.follower) === "external"
+      return ok({
+        created: result.created,
+        follow: followView(result.follow),
+        ...(external ? { delivery: {
+          mode: "external-inbox",
+          wakesFollower: false,
+          message: "The digest reaches the follower's agentproto inbox. Its host must consume it and queue a turn in that chat; agentproto cannot wake a Desktop chat by itself.",
+        } } : {}),
+      })
     },
   )
 
