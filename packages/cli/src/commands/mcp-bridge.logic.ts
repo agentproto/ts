@@ -137,15 +137,21 @@ export function bridgeCallerUrl(
 /** The only `?surface=` values the bridge will dial. */
 export const BRIDGE_SURFACES: readonly string[] = ["approval-cards"]
 
+/** An import id or alias: what `/mcp/imported/<id>` accepts. */
+const IMPORT_REF = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+
 /**
  * Parse the bridge's own flags. Unknown flags are ignored (the bridge has
- * always tolerated them); only `--surface <name>` / `--surface=<name>` is
- * read, and only the names in `BRIDGE_SURFACES` are accepted.
+ * always tolerated them); `--surface <name>` / `--surface=<name>` (only the
+ * names in `BRIDGE_SURFACES`) and `--import <alias|importId>` /
+ * `--import=<alias|importId>` are read. The two are mutually exclusive: a
+ * surface is a view of `/mcp`, an import is a different endpoint.
  */
 export function parseBridgeArgs(
   args: readonly string[],
-): { surface?: string } | { error: string } {
+): { surface?: string; importRef?: string } | { error: string } {
   let surface: string | undefined
+  let importRef: string | undefined
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (arg === "--surface") {
@@ -155,7 +161,23 @@ export function parseBridgeArgs(
       }
     } else if (arg.startsWith("--surface=")) {
       surface = arg.slice("--surface=".length)
+    } else if (arg === "--import") {
+      importRef = args[++i]
+      if (importRef === undefined || importRef.startsWith("--")) {
+        return { error: "--import needs a value (an import alias such as bureau, or an import id)" }
+      }
+    } else if (arg.startsWith("--import=")) {
+      importRef = arg.slice("--import=".length)
     }
+  }
+  if (surface !== undefined && importRef !== undefined) {
+    return { error: "--import can not be combined with --surface" }
+  }
+  if (importRef !== undefined) {
+    if (!IMPORT_REF.test(importRef)) {
+      return { error: `invalid --import value "${importRef}" (expected an import alias or id: letters, digits, . _ : -)` }
+    }
+    return { importRef }
   }
   if (surface === undefined) return {}
   if (!BRIDGE_SURFACES.includes(surface)) {
@@ -170,6 +192,18 @@ export function parseBridgeArgs(
 export function withSurface(url: string, surface: string): string {
   const next = new URL(url)
   next.searchParams.set("surface", surface)
+  return next.toString()
+}
+
+/**
+ * `url` pointed at the daemon's per-import passthrough,
+ * `/mcp/imported/<alias|importId>` (the daemon resolves an alias itself, see
+ * `handleImportedMcp`). Origin and query (caller claims, host) are kept; only
+ * the path changes, so an explicit `AGENTPROTO_MCP_URL` still picks the daemon.
+ */
+export function withImport(url: string, importRef: string): string {
+  const next = new URL(url)
+  next.pathname = `/mcp/imported/${encodeURIComponent(importRef)}`
   return next.toString()
 }
 

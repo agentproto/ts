@@ -19,11 +19,13 @@
  *
  * `defaults.browser.builtin: "off"` registers `fetch_page` alone.
  *
- * Retired, with no Bureau twin: `browser_select`, `browser_wait_for`,
+ * Retired from the daemon: `browser_select`, `browser_wait_for`,
  * `browser_upload_file`, `browser_new_tab`, `start_browser`, `stop_browser`,
- * `browser_status`, `browser_adapter_list`. Bureau gives every caller session
- * its own tab on first use, so `browser_navigate` replaces `start_browser` +
- * `browser_new_tab`.
+ * `browser_status`, `browser_adapter_list`. Bureau itself DOES have
+ * `browser_new_tab` and `browser_upload_file` (call them on the `bureau` MCP
+ * server, or through `mcp_imported_call`); the daemon just does not relay them.
+ * Bureau gives every caller session its own tab on first use, so
+ * `browser_navigate` replaces `start_browser` + `browser_new_tab` here.
  *
  * The calling session id rides on every forwarded call, so Bureau's tab
  * ownership applies per agent session.
@@ -44,6 +46,7 @@ import {
   callBureauExtractText,
   callBureauScroll,
   callProxiedBrowserTool,
+  deprecatedRelayPrefix,
   resolveBrowserProxyImport,
   type BrowserBuiltinMode,
   type BrowserProxyCaller,
@@ -323,7 +326,7 @@ export function registerBrowserTools(
   // ── list_browsers ────────────────────────────────────────────────────────────
   server.tool(
     "list_browsers",
-    "List the browser instances Bureau can drive (Bureau's browser_list_instances)." + BUREAU_NOTE,
+    deprecatedRelayPrefix("browser_list_instances") + "List the browser instances Bureau can drive (Bureau's browser_list_instances)." + BUREAU_NOTE,
     {
       onlyAlive: z
         .boolean()
@@ -337,7 +340,7 @@ export function registerBrowserTools(
   // ── browser_navigate ─────────────────────────────────────────────────────────
   server.tool(
     "browser_navigate",
-    "Navigate this session's own Bureau tab to `url` (Bureau opens it on first use; " +
+    deprecatedRelayPrefix("browser_navigate") + "Navigate this session's own Bureau tab to `url` (Bureau opens it on first use; " +
       "never a tab another session owns). Follow with `browser_extract_text`/`browser_get_dom` " +
       "to read the page, `browser_click`/`browser_fill`/`browser_scroll` to interact, or " +
       "`browser_screenshot` to see it." + BUREAU_NOTE,
@@ -353,7 +356,7 @@ export function registerBrowserTools(
   // ── browser_screenshot ───────────────────────────────────────────────────────
   server.tool(
     "browser_screenshot",
-    "Capture a screenshot of this session's own Bureau tab; returns Bureau's result " +
+    deprecatedRelayPrefix("browser_screenshot") + "Capture a screenshot of this session's own Bureau tab; returns Bureau's result " +
       "(base64 image and its format)." + BUREAU_NOTE,
     { sessionId: sessionIdField, tabId: tabIdField, instance: instanceField },
     relay("browser_screenshot")
@@ -362,7 +365,7 @@ export function registerBrowserTools(
   // ── browser_extract_text ─────────────────────────────────────────────────────
   server.tool(
     "browser_extract_text",
-    "Read this session's own Bureau tab as clean text: strips boilerplate (nav/ads/scripts) " +
+    deprecatedRelayPrefix("browser_get_dom` + `browser_evaluate") + "Read this session's own Bureau tab as clean text: strips boilerplate (nav/ads/scripts) " +
       "and returns { title, text (markdown), url }. Reads the DOM through Bureau's " +
       "browser_get_dom and purifies it on the daemon (the `fetch_page` extractor). Call " +
       "`browser_navigate` first. Prefer this over `browser_get_dom` unless you need raw HTML " +
@@ -378,7 +381,7 @@ export function registerBrowserTools(
   // ── browser_get_dom ───────────────────────────────────────────────────────────
   server.tool(
     "browser_get_dom",
-    "Read this session's own Bureau tab as RAW serialized DOM (outerHTML). Use " +
+    deprecatedRelayPrefix("browser_get_dom") + "Read this session's own Bureau tab as RAW serialized DOM (outerHTML). Use " +
       "`browser_extract_text` to read content; reach for this when you need exact markup " +
       "(e.g. to find a CSS selector for `browser_click`/`browser_fill`)." + BUREAU_NOTE,
     { sessionId: sessionIdField, tabId: tabIdField, instance: instanceField },
@@ -388,7 +391,7 @@ export function registerBrowserTools(
   // ── browser_click ──────────────────────────────────────────────────────────────
   server.tool(
     "browser_click",
-    "Click a CSS selector on this session's own Bureau tab. Find a selector with " +
+    deprecatedRelayPrefix("browser_click") + "Click a CSS selector on this session's own Bureau tab. Find a selector with " +
       "`browser_get_dom` if you don't already know one." + BUREAU_NOTE,
     {
       sessionId: sessionIdField,
@@ -404,7 +407,7 @@ export function registerBrowserTools(
   // ── browser_fill ───────────────────────────────────────────────────────────────
   server.tool(
     "browser_fill",
-    "Fill a CSS selector on this session's own Bureau tab with `value` (clearing the " +
+    deprecatedRelayPrefix("browser_fill") + "Fill a CSS selector on this session's own Bureau tab with `value` (clearing the " +
       "existing value first by default)." + BUREAU_NOTE,
     {
       sessionId: sessionIdField,
@@ -420,7 +423,7 @@ export function registerBrowserTools(
   // ── browser_evaluate ───────────────────────────────────────────────────────────
   server.tool(
     "browser_evaluate",
-    "Run a JavaScript expression on this session's own Bureau tab and return its value." + BUREAU_NOTE,
+    deprecatedRelayPrefix("browser_evaluate") + "Run a JavaScript expression on this session's own Bureau tab and return its value." + BUREAU_NOTE,
     {
       sessionId: sessionIdField,
       tabId: tabIdField,
@@ -436,7 +439,7 @@ export function registerBrowserTools(
   // ── browser_scroll ─────────────────────────────────────────────────────────────
   server.tool(
     "browser_scroll",
-    "Scroll this session's own Bureau tab: pass `selector` to scroll that element into view " +
+    deprecatedRelayPrefix("browser_evaluate") + "Scroll this session's own Bureau tab: pass `selector` to scroll that element into view " +
       "(centered), or `x`/`y` to scroll the window BY that many CSS px (relative). Runs a fixed " +
       "daemon-built script through Bureau's browser_evaluate; it never runs caller code." + BUREAU_NOTE,
     {
@@ -457,17 +460,19 @@ export function registerBrowserTools(
   // ── browser_press_key ──────────────────────────────────────────────────────────
   server.tool(
     "browser_press_key",
-    "Press one key on this session's own Bureau tab: Enter, Tab, Escape, Backspace, Delete, " +
+    deprecatedRelayPrefix("browser_press_key") + "Press one key on this session's own Bureau tab: Enter, Tab, Escape, Backspace, Delete, " +
       "ArrowUp/Down/Left/Right, Home, End, PageUp/PageDown, Space, or a single printable " +
-      "character. Optionally focus a `selector` first, repeat with `count`, and hold `modifiers`." +
+      "character, optionally holding `modifiers`. The key goes to whatever has focus: `selector` " +
+      "and `count` are NOT supported by Bureau and are refused with an error (click the element " +
+      "first; call again to repeat)." +
       BUREAU_NOTE,
     {
       sessionId: sessionIdField,
       tabId: tabIdField,
       instance: instanceField,
       key: z.string().min(1).describe("Key name (Enter, Tab, Escape, ArrowDown, …) or one printable character."),
-      selector: z.string().optional().describe("CSS selector to focus before pressing. Default: whatever has focus."),
-      count: z.number().int().min(1).max(100).optional().describe("How many times to press. Default 1."),
+      selector: z.string().optional().describe("NOT SUPPORTED by Bureau: refused with an error. Click the element first."),
+      count: z.number().int().min(1).max(100).optional().describe("NOT SUPPORTED by Bureau: refused with an error. Call again to repeat."),
       modifiers: z
         .array(z.enum(["Alt", "Control", "Meta", "Shift"]))
         .optional()
@@ -479,7 +484,7 @@ export function registerBrowserTools(
   // ── browser_list_tabs ───────────────────────────────────────────────────────
   server.tool(
     "browser_list_tabs",
-    "List the Bureau tabs this session owns (Bureau's browser_list_owned_tabs): the ids every " +
+    deprecatedRelayPrefix("browser_list_owned_tabs") + "List the Bureau tabs this session owns (Bureau's browser_list_owned_tabs): the ids every " +
       "other browser tool accepts as `tabId`." + BUREAU_NOTE,
     { sessionId: sessionIdField, instance: instanceField },
     relay("browser_list_tabs")
@@ -488,7 +493,7 @@ export function registerBrowserTools(
   // ── browser_screencast_* ─────────────────────────────────────────────────────
   server.tool(
     "browser_screencast_start",
-    "Start recording this session's own Bureau tab (Bureau's browser_record_start). Pass the " +
+    deprecatedRelayPrefix("browser_record_start") + "Start recording this session's own Bureau tab (Bureau's browser_record_start). Pass the " +
       "owned `tabId` (Bureau requires it), optionally `instance`, `fps` and `format`; `quality`, " +
       "`everyNthFrame`, `maxWidth` and `maxHeight` are dropped and listed in `notes`. " +
       "`browser_screencast_frame` grabs the latest frame; `browser_screencast_stop` ends the " +
@@ -509,7 +514,7 @@ export function registerBrowserTools(
 
   server.tool(
     "browser_screencast_frame",
-    "Return the latest recorded frame of this session's own Bureau tab (Bureau's " +
+    deprecatedRelayPrefix("browser_record_frame") + "Return the latest recorded frame of this session's own Bureau tab (Bureau's " +
       "browser_record_frame). Pass the owned `tabId`." + BUREAU_NOTE,
     {
       sessionId: sessionIdField,
@@ -521,7 +526,7 @@ export function registerBrowserTools(
 
   server.tool(
     "browser_screencast_stop",
-    "Stop the recording started with `browser_screencast_start` (Bureau's browser_record_stop). " +
+    deprecatedRelayPrefix("browser_record_stop") + "Stop the recording started with `browser_screencast_start` (Bureau's browser_record_stop). " +
       "Pass the owned `tabId`, optionally `instance` and `encode`; returns Bureau's result." + BUREAU_NOTE,
     {
       sessionId: sessionIdField,

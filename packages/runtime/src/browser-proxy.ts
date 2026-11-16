@@ -37,7 +37,23 @@ import type { ProxyCallContext, ProxyCallOutcome } from "./mcp-proxy.js"
 import { extractPageText } from "./page-text.js"
 
 export const BROWSER_PROXY_DEPRECATED =
-  "The daemon browser_* tools proxy to Bureau: mount the Bureau MCP and call its tools directly."
+  "The daemon browser_* tools are deprecated relays to Bureau. Call Bureau's own tool instead: " +
+  "directly if your client has a `bureau` MCP server, else through " +
+  'mcp_imported_call({ alias: "bureau", toolName, args }) (mcp_imported_tool_list({ alias: "bureau", full: true }) ' +
+  "lists the tools and their schemas)."
+
+/**
+ * The sentence every relayed tool's description starts with: it says the tool
+ * is a deprecated relay and names Bureau's own tool plus how to reach it.
+ * `bureauTools` is the Bureau tool(s) the relay runs on.
+ */
+export function deprecatedRelayPrefix(bureauTools: string): string {
+  return (
+    `DEPRECATED relay to Bureau (runs Bureau's \`${bureauTools}\`). Prefer Bureau's own tool: ` +
+    'a `bureau` MCP server if your client has one, else mcp_imported_call({ alias: "bureau", ' +
+    "toolName, args }). "
+  )
+}
 
 /** How much of the built-in browser surface the daemon registers. */
 export type BrowserBuiltinMode = "off" | "proxy"
@@ -104,6 +120,9 @@ interface BrowserToolMapping {
   consumed: readonly string[]
   /** Daemon input fields with no Bureau equivalent: dropped and noted. */
   dropped: readonly string[]
+  /** Daemon input fields Bureau cannot honor and whose loss would change what
+   *  the call does: the whole call is refused with an error, never dropped. */
+  refused?: readonly string[]
   /** Extra notes carried on a successful proxied result. */
   extraNotes?: readonly string[]
 }
@@ -170,9 +189,13 @@ const MAPPINGS: Record<ProxiedBrowserToolName, BrowserToolMapping> = {
   },
   browser_press_key: {
     target: "browser_press_key",
-    forward: ["key", "selector", "count", "modifiers", "tabId", "instance"],
+    forward: ["key", "modifiers", "tabId", "instance"],
     consumed: ["sessionId"],
     dropped: [],
+    // Bureau's browser_press_key takes only key + modifiers: a selector to
+    // focus first or a repeat count would be lost and the key would go to
+    // whatever has focus, so refuse instead of dropping.
+    refused: ["selector", "count"],
   },
   browser_list_tabs: {
     target: "browser_list_owned_tabs",
@@ -216,6 +239,14 @@ export function isProxiedBrowserTool(name: string): name is ProxiedBrowserToolNa
 /** The Bureau tool a daemon tool maps to. */
 export function bureauToolName(toolName: ProxiedBrowserToolName): string {
   return MAPPINGS[toolName].target
+}
+
+/** The input fields of `toolName` that Bureau cannot honor (refused, not dropped). */
+export function refusedBrowserProxyFields(
+  toolName: ProxiedBrowserToolName,
+  input: Record<string, unknown>,
+): string[] {
+  return (MAPPINGS[toolName].refused ?? []).filter(key => input[key] !== undefined)
 }
 
 /** Map one daemon tool input to the Bureau argument object + drop notes. */
@@ -326,6 +357,10 @@ async function callBureau(input: {
   return { ok: true, result: outcome.result }
 }
 
+function acceptedBureauFields(toolName: ProxiedBrowserToolName): string {
+  return [...MAPPINGS[toolName].forward].map(k => `\`${k}\``).join(", ")
+}
+
 /** Call the Bureau tool and return an MCP tool result for the daemon tool. */
 export async function callProxiedBrowserTool(input: {
   proxy: BrowserProxyCaller
@@ -334,6 +369,15 @@ export async function callProxiedBrowserTool(input: {
   toolInput: Record<string, unknown>
   callerSessionId?: string
 }): Promise<CallToolResult> {
+  const refused = refusedBrowserProxyFields(input.toolName, input.toolInput)
+  if (refused.length > 0) {
+    return errorResult(
+      `${input.toolName}: ${refused.map(k => `"${k}"`).join(", ")} not supported: Bureau's ` +
+        `${bureauToolName(input.toolName)} takes only ${acceptedBureauFields(input.toolName)}, and ` +
+        "the call would run without it. Nothing was sent. For several presses, call it several times; " +
+        "to focus an element first, call browser_click on it."
+    )
+  }
   const { args, notes } = mapBrowserProxyArgs(input.toolName, input.toolInput)
   const call = await callBureau({
     proxy: input.proxy,

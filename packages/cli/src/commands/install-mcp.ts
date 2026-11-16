@@ -22,6 +22,13 @@
  * assumes agentproto is its only MCP entry (see `registerAider`) and would
  * clobber siblings — all three are refused in `--app` mode.
  *
+ * `--import <alias>` is the same scoped mode for ONE imported MCP server
+ * (for example `bureau`): it writes an entry named after the alias that runs
+ * `agentproto mcp-bridge --import <alias>`, so a stdio-only client (Codex app,
+ * Claude Desktop) sees that server's native tool names. Same agent support as
+ * `--app`; the alias is not checked against the daemon here (the bridge and
+ * the daemon resolve it when the client starts).
+ *
  * `--approvals` is a separate, Claude Desktop only mode: it prints (and with
  * `--write` adds) a second entry, `agentproto-approvals`, that dials the
  * daemon's `approval-cards` surface so Desktop can show Approve / Refuse
@@ -33,6 +40,7 @@
  *   agentproto install-mcp --dry-run [--agent claude-desktop]
  *   agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
  *   agentproto install-mcp --approvals [--write]
+ *   agentproto install-mcp --import <alias> [--agent <name>...] [--yes]
  *
  * Agent names: claude, cursor, codex, claude-desktop, aider, windsurf, hermes
  */
@@ -69,6 +77,9 @@ export interface InstallStateEntry {
    *  id, so `--update`/`--uninstall` know which named entry to touch and
    *  can tell it apart from a full-daemon registration for the same agent. */
   appId?: string
+  /** Present only for a scoped `--import` registration: the import alias
+   *  (or id) dialed by `agentproto mcp-bridge --import <alias>`. */
+  importAlias?: string
 }
 
 export interface InstallState {
@@ -101,6 +112,7 @@ Usage:
   agentproto install-mcp --dry-run [--agent claude-desktop]
   agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
   agentproto install-mcp --approvals [--write]
+  agentproto install-mcp --import <alias> [--agent <name>...] [--yes]
 
 Options:
   --agent <name>   Target a specific agent (repeatable). Known: claude, cursor, codex, claude-desktop, aider, windsurf, hermes
@@ -108,6 +120,9 @@ Options:
   --app <appId>    Scoped mode: write \`agentproto mcp-app <appId>\` instead of the full
                    daemon entry. Requires the app to be installed and declare the
                    book/library contract. Supported agents: cursor, codex, claude-desktop, windsurf.
+  --import <alias> Scoped mode: write an entry named <alias> that runs
+                   \`agentproto mcp-bridge --import <alias>\` (one imported MCP server, native
+                   tool names, e.g. bureau). Supported agents: cursor, codex, claude-desktop, windsurf.
   --yes            Skip prompts (non-interactive; auto-confirm)
   --dry-run        Print the exact Claude Desktop entry that would be written; write nothing
   --approvals      Claude Desktop approval cards: print the \`agentproto-approvals\` entry
@@ -167,6 +182,7 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
       "dry-run": { type: "boolean" },
       "skip-daemon": { type: "boolean" },
       app: { type: "string" },
+      import: { type: "string" },
       approvals: { type: "boolean" },
       write: { type: "boolean" },
     },
@@ -270,7 +286,26 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
     targets = detected
   }
 
-  // 2b. --app: scope registration to one installed app's mcp-app proxy
+  // 2a. --import: validate before touching anything.
+  const scopedImport = values.import
+  if (scopedImport !== undefined) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(scopedImport)) {
+      process.stderr.write(
+        `agentproto install-mcp: invalid --import value "${scopedImport}" (expected an import alias such as bureau)\n`,
+      )
+      return 2
+    }
+    if (values.app) {
+      process.stderr.write("agentproto install-mcp: --import can not be combined with --app\n")
+      return 2
+    }
+    if (values["dry-run"]) {
+      process.stderr.write("agentproto install-mcp: --dry-run is not supported with --import\n")
+      return 2
+    }
+  }
+
+  // 2b. --app / --import: scope registration to one installed app's mcp-app proxy
   // instead of the full daemon entry.
   const scopedAppId = values.app
   if (scopedAppId) {
@@ -320,6 +355,25 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
     }
   }
 
+  if (scopedImport !== undefined) {
+    if (values.agent && values.agent.length > 0) {
+      const unsupported = targets.filter((t) => !SCOPED_CAPABLE_AGENTS.includes(t.name))
+      if (unsupported.length > 0) {
+        process.stderr.write(
+          `agentproto install-mcp: --import is not supported for ${unsupported.map((t) => t.name).join(", ")} ` +
+            `(scoped mode supports: ${SCOPED_CAPABLE_AGENTS.join(", ")}).\n`,
+        )
+        return 2
+      }
+    } else {
+      targets = targets.filter((t) => SCOPED_CAPABLE_AGENTS.includes(t.name))
+      if (targets.length === 0) {
+        process.stdout.write("No scoped-capable agents detected. Nothing to do.\n")
+        return 0
+      }
+    }
+  }
+
   // 3. Ensure the daemon is running (unless --skip-daemon)
   const skipDaemon = values["skip-daemon"] === true
   let port = DEFAULT_PORT
@@ -345,7 +399,9 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
 
   for (const target of targets) {
     try {
-      const entry = scopedAppId
+      const entry = scopedImport !== undefined
+        ? await registerAgentImport(target, scopedImport, port)
+        : scopedAppId
         ? await registerAgentScoped(target, scopedAppId, port, values.yes === true)
         : await registerAgent(target, port, values.yes === true)
       if (entry) {
@@ -353,7 +409,10 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
         // entry and one-or-more scoped `--app` entries for the same agent
         // are distinct entries, keyed by appId).
         const existingIdx = state.entries.findIndex(
-          e => e.agent === target.name && (e.appId ?? null) === (scopedAppId ?? null),
+          e =>
+            e.agent === target.name &&
+            (e.appId ?? null) === (scopedAppId ?? null) &&
+            (e.importAlias ?? null) === (scopedImport ?? null),
         )
         if (existingIdx >= 0) {
           state.entries[existingIdx] = entry
@@ -599,12 +658,17 @@ async function runUpdate(yes: boolean): Promise<number> {
       continue
     }
     try {
-      const updated = entry.appId
+      const updated = entry.importAlias
+        ? await registerAgentImport(detection, entry.importAlias, daemonPort)
+        : entry.appId
         ? await registerAgentScoped(detection, entry.appId, daemonPort, yes)
         : await registerAgent(detection, daemonPort, yes)
       if (updated) {
         const idx = state.entries.findIndex(
-          e => e.agent === entry.agent && (e.appId ?? null) === (entry.appId ?? null),
+          e =>
+            e.agent === entry.agent &&
+            (e.appId ?? null) === (entry.appId ?? null) &&
+            (e.importAlias ?? null) === (entry.importAlias ?? null),
         )
         if (idx >= 0) state.entries[idx] = updated
         process.stdout.write(
@@ -922,8 +986,36 @@ function scopedServerKey(appId: string): string {
  *  `SERVER_NAME` for a full-daemon registration, `scopedServerKey(appId)`
  *  for a scoped `--app` one. Derived rather than stored so old
  *  (pre-`appId`) state entries still resolve correctly. */
-function serverKeyFor(appId?: string): string {
+function serverKeyFor(appId?: string, importAlias?: string): string {
+  if (importAlias) return importAlias
   return appId ? scopedServerKey(appId) : SERVER_NAME
+}
+
+/** `--import` counterpart of `registerAgentScoped`: an entry named after the
+ *  alias that runs `agentproto mcp-bridge --import <alias>`. */
+async function registerAgentImport(
+  detection: AgentDetection,
+  importAlias: string,
+  port: number,
+): Promise<InstallStateEntry | null> {
+  const serverKey = importAlias
+  const args = ["mcp-bridge", "--import", importAlias]
+  const env: Record<string, string> =
+    port === DEFAULT_PORT ? {} : { AGENTPROTO_MCP_URL: `http://127.0.0.1:${port}/mcp` }
+  let entry: InstallStateEntry
+  switch (detection.name) {
+    case "cursor":
+    case "claude-desktop":
+    case "windsurf":
+      entry = await registerStdioJson(detection, detection.name, env, { serverKey, args })
+      break
+    case "codex":
+      entry = await registerCodex(detection, env, { serverKey, args })
+      break
+    default:
+      throw new Error(`agentproto mcp-bridge --import is not supported for "${detection.name}".`)
+  }
+  return { ...entry, importAlias }
 }
 
 /** Scoped counterpart of `registerAgent`: writes `agentproto mcp-app <appId>`
@@ -1222,7 +1314,7 @@ async function registerOpencode(
 // ── unregister ───────────────────────────────────────────────────────────────
 
 async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
-  const serverKey = serverKeyFor(entry.appId)
+  const serverKey = serverKeyFor(entry.appId, entry.importAlias)
   switch (entry.agent) {
     case "claude": {
       // Try `claude mcp remove` first, then fall back to file editing
@@ -1240,7 +1332,7 @@ async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
     case "claude-desktop":
       await removeFromJsonConfig(entry.configPath, serverKey)
       // Mirror of the Claude-3p write in registerAgent (full-daemon entry only).
-      if (!entry.appId && platform() === "darwin") {
+      if (!entry.appId && !entry.importAlias && platform() === "darwin") {
         const thirdParty = desktopThirdPartyConfigPath()
         if (await fileExists(thirdParty)) {
           try {

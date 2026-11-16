@@ -30,6 +30,19 @@ import { defineApp, type AppHandle } from "@agentproto/app"
 import { BUREAU_SESSIONS_HTML } from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 
+/**
+ * What this panel really is. It lists the daemon's `kind: "browser"` sessions,
+ * which only the retired chrome-live path created; the daemon browser tools now
+ * relay to Bureau and create none, so the panel is normally empty
+ * and never shows Bureau. The name is kept (the tool id is a public surface:
+ * generated tool names, tool profiles, the package export).
+ */
+const LEGACY_DESCRIPTION =
+  "LEGACY panel, not Bureau: lists the daemon's browser sessions from the retired chrome-live " +
+  "path (adapter, base URL, port, status, uptime), normally empty today. It says nothing " +
+  "about Bureau. For Bureau use bureau_overview / bureau_list_instances / bureau_list_owned_tabs, " +
+  "or Bureau's own tools (see the `browser` skill)."
+
 export const bureauSessionsInputSchema = z.object({
   filter: z
     .enum(["running", "all"])
@@ -54,9 +67,7 @@ export function makeBureauSessionsApp<TSession extends { kind: string }>(
   return {
     id: "agentproto_bureau_sessions",
     title: "Bureau — sessions navigateur",
-    description:
-      "Open the browser-sessions panel — one row per browser service " +
-      "(adapter, base URL, port, status, uptime). Polls live every ~5 s.",
+    description: LEGACY_DESCRIPTION + " Polls live every ~5 s.",
     inputSchema: bureauSessionsInputSchema,
     execute: async input => ({
       sessions: ops.listSessions(input.filter).filter(s => s.kind === "browser"),
@@ -68,9 +79,7 @@ export function makeBureauSessionsApp<TSession extends { kind: string }>(
 export const bureauSessionsApp: AppHandle = defineApp({
   id: "@agentproto/bureau-sessions",
   name: "Bureau — sessions navigateur",
-  description:
-    "Open the browser-sessions panel — one row per browser service (adapter, base URL, port, " +
-    "status, uptime).",
+  description: LEGACY_DESCRIPTION,
   agents: [],
   ui: {
     html: BUREAU_SESSIONS_HTML,

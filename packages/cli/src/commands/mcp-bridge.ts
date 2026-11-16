@@ -8,11 +8,18 @@
  *
  * Usage:
  *   agentproto mcp-bridge [--surface approval-cards]
+ *   agentproto mcp-bridge --import <alias|importId>
  *
  * `--surface <name>` sets `?surface=<name>` on the daemon URL (the default
  * one or AGENTPROTO_MCP_URL; any other query parameter in it is kept). Only
  * `approval-cards` is accepted: the human-facing Approve / Refuse cards for
  * Claude Desktop, see `install-mcp --approvals`.
+ *
+ * `--import <alias|importId>` dials `/mcp/imported/<alias|importId>` instead of
+ * `/mcp`: the stdio client gets ONE imported server (for example `bureau`)
+ * with its own native tool names, not the daemon's orchestration tools. The
+ * daemon accepts the alias or the import id. Same auth and caller identity as
+ * `/mcp`. Not combinable with `--surface`.
  *
  * Configuration:
  *   AGENTPROTO_MCP_URL  - explicit URL (e.g. http://127.0.0.1:18790/mcp);
@@ -51,6 +58,7 @@ import {
   parseBridgeArgs,
   urlForLog,
   watchParentExit,
+  withImport,
   withSurface,
 } from "./mcp-bridge.logic.js"
 import { forwardBridgeTool } from "./mcp-bridge-call.js"
@@ -62,7 +70,11 @@ export async function runMcpBridge(args: readonly string[]): Promise<number> {
     return 2
   }
   const baseUrl = process.env.AGENTPROTO_MCP_URL ?? (await resolveDefaultUrl())
-  const url = parsed.surface ? withSurface(baseUrl, parsed.surface) : baseUrl
+  const url = parsed.importRef
+    ? withImport(baseUrl, parsed.importRef)
+    : parsed.surface
+      ? withSurface(baseUrl, parsed.surface)
+      : baseUrl
 
   if (!process.env.AGENTPROTO_MCP_URL) {
     process.stderr.write(

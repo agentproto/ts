@@ -120,6 +120,49 @@ const RELAYED_TOOLS = [
   "browser_screencast_stop",
 ]
 
+describe("relay deprecation and press_key refusal", () => {
+  it("every relayed tool but fetch_page opens its description with the deprecation and names a Bureau tool", async () => {
+    const { client, cleanup } = await makeSetup({})
+    try {
+      const tools = (await client.listTools()).tools
+      for (const tool of tools) {
+        if (tool.name === "fetch_page") continue
+        expect(tool.description, tool.name).toMatch(/^DEPRECATED relay to Bureau \(runs Bureau's `browser_[a-z_]+`/)
+        expect(tool.description, tool.name).toContain("mcp_imported_call")
+      }
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("the deprecation note on a result says how to reach Bureau", async () => {
+    const { client, cleanup } = await makeSetup({})
+    try {
+      const res = await client.callTool({ name: "browser_get_dom", arguments: {} })
+      const note = (res.structuredContent as { deprecated?: string }).deprecated ?? ""
+      expect(note).toContain('mcp_imported_call({ alias: "bureau"')
+      expect(note).toContain("`bureau` MCP server")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("browser_press_key refuses selector and count instead of dropping them, and calls nothing", async () => {
+    const { client, proxy, cleanup } = await makeSetup({})
+    try {
+      const res = await client.callTool({
+        name: "browser_press_key",
+        arguments: { key: "Enter", selector: "#q", count: 3 },
+      })
+      expect(res.isError).toBe(true)
+      expect(textOf(res)).toContain('"selector", "count" not supported')
+      expect(proxy?.callTool).not.toHaveBeenCalled()
+    } finally {
+      await cleanup()
+    }
+  })
+})
+
 describe("tools/list", () => {
   it("registers the relayed tools and none of the removed ones by default", async () => {
     const { client, cleanup } = await makeSetup({})
@@ -257,15 +300,11 @@ describe("relayed tools forward to Bureau with the caller identity", () => {
         tabId: "t1",
         instance: "inst-1",
         key: "ArrowDown",
-        selector: "#list",
-        count: 2,
         modifiers: ["Shift"],
       },
       target: "browser_press_key",
       expectedArgs: {
         key: "ArrowDown",
-        selector: "#list",
-        count: 2,
         modifiers: ["Shift"],
         tabId: "t1",
         instance: "inst-1",
@@ -301,7 +340,7 @@ describe("relayed tools forward to Bureau with the caller identity", () => {
         expect(proxy?.callTool).toHaveBeenCalledWith("bureau", c.target, c.expectedArgs, {
           callerSessionId: CALLER,
         })
-        expect((res.structuredContent as { deprecated?: string }).deprecated).toContain("proxy to Bureau")
+        expect((res.structuredContent as { deprecated?: string }).deprecated).toContain("deprecated relays to Bureau")
         expect((res.structuredContent as { notes?: string[] }).notes ?? []).toEqual(c.expectedNotes)
       } finally {
         await cleanup()
