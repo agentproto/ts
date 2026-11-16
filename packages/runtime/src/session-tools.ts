@@ -6309,6 +6309,10 @@ export function registerSessionTools(
             // `--name dev-shell` handle. `getSlug` reads `slug ?? name`, so a
             // legacy named row is migrated onto the slug on restart.
             ...(getSlug(prev) ? { slug: getSlug(prev) } : {}),
+            // `replaces` makes the new row take over the slug even while this
+            // row is still alive (the PTY restart does not stop it): the plain
+            // `slug` forward above is only the fallback when that is refused.
+            replaces: prev.id,
             ...(prev.label ? { label: prev.label } : {}),
             // Lineage carry-forward (#session-visibility) — same reasoning as
             // the agent branch in session-restart-core.ts: a restart keeps the

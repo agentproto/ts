@@ -1836,6 +1836,8 @@ async function restartAgentSessionOnce(
             } satisfies SessionAuthEcho,
           }
         : {}),
+      // The restarted row takes over the predecessor's slug (no `x-2` drift).
+      replaces: prev.id,
       resumedFrom: prev.id,
       resumeVia,
     })
@@ -2666,6 +2668,8 @@ async function restartAgentSessionOnce(
         : {}),
       ...(box.sandboxPorts ? { sandboxPorts: box.sandboxPorts } : {}),
       commandPreview: `sandbox:${box.provider} → ${adapterSlug}`,
+      // The restarted row takes over the predecessor's slug (no `x-2` drift).
+      replaces: prev.id,
       resumedFrom: prev.id,
       resumeVia: box.resumeVia ?? "",
     })

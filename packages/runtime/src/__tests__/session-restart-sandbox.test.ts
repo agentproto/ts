@@ -336,6 +336,21 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(result.desc.pinnedOrder).toBe(pinOrder)
   })
 
+  it("hands the replaced sandbox row's slug to the restarted session", async () => {
+    // The predecessor is NOT killed first: a restart mints while it still
+    // runs (it is stopped after the spawn), so the slug must move regardless
+    // of its status. Before `replaces` the new row got `fake-cli-2`.
+    const { resolver, providerResolver } = await setup({ killPrev: false })
+    expect(prev.slug).toBe("fake-cli")
+
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    expect(result.desc.slug).toBe("fake-cli")
+    expect(registry.get(prev.id)!.slug).toBeUndefined()
+  })
+
   it("registers the RESUMED session on the live box's ledger row (gc must not reap it)", async () => {
     const savedLedger = process.env.AGENTPROTO_SANDBOX_LEDGER
     const ledgerDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-ledger-"))
