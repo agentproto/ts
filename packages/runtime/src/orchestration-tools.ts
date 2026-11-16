@@ -2113,7 +2113,7 @@ export function registerOrchestrationTools(
     ...(opts.taskLedger ? { ledger: opts.taskLedger } : {}),
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),
-    ...(callerSessionId
+    ...(callerSessionId || callerScope
       ? {
           isOperatorDelegate: (sessionId: string) =>
             matchesSessionGrant(
@@ -2122,6 +2122,27 @@ export function registerOrchestrationTools(
               id => registry.get(id)?.operatorLabel,
               id => registry.get(id)?.parentSessionId,
             ),
+          // A session spawned (at any depth) by an operator delegate may
+          // write the operator's ws board, nothing wider.
+          isDelegateDescendant: (sessionId: string) => {
+            const seen = new Set<string>([sessionId])
+            let cur = registry.get(sessionId)?.parentSessionId
+            while (cur && !seen.has(cur)) {
+              seen.add(cur)
+              if (
+                matchesSessionGrant(
+                  operatorDelegates,
+                  cur,
+                  id => registry.get(id)?.operatorLabel,
+                  id => registry.get(id)?.parentSessionId,
+                )
+              ) {
+                return true
+              }
+              cur = registry.get(cur)?.parentSessionId
+            }
+            return false
+          },
         }
       : {}),
   })

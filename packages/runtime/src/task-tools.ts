@@ -106,6 +106,10 @@ export interface RegisterTaskToolsOptions {
    *  `defaults.tasks.operatorDelegates` names it. Never consulted for a
    *  bound `callerScope`. */
   isOperatorDelegate?: (sessionId: string) => boolean
+  /** Whether that session is a spawn-tree descendant of an operator
+   *  delegate. Grants write rights on the operator's `ws:*` board only
+   *  (see `TaskCaller.delegateDescendant`). */
+  isDelegateDescendant?: (sessionId: string) => boolean
   /** Optional allowlist — same semantics as the other register passes. */
   toolSubset?: ReadonlySet<string>
 }
@@ -142,7 +146,8 @@ export function registerTaskTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { ledger, callerScope, callerSessionId, isOperatorDelegate } = opts
+  const { ledger, callerScope, callerSessionId, isOperatorDelegate, isDelegateDescendant } =
+    opts
 
   /**
    * Resolve the calling identity. A bound scope is that session; an unbound
@@ -156,13 +161,22 @@ export function registerTaskTools(
       if (!callerScope.ownerSessionId) {
         return { error: "scope is not yet bound to a session; cannot touch tasks" }
       }
-      return { kind: "session", sessionId: callerScope.ownerSessionId }
+      return {
+        kind: "session",
+        sessionId: callerScope.ownerSessionId,
+        ...(isDelegateDescendant?.(callerScope.ownerSessionId)
+          ? { delegateDescendant: true as const }
+          : {}),
+      }
     }
     if (callerSessionId) {
       return {
         kind: "session",
         sessionId: callerSessionId,
         ...(isOperatorDelegate?.(callerSessionId) ? { actsAsOperator: true } : {}),
+        ...(isDelegateDescendant?.(callerSessionId)
+          ? { delegateDescendant: true as const }
+          : {}),
       }
     }
     return { kind: "operator" }

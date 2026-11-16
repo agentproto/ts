@@ -285,6 +285,37 @@ describe("operator delegates", () => {
   })
 })
 
+describe("delegate descendants", () => {
+  const CHILD: TaskCaller = {
+    kind: "session",
+    sessionId: "child",
+    delegateDescendant: true,
+  }
+
+  it("a plain child is refused, a delegate descendant updates the operator ws board", () => {
+    const { ledger } = harness({ operatorWorkspaceSlug: "w1" })
+    const t = mustOk(ledger.create({ title: "operator task" }, OPERATOR))
+    // Without the flag: the refusal the brain's executors hit.
+    expect(
+      mustError(ledger.update({ taskId: t.taskId, rev: 0, status: "cancelled" }, session("child"))),
+    ).toContain("only the task's owner")
+    const done = mustOk(ledger.update({ taskId: t.taskId, rev: 0, status: "cancelled" }, CHILD))
+    expect(done.status).toBe("cancelled")
+  })
+
+  it("does not reach another board's tasks", () => {
+    const { ledger } = harness({ operatorWorkspaceSlug: "w1" })
+    const other = mustOk(ledger.create({ title: "other ws", boardId: "ws:other" }, OPERATOR))
+    expect(
+      mustError(ledger.update({ taskId: other.taskId, rev: 0, status: "cancelled" }, CHILD)),
+    ).toContain("only the task's owner")
+    const tree = mustOk(ledger.create({ title: "tree", boardId: "tree:child" }, OPERATOR))
+    expect(
+      mustError(ledger.update({ taskId: tree.taskId, rev: 0, title: "x" }, CHILD)),
+    ).toContain("only the task's owner")
+  })
+})
+
 // ── State machine ─────────────────────────────────────────────────────
 
 describe("state machine", () => {
