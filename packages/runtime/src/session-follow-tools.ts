@@ -200,8 +200,9 @@ export function followView(follow: SessionFollow): SessionFollow {
 export interface RegisterSessionFollowToolsOptions {
   store: SessionFollowStore
   hasSession: (sessionId: string) => boolean
-  /** External sessions receive an inbox digest; only their host can wake them. */
+  /** External sessions receive an inbox digest. */
   sessionKind?: (sessionId: string) => string | undefined
+  codexDesktopWakeEnabled?: (sessionId: string) => boolean
   /** Trusted `?callerSessionId=` of the connecting `/mcp` client. */
   callerSessionId?: string
 }
@@ -276,10 +277,15 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       )
       if (!result.ok) return fail(result.error, `session_follow: ${result.message}`)
       const external = opts.sessionKind?.(result.follow.follower) === "external"
+      const codex = external && opts.codexDesktopWakeEnabled?.(result.follow.follower)
       return ok({
         created: result.created,
         follow: followView(result.follow),
-        ...(external ? { delivery: {
+        ...(codex ? { delivery: {
+          mode: "codex-desktop-ipc",
+          wakesFollower: true,
+          message: "Agentproto may wake this allowlisted local Codex Desktop chat when idle. Digests stay in the inbox until the chat acknowledges them.",
+        } } : external ? { delivery: {
           mode: "external-inbox",
           wakesFollower: false,
           message: "The digest reaches the follower's agentproto inbox. Its host must consume it and queue a turn in that chat; agentproto cannot wake a Desktop chat by itself.",

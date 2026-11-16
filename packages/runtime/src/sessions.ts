@@ -38,6 +38,7 @@ import type { PrFooterState } from "./pr-provenance-stamp.js"
 import { computeAgentRoleRefresh, renderRoleUpdateNotice } from "./agent-role-refresh.js"
 import type { AgentManifestRefError } from "./spawn-agent-manifest.js"
 import { encodeCloudSessionMeta, resolveCloudResumeId } from "@agentproto/cloud-agent"
+import { codexDesktopThreadId, createCodexDesktopWake, type CodexDesktopWakeOptions, type CodexDesktopWakeOutcome } from "./codex-desktop-wake.js"
 import {
   CONVERSATION_STORES,
   conversationTerminalSlugFor,
@@ -1532,6 +1533,8 @@ export interface SendMessageResult {
    *  `via: "socket"`, nothing is parked); a skipped or failed wake falls back
    *  to the inbox and `reason` records why. */
   wake?: ClaudeSocketWakeOutcome
+  /** The wake notification result; the actual message remains in the inbox. */
+  desktopWake?: CodexDesktopWakeOutcome
 }
 
 export interface WaitForMessagesResult {
@@ -6798,6 +6801,7 @@ export function createSessionsRegistry(opts?: {
    *  skip or failure falls back to the inbox and is reported on
    *  `SendMessageResult.wake`. Off unless `enabled` is true. */
   claudeSocketWake?: ClaudeSocketWakeConfig
+  codexDesktopWake?: CodexDesktopWakeOptions
   /** How long a queued prompt may wait before it is reported stuck
    *  (`pendingPrompts[].stale`, sender notice). Default
    *  {@link DEFAULT_PENDING_PROMPT_STALE_MS}; `sweepPendingPrompts({staleMs})`
@@ -7036,6 +7040,7 @@ export function createSessionsRegistry(opts?: {
       : DEFAULT_EXTERNAL_SESSION_LIVENESS_MS
   const externalNowMs = opts?.externalNow ?? Date.now
   const claudeSocketWake = opts?.claudeSocketWake
+  const codexDesktopWake = opts?.codexDesktopWake ? createCodexDesktopWake(opts.codexDesktopWake) : undefined
   const wakeWarningsByReceiver = new Map<string, WakeWarning>()
   /** Lazily expire an `external` row whose last sighting fell out of the
    *  liveness window: there is no process whose exit could flip it, so every
@@ -14307,6 +14312,12 @@ export function createSessionsRegistry(opts?: {
             }
           }
         }
+        const wakeThread = msg.urgency === "next-turn" && codexDesktopWake?.configured(rt.desc)
+          ? codexDesktopThreadId(rt.desc.id)
+          : undefined
+        if (wakeThread && rt.desc.inbox?.some(entry => entry.id === msg.id)) {
+          return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: msg.urgency }
+        }
         const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
         if (!addToInbox(rt, parked)) {
           // Refused: don't ack a delivery that never happened, don't emit.
@@ -14320,12 +14331,18 @@ export function createSessionsRegistry(opts?: {
         }
         recordSent(parked)
         emitSessionMessage(parked)
+        const desktopWake = wakeThread ? await codexDesktopWake?.wake(wakeThread, msg.id, () => (
+          sessions.get(msg.to) === rt && !isRetired(rt.desc) &&
+          (rt.desc.status === "running" || rt.desc.status === "starting" || isExternalInboxOpen(rt.desc)) &&
+          rt.desc.inbox?.some(entry => entry.id === msg.id) === true
+        )) : undefined
         return {
           messageId: msg.id,
           delivered: { via: "inbox" },
           queued: false,
           urgencyApplied: msg.urgency,
           ...(wake ? { wake } : {}),
+          ...(desktopWake ? { desktopWake } : {}),
         }
       }
       // An un-granted interrupt never cuts a turn: the fastest thing short
@@ -16732,6 +16749,7 @@ export function createSessionsRegistry(opts?: {
   function shutdownImpl(): void {
     if (shutdownDone) return
     shutdownDone = true
+    codexDesktopWake?.shutdown()
     // In-memory-only fs watchers (agent-role-refresh opt-in watch) never
     // outlive their registry.
     for (const id of [...agentRoleWatchers.keys()]) stopAgentRoleWatch(id)

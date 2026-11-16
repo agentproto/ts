@@ -34,12 +34,11 @@ that does not attach them must be updated to do so. The bridge never derives
 conversation identity from `clientInfo.name`, a process-wide `CODEX_THREAD_ID`,
 or an old agentproto session id.
 
-**Identity does not provide a wake transport.** External sessions have an
-inbox and no daemon-owned agent process. `session_follow` reports
-`delivery: { mode: "external-inbox", wakesFollower: false, ... }` for them.
-A digest keeps its requested `next-turn` urgency in that inbox, but only the
-Desktop host can enqueue a new turn in the original chat. See the
-[host integration requirements](../guides/session-follow.md#desktop-host-integration).
+Identity alone provides inbox delivery. By default `session_follow` reports
+`delivery: { mode: "external-inbox", wakesFollower: false, ... }`.
+For allowlisted local chats, the daemon can use
+[experimental Codex Desktop wake](../guides/session-follow.md#experimental-local-codex-desktop-wake)
+to request a notification turn from Desktop.
 
 ## Configuration
 

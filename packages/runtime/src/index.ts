@@ -2685,6 +2685,8 @@ export async function createGateway(
   // webhook notifier — a brain failure never throws into the exit path.
   // Limits come from `defaults.reactions.brainIngest`, read once at boot.
   const daemonConfig = await loadConfig()
+  const rawCodexWakeThreadIds = daemonConfig.daemon?.codexDesktopWakeThreadIds
+  const codexWakeThreadIds = Array.isArray(rawCodexWakeThreadIds) ? rawCodexWakeThreadIds : []
   // Operator-only read-only grants for apps (`apps.readGrants`); validated and
   // logged once at boot. Never sourced from an app manifest.
   const appReadGrants = createAppReadGrantResolver(daemonConfig.apps?.readGrants, { daemonWorkspace: workspace })
@@ -2970,6 +2972,9 @@ export async function createGateway(
       ? { externalSessionLivenessMs }
       : {}),
     ...(daemonConfig.daemon?.claudeSocketWake ? { claudeSocketWake: { enabled: true } } : {}),
+    ...(codexWakeThreadIds.length > 0
+      ? { codexDesktopWake: { threadIds: codexWakeThreadIds } }
+      : {}),
     onOpenedPr: sentinelAutoLinker.onOpenedPr,
     ...(daemonConfig.sessions?.eventsDir
       ? { transcriptDir: defaultTranscriptBaseDir() }
@@ -5111,6 +5116,8 @@ export async function createGateway(
       store: sessionFollowStore,
       hasSession: id => sessions.get(id) !== undefined,
       sessionKind: id => sessions.get(id)?.kind,
+      codexDesktopWakeEnabled: id => sessions.get(id)?.externalHost === "codex" &&
+        codexWakeThreadIds.some(threadId => id === `codex:${threadId}`),
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
