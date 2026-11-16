@@ -430,6 +430,8 @@ async function continueAgentSessionFreshOnce(
     mcpServers: stripOwnCallerStamp(prev.mcpServers, prev.id),
     label: prev.label ? stripContinuedSuffix(prev.label) : undefined,
     title: prev.title ? stripContinuedSuffix(prev.title) : undefined,
+    // The continuation takes over the retired row's slug, like a restart.
+    replaces: prev.id,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,
     // The clerk hook's AGENT level lives on the descriptor; `spawnAgentSession`
     // re-reads it from `hooks.clerk`.

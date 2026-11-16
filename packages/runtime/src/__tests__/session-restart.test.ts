@@ -1227,6 +1227,33 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     registry.shutdown()
   })
 
+  it("a PTY restart hands the slug over even while the predecessor is still alive", async () => {
+    const { client, registry, close } = await buildHarness()
+    const prev = registry.spawnPty({
+      argv: ["bash"],
+      cwd: process.cwd(),
+      workspaceSlug: "default",
+      cols: 80,
+      rows: 24,
+      name: "dev-shell",
+    })
+    // Not killed: the PTY restart never stops the row it replaces, so a rule
+    // that only frees DEAD holders would have minted `dev-shell-2`.
+    expect(registry.get(prev.id)!.status).toBe("running")
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    const desc = toolJson(result)
+
+    expect(desc.slug).toBe("dev-shell")
+    expect(registry.get(prev.id)!.slug).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
   it("preserves the addressable slug across a plain PTY restart (the --name handle survives)", async () => {
     const { client, registry, close } = await buildHarness()
     const prev = registry.spawnPty({

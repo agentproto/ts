@@ -6326,6 +6326,14 @@ export interface SpawnAgentInput {
    *  {@link SessionDescriptor.resumedFrom}. Absent for a direct (non-restart)
    *  spawn. */
   resumedFrom?: string
+  /** The row this spawn REPLACES (a restart or a continue-fresh): the new row
+   *  takes over that row's `slug` verbatim (a user rename included) and the
+   *  replaced row gives it up, so a slug keeps naming the one live session of
+   *  the conversation instead of drifting to `x-2`, `x-3`, ... at every
+   *  restart. Not set by `agent_start.succeeds` (a position handover: the
+   *  predecessor stays a live, separately addressable session). Ignored when
+   *  the replaced row has no slug. */
+  replaces?: string
   /** Human-readable resume path, recorded onto {@link SessionDescriptor.resumeVia}.
    *  Threaded through alongside `resumedFrom` — see that field's doc. */
   resumeVia?: string
@@ -6582,6 +6590,11 @@ export interface SpawnPtyInput {
    *  pty-native/pty-plain branches (session-tools.ts). */
   resumedFrom?: string
   resumeVia?: string
+  /** The row this PTY replaces (a restart): it takes over that row's `slug`
+   *  and the replaced row gives it up. See {@link SpawnAgentInput.replaces}.
+   *  The replaced row may still be alive here (the PTY restart does not stop
+   *  it), which a dead-holder reclaim alone could not handle. */
+  replaces?: string
 }
 
 export interface RecordCommandInput {
@@ -8149,6 +8162,34 @@ export function createSessionsRegistry(opts?: {
       if (getSlug(rt.desc) === candidate) return true
     }
     return false
+  }
+
+  /** The slug a spawn inherits from the row it REPLACES (see
+   *  `SpawnAgentInput.replaces`), or `undefined` when there is nothing to
+   *  inherit: no such row, a row without a slug, or a slug some OTHER row
+   *  also holds (legacy duplicates), in which case the caller mints as usual.
+   *  Read BEFORE minting and regardless of the replaced row's status: a
+   *  restart mints while its predecessor is still `running` (it is stopped
+   *  only after the spawn), so a "free dead holders" rule cannot apply. */
+  const slugInheritedFrom = (replaces: string | undefined): string | undefined => {
+    if (!replaces) return undefined
+    const prev = sessions.get(replaces)
+    const inherited = prev ? getSlug(prev.desc) : undefined
+    if (!inherited || isSlugTaken(inherited, replaces)) return undefined
+    return inherited
+  }
+
+  /** Give up the replaced row's slug once the new row owns it. Called in the
+   *  same synchronous block that registers the new row, so a spawn that throws
+   *  earlier leaves the predecessor's slug intact, and no other spawn can
+   *  observe the slug held twice or by neither. */
+  const releaseSlugOf = (replaces: string | undefined): void => {
+    if (!replaces) return
+    const prev = sessions.get(replaces)
+    if (!prev) return
+    prev.desc.slug = undefined
+    prev.desc.name = undefined
+    schedulePersist()
   }
 
   /** Lazy slug backfill (session-addressing PLAN §4 WP-B1). A descriptor
@@ -12798,11 +12839,15 @@ export function createSessionsRegistry(opts?: {
       // present of title || label || adapterSlug || kind, de-duped against
       // every session the registry currently holds. `id` is the fallback tail
       // when the input slugifies to empty.
-      const slug = mintSlug(
-        input.title || input.label || input.adapterSlug || "agent-cli",
-        candidate => isSlugTaken(candidate),
-        id,
-      )
+      // A restart / continue-fresh (`replaces`) keeps its predecessor's slug.
+      const inheritedSlug = slugInheritedFrom(input.replaces)
+      const slug =
+        inheritedSlug ??
+        mintSlug(
+          input.title || input.label || input.adapterSlug || "agent-cli",
+          candidate => isSlugTaken(candidate),
+          id,
+        )
       let desc: SessionDescriptor = {
         id,
         kind: "agent-cli",
@@ -13011,6 +13056,7 @@ export function createSessionsRegistry(opts?: {
         rt.emitter.setMaxListeners(50)
         sessions.set(id, rt)
       }
+      if (inheritedSlug) releaseSlugOf(input.replaces)
       linkContinuedTo(input.resumedFrom, id)
       // Bind the agent session onto `rt` BEFORE the consumers below that read
       // `rt.agentSession` (`bindOutOfTurnEvents`, `stampCapabilities`,
@@ -13484,6 +13530,9 @@ export function createSessionsRegistry(opts?: {
       // only LIVE holders count as taken. `mintSlug` with an always-false
       // predicate yields the bare slugified base (no de-dup), which is what
       // we compare a holder against. Live collisions still append `-2`, `-3`.
+      // A restart (`replaces`) inherits its predecessor's slug. Read before the
+      // dead-holder reclaim below, which could otherwise clear it first.
+      const inheritedSlug = slugInheritedFrom(input.replaces)
       const rawSlug = input.slug || input.name || input.label || conversationSlug || "terminal"
       const baseSlug = mintSlug(rawSlug, () => false, id)
       for (const rt of sessions.values()) {
@@ -13493,7 +13542,7 @@ export function createSessionsRegistry(opts?: {
         rt.desc.slug = undefined
         rt.desc.name = undefined
       }
-      const slug = mintSlug(rawSlug, candidate => isSlugTaken(candidate), id)
+      const slug = inheritedSlug ?? mintSlug(rawSlug, candidate => isSlugTaken(candidate), id)
       const desc: SessionDescriptor = {
         id,
         kind: "terminal",
@@ -13557,6 +13606,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      if (inheritedSlug) releaseSlugOf(input.replaces)
       linkContinuedTo(input.resumedFrom, id)
       // Lineage-attribution signal (WP-R3) — same rule as spawnAgent above.
       sessionEvents?.emit({

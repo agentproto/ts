@@ -1837,6 +1837,10 @@ export interface SpawnAgentSessionDeps {
 }
 
 export interface SpawnAgentSessionInput {
+  /** The session this spawn replaces (a continue-fresh): the new row takes over
+   *  its slug and the replaced row gives it up. See `SpawnAgentInput.replaces`.
+   *  Internal: not part of the `agent_start` tool schema. */
+  replaces?: string
   adapter: string
   /** Canonical harness slug — recorded on the descriptor; defaults to `adapter`. */
   harness?: string
@@ -6831,6 +6835,7 @@ async function spawnAgentSessionOnce(
       ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
       ...(callerExposedToolOptIn ? { exposedToolOptIn: callerExposedToolOptIn } : {}),
       ...resumeLineageFields,
+      ...(input.replaces ? { replaces: input.replaces } : {}),
       workspaceSlug: resolvedSlug,
       cwd,
       agentSession,

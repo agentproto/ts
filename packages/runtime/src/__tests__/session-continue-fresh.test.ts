@@ -269,6 +269,23 @@ describe("continueAgentSessionFresh", () => {
     expect(input.title).toBe("Fixing the billing module")
   })
 
+  it("asks the spawn to take over the retired row's slug (`replaces`)", async () => {
+    const prev = makePrev()
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.replaces).toBe(prev.id)
+  })
+
   it("stamps continuationGeneration: prev's generation + 1, or 1 from a base row", async () => {
     const base = makePrev()
     const baseNew = { id: "sess_new" } as SessionDescriptor
