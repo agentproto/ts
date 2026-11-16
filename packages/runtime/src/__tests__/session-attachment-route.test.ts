@@ -175,3 +175,85 @@ describe("GET /sessions/:id/attachments/:filename", () => {
     }
   })
 })
+
+/**
+ * session-chat served by the daemon itself (`http://127.0.0.1:<port>/apps/…`)
+ * re-renders a cold-loaded image with a same-origin GET. Browsers send no
+ * `Origin` on that request and loopback has no bearer, so before the
+ * `sameOriginAppUiRead` gate branch the thumbnail came back 401.
+ */
+describe("GET /sessions/:id/attachments/:filename from a daemon-served page", () => {
+  let tmp: string
+  let port: number
+  let http: Awaited<ReturnType<typeof startHttpServer>>
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), "session-attachment-same-origin-"))
+    setDefaultSessionsBaseDir(tmp)
+    const dir = sessionAttachmentsDir("sess_1")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, "abc123.png"), Buffer.from("fake-png-bytes"))
+    port = await freePort()
+    http = await startHttpServer({
+      port,
+      token: TOKEN,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: createSessionsRegistry({ persist: false }),
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+  })
+
+  afterEach(async () => {
+    await http.stop()
+    setDefaultSessionsBaseDir(undefined)
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  const get = (headers: Record<string, string>, method = "GET") =>
+    fetch(`http://127.0.0.1:${port}/sessions/sess_1/attachments/abc123.png`, {
+      method,
+      headers,
+    })
+
+  it("serves an app UI page's same-origin read (no Origin, no bearer)", async () => {
+    const res = await get({
+      "sec-fetch-site": "same-origin",
+      referer: `http://127.0.0.1:${port}/apps/@agentik/session-chat/ui?session=sess_1`,
+    })
+    expect(res.status).toBe(200)
+    expect(Buffer.from(await res.arrayBuffer()).toString()).toBe("fake-png-bytes")
+  })
+
+  it("refuses a same-origin read from an agent-made artifact page", async () => {
+    const res = await get({
+      "sec-fetch-site": "same-origin",
+      referer: `http://127.0.0.1:${port}/sessions/sess_2/artifacts/page/raw/apps/x.html`,
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it("refuses a cross-site request even with an app UI Referer", async () => {
+    const res = await get({
+      "sec-fetch-site": "cross-site",
+      referer: `http://127.0.0.1:${port}/apps/@agentik/session-chat/ui`,
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it("refuses an app UI Referer from another host", async () => {
+    const res = await get({
+      "sec-fetch-site": "same-origin",
+      referer: "http://evil.example/apps/@agentik/session-chat/ui",
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it("refuses a same-origin read with no Referer", async () => {
+    const res = await get({ "sec-fetch-site": "same-origin" })
+    expect(res.status).toBe(401)
+  })
+})

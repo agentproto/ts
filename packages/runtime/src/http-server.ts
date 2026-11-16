@@ -2007,6 +2007,9 @@ export async function startHttpServer(
    *      this too).
    *   3. An `Origin: <url>` header matching `allowedOrigins` — the
    *      browser path. Origin is browser-set, JS can't forge.
+   *   4. A per-boot widget embed token (`?et=`).
+   *   5. A same-origin GET/HEAD from a daemon-served app UI page
+   *      (`sameOriginAppUiRead`), which carries no Origin at all.
    *
    * UNLIKE `authorize()`, this does NOT have a loopback bypass: the
    * threat we're defending against (browser drive-by spawning shells
@@ -2042,7 +2045,43 @@ export async function startHttpServer(
     //    document has an opaque origin no allowlist can name.
     if (embedTokenTrusted(req)) return "ok"
 
+    // 5. A same-origin read from one of the daemon's own app UI pages.
+    if (sameOriginAppUiRead(req)) return "ok"
+
     return header ? "bad" : "missing"
+  }
+
+  /**
+   * A browser GET/HEAD issued by a page the daemon itself serves under
+   * `/apps/<id>/ui` (session-chat opened at `http://127.0.0.1:<port>/apps/…`).
+   * Browsers send no `Origin` on a same-origin GET (fetch or `<img>`), so the
+   * Origin-allowlist branch never sees one, and on loopback there is no
+   * bearer either: a cold-loaded chat image
+   * (`GET /sessions/:id/attachments/:file`) came back 401 and rendered broken.
+   *
+   * Both headers are browser-set and unforgeable from page JS:
+   * `Sec-Fetch-Site: same-origin` proves the initiator is the daemon's own
+   * origin, and the `Referer` path proves it is an app UI page, the same
+   * pages whose POSTs already pass through their allowlisted `Origin`. So no
+   * new privilege is granted. The Referer check matters: agent-made HTML
+   * artifacts are served from the same origin
+   * (`/sessions/:id/artifacts/:key/raw`, `img-src 'self'`) and must not read
+   * other sessions' files this way. A non-browser client could forge both
+   * headers, but it could forge an allowlisted `Origin` just as well; this
+   * gate defends against browser drive-bys, not local processes.
+   */
+  function sameOriginAppUiRead(req: IncomingMessage): boolean {
+    if (req.method !== "GET" && req.method !== "HEAD") return false
+    if (req.headers["sec-fetch-site"] !== "same-origin") return false
+    const referer = req.headers.referer
+    const host = req.headers.host
+    if (typeof referer !== "string" || typeof host !== "string") return false
+    try {
+      const ref = new URL(referer)
+      return ref.host === host && ref.pathname.startsWith("/apps/")
+    } catch {
+      return false
+    }
   }
 
   /**
