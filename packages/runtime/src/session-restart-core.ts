@@ -1842,6 +1842,7 @@ async function restartAgentSessionOnce(
     // The registry now serves this caller's context itself.
     unstageSpawningCaller()
     if (modelMismatch) registry.emitHarnessWarning(desc.id, [modelApplyWarning(modelMismatch)], prev.label)
+    registry.inheritDisplayName(desc.id, prev)
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
@@ -2670,6 +2671,7 @@ async function restartAgentSessionOnce(
     })
     const carriedPlacement = box.placement ?? prev.placement
     if (carriedPlacement) registry.recordPlacement(desc.id, carriedPlacement)
+    registry.inheritDisplayName(desc.id, prev)
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)

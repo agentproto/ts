@@ -238,6 +238,7 @@ describe("cron prompt-session — agent label target", () => {
       list: vi.fn(() => [deadDesc]),
       sendPrompt,
       spawnAgent,
+      inheritDisplayName: vi.fn(),
       pulseActivity: vi.fn(),
       kill: vi.fn(),
     } as unknown as SessionsRegistry
