@@ -214,7 +214,15 @@ export interface TaskRecord {
  */
 export type TaskCaller =
   | { kind: "operator" }
-  | { kind: "session"; sessionId: string; actsAsOperator?: true }
+  | {
+      kind: "session"
+      sessionId: string
+      actsAsOperator?: true
+      /** Set ONLY for a spawn-tree DESCENDANT of an operator delegate. It
+       *  grants manager rights on the operator's `ws:<slug>` board and
+       *  nothing else: no other board, no `tree:*` task it doesn't own. */
+      delegateDescendant?: true
+    }
 
 /** Owner values that are NOT session ids — never released on session death. */
 const NON_SESSION_OWNERS: readonly string[] = ["human", "operator"]
@@ -725,6 +733,7 @@ export function createTaskLedger(opts: {
   const isManager = (caller: TaskCaller, task: TaskRecord): boolean =>
     caller.kind === "operator" ||
     caller.actsAsOperator === true ||
+    (caller.delegateDescendant === true && task.boardId === operatorBoardId) ||
     (caller.kind === "session" && caller.sessionId === task.createdBy)
 
   const isOwner = (caller: TaskCaller, task: TaskRecord): boolean => {
