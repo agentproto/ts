@@ -1135,6 +1135,17 @@
           "cache_read": 0
         }
       },
+      "hy4-flash-free": {
+        "id": "hy4-flash-free",
+        "name": "Hy4 flash Free",
+        "family": "Hy",
+        "release_date": "2026-11-16",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "iceman-free": {
         "id": "iceman-free",
         "name": "Iceman Free",

@@ -126,6 +126,13 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "tencent",
     provider: "opencode-go",
   },
+  "opencode-go/hy4-flash-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-11-16",
+    vendor: "tencent",
+    provider: "opencode-go",
+  },
   "opencode-go/hy4-preview": {
     inputPer1M: 0.834,
     outputPer1M: 2.501,
@@ -273,6 +280,15 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "qwen",
     provider: "opencode-go",
   },
+  "opencode-go/qwen4-max": {
+    inputPer1M: 1.5,
+    outputPer1M: 4.5,
+    cacheReadMultiplier: 0.05,
+    cacheWriteMultiplier: 1.25,
+    addedAt: "2026-11-16",
+    vendor: "qwen",
+    provider: "opencode-go",
+  },
   "opencode-go/step-5-preview": {
     inputPer1M: 1,
     outputPer1M: 2.7,
@@ -298,4 +314,5 @@ export const OPENCODE_GO_ANTHROPIC_MODELS: readonly string[] = [
   "qwen3.7-plus",
   "qwen3.8-flash",
   "qwen3.8-max",
+  "qwen4-max",
 ]

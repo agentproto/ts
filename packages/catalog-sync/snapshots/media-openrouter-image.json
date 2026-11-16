@@ -1055,8 +1055,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1224,
-            "win_rate": 51.9,
+            "elo": 1223,
+            "win_rate": 51.8,
             "rank": 4
           },
           {
@@ -1136,7 +1136,7 @@
             "arena": "models",
             "category": "imageediting",
             "elo": 1235,
-            "win_rate": 57,
+            "win_rate": 56.9,
             "rank": 2
           },
           {
@@ -2267,8 +2267,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1285,
-            "win_rate": 62.3,
+            "elo": 1284,
+            "win_rate": 62.1,
             "rank": 1
           }
         ]
@@ -3565,7 +3565,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1112,
+            "elo": 1111,
             "win_rate": 46.7,
             "rank": 6
           }
@@ -3666,7 +3666,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1228,
+            "elo": 1227,
             "win_rate": 66,
             "rank": 3
           }
