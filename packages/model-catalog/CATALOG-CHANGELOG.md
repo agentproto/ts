@@ -584,3 +584,17 @@ for that.
 
 ### image:openrouter
 - Added: bytedance-seed/seedream-5-5, minimax/minimax-h3-image, minimax/minimax-h3-image-highspeed, recraft/recraft-v4.1-flash-v2, tencent/hy-world-2.1-panorama
+
+## 2026-11-16
+
+### llm:openrouter
+- Added: qwen/qwen4-max
+
+### llm:requesty
+- Added: lyceum/deepseek-v4-flash-0731, lyceum/deepseek-v4-pro, lyceum/deepseek-v4.1-flash, lyceum/glm-5.3, lyceum/glm-5.3-flash, lyceum/kimi-k3, lyceum/kimi-k3.1-pro
+
+### llm:opencode-go
+- Added: opencode-go/hy4-flash-free, opencode-go/qwen4-max
+
+### llm:opencode-zen
+- Added: opencode/hy4-flash-free

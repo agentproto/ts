@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-openai.mjs
-// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-11-15T23:08:31.480Z)
+// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-11-16T14:16:11.322Z)
 //
 // Provenance is recorded PER ROW — `idSource` says which list the id came
 // from, `priceSource` which source priced it:

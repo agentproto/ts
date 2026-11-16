@@ -557,6 +557,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "x-ai",
     provider: "opencode",
   },
+  "opencode/hy4-flash-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-11-16",
+    vendor: "tencent",
+    provider: "opencode",
+  },
   "opencode/iceman-free": {
     inputPer1M: 0,
     outputPer1M: 0,
