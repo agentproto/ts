@@ -641,8 +641,9 @@ export class ClaudeCloudAcpAgent implements Agent {
     )
   }
 
-  /** No runtime-configurable options (no model menu — the vendor picks the
-   *  model). Empty set so a host that tries to set one doesn't error. */
+  /** No runtime-configurable options: the model is fixed at spawn (the
+   *  manifest's `model` option, applied as `ANTHROPIC_MODEL`), so there is no
+   *  live switch. Empty set so a host that tries to set one doesn't error. */
   async setSessionConfigOption(
     _params: SetSessionConfigOptionRequest,
   ): Promise<SetSessionConfigOptionResponse> {

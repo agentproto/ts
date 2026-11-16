@@ -36,6 +36,12 @@ for (const name of ['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CLOUD_OAUTH_TOKEN']) {
 // then ~/.claude.json oauthAccount.organizationUuid, then the profile API. A
 // `setup-token` credential has no profile scope, so on a clean runner all
 // three come up empty ("Unable to get organization UUID"). Pin it explicitly.
+// This only gets past the org lookup: a setup-token (`user:inference` scope)
+// is still refused at session create (`Cloud session create failed: ... 403`)
+// and by the sessions API (`401 oauth_scope_insufficient`). Every release run
+// from 2026-11-12 to 2026-11-15 failed that way and fell back to the next
+// preset. A cloud turn needs a full `claude auth login` credential, which a
+// clean runner does not have.
 const orgUuid = process.env.CLAUDE_CLOUD_ORG_UUID?.trim()
 if (!orgUuid) {
   throw new Error('CLAUDE_CLOUD_ORG_UUID is required: `claude --cloud` cannot resolve the organization from a setup-token login')

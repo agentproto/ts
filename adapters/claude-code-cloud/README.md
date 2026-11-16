@@ -31,6 +31,15 @@ zero — AIP-66 §7).
   and retries — a still-failing call reports `run \`claude auth login\``. The
   token is only ever used as a request header — never logged or persisted
   (AIP-66 §8).
+- **That login is the only account.** A cloud spawn ignores `access`, account
+  slots and harness presets; switching account means logging the daemon
+  user's `claude` in to another claude.ai account.
+- **A `claude setup-token` credential is not enough.** Its `user:inference`
+  scope cannot create or read cloud sessions (`Cloud session create failed:
+  403`, sessions API `401 oauth_scope_insufficient`, checked 2026-11-17), even
+  with `CLAUDE_CODE_ORGANIZATION_UUID` set. Use a full `claude auth login`.
+- **The first prompt rides argv** (`claude --cloud "<prompt>"`), so on Linux
+  one prompt is capped at 128 KiB (`execvp ... Argument list too long`).
 - **A repo source: a declared workspace remote, or a clean, pushed git
   checkout as the session cwd.** The cloud runs the repo from its git remote,
   never an uploaded working tree.
@@ -61,7 +70,9 @@ agentproto-claude-code-cloud-acp
 ```
 
 `session/cancel` reports unsupported: the vendor exposes no interrupt verb
-(AIP-66 §6). No model menu is exposed either — the vendor picks the model.
+(AIP-66 §6). The model is chosen at spawn: `agent_start({ model })` reaches
+the cloud through `ANTHROPIC_MODEL` (omit it for the vendor default); there is
+no live model switch.
 
 ## Protocol details
 
