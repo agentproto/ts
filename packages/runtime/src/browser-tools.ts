@@ -332,7 +332,10 @@ export function registerBrowserTools(
         .boolean()
         .optional()
         .describe("Retired daemon filter. Dropped (listed in `notes`): Bureau lists instances, not sessions."),
-      instance: instanceField,
+      instance: z
+        .string()
+        .optional()
+        .describe("Dropped (listed in `notes`): Bureau's browser_list_instances takes no argument."),
     },
     relay("list_browsers")
   )

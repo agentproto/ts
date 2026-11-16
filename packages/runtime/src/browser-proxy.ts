@@ -141,7 +141,7 @@ interface BrowserToolMapping {
  *   browser_record_start  { tabId, instance?, fps?, format? }
  *   browser_record_frame  { tabId, instance? }
  *   browser_record_stop   { tabId, instance?, encode? }
- *   browser_list_instances   { instance? }
+ *   browser_list_instances   {}  (takes no argument; the relay drops `instance`)
  */
 const MAPPINGS: Record<ProxiedBrowserToolName, BrowserToolMapping> = {
   browser_navigate: {
