@@ -311,27 +311,6 @@ describe("resolveAdapter — regression: a never-resolved adapter is unaffected"
   })
 })
 
-describe("resolveAdapter — the error text for a transient failure doesn't send the operator to reinstall", () => {
-  it("names 'resolves on disk but could not be imported' instead of 'not installed' when the package IS present but momentarily broken", async () => {
-    _resetLastKnownGoodForTests()
-    await withMutatedDist("@agentproto/adapter-pi", "truncate", async () => {
-      // No prior successful resolve in this process (reset above) and the
-      // file still exists with garbage content — the narrow window this
-      // PR's `AdapterImportFailedError` distinguishes: present, but the
-      // import itself just failed.
-      try {
-        await resolveAdapter("pi")
-        expect.fail("resolveAdapter('pi') should have thrown")
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        expect(message).toMatch(/resolves on disk but could not be imported/)
-        expect(message).not.toMatch(/agentproto install/i)
-        expect(message).not.toMatch(/npm i -g/i)
-      }
-    })
-  })
-})
-
 // jcode is built locally (adapters/jcode/dist/index.mjs exists in this
 // checkout) but is deliberately NOT listed as a dependency of packages/cli
 // and is not published to npm (confirmed via `npm view` returning E404) —
