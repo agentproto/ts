@@ -551,6 +551,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         queued: r.queued,
         urgencyApplied: r.urgencyApplied,
         ...(r.wake ? { wake: r.wake } : {}),
+        ...(r.desktopWake ? { desktopWake: r.desktopWake } : {}),
         ...(anonymous ? { anonymous: true, from: "claude-code" } : {}),
         ...(declared
           ? {

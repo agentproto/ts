@@ -13,6 +13,7 @@
  * narrows, it never drops.
  */
 
+import { CODEX_DESKTOP_THREAD_ID } from "./codex-desktop-wake.js"
 import { z } from "zod"
 import type { Grant } from "@agentproto/policy"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
@@ -438,6 +439,7 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     harnessCacheRetentionDays: z.number().optional(),
     adapterCacheRetentionDays: z.number().optional(),
     claudeSocketWake: z.boolean().optional(),
+    codexDesktopWakeThreadIds: z.array(z.string().regex(CODEX_DESKTOP_THREAD_ID)).optional(),
   })
   .passthrough()
 
@@ -1359,6 +1361,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Claude Code socket wake",
     help: "Wake an idle external Claude Code session over its per-session unix socket for level 2+ messages (next-turn / steer). fyi messages still use the inbox. A bypassPermissions target is written to as well, but Claude Code holds the message until crossSessionInbound is set to accept in ~/.claude/settings.json (agentproto doctor --fix); until then it is also parked in the inbox. Off by default.",
     default: false,
+  },
+  {
+    path: "daemon.codexDesktopWakeThreadIds",
+    schema: z.array(z.string().regex(CODEX_DESKTOP_THREAD_ID)),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Codex Desktop wake allowlist",
+    help: "Experimental. Allow agentproto to start a notification turn in these exact local Codex Desktop chat UUIDs. An empty list disables the private IPC transport.",
+    default: [],
   },
   {
     path: "sessions.eventsDir",

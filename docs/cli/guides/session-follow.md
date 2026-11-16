@@ -200,11 +200,49 @@ An unscoped call without that metadata still returns `no_follower`; it must
 never choose another session based on recency or the host product name.
 Explicit `follower` continues to take precedence.
 
-An **external** session is inbox-only. Even a `next-turn` digest cannot start a
-Desktop turn: the daemon does not own that chat's executor. Registration
-returns `delivery.mode: "external-inbox"` and `delivery.wakesFollower: false`
-to make this boundary visible. Do not report a successful registration as
-proof that Desktop will wake.
+An external session is inbox-only by default. Registration returns
+`delivery.mode: "external-inbox"` and `delivery.wakesFollower: false`. A digest
+keeps its original urgency even when no wake transport is configured.
+
+#### Experimental local Codex Desktop wake
+
+On the same machine and OS account as Codex Desktop, add the exact chat UUIDs
+you want to wake to the daemon's local `~/.agentproto/config.json`, under
+`daemon.codexDesktopWakeThreadIds`, and restart the daemon. For example:
+
+```json
+{
+  "daemon": {
+    "codexDesktopWakeThreadIds": ["00000000-0000-4000-8000-000000000001"]
+  }
+}
+```
+
+The registration response names the `codex-desktop-ipc` transport for those
+chats. On a `next-turn` message, the daemon parks the message in the inbox
+and asks the loaded local Codex Desktop owner to start a turn with a fixed
+notification. The notification tells the chat to read its inbox through MCP.
+The sender's text stays in the inbox, including after successful wake
+delivery, until the chat acknowledges it. Messages delivered to an active
+`inbox_wait` do not start another turn.
+
+The transport uses Codex Desktop's private per-user Unix socket and requires
+an owner that advertises support for untrusted app inputs. Codex Desktop can
+reject a notification when the chat is busy. The daemon coalesces those
+retries by chat while the daemon is running and messages remain unread,
+with a backoff from five seconds to one minute. If the recipient closes the
+chat or Desktop becomes unreachable, the retries stop and the messages
+stay in the inbox. The inbox survives a normal daemon restart, but wake
+attempts do not resume on restart. If Desktop might already have accepted
+the turn (for example, a lost response), that notification is never retried.
+Other messages, including `fyi`, do not trigger this transport.
+
+Codex Desktop updates can change this private protocol. Use an empty list
+to disable it. The daemon verifies access to the local socket and avoids
+submitting a turn if it cannot identify a compatible owner. A configured
+registration is a capability, not a receipt for any particular wake.
+
+#### Supported host integrations
 
 For durable local Desktop wakes the host needs to implement both halves:
 
@@ -219,8 +257,7 @@ For durable local Desktop wakes the host needs to implement both halves:
    reconnect. Busy chats must queue the turn; `fyi` must not start a turn.
    Stop the consumer and remove its follows when the chat is closed.
 
-The second half belongs in the Desktop host/app integration, not in a tool
-argument or an inferred agentproto session. The bridge deliberately does not
+For a supported integration, the second half belongs in the Desktop host or app. The bridge deliberately does not
 spawn `codex --resume` (which creates a separate executor), send messages to
 an arbitrary chat, or treat a generic MCP notification as a supported wake.
 The [Codex app-server API](https://learn.chatgpt.com/docs/app-server) exposes
@@ -233,8 +270,7 @@ not an automatic local stdio wake channel.
 Regression coverage verifies two concurrent chat identities, a real watched
 turn-end reaching each corresponding inbox with `next-turn` urgency, no
 identity reuse on an unscoped subsequent call, and explicit-follower
-compatibility. It does **not** establish a live Desktop wake without the host
-consumer above.
+compatibility. Separate Unix-socket regression tests exercise the experimental adapter without submitting turns to the running Desktop app.
 
 ## HTTP
 
