@@ -5520,6 +5520,15 @@ export interface SessionsRegistry {
    *  by the `agent_set_operator_label` MCP tool (`agent-tools.ts`), which
    *  gates session callers with `checkOperatorLabelStamp`. */
   setOperatorLabel(id: string, operatorLabel: string | undefined): SessionDescriptor
+  /** Carry a predecessor's display name onto its restarted / continued-fresh
+   *  successor: the derived `title` and the `renamedByUser` flag (what makes
+   *  a human-written `label` outrank the title in `sessionDisplayName`).
+   *  Without it the successor re-derives its title from the RESUME prompt and
+   *  a spawn-style `label` copied by the restart loses to it. Daemon-internal. */
+  inheritDisplayName(
+    id: string,
+    from: { title?: string; label?: string; renamedByUser?: boolean },
+  ): SessionDescriptor
   /** Stamp (or clear, with `operator` undefined) the AIP-46 `operator` and its
    *  `operatorDigest`. Daemon-internal: the restart / continue-fresh
    *  carry-forward copies them from the source row. No request path calls it. */
@@ -16096,6 +16105,17 @@ export function createSessionsRegistry(opts?: {
       } else {
         rt.desc.operatorLabel = operatorLabel
       }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    inheritDisplayName(id, from) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`inheritDisplayName: no session "${id}"`)
+      if (from.title) rt.desc.title = from.title
+      // Same back-compat rule as `sessionDisplayName`: a labelled row with no
+      // flag predates it and counts as a human rename.
+      if (from.label) rt.desc.renamedByUser = from.renamedByUser ?? true
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc
