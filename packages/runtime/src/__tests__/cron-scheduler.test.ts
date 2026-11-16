@@ -462,6 +462,7 @@ describe("CronScheduler", () => {
       get: vi.fn().mockReturnValue(desc),
       sendPrompt,
       spawnAgent,
+      inheritDisplayName: vi.fn(),
     } as unknown as SessionsRegistry
     return { registry, sendPrompt, spawnAgent }
   }
@@ -730,6 +731,7 @@ describe("CronScheduler", () => {
       get: vi.fn().mockReturnValue(deadDesc),
       sendPrompt,
       spawnAgent,
+      inheritDisplayName: vi.fn(),
       pulseActivity,
       // `restartAgentSession` closes a still-alive prior row after a
       // successful restart (session-restart-core.ts) — a no-op here since
@@ -818,6 +820,7 @@ describe("CronScheduler", () => {
       get: vi.fn().mockReturnValue(deadDesc),
       sendPrompt,
       spawnAgent,
+      inheritDisplayName: vi.fn(),
       pulseActivity,
       kill: vi.fn(),
     } as unknown as SessionsRegistry
