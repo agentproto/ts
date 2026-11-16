@@ -7,11 +7,13 @@
  *     `POST /apps/:appId/tool-call` (that one appId) and the read routes of
  *     the token's own session (`GET /sessions/:id`, `/events`,
  *     `/events/stream`, `/capabilities`, `/screencast`, `/screencast.jpg`,
- *     `/screencast.mjpg`, that one sessionId, only when the token carries
+ *     `/screencast.mjpg`, `/live.mjpeg`, `/live/:streamId/replay.mp4`,
+ *     that one sessionId, only when the token carries
  *     a `sessionId` claim; `/screencast.jpg` of that id is a Bureau screenshot
  *     of the session's own newest open tab, fetched as that session, no
  *     recording),
- *     plus the three screencast spellings (and only those) of the browser
+ *     plus the three screencast spellings and the two live relay routes
+ *     (and only those) of the browser
  *     session named by a `browserSessionId` claim (kept for chrome-live ids,
  *     a retired path), plus the approval routes (`GET /approvals/:id`,
  *     `POST /approvals/:id/decision/telegram`, and the files pair
@@ -85,15 +87,24 @@ export function appLinkToolCallAuth(
 /** `/sessions/:id`, `/sessions/:id/events`, `/sessions/:id/events/stream`,
  *  `/sessions/:id/capabilities`: the four GET routes session-chat reads for
  *  one session, plus `/sessions/:id/screencast` and its `.jpg`/`.mjpg`
- *  spellings (the live frames of the session's own browser tab). Every other `/sessions/*` route (pty, kill, chat,
+ *  spellings (the live frames of the session's own browser tab) and the
+ *  live relay pair `/live.mjpeg` + `/live/:streamId/replay.mp4` (GET, and
+ *  HEAD for the replay). Every other `/sessions/*` route (pty, kill, chat,
  *  prompt, the plain `/stream` line-tail, …) is deliberately excluded: the
  *  HTTP side of a link-session token reads one session, nothing else; its
  *  writes go only through the app's tool-call route and `ui.toolScope`. */
-const SESSION_READ_RE = /^\/sessions\/([^/]+)(?:\/events\/stream|\/events|\/capabilities|\/screencast(?:\.jpg|\.mjpg)?)?$/
+const SESSION_READ_RE =
+  /^\/sessions\/([^/]+)(?:\/events\/stream|\/events|\/capabilities|\/screencast(?:\.jpg|\.mjpg)?|\/live\.mjpeg|\/live\/[^/]+\/replay\.mp4)?$/
 
-/** The three screencast spellings, the only `/sessions/:id` reads a
- *  `browserSessionId` claim unlocks. */
-const SCREENCAST_PATH_RE = /^\/sessions\/[^/]+\/screencast(?:\.jpg|\.mjpg)?$/
+/** The three screencast spellings plus the two live relay routes
+ *  (`/live.mjpeg`, `/live/:streamId/replay.mp4`, session-live-relay.ts), the
+ *  only `/sessions/:id` reads a `browserSessionId` claim unlocks. */
+const SCREENCAST_PATH_RE =
+  /^\/sessions\/[^/]+\/(?:screencast(?:\.jpg|\.mjpg)?|live\.mjpeg|live\/[^/]+\/replay\.mp4)$/
+
+/** The kept video of a relayed live stream: the one session read a link may
+ *  also `HEAD` (a `<video>` probe). */
+const LIVE_REPLAY_PATH_RE = /^\/sessions\/[^/]+\/live\/[^/]+\/replay\.mp4$/
 
 export function appLinkSessionReadAuth(
   req: IncomingMessage,
@@ -101,7 +112,7 @@ export function appLinkSessionReadAuth(
   method: string,
   keyPath?: string,
 ): AppLinkSessionAuth | undefined {
-  if (method !== "GET") return undefined
+  if (method !== "GET" && !(method === "HEAD" && LIVE_REPLAY_PATH_RE.test(path))) return undefined
   const match = SESSION_READ_RE.exec(path)
   const rawSessionId = match?.[1]
   if (!rawSessionId) return undefined

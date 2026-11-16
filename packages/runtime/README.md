@@ -56,6 +56,9 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | **Chat stream**   | `POST /sessions/:id/chat`                | Send a follow-up prompt + fan RAW transcript into the `ai` v6 UI message stream |
 | **Chat (create)** | `POST /sessions/chat`                    | Spawn a session + stream its first turn as chat (needs `resolveAgentAdapter`) |
 | Kill / forget / gc | `POST /sessions/:id/kill`, `DELETE /sessions/:id`, `POST /sessions/gc` | SIGTERM, drop from registry, bulk archive terminal sessions |
+| Browser snapshot  | `GET /sessions/:id/screencast.jpg`       | One Bureau screenshot of the newest open tab owned by `:id`, fetched as `:id`; daemon bearer or a link token whose `sessionId` / `browserSessionId` claim is `:id` |
+| **Browser live**  | `GET /sessions/:id/live.mjpeg`           | Relays Bureau's live MJPEG of that same tab (`browser_live_view` as `:id`, `reuse: true`, 8 fps, 600 s), piped verbatim with `x-live-stream-id`; never stops the stream; Bureau's token URLs never leave the daemon (loopback only). Same gate as the snapshot. Uniform `404 no_live_stream` on any miss, `429 live_relay_busy` over 3 relays per session or 12 per daemon (`src/session-live-relay.ts`) |
+| Browser live replay | `GET\|HEAD /sessions/:id/live/:streamId/replay.mp4` | The kept video of one of the last 5 streams relayed for `:id` (in memory, 24 h), `range` passed through (200, 206, 416); unknown stream or a Bureau 404 while encoding is the uniform 404. Same gate |
 
 ### MCP tool surface
 

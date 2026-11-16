@@ -49,7 +49,7 @@ type CallImportedTool = (
   callerSessionId?: string,
 ) => Promise<unknown>
 
-interface OwnedTab {
+export interface OwnedTab {
   targetId: string
   instance?: string
   openedAt: number
@@ -75,7 +75,7 @@ export interface SessionScreencastReaderOptions {
   queueWaitMs?: number
 }
 
-async function defaultResolveAlias(): Promise<string> {
+export async function defaultResolveAlias(): Promise<string> {
   try {
     return resolveBrowserProxyImport((await loadConfig()).defaults?.browser)
   } catch {
@@ -83,14 +83,14 @@ async function defaultResolveAlias(): Promise<string> {
   }
 }
 
-function contentBlocks(result: unknown): Record<string, unknown>[] {
+export function contentBlocks(result: unknown): Record<string, unknown>[] {
   const content = (result as { content?: unknown } | null)?.content
   return Array.isArray(content)
     ? content.filter((b): b is Record<string, unknown> => !!b && typeof b === "object")
     : []
 }
 
-function isToolError(result: unknown): boolean {
+export function isToolError(result: unknown): boolean {
   return (result as { isError?: unknown } | null)?.isError === true
 }
 
@@ -103,7 +103,7 @@ function parseOpenedAt(value: unknown): number {
   return 0
 }
 
-function parseTabs(result: unknown): OwnedTab[] | null {
+export function parseTabs(result: unknown): OwnedTab[] | null {
   let payload: unknown = (result as { structuredContent?: unknown } | null)?.structuredContent
   if (!payload) {
     const text = contentBlocks(result).find(b => b.type === "text" && typeof b.text === "string")
@@ -173,7 +173,7 @@ function parseImage(result: unknown): { bytes: Buffer; mimeType: string } | null
   return null
 }
 
-function setBounded<V>(map: Map<string, V>, key: string, value: V, cap = CACHE_CAP): void {
+export function setBounded<V>(map: Map<string, V>, key: string, value: V, cap = CACHE_CAP): void {
   map.delete(key)
   map.set(key, value)
   while (map.size > cap) {
