@@ -75,6 +75,7 @@ agentproto usage rollup --window 5h
 - Model identity is `vendor/product[@route]` — `z-ai/glm-5.2` and `z-ai/glm-5.2@openrouter` are different routes with potentially different prices.
 - Auth profile credentials are never returned — only `keyStatus`, fingerprints, and last-4 digits. If a spawn fails auth, re-check `keyStatus` on `auth_profile_list` rather than trying to echo the secret.
 - `harness_preset_create` rejects a `profileRef` that does not exist or is disabled, and a `defaultModel` the profile's allowlist cannot service.
+- `profileRef` and `defaultModel` are optional. No `profileRef` = the harness bills on its own login (`claude-code-cloud`, or `claude-code`/`codex` logged in): a spawn through that default passes no `access`. No `defaultModel` = the vendor default (no model sent). No manifest signal says a harness has no own login, so a profile-less preset is accepted for every harness.
 - Curated allowlists (`mode: "allow"`) drift as catalogs change — `auth_profile_refresh_models` re-syncs against the current catalog on demand, nothing does it automatically.
 
 ## Pointers

@@ -232,7 +232,7 @@ export function validateSpawnTarget(profile: DecisionExecProfile, target: SpawnT
 
 export interface PresetLookups extends Pick<DaemonReviewerHostDeps, "getHarnessPreset" | "getUserPreset" | "getAuthProfile"> {
   /** Default-harness-preset lookup (what a bare spawn would inherit). */
-  readonly getDefaultHarnessPreset?: (harness: string) => Promise<{ profileRef: string; defaultModel?: string } | undefined>
+  readonly getDefaultHarnessPreset?: (harness: string) => Promise<{ profileRef?: string; defaultModel?: string } | undefined>
   /** The configured `review.small` role (workspace/daemon `models` block). */
   readonly resolveRole?: (role: string) => ResolvedModelRole | undefined
   /** Account slot map for a `slot:<name>` profileRef. Defaults to config.json. */

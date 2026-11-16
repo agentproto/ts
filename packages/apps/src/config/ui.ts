@@ -1583,7 +1583,7 @@ function renderHarnesses() {
       html += '<dt>Billing</dt><dd>' + chips + '</dd>';
     }
     if (def) {
-      html += row("Default preset", escHtml(def.name) + ' &rarr; <a class="link" data-goto="wallets/' + encodeURIComponent(def.profileRef) + '">' + escHtml(def.profileRef) + '</a> / ' + escHtml(def.defaultModel));
+      html += row("Default preset", escHtml(def.name) + ' &rarr; ' + (def.profileRef ? '<a class="link" data-goto="wallets/' + encodeURIComponent(def.profileRef) + '">' + escHtml(def.profileRef) + '</a>' : 'harness login') + ' / ' + escHtml(def.defaultModel || 'vendor default'));
     } else if (slugPresets.length > 0) {
       html += row("Presets", String(slugPresets.length) + " (no default)");
     }
@@ -1633,8 +1633,8 @@ function presetsTableHtml(presets) {
   for (var i = 0; i < presets.length; i++) {
     var p = presets[i];
     html += '<tr data-row-id="' + escHtml(p.id) + '"><td>' + escHtml(p.id) + '</td><td>' + escHtml(p.harnessSlug) + '</td><td>' + escHtml(p.name) + '</td>'
-      + '<td><a class="link" data-goto="wallets/' + encodeURIComponent(p.profileRef) + '">' + escHtml(p.profileRef) + '</a>' + (p.profileDisabled ? ' <span class="tag bad">disabled/missing</span>' : '') + '</td>'
-      + '<td>' + escHtml(p.defaultModel) + '</td>'
+      + '<td>' + (p.profileRef ? '<a class="link" data-goto="wallets/' + encodeURIComponent(p.profileRef) + '">' + escHtml(p.profileRef) + '</a>' : 'harness login') + (p.profileDisabled ? ' <span class="tag bad">disabled/missing</span>' : '') + '</td>'
+      + '<td>' + escHtml(p.defaultModel || 'vendor default') + '</td>'
       + '<td>' + (p.isDefault ? '<span class="tag ok">default</span>' : '<button type="button" class="btn-sm" data-preset-set-default="' + escHtml(p.id) + '" data-preset-harness="' + escHtml(p.harnessSlug) + '">set default</button>') + '</td>'
       + '<td><button type="button" class="btn-sm danger" data-preset-delete="' + escHtml(p.id) + '">delete</button></td></tr>';
   }

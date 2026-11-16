@@ -74,8 +74,8 @@ export const compactHarnessPresetRow = (p: HarnessPresetListRow) => ({
   id: p.id,
   harnessSlug: p.harnessSlug,
   name: p.name,
-  profileRef: p.profileRef,
-  defaultModel: p.defaultModel,
+  ...(p.profileRef !== undefined ? { profileRef: p.profileRef } : {}),
+  ...(p.defaultModel !== undefined ? { defaultModel: p.defaultModel } : {}),
   isDefault: p.isDefault,
   profileDisabled: p.profileDisabled,
   ...(p.profileMissing ? { profileMissing: p.profileMissing } : {}),
@@ -123,6 +123,8 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
       const presets = await listHarnessPresets(input.harnessSlug)
       return Promise.all(
         presets.map(async preset => {
+          // No profileRef: the harness bills on its own login, nothing to check.
+          if (preset.profileRef === undefined) return { ...preset, profileDisabled: false }
           // A slot-backed preset reports the status of the profile its slot
           // points at now; an unresolvable slot cannot bill either.
           let profileRef = preset.profileRef
@@ -158,7 +160,9 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
     "harness_preset_create",
     "Create (or replace, by id) a harness→profile preset. Binds an adapter " +
       "harness to an auth profile + default model that a fresh spawn uses when " +
-      "the caller pins neither. Rejects a `profileRef` that references no " +
+      "the caller pins neither. `profileRef` and `defaultModel` are optional: no " +
+      "`profileRef` = the harness bills on its own login (no `access` is sent), " +
+      "no `defaultModel` = the vendor default. Rejects a `profileRef` that references no " +
       "existing/enabled auth profile, or a `defaultModel` the profile's " +
       "allowlist can't service. Passing `isDefault: true` demotes every other " +
       "preset for the same harness (at most one default per harness).",
@@ -166,8 +170,8 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
       id: z.string().describe("Stable, unique preset id (e.g. hm-cheap)."),
       harnessSlug: z.string().describe("Adapter harness slug this preset binds (e.g. hermes)."),
       name: z.string().describe("Human-readable display name (e.g. Cheap)."),
-      profileRef: z.string().describe("Auth-profile id to bill through (must exist and be enabled), or an account slot `slot:<name>` (config.json accountSlots), resolved again at each spawn."),
-      defaultModel: z.string().describe("Model id applied at spawn (e.g. z-ai/glm-5.2)."),
+      profileRef: z.string().optional().describe("Optional. Omit when the harness bills on its OWN login (e.g. claude-code-cloud, or claude-code/codex logged in): a spawn through this default then passes no `access`. Otherwise the auth-profile id to bill through (must exist and be enabled), or an account slot `slot:<name>` (config.json accountSlots), resolved again at each spawn."),
+      defaultModel: z.string().optional().describe("Optional model id applied at spawn (e.g. z-ai/glm-5.2). Omit for the harness/vendor default (no model sent)."),
       isDefault: z
         .boolean()
         .optional()
@@ -182,8 +186,8 @@ export function registerHarnessPresetTools(server: McpServer, deps: HarnessPrese
           id,
           harnessSlug,
           name,
-          profileRef,
-          defaultModel,
+          ...(profileRef ? { profileRef } : {}),
+          ...(defaultModel ? { defaultModel } : {}),
           isDefault: isDefault ?? false,
           ...(turnRetry ? { turnRetry } : {}),
         })

@@ -2937,9 +2937,9 @@ async function spawnAgentSessionOnce(
       // resolved now, against the current `accountSlots`, and an unknown slot
       // fails the spawn with the same preset-naming message.
       let presetProfileRef = preset.profileRef
-      if (isSlotRef(preset.profileRef)) {
+      if (presetProfileRef !== undefined && isSlotRef(presetProfileRef)) {
         try {
-          presetProfileRef = (await resolveProfileRef(preset.profileRef, slotDeps)).profileRef
+          presetProfileRef = (await resolveProfileRef(presetProfileRef, slotDeps)).profileRef
         } catch (err) {
           if (!(err instanceof AccountSlotError)) throw err
           return {
@@ -2952,8 +2952,9 @@ async function spawnAgentSessionOnce(
           }
         }
       }
-      const presetProfile = await getAuthProfile(presetProfileRef)
-      if (!presetProfile || presetProfile.disabled) {
+      // No profileRef: the harness bills on its own login; skip the profile gate.
+      const presetProfile = presetProfileRef !== undefined ? await getAuthProfile(presetProfileRef) : undefined
+      if (presetProfileRef !== undefined && (!presetProfile || presetProfile.disabled)) {
         return {
           ok: false,
           code: "harness_preset_profile_unavailable",
@@ -2966,8 +2967,8 @@ async function spawnAgentSessionOnce(
       }
       harnessPreset = {
         id: preset.id,
-        access: { profileRef: preset.profileRef },
-        model: preset.defaultModel,
+        ...(preset.profileRef !== undefined ? { access: { profileRef: preset.profileRef } } : {}),
+        ...(preset.defaultModel !== undefined ? { model: preset.defaultModel } : {}),
         turnRetry: preset.turnRetry,
       }
     }

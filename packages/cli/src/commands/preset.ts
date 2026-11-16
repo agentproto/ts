@@ -149,8 +149,8 @@ async function resolvePreset(args: readonly string[]): Promise<number> {
   const overlay: HarnessPresetOverlay | undefined = harnessPreset
     ? {
         id: harnessPreset.id,
-        access: { profileRef: harnessPreset.profileRef },
-        model: harnessPreset.defaultModel,
+        ...(harnessPreset.profileRef !== undefined ? { access: { profileRef: harnessPreset.profileRef } } : {}),
+        ...(harnessPreset.defaultModel !== undefined ? { model: harnessPreset.defaultModel } : {}),
         turnRetry: harnessPreset.turnRetry,
       }
     : undefined
