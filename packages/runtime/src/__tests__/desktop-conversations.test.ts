@@ -7,8 +7,11 @@ import {
   askDesktopConversation,
   listDesktopConversations,
   readDesktopConversation,
+  registerDesktopConversationAskTool,
 } from "../desktop-conversations.js"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { registerMessageTools } from "../message-tools.js"
 import {
   createSessionsRegistry,
@@ -35,8 +38,10 @@ async function claudeFile(name: string, body: unknown) {
   )
 }
 
-function codexDb(rows: Array<Record<string, unknown>>) {
-  const dir = join(root, "codex")
+function codexDb(
+  rows: Array<Record<string, unknown>>,
+  dir = join(root, "codex")
+) {
   return mkdir(dir, { recursive: true }).then(() => {
     const db = new DatabaseSync(join(dir, "state_5.sqlite"))
     db.exec(
@@ -510,6 +515,52 @@ describe("askDesktopConversation", () => {
       expect((await ask(parked, "steer")).note).toMatch(/only a next-turn message/)
       const refused = async () => toolOk({ messageId: "m", delivered: { via: "inbox" }, desktopWake: "unavailable" })
       expect((await ask(refused)).note).toMatch(/answered "unavailable"/)
+    })
+
+    it("the registered MCP tool accepts app codex (schema reachability)", async () => {
+      const home = join(root, "home")
+      vi.stubEnv("HOME", home)
+      const cdir = join(home, ".codex")
+      await mkdir(join(cdir, "sessions"), { recursive: true })
+      const file = join(cdir, "sessions", `rollout-${TID}.jsonl`)
+      await writeFile(
+        file,
+        JSON.stringify({ type: "session_meta", payload: { id: TID, session_id: TID, cwd: "/p" } }) + "\n" + item("user", "avant", 1)
+      )
+      await codexDb([{ id: TID, title: "t", name: "Mon thread", updated_at: 5, rollout_path: file, cwd: "/p" }], cdir)
+      const send = vi.fn(async () =>
+        toolOk({ messageId: "m", delivered: { via: "inbox" }, desktopWake: "accepted" })
+      )
+      const server = new McpServer({ name: "desktop-ask-test", version: "0.0.0" })
+      registerDesktopConversationAskTool(server, {
+        registry: { touchExternal: vi.fn() } as any,
+        send: send as any,
+      })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      const client = new Client({ name: "test", version: "0.0.0" })
+      await client.connect(clientTransport)
+      try {
+        const result = (await client.callTool({
+          name: "desktop_conversation_ask",
+          arguments: { app: "codex", id: TID, text: "ping", waitMs: 0 },
+        })) as { isError?: boolean; content: Array<{ text: string }> }
+        expect(result.isError).toBeFalsy()
+        expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+          desktopWake: "accepted",
+          reply: null,
+        })
+        // Still a closed set: an unknown app is refused at the schema.
+        const refused = (await client.callTool({
+          name: "desktop_conversation_ask",
+          arguments: { app: "gemini", id: TID, text: "ping", waitMs: 0 },
+        })) as { isError?: boolean; content: Array<{ text: string }> }
+        expect(refused.isError).toBe(true)
+        expect(refused.content[0]!.text).toMatch(/expected one of "claude"\|"codex"/)
+      } finally {
+        await client.close()
+        await server.close()
+      }
     })
   })
 })

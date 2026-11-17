@@ -482,9 +482,11 @@ export async function askDesktopConversation(
   const pollMs = opts.pollMs ?? 1_000
   const settleMs = opts.settleMs ?? 3_000
   const deadline = Date.now() + waitMs
-  const transcriptPath = conversation.cwd
-    ? join(claudeCodeProjectDir(conversation.cwd), `${conversation.id}.jsonl`)
-    : undefined
+  const transcriptPath =
+    conversation.transcriptPath ??
+    (conversation.cwd
+      ? join(claudeCodeProjectDir(conversation.cwd), `${conversation.id}.jsonl`)
+      : undefined)
   let lastCount = before.totalMessages
   // Re-parsing the transcript store on every tick is wasteful on a long wait.
   // Stat the jsonl instead: only once its size has stopped changing for
@@ -580,7 +582,7 @@ export function registerDesktopConversationAskTool(
       "is on and the chat is alive, else the message is parked in its inbox and the chat reads it at its " +
       "next hook poll (`delivered.via` tells which; no reply then). Codex: only a `next-turn` message to a thread listed in `daemon.codexDesktopWakeThreadIds` starts a turn, otherwise it is parked. `waitMs` 0 = send only.",
     {
-      app: z.literal("claude"),
+      app: z.enum(["claude", "codex"]),
       id: z
         .string()
         .min(1)
