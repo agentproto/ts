@@ -22,6 +22,8 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
 import type { ExportedSession } from "./transcript-export.js"
+import type { SessionsRegistry } from "./sessions.js"
+import { createSessionMessage, type MessageUrgency } from "./session-message.js"
 
 export type DesktopApp = "claude" | "codex"
 
@@ -357,6 +359,169 @@ export function registerDesktopConversationReadTool(server: McpServer): void {
     async input => {
       try {
         const result = await readDesktopConversation(input)
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        }
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: (err as Error).message }],
+        }
+      }
+    }
+  )
+}
+
+export type DesktopAskRegistry = Pick<
+  SessionsRegistry,
+  "touchExternal" | "sendMessage"
+>
+
+export interface DesktopAskOptions extends DesktopListOptions {
+  registry: DesktopAskRegistry
+  app: DesktopApp
+  id: string
+  text: string
+  /** Delivery tier, `next-turn` (default) or `steer`. Never `interrupt`. */
+  urgency?: Extract<MessageUrgency, "fyi" | "next-turn" | "steer">
+  /** How long to wait for the reply, ms. Default 60000, max 300000, 0 = send only. */
+  waitMs?: number
+  /** Test seams. */
+  pollMs?: number
+  settleMs?: number
+}
+
+export interface DesktopAskResult {
+  conversation: DesktopConversation
+  messageId: string
+  delivered: unknown
+  /** The assistant text produced after the message arrived, or null. */
+  reply: string | null
+  note?: string
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+/**
+ * Ask a Claude Desktop conversation: send `text` to its `cc:<id>` address and
+ * read its answer from the transcript.
+ *
+ * Delivery is the daemon's own external path: a direct wake over the chat's
+ * Claude Code socket when `daemon.claudeSocketWake` is on and the chat's
+ * process is alive, otherwise the message waits in the chat's inbox until its
+ * next hook poll. `delivered.via` says which; a parked message normally
+ * produces no reply inside `waitMs`, and the result says so instead of
+ * pretending. The reply is the assistant text that appears in the transcript
+ * after the send and has stopped growing for `settleMs`.
+ */
+export async function askDesktopConversation(
+  opts: DesktopAskOptions
+): Promise<DesktopAskResult> {
+  if (opts.app !== "claude") {
+    throw new Error(
+      "desktop_conversation_ask: only Claude Desktop is supported so far (Codex comes in a later change)"
+    )
+  }
+  const before = await readDesktopConversation({ ...opts, tail: 1 })
+  const { conversation } = before
+  opts.registry.touchExternal({
+    id: conversation.externalId,
+    host: "claude-desktop",
+    name: conversation.title,
+    ...(conversation.cwd ? { cwd: conversation.cwd } : {}),
+    ...(conversation.appSessionId
+      ? { hostSessionId: conversation.appSessionId }
+      : {}),
+  })
+  const msg = createSessionMessage({
+    to: conversation.externalId,
+    from: { relation: "human", label: "agentproto desktop_conversation_ask" },
+    text: opts.text,
+    kind: "question",
+    urgency: opts.urgency ?? "next-turn",
+  })
+  const sent = await opts.registry.sendMessage(msg, {
+    source: "desktop_conversation_ask",
+    origin: "desktop_conversation_ask",
+  })
+  const base: DesktopAskResult = {
+    conversation,
+    messageId: msg.id,
+    delivered: sent.delivered,
+    reply: null,
+  }
+  const waitMs = Math.min(Math.max(opts.waitMs ?? 60_000, 0), 300_000)
+  if (waitMs === 0) return base
+  const pollMs = opts.pollMs ?? 1_000
+  const settleMs = opts.settleMs ?? 3_000
+  const deadline = Date.now() + waitMs
+  let lastCount = before.totalMessages
+  let lastChange = Date.now()
+  while (Date.now() < deadline) {
+    await sleep(pollMs)
+    const now = await readDesktopConversation({ ...opts, tail: 200 })
+    if (now.totalMessages !== lastCount) {
+      lastCount = now.totalMessages
+      lastChange = Date.now()
+    }
+    const fresh = now.messages.slice(
+      -(now.totalMessages - before.totalMessages) || undefined
+    )
+    const grew = now.totalMessages > before.totalMessages
+    const lastIsAssistant =
+      now.messages[now.messages.length - 1]?.role === "assistant"
+    if (grew && lastIsAssistant && Date.now() - lastChange >= settleMs) {
+      const reply = fresh
+        .filter(m => m.role === "assistant" && m.text)
+        .map(m => m.text)
+        .join("\n\n")
+      return { ...base, reply: reply || null }
+    }
+  }
+  return {
+    ...base,
+    note:
+      (sent.delivered as { via?: string } | null)?.via === "inbox"
+        ? "parked in the chat's inbox (no live wake): the chat reads it at its next hook poll, no reply yet"
+        : `no finished reply within ${waitMs} ms`,
+  }
+}
+
+export function registerDesktopConversationAskTool(
+  server: McpServer,
+  ops: { registry: DesktopAskRegistry }
+): void {
+  server.tool(
+    "desktop_conversation_ask",
+    "Ask a Claude Desktop conversation from desktop_conversation_list: sends your text to it and waits for " +
+      "its answer. Delivery is a direct wake over the chat's Claude Code socket when `daemon.claudeSocketWake` " +
+      "is on and the chat is alive, else the message is parked in its inbox and the chat reads it at its " +
+      "next hook poll (`delivered.via` tells which; no reply then). Only app `claude` for now. `waitMs` 0 = send only.",
+    {
+      app: z.enum(["claude", "codex"]),
+      id: z
+        .string()
+        .min(1)
+        .describe("The `id` from desktop_conversation_list."),
+      text: z.string().min(1).max(20_000),
+      urgency: z
+        .enum(["fyi", "next-turn", "steer"])
+        .optional()
+        .describe("Default next-turn. fyi never wakes."),
+      waitMs: z
+        .number()
+        .int()
+        .min(0)
+        .max(300_000)
+        .optional()
+        .describe("Wait for the reply, default 60000."),
+    },
+    async input => {
+      try {
+        const result = await askDesktopConversation({
+          ...input,
+          registry: ops.registry,
+        })
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
         }

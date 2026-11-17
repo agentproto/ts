@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import {
+  askDesktopConversation,
   listDesktopConversations,
   readDesktopConversation,
 } from "../desktop-conversations.js"
@@ -210,5 +211,139 @@ describe("readDesktopConversation", () => {
     await expect(
       readDesktopConversation({ ...opts(), app: "codex", id: "cli-a" })
     ).rejects.toThrow(/no codex Desktop conversation/)
+  })
+})
+
+describe("askDesktopConversation", () => {
+  const cwd = () => join(root, "proj")
+  const jl = (role: string, text: string, i: number) =>
+    JSON.stringify({
+      type: role,
+      uuid: `u${i}`,
+      timestamp: `2026-11-17T10:00:${String(i).padStart(2, "0")}Z`,
+      sessionId: "cli-a",
+      message: { role, content: text },
+    }) + "\n"
+
+  async function setup() {
+    vi.stubEnv("HOME", join(root, "home"))
+    await claudeFile("local_a.json", {
+      sessionId: "local_a",
+      cliSessionId: "cli-a",
+      cwd: cwd(),
+      title: "Chat A",
+    })
+    const dir = claudeCodeProjectDir(cwd())
+    await mkdir(dir, { recursive: true })
+    const file = join(dir, "cli-a.jsonl")
+    await writeFile(file, jl("user", "avant", 1))
+    return file
+  }
+
+  const fast = { pollMs: 10, settleMs: 30 }
+
+  it("registers the chat, sends to its cc address and returns the answer the chat wrote", async () => {
+    const file = await setup()
+    const touchExternal = vi.fn()
+    const sendMessage = vi.fn(async (msg: any) => {
+      // the live chat answers after the wake
+      setTimeout(
+        () =>
+          void appendFile(
+            file,
+            jl("user", msg.text, 2) + jl("assistant", "la réponse", 3)
+          ),
+        20
+      )
+      return {
+        messageId: msg.id,
+        delivered: { via: "socket" },
+        queued: false,
+        urgencyApplied: msg.urgency,
+      }
+    })
+    const r = await askDesktopConversation({
+      ...opts(),
+      ...fast,
+      registry: { touchExternal, sendMessage } as any,
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 3000,
+    })
+    expect(touchExternal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "cc:cli-a",
+        host: "claude-desktop",
+        hostSessionId: "local_a",
+      })
+    )
+    expect(sendMessage.mock.calls[0]![0]).toMatchObject({
+      to: "cc:cli-a",
+      text: "ping",
+      kind: "question",
+      urgency: "next-turn",
+    })
+    expect(r.reply).toBe("la réponse")
+    expect(r.delivered).toEqual({ via: "socket" })
+  })
+
+  it("says so when the message is only parked in the inbox", async () => {
+    await setup()
+    const sendMessage = vi.fn(async (msg: any) => ({
+      messageId: msg.id,
+      delivered: { via: "inbox" },
+      queued: false,
+      urgencyApplied: msg.urgency,
+    }))
+    const r = await askDesktopConversation({
+      ...opts(),
+      ...fast,
+      registry: { touchExternal: vi.fn(), sendMessage } as any,
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 150,
+    })
+    expect(r.reply).toBeNull()
+    expect(r.note).toMatch(/parked in the chat's inbox/)
+  })
+
+  it("waitMs 0 only sends, and codex is refused for now", async () => {
+    await setup()
+    const sendMessage = vi.fn(async (msg: any) => ({
+      messageId: msg.id,
+      delivered: { via: "inbox" },
+      queued: false,
+      urgencyApplied: msg.urgency,
+    }))
+    const registry = { touchExternal: vi.fn(), sendMessage } as any
+    const r = await askDesktopConversation({
+      ...opts(),
+      registry,
+      app: "claude",
+      id: "cli-a",
+      text: "x",
+      waitMs: 0,
+    })
+    expect(r.reply).toBeNull()
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        app: "codex",
+        id: "t",
+        text: "x",
+      })
+    ).rejects.toThrow(/only Claude Desktop/)
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        app: "claude",
+        id: "nope",
+        text: "x",
+      })
+    ).rejects.toThrow(/no claude Desktop conversation/)
   })
 })
