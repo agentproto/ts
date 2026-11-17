@@ -16787,6 +16787,20 @@ export function createSessionsRegistry(opts?: {
       // and asked the box to extend its lifetime; this covers a shutdown that
       // reached us without it — the process-exit net.)
       if (rt.desc.hostDetached === true || detachRow(rt)) continue
+      // An external row (Claude Code / Desktop) owns no process here: the
+      // host session outlives this daemon, so the row is persisted exactly as
+      // a lapsed liveness window would leave it (`exited`, no `endedReason`),
+      // the status `isExternalInboxOpen` keeps deliverable. Marking it
+      // `killed` made every sentinel/follow delivery bounce after a restart
+      // until the session happened to act on its own.
+      if (rt.desc.kind === "external") {
+        if (rt.desc.status === "running" || rt.desc.status === "starting") {
+          rt.desc.status = "exited"
+          rt.desc.endedAt = rt.desc.lastSeenAt ?? nowIso
+          clearInFlightFlags(rt.desc)
+        }
+        continue
+      }
       if (
         rt.desc.status === "running" ||
         rt.desc.status === "starting"
@@ -16996,6 +17010,20 @@ function loadHistorySnapshot(
     // An external row has no process to have died with the daemon: it simply
     // expires (lazily) like any other, and a later sighting revives it.
     const externalAlive = wasAlive && desc.kind === "external"
+    // An external row an older daemon's shutdown sweep stamped
+    // `killed`/`daemon-restart` (or `crashed`) was never ended by anyone: the
+    // host session may well be alive. Heal it to the open-inbox shape.
+    const externalDaemonEnded =
+      desc.kind === "external" &&
+      desc.status === "killed" &&
+      desc.endedReason !== undefined &&
+      DAEMON_ENDED_EXTERNAL_REASONS.has(desc.endedReason) &&
+      !isRetired(desc)
+    if (externalDaemonEnded) {
+      desc.status = "exited"
+      delete desc.endedReason
+      delete desc.killedMidTurn
+    }
     // A provider-box session the previous process detached from (graceful
     // shutdown) or died holding (crash: `snapshotRows` keeps the re-attach
     // record fresh) — the box and its agent are presumably still running, so
