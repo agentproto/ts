@@ -257,6 +257,7 @@ import {
   resolveWorkspaceRules as realResolveWorkspaceRules,
   type WorkspaceRulesResolution,
 } from "./workspace-rules.js"
+import { composeContextFiles } from "./role-context-files.js"
 import { deriveSessionTitle } from "./session-title.js"
 import { resolveOperatorBinding } from "./session-operator.js"
 import { isAbsolute, join } from "node:path"
@@ -5741,6 +5742,7 @@ async function spawnAgentSessionOnce(
         roleRegistry,
         delegationReach,
       ),
+      ...(await composeContextFiles(role)),
       ...agentsMdParts,
       parentContextLine,
       // No-channel fallback for `appendSystemPrompt` (decision above): the

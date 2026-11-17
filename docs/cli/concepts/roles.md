@@ -473,6 +473,17 @@ when parsed directly, but registry loading treats a broken pack as
 partial-discovery-safe — it's skipped, not fatal to the whole
 registry.
 
+`contextFiles` (optional, comma-separated `tag=path` entries) names files
+whose content the daemon injects into the spawn prompt, fenced by
+`<tag>...</tag>`, right after the role disposition. `~`, `$VAR` and `${VAR}`
+are expanded in the path (an entry whose variable is unset is skipped). A
+missing or unreadable file is announced as `<tag absent="path"/>` instead of
+failing the spawn, and a file over 64 KiB is truncated with a marker. Example:
+[`templates/roles/recherche/ROLE.md`](../../../templates/roles/recherche/ROLE.md),
+which puts the repo map in front of an agent asked to search "globally".
+Only effective when the spawn carries a plain-string `prompt`, like the
+disposition itself.
+
 **Built-ins always win a name collision** — a pack cannot shadow or
 widen `executor`/`supervisor`, regardless of where the merged
 registry is consumed (`resolveRole`, `listRoles`, `spawnableRolesFor`

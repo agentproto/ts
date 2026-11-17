@@ -12,6 +12,7 @@
  */
 
 import { parseBrowserMode } from "./browser-mount.js"
+import { parseContextFiles } from "./role-context-files.js"
 import type { DelegationPolicy, RoleProfile } from "./role.js"
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/
@@ -85,6 +86,7 @@ export function parseRolePack(md: string): RoleProfile {
   const skills = parseList(fields.skills)
   const spawnableRoles = parseList(fields.spawnableRoles)
   const browser = parseBrowserMode(fields.browser)
+  const contextFiles = parseContextFiles(fields.contextFiles)
 
   const profile: RoleProfile = {
     name,
@@ -92,6 +94,7 @@ export function parseRolePack(md: string): RoleProfile {
     toolPolicy: { delegation },
     level,
     ...(skills ? { skills } : {}),
+    ...(contextFiles ? { contextFiles } : {}),
     ...(spawnableRoles ? { spawnableRoles } : {}),
     ...(browser !== undefined ? { browser } : {}),
   }

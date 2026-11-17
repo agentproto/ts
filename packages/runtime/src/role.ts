@@ -34,6 +34,11 @@ export interface RoleProfile {
   toolPolicy: RoleToolPolicy
   skills?: string[]
   /**
+   * Files injected, fenced by their tag, into the spawn prompt right after the
+   * disposition (`role-context-files.ts`). ROLE.md: `contextFiles: tag=path`.
+   */
+  contextFiles?: Array<{ tag: string; path: string }>
+  /**
    * Privilege level in the spawn lattice. Higher = more privileged.
    * The default spawn-gate rule (`canSpawn`) is non-escalation: a
    * parent may spawn a child only when `child.level <= parent.level`
