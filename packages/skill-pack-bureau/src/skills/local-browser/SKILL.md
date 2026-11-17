@@ -3,7 +3,7 @@ name: local-browser
 description:
   Drive the user's real, authenticated Chrome from an agentproto-connected
   client. Use when a task needs the user's live cookies, sessions, or
-  extensions (Gmail, LinkedIn, GitHub, ad managers, internal tools)
+  extensions (webmail, code hosting, ad managers, internal tools)
   rather than a fresh anonymous browser.
 metadata:
   tags: browser, chrome, mcp, agentproto, local-browser, chrome-devtools
@@ -15,7 +15,7 @@ Reach for this skill whenever the task needs to act AS THE USER in a
 web context. The hallmark is: an unauthenticated browser can't do this
 because the page requires their cookies/session.
 
-- "Post this to LinkedIn / Twitter / Reddit" — needs their logged-in
+- "Post this on my social account" — needs their logged-in
   session.
 - "Check my Gmail / Slack / Linear for X" — same.
 - "Pull this from <internal admin tool> behind SSO."
