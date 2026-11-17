@@ -146,6 +146,25 @@ describe("composeContextFiles", () => {
     }
   })
 
+  it("rejects a FIFO without blocking on open, and escapes the absent attribute", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const { execFileSync } = await import("node:child_process")
+    const dir = await mkdtemp(join(tmpdir(), 'ctx"-'))
+    try {
+      const fifo = join(dir, "p")
+      execFileSync("mkfifo", [fifo])
+      const r = { ...role, contextFiles: [{ tag: "t", path: fifo }] }
+      const blocks = await composeContextFiles(r, { env: {} })
+      expect(blocks[0]).toContain("<t absent=")
+      expect(blocks[0]).not.toContain('ctx"-')
+      expect(blocks[0]).toContain("&#34;")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it("returns nothing for a role without contextFiles", async () => {
     expect(
       await composeContextFiles({ ...role, contextFiles: undefined }, { env: {}, home: "/h" }),

@@ -335,6 +335,15 @@ export function spawnableRolesFor(
 }
 
 /**
+ * True when `composeRoleContext` replaces this role's disposition with the
+ * executor one (delegation allowed but the delegation tools are unreachable).
+ * Shared with the spawn so a role's context files follow its disposition.
+ */
+export function isExecutorFallback(role: RoleProfile, reach?: DelegationReach): boolean {
+  return role.toolPolicy.delegation === "allow" && !!reach && !reach.reachable
+}
+
+/**
  * Compose the child's effective system-context text:
  *   disposition + (optional) "Roles you may spawn: …" line + (optional)
  *   promptAppend — in that order. `promptAppend` layers ON TOP of the
@@ -360,7 +369,7 @@ export function composeRoleContext(
   registry?: Readonly<Record<string, RoleProfile>>,
   reach?: DelegationReach,
 ): string {
-  if (role.toolPolicy.delegation === "allow" && reach && !reach.reachable) {
+  if (isExecutorFallback(role, reach)) {
     return [EXECUTOR_ROLE.disposition, promptAppend].filter((p): p is string => !!p).join("\n\n")
   }
   const spawnable = spawnableRolesFor(role, registry)

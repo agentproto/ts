@@ -21,7 +21,8 @@
  * to fall back on listing the repos itself.
  */
 
-import { open } from "node:fs/promises"
+import { constants } from "node:fs"
+import { open, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 
 import type { RoleProfile } from "./role.js"
@@ -84,12 +85,19 @@ export interface ComposeContextFilesDeps {
 }
 
 async function readBounded(path: string, maxBytes: number): Promise<Buffer> {
-  const fh = await open(path, "r")
+  // stat BEFORE open: opening a FIFO for reading blocks until a writer shows up.
+  if (!(await stat(path)).isFile()) throw new Error("not a regular file")
+  const fh = await open(path, constants.O_RDONLY | constants.O_NONBLOCK)
   try {
-    if (!(await fh.stat()).isFile()) throw new Error("not a regular file")
-    const buf = Buffer.alloc(maxBytes + 1)
-    const { bytesRead } = await fh.read(buf, 0, maxBytes + 1, 0)
-    return buf.subarray(0, bytesRead)
+    const want = maxBytes + 1
+    const buf = Buffer.alloc(want)
+    let total = 0
+    while (total < want) {
+      const { bytesRead } = await fh.read(buf, total, want - total, total)
+      if (bytesRead === 0) break
+      total += bytesRead
+    }
+    return buf.subarray(0, total)
   } finally {
     await fh.close()
   }
@@ -129,7 +137,7 @@ export async function composeContextFiles(
       const body = buf.byteLength > maxBytes ? `${text}\n[tronqué à ${maxBytes} octets]` : text
       blocks.push(`<${tag}>\n${neutralizeFence(body, tag)}\n</${tag}>`)
     } catch {
-      blocks.push(`<${tag} absent="${resolved}"/>`)
+      blocks.push(`<${tag} absent="${resolved.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)}"/>`)
     }
   }
   return blocks

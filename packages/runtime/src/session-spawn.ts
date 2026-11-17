@@ -209,6 +209,7 @@ import {
   DEFAULT_ROLE_DEPTH_CUTOFF,
   resolveRole,
   composeRoleContext,
+  isExecutorFallback,
   canSpawn,
   mergeRoleRegistry,
   unknownDefaultAgents,
@@ -5745,8 +5746,7 @@ async function spawnAgentSessionOnce(
       // Skipped for device sandbox spawns (host-side read, same as AGENTS.md /
       // RULES.md) and when `composeRoleContext` fell back to the executor
       // disposition (the role's files belong with its disposition).
-      ...(isDeviceSandboxSpawn ||
-      (role.toolPolicy.delegation === "allow" && delegationReach && !delegationReach.reachable)
+      ...(isDeviceSandboxSpawn || isExecutorFallback(role, delegationReach)
         ? []
         : await composeContextFiles(role)),
       ...agentsMdParts,
