@@ -48,6 +48,7 @@ describe("repo-maintenance app", () => {
       "review:map",
       "reviewCleanup:tool",
       "branchGcVerify:tool",
+      "salvageFollowUp:transform",
       "gaps:transform",
       "verdictLookupTips:transform",
       "verdictRecords:map",
