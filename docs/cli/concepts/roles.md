@@ -483,6 +483,12 @@ failing the spawn, and a file over 64 KiB is truncated with a marker. Example:
 which puts the repo map in front of an agent asked to search "globally".
 Only effective when the spawn carries a plain-string `prompt`, like the
 disposition itself.
+**Spec status:** `contextFiles` is a host extension of the pack-carried role
+surface, which no AIP defines. AIP-46 (§"There is no `role` on this surface")
+treats the spawn-time `role` as a deprecated private alias for a built-in
+AGENT, and AIP-47's `ROLE.md` (`role/v1`, an organizational role) is a different
+document. The spec-aligned home for "context injected at spawn" is an AIP-42
+AGENT field; until the spec gains one, this stays a documented host extension.
 Paths must be absolute, `~/...` or start with `$VAR` (a relative path is
 rejected at parse time). **Trust:** the daemon reads these files on the host
 with its own rights and the bytes go to the model provider, outside any
