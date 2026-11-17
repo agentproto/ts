@@ -4,14 +4,17 @@
  *
  * Until now a Desktop conversation only showed up in agentproto as the
  * `parentSessionId` (`cc:<id>` / `codex:<thread>`) of a session it had
- * spawned, and only after it had called the daemon once. This lists them all,
- * whether or not they ever did.
+ * spawned, and only after it had called the daemon once. This lists them
+ * whether or not they ever called it. A Claude chat that has not run a turn
+ * yet has no CLI session, so it is not listed (nothing to address or read).
  *
  *   claude  ~/Library/Application Support/{Claude,Claude-3p}/claude-code-sessions/<account>/<org>/local_*.json
  *           (title, cliSessionId, cwd, timestamps, isArchived). Undocumented
  *           app-internal format: every field is read defensively and a file
  *           that does not parse is skipped, never fatal.
- *   codex   ~/.codex/state_5.sqlite, table `threads` (opened read-only).
+ *   codex   ~/.codex/state_5.sqlite, table `threads` (opened read-only). The
+ *           file name carries the app's schema version and changes when Codex
+ *           bumps it: a rename yields no Codex rows, not an error.
  *
  * Read-only. Nothing here talks to the apps or writes to their stores.
  */
@@ -165,9 +168,16 @@ export async function listCodexDesktopConversations(
   } catch {
     return []
   }
-  const { DatabaseSync } = (await import(
-    /* @vite-ignore */ NODE_SQLITE
-  )) as typeof import("node:sqlite")
+  // Codex is a best-effort half: `node:sqlite` is missing before Node 22.5
+  // (the repo supports 20.9), and that must not fail the Claude half.
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync
+  try {
+    ;({ DatabaseSync } = (await import(
+      /* @vite-ignore */ NODE_SQLITE
+    )) as typeof import("node:sqlite"))
+  } catch {
+    return []
+  }
   let db: InstanceType<typeof DatabaseSync>
   try {
     db = new DatabaseSync(dbPath, { readOnly: true })
@@ -325,7 +335,7 @@ export function registerDesktopConversationListTool(server: McpServer): void {
       "read from the apps' own local stores. Each row carries `id`, the `externalId` the chat uses " +
       "when it calls the daemon (`cc:<id>` / `codex:<id>`, usable as a message_send target once the " +
       "chat has registered), title, cwd and last activity. Includes chats that never called agentproto. " +
-      "Read-only; archived chats are hidden unless `includeArchived`.",
+      "Read-only; archived chats are hidden unless `includeArchived`. A Claude chat that has not run a turn yet is not listed.",
     {
       app: z
         .enum(["claude", "codex"])
