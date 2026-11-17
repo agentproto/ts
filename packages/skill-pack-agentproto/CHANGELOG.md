@@ -1,5 +1,13 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.10.4
+
+### Patch Changes
+
+- 9bcae2b: agentproto skill: add a "Rules and permissions" section (task board writes and status transitions, driving a session, message_parent, cold restart, host guard and idle reaper, keepAlive), each rule with its file:line and the conduct to hold.
+- 44277f5: Docs: a cloud spawn's `model` does apply (through `ANTHROPIC_MODEL`), the account is always the daemon user's claude.ai login (`access`, slots and presets are skipped), and a `claude setup-token` credential cannot create cloud sessions.
+- 02114df: A harness preset can omit `profileRef` and `defaultModel`. No `profileRef` means the harness bills on its own login (`claude-code-cloud`, or `claude-code`/`codex` logged in): a spawn through that default passes no `access`, exactly like an `agent_start` without `access`. No `defaultModel` means the vendor picks its own default (no model sent). An explicit `profileRef` keeps the existing exists/enabled/allowlist checks. `harness_preset_create`, `harness_preset_list`, default resolution at spawn, `agentproto preset resolve`, reviewer preset resolution `user_preset_resolve` and the config UI's display handle the absent fields (creating one from the config UI form is not supported yet).
+
 ## 0.10.3
 
 ### Patch Changes
