@@ -86,7 +86,7 @@ export const FOLLOW_EXCERPT_MAX = 300
 export const FOLLOW_DIGEST_MAX_LINES = 40
 /** Cap on retained events when queued digests merge (newest wins). */
 export const FOLLOW_DIGEST_MERGE_MAX_ENTRIES = 50
-/** A PR event whose real time is older than this is catch-up, not news: the
+/** A pr-merged whose real time is older than this is catch-up, not news: the
  *  projector re-asks the forge after every daemon restart (its verdict memo is
  *  in-memory), so PRs that merged days ago settle "now". Those are dropped,
  *  not delivered as new. */
@@ -1405,12 +1405,9 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       const signal = signalOf(ev, seenPrs)
       if (!signal) return
       // Catch-up guard: a PR event whose real time is long past (a restart
-      // re-settling old PRs) is not news. Only pr-* signals can carry a
-      // time that differs from "now".
-      if (
-        (signal.event === "pr-merged" || signal.event === "pr-opened") &&
-        nowMs() - Date.parse(signal.ts) > staleEventMs
-      ) {
+      // re-settling old PRs) is not news. Only pr-merged carries a time
+      // (the forge merge time) that differs from "now".
+      if (signal.event === "pr-merged" && nowMs() - Date.parse(signal.ts) > staleEventMs) {
         log(`[session-follow] ignored stale ${signal.event} for ${signal.sessionId} (event time ${signal.ts})`)
         return
       }
