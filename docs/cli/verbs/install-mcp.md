@@ -89,7 +89,9 @@ native tool names instead of the daemon's full tool set.
 
 - **Agents:** the same four as `--app` — **cursor, codex, claude-desktop,
   windsurf**. An explicitly-requested unsupported agent exits `2`; with no
-  `--agent`, unsupported detected ones are skipped with a note.
+  `--agent`, unsupported detected ones are left out silently (unlike `--app`,
+  no "Skipping" note is printed), and when none is left the verb prints
+  `No scoped-capable agents detected. Nothing to do.` and exits `0`.
 - **Exclusions:** cannot be combined with `--app` (exit `2`) or `--dry-run`
   (exit `2`).
 - **Validation:** the alias must look like `bureau` (letters, digits, `.`
