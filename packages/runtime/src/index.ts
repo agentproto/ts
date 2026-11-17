@@ -42,6 +42,7 @@ import {
   registerConversationExportTool,
 } from "./session-tools.js"
 import { registerCreateAgentTool } from "./create-agent-tool.js"
+import { registerDesktopConversationListTool } from "./desktop-conversations.js"
 import { registerCreateToolTools } from "./create-tool-tool.js"
 import { collectSubtree } from "./agent-tools.js"
 import { registerBrainTools } from "./brain-tools.js"
@@ -5078,6 +5079,8 @@ export async function createGateway(
     // lookup over the persisted per-workspace index. Stateless (bucketsRoot
     // resolves straight off HOME), so it needs no injected deps.
     registerConversationLocateTool(server)
+    // Claude Desktop / Codex Desktop conversation list (local app stores, read-only).
+    registerDesktopConversationListTool(server)
     // Conversation exporter — WRITE side of the cross-adapter pivot above:
     // copies a daemon session's events.jsonl transcript into a target
     // adapter's native conversation store (today claude-code JSONL) and
