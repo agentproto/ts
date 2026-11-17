@@ -98,6 +98,90 @@ commands, cron, task boards, completion policies, apps, and workflows.
 | agentproto-apps | Author, build, and package an agentproto APP. |
 | pb-build-pack | Author and import company/agency/knowledge packs. |
 
+## Rules and permissions
+
+Rules the daemon enforces, with where. Paths are relative to the
+`agentproto/ts` repo (`packages/runtime/src/...` unless noted). When a call is
+refused, read the error text, find the rule here, apply the conduct.
+
+**Task board writes** (`task-ledger.ts`)
+- Rule: a session writes a task only if it is its owner, its creator, or the
+  operator (`isManager` :725, `isOwner` :730; refusal :1019). Editing fields,
+  reassigning, cancelling and reopening a done task are creator/operator only
+  (:1034, :1073, :1081). A `tree:*` board is reachable only inside the caller's
+  own lineage (:713).
+- Status moves (`ALLOWED_TRANSITIONS` :910): `pending` -> `in_progress` or
+  `cancelled`; `in_progress` -> `pending`, `done`, `failed`, `cancelled`,
+  `awaiting_approval`; `done` -> `pending` (reopen); `failed` and `cancelled`
+  are terminal. `pending` -> `done` is refused (`invalid transition`, :1065);
+  `in_progress` on an unowned task is refused (:1093).
+- Conduct: the worker calls `task_claim` first (CAS on `rev`, :991), then
+  `task_update` to `done`. A child that did not claim and did not create the
+  task gets "only owner, creator or operator": either create the task with
+  `owner: <child sessionId>`, or reassign it (`task_update owner`) as the
+  creator, or have the child claim it. On a `conflict` answer, re-read the
+  returned record and retry with its `rev`.
+
+**Driving a session** (`session-owner.ts:116`, `checkSessionOwnerGate`)
+- Rule: `agent_prompt`, `agent_kill`, `agent_interrupt`, `session_restart`
+  accept only the target's owner (the session that spawned it), one of its
+  ancestors, the session itself, the human operator, or a caller listed in the
+  target's `allowPromptFrom` (`sessions.ts:2282`; ids, `"any"`, `label:<x>`;
+  a `label:` grant matches root sessions only). Everyone else gets "may only be
+  driven by its owner".
+- Conduct: spawn the child yourself, or pass `allowPromptFrom` at `agent_start`,
+  or change it afterwards with `agent_set_prompt_policy` (owner, the session
+  or the operator only). After a successor replaces a parent, use
+  `session_adopt` so the children move to the new owner
+  (`lineage-handover.ts`).
+
+**`message_parent`** (`agent-tools.ts:1339-1500`)
+- Rule: reports up to `parentSessionId`. No parent (a root session): refused
+  (:1453). Parent id gone from the registry: refused (:1459). Parent dead:
+  the daemon re-parents the caller to the declared successor or nearest live
+  ancestor and delivers there (`resolveLiveParent`, `lineage-handover.ts:94`,
+  call :1466); if none is alive, "is not running ... no live successor or
+  ancestor" (:1479).
+- Conduct: a refusal is a final state, not a retry loop. Write the result to a
+  durable place (file, task `evidence`, PR) and end the turn; the supervisor
+  reads it with `session_follow` or `agent_output`. A root session has no one to
+  `message_parent`: use `message_send` to a named session instead.
+
+**`sessions restart` on a cold session** (`cli/src/commands/sessions.ts:5666`,
+`session-tools.ts:5866`, `session-restart-core.ts:1005`)
+- Rule: restart looks the id up in the registry and in history (cold rows the
+  registry dropped at boot, `session_list includeCold`). "no session ... found
+  in registry or history" means the id or name matches neither: typo, a short
+  prefix, or a row that is gone. A row killed in this daemon lifetime is not
+  lazy-resumable and falls back to a new-id restart (:1005). Restart is gated
+  by the same drive rule as above.
+- Conduct: locate the real id first (`session_list` with `includeCold`, or
+  `session_search`), then `session_restart <id>`; the answer carries
+  `resumedFrom` and the NEW id, so follow the new id. If the history is truly
+  gone, start a fresh session with a recap instead (`session_continue_fresh`).
+
+**Host guard and idle reaper** (`idle-reaper.ts:163-190`,
+`cli/src/commands/host-guard.ts:25-75`, `config-schema.ts:1247`)
+- Rule: the idle reaper retires an `agent-cli` session that is `running`, idle
+  past `daemon.idleReapAfterMs` (default 0 = never runs), not busy, not
+  awaiting input or permission, not `keepAlive`, not `pinned`, and whose parent
+  is not alive (:163-188). `agentproto host guard` closes the oldest idle
+  sessions on host WARN/CRIT through `/sessions/:id/reap` (tag `guard-reaped`,
+  row stays lazy-resumable), never a busy, `keepAlive`, `pinned`, watched
+  session or an ancestor of a live one. On CRIT it also blocks
+  `agentproto workflow start|run-file` (`heavyWorkflowBlockReason` :494).
+- Conduct: a reaped session is not lost: prompt it (lazy resume) or
+  `session_restart`. On a workflow blocked by the guard, free the host and
+  re-check `agentproto host health`; `--force` only with the operator's go.
+
+**`keepAlive`** (`sessions.ts:2264`, `idle-reaper.ts:167`)
+- Rule: `keepAlive: true` exempts a session from the idle reaper and the host
+  guard's sweep. Set at `agent_start` or later with `session_set_keepalive`.
+  It does not stop an explicit kill, a crash, or a daemon restart. `pinned`
+  exempts from the idle sweep too but is a separate flag.
+- Conduct: set it on a supervisor that parks while waiting on children or a
+  scheduled wake; do not set it on workers (it keeps them in RAM for nothing).
+
 ## CLI orientation
 
 - `agentproto sessions` — list/attach/mirror/export/story/stop.
