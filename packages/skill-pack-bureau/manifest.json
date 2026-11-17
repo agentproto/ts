@@ -1,32 +1,20 @@
 {
   "name": "bureau-plugin",
-  "description": "Drive real authenticated browsers and social platforms through the Bureau stack (Camofox stealth + daemon) or the local-browser chain: browser automation, LinkedIn, X/Twitter, YouTube, Instagram, TikTok, news/media extraction, and marketplace scraping.",
+  "description": "Drive real, already-authenticated browsers through Bureau's MCP tools, plus the legacy local-browser chain. Site recipes ship separately and are not part of this pack.",
   "skills": [
     "bureau",
     "browser",
-    "local-browser",
-    "linkedin",
-    "x-twitter",
-    "youtube",
-    "instagram",
-    "tiktok",
-    "news-media",
-    "leboncoin"
+    "local-browser"
   ],
   "sourceDir": "./src/skills",
-  "author": { "name": "Jeremy — fabrikapp" },
+  "author": {
+    "name": "Jeremy — fabrikapp"
+  },
   "keywords": [
     "bureau",
     "browser",
     "automation",
-    "linkedin",
-    "twitter",
-    "x",
-    "youtube",
-    "instagram",
-    "tiktok",
-    "social",
-    "scraping",
+    "mcp",
     "camofox"
   ]
 }
