@@ -30,6 +30,9 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
+          # Plain node, no pnpm on this runner: without this, setup-node v5 reads
+          # packageManager (pnpm) and fails looking for the pnpm executable.
+          package-manager-cache: false
 
       - name: Run checker tests
         run: node --test scripts/check-adapter-pins.test.mjs
