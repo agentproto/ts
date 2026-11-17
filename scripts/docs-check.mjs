@@ -53,11 +53,12 @@
  *   1 — hard error before the SDK run even started (missing API key)
  */
 
-import { execFileSync, execSync, spawn } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeConfineToRepoRoot } from './lib/path-confine.mjs'
 import { describeLane, pickLane, resolveLane } from './lib/agent-lane.mjs'
+import { agentDeadlineMs, runBoundedChild } from './lib/bounded-child.mjs'
 
 // ── root ──────────────────────────────────────────────────────────────────
 
@@ -338,7 +339,7 @@ function restoreDisallowedChanges(before) {
   if (introduced.length) throw new Error(`OpenCode attempted changes outside the docs scope: ${introduced.join(', ')}`)
 }
 
-function runOpenCode(env) {
+async function runOpenCode(env) {
   const before = workingTreePaths()
   const inlineConfig = {
     small_model: MODEL,
@@ -357,31 +358,19 @@ function runOpenCode(env) {
     OPENCODE_DISABLE_PROJECT_CONFIG: '1',
   }
 
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn('opencode', ['run', '--pure', '--model', MODEL], {
-      cwd: ROOT,
-      env: childEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    child.stdout.on('data', (chunk) => (stdout += chunk))
-    child.stderr.on('data', (chunk) => (stderr += chunk))
-    child.on('error', reject)
-    child.on('close', (code) => {
-      try {
-        restoreDisallowedChanges(before)
-        if (code !== 0) throw new Error(`OpenCode exited ${code}: ${stderr.slice(-500)}`)
-        if (stdout.trim()) console.log(stdout.trim())
-        resolvePromise()
-      } catch (error) {
-        reject(error)
-      }
-    })
-    child.stdin.end(prompt)
+  // Bounded: a lane that outlives its step keeps editing the checkout while
+  // the next lane and "Open docs PR" run (release run 44007187073).
+  const deadlineMs = agentDeadlineMs()
+  const { code, stdout, stderr, timedOut } = await runBoundedChild('opencode', ['run', '--pure', '--model', MODEL], {
+    cwd: ROOT,
+    env: childEnv,
+    input: prompt,
+    deadlineMs,
   })
+  restoreDisallowedChanges(before)
+  if (timedOut) throw new Error(`OpenCode was stopped at the ${deadlineMs / 60_000}-minute lane deadline (AGENT_DEADLINE_MINUTES)`)
+  if (code !== 0) throw new Error(`OpenCode exited ${code}: ${stderr.slice(-500)}`)
+  if (stdout.trim()) console.log(stdout.trim())
 }
 
 // ── run ───────────────────────────────────────────────────────────────────
@@ -439,7 +428,15 @@ async function main() {
   })
 
   let finalResult = null
+  // Same lane deadline as OpenCode: aborting the query stops the SDK's
+  // claude child, and the catch below reports it as a soft failure.
+  let deadline = null
   try {
+    const deadlineMs = agentDeadlineMs()
+    deadline = setTimeout(() => {
+      console.warn(`\n⚠️  docs-check reached the ${deadlineMs / 60_000}-minute lane deadline (AGENT_DEADLINE_MINUTES); stopping the agent.`)
+      abortController.abort()
+    }, deadlineMs)
     for await (const message of result) {
       if (message.type === 'stream_event') {
         process.stdout.write('.')
@@ -481,6 +478,8 @@ async function main() {
     console.warn('Any edits made before the cutoff are still on disk; the workflow will PR them if present.')
     emitStatus('error')
     return
+  } finally {
+    clearTimeout(deadline)
   }
 
   if (!finalResult) {

@@ -497,6 +497,15 @@ jobs:
       # next lane only runs when the previous one wasn't ok. Every lane is
       # continue-on-error and the script itself soft-fails — this is a
       # best-effort bonus on top of an already-published release.
+      #
+      # A local lane stops its own agent (whole process group) at a 17-minute
+      # deadline, before the step's 20-minute timeout-minutes
+      # (scripts/lib/bounded-child.mjs, AGENT_DEADLINE_MINUTES). The runner's
+      # step timeout does not: release run 44007187073 left the OpenCode agent
+      # editing docs through the next lanes, and "Open docs PR" then failed
+      # to check out the existing docs-sync/auto branch over the file it had
+      # just dirtied. Keep timeout-minutes above the deadline;
+      # scripts/lib/bounded-child.test.mjs checks it.
       - name: Check docs for release drift (Claude Cloud primary)
         id: docs-cloud-primary
         if: always() && steps.docs-agent.outputs.backend == 'claude-cloud' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
@@ -565,6 +574,9 @@ jobs:
             git diff --stat >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # An open docs PR from an earlier release is not in the way: the action
+      # resets docs-sync/auto to this run's commit on top of main and
+      # force-pushes, so the PR now carries this release's drift only.
       - name: Open docs PR
         if: always() && steps.docs-drift.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
