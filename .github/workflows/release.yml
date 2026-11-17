@@ -43,7 +43,7 @@ jobs:
     # own ceiling. Notes: cloud-primary 45 + free 20 + free-fallback 20 +
     # sonnet-fallback 20 = 105. Docs: the same shape = 105. 210 total, plus the
     # non-LLM release work (install, publish, vsce) — so the job cap is 300,
-    # comfortably above 260, or a pathological run is killed mid-ladder and
+    # comfortably above 210, or a pathological run is killed mid-ladder and
     # never reaches the final honest-red notes gate below.
     timeout-minutes: 300
     env:
@@ -434,6 +434,7 @@ jobs:
         if:
           always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.release-agent.outputs.free_fallback_model != '' &&
+          steps.notes-check-cloud-primary.outputs.posted != 'true' &&
           steps.notes-check-1.outputs.posted != 'true'
         continue-on-error: true
         timeout-minutes: 20
@@ -465,7 +466,7 @@ jobs:
       # but it does run local inference. The Agent SDK bundles its own CLI.
       - name: Generate agentic release notes (Claude Sonnet fallback)
         id: notes-3
-        if: always() && steps.notes-check-1.outputs.posted != 'true' && steps.notes-check-2.outputs.posted != 'true' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && steps.notes-check-cloud-primary.outputs.posted != 'true' && steps.notes-check-1.outputs.posted != 'true' && steps.notes-check-2.outputs.posted != 'true' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         timeout-minutes: 20
         run: node scripts/release-notes.mjs
@@ -529,6 +530,7 @@ jobs:
         if:
           always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true) &&
           steps.docs-agent.outputs.free_fallback_model != '' &&
+          steps.docs-cloud-primary.outputs.status != 'ok' &&
           steps.docs-1.outputs.status != 'ok'
         continue-on-error: true
         timeout-minutes: 20
@@ -540,7 +542,7 @@ jobs:
 
       - name: Check docs for release drift (Claude Sonnet fallback)
         id: docs-3
-        if: always() && steps.docs-1.outputs.status != 'ok' && steps.docs-2.outputs.status != 'ok' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        if: always() && steps.docs-cloud-primary.outputs.status != 'ok' && steps.docs-1.outputs.status != 'ok' && steps.docs-2.outputs.status != 'ok' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
         timeout-minutes: 20
         run: node scripts/docs-check.mjs
