@@ -317,6 +317,30 @@ describe("askDesktopConversation", () => {
     expect(r.delivered).toEqual({ via: "socket" })
   })
 
+  it("returns the answer even when the transcript ends on a system line, and when the turn adds over 200 messages", async () => {
+    const file = await setup()
+    const sendMessage = vi.fn(async (_t: string, to: string, msg: any) => {
+      setTimeout(() => {
+        const many = Array.from({ length: 230 }, (_, k) => jl("assistant", `part ${k}`, 10 + (k % 40))).join("")
+        void appendFile(file, jl("user", msg.text, 2) + many + jl("system", "résumé", 59))
+      }, 20)
+      return toolOk({ messageId: "msg_s", to, delivered: { via: "socket" } })
+    })
+    const r = await askDesktopConversation({
+      ...opts(),
+      ...fast,
+      registry: { touchExternal: vi.fn() } as any,
+      send: sendMessage as any,
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 3000,
+    })
+    // all 230 parts come back, not only the last 200
+    expect(r.reply?.split("\n\n")).toHaveLength(230)
+    expect(r.reply).toContain("part 0")
+  })
+
   it("says so when the message is only parked in the inbox", async () => {
     await setup()
     const sendMessage = vi.fn(async () =>

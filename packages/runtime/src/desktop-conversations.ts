@@ -247,8 +247,26 @@ export async function listDesktopConversations(
 export interface DesktopReadOptions extends DesktopListOptions {
   app: DesktopApp
   id: string
-  /** Keep only the last N messages (default 20, max 200). */
+  /** Keep only the last N messages (default 20). The MCP tool caps it at 200. */
   tail?: number
+  /** Already resolved conversation: skips the re-list (the ask poll loop reads many times). */
+  conversation?: DesktopConversation
+}
+
+/** The fields the list/read need, picked out of the (much larger) ask options. */
+function lastNonSystemRole(messages: ExportedSession["messages"]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.role !== "system") return messages[i]!.role
+  return undefined
+}
+
+function readScope(opts: DesktopAskOptions | DesktopReadOptions, tail: number): DesktopReadOptions {
+  return {
+    app: opts.app,
+    id: opts.id,
+    tail,
+    ...(opts.claudeSessionsDirs ? { claudeSessionsDirs: opts.claudeSessionsDirs } : {}),
+    ...(opts.codexHome ? { codexHome: opts.codexHome } : {}),
+  }
 }
 
 export interface DesktopReadResult {
@@ -263,14 +281,18 @@ export interface DesktopReadResult {
 export async function readDesktopConversation(
   opts: DesktopReadOptions
 ): Promise<DesktopReadResult> {
-  const tail = Math.min(Math.max(opts.tail ?? 20, 1), 200)
-  const all = await listDesktopConversations({
-    ...opts,
-    app: opts.app,
-    includeArchived: true,
-    limit: 500,
-  })
-  const conversation = all.find(c => c.app === opts.app && c.id === opts.id)
+  const tail = Math.max(opts.tail ?? 20, 1)
+  const conversation =
+    opts.conversation ??
+    (
+      await listDesktopConversations({
+        app: opts.app,
+        includeArchived: true,
+        limit: 500,
+        ...(opts.claudeSessionsDirs ? { claudeSessionsDirs: opts.claudeSessionsDirs } : {}),
+        ...(opts.codexHome ? { codexHome: opts.codexHome } : {}),
+      })
+    ).find(c => c.app === opts.app && c.id === opts.id)
   if (!conversation)
     throw new Error(
       `desktop_conversation_read: no ${opts.app} Desktop conversation "${opts.id}"`
@@ -426,7 +448,7 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 export async function askDesktopConversation(
   opts: DesktopAskOptions
 ): Promise<DesktopAskResult> {
-  const before = await readDesktopConversation({ ...opts, tail: 1 })
+  const before = await readDesktopConversation(readScope(opts, 1))
   const { conversation } = before
   // Stamp the workspace the chat runs in: without it the external row has no
   // workspace and `message_send`'s default same-workspace rule can never bind,
@@ -519,18 +541,19 @@ export async function askDesktopConversation(
         settled = true
       }
     }
-    const now = await readDesktopConversation({ ...opts, tail: 200 })
+    // No tail cap here: a turn can add more than 200 messages, and the reply is all of them.
+    const now = await readDesktopConversation({ ...readScope(opts, Number.MAX_SAFE_INTEGER), conversation })
     if (settled) readSize = seenSize
     if (now.totalMessages !== lastCount) {
       lastCount = now.totalMessages
       if (!settled) lastChange = Date.now()
     }
-    const fresh = now.messages.slice(
-      -(now.totalMessages - before.totalMessages) || undefined
-    )
-    const grew = now.totalMessages > before.totalMessages
-    const lastIsAssistant =
-      now.messages[now.messages.length - 1]?.role === "assistant"
+    const added = now.totalMessages - before.totalMessages
+    const grew = added > 0
+    const fresh = grew ? now.messages.slice(-added) : []
+    // A transcript can end on a system / summary line after the answer: judge by
+    // the last message that is not a system one.
+    const lastIsAssistant = lastNonSystemRole(now.messages) === "assistant"
     if (
       grew &&
       lastIsAssistant &&
