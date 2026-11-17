@@ -89,16 +89,20 @@ targets with no real usage yet, then what sentinels don't do.
 
    **Superseded commits.** After a push, GitHub keeps reporting the CI that
    ran on the previous head (a `check_suite` or `workflow_run` completing
-   minutes later). The sentinel remembers each PR's current head from the
-   `pull_request` events it sees (opened, synchronize, reopened, ...), and a
-   CI event for any other commit is delivered marked instead of as-is:
-   `data.stale: true`, `data.current_head_sha`, a `[superseded]` prefix on
-   the summary, and `fyi` urgency, so it never wakes the session and never
-   ends the watch. It is not dropped: the agent can still read it. When the
-   head is unknown (the sentinel was created after the last push, or no
-   `pull_request` event has arrived yet), nothing is marked. `local-gh`
-   only ever reports the current head, so this matters for the `webhook` and
-   `agentpush` providers.
+   minutes later). From the `pull_request` events it sees, the sentinel keeps
+   each PR's current head and the commits it replaced (a push's `before` sha,
+   and any previously recorded head). A CI event for one of those replaced
+   commits is delivered marked instead of as-is: `data.stale: true`,
+   `data.current_head_sha`, a `[superseded]` prefix on the summary, and `fyi`
+   urgency, so it never wakes the session and never ends the watch. It is not
+   dropped: the agent can still read it. A CI event for a commit the sentinel
+   has never seen (for example the new head, when its CI result beats the push
+   event) is delivered unchanged, so a real failure is never demoted. Heads
+   are learned before the sentinel's `types` filter, so the `webhook`
+   provider tracks them even when `types` omits `pull_request.*`; an
+   `agentpush` sentinel only receives the types it subscribes to, so keep a
+   `github.pull_request.*` type (the default set has `synchronize`) or nothing
+   is marked. `local-gh` only ever reports the current head.
 
 ## Listing, stopping, expiry
 

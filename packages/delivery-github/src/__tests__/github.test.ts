@@ -76,7 +76,7 @@ describe("GitHub classification table", () => {
 describe("superseded CI events", () => {
   it("a stale failure is fyi (rule superseded), a stale-free failure still wakes", () => {
     const reg = createClassifierRegistry(GITHUB_CLASSIFIERS)
-    for (const type of ["github.check_suite.completed", "github.workflow_run.completed", "github.check_run.completed"]) {
+    for (const type of ["github.check_suite.completed", "github.workflow_run.completed"]) {
       expect(reg.classify(env(type, { data: { conclusion: "failure", stale: true } }), ctx)).toEqual({
         level: 1,
         rule: "superseded",

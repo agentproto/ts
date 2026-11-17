@@ -79,7 +79,7 @@ import {
 } from "./sentinel-webhook-outbox.js"
 import type { DeliveryReplay } from "./platform.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
-import { isSupersededEvent, trackHead } from "./sentinel-head-tracker.js"
+import { isStaleCiEvent, trackHead } from "./sentinel-head-tracker.js"
 import {
   RecentKeys,
   classifySentinelEvent,
@@ -813,7 +813,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // (the default) the classification is only observed. Being stale is a
     // fact, not a learned preference, so its level caps the target urgency
     // either way: it never wakes anyone.
-    const targetUrgency: MessageUrgency = isSupersededEvent(envelope)
+    const targetUrgency: MessageUrgency = isStaleCiEvent(envelope)
       ? capUrgency(classified, levelToTier(envelope.levelHint ?? 1))
       : classified
     const key = coalesceKeyFor(event)
@@ -1180,11 +1180,14 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       }
 
       // Superseded-head marking (webhook, agentpush and poll alike): a CI
-      // event for a commit that is no longer the PR head is marked and
-      // demoted to fyi, never dropped. Unknown head = unchanged (fail open).
-      const tracked = trackHead(incoming, current.headShas)
+      // event whose sha is a KNOWN superseded sha of its PR is marked and
+      // demoted to fyi, never dropped; an unknown sha is unchanged (fail
+      // open). Runs before the per-clause `types` filter so a sentinel whose
+      // types omit `pull_request.*` still learns heads from the events its
+      // provider delivers anyway.
+      const tracked = trackHead(incoming, current.prHeads)
       const event = tracked.event
-      if (tracked.heads) current = store.update(current.id, { headShas: tracked.heads }) ?? current
+      if (tracked.heads) current = store.update(current.id, { prHeads: tracked.heads }) ?? current
 
       const closedNow = trackClosure(current, event)
       if (closedNow && !event.terminal) {

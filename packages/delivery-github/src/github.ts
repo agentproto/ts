@@ -157,7 +157,7 @@ export function isSupersededEvent(event: Pick<Envelope, "data">): boolean {
 
 const supersededClassifier: Classifier = {
   id: "superseded",
-  types: ["github.check_suite.*", "github.workflow_run.*", "github.check_run.*", "github.status*"],
+  types: ["github.check_suite.*", "github.workflow_run.*"],
   classify: env => (isSupersededEvent(env) ? decisionToLevel("fyi") : undefined),
 }
 
