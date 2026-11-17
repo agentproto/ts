@@ -1,13 +1,37 @@
 # `agentproto mcp-bridge`
 
 ```text
-agentproto mcp-bridge
+agentproto mcp-bridge [--import <alias|importId>]
 ```
 
 A stdio MCP server that proxies to the daemon's HTTP `/mcp` orchestration
 endpoint. Stdio-only MCP clients (Codex, Cursor, Claude Desktop, Hermes)
 can use AgentProto's orchestration tools through this bridge — no
 third-party bridge needed.
+
+## `--import <alias|importId>`: one imported MCP server
+
+By default the bridge proxies `/mcp` — every orchestration tool.
+`--import <alias|importId>` dials `/mcp/imported/<alias|importId>` instead:
+the stdio client sees ONE imported MCP server (for example `bureau`) under
+its own native tool names, not the daemon's orchestration tools. The daemon
+accepts the alias or the import id; same auth and caller identity as
+`/mcp`. `--import` cannot be combined with `--surface` (exit `2`), and its
+value must be letters, digits, `.` `_` `:` `-`.
+
+```json
+{
+  "mcpServers": {
+    "bureau": {
+      "command": "agentproto",
+      "args": ["mcp-bridge", "--import", "bureau"]
+    }
+  }
+}
+```
+
+[`install-mcp --import`](./install-mcp.md#--import-alias-scoped-registration-for-one-imported-mcp-server)
+writes such an entry for you.
 
 The bridge connects to the daemon over HTTP (Streamable HTTP transport),
 pulls the tool list once at startup, then passes `listTools`, `callTool`,

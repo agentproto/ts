@@ -64,8 +64,16 @@ batch collapse (the latest wins). Format:
 
 ```text
 [session-follow] automatic digest — 2 events from sessions you follow. Decide whether anything needs the human's attention; if not, no reply is needed.
-[session-follow] <label|id> (<id>) <event> — <cwd basename> — <excerpt, <=300 chars>
+[session-follow] <label|id> (<id>) <event> [<relative>, <DD/MM HH:MMZ>] — <cwd basename> — <excerpt, <=300 chars>
 ```
+
+Each event line carries the event's own time — `[il y a 18 j, 29/10 05:27Z]`
+— not the time the digest was composed, so a restart's catch-up sweep never
+presents old news as fresh. A `pr-merged` tag reads
+`[fusionnée il y a 18 j, 29/10 05:28Z]` (the forge's real merge time). A
+`pr-merged` older than 24 h — for example the settlement sweep re-reporting a
+PR merged long ago after a daemon restart — is ignored and logged, never
+delivered as a new event.
 
 The excerpt is the tail of the session's last output (or its outcome summary /
 error / exit reason), prefixed with `…` when trimmed. More than 40 events add a
