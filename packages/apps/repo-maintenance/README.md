@@ -37,7 +37,7 @@ The `maintain` workflow, one run:
    stored verdict for its tip (checked via `branch_gc_verdict_get`) gets
    one re-prompt in the same session, then one retry on the large model.
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
-   reports any gap, the verdict tally, and the `salvage` branches by name.
+   reports any gap, the verdict tally, and a next action for every `salvage` verdict: `pr-candidate` (fresh verdict: proposed PR title and clean/conflict merge status against base) or `stale-salvage` (older than `salvageStaleDays`, default 14). A salvage tip is re-reviewed once when base gained more than `salvageRereviewMoved` (default 100) commits since its verdict. Report only: no PR is opened, nothing is deleted.
 4. If `applyMerged` is true: `worktree_gc` applies first (`salvageDirty:
    false`) — removing a merged worktree frees its branch — then `branch_gc`
    applies, then `sandbox_checkpoint_gc` deletes the stale checkpoint refs

@@ -142,12 +142,18 @@ call it; don't search again. Call `branch_gc_verdict` exactly once, with:
   repoRoot: "<repo root you were given>",
   name: "<branch name>",
   sha: "<the exact tip sha you were given>",
-  triage: { verdict, confidence (0..1), reason, salvage? },
+  triage: { verdict, confidence (0..1), reason, salvage?, prTitle? },   // prTitle: salvage only
   gate: { agree, verdict, reason, evidence: ["<sha or path>: what it shows", ...] },
   landedIn: [{ pr: <number>, commit?: "<sha on base>" }],   // superseded only, see below
   reviewer: "repo-maintenance-reviewer",
 }
 ```
+
+For a `salvage` verdict, also give `triage.prTitle`: the one-line title
+(imperative, under 100 characters) of the PR that would land the work worth
+keeping. The maintain report lists the tip as a PR candidate under that title,
+and as stale salvage once nobody acted on it. `salvage` says what to keep;
+`prTitle` says how a PR for it would be called.
 
 `landedIn` is only for a `superseded` verdict whose work landed through a
 merged PR you checked: give that PR's number (and its commit on base when you

@@ -261,6 +261,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "review:map",
       "reviewCleanup:tool",
       "branchGcVerify:tool",
+      "salvageFollowUp:transform",
       "gaps:transform",
       "verdictLookupTips:transform",
       "verdictRecords:map",
@@ -1130,7 +1131,7 @@ describe("repo-maintenance maintain workflow — missing-verdict retry", () => {
     expect(output.gaps).toEqual([])
     expect(output.report).toContain("every review candidate has a recorded verdict")
     expect(output.report).toContain("verdicts: obsolete=1 salvage=1 (deletion agreed on 1)")
-    expect(output.report).toContain("**salvage — needs a human**: `wt/large-residual`")
+    expect(output.report).toContain("**salvage: next action in \"Salvage follow-up\"**: `wt/large-residual`")
   })
 })
 
@@ -2235,5 +2236,116 @@ describe("repo-maintenance maintain workflow - one-time re-review of uncited sup
       expect(reviewPromptOf(sends, SHA_UNCITED)).toBeUndefined()
       expect(output.report).not.toContain("re-review")
     }
+  })
+})
+
+// ── salvage follow-up ───────────────────────────────────────────────────
+
+describe("repo-maintenance maintain: salvage follow-up", () => {
+  const sha = (c: string) => c.repeat(40)
+  const NOW = Date.parse("2026-11-17T00:00:00Z")
+  const daysAgo = (n: number) => new Date(NOW - n * 86_400_000).toISOString()
+  type Entry = Record<string, unknown>
+  type Item = { name: string; action: string; merge: string; title: string; verdictAgeDays: number | null; baseMoved: number | null; titleFromReviewer: boolean }
+
+  const salvageVerdict = (over: Record<string, unknown> = {}) => ({
+    triage: "salvage",
+    agree: null,
+    reviewer: "repo-maintenance-reviewer",
+    citedPrs: [] as number[],
+    recordedAt: daysAgo(3),
+    baseMoved: 10,
+    ...over,
+  })
+  function entry(over: Entry): Entry {
+    return {
+      kind: "local",
+      date: "2026-01-01T00:00:00Z",
+      author: "a",
+      subject: "tip subject",
+      ageDays: 30,
+      class: "review",
+      status: "unmerged",
+      history: "current",
+      ahead: 1,
+      behind: 0,
+      conflicts: false,
+      mergedTree: sha("f"),
+      ...over,
+    }
+  }
+  const planOf = (entries: Entry[]) => ({
+    mode: "plan",
+    plan: { repoRoot: "/repo", repoName: "repo", base: "origin/main", baseSha: sha("c"), scopes: ["local"], minLineCoverage: 95, entries },
+    summary: { byClass: { local: { reclaim: 0, review: entries.length, hold: 0 } }, byStatus: {} },
+  })
+  type Mod = {
+    buildSalvageFollowUp: (e: unknown, o?: Record<string, unknown>) => Item[]
+    buildReviewQueue: (p: unknown, w: unknown, o?: Record<string, unknown>) => { queue: Array<Record<string, unknown>>; rereviewQueued: number }
+    buildReport: (b: unknown) => string
+  }
+  const load = async () => (await import(join(dirname(WORKFLOW_PATH), "entry.mjs"))) as Mod
+
+  it("a fresh salvage verdict is a pr-candidate with the reviewer's title and its merge status; an old one is stale-salvage", async () => {
+    const { buildSalvageFollowUp } = await load()
+    const items = buildSalvageFollowUp(
+      [
+        entry({ name: "fresh-clean", ref: "refs/heads/fresh-clean", sha: sha("1"), verdict: salvageVerdict({ prTitle: "Add the retry queue" }) }),
+        entry({ name: "fresh-conflict", ref: "refs/heads/fresh-conflict", sha: sha("2"), conflicts: true, mergedTree: null, verdict: salvageVerdict({ salvage: "Keep the parser fix\nand more" }) }),
+        entry({ name: "old", ref: "refs/heads/old", sha: sha("3"), verdict: salvageVerdict({ recordedAt: daysAgo(29) }) }),
+        // A twin ref of the same tip is one item.
+        entry({ kind: "remote", name: "fresh-clean", ref: "refs/remotes/origin/fresh-clean", sha: sha("1"), verdict: salvageVerdict({ prTitle: "Add the retry queue" }) }),
+        // Not salvage: ignored.
+        entry({ name: "obsolete", ref: "refs/heads/obsolete", sha: sha("4"), verdict: { ...salvageVerdict(), triage: "obsolete" } }),
+      ],
+      { nowMs: NOW },
+    )
+    expect(items.map(i => [i.name, i.action, i.merge])).toEqual([
+      ["fresh-clean", "pr-candidate", "clean"],
+      ["old", "stale-salvage", "clean"],
+      ["fresh-conflict", "pr-candidate", "conflict"],
+    ])
+    expect(items[0]).toMatchObject({ title: "Add the retry queue", titleFromReviewer: true, verdictAgeDays: 3 })
+    expect(items[2]).toMatchObject({ title: "Keep the parser fix", titleFromReviewer: false })
+    expect(items[1]!.verdictAgeDays).toBe(29)
+    // The threshold is configurable: at 30 days the 29-day verdict is still a candidate.
+    expect(buildSalvageFollowUp([entry({ name: "old", ref: "refs/heads/old", sha: sha("3"), verdict: salvageVerdict({ recordedAt: daysAgo(29) }) })], { nowMs: NOW, staleDays: 30 })[0]!.action).toBe("pr-candidate")
+  })
+
+  it("re-reviews a salvage tip once base moved more than M commits since the verdict; a calm base and an operator-approved tip are left", async () => {
+    const { buildReviewQueue } = await load()
+    const plan = planOf([
+      entry({ name: "moved", ref: "refs/heads/moved", sha: sha("1"), verdict: salvageVerdict({ baseMoved: 101 }) }),
+      entry({ name: "calm", ref: "refs/heads/calm", sha: sha("2"), verdict: salvageVerdict({ baseMoved: 100 }) }),
+      entry({ name: "old-engine", ref: "refs/heads/old-engine", sha: sha("3"), verdict: { ...salvageVerdict(), baseMoved: undefined } }),
+      entry({ name: "operator", ref: "refs/heads/operator", sha: sha("4"), verdict: salvageVerdict({ baseMoved: 900, operator: { by: "jeremy" } }) }),
+      entry({ name: "fresh", ref: "refs/heads/fresh", sha: sha("5"), verdict: undefined }),
+    ])
+    const { queue, rereviewQueued } = await buildReviewQueue(plan, undefined)
+    expect(queue.map(c => c.name)).toEqual(["fresh", "moved"])
+    expect(queue[1]).toMatchObject({ rereviewKind: "salvage" })
+    expect(String(queue[1]!.rereview)).toContain("base gained 101 commits")
+    expect(rereviewQueued).toBe(1)
+    expect((await buildReviewQueue(plan, undefined, { salvageRereviewMoved: 5 })).queue.map(c => c.name)).toEqual(["fresh", "moved", "calm"])
+    expect((await buildReviewQueue(plan, undefined, { rereviewSalvage: false })).queue.map(c => c.name)).toEqual(["fresh"])
+  })
+
+  it("the report ends each salvage verdict in a next action and says it is report only", async () => {
+    const { buildReport } = await load()
+    const verify = planOf([
+      entry({ name: "fresh-clean", ref: "refs/heads/fresh-clean", sha: sha("1"), verdict: salvageVerdict({ prTitle: "Add the retry queue" }) }),
+      entry({ name: "old", ref: "refs/heads/old", sha: sha("3"), verdict: salvageVerdict({ recordedAt: daysAgo(29), baseMoved: 400 }) }),
+    ])
+    const report = buildReport({
+      input: { nowMs: NOW },
+      steps: { branchGcPlan: verify, branchGcVerify: verify, worktreeGcPlan: { mode: "plan", entries: [] }, reviewCandidates: [], reviewQueue: { queue: [], alreadyReviewed: 0 }, gaps: [] },
+    })
+    expect(report).toContain("## Salvage follow-up (2)")
+    expect(report).toContain("**pr-candidate (1)**")
+    expect(report).toContain("`fresh-clean` - clean - base +10 commits since the verdict - verdict 3d old - proposed title: Add the retry queue")
+    expect(report).toContain("**stale-salvage (1)**")
+    expect(report).toContain("`old` - clean - base +400 commits since the verdict - verdict 29d old")
+    expect(report).toContain("nothing here opens a PR or deletes a branch")
+    expect(report).not.toContain("needs a human")
   })
 })

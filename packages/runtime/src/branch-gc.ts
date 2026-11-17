@@ -105,6 +105,12 @@ export interface BranchGcPlanEntryView {
     citedPrs?: number[]
     /** How many earlier verdicts for this tip the stored one replaced; absent on a first verdict. */
     revision?: number
+    /** When the verdict was recorded (ISO). Absent on an older result. */
+    recordedAt?: string
+    /** `salvage` verdicts: what is worth keeping, the reviewer's proposed PR title, and commits that landed on base since the verdict. */
+    salvage?: string
+    prTitle?: string
+    baseMoved?: number
   }
   /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`), or that an operator or the `verified-pr` pass got it past that guard. */
   verdictGuard?: string
@@ -544,7 +550,7 @@ export interface BranchGcVerdictRecordView {
   recordedAt: string
   /** How many earlier verdicts for this tip this record replaced; absent on a first verdict. */
   revision?: number
-  triage: { verdict: BranchGcTriageVerdict; confidence: number; reason: string; salvage?: string }
+  triage: { verdict: BranchGcTriageVerdict; confidence: number; reason: string; salvage?: string; prTitle?: string }
   gate?: { agree: boolean; verdict: BranchGcTriageVerdict; reason: string; evidence: string[] }
   /** The PR(s) a superseded verdict says landed the work. */
   landedIn?: Array<{ pr: number; commit?: string }>

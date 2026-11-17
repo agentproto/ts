@@ -2653,3 +2653,60 @@ describe("branch gc: history-covered guard pass", () => {
     expect(e.historyRefusal).toBeUndefined()
   })
 })
+
+// ── salvage verdicts: prTitle and how far base moved since ───────────────
+
+describe("branch gc: salvage verdict summary", () => {
+  it("stamps recordedAt, salvage, prTitle and the commits base gained since the verdict", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/keep", { "a.txt": "a\n" })
+    await execGit(repo, ["checkout", "-q", "main"])
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      now: () => "2026-01-01T00:00:00.000Z",
+      verdict: {
+        name: "feat/keep",
+        sha: tip,
+        reviewer: "flash reviewer",
+        triage: { verdict: "salvage", confidence: 0.8, reason: "real work", salvage: "the retry queue", prTitle: "Add the retry queue" },
+      },
+    })
+    // Two commits on base AFTER the verdict, one before it.
+    const commitAt = async (msg: string, date: string): Promise<void> => {
+      await writeFile(join(repo, `${msg}.txt`), msg)
+      await execGit(repo, ["add", "-A"])
+      await execArgv("git", ["-C", repo, "commit", "-q", "-m", msg], repo, { env: { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } })
+    }
+    await commitAt("before", "2025-12-31T00:00:00Z")
+    await commitAt("after-1", "2026-02-01T00:00:00Z")
+    await commitAt("after-2", "2026-02-02T00:00:00Z")
+
+    const e = entry(await plan(repo, { verdicts }), "feat/keep")
+    expect(e.verdict).toMatchObject({
+      triage: "salvage",
+      recordedAt: "2026-01-01T00:00:00.000Z",
+      salvage: "the retry queue",
+      prTitle: "Add the retry queue",
+      baseMoved: 2,
+    })
+  })
+
+  it("leaves baseMoved off for a verdict that is not salvage", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/dead", { "a.txt": "a\n" })
+    await execGit(repo, ["checkout", "-q", "main"])
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: { name: "feat/dead", sha: tip, reviewer: "r", triage: { verdict: "unclear", confidence: 0.4, reason: "?" } },
+    })
+    const e = entry(await plan(repo, { verdicts }), "feat/dead")
+    expect(e.verdict?.baseMoved).toBeUndefined()
+    expect(e.verdict?.recordedAt).toBeDefined()
+  })
+})

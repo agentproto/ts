@@ -36,7 +36,7 @@ One run:
    command when the reviewer agreed nothing of value is lost. Removal stays
    manual. The workflow input `reviewHeldWorktrees: false` turns this off.
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
-   reports any gap, the verdict tally, and the `salvage` branches by name.
+   reports any gap, the verdict tally, and a next action for every `salvage` verdict: `pr-candidate` (fresh verdict: proposed PR title and clean/conflict merge status against base) or `stale-salvage` (older than `salvageStaleDays`, default 14). A salvage tip is re-reviewed once when base gained more than `salvageRereviewMoved` (default 100) commits since its verdict. Report only: no PR is opened, nothing is deleted.
 4. With `--apply-merged`: applies `branch_gc` (reclaim-class only by
    default), `worktree_gc`, and `sandbox_checkpoint_gc` (stale checkpoint
    refs; the engine re-plans and re-classifies every ref immediately before

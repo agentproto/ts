@@ -131,6 +131,8 @@ const REVIEW_PROMPT =
   "do not infer one. git cherry counts commits with no patch-equivalent on base (a `+` line of `git cherry " +
   "<base> <tip>`); when it says unavailable, run that read-only command yourself. " +
   "Keep triage.reason (and gate.reason) to ONE line: the maintain report prints it verbatim next to the PR state. " +
+  "When your verdict is salvage, also pass triage.prTitle: the one-line title (imperative, under 100 chars) of the PR that " +
+  "would land the work worth keeping; the maintain report lists the tip as a PR candidate under that title. " +
   "When your verdict is superseded because a merged PR landed this work, also pass landedIn: [{ pr, commit? }] " +
   "(the PR number(s), and the commit on base when you know it) and cite `#<pr>` in gate.reason: `branch_gc`'s " +
   "verified-pr pass checks that PR with the forge and lets the tip past the line guard when every file with " +
@@ -478,6 +480,116 @@ export function needsUncitedRereview(e, plan) {
   return typeof e.lineCoverage?.pct === "number" && e.lineCoverage.pct < min
 }
 
+/** A `salvage` verdict older than this many days is reported as `stale-salvage`
+ *  (`salvageStaleDays`): nobody acted on it. */
+export const DEFAULT_SALVAGE_STALE_DAYS = 14
+/** A `salvage` verdict is re-reviewed once base gained more than this many
+ *  commits since it was recorded (`salvageRereviewMoved`): verdicts are keyed
+ *  by tip sha only, so otherwise a verdict made against an old base is never
+ *  checked again. */
+export const DEFAULT_SALVAGE_REREVIEW_MOVED = 100
+
+/** What the reviewer of a salvage re-review is told, after "This is a RE-REVIEW." */
+export function rereviewSalvageWhy(baseMoved) {
+  return (
+    `This tip's stored verdict is salvage, but base gained ${baseMoved} commits since it was recorded. ` +
+    "Check again what base already has: record superseded or obsolete (with landedIn when a merged PR landed it) " +
+    "when the work is no longer missing, else keep salvage and name what is still unlanded. " +
+    "For salvage also give triage.prTitle: the one-line title of the PR that would land the work worth keeping. " +
+    "Your verdict replaces the stored one."
+  )
+}
+
+/** The salvage re-review reason for plan entry `e`, or null: a stored
+ *  `salvage` verdict whose base moved more than `moved` commits since it was
+ *  recorded (`verdict.baseMoved`, stamped by branch_gc). An engine that does
+ *  not report `baseMoved` never qualifies. */
+export function salvageRereviewReason(e, moved = DEFAULT_SALVAGE_REREVIEW_MOVED) {
+  const v = e?.verdict
+  if (!v || v.triage !== "salvage" || v.operator) return null
+  return typeof v.baseMoved === "number" && v.baseMoved > moved ? rereviewSalvageWhy(v.baseMoved) : null
+}
+
+const DAY_MS = 86_400_000
+
+/** `clean` / `conflict` / `unknown`: whether the tip merges into base, from
+ *  the plan's own `git merge-tree --write-tree` run (`mergedTree` is null and
+ *  `conflicts` true when it conflicts). */
+export function mergeStatusOf(e) {
+  if (e?.conflicts === true) return "conflict"
+  if (e?.conflicts === false && typeof e.mergedTree === "string" && e.mergedTree) return "clean"
+  return "unknown"
+}
+
+/** The next action for every distinct tip whose stored verdict is `salvage`,
+ *  one item per tip sha (a local branch and its remote twin are one):
+ *  `pr-candidate` (the verdict is fresh: open a PR with the reviewer's title)
+ *  or `stale-salvage` (older than `staleDays`: nobody acted on it). Report
+ *  only: nothing here opens a PR or deletes. Clean merges come first, then
+ *  the newest verdicts. `entries` are branch_gc plan entries. */
+export function buildSalvageFollowUp(entries, opts = {}) {
+  const nowMs = opts.nowMs ?? Date.now()
+  const staleDays = typeof opts.staleDays === "number" && opts.staleDays >= 0 ? opts.staleDays : DEFAULT_SALVAGE_STALE_DAYS
+  const bySha = new Map()
+  for (const e of Array.isArray(entries) ? entries : []) {
+    const v = e?.verdict
+    if (!v || v.triage !== "salvage" || typeof e.sha !== "string") continue
+    const seen = bySha.get(e.sha)
+    if (seen) {
+      seen.refs.push(e.ref)
+      continue
+    }
+    const recorded = Date.parse(v.recordedAt ?? "")
+    const verdictAgeDays = Number.isNaN(recorded) ? null : Math.max(0, Math.floor((nowMs - recorded) / DAY_MS))
+    const firstLine = t => String(t ?? "").split("\n").map(l => l.trim()).find(l => l.length > 0)
+    bySha.set(e.sha, {
+      name: e.name,
+      sha: e.sha,
+      refs: [e.ref],
+      // No recording date (an older engine) cannot prove freshness: stale.
+      action: verdictAgeDays !== null && verdictAgeDays <= staleDays ? "pr-candidate" : "stale-salvage",
+      verdictAgeDays,
+      merge: mergeStatusOf(e),
+      baseMoved: typeof v.baseMoved === "number" ? v.baseMoved : null,
+      title: firstLine(v.prTitle) ?? firstLine(v.salvage) ?? firstLine(e.subject) ?? e.name,
+      titleFromReviewer: Boolean(firstLine(v.prTitle)),
+    })
+  }
+  const rank = { clean: 0, unknown: 1, conflict: 2 }
+  return [...bySha.values()].sort(
+    (a, b) => rank[a.merge] - rank[b.merge] || (a.verdictAgeDays ?? Infinity) - (b.verdictAgeDays ?? Infinity) || a.name.localeCompare(b.name),
+  )
+}
+
+/** Report lines for {@link buildSalvageFollowUp}'s items (none when empty). */
+export function salvageFollowUpLines(items, opts = {}) {
+  if (items.length === 0) return []
+  const staleDays = opts.staleDays ?? DEFAULT_SALVAGE_STALE_DAYS
+  const candidates = items.filter(i => i.action === "pr-candidate")
+  const stale = items.filter(i => i.action === "stale-salvage")
+  const lines = ["", `## Salvage follow-up (${items.length})`]
+  lines.push(
+    "Report only: nothing here opens a PR or deletes a branch. A `salvage` verdict ends in one of two next actions: " +
+      `\`pr-candidate\` (verdict at most ${staleDays}d old: open a PR with the proposed title) or \`stale-salvage\` (older: re-review, open the PR or drop the work). ` +
+      "Merge status is `git merge-tree --write-tree` of the tip against base.",
+  )
+  const row = i =>
+    `- \`${i.name}\` - ${i.merge}${i.baseMoved !== null ? ` - base +${i.baseMoved} commits since the verdict` : ""}` +
+    `${i.verdictAgeDays !== null ? ` - verdict ${i.verdictAgeDays}d old` : " - verdict undated"} - ` +
+    `${i.titleFromReviewer ? "proposed title" : "title (no reviewer proposal)"}: ${i.title}`
+  if (candidates.length > 0) {
+    lines.push(`- **pr-candidate (${candidates.length})**:`)
+    for (const i of candidates.slice(0, REPORT_LIST_CAP)) lines.push(`  ${row(i)}`)
+    if (candidates.length > REPORT_LIST_CAP) lines.push(moreLine("  ", candidates.length, "the run output's `salvage`"))
+  }
+  if (stale.length > 0) {
+    lines.push(`- **stale-salvage (${stale.length})**:`)
+    for (const i of stale.slice(0, REPORT_LIST_CAP)) lines.push(`  ${row(i)}`)
+    if (stale.length > REPORT_LIST_CAP) lines.push(moreLine("  ", stale.length, "the run output's `salvage`"))
+  }
+  return lines
+}
+
 /** One `review`-class branch_gc plan entry per BRANCH NAME — a local branch
  *  and its remote twin share one review instead of costing the reviewer two
  *  turns, whether they share a tip (grouped by sha, as before) or DIVERGED
@@ -513,9 +625,26 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
   const heldWorktrees = opts.reviewHeldWorktrees === false ? new Map() : reviewableWorktrees(worktreeGcPlanResult)
   const reviewable = e => e.class === "review" || heldWorktreeOf(e, heldWorktrees) !== null
   // Per tip sha: a local ref and its remote twin share one verdict.
-  const rereviewShas = new Set(
-    opts.rereviewUncited === false ? [] : entries.filter(e => reviewable(e) && needsUncitedRereview(e, plan)).map(e => e.sha),
-  )
+  // sha → the reviewer's instructions. A salvage verdict whose base moved a lot
+  // comes first in the lookup, so the two reasons never collide on one tip.
+  const rereviewWhy = new Map()
+  const rereviewKind = new Map()
+  for (const e of entries) {
+    if (!reviewable(e) || rereviewWhy.has(e.sha)) continue
+    if (opts.rereviewSalvage !== false) {
+      const why = salvageRereviewReason(e, opts.salvageRereviewMoved)
+      if (why) {
+        rereviewWhy.set(e.sha, why)
+        rereviewKind.set(e.sha, "salvage")
+        continue
+      }
+    }
+    if (opts.rereviewUncited !== false && needsUncitedRereview(e, plan)) {
+      rereviewWhy.set(e.sha, REREVIEW_UNCITED_WHY)
+      rereviewKind.set(e.sha, "uncited")
+    }
+  }
+  const rereviewShas = new Set(rereviewWhy.keys())
   const bySha = new Map()
   const dates = new Map()
   for (const e of entries) {
@@ -565,7 +694,7 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
       lineCoverage: e.lineCoverage ?? null,
       refs: [e.ref],
       ...(heldPath ? { worktree: heldPath } : {}),
-      ...(rereview ? { rereview: REREVIEW_UNCITED_WHY } : {}),
+      ...(rereview ? { rereview: rereviewWhy.get(e.sha), rereviewKind: rereviewKind.get(e.sha) } : {}),
     })
   }
   // Merge candidates whose refs share one branch NAME: `foo` and `origin/foo`
@@ -1006,12 +1135,25 @@ export function buildReport(b) {
       (backlog > 0 ? `, not reviewed this run (${backlog}) — raise \`maxReviews\` or let the next run take them` : "") +
       (reviewQueue.alreadyReviewed > 0 ? `; ${reviewQueue.alreadyReviewed} tip(s) already carry a verdict from an earlier run` : ""),
   )
-  if (rereviewQueued > 0) {
+  const queuedOf = kind => reviewQueue.queue.filter(c => c.rereviewKind === kind).length
+  const uncitedQueued = queuedOf("uncited")
+  const salvageQueued = queuedOf("salvage")
+  const rereviewedOf = kind => rereviewed.filter(c => c.rereviewKind === kind)
+  if (uncitedQueued > 0) {
+    const done = rereviewedOf("uncited")
     lines.push(
-      `- re-reviewed ${rereviewed.length} of ${rereviewQueued} tip(s) whose stored superseded verdict agreed but cites no PR, ` +
+      `- re-reviewed ${done.length} of ${uncitedQueued} tip(s) whose stored superseded verdict agreed but cites no PR, ` +
         `under the ${plan?.minLineCoverage ?? DEFAULT_MIN_LINE_COVERAGE}% line guard: only the verified-pr pass can reclaim them and it needs a cited merged PR, ` +
         "so each reviewer was asked to cite it in `landedIn` or change the verdict (once per tip; unreviewed tips go first)" +
-        (rereviewed.length > 0 ? `: ${formatNameList(rereviewed.map(c => c.name))}` : ""),
+        (done.length > 0 ? `: ${formatNameList(done.map(c => c.name))}` : ""),
+    )
+  }
+  if (salvageQueued > 0) {
+    const done = rereviewedOf("salvage")
+    lines.push(
+      `- re-reviewed ${done.length} of ${salvageQueued} salvage tip(s) whose base gained more than ${b.input?.salvageRereviewMoved ?? DEFAULT_SALVAGE_REREVIEW_MOVED} commits since the verdict ` +
+        "(once per tip; unreviewed tips go first)" +
+        (done.length > 0 ? `: ${formatNameList(done.map(c => c.name))}` : ""),
     )
   }
   lines.push(
@@ -1036,8 +1178,12 @@ export function buildReport(b) {
   }
   const salvage = verdicts.filter(v => v.triage === "salvage")
   if (salvage.length > 0) {
-    lines.push(`- **salvage — needs a human**: ${formatNameList(salvage.map(v => v.name), REPORT_LIST_CAP, "the run output's `verdictRecords`")}`)
+    lines.push(`- **salvage: next action in "Salvage follow-up"**: ${formatNameList(salvage.map(v => v.name), REPORT_LIST_CAP, "the run output's `verdictRecords`")}`)
   }
+  const salvageItems = buildSalvageFollowUp(b.steps.branchGcVerify?.plan?.entries, {
+    nowMs: b.input?.nowMs,
+    staleDays: b.input?.salvageStaleDays,
+  })
   const heldVerdicts = b.input?.reviewHeldWorktrees === false ? [] : heldWorktreeVerdicts(b.steps.branchGcVerify, wtPlan)
   // Held worktrees get their line in their own section below.
   const heldNames = new Set(heldVerdicts.map(v => v.name))
@@ -1046,6 +1192,10 @@ export function buildReport(b) {
     lines.push("- verdict reasons (one line per verdict: branch, PR state, git cherry, reviewer's reason):")
     for (const v of branchVerdicts.slice(0, REPORT_LIST_CAP)) lines.push(`  ${verdictLine(v, records.get(v.sha))}`)
     if (branchVerdicts.length > REPORT_LIST_CAP) lines.push(moreLine("  ", branchVerdicts.length, "the run output's `verdictRecords`"))
+  }
+  if (salvageItems.length > 0) {
+    const nStale = salvageItems.filter(i => i.action === "stale-salvage").length
+    lines.push(`- salvage verdicts: ${salvageItems.length - nStale} pr-candidate, ${nStale} stale-salvage (see "Salvage follow-up")`)
   }
   if (gaps.length > 0) {
     lines.push(`- **${gaps.length} branch(es) with no recorded verdict** (after a same-session re-prompt and a large-model retry; full list in the run output's \`gaps\`): ${formatNameList(gaps.map(g => g.name))}`)
@@ -1069,6 +1219,7 @@ export function buildReport(b) {
     }
     if (heldVerdicts.length > REPORT_LIST_CAP) lines.push(moreLine("", heldVerdicts.length, "the run output's `verdictRecords`"))
   }
+  lines.push(...salvageFollowUpLines(salvageItems, { staleDays: b.input?.salvageStaleDays }))
   lines.push("")
   lines.push("## Apply")
   if (!applyMerged) {
@@ -1234,6 +1385,9 @@ export default {
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     maxReviews: { type: "number", description: `Most review candidates to review this run — newest tip first, then the larger residual. The rest are reported as not reviewed this run; tips with a stored verdict are not reviewed again (except the one-time \`rereviewUncited\` re-reviews, which count against this cap and come after every unreviewed tip), so daily runs walk the backlog. Default ${DEFAULT_MAX_REVIEWS}.`, default: DEFAULT_MAX_REVIEWS },
     rereviewUncited: { type: "boolean", description: "Re-review, once per tip, a tip whose stored verdict says superseded (triage and gate), agreed, cites no PR (no `landedIn`, no `#N` in gate.reason/evidence) and sits under branch_gc's line-coverage guard: the verified-pr pass cannot reclaim it without a cited PR. The reviewer is asked to find and cite the merged PR that landed the work, or change the verdict. Re-reviews count against `maxReviews` and are queued after every unreviewed tip (newest first). A tip whose stored verdict already replaced an earlier one (`revision` in the store) is never picked, so a re-review that again cites no PR is not repeated. Off when `requireOperatorBelowGuard` is true. Default true.", default: true },
+    rereviewSalvage: { type: "boolean", description: `Re-review, once per tip, a tip whose stored verdict is salvage when base gained more than \`salvageRereviewMoved\` commits since the verdict was recorded (verdicts are keyed by sha only, so a verdict on an old base is otherwise never checked). Counts against \`maxReviews\`, after every unreviewed tip. Default true.`, default: true },
+    salvageRereviewMoved: { type: "number", description: `Base commits since a salvage verdict that trigger its re-review. Default ${DEFAULT_SALVAGE_REREVIEW_MOVED}.`, default: DEFAULT_SALVAGE_REREVIEW_MOVED },
+    salvageStaleDays: { type: "number", description: `A salvage verdict older than this many days is reported as \`stale-salvage\`, a newer one as \`pr-candidate\` (with the reviewer's proposed PR title and clean/conflict merge status). Report only: no PR is opened, nothing is deleted. Default ${DEFAULT_SALVAGE_STALE_DAYS}.`, default: DEFAULT_SALVAGE_STALE_DAYS },
     reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). When the reviewer agreed, the worktree (never its branch) goes: with \`applyMerged\` + \`applyReviewed\`, worktree_gc removes it after re-checking it (same tip, clean, idle, no open PR, agreeing stored verdict) and the report gives each outcome; otherwise the report prints \`agentproto worktree rm <path> --keep-branch\`. Either way the branch is then judged by branch_gc's line-coverage guard. Default true.`, default: true },
     notify: {
       type: "object",
@@ -1297,6 +1451,8 @@ export default {
           reviewHeldWorktrees: b.input?.reviewHeldWorktrees !== false,
           // A cited PR only helps through the verified-pr pass: off with it.
           rereviewUncited: b.input?.rereviewUncited !== false && b.input?.requireOperatorBelowGuard !== true,
+          rereviewSalvage: b.input?.rereviewSalvage !== false,
+          salvageRereviewMoved: b.input?.salvageRereviewMoved,
         }),
     },
     {
@@ -1399,6 +1555,17 @@ export default {
       // fields (coverage, residualFiles, lineCoverage, cherry), which the
       // tool's compact, paged default leaves out.
       inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, includeReviewed: false, full: true },
+    },
+    {
+      // Report-only next action for every salvage verdict (after review, so
+      // verdicts recorded or replaced this run count).
+      id: "salvageFollowUp",
+      kind: "transform",
+      compute: b =>
+        buildSalvageFollowUp(b.steps.branchGcVerify?.plan?.entries, {
+          nowMs: b.input?.nowMs,
+          staleDays: b.input?.salvageStaleDays,
+        }),
     },
     {
       id: "gaps",
@@ -1628,6 +1795,7 @@ export default {
   result: {
     report: "$steps.reportFinal",
     gaps: "$steps.gaps",
+    salvage: "$steps.salvageFollowUp",
     review: "$steps.review",
     verdictRecords: "$steps.verdictRecords",
     applyMerged: "$input.applyMerged",

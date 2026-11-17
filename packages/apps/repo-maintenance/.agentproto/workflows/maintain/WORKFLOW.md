@@ -90,6 +90,27 @@ inputs:
       re-review that again cites no PR is not repeated. Off when
       `requireOperatorBelowGuard` is true.
     default: true
+  rereviewSalvage:
+    type: boolean
+    description: >-
+      Re-review, once per tip, a tip whose stored verdict is salvage when base
+      gained more than `salvageRereviewMoved` commits since the verdict was
+      recorded (verdicts are keyed by sha only, so a verdict on an old base is
+      otherwise never checked). Counts against `maxReviews`, after every
+      unreviewed tip.
+    default: true
+  salvageRereviewMoved:
+    type: number
+    description: Base commits since a salvage verdict that trigger its re-review.
+    default: 100
+  salvageStaleDays:
+    type: number
+    description: >-
+      A salvage verdict older than this many days is reported as
+      `stale-salvage`, a newer one as `pr-candidate` (with the reviewer's
+      proposed PR title and clean/conflict merge status). Report only: no PR is
+      opened, nothing is deleted.
+    default: 14
   reviewHeldWorktrees:
     type: boolean
     description: >-
@@ -251,6 +272,11 @@ steps:
       includeReviewed: false
       full: true
 
+  - id: salvageFollowUp
+    kind: transform
+    name: Next action for every salvage verdict (pr-candidate or stale-salvage)
+    description: Entry-based - see entry.mjs's buildSalvageFollowUp.
+
   - id: gaps
     kind: transform
     name: Review candidates with no recorded verdict
@@ -409,6 +435,7 @@ steps:
 result:
   report: $steps.reportFinal
   gaps: $steps.gaps
+  salvage: $steps.salvageFollowUp
   review: $steps.review
   verdictRecords: $steps.verdictRecords
   applyMerged: $input.applyMerged
@@ -565,3 +592,27 @@ No `bash` allowlist entry and no `AGENTPUSH_API_KEY` are needed. A provider
 that is not configured on the daemon (no bot token, no imported alias for the
 named alias) does not fail the run: the report ends with
 `notify skipped: <reason>`.
+
+## Salvage follow-up
+
+A `salvage` verdict used to wait forever: nothing acts on it, and verdicts are
+keyed by tip sha only, so one recorded against an old base is never checked
+again. Every distinct salvage tip now ends in a next action, listed in the
+report's "Salvage follow-up" section and in the run output's `salvage`:
+
+- `pr-candidate`: the verdict is at most `salvageStaleDays` (default 14) days
+  old. The row gives the reviewer's proposed PR title (`triage.prTitle`, else
+  the first line of `triage.salvage`, else the tip's commit subject), whether
+  the tip merges cleanly into base (`clean`, `conflict` or `unknown`, from the
+  plan's own `git merge-tree --write-tree` run) and how many commits base gained
+  since the verdict.
+- `stale-salvage`: the verdict is older than `salvageStaleDays` (or undated).
+
+Re-review: with `rereviewSalvage` (default true) a salvage tip is re-reviewed,
+once, when base gained more than `salvageRereviewMoved` (default 100) commits
+since the verdict was recorded (`verdict.baseMoved`, from branch_gc:
+`git rev-list --count --since=<recordedAt> base`). It follows the same queue
+rules as the uncited re-review: after every unreviewed tip, under `maxReviews`.
+The new verdict replaces the old one and restarts its clock.
+
+Report only: the workflow opens no PR and deletes nothing for a salvage tip.

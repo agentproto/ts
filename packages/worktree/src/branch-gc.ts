@@ -316,6 +316,18 @@ export interface BranchVerdictSummary {
   citedPrs: number[]
   /** The stored record's {@link BranchVerdictRecord.revision}, when it replaced an earlier verdict. */
   revision?: number
+  /** When the verdict was recorded (ISO). Absent on an older result. */
+  recordedAt?: string
+  /** A `salvage` verdict: what is worth keeping, and the PR title the reviewer proposed. */
+  salvage?: string
+  prTitle?: string
+  /**
+   * A `salvage` verdict only: commits that landed on base since the verdict was
+   * recorded (`git rev-list --count --since=<recordedAt> base`). Verdicts are
+   * keyed by tip sha alone, so without this a verdict made against an old base
+   * is never questioned; the maintain workflow re-reviews past a threshold.
+   */
+  baseMoved?: number
 }
 
 /**
@@ -1327,6 +1339,14 @@ function mergedPrMatchOf(env: ClassifyEnv, sha: string): Promise<{ pr: number; m
   return pending
 }
 
+/** `{ baseMoved }`: commits reachable from base committed after `since`; `{}` when git cannot say. */
+async function commitsOnBaseSince(repoRoot: string, baseSha: string, since: string): Promise<{ baseMoved?: number }> {
+  if (Number.isNaN(Date.parse(since))) return {}
+  const res = await git(repoRoot, ["rev-list", "--count", `--since=${since}`, baseSha])
+  const n = Number.parseInt(res.stdout.trim(), 10)
+  return res.exitCode === 0 && Number.isFinite(n) ? { baseMoved: n } : {}
+}
+
 /** Stamp the stored verdict for `sha` onto `entry` (`BranchVerdictSummary` shape), if one exists, and return the full record. */
 async function stampVerdict(entry: BranchGcPlanEntry, sha: string, env: ClassifyEnv): Promise<BranchVerdictRecord | null> {
   const stored = env.verdicts ? await env.verdicts.get(env.repoName, sha) : null
@@ -1339,6 +1359,14 @@ async function stampVerdict(entry: BranchGcPlanEntry, sha: string, env: Classify
     ...(stored.gate ? { gateVerdict: stored.gate.verdict } : {}),
     citedPrs: citedPrsOf(stored),
     ...(stored.revision ? { revision: stored.revision } : {}),
+    recordedAt: stored.recordedAt,
+    ...(stored.triage.verdict === "salvage"
+      ? {
+          ...(stored.triage.salvage ? { salvage: stored.triage.salvage } : {}),
+          ...(stored.triage.prTitle ? { prTitle: stored.triage.prTitle } : {}),
+          ...(await commitsOnBaseSince(env.ctx.repoRoot, env.ctx.baseSha, stored.recordedAt)),
+        }
+      : {}),
   }
   return stored
 }
@@ -3417,6 +3445,8 @@ export const branchVerdictSchema = z
       confidence: z.number().min(0).max(1),
       reason: z.string().min(1),
       salvage: z.string().optional(),
+      /** A `salvage` verdict: the PR title the reviewer proposes for the work worth keeping (the maintain report lists it as a `pr-candidate`). */
+      prTitle: z.string().trim().min(1).max(120).optional(),
     }),
     gate: z
       .object({

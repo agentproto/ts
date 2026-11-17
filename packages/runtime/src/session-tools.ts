@@ -5582,6 +5582,7 @@ export function registerSessionTools(
         confidence: mcpNumber.describe("0..1"),
         reason: z.string(),
         salvage: z.string().optional().describe("What is worth keeping, if anything."),
+        prTitle: z.string().optional().describe("salvage only: the PR title you propose for the work worth keeping (max 120 chars, imperative, no trailing period)."),
       }),
       gate: z
         .object({
