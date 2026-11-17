@@ -569,3 +569,116 @@ describe("/mcp/imported/<id> - caller attribution", () => {
     })
   })
 })
+
+describe("/mcp/imported/<id> - MCP Apps UI", () => {
+  const SHOT = "ui://fake/screenshot"
+  const SECRET = "ui://fake/secret"
+  const tools: ProxyToolDescriptor[] = [
+    { name: "ping", inputSchema: { type: "object" }, _meta: { ui: { resourceUri: SHOT } } },
+    { name: "secret_tool", inputSchema: { type: "object" }, _meta: { ui: { resourceUri: SECRET } } },
+    { name: "plain", inputSchema: { type: "object" } },
+  ]
+  const readResource = vi.fn(async (_alias: string, uri: string) => ({
+    ok: true as const,
+    result: { contents: [{ uri, mimeType: "text/html;profile=mcp-app", text: `<html>${uri}</html>` }] },
+  }))
+
+  function uiProxy(): McpProxyRegistry {
+    return {
+      async listAliases() {
+        return [
+          { alias: "fake-mcp", importId: "fake:mcp", source: "workspace", type: "stdio", status: "connected", toolCount: 3 },
+        ] as ProxyAliasSummary[]
+      },
+      async listTools() {
+        return { ok: true as const, tools }
+      },
+      async callTool(): Promise<ProxyCallOutcome> {
+        return {
+          ok: true,
+          result: {
+            content: [{ type: "text", text: "shot" }],
+            structuredContent: { id: 7 },
+            _meta: { trace: "t1" },
+          },
+        }
+      },
+      readResource,
+      async closeAll() {},
+    } as unknown as McpProxyRegistry
+  }
+
+  async function withClient(query: string, run: (c: Client) => Promise<void>): Promise<void> {
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      mcpProxy: uiProxy(),
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const client = new Client({ name: "imported-ui-test", version: "0.0.1" })
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/imported/fake:mcp${query}`)),
+      )
+      try {
+        await run(client)
+      } finally {
+        await client.close()
+      }
+    } finally {
+      await http.stop()
+    }
+  }
+
+  it("tools/list keeps _meta.ui and lists the declared UI resources", async () => {
+    readResource.mockClear()
+    await withClient("", async client => {
+      const { tools: listed } = await client.listTools()
+      expect(listed.find(t => t.name === "ping")?._meta).toEqual({ ui: { resourceUri: SHOT } })
+      const { resources } = await client.listResources()
+      expect(resources.map(r => r.uri).sort()).toEqual([SECRET, SHOT].sort())
+      expect(resources[0]?.mimeType).toBe("text/html;profile=mcp-app")
+    })
+  })
+
+  it("resources/read of a declared ui:// URI relays the upstream HTML by alias", async () => {
+    readResource.mockClear()
+    await withClient("", async client => {
+      const out = await client.readResource({ uri: SHOT })
+      expect(out.contents[0]).toMatchObject({ uri: SHOT, text: `<html>${SHOT}</html>` })
+      expect(readResource).toHaveBeenCalledWith("fake-mcp", SHOT)
+    })
+  })
+
+  it("refuses an undeclared URI without relaying it", async () => {
+    readResource.mockClear()
+    await withClient("", async client => {
+      await expect(client.readResource({ uri: "ui://fake/other" })).rejects.toThrow()
+      await expect(client.readResource({ uri: "file:///etc/passwd" })).rejects.toThrow()
+      expect(readResource).not.toHaveBeenCalled()
+    })
+  })
+
+  it("refuses the resource of a tool hidden by denyTools", async () => {
+    readResource.mockClear()
+    await withClient("?denyTools=secret_tool", async client => {
+      const { resources } = await client.listResources()
+      expect(resources.map(r => r.uri)).toEqual([SHOT])
+      await expect(client.readResource({ uri: SECRET })).rejects.toThrow()
+      expect(readResource).not.toHaveBeenCalled()
+    })
+  })
+
+  it("tools/call passes structuredContent and result _meta through untouched", async () => {
+    await withClient("", async client => {
+      const result = await client.callTool({ name: "ping", arguments: {} })
+      expect(result.structuredContent).toEqual({ id: 7 })
+      expect(result._meta).toEqual({ trace: "t1" })
+    })
+  })
+})

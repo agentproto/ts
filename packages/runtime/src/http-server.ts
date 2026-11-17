@@ -46,8 +46,13 @@ import {
   SUPPORTED_PROTOCOL_VERSIONS,
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
   McpError,
+  type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
+import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/app-bridge"
+import { buildUiToolIndex } from "./mcp-client-pool.js"
 import { WebSocketServer, type WebSocket } from "ws"
 import { ZodError, type ZodType } from "zod"
 import type { UIMessageChunk } from "ai"
@@ -2968,7 +2973,7 @@ export async function startHttpServer(
     }
     const server = new McpServer(
       { name: `agentproto-imported-${known.alias}`, version: opts.meta.version ?? "0.1.0-alpha" },
-      { capabilities: { tools: {} } },
+      { capabilities: { tools: {}, resources: {} } },
     )
     server.server.setRequestHandler(ListToolsRequestSchema, async () => {
       const out = await proxy.listTools(importId)
@@ -2980,8 +2985,39 @@ export async function startHttpServer(
             name: t.name,
             ...(t.description ? { description: t.description } : {}),
             inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
+            // MCP Apps: `_meta.ui.resourceUri` must reach the host.
+            ...(t._meta ? { _meta: t._meta } : {}),
           })),
       }
+    })
+    // MCP Apps UI resources. Only the `ui://` URIs that a tool VISIBLE on this
+    // mount (after allow/deny) declares in `_meta.ui.resourceUri` are served;
+    // nothing else of the upstream's resources is listed or relayed.
+    const declaredUiResources = async (): Promise<string[]> => {
+      const out = await proxy.listTools(importId)
+      if (!out.ok) return []
+      const visible = out.tools.filter(t => allowed(t.name)) as unknown as Tool[]
+      const uris = buildUiToolIndex(visible).tools.map(t => t.resourceUri)
+      return [...new Set(uris.filter(u => u.startsWith("ui://")))]
+    }
+    server.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: (await declaredUiResources()).map(uri => ({
+        uri,
+        name: uri.replace(/^ui:\/\//, ""),
+        mimeType: RESOURCE_MIME_TYPE,
+      })),
+    }))
+    server.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const uri = request.params.uri
+      if (!(await declaredUiResources()).includes(uri)) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `resource "${uri}" is not a UI resource declared by a tool of this import`,
+        )
+      }
+      const out = await proxy.readResource(known.alias, uri)
+      if (!out.ok) throw new McpError(ErrorCode.InternalError, out.error)
+      return out.result
     })
     server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Hard gate: a filtered tool never reaches the upstream, mirroring
