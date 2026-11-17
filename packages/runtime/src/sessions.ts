@@ -14331,10 +14331,10 @@ export function createSessionsRegistry(opts?: {
         }
         recordSent(parked)
         emitSessionMessage(parked)
-        const desktopWake = wakeThread ? await codexDesktopWake?.wake(wakeThread, msg.id, () => (
+        const desktopWake = wakeThread ? await codexDesktopWake?.wake(wakeThread, parked, () => (
           sessions.get(msg.to) === rt && !isRetired(rt.desc) &&
           (rt.desc.status === "running" || rt.desc.status === "starting" || isExternalInboxOpen(rt.desc)) &&
-          rt.desc.inbox?.some(entry => entry.id === msg.id) === true
+          rt.desc.inbox?.includes(parked) === true
         )) : undefined
         return {
           messageId: msg.id,

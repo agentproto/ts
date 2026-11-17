@@ -207,40 +207,52 @@ keeps its original urgency even when no wake transport is configured.
 #### Experimental local Codex Desktop wake
 
 On the same machine and OS account as Codex Desktop, add the exact chat UUIDs
-you want to wake to the daemon's local `~/.agentproto/config.json`, under
-`daemon.codexDesktopWakeThreadIds`, and restart the daemon. For example:
+you want to wake to the daemon's local `~/.agentproto/config.json` and restart
+the daemon. Use `daemon.codexDesktopWakeThreadIds` for an inbox notification
+and `daemon.codexDesktopWakeDirectThreadIds` to opt individual chats into
+direct message text. The direct list takes precedence for a chat in both lists.
 
 ```json
 {
   "daemon": {
-    "codexDesktopWakeThreadIds": ["00000000-0000-4000-8000-000000000001"]
+    "codexDesktopWakeThreadIds": ["00000000-0000-4000-8000-000000000001"],
+    "codexDesktopWakeDirectThreadIds": ["00000000-0000-4000-8000-000000000002"]
   }
 }
 ```
 
 The registration response names the `codex-desktop-ipc` transport for those
 chats. On a `next-turn` message, the daemon parks the message in the inbox
-and asks the loaded local Codex Desktop owner to start a turn with a fixed
-notification. The notification tells the chat to read its inbox through MCP.
-The sender's text stays in the inbox, including after successful wake
-delivery, until the chat acknowledges it. Messages delivered to an active
-`inbox_wait` do not start another turn.
+and asks the loaded local Desktop owner to start a turn with a fixed prompt.
+In inbox mode that prompt tells the chat to read its inbox through MCP. In
+direct mode, Desktop receives the message IDs, sender metadata and text in
+the `untrusted_input` tool output. Use `inbox_list` for the full envelopes,
+including any structured data. If the serialized direct payload exceeds
+16 KiB in UTF-8, the daemon sends the inbox notification for that batch.
 
-The transport uses Codex Desktop's private per-user Unix socket and requires
-an owner that advertises support for untrusted app inputs. Codex Desktop can
-reject a notification when the chat is busy. The daemon coalesces those
-retries by chat while the daemon is running and messages remain unread,
-with a backoff from five seconds to one minute. If the recipient closes the
-chat or Desktop becomes unreachable, the retries stop and the messages
-stay in the inbox. The inbox survives a normal daemon restart, but wake
-attempts do not resume on restart. If Desktop might already have accepted
-the turn (for example, a lost response), that notification is never retried.
-Other messages, including `fyi`, do not trigger this transport.
+The wake result describes the IPC attempt. Both modes retain the inbox copy
+until the chat acknowledges or consumes it through MCP. Messages delivered
+directly to an active `inbox_wait` and messages marked `fyi` do not start a
+Desktop turn.
 
-Codex Desktop updates can change this private protocol. Use an empty list
-to disable it. The daemon verifies access to the local socket and avoids
-submitting a turn if it cannot identify a compatible owner. A configured
-registration is a capability, not a receipt for any particular wake.
+The transport uses Desktop's private per-user Unix socket and requires an
+owner that advertises support for untrusted app inputs. The direct payload
+is visible to the model as tool output and can contain misleading instructions.
+Socket checks restrict access by OS user. Processes running as that user can
+impersonate Desktop, so direct mode grants that local endpoint access to
+the message text.
+
+The daemon batches messages still pending at the time of the IPC write.
+Messages arriving after that write get a separate attempt. When Desktop
+explicitly refuses a wake because the chat is busy, the daemon retries with
+a fresh batch and a backoff from five seconds to one minute. If the outcome
+is ambiguous, the daemon leaves that batch in the inbox without resubmitting
+it. The inbox survives a normal daemon restart. Wake retries run only while
+the daemon is running and the destination remains available.
+
+Desktop updates can change this private protocol. Empty both lists to disable
+the transport. The registered capability reflects your configuration. Check
+the wake result for the outcome of a specific attempt.
 
 #### Supported host integrations
 

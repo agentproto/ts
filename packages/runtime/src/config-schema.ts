@@ -440,6 +440,7 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     adapterCacheRetentionDays: z.number().optional(),
     claudeSocketWake: z.boolean().optional(),
     codexDesktopWakeThreadIds: z.array(z.string().regex(CODEX_DESKTOP_THREAD_ID)).optional(),
+    codexDesktopWakeDirectThreadIds: z.array(z.string().regex(CODEX_DESKTOP_THREAD_ID)).optional(),
   })
   .passthrough()
 
@@ -1369,7 +1370,17 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: false,
     section: "daemon",
     label: "Codex Desktop wake allowlist",
-    help: "Experimental. Allow agentproto to start a notification turn in these exact local Codex Desktop chat UUIDs. An empty list disables the private IPC transport.",
+    help: "Experimental. Wake these exact local Codex Desktop chat UUIDs with an inbox notification.",
+    default: [],
+  },
+  {
+    path: "daemon.codexDesktopWakeDirectThreadIds",
+    schema: z.array(z.string().regex(CODEX_DESKTOP_THREAD_ID)),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Codex Desktop direct wake allowlist",
+    help: "Experimental. Wake these exact local Codex Desktop chat UUIDs with bounded, untrusted message text.",
     default: [],
   },
   {
