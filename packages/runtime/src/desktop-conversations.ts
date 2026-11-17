@@ -665,7 +665,9 @@ export interface CodexCreateOptions {
   sandbox?: "read-only" | "workspace-write"
   /** How long to wait for the first turn to end, ms. Default 120000, max 600000. */
   timeoutMs?: number
-  /** Time between SIGTERM and SIGKILL on a timeout, ms. Default 2000. */
+  /** Time between SIGTERM and SIGKILL on a timeout, ms. Default 2000.
+   *  A non-finite or negative value falls back to that default; 0 is allowed
+   *  and means SIGKILL immediately. */
   killGraceMs?: number
   /** Test seam: replaces `spawn`. */
   spawnFn?: typeof spawn
@@ -737,9 +739,18 @@ export async function createCodexConversation(opts: CodexCreateOptions): Promise
     }
   })
   child.stdin?.end(opts.prompt)
-  const killGraceMs = opts.killGraceMs ?? 2_000
+  const defaultKillGraceMs = 2_000
+  // Guard a public option whose value becomes a setTimeout delay: a non-finite
+  // or negative one would silently mean "SIGKILL at once". 0 stays legal.
+  const killGraceMs =
+    typeof opts.killGraceMs === "number" && Number.isFinite(opts.killGraceMs) && opts.killGraceMs >= 0
+      ? Math.max(opts.killGraceMs, 0)
+      : defaultKillGraceMs
   const exit = await new Promise<"exit" | "timeout" | "spawn-error">(resolve => {
     let timedOut = false
+    // Hoisted above `clear()`: `clear()` closes over it, and a synchronous call
+    // before the assignment below would otherwise hit the temporal dead zone.
+    let timer: ReturnType<typeof setTimeout> | undefined
     let killTimer: ReturnType<typeof setTimeout> | undefined
     let hardTimer: ReturnType<typeof setTimeout> | undefined
     const clear = () => {
@@ -750,7 +761,7 @@ export async function createCodexConversation(opts: CodexCreateOptions): Promise
     // A timeout stops the child for real: SIGTERM, then SIGKILL after a grace
     // period, and the call returns only once the child has closed (with a last
     // resort so a held-open pipe cannot hang the tool).
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true
       child.kill("SIGTERM")
       killTimer = setTimeout(() => {

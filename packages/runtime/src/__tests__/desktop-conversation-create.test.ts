@@ -102,6 +102,32 @@ describe("timeout kills the child for real", () => {
     expect(r.status).toBe("timeout")
     expect(Date.now() - t0).toBeGreaterThanOrEqual(1_050)
   })
+
+  it.each([-1, Number.NaN])(
+    "falls back to the default grace (not an instant SIGKILL) for killGraceMs %s",
+    async bad => {
+      const child = Object.assign(new EventEmitter(), {
+        stdin: { end: () => {} },
+        stdout: new EventEmitter(),
+        kill: vi.fn((_sig: string) => true),
+      })
+      const p = createCodexConversation({
+        cwd: root,
+        prompt: "x",
+        timeoutMs: 1_000,
+        killGraceMs: bad,
+        spawnFn: (() => child) as any,
+      })
+      // Past the timeout by a small margin: only SIGTERM must have been sent.
+      // A raw setTimeout with a negative/NaN delay would fire at once and put
+      // SIGKILL in this list.
+      await new Promise(r => setTimeout(r, 1_100))
+      expect(child.kill.mock.calls.map(c => c[0])).toEqual(["SIGTERM"])
+      child.emit("close", null)
+      expect((await p).status).toBe("timeout")
+    },
+    10_000
+  )
 })
 
 describe("the registered tool", () => {
