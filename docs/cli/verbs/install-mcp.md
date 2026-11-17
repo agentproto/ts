@@ -4,6 +4,7 @@
 agentproto install-mcp [--agent <name>...] [--all] [--yes] [--dry-run]
                        [--skip-daemon] [--update] [--uninstall]
 agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
+agentproto install-mcp --import <alias> [--agent <name>...] [--yes]
 ```
 
 Register the daemon's MCP server with the coding-CLI agents installed on this
@@ -77,6 +78,29 @@ sanitized to `[A-Za-z0-9_-]`), distinct from the full-daemon `agentproto` key
 — the two can coexist for the same client, and `--update`/`--uninstall` track
 them separately (the tracked state entry carries an `appId`).
 
+## `--import <alias>`: scoped registration for one imported MCP server
+
+The same scoped mode for ONE imported MCP server (for example `bureau`):
+it writes an entry named after the alias that runs
+`agentproto mcp-bridge --import <alias>` (see
+[`mcp-bridge.md`](./mcp-bridge.md#--import-aliasimportid-one-imported-mcp-server)),
+so a stdio-only client (Codex app, Claude Desktop) sees that server's
+native tool names instead of the daemon's full tool set.
+
+- **Agents:** the same four as `--app` — **cursor, codex, claude-desktop,
+  windsurf**. An explicitly-requested unsupported agent exits `2`; with no
+  `--agent`, unsupported detected ones are left out silently (unlike `--app`,
+  no "Skipping" note is printed), and when none is left the verb prints
+  `No scoped-capable agents detected. Nothing to do.` and exits `0`.
+- **Exclusions:** cannot be combined with `--app` (exit `2`) or `--dry-run`
+  (exit `2`).
+- **Validation:** the alias must look like `bureau` (letters, digits, `.`
+  `_` `-`) — but it is NOT checked against the daemon here; the bridge and
+  the daemon resolve it when the client starts.
+- **Tracked state:** the entry carries an `importAlias`, so
+  `--update`/`--uninstall` act on it precisely, exactly like an `--app`
+  entry.
+
 ## Flags
 
 | Flag | Default | Description |
@@ -84,6 +108,7 @@ them separately (the tracked state entry carries an `appId`).
 | `--agent <name>` | *(all detected)* | Target one agent; repeatable. Unknown names fail with exit `2`; known-but-undetected ones exit `1`. |
 | `--all` | — | Target every detected agent — which is already the default. Accepted for explicitness, but it changes nothing: with `--agent` also present, `--agent` wins and `--all` is ignored. |
 | `--app <appId>` | — | Scoped mode — see above. Requires the app to be installed and declare the book/library contract; exits `1` otherwise. |
+| `--import <alias>` | — | Scoped mode for one imported MCP server — see above. Writes an entry named `<alias>` running `agentproto mcp-bridge --import <alias>`; supported agents cursor, codex, claude-desktop, windsurf. Cannot be combined with `--app` or `--dry-run` (exit `2`). |
 | `--yes` | `false` | Non-interactive. Also authorises the background `agentproto serve` fallback when the daemon can't be started via `daemon start`. |
 | `--dry-run` | `false` | Print the exact MCP entry as JSON on stdout and write nothing (no config file, install state or daemon start). Only for the `claude-desktop` target; exits `2` with `--app`, and prints nothing when Claude Desktop is not a target. |
 | `--skip-daemon` | `false` | Skip daemon discovery/start; take the port from `~/.agentproto/config.json` (`daemon.port`, default `18790`). |
@@ -122,6 +147,9 @@ agentproto install-mcp --uninstall
 
 # Scope a buyer-facing entry to one installed book app instead of the full daemon
 agentproto install-mcp --app my-book --agent cursor --yes
+
+# Register one imported MCP server (native tool names) for Codex and Claude Desktop
+agentproto install-mcp --import bureau --agent codex --agent claude-desktop --yes
 ```
 
 Restart your CLI agent(s) afterwards to pick up the change — the verb reminds

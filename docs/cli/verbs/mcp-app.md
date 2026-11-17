@@ -10,8 +10,9 @@ distribution path for an app (e.g. a book bundle) that shouldn't hand a
 Codex/Cursor/Windsurf client the full daemon `/mcp` gateway (~177 core tools
 including `command_execute`, fs, `agent_*`).
 
-Unlike [`mcp-bridge`](./mcp-bridge.md), which proxies every daemon tool
-verbatim, `mcp-app` reads the target app's `exposes.tools` off its installed
+Unlike [`mcp-bridge`](./mcp-bridge.md), which by default proxies every daemon
+tool verbatim (`--import` narrows it to one imported server),
+`mcp-app` reads the target app's `exposes.tools` off its installed
 `APP.md` and registers only those tools. Each call forwards to the daemon's
 `POST /apps/:appId/tool-call` route with the tool's ORIGINAL id (the same
 allowlist+dispatch path (`performAppToolCall`) the browser bridge
