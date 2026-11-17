@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     # Must cover the worst case of BOTH LLM ladders running every lane to its
     # own ceiling. Notes: cloud-primary 45 + free 20 + free-fallback 20 +
-    # cloud-fallback 45 = 130. Docs: the same shape = 130. 260 total, plus the
+    # sonnet-fallback 20 = 105. Docs: the same shape = 105. 210 total, plus the
     # non-LLM release work (install, publish, vsce) — so the job cap is 300,
     # comfortably above 260, or a pathological run is killed mid-ladder and
     # never reaches the final honest-red notes gate below.
@@ -460,23 +460,20 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Generate and publish release notes (Claude Cloud fallback)
-        id: notes-cloud-fallback
-        if: always() && steps.release-agent.outputs.backend != 'claude-cloud' && steps.release-agent.outputs.has_cloud == 'true' && steps.notes-check-1.outputs.posted != 'true' && steps.notes-check-2.outputs.posted != 'true' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+      # Last resort: Claude Sonnet on the subscription lane. The CI setup-token
+      # (scope user:inference) cannot create Claude Code cloud sessions (403),
+      # but it does run local inference. The Agent SDK bundles its own CLI.
+      - name: Generate agentic release notes (Claude Sonnet fallback)
+        id: notes-3
+        if: always() && steps.notes-check-1.outputs.posted != 'true' && steps.notes-check-2.outputs.posted != 'true' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
-        timeout-minutes: 45
+        timeout-minutes: 20
+        run: node scripts/release-notes.mjs
         env:
+          AGENT_LANE: subscription
+          AGENT_MODEL: claude-sonnet-5-5
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
-          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          node scripts/release-notes.mjs --print-cloud-prompt > "$RUNNER_TEMP/release-notes-cloud.prompt"
-          node scripts/claude-cloud-ci.mjs \
-            --prompt-file "$RUNNER_TEMP/release-notes-cloud.prompt" \
-            --output "$RUNNER_TEMP/release-notes-cloud.md" \
-            --label ci-release-notes-fallback
-          node scripts/release-notes.mjs --body-file "$RUNNER_TEMP/release-notes-cloud.md"
 
       - name: Release notes posted? (final gate)
         if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
@@ -541,23 +538,18 @@ jobs:
           AGENT_MODEL: ${{ steps.docs-agent.outputs.free_fallback_model }}
           OPENCODE_API_KEY: ${{ (startsWith(steps.docs-agent.outputs.free_fallback_model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
 
-      - name: Check docs for release drift (Claude Cloud fallback)
-        id: docs-cloud-fallback
-        if: always() && steps.docs-agent.outputs.backend != 'claude-cloud' && steps.docs-agent.outputs.has_cloud == 'true' && steps.docs-1.outputs.status != 'ok' && steps.docs-2.outputs.status != 'ok' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+      - name: Check docs for release drift (Claude Sonnet fallback)
+        id: docs-3
+        if: always() && steps.docs-1.outputs.status != 'ok' && steps.docs-2.outputs.status != 'ok' && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         continue-on-error: true
-        timeout-minutes: 45
+        timeout-minutes: 20
+        run: node scripts/docs-check.mjs
         env:
+          AGENT_LANE: subscription
+          AGENT_MODEL: claude-sonnet-5-5
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
-          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
-        run: |
-          node scripts/docs-check.mjs --print-cloud-prompt > "$RUNNER_TEMP/docs-check-cloud.prompt"
-          node scripts/claude-cloud-ci.mjs \
-            --prompt-file "$RUNNER_TEMP/docs-check-cloud.prompt" \
-            --output "$RUNNER_TEMP/docs-check-cloud.patch" \
-            --label ci-docs-check-fallback
-          node scripts/apply-cloud-docs-patch.mjs "$RUNNER_TEMP/docs-check-cloud.patch"
-          echo "status=ok" >> "$GITHUB_OUTPUT"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Detect docs drift
         id: docs-drift
         if: always() && (steps.changesets.outputs.published == 'true' || steps.publish-missed.outcome == 'success' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
@@ -583,7 +575,7 @@ jobs:
           body: |
             Automated doc-drift check after the latest release, via
             `scripts/docs-check.mjs` using the selected release-agent backend
-            (OpenCode MiMo → Step 5, or Claude Code Cloud).
+            (OpenCode MiMo → Step 5, then Claude Sonnet, or Claude Code Cloud).
 
             The agent compared each published package's CHANGELOG entry
             against `docs/**`, the root `README.md`, and per-package
