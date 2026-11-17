@@ -1624,7 +1624,11 @@ export function registerAgentTools(
     ...(deliveryApply ? { deliveryApply } : {}),
   })
   // Claude Desktop conversation ask: sends through the SAME path as message_send.
-  registerDesktopConversationAskTool(server, { registry, send: messageSend.sendAsCaller })
+  registerDesktopConversationAskTool(server, {
+    registry,
+    send: messageSend.sendAsCaller,
+    workspaceOfCwd: createWorkspaceOfCwd(),
+  })
   // ── permissions_explain (read-only twin of decide()) ─────────
   registerPermissionsTools(server, {
     registry,

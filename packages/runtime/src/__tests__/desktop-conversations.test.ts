@@ -10,7 +10,11 @@ import {
 } from "../desktop-conversations.js"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { registerMessageTools } from "../message-tools.js"
-import { createSessionsRegistry } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  type AgentSessionLike,
+  type AgentStreamEvent,
+} from "../sessions.js"
 import { claudeCodeProjectDir } from "../conversation-store.js"
 
 let root: string
@@ -251,6 +255,18 @@ describe("askDesktopConversation", () => {
 
   const fast = { pollMs: 10, settleMs: 30 }
 
+  function fakeAgentSession(): AgentSessionLike {
+    return {
+      sessionId: "acp_test",
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        return
+      },
+      async cancel() {},
+      async close() {},
+    }
+  }
+
   it("registers the chat, sends to its cc address and returns the answer the chat wrote", async () => {
     const file = await setup()
     const touchExternal = vi.fn()
@@ -376,5 +392,70 @@ describe("askDesktopConversation", () => {
     )
     expect(registry.get("cc:cli-a")?.kind).toBe("external")
     expect(registry.listInbox("cc:cli-a") ?? []).toEqual([])
+  })
+
+  it("delivers when the caller session is in the chat's own workspace", async () => {
+    await setup()
+    const registry = createSessionsRegistry({ persist: false })
+    const caller = registry.spawnAgent({
+      workspaceSlug: "ws-a",
+      cwd: cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      label: "caller",
+      depth: 0,
+    })
+    const sendMessage = vi.spyOn(registry, "sendMessage")
+    const { sendAsCaller } = registerMessageTools(
+      new McpServer({ name: "t", version: "0" }),
+      { registry, callerSessionId: caller.id, workspaceOfCwd: () => "ws-a" }
+    )
+    const r = await askDesktopConversation({
+      ...opts(),
+      registry,
+      send: sendAsCaller,
+      workspaceOfCwd: () => "ws-a",
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 0,
+    })
+    expect(r.reply).toBeNull()
+    // The chat's external row carries the workspace resolved from its cwd, so
+    // the default same-workspace allowance binds and the send goes through.
+    expect(registry.get("cc:cli-a")?.workspaceSlug).toBe("ws-a")
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it("refuses with forbidden_recipient when the caller is outside the chat's workspace", async () => {
+    await setup()
+    const registry = createSessionsRegistry({ persist: false })
+    const caller = registry.spawnAgent({
+      workspaceSlug: "ws-b",
+      cwd: cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      label: "caller",
+      depth: 0,
+    })
+    const sendMessage = vi.spyOn(registry, "sendMessage")
+    const { sendAsCaller } = registerMessageTools(
+      new McpServer({ name: "t", version: "0" }),
+      { registry, callerSessionId: caller.id, workspaceOfCwd: () => "ws-b" }
+    )
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        send: sendAsCaller,
+        workspaceOfCwd: () => "ws-a",
+        app: "claude",
+        id: "cli-a",
+        text: "ping",
+        waitMs: 0,
+      })
+    ).rejects.toThrow(/forbidden_recipient|not a tree neighbour/)
+    expect(registry.get("cc:cli-a")?.workspaceSlug).toBe("ws-a")
+    expect(sendMessage).not.toHaveBeenCalled()
   })
 })

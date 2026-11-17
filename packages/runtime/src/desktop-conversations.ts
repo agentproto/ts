@@ -25,6 +25,8 @@ import type { ExportedSession } from "./transcript-export.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { MessageUrgency } from "./session-message.js"
 import type { MessageSendApi } from "./message-tools.js"
+import { claudeCodeProjectDir } from "./conversation-store.js"
+import { createWorkspaceOfCwd } from "./workspace-binding.js"
 
 export type DesktopApp = "claude" | "codex"
 
@@ -387,6 +389,10 @@ export interface DesktopAskOptions extends DesktopListOptions {
   urgency?: Extract<MessageUrgency, "fyi" | "next-turn" | "steer">
   /** How long to wait for the reply, ms. Default 60000, max 300000, 0 = send only. */
   waitMs?: number
+  /** Resolves a cwd to a registered workspace slug. Defaults to the daemon's
+   *  own workspaces config. A conversation is stamped with its workspace so
+   *  the same-workspace rule in `message_send`'s permission decision binds. */
+  workspaceOfCwd?: (cwd: string) => string | undefined
   /** Test seams. */
   pollMs?: number
   settleMs?: number
@@ -425,6 +431,12 @@ export async function askDesktopConversation(
   }
   const before = await readDesktopConversation({ ...opts, tail: 1 })
   const { conversation } = before
+  // Stamp the workspace the chat runs in: without it the external row has no
+  // workspace and `message_send`'s default same-workspace rule can never bind,
+  // so every session caller outside the chat's own tree is refused.
+  const workspaceSlug = conversation.cwd
+    ? (opts.workspaceOfCwd ?? createWorkspaceOfCwd())(conversation.cwd)
+    : undefined
   opts.registry.touchExternal({
     id: conversation.externalId,
     host: "claude-desktop",
@@ -433,6 +445,7 @@ export async function askDesktopConversation(
     ...(conversation.appSessionId
       ? { hostSessionId: conversation.appSessionId }
       : {}),
+    ...(workspaceSlug ? { workspaceSlug } : {}),
   })
   const toolResult = await opts.send(
     "desktop_conversation_ask",
@@ -445,13 +458,20 @@ export async function askDesktopConversation(
   )
   const sent = JSON.parse(toolResult.content[0]!.text) as {
     ok: boolean
+    error?: string
     message?: string
     messageId?: string
     delivered?: unknown
   }
   // A refusal (permissions, no caller identity, ...) is the answer: surfaced as is, nothing is sent.
-  if (toolResult.isError || !sent.ok)
-    throw new Error(sent.message ?? "desktop_conversation_ask: send refused")
+  if (toolResult.isError || !sent.ok) {
+    const refused = sent.message ?? "desktop_conversation_ask: send refused"
+    const hint =
+      sent.error === "forbidden_recipient"
+        ? ` (a session caller must share this chat's workspace${workspaceSlug ? ` "${workspaceSlug}"` : ""}, or hold a grant / peer group that allows it — see permissions_explain)`
+        : ""
+    throw new Error(`${refused}${hint}`)
+  }
   const base: DesktopAskResult = {
     conversation,
     messageId: sent.messageId ?? "",
@@ -463,14 +483,46 @@ export async function askDesktopConversation(
   const pollMs = opts.pollMs ?? 1_000
   const settleMs = opts.settleMs ?? 3_000
   const deadline = Date.now() + waitMs
+  const transcriptPath = conversation.cwd
+    ? join(claudeCodeProjectDir(conversation.cwd), `${conversation.id}.jsonl`)
+    : undefined
   let lastCount = before.totalMessages
+  // Re-parsing the transcript store on every tick is wasteful on a long wait.
+  // Stat the jsonl instead: only once its size has stopped changing for
+  // `settleMs` is the (single) full read taken. When the file cannot be
+  // stat'd, fall back to the per-tick read.
+  let seenSize = -1
+  let readSize = -1
   let lastChange = Date.now()
   while (Date.now() < deadline) {
     await sleep(pollMs)
+    // `settled` means the jsonl itself has been quiet for `settleMs`, so the
+    // single read below already reflects the finished reply and needs no
+    // further message-count settling.
+    let settled = false
+    if (transcriptPath) {
+      let size: number | undefined
+      try {
+        size = (await stat(transcriptPath)).size
+      } catch {
+        size = undefined
+      }
+      if (size !== undefined) {
+        if (size !== seenSize) {
+          seenSize = size
+          lastChange = Date.now()
+          continue
+        }
+        if (size === readSize) continue
+        if (Date.now() - lastChange < settleMs) continue
+        settled = true
+      }
+    }
     const now = await readDesktopConversation({ ...opts, tail: 200 })
+    if (settled) readSize = seenSize
     if (now.totalMessages !== lastCount) {
       lastCount = now.totalMessages
-      lastChange = Date.now()
+      if (!settled) lastChange = Date.now()
     }
     const fresh = now.messages.slice(
       -(now.totalMessages - before.totalMessages) || undefined
@@ -478,7 +530,11 @@ export async function askDesktopConversation(
     const grew = now.totalMessages > before.totalMessages
     const lastIsAssistant =
       now.messages[now.messages.length - 1]?.role === "assistant"
-    if (grew && lastIsAssistant && Date.now() - lastChange >= settleMs) {
+    if (
+      grew &&
+      lastIsAssistant &&
+      (settled || Date.now() - lastChange >= settleMs)
+    ) {
       const reply = fresh
         .filter(m => m.role === "assistant" && m.text)
         .map(m => m.text)
@@ -497,7 +553,11 @@ export async function askDesktopConversation(
 
 export function registerDesktopConversationAskTool(
   server: McpServer,
-  ops: { registry: DesktopAskRegistry; send: DesktopAskSend }
+  ops: {
+    registry: DesktopAskRegistry
+    send: DesktopAskSend
+    workspaceOfCwd?: DesktopAskOptions["workspaceOfCwd"]
+  }
 ): void {
   server.tool(
     "desktop_conversation_ask",
@@ -506,7 +566,7 @@ export function registerDesktopConversationAskTool(
       "is on and the chat is alive, else the message is parked in its inbox and the chat reads it at its " +
       "next hook poll (`delivered.via` tells which; no reply then). Only app `claude` for now. `waitMs` 0 = send only.",
     {
-      app: z.enum(["claude", "codex"]),
+      app: z.literal("claude"),
       id: z
         .string()
         .min(1)
@@ -530,6 +590,7 @@ export function registerDesktopConversationAskTool(
           ...input,
           registry: ops.registry,
           send: ops.send,
+          ...(ops.workspaceOfCwd ? { workspaceOfCwd: ops.workspaceOfCwd } : {}),
         })
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
