@@ -17,9 +17,10 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { spawn } from "node:child_process"
 import { readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { z } from "zod"
 import type { ExportedSession } from "./transcript-export.js"
 import type { SessionsRegistry } from "./sessions.js"
@@ -641,5 +642,169 @@ export function registerDesktopConversationAskTool(
         }
       }
     }
+  )
+}
+
+export interface CodexCreateOptions {
+  /** Absolute directory the new thread works in. */
+  cwd: string
+  /** First message of the new conversation. */
+  prompt: string
+  model?: string
+  /** Default `read-only`: creating a conversation never grants write access on its own. */
+  sandbox?: "read-only" | "workspace-write"
+  /** How long to wait for the first turn to end, ms. Default 120000, max 600000. */
+  timeoutMs?: number
+  /** Test seam: replaces `spawn`. */
+  spawnFn?: typeof spawn
+  codexBin?: string
+}
+
+export interface CodexCreateResult {
+  threadId: string | null
+  /** The address the new thread uses when it calls the daemon. */
+  externalId: string | null
+  status: "completed" | "failed" | "timeout"
+  /** The assistant's first answer, when the turn completed. */
+  reply: string | null
+  error?: string
+  note: string
+}
+
+/**
+ * Create a new Codex conversation with `codex exec --json` and return its
+ * thread id. The thread lands in the same store (`~/.codex/state_5.sqlite`)
+ * `desktop_conversation_list` reads, so it can be listed, read and asked
+ * afterwards. It is recorded with source `exec`, not as a thread typed in the
+ * Desktop app: whether the app shows it in its sidebar is not guaranteed.
+ */
+export async function createCodexConversation(opts: CodexCreateOptions): Promise<CodexCreateResult> {
+  if (!isAbsolute(opts.cwd)) throw new Error("desktop_conversation_create: cwd must be an absolute path")
+  if (!(await stat(opts.cwd).then(st => st.isDirectory(), () => false))) {
+    throw new Error(`desktop_conversation_create: cwd "${opts.cwd}" is not a directory`)
+  }
+  const timeoutMs = Math.min(Math.max(opts.timeoutMs ?? 120_000, 1_000), 600_000)
+  const args = [
+    "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "-s",
+    opts.sandbox ?? "read-only",
+    ...(opts.model ? ["-m", opts.model] : []),
+    "-C",
+    opts.cwd,
+    "-",
+  ]
+  const child = (opts.spawnFn ?? spawn)(opts.codexBin ?? "codex", args, { stdio: ["pipe", "pipe", "pipe"] })
+  let threadId: string | null = null
+  let reply: string | null = null
+  let error: string | undefined
+  let finished: "completed" | "failed" | undefined
+  let buf = ""
+  const onLine = (line: string) => {
+    let ev: { type?: string; thread_id?: string; item?: { type?: string; text?: string }; error?: { message?: string }; message?: string }
+    try {
+      ev = JSON.parse(line)
+    } catch {
+      return
+    }
+    if (ev.type === "thread.started" && typeof ev.thread_id === "string") threadId = ev.thread_id
+    else if (ev.type === "item.completed" && ev.item?.type === "agent_message" && ev.item.text) reply = ev.item.text
+    else if (ev.type === "turn.completed") finished = "completed"
+    else if (ev.type === "turn.failed") {
+      finished = "failed"
+      error = ev.error?.message ?? "turn failed"
+    }
+  }
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    buf += chunk.toString()
+    let i: number
+    while ((i = buf.indexOf("\n")) >= 0) {
+      onLine(buf.slice(0, i))
+      buf = buf.slice(i + 1)
+    }
+  })
+  child.stdin?.end(opts.prompt)
+  const exit = await new Promise<"exit" | "timeout" | "spawn-error">(resolve => {
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM")
+      resolve("timeout")
+    }, timeoutMs)
+    child.once("error", err => {
+      clearTimeout(timer)
+      error = (err as Error).message
+      resolve("spawn-error")
+    })
+    child.once("close", () => {
+      clearTimeout(timer)
+      resolve("exit")
+    })
+  })
+  if (buf.trim()) onLine(buf)
+  const externalId = threadId ? `codex:${threadId}` : null
+  if (exit === "spawn-error") {
+    return { threadId, externalId, status: "failed", reply: null, ...(error ? { error } : {}), note: "could not start the codex CLI" }
+  }
+  if (exit === "timeout") {
+    return {
+      threadId,
+      externalId,
+      status: "timeout",
+      reply,
+      note: `the first turn did not end within ${timeoutMs} ms; it was stopped${threadId ? ", the thread exists" : ""}`,
+    }
+  }
+  const status = finished ?? "failed"
+  return {
+    threadId,
+    externalId,
+    status,
+    reply: status === "completed" ? reply : null,
+    ...(status === "failed" ? { error: error ?? "codex exec ended without a finished turn" } : {}),
+    note:
+      status === "completed"
+        ? "created through `codex exec` (source exec): listed and readable through the desktop_conversation_* tools; the Desktop sidebar may not show it"
+        : "the thread was created but its first turn failed",
+  }
+}
+
+export function registerDesktopConversationCreateTool(server: McpServer): void {
+  server.tool(
+    "desktop_conversation_create",
+    "Create a new Codex conversation from agentproto: runs `codex exec` with your first message in `cwd` " +
+      "and returns the new thread id (`codex:<id>`) and its first answer. Codex only: Claude Desktop has no " +
+      "supported way to create a chat from outside the app. Runs read-only unless you ask `workspace-write`. " +
+      "The thread is stored as a `codex exec` thread: the Desktop sidebar may not show it, but " +
+      "desktop_conversation_list / read / ask can reach it.",
+    {
+      app: z.enum(["codex", "claude"]),
+      cwd: z.string().min(1).describe("Absolute working directory."),
+      prompt: z.string().min(1).max(20_000).describe("The first message."),
+      model: z.string().min(1).max(100).optional(),
+      sandbox: z.enum(["read-only", "workspace-write"]).optional().describe("Default read-only."),
+      timeoutMs: z.number().int().min(1_000).max(600_000).optional().describe("Default 120000."),
+    },
+    async input => {
+      if (input.app !== "codex") {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                "desktop_conversation_create: Claude Desktop cannot create a chat from outside the app. " +
+                "A `claude -p` session is not shown in its Code tab; start a daemon session with agent_start instead.",
+            },
+          ],
+        }
+      }
+      try {
+        const { app: _app, ...rest } = input
+        const result = await createCodexConversation(rest)
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] }
+      } catch (err) {
+        return { isError: true, content: [{ type: "text" as const, text: (err as Error).message }] }
+      }
+    },
   )
 }

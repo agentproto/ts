@@ -328,6 +328,7 @@ export const FULL_ONLY_TOOLS: readonly string[] = [
   "decision_validate_verdict",
   "delete_tool",
   "desktop_conversation_ask",
+  "desktop_conversation_create",
   "desktop_conversation_list",
   "desktop_conversation_read",
   "directory_create",
