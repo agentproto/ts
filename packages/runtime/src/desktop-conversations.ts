@@ -247,8 +247,26 @@ export async function listDesktopConversations(
 export interface DesktopReadOptions extends DesktopListOptions {
   app: DesktopApp
   id: string
-  /** Keep only the last N messages (default 20, max 200). */
+  /** Keep only the last N messages (default 20). The MCP tool caps it at 200. */
   tail?: number
+  /** Already resolved conversation: skips the re-list (the ask poll loop reads many times). */
+  conversation?: DesktopConversation
+}
+
+/** The fields the list/read need, picked out of the (much larger) ask options. */
+function lastNonSystemRole(messages: ExportedSession["messages"]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.role !== "system") return messages[i]!.role
+  return undefined
+}
+
+function readScope(opts: DesktopAskOptions | DesktopReadOptions, tail: number): DesktopReadOptions {
+  return {
+    app: opts.app,
+    id: opts.id,
+    tail,
+    ...(opts.claudeSessionsDirs ? { claudeSessionsDirs: opts.claudeSessionsDirs } : {}),
+    ...(opts.codexHome ? { codexHome: opts.codexHome } : {}),
+  }
 }
 
 export interface DesktopReadResult {
@@ -263,14 +281,18 @@ export interface DesktopReadResult {
 export async function readDesktopConversation(
   opts: DesktopReadOptions
 ): Promise<DesktopReadResult> {
-  const tail = Math.min(Math.max(opts.tail ?? 20, 1), 200)
-  const all = await listDesktopConversations({
-    ...opts,
-    app: opts.app,
-    includeArchived: true,
-    limit: 500,
-  })
-  const conversation = all.find(c => c.app === opts.app && c.id === opts.id)
+  const tail = Math.max(opts.tail ?? 20, 1)
+  const conversation =
+    opts.conversation ??
+    (
+      await listDesktopConversations({
+        app: opts.app,
+        includeArchived: true,
+        limit: 500,
+        ...(opts.claudeSessionsDirs ? { claudeSessionsDirs: opts.claudeSessionsDirs } : {}),
+        ...(opts.codexHome ? { codexHome: opts.codexHome } : {}),
+      })
+    ).find(c => c.app === opts.app && c.id === opts.id)
   if (!conversation)
     throw new Error(
       `desktop_conversation_read: no ${opts.app} Desktop conversation "${opts.id}"`
@@ -402,6 +424,8 @@ export interface DesktopAskResult {
   conversation: DesktopConversation
   messageId: string
   delivered: unknown
+  /** Codex only: outcome of the Desktop wake (`accepted` | `unavailable` | `busy` | `uncertain`), when attempted. */
+  desktopWake?: string
   /** The assistant text produced after the message arrived, or null. */
   reply: string | null
   note?: string
@@ -424,12 +448,7 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 export async function askDesktopConversation(
   opts: DesktopAskOptions
 ): Promise<DesktopAskResult> {
-  if (opts.app !== "claude") {
-    throw new Error(
-      "desktop_conversation_ask: only Claude Desktop is supported so far (Codex comes in a later change)"
-    )
-  }
-  const before = await readDesktopConversation({ ...opts, tail: 1 })
+  const before = await readDesktopConversation(readScope(opts, 1))
   const { conversation } = before
   // Stamp the workspace the chat runs in: without it the external row has no
   // workspace and `message_send`'s default same-workspace rule can never bind,
@@ -439,7 +458,7 @@ export async function askDesktopConversation(
     : undefined
   opts.registry.touchExternal({
     id: conversation.externalId,
-    host: "claude-desktop",
+    host: opts.app === "codex" ? "codex" : "claude-desktop",
     name: conversation.title,
     ...(conversation.cwd ? { cwd: conversation.cwd } : {}),
     ...(conversation.appSessionId
@@ -462,6 +481,7 @@ export async function askDesktopConversation(
     message?: string
     messageId?: string
     delivered?: unknown
+    desktopWake?: string
   }
   // A refusal (permissions, no caller identity, ...) is the answer: surfaced as is, nothing is sent.
   if (toolResult.isError || !sent.ok) {
@@ -476,6 +496,7 @@ export async function askDesktopConversation(
     conversation,
     messageId: sent.messageId ?? "",
     delivered: sent.delivered,
+    ...(sent.desktopWake ? { desktopWake: sent.desktopWake } : {}),
     reply: null,
   }
   const waitMs = Math.min(Math.max(opts.waitMs ?? 60_000, 0), 300_000)
@@ -483,9 +504,11 @@ export async function askDesktopConversation(
   const pollMs = opts.pollMs ?? 1_000
   const settleMs = opts.settleMs ?? 3_000
   const deadline = Date.now() + waitMs
-  const transcriptPath = conversation.cwd
-    ? join(claudeCodeProjectDir(conversation.cwd), `${conversation.id}.jsonl`)
-    : undefined
+  const transcriptPath =
+    conversation.transcriptPath ??
+    (conversation.cwd
+      ? join(claudeCodeProjectDir(conversation.cwd), `${conversation.id}.jsonl`)
+      : undefined)
   let lastCount = before.totalMessages
   // Re-parsing the transcript store on every tick is wasteful on a long wait.
   // Stat the jsonl instead: only once its size has stopped changing for
@@ -518,18 +541,19 @@ export async function askDesktopConversation(
         settled = true
       }
     }
-    const now = await readDesktopConversation({ ...opts, tail: 200 })
+    // No tail cap here: a turn can add more than 200 messages, and the reply is all of them.
+    const now = await readDesktopConversation({ ...readScope(opts, Number.MAX_SAFE_INTEGER), conversation })
     if (settled) readSize = seenSize
     if (now.totalMessages !== lastCount) {
       lastCount = now.totalMessages
       if (!settled) lastChange = Date.now()
     }
-    const fresh = now.messages.slice(
-      -(now.totalMessages - before.totalMessages) || undefined
-    )
-    const grew = now.totalMessages > before.totalMessages
-    const lastIsAssistant =
-      now.messages[now.messages.length - 1]?.role === "assistant"
+    const added = now.totalMessages - before.totalMessages
+    const grew = added > 0
+    const fresh = grew ? now.messages.slice(-added) : []
+    // A transcript can end on a system / summary line after the answer: judge by
+    // the last message that is not a system one.
+    const lastIsAssistant = lastNonSystemRole(now.messages) === "assistant"
     if (
       grew &&
       lastIsAssistant &&
@@ -544,11 +568,26 @@ export async function askDesktopConversation(
   }
   return {
     ...base,
-    note:
-      (sent.delivered as { via?: string } | null)?.via === "inbox"
-        ? "parked in the chat's inbox (no live wake): the chat reads it at its next hook poll, no reply yet"
-        : `no finished reply within ${waitMs} ms`,
+    note: parkedNote(opts.app, opts.urgency ?? "next-turn", sent.delivered, sent.desktopWake, waitMs),
   }
+}
+
+function parkedNote(
+  app: DesktopApp,
+  urgency: string,
+  delivered: unknown,
+  desktopWake: string | undefined,
+  waitMs: number,
+): string {
+  if ((delivered as { via?: string } | null)?.via !== "inbox") return `no finished reply within ${waitMs} ms`
+  if (app === "claude") {
+    return "parked in the chat's inbox (no live wake): the chat reads it at its next hook poll, no reply yet"
+  }
+  if (desktopWake === "accepted") return `Codex Desktop accepted the wake but wrote no finished reply within ${waitMs} ms`
+  if (desktopWake) return `parked in the thread's inbox: the Codex Desktop wake answered "${desktopWake}", so no turn was started`
+  return urgency !== "next-turn"
+    ? "parked in the thread's inbox: only a next-turn message can wake Codex Desktop"
+    : "parked in the thread's inbox: no Codex Desktop wake was attempted (the thread id is not in daemon.codexDesktopWakeThreadIds)"
 }
 
 export function registerDesktopConversationAskTool(
@@ -561,12 +600,12 @@ export function registerDesktopConversationAskTool(
 ): void {
   server.tool(
     "desktop_conversation_ask",
-    "Ask a Claude Desktop conversation from desktop_conversation_list: sends your text to it and waits for " +
+    "Ask a Claude Desktop or Codex Desktop conversation from desktop_conversation_list: sends your text to it and waits for " +
       "its answer. Delivery is a direct wake over the chat's Claude Code socket when `daemon.claudeSocketWake` " +
       "is on and the chat is alive, else the message is parked in its inbox and the chat reads it at its " +
-      "next hook poll (`delivered.via` tells which; no reply then). Only app `claude` for now. `waitMs` 0 = send only.",
+      "next hook poll (`delivered.via` tells which; no reply then). Codex: only a `next-turn` message to a thread listed in `daemon.codexDesktopWakeThreadIds` starts a turn, otherwise it is parked. `waitMs` 0 = send only.",
     {
-      app: z.literal("claude"),
+      app: z.enum(["claude", "codex"]),
       id: z
         .string()
         .min(1)

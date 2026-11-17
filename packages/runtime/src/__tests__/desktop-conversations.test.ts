@@ -7,8 +7,11 @@ import {
   askDesktopConversation,
   listDesktopConversations,
   readDesktopConversation,
+  registerDesktopConversationAskTool,
 } from "../desktop-conversations.js"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { registerMessageTools } from "../message-tools.js"
 import {
   createSessionsRegistry,
@@ -35,8 +38,10 @@ async function claudeFile(name: string, body: unknown) {
   )
 }
 
-function codexDb(rows: Array<Record<string, unknown>>) {
-  const dir = join(root, "codex")
+function codexDb(
+  rows: Array<Record<string, unknown>>,
+  dir = join(root, "codex")
+) {
   return mkdir(dir, { recursive: true }).then(() => {
     const db = new DatabaseSync(join(dir, "state_5.sqlite"))
     db.exec(
@@ -312,6 +317,30 @@ describe("askDesktopConversation", () => {
     expect(r.delivered).toEqual({ via: "socket" })
   })
 
+  it("returns the answer even when the transcript ends on a system line, and when the turn adds over 200 messages", async () => {
+    const file = await setup()
+    const sendMessage = vi.fn(async (_t: string, to: string, msg: any) => {
+      setTimeout(() => {
+        const many = Array.from({ length: 230 }, (_, k) => jl("assistant", `part ${k}`, 10 + (k % 40))).join("")
+        void appendFile(file, jl("user", msg.text, 2) + many + jl("system", "résumé", 59))
+      }, 20)
+      return toolOk({ messageId: "msg_s", to, delivered: { via: "socket" } })
+    })
+    const r = await askDesktopConversation({
+      ...opts(),
+      ...fast,
+      registry: { touchExternal: vi.fn() } as any,
+      send: sendMessage as any,
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 3000,
+    })
+    // all 230 parts come back, not only the last 200
+    expect(r.reply?.split("\n\n")).toHaveLength(230)
+    expect(r.reply).toContain("part 0")
+  })
+
   it("says so when the message is only parked in the inbox", async () => {
     await setup()
     const sendMessage = vi.fn(async () =>
@@ -331,7 +360,7 @@ describe("askDesktopConversation", () => {
     expect(r.note).toMatch(/parked in the chat's inbox/)
   })
 
-  it("waitMs 0 only sends, and codex is refused for now", async () => {
+  it("waitMs 0 only sends, and unknown ids are refused", async () => {
     await setup()
     const sendMessage = vi.fn(async () =>
       toolOk({ messageId: "msg_2", delivered: { via: "inbox" } })
@@ -347,16 +376,6 @@ describe("askDesktopConversation", () => {
       waitMs: 0,
     })
     expect(r.reply).toBeNull()
-    await expect(
-      askDesktopConversation({
-        ...opts(),
-        registry,
-        send: sendMessage as any,
-        app: "codex",
-        id: "t",
-        text: "x",
-      })
-    ).rejects.toThrow(/only Claude Desktop/)
     await expect(
       askDesktopConversation({
         ...opts(),
@@ -457,5 +476,115 @@ describe("askDesktopConversation", () => {
     ).rejects.toThrow(/forbidden_recipient|not a tree neighbour/)
     expect(registry.get("cc:cli-a")?.workspaceSlug).toBe("ws-a")
     expect(sendMessage).not.toHaveBeenCalled()
+  })
+
+  describe("codex", () => {
+    const TID = "01a1eae5-a8d7-7230-8585-645615406614"
+    const item = (role: string, text: string, i: number) =>
+      JSON.stringify({
+        timestamp: `2026-11-17T19:04:${String(i).padStart(2, "0")}.000Z`,
+        ordinal: i,
+        type: "response_item",
+        payload: {
+          type: "message",
+          role,
+          content: [{ type: role === "user" ? "input_text" : "output_text", text }],
+        },
+      }) + "\n"
+
+    async function setupCodex() {
+      const dir = join(root, "codex", "sessions", "2026", "11", "17")
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, `rollout-2026-11-17T20-04-41-${TID}.jsonl`)
+      await writeFile(
+        file,
+        JSON.stringify({ type: "session_meta", payload: { id: TID, session_id: TID, cwd: "/p" } }) + "\n" + item("user", "avant", 1)
+      )
+      await codexDb([{ id: TID, title: "t", name: "Mon thread", updated_at: 5, rollout_path: file, cwd: "/p" }])
+      return file
+    }
+
+    it("registers the thread as a codex external row, sends next-turn, reports the wake and returns the answer", async () => {
+      const file = await setupCodex()
+      const touchExternal = vi.fn()
+      const send = vi.fn(async (_t: string, _to: string, m: any) => {
+        setTimeout(() => void appendFile(file, item("user", m.text, 2) + item("assistant", "réponse codex", 3)), 20)
+        return toolOk({ messageId: "msg_c", delivered: { via: "inbox" }, desktopWake: "accepted" })
+      })
+      const r = await askDesktopConversation({
+        ...opts(),
+        pollMs: 10,
+        settleMs: 30,
+        registry: { touchExternal } as any,
+        send: send as any,
+        app: "codex",
+        id: TID,
+        text: "ping",
+        waitMs: 3000,
+      })
+      expect(touchExternal).toHaveBeenCalledWith(expect.objectContaining({ id: `codex:${TID}`, host: "codex" }))
+      expect(send.mock.calls[0]![1]).toBe(`codex:${TID}`)
+      expect(send.mock.calls[0]![2]).toMatchObject({ urgency: "next-turn" })
+      expect(r.desktopWake).toBe("accepted")
+      expect(r.reply).toBe("réponse codex")
+    })
+
+    it("explains why nothing woke: not configured, wrong urgency, or a wake that said no", async () => {
+      await setupCodex()
+      const base = { ...opts(), pollMs: 10, settleMs: 30, registry: { touchExternal: vi.fn() } as any, app: "codex" as const, id: TID, text: "x", waitMs: 120 }
+      const ask = (send: any, urgency?: "fyi" | "next-turn" | "steer") =>
+        askDesktopConversation({ ...base, send, ...(urgency ? { urgency } : {}) })
+      const parked = async () => toolOk({ messageId: "m", delivered: { via: "inbox" } })
+      expect((await ask(parked)).note).toMatch(/not in daemon\.codexDesktopWakeThreadIds/)
+      expect((await ask(parked, "steer")).note).toMatch(/only a next-turn message/)
+      const refused = async () => toolOk({ messageId: "m", delivered: { via: "inbox" }, desktopWake: "unavailable" })
+      expect((await ask(refused)).note).toMatch(/answered "unavailable"/)
+    })
+
+    it("the registered MCP tool accepts app codex (schema reachability)", async () => {
+      const home = join(root, "home")
+      vi.stubEnv("HOME", home)
+      const cdir = join(home, ".codex")
+      await mkdir(join(cdir, "sessions"), { recursive: true })
+      const file = join(cdir, "sessions", `rollout-${TID}.jsonl`)
+      await writeFile(
+        file,
+        JSON.stringify({ type: "session_meta", payload: { id: TID, session_id: TID, cwd: "/p" } }) + "\n" + item("user", "avant", 1)
+      )
+      await codexDb([{ id: TID, title: "t", name: "Mon thread", updated_at: 5, rollout_path: file, cwd: "/p" }], cdir)
+      const send = vi.fn(async () =>
+        toolOk({ messageId: "m", delivered: { via: "inbox" }, desktopWake: "accepted" })
+      )
+      const server = new McpServer({ name: "desktop-ask-test", version: "0.0.0" })
+      registerDesktopConversationAskTool(server, {
+        registry: { touchExternal: vi.fn() } as any,
+        send: send as any,
+      })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      const client = new Client({ name: "test", version: "0.0.0" })
+      await client.connect(clientTransport)
+      try {
+        const result = (await client.callTool({
+          name: "desktop_conversation_ask",
+          arguments: { app: "codex", id: TID, text: "ping", waitMs: 0 },
+        })) as { isError?: boolean; content: Array<{ text: string }> }
+        expect(result.isError).toBeFalsy()
+        expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+          desktopWake: "accepted",
+          reply: null,
+        })
+        // Still a closed set: an unknown app is refused at the schema.
+        const refused = (await client.callTool({
+          name: "desktop_conversation_ask",
+          arguments: { app: "gemini", id: TID, text: "ping", waitMs: 0 },
+        })) as { isError?: boolean; content: Array<{ text: string }> }
+        expect(refused.isError).toBe(true)
+        expect(refused.content[0]!.text).toMatch(/expected one of "claude"\|"codex"/)
+      } finally {
+        await client.close()
+        await server.close()
+      }
+    })
   })
 })
