@@ -17015,12 +17015,16 @@ function loadHistorySnapshot(
     // host session may well be alive. Heal it to the open-inbox shape.
     const externalDaemonEnded =
       desc.kind === "external" &&
-      desc.status === "killed" &&
+      // `killed` + `daemon-restart` from a graceful shutdown sweep, or
+      // `error` + `crashed` from a crash sweep.
+      (desc.status === "killed" || desc.status === "error") &&
       desc.endedReason !== undefined &&
       DAEMON_ENDED_EXTERNAL_REASONS.has(desc.endedReason) &&
       !isRetired(desc)
     if (externalDaemonEnded) {
       desc.status = "exited"
+      // Same shape the live shutdown branch writes for this row.
+      desc.endedAt = desc.lastSeenAt ?? now
       delete desc.endedReason
       delete desc.killedMidTurn
     }

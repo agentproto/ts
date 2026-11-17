@@ -127,7 +127,10 @@ describe("external row across a daemon restart", () => {
     expect(res.wake).toMatchObject({ written: true, reason: "written", pid: h.pid })
   })
 
-  it("heals a row an older daemon persisted as killed/daemon-restart", async () => {
+  it.each([
+    { status: "killed", endedReason: "daemon-restart" },
+    { status: "error", endedReason: "crashed" },
+  ])("heals a row an older daemon persisted as $status/$endedReason", async ({ status, endedReason }) => {
     const before = boot(h)
     before.touchExternal({ id: ROW, host: "claude-desktop" })
     before.shutdown()
@@ -135,7 +138,7 @@ describe("external row across a daemon restart", () => {
     // Rewrite the snapshot the way the pre-fix shutdown sweep left it.
     const snap = JSON.parse(readFileSync(h.persistPath, "utf8")) as { sessions: Array<Record<string, unknown>> }
     for (const row of snap.sessions) {
-      if (row.id === ROW) Object.assign(row, { status: "killed", endedReason: "daemon-restart", killedMidTurn: false })
+      if (row.id === ROW) Object.assign(row, { status, endedReason, killedMidTurn: false })
     }
     writeFileSync(h.persistPath, JSON.stringify(snap))
 
