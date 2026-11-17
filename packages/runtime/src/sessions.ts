@@ -4915,6 +4915,9 @@ export interface SessionsRegistry {
     name?: string
     cwd?: string
     hostSessionId?: string
+    /** Workspace the host conversation belongs to (resolved from its cwd);
+     *  absent leaves the stored one as is. */
+    workspaceSlug?: string
     /** Host registration `entrypoint` (e.g. `claude-desktop-3p`); absent leaves the stored one. */
     entrypoint?: string
     /** Host-reported permission mode; absent leaves the stored one as is. */
@@ -13908,6 +13911,7 @@ export function createSessionsRegistry(opts?: {
         if (input.name) desc.name = input.name
         if (input.cwd) desc.cwd = input.cwd
         if (input.hostSessionId) desc.externalHostSessionId = input.hostSessionId
+        if (input.workspaceSlug) desc.workspaceSlug = input.workspaceSlug
         if (input.entrypoint) desc.externalEntrypoint = input.entrypoint
         if (input.permissionMode) desc.externalPermissionMode = input.permissionMode
         schedulePersist()
@@ -13917,7 +13921,7 @@ export function createSessionsRegistry(opts?: {
       const desc: SessionDescriptor = {
         id: input.id,
         kind: "external",
-        workspaceSlug: "",
+        workspaceSlug: input.workspaceSlug ?? "",
         command: `${input.host} (external session)`,
         pid: null,
         status: "running",

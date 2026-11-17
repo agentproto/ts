@@ -112,6 +112,7 @@ import { createWorkspaceOfCwd } from "./workspace-binding.js"
 import { postParentRelayMessage, relayTokenForSession } from "./parent-relay.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 import { redactSessionMounts } from "./session-descriptor-public.js"
+import { registerDesktopConversationAskTool } from "./desktop-conversations.js"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
  *
@@ -1604,7 +1605,7 @@ export function registerAgentTools(
   )
 
   // ── message_send / message_reply / inbox_* ─────────
-  registerMessageTools(server, {
+  const messageSend = registerMessageTools(server, {
     registry,
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),
@@ -1621,6 +1622,12 @@ export function registerAgentTools(
     ...(noCallerIdentity ? { noCallerIdentity } : {}),
     ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
     ...(deliveryApply ? { deliveryApply } : {}),
+  })
+  // Claude Desktop conversation ask: sends through the SAME path as message_send.
+  registerDesktopConversationAskTool(server, {
+    registry,
+    send: messageSend.sendAsCaller,
+    workspaceOfCwd: createWorkspaceOfCwd(),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
   registerPermissionsTools(server, {

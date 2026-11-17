@@ -21,6 +21,12 @@ import { readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
+import type { ExportedSession } from "./transcript-export.js"
+import type { SessionsRegistry } from "./sessions.js"
+import type { MessageUrgency } from "./session-message.js"
+import type { MessageSendApi } from "./message-tools.js"
+import { claudeCodeProjectDir } from "./conversation-store.js"
+import { createWorkspaceOfCwd } from "./workspace-binding.js"
 
 export type DesktopApp = "claude" | "codex"
 
@@ -238,6 +244,57 @@ export async function listDesktopConversations(
     .slice(0, limit)
 }
 
+export interface DesktopReadOptions extends DesktopListOptions {
+  app: DesktopApp
+  id: string
+  /** Keep only the last N messages (default 20, max 200). */
+  tail?: number
+}
+
+export interface DesktopReadResult {
+  conversation: DesktopConversation
+  meta: ExportedSession["meta"]
+  totalMessages: number
+  messages: ExportedSession["messages"]
+}
+
+/** Read one Desktop conversation's transcript. The id must be one the list
+ *  returns: an unknown id is an error, never a guess. */
+export async function readDesktopConversation(
+  opts: DesktopReadOptions
+): Promise<DesktopReadResult> {
+  const tail = Math.min(Math.max(opts.tail ?? 20, 1), 200)
+  const all = await listDesktopConversations({
+    ...opts,
+    app: opts.app,
+    includeArchived: true,
+    limit: 500,
+  })
+  const conversation = all.find(c => c.app === opts.app && c.id === opts.id)
+  if (!conversation)
+    throw new Error(
+      `desktop_conversation_read: no ${opts.app} Desktop conversation "${opts.id}"`
+    )
+  const { exportClaudeCodeSession, exportCodexSession } =
+    await import("./transcript-export.js")
+  let session: ExportedSession
+  if (conversation.app === "claude") {
+    if (!conversation.cwd)
+      throw new Error(
+        `desktop_conversation_read: chat ${opts.id} has no cwd, cannot locate its transcript`
+      )
+    session = await exportClaudeCodeSession(conversation.id, conversation.cwd)
+  } else {
+    session = await exportCodexSession(conversation.id, opts.codexHome)
+  }
+  return {
+    conversation,
+    meta: session.meta,
+    totalMessages: session.messages.length,
+    messages: session.messages.slice(-tail),
+  }
+}
+
 export function registerDesktopConversationListTool(server: McpServer): void {
   server.tool(
     "desktop_conversation_list",
@@ -275,6 +332,274 @@ export function registerDesktopConversationListTool(server: McpServer): void {
             }),
           },
         ],
+      }
+    }
+  )
+}
+
+export function registerDesktopConversationReadTool(server: McpServer): void {
+  server.tool(
+    "desktop_conversation_read",
+    "Read the transcript of a Claude Desktop or Codex Desktop conversation returned by " +
+      "desktop_conversation_list: the last `tail` messages (default 20) plus metadata. Read-only; an id " +
+      "that is not in the list is an error.",
+    {
+      app: z
+        .enum(["claude", "codex"])
+        .describe("The app the conversation belongs to."),
+      id: z
+        .string()
+        .min(1)
+        .describe("The `id` from desktop_conversation_list."),
+      tail: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("Last N messages, default 20."),
+    },
+    async input => {
+      try {
+        const result = await readDesktopConversation(input)
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        }
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: (err as Error).message }],
+        }
+      }
+    }
+  )
+}
+
+export type DesktopAskRegistry = Pick<SessionsRegistry, "touchExternal">
+/** The send path of `message_send`: same permission decision as that tool. */
+export type DesktopAskSend = MessageSendApi["sendAsCaller"]
+
+export interface DesktopAskOptions extends DesktopListOptions {
+  registry: DesktopAskRegistry
+  send: DesktopAskSend
+  app: DesktopApp
+  id: string
+  text: string
+  /** Delivery tier, `next-turn` (default) or `steer`. Never `interrupt`. */
+  urgency?: Extract<MessageUrgency, "fyi" | "next-turn" | "steer">
+  /** How long to wait for the reply, ms. Default 60000, max 300000, 0 = send only. */
+  waitMs?: number
+  /** Resolves a cwd to a registered workspace slug. Defaults to the daemon's
+   *  own workspaces config. A conversation is stamped with its workspace so
+   *  the same-workspace rule in `message_send`'s permission decision binds. */
+  workspaceOfCwd?: (cwd: string) => string | undefined
+  /** Test seams. */
+  pollMs?: number
+  settleMs?: number
+}
+
+export interface DesktopAskResult {
+  conversation: DesktopConversation
+  messageId: string
+  delivered: unknown
+  /** The assistant text produced after the message arrived, or null. */
+  reply: string | null
+  note?: string
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+/**
+ * Ask a Claude Desktop conversation: send `text` to its `cc:<id>` address and
+ * read its answer from the transcript.
+ *
+ * Delivery is the daemon's own external path: a direct wake over the chat's
+ * Claude Code socket when `daemon.claudeSocketWake` is on and the chat's
+ * process is alive, otherwise the message waits in the chat's inbox until its
+ * next hook poll. `delivered.via` says which; a parked message normally
+ * produces no reply inside `waitMs`, and the result says so instead of
+ * pretending. The reply is the assistant text that appears in the transcript
+ * after the send and has stopped growing for `settleMs`.
+ */
+export async function askDesktopConversation(
+  opts: DesktopAskOptions
+): Promise<DesktopAskResult> {
+  if (opts.app !== "claude") {
+    throw new Error(
+      "desktop_conversation_ask: only Claude Desktop is supported so far (Codex comes in a later change)"
+    )
+  }
+  const before = await readDesktopConversation({ ...opts, tail: 1 })
+  const { conversation } = before
+  // Stamp the workspace the chat runs in: without it the external row has no
+  // workspace and `message_send`'s default same-workspace rule can never bind,
+  // so every session caller outside the chat's own tree is refused.
+  const workspaceSlug = conversation.cwd
+    ? (opts.workspaceOfCwd ?? createWorkspaceOfCwd())(conversation.cwd)
+    : undefined
+  opts.registry.touchExternal({
+    id: conversation.externalId,
+    host: "claude-desktop",
+    name: conversation.title,
+    ...(conversation.cwd ? { cwd: conversation.cwd } : {}),
+    ...(conversation.appSessionId
+      ? { hostSessionId: conversation.appSessionId }
+      : {}),
+    ...(workspaceSlug ? { workspaceSlug } : {}),
+  })
+  const toolResult = await opts.send(
+    "desktop_conversation_ask",
+    conversation.externalId,
+    {
+      text: opts.text,
+      kind: "question",
+      urgency: opts.urgency ?? "next-turn",
+    }
+  )
+  const sent = JSON.parse(toolResult.content[0]!.text) as {
+    ok: boolean
+    error?: string
+    message?: string
+    messageId?: string
+    delivered?: unknown
+  }
+  // A refusal (permissions, no caller identity, ...) is the answer: surfaced as is, nothing is sent.
+  if (toolResult.isError || !sent.ok) {
+    const refused = sent.message ?? "desktop_conversation_ask: send refused"
+    const hint =
+      sent.error === "forbidden_recipient"
+        ? ` (a session caller must share this chat's workspace${workspaceSlug ? ` "${workspaceSlug}"` : ""}, or hold a grant / peer group that allows it — see permissions_explain)`
+        : ""
+    throw new Error(`${refused}${hint}`)
+  }
+  const base: DesktopAskResult = {
+    conversation,
+    messageId: sent.messageId ?? "",
+    delivered: sent.delivered,
+    reply: null,
+  }
+  const waitMs = Math.min(Math.max(opts.waitMs ?? 60_000, 0), 300_000)
+  if (waitMs === 0) return base
+  const pollMs = opts.pollMs ?? 1_000
+  const settleMs = opts.settleMs ?? 3_000
+  const deadline = Date.now() + waitMs
+  const transcriptPath = conversation.cwd
+    ? join(claudeCodeProjectDir(conversation.cwd), `${conversation.id}.jsonl`)
+    : undefined
+  let lastCount = before.totalMessages
+  // Re-parsing the transcript store on every tick is wasteful on a long wait.
+  // Stat the jsonl instead: only once its size has stopped changing for
+  // `settleMs` is the (single) full read taken. When the file cannot be
+  // stat'd, fall back to the per-tick read.
+  let seenSize = -1
+  let readSize = -1
+  let lastChange = Date.now()
+  while (Date.now() < deadline) {
+    await sleep(pollMs)
+    // `settled` means the jsonl itself has been quiet for `settleMs`, so the
+    // single read below already reflects the finished reply and needs no
+    // further message-count settling.
+    let settled = false
+    if (transcriptPath) {
+      let size: number | undefined
+      try {
+        size = (await stat(transcriptPath)).size
+      } catch {
+        size = undefined
+      }
+      if (size !== undefined) {
+        if (size !== seenSize) {
+          seenSize = size
+          lastChange = Date.now()
+          continue
+        }
+        if (size === readSize) continue
+        if (Date.now() - lastChange < settleMs) continue
+        settled = true
+      }
+    }
+    const now = await readDesktopConversation({ ...opts, tail: 200 })
+    if (settled) readSize = seenSize
+    if (now.totalMessages !== lastCount) {
+      lastCount = now.totalMessages
+      if (!settled) lastChange = Date.now()
+    }
+    const fresh = now.messages.slice(
+      -(now.totalMessages - before.totalMessages) || undefined
+    )
+    const grew = now.totalMessages > before.totalMessages
+    const lastIsAssistant =
+      now.messages[now.messages.length - 1]?.role === "assistant"
+    if (
+      grew &&
+      lastIsAssistant &&
+      (settled || Date.now() - lastChange >= settleMs)
+    ) {
+      const reply = fresh
+        .filter(m => m.role === "assistant" && m.text)
+        .map(m => m.text)
+        .join("\n\n")
+      return { ...base, reply: reply || null }
+    }
+  }
+  return {
+    ...base,
+    note:
+      (sent.delivered as { via?: string } | null)?.via === "inbox"
+        ? "parked in the chat's inbox (no live wake): the chat reads it at its next hook poll, no reply yet"
+        : `no finished reply within ${waitMs} ms`,
+  }
+}
+
+export function registerDesktopConversationAskTool(
+  server: McpServer,
+  ops: {
+    registry: DesktopAskRegistry
+    send: DesktopAskSend
+    workspaceOfCwd?: DesktopAskOptions["workspaceOfCwd"]
+  }
+): void {
+  server.tool(
+    "desktop_conversation_ask",
+    "Ask a Claude Desktop conversation from desktop_conversation_list: sends your text to it and waits for " +
+      "its answer. Delivery is a direct wake over the chat's Claude Code socket when `daemon.claudeSocketWake` " +
+      "is on and the chat is alive, else the message is parked in its inbox and the chat reads it at its " +
+      "next hook poll (`delivered.via` tells which; no reply then). Only app `claude` for now. `waitMs` 0 = send only.",
+    {
+      app: z.literal("claude"),
+      id: z
+        .string()
+        .min(1)
+        .describe("The `id` from desktop_conversation_list."),
+      text: z.string().min(1).max(20_000),
+      urgency: z
+        .enum(["fyi", "next-turn", "steer"])
+        .optional()
+        .describe("Default next-turn. fyi never wakes."),
+      waitMs: z
+        .number()
+        .int()
+        .min(0)
+        .max(300_000)
+        .optional()
+        .describe("Wait for the reply, default 60000."),
+    },
+    async input => {
+      try {
+        const result = await askDesktopConversation({
+          ...input,
+          registry: ops.registry,
+          send: ops.send,
+          ...(ops.workspaceOfCwd ? { workspaceOfCwd: ops.workspaceOfCwd } : {}),
+        })
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        }
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: (err as Error).message }],
+        }
       }
     }
   )

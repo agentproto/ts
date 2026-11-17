@@ -1,15 +1,28 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { listDesktopConversations } from "../desktop-conversations.js"
+import {
+  askDesktopConversation,
+  listDesktopConversations,
+  readDesktopConversation,
+} from "../desktop-conversations.js"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { registerMessageTools } from "../message-tools.js"
+import {
+  createSessionsRegistry,
+  type AgentSessionLike,
+  type AgentStreamEvent,
+} from "../sessions.js"
+import { claudeCodeProjectDir } from "../conversation-store.js"
 
 let root: string
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "desktop-conv-"))
 })
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await rm(root, { recursive: true, force: true })
 })
 
@@ -164,5 +177,285 @@ describe("listDesktopConversations", () => {
     expect(
       (await listDesktopConversations({ ...opts(), limit: 2 })).map(c => c.id)
     ).toEqual(["c3", "c2"])
+  })
+})
+
+describe("readDesktopConversation", () => {
+  it("reads the tail of a Claude chat from the jsonl under its cwd, and refuses an unlisted id", async () => {
+    const cwd = join(root, "proj")
+    await claudeFile("local_a.json", { cliSessionId: "cli-a", cwd, title: "T" })
+    vi.stubEnv("HOME", join(root, "home"))
+    // exportClaudeCodeSession reads <home>/.claude/projects/<cwd slug>/<id>.jsonl
+    const slugDir = claudeCodeProjectDir(cwd)
+    await mkdir(slugDir, { recursive: true })
+    const line = (type: string, role: string, text: string, i: number) =>
+      JSON.stringify({
+        type,
+        uuid: `u${i}`,
+        timestamp: `2026-11-17T10:00:0${i}Z`,
+        sessionId: "cli-a",
+        message: { role, content: text },
+      })
+    await writeFile(
+      join(slugDir, "cli-a.jsonl"),
+      [
+        line("user", "user", "un", 1),
+        line("assistant", "assistant", "deux", 2),
+        line("user", "user", "trois", 3),
+      ].join("\n") + "\n"
+    )
+    const r = await readDesktopConversation({
+      ...opts(),
+      app: "claude",
+      id: "cli-a",
+      tail: 2,
+    })
+    expect(r.totalMessages).toBe(3)
+    expect(r.messages.map(m => m.text)).toEqual(["deux", "trois"])
+    await expect(
+      readDesktopConversation({ ...opts(), app: "claude", id: "nope" })
+    ).rejects.toThrow(/no claude Desktop conversation/)
+    await expect(
+      readDesktopConversation({ ...opts(), app: "codex", id: "cli-a" })
+    ).rejects.toThrow(/no codex Desktop conversation/)
+  })
+})
+
+const toolOk = (body: Record<string, unknown>) => ({
+  content: [
+    { type: "text" as const, text: JSON.stringify({ ok: true, ...body }) },
+  ],
+})
+
+describe("askDesktopConversation", () => {
+  const cwd = () => join(root, "proj")
+  const jl = (role: string, text: string, i: number) =>
+    JSON.stringify({
+      type: role,
+      uuid: `u${i}`,
+      timestamp: `2026-11-17T10:00:${String(i).padStart(2, "0")}Z`,
+      sessionId: "cli-a",
+      message: { role, content: text },
+    }) + "\n"
+
+  async function setup() {
+    vi.stubEnv("HOME", join(root, "home"))
+    await claudeFile("local_a.json", {
+      sessionId: "local_a",
+      cliSessionId: "cli-a",
+      cwd: cwd(),
+      title: "Chat A",
+    })
+    const dir = claudeCodeProjectDir(cwd())
+    await mkdir(dir, { recursive: true })
+    const file = join(dir, "cli-a.jsonl")
+    await writeFile(file, jl("user", "avant", 1))
+    return file
+  }
+
+  const fast = { pollMs: 10, settleMs: 30 }
+
+  function fakeAgentSession(): AgentSessionLike {
+    return {
+      sessionId: "acp_test",
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        return
+      },
+      async cancel() {},
+      async close() {},
+    }
+  }
+
+  it("registers the chat, sends to its cc address and returns the answer the chat wrote", async () => {
+    const file = await setup()
+    const touchExternal = vi.fn()
+    const sendMessage = vi.fn(async (_tool: string, to: string, msg: any) => {
+      // the live chat answers after the wake
+      setTimeout(
+        () =>
+          void appendFile(
+            file,
+            jl("user", msg.text, 2) + jl("assistant", "la réponse", 3)
+          ),
+        20
+      )
+      return toolOk({ messageId: "msg_1", to, delivered: { via: "socket" } })
+    })
+    const r = await askDesktopConversation({
+      ...opts(),
+      ...fast,
+      registry: { touchExternal } as any,
+      send: sendMessage as any,
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 3000,
+    })
+    expect(touchExternal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "cc:cli-a",
+        host: "claude-desktop",
+        hostSessionId: "local_a",
+      })
+    )
+    expect(sendMessage.mock.calls[0]!.slice(0, 2)).toEqual([
+      "desktop_conversation_ask",
+      "cc:cli-a",
+    ])
+    expect(sendMessage.mock.calls[0]![2]).toMatchObject({
+      text: "ping",
+      kind: "question",
+      urgency: "next-turn",
+    })
+    expect(r.reply).toBe("la réponse")
+    expect(r.delivered).toEqual({ via: "socket" })
+  })
+
+  it("says so when the message is only parked in the inbox", async () => {
+    await setup()
+    const sendMessage = vi.fn(async () =>
+      toolOk({ messageId: "msg_2", delivered: { via: "inbox" } })
+    )
+    const r = await askDesktopConversation({
+      ...opts(),
+      ...fast,
+      registry: { touchExternal: vi.fn() } as any,
+      send: sendMessage as any,
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 150,
+    })
+    expect(r.reply).toBeNull()
+    expect(r.note).toMatch(/parked in the chat's inbox/)
+  })
+
+  it("waitMs 0 only sends, and codex is refused for now", async () => {
+    await setup()
+    const sendMessage = vi.fn(async () =>
+      toolOk({ messageId: "msg_2", delivered: { via: "inbox" } })
+    )
+    const registry = { touchExternal: vi.fn() } as any
+    const r = await askDesktopConversation({
+      ...opts(),
+      registry,
+      send: sendMessage as any,
+      app: "claude",
+      id: "cli-a",
+      text: "x",
+      waitMs: 0,
+    })
+    expect(r.reply).toBeNull()
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        send: sendMessage as any,
+        app: "codex",
+        id: "t",
+        text: "x",
+      })
+    ).rejects.toThrow(/only Claude Desktop/)
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        send: sendMessage as any,
+        app: "claude",
+        id: "nope",
+        text: "x",
+      })
+    ).rejects.toThrow(/no claude Desktop conversation/)
+  })
+
+  it("goes through message_send's own permission decision: a refusal sends nothing and is surfaced", async () => {
+    await setup()
+    const registry = createSessionsRegistry({ persist: false })
+    // No caller identity and the default noCallerIdentity "block": message_send refuses.
+    const { sendAsCaller } = registerMessageTools(
+      new McpServer({ name: "t", version: "0" }),
+      { registry }
+    )
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        send: sendAsCaller,
+        app: "claude",
+        id: "cli-a",
+        text: "ping",
+        waitMs: 0,
+      })
+    ).rejects.toThrow(
+      /no_caller_identity|cannot identify the calling session|identity/i
+    )
+    expect(registry.get("cc:cli-a")?.kind).toBe("external")
+    expect(registry.listInbox("cc:cli-a") ?? []).toEqual([])
+  })
+
+  it("delivers when the caller session is in the chat's own workspace", async () => {
+    await setup()
+    const registry = createSessionsRegistry({ persist: false })
+    const caller = registry.spawnAgent({
+      workspaceSlug: "ws-a",
+      cwd: cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      label: "caller",
+      depth: 0,
+    })
+    const sendMessage = vi.spyOn(registry, "sendMessage")
+    const { sendAsCaller } = registerMessageTools(
+      new McpServer({ name: "t", version: "0" }),
+      { registry, callerSessionId: caller.id, workspaceOfCwd: () => "ws-a" }
+    )
+    const r = await askDesktopConversation({
+      ...opts(),
+      registry,
+      send: sendAsCaller,
+      workspaceOfCwd: () => "ws-a",
+      app: "claude",
+      id: "cli-a",
+      text: "ping",
+      waitMs: 0,
+    })
+    expect(r.reply).toBeNull()
+    // The chat's external row carries the workspace resolved from its cwd, so
+    // the default same-workspace allowance binds and the send goes through.
+    expect(registry.get("cc:cli-a")?.workspaceSlug).toBe("ws-a")
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it("refuses with forbidden_recipient when the caller is outside the chat's workspace", async () => {
+    await setup()
+    const registry = createSessionsRegistry({ persist: false })
+    const caller = registry.spawnAgent({
+      workspaceSlug: "ws-b",
+      cwd: cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      label: "caller",
+      depth: 0,
+    })
+    const sendMessage = vi.spyOn(registry, "sendMessage")
+    const { sendAsCaller } = registerMessageTools(
+      new McpServer({ name: "t", version: "0" }),
+      { registry, callerSessionId: caller.id, workspaceOfCwd: () => "ws-b" }
+    )
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        send: sendAsCaller,
+        workspaceOfCwd: () => "ws-a",
+        app: "claude",
+        id: "cli-a",
+        text: "ping",
+        waitMs: 0,
+      })
+    ).rejects.toThrow(/forbidden_recipient|not a tree neighbour/)
+    expect(registry.get("cc:cli-a")?.workspaceSlug).toBe("ws-a")
+    expect(sendMessage).not.toHaveBeenCalled()
   })
 })
