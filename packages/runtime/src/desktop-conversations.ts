@@ -402,6 +402,8 @@ export interface DesktopAskResult {
   conversation: DesktopConversation
   messageId: string
   delivered: unknown
+  /** Codex only: outcome of the Desktop wake (`accepted` | `unavailable` | `busy` | `uncertain`), when attempted. */
+  desktopWake?: string
   /** The assistant text produced after the message arrived, or null. */
   reply: string | null
   note?: string
@@ -424,11 +426,6 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 export async function askDesktopConversation(
   opts: DesktopAskOptions
 ): Promise<DesktopAskResult> {
-  if (opts.app !== "claude") {
-    throw new Error(
-      "desktop_conversation_ask: only Claude Desktop is supported so far (Codex comes in a later change)"
-    )
-  }
   const before = await readDesktopConversation({ ...opts, tail: 1 })
   const { conversation } = before
   // Stamp the workspace the chat runs in: without it the external row has no
@@ -439,7 +436,7 @@ export async function askDesktopConversation(
     : undefined
   opts.registry.touchExternal({
     id: conversation.externalId,
-    host: "claude-desktop",
+    host: opts.app === "codex" ? "codex" : "claude-desktop",
     name: conversation.title,
     ...(conversation.cwd ? { cwd: conversation.cwd } : {}),
     ...(conversation.appSessionId
@@ -462,6 +459,7 @@ export async function askDesktopConversation(
     message?: string
     messageId?: string
     delivered?: unknown
+    desktopWake?: string
   }
   // A refusal (permissions, no caller identity, ...) is the answer: surfaced as is, nothing is sent.
   if (toolResult.isError || !sent.ok) {
@@ -476,6 +474,7 @@ export async function askDesktopConversation(
     conversation,
     messageId: sent.messageId ?? "",
     delivered: sent.delivered,
+    ...(sent.desktopWake ? { desktopWake: sent.desktopWake } : {}),
     reply: null,
   }
   const waitMs = Math.min(Math.max(opts.waitMs ?? 60_000, 0), 300_000)
@@ -544,11 +543,26 @@ export async function askDesktopConversation(
   }
   return {
     ...base,
-    note:
-      (sent.delivered as { via?: string } | null)?.via === "inbox"
-        ? "parked in the chat's inbox (no live wake): the chat reads it at its next hook poll, no reply yet"
-        : `no finished reply within ${waitMs} ms`,
+    note: parkedNote(opts.app, opts.urgency ?? "next-turn", sent.delivered, sent.desktopWake, waitMs),
   }
+}
+
+function parkedNote(
+  app: DesktopApp,
+  urgency: string,
+  delivered: unknown,
+  desktopWake: string | undefined,
+  waitMs: number,
+): string {
+  if ((delivered as { via?: string } | null)?.via !== "inbox") return `no finished reply within ${waitMs} ms`
+  if (app === "claude") {
+    return "parked in the chat's inbox (no live wake): the chat reads it at its next hook poll, no reply yet"
+  }
+  if (desktopWake === "accepted") return `Codex Desktop accepted the wake but wrote no finished reply within ${waitMs} ms`
+  if (desktopWake) return `parked in the thread's inbox: the Codex Desktop wake answered "${desktopWake}", so no turn was started`
+  return urgency !== "next-turn"
+    ? "parked in the thread's inbox: only a next-turn message can wake Codex Desktop"
+    : "parked in the thread's inbox: no Codex Desktop wake was attempted (the thread id is not in daemon.codexDesktopWakeThreadIds)"
 }
 
 export function registerDesktopConversationAskTool(
@@ -561,10 +575,10 @@ export function registerDesktopConversationAskTool(
 ): void {
   server.tool(
     "desktop_conversation_ask",
-    "Ask a Claude Desktop conversation from desktop_conversation_list: sends your text to it and waits for " +
+    "Ask a Claude Desktop or Codex Desktop conversation from desktop_conversation_list: sends your text to it and waits for " +
       "its answer. Delivery is a direct wake over the chat's Claude Code socket when `daemon.claudeSocketWake` " +
       "is on and the chat is alive, else the message is parked in its inbox and the chat reads it at its " +
-      "next hook poll (`delivered.via` tells which; no reply then). Only app `claude` for now. `waitMs` 0 = send only.",
+      "next hook poll (`delivered.via` tells which; no reply then). Codex: only a `next-turn` message to a thread listed in `daemon.codexDesktopWakeThreadIds` starts a turn, otherwise it is parked. `waitMs` 0 = send only.",
     {
       app: z.literal("claude"),
       id: z
