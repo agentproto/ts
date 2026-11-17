@@ -51,11 +51,12 @@
  *   3 — --check: no consolidated release carries this batch's marker
  */
 
-import { execSync, execFileSync, spawn } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describeLane, pickLane, resolveLane } from './lib/agent-lane.mjs'
+import { agentDeadlineMs, runBoundedChild } from './lib/bounded-child.mjs'
 import { makeConfineToRepoRoot } from './lib/path-confine.mjs'
 
 // ── root ──────────────────────────────────────────────────────────────────────
@@ -513,40 +514,27 @@ npm install @agentproto/agent@latest @agentproto/mcp-server@latest ...
 
 // ── generation (selected harness, one lane) ──────────────────────────────────
 
-function generateWithOpenCode(resolved, context) {
+async function generateWithOpenCode(resolved, context) {
   const prompt =
     `${SYSTEM_PROMPT}\n\n` +
     'Please generate the consolidated release notes for this batch of @agentproto package publishes. ' +
     'Read the code behind the changes, then reply with the announcement only.\n\n' +
     renderContext(context)
 
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn('opencode', ['run', '--pure', '--model', resolved.model], {
-      cwd: ROOT,
-      env: resolved.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    child.stdout.on('data', (chunk) => (stdout += chunk))
-    child.stderr.on('data', (chunk) => (stderr += chunk))
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`OpenCode exited ${code}: ${stderr.slice(-500)}`))
-        return
-      }
-      const body = unwrapFence(stdout.trim())
-      if (!body) {
-        reject(new Error(`OpenCode produced no release-note body: ${stderr.slice(-500)}`))
-        return
-      }
-      resolvePromise(body)
-    })
-    child.stdin.end(prompt)
+  // Bounded: an OpenCode run that outlives its step would go on and publish
+  // its notes while the fallback lane is publishing its own.
+  const deadlineMs = agentDeadlineMs()
+  const { code, stdout, stderr, timedOut } = await runBoundedChild('opencode', ['run', '--pure', '--model', resolved.model], {
+    cwd: ROOT,
+    env: resolved.env,
+    input: prompt,
+    deadlineMs,
   })
+  if (timedOut) throw new Error(`OpenCode was stopped at the ${deadlineMs / 60_000}-minute lane deadline (AGENT_DEADLINE_MINUTES)`)
+  if (code !== 0) throw new Error(`OpenCode exited ${code}: ${stderr.slice(-500)}`)
+  const body = unwrapFence(stdout.trim())
+  if (!body) throw new Error(`OpenCode produced no release-note body: ${stderr.slice(-500)}`)
+  return body
 }
 
 async function generateBody(resolved, context) {
@@ -578,14 +566,25 @@ async function generateBody(resolved, context) {
     },
   })
   let final = null
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const block of message.message?.content ?? []) {
-        if (block.type === 'tool_use') log(`   🔧 ${block.name}(${Object.keys(block.input ?? {}).join(', ')})`)
+  // Same lane deadline as OpenCode: aborting the query stops the SDK's
+  // claude child, and the iteration below throws.
+  const deadlineMs = agentDeadlineMs()
+  const deadline = setTimeout(() => {
+    log(`   ⚠️  lane deadline reached (${deadlineMs / 60_000} min, AGENT_DEADLINE_MINUTES); stopping the agent.`)
+    abortController.abort()
+  }, deadlineMs)
+  try {
+    for await (const message of result) {
+      if (message.type === 'assistant') {
+        for (const block of message.message?.content ?? []) {
+          if (block.type === 'tool_use') log(`   🔧 ${block.name}(${Object.keys(block.input ?? {}).join(', ')})`)
+        }
+      } else if (message.type === 'result') {
+        final = message
       }
-    } else if (message.type === 'result') {
-      final = message
     }
+  } finally {
+    clearTimeout(deadline)
   }
   if (!final) throw new Error('the agent produced no result message (stream ended without one)')
   if (final.is_error || final.subtype !== 'success') {
