@@ -1,15 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { listDesktopConversations } from "../desktop-conversations.js"
+import {
+  listDesktopConversations,
+  readDesktopConversation,
+} from "../desktop-conversations.js"
+import { claudeCodeProjectDir } from "../conversation-store.js"
 
 let root: string
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "desktop-conv-"))
 })
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await rm(root, { recursive: true, force: true })
 })
 
@@ -164,5 +169,46 @@ describe("listDesktopConversations", () => {
     expect(
       (await listDesktopConversations({ ...opts(), limit: 2 })).map(c => c.id)
     ).toEqual(["c3", "c2"])
+  })
+})
+
+describe("readDesktopConversation", () => {
+  it("reads the tail of a Claude chat from the jsonl under its cwd, and refuses an unlisted id", async () => {
+    const cwd = join(root, "proj")
+    await claudeFile("local_a.json", { cliSessionId: "cli-a", cwd, title: "T" })
+    vi.stubEnv("HOME", join(root, "home"))
+    // exportClaudeCodeSession reads <home>/.claude/projects/<cwd slug>/<id>.jsonl
+    const slugDir = claudeCodeProjectDir(cwd)
+    await mkdir(slugDir, { recursive: true })
+    const line = (type: string, role: string, text: string, i: number) =>
+      JSON.stringify({
+        type,
+        uuid: `u${i}`,
+        timestamp: `2026-11-17T10:00:0${i}Z`,
+        sessionId: "cli-a",
+        message: { role, content: text },
+      })
+    await writeFile(
+      join(slugDir, "cli-a.jsonl"),
+      [
+        line("user", "user", "un", 1),
+        line("assistant", "assistant", "deux", 2),
+        line("user", "user", "trois", 3),
+      ].join("\n") + "\n"
+    )
+    const r = await readDesktopConversation({
+      ...opts(),
+      app: "claude",
+      id: "cli-a",
+      tail: 2,
+    })
+    expect(r.totalMessages).toBe(3)
+    expect(r.messages.map(m => m.text)).toEqual(["deux", "trois"])
+    await expect(
+      readDesktopConversation({ ...opts(), app: "claude", id: "nope" })
+    ).rejects.toThrow(/no claude Desktop conversation/)
+    await expect(
+      readDesktopConversation({ ...opts(), app: "codex", id: "cli-a" })
+    ).rejects.toThrow(/no codex Desktop conversation/)
   })
 })

@@ -21,6 +21,7 @@ import { readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
+import type { ExportedSession } from "./transcript-export.js"
 
 export type DesktopApp = "claude" | "codex"
 
@@ -238,6 +239,57 @@ export async function listDesktopConversations(
     .slice(0, limit)
 }
 
+export interface DesktopReadOptions extends DesktopListOptions {
+  app: DesktopApp
+  id: string
+  /** Keep only the last N messages (default 20, max 200). */
+  tail?: number
+}
+
+export interface DesktopReadResult {
+  conversation: DesktopConversation
+  meta: ExportedSession["meta"]
+  totalMessages: number
+  messages: ExportedSession["messages"]
+}
+
+/** Read one Desktop conversation's transcript. The id must be one the list
+ *  returns: an unknown id is an error, never a guess. */
+export async function readDesktopConversation(
+  opts: DesktopReadOptions
+): Promise<DesktopReadResult> {
+  const tail = Math.min(Math.max(opts.tail ?? 20, 1), 200)
+  const all = await listDesktopConversations({
+    ...opts,
+    app: opts.app,
+    includeArchived: true,
+    limit: 500,
+  })
+  const conversation = all.find(c => c.app === opts.app && c.id === opts.id)
+  if (!conversation)
+    throw new Error(
+      `desktop_conversation_read: no ${opts.app} Desktop conversation "${opts.id}"`
+    )
+  const { exportClaudeCodeSession, exportCodexSession } =
+    await import("./transcript-export.js")
+  let session: ExportedSession
+  if (conversation.app === "claude") {
+    if (!conversation.cwd)
+      throw new Error(
+        `desktop_conversation_read: chat ${opts.id} has no cwd, cannot locate its transcript`
+      )
+    session = await exportClaudeCodeSession(conversation.id, conversation.cwd)
+  } else {
+    session = await exportCodexSession(conversation.id, opts.codexHome)
+  }
+  return {
+    conversation,
+    meta: session.meta,
+    totalMessages: session.messages.length,
+    messages: session.messages.slice(-tail),
+  }
+}
+
 export function registerDesktopConversationListTool(server: McpServer): void {
   server.tool(
     "desktop_conversation_list",
@@ -275,6 +327,44 @@ export function registerDesktopConversationListTool(server: McpServer): void {
             }),
           },
         ],
+      }
+    }
+  )
+}
+
+export function registerDesktopConversationReadTool(server: McpServer): void {
+  server.tool(
+    "desktop_conversation_read",
+    "Read the transcript of a Claude Desktop or Codex Desktop conversation returned by " +
+      "desktop_conversation_list: the last `tail` messages (default 20) plus metadata. Read-only; an id " +
+      "that is not in the list is an error.",
+    {
+      app: z
+        .enum(["claude", "codex"])
+        .describe("The app the conversation belongs to."),
+      id: z
+        .string()
+        .min(1)
+        .describe("The `id` from desktop_conversation_list."),
+      tail: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("Last N messages, default 20."),
+    },
+    async input => {
+      try {
+        const result = await readDesktopConversation(input)
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        }
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: (err as Error).message }],
+        }
       }
     }
   )
