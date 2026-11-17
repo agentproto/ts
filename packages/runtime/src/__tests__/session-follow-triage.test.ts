@@ -96,6 +96,7 @@ describe("follow-triage", () => {
       parkedPath: join(tmp, "parked.jsonl"),
       ledgerPath: join(tmp, "delivery-ledger.jsonl"),
       log: () => {},
+      now: () => Date.parse(T0),
       ...extra,
     })
     return { ...reg, store }
@@ -599,8 +600,8 @@ describe("follow-triage", () => {
       expect(sent[0]!.text).toBe(
         "[session-follow] automatic digest \u2014 2 events from sessions you follow. " +
           "Decide whether anything needs the human's attention; if not, no reply is needed.\n" +
-          "[session-follow] w (w) turn-end \u2014 proj\n" +
-          "[session-follow] w (w) exited \u2014 proj \u2014 operator-stopped",
+          "[session-follow] w (w) turn-end [à l'instant, 05/10 00:00Z] \u2014 proj\n" +
+          "[session-follow] w (w) exited [à l'instant, 05/10 00:00Z] \u2014 proj \u2014 operator-stopped",
       )
     })
   })

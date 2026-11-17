@@ -639,7 +639,11 @@ export type PrResolvedState = "open" | "merged" | "closed"
  */
 export function prToActivities(
   session: ActivityPrSession,
-  opts: { resolvedPrState?: (url: string) => PrResolvedState | undefined } = {},
+  opts: {
+    resolvedPrState?: (url: string) => PrResolvedState | undefined
+    /** The forge's real merge time (ISO) for a merged PR, when known. */
+    resolvedPrMergedAt?: (url: string) => string | undefined
+  } = {},
 ): ActivityRecord[] {
   return (session.openedPrs ?? []).map(pr => {
     const base = (title: string): ActivityRecordBase => ({
@@ -653,7 +657,9 @@ export function prToActivities(
     })
     const settled = opts.resolvedPrState?.(pr.url)
     if (settled === "merged") {
-      return record(base(`PR #${pr.number} merged (${pr.url})`), "done")
+      const mergedAt = opts.resolvedPrMergedAt?.(pr.url)
+      const done = record(base(`PR #${pr.number} merged (${pr.url})`), "done")
+      return mergedAt ? { ...done, endedAt: mergedAt } : done
     }
     if (settled === "closed") {
       return record(base(`PR #${pr.number} closed (${pr.url})`), "cancelled")

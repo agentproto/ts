@@ -81,6 +81,7 @@ describe("session-follow", () => {
       readLastOutput: () => undefined,
       parkedPath: join(tmp, "parked.jsonl"),
       log: () => {},
+      now: () => Date.parse(NOW),
       ...extra,
     })
     return { ...reg, store }
@@ -320,19 +321,69 @@ describe("session-follow", () => {
       pr("pending", "PR #12 open (https://github.com/o/r/pull/12)") // re-projection
       await handle!.flush()
       expect(sent).toHaveLength(1)
-      expect(sent[0]!.text).toMatch(/ \(a\) pr-opened — repo — PR #12 open/)
+      expect(sent[0]!.text).toMatch(/ \(a\) pr-opened \[à l'instant, 05\/10 00:00Z\] — repo — PR #12 open/)
       expect(sent[0]!.text.match(/pr-opened/g)).toHaveLength(1)
 
       pr("done", "PR #12 merged (https://github.com/o/r/pull/12)")
       await handle!.flush()
       expect(sent).toHaveLength(2)
-      expect(sent[1]!.text).toMatch(/ \(a\) pr-merged — repo — PR #12 merged/)
+      expect(sent[1]!.text).toMatch(/ \(a\) pr-merged \[fusionnée à l'instant, 05\/10 00:00Z\] — repo — PR #12 merged/)
 
       pr("cancelled", "PR #12 closed")
       bus.emit({ type: "activity:changed", ts: NOW, activity: { id: "turn:a:1", kind: "turn", sessionId: "a", state: "done" } } as never)
       bus.emit({ type: "activity:changed", ts: NOW, activity: undefined } as never)
       await handle!.flush()
       expect(sent).toHaveLength(2)
+    })
+  })
+
+  describe("stale PR events (restart catch-up)", () => {
+    const prEvent = (ts: string, endedAt?: string): void =>
+      bus.emit({
+        type: "activity:changed",
+        ts,
+        activity: {
+          id: "pr:a:144",
+          kind: "pr",
+          sessionId: "a",
+          state: "done",
+          title: "PR #144 merged (https://github.com/o/r/pull/144)",
+          sourceRef: "u",
+          source: "code-host",
+          startedAt: NOW,
+          ...(endedAt ? { endedAt } : {}),
+        },
+      } as never)
+
+    it("a pr-merged whose real merge time is days old is ignored, not delivered as new", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
+      // Emitted "now" (the daemon just re-settled it) but merged 18 days ago.
+      prEvent(NOW, "2026-09-17T05:28:51Z")
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+    })
+
+    it("a pr-merged merged minutes ago is delivered, stamped with the merge time", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
+      prEvent(NOW, "2026-10-04T23:50:00Z")
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("pr-merged [fusionnée il y a 10 min, 04/10 23:50Z]")
+    })
+
+    it("with no merge time (resolver gave none) the event keeps its emission time", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
+      prEvent(NOW)
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("[fusionnée à l'instant, 05/10 00:00Z]")
+    })
+
+    it("every digest line carries the real event time", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
+      emitTurnEnd(bus, "a", { awaitingInput: true })
+      await handle!.flush()
+      expect(sent[0]!.text).toContain("awaiting-input [à l'instant, 05/10 00:00Z]")
     })
   })
 
@@ -491,9 +542,9 @@ describe("session-follow", () => {
       expect(header).toMatch(/^\[session-follow\] automatic digest — 3 events/)
       expect(header).toContain("needs the human's attention")
       expect(lines).toEqual([
-        "[session-follow] alpha (a) turn-end — proj",
-        "[session-follow] b (b) turn-end — proj",
-        "[session-follow] alpha (a) exited — proj",
+        "[session-follow] alpha (a) turn-end [à l'instant, 05/10 00:00Z] — proj",
+        "[session-follow] b (b) turn-end [à l'instant, 05/10 00:00Z] — proj",
+        "[session-follow] alpha (a) exited [à l'instant, 05/10 00:00Z] — proj",
       ])
     })
 
@@ -524,7 +575,7 @@ describe("session-follow", () => {
       expect(excerpt.length).toBeLessThanOrEqual(FOLLOW_EXCERPT_MAX)
       expect(excerpt.startsWith("…")).toBe(true)
       expect(excerpt.endsWith("THE CONCLUSION")).toBe(true)
-      expect(lineB).toMatch(/ \(b\) exited — proj — shipped it$/)
+      expect(lineB).toMatch(/ \(b\) exited \[à l'instant, 05\/10 00:00Z\] — proj — shipped it$/)
       expect(excerptOf("  a \n b  ")).toBe("a b")
       expect(excerptOf("")).toBeUndefined()
     })

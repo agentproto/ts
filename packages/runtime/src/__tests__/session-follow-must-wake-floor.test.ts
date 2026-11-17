@@ -77,6 +77,7 @@ describe("must-wake floor on a fyi follow", () => {
       parkedPath: join(tmp, "parked.jsonl"),
       ledgerPath: join(tmp, "delivery-ledger.jsonl"),
       log: () => {},
+      now: () => Date.parse(T0),
       ...extra,
     })
     return { ...reg, store }

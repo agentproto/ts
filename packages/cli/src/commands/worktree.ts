@@ -100,8 +100,8 @@ import {
   type SandboxCheckpointReclaimer,
   type SandboxCheckpointGcRunner,
   summarizeSandboxCheckpointGcPlan,
+  type PrResolution,
   type PrStateResolver,
-  type PrResolvedState,
 } from "@agentproto/runtime"
 
 const USAGE = `agentproto worktree — create, inspect, and tear down git worktrees
@@ -944,8 +944,8 @@ export function makeOpenPrResolver(deps?: {
  * never a throw (the settlement pass is best-effort).
  */
 export function makePrStateResolver(): PrStateResolver {
-  const verdicts = new Map<string, Extract<PrResolvedState, "merged" | "closed">>()
-  return async (prUrl: string): Promise<PrResolvedState | null> => {
+  const verdicts = new Map<string, PrResolution>()
+  return async (prUrl: string): Promise<PrResolution | null> => {
     const memo = verdicts.get(prUrl)
     if (memo) return memo
     // Cheap shape guard so garbage never spawns a process. GitHub-only for
@@ -954,21 +954,33 @@ export function makePrStateResolver(): PrStateResolver {
     const raw = await new Promise<string | null>(resolvePromise => {
       execFile(
         "gh",
-        ["pr", "view", prUrl, "--json", "state", "--jq", ".state"],
+        ["pr", "view", prUrl, "--json", "state,mergedAt"],
         { encoding: "utf8" },
         (err, stdout) => resolvePromise(err ? null : stdout),
       )
     })
     if (raw === null) return null
-    switch (raw.trim().toUpperCase()) {
-      case "MERGED":
-        verdicts.set(prUrl, "merged")
-        return "merged"
-      case "CLOSED":
-        verdicts.set(prUrl, "closed")
-        return "closed"
+    let parsed: { state?: unknown; mergedAt?: unknown }
+    try {
+      parsed = JSON.parse(raw) as { state?: unknown; mergedAt?: unknown }
+    } catch {
+      return null
+    }
+    const state = typeof parsed.state === "string" ? parsed.state.trim().toUpperCase() : ""
+    const mergedAt = typeof parsed.mergedAt === "string" && parsed.mergedAt ? parsed.mergedAt : undefined
+    switch (state) {
+      case "MERGED": {
+        const verdict: PrResolution = { state: "merged", ...(mergedAt ? { mergedAt } : {}) }
+        verdicts.set(prUrl, verdict)
+        return verdict
+      }
+      case "CLOSED": {
+        const verdict: PrResolution = { state: "closed" }
+        verdicts.set(prUrl, verdict)
+        return verdict
+      }
       case "OPEN":
-        return "open"
+        return { state: "open" }
       default:
         return null
     }
