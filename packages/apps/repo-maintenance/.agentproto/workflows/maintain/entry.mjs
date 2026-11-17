@@ -58,8 +58,145 @@ export function reviewRoute(b, role) {
   return b.steps?.modelRoles?.routes?.[role] || undefined
 }
 /** Small model for a residual of 3 files or fewer, large otherwise. */
+function reviewRoleOfCount(residualFileCount) {
+  return (residualFileCount ?? 0) <= 3 ? ROLE_REVIEW_SMALL : ROLE_REVIEW_LARGE
+}
 function reviewRole(b) {
-  return (b.item?.residualFileCount ?? 0) <= 3 ? ROLE_REVIEW_SMALL : ROLE_REVIEW_LARGE
+  return reviewRoleOfCount(b.item?.residualFileCount)
+}
+
+/** The run is marked `failed` when MORE than this share of the reviewer turns
+ *  it started ended with an empty turn (`maxEmptyTurnShare`). The turns of the
+ *  2026-11-16 nightly run failed 28 of 28 and the run still ended `done`. */
+export const DEFAULT_MAX_EMPTY_TURN_SHARE = 0.5
+
+/** A rejected reviewer turn that produced nothing: the adapter's own text is
+ *  "empty turn, commonly an auth failure or an invalid model id". */
+export function isEmptyTurnError(error) {
+  return /\bempty turn\b/i.test(String(error ?? ""))
+}
+
+/** Where the probe turn runs: it reads nothing, so any existing directory. */
+const PROBE_CWD = tmpdir()
+const PROBE_PROMPT = "Pre-flight check of the review model. Reply with the single word OK. Do not call any tool."
+
+/** One probe target per model role the queue will use: `{ role, model,
+ *  adapter, profile, route, cwd }`. Empty when there is nothing to review or
+ *  `probeReviewer` is false. */
+export function reviewProbeTargets(b) {
+  if (b.input?.probeReviewer === false) return []
+  const roles = new Set((b.steps?.reviewCandidatesPlanned ?? []).map(c => reviewRoleOfCount(c.residualFileCount)))
+  return [ROLE_REVIEW_SMALL, ROLE_REVIEW_LARGE]
+    .filter(role => roles.has(role))
+    .map(role => ({
+      role,
+      model: reviewModel(b, role) ?? null,
+      adapter: reviewAdapter(b, role) ?? null,
+      profile: b.steps?.modelRoles?.profiles?.[role] ?? null,
+      route: reviewRoute(b, role) ?? null,
+      cwd: PROBE_CWD,
+    }))
+}
+
+/** How the pre-flight probe went: `{ failed, failures: [{ role, model, adapter, profile, error }] }`. */
+export function reviewProbeHealth(b) {
+  const targets = b.steps?.reviewProbeTargets ?? []
+  const results = Array.isArray(b.steps?.reviewProbe?.results) ? b.steps.reviewProbe.results : []
+  const failures = []
+  for (const r of results) {
+    if (r?.status !== "rejected") continue
+    const t = targets[r.index] ?? {}
+    failures.push({ role: t.role ?? "?", model: t.model ?? null, adapter: t.adapter ?? null, profile: t.profile ?? null, error: String(r.error ?? "") })
+  }
+  return { failed: failures.length > 0, failures }
+}
+
+/** The candidates the review map runs on: none once the probe failed (the
+ *  run aborts early instead of burning one failing turn per candidate). */
+export function reviewCandidatesToRun(b) {
+  return b.steps?.reviewProbeHealth?.failed === true ? [] : (b.steps?.reviewCandidatesPlanned ?? [])
+}
+
+/** Is the run healthy? Fails it (`failed: true`) when the probe failed or when
+ *  more than `maxEmptyTurnShare` (default 0.5) of the reviewer turns that were
+ *  started ended with an empty turn. Names the model role, model, adapter and
+ *  billing profile behind each failing turn so the fix is "re-auth this
+ *  profile", not "read 28 stack traces". */
+export function computeRunHealth(b) {
+  const threshold =
+    typeof b.input?.maxEmptyTurnShare === "number" && b.input.maxEmptyTurnShare >= 0 && b.input.maxEmptyTurnShare <= 1
+      ? b.input.maxEmptyTurnShare
+      : DEFAULT_MAX_EMPTY_TURN_SHARE
+  const candidates = b.steps?.reviewCandidates ?? []
+  const results = Array.isArray(b.steps?.review?.results) ? b.steps.review.results : []
+  const byRole = new Map()
+  let started = 0
+  let empty = 0
+  for (const r of results) {
+    if (r?.status === "skipped") continue
+    started++
+    const role = reviewRoleOfCount(candidates[r.index]?.residualFileCount)
+    const slot = byRole.get(role) ?? { role, started: 0, empty: 0 }
+    slot.started++
+    if (r?.status === "rejected" && isEmptyTurnError(r.error)) {
+      empty++
+      slot.empty++
+    }
+    byRole.set(role, slot)
+  }
+  const roles = [...byRole.values()]
+    .filter(x => x.empty > 0)
+    .map(x => ({
+      ...x,
+      model: reviewModel(b, x.role) ?? null,
+      adapter: reviewAdapter(b, x.role) ?? null,
+      profile: b.steps?.modelRoles?.profiles?.[x.role] ?? null,
+    }))
+  const probe = b.steps?.reviewProbeHealth ?? { failed: false, failures: [] }
+  const share = started > 0 ? empty / started : 0
+  const emptyTurnsFailed = started > 0 && share > threshold
+  return {
+    failed: probe.failed === true || emptyTurnsFailed,
+    probeFailed: probe.failed === true,
+    probeFailures: probe.failures ?? [],
+    emptyTurnsFailed,
+    started,
+    empty,
+    share,
+    threshold,
+    roles,
+    summary: runHealthSummary({ probeFailed: probe.failed === true, probeFailures: probe.failures ?? [], emptyTurnsFailed, empty, started, roles }),
+  }
+}
+
+/** One line for the failed run's error: which role/model/profile, how many turns. */
+function runHealthSummary(h) {
+  const parts = []
+  if (h.probeFailed) parts.push(`pre-flight probe failed for ${h.probeFailures.map(f => `${f.role} (${describeModel(f)})`).join("; ")}`)
+  if (h.emptyTurnsFailed) parts.push(`${h.empty} of ${h.started} reviewer turns empty: ${h.roles.map(r => `${r.role} (${describeModel(r)})`).join("; ")}`)
+  return parts.join(" | ")
+}
+
+const describeModel = x =>
+  `model ${x.model ?? "(agent default)"}, adapter ${x.adapter ?? "(agent default)"}, profile ${x.profile ?? "(ambient credential)"}`
+
+/** The loud report header of a failed run (no lines for a healthy one). */
+export function runHealthLines(health) {
+  if (!health?.failed) return []
+  const lines = ["**RUN FAILED: the reviewer could not run, so this report is NOT a success.**"]
+  if (health.probeFailed) {
+    lines.push("- pre-flight probe failed; no candidate was reviewed (aborted early). Fix the credential or model, then re-run:")
+    for (const f of health.probeFailures) lines.push(`  - role \`${f.role}\`: ${describeModel(f)}: ${f.error.length > 300 ? `${f.error.slice(0, 300)}…` : f.error}`)
+  }
+  if (health.emptyTurnsFailed) {
+    lines.push(
+      `- ${health.empty} of ${health.started} reviewer turns ended with an empty turn (${Math.round(health.share * 100)}%, limit ${Math.round(health.threshold * 100)}%): ` +
+        "commonly an auth failure or an invalid model id. By model role:",
+    )
+    for (const r of health.roles) lines.push(`  - role \`${r.role}\`: ${r.empty} of ${r.started} turns empty - ${describeModel(r)}`)
+  }
+  lines.push("")
+  return lines
 }
 /** Reviews per run — 500+ candidates in one run is hours of agent turns;
  *  daily runs walk the backlog instead (a reviewed tip is skipped next time). */
@@ -134,7 +271,10 @@ const REVIEW_PROMPT =
   "When your verdict is superseded because a merged PR landed this work, also pass landedIn: [{ pr, commit? }] " +
   "(the PR number(s), and the commit on base when you know it) and cite `#<pr>` in gate.reason: `branch_gc`'s " +
   "verified-pr pass checks that PR with the forge and lets the tip past the line guard when every file with " +
-  "uncovered lines is explained by it, a moved/deleted path, or a consumed changeset. Never cite a PR you did not check." +
+  "uncovered lines is explained by it, a moved/deleted path, or a consumed changeset. Never cite a PR you did not check. " +
+  "A superseded verdict with no landedIn can never pass that guard, so look for the PR before you record it: " +
+  "`git log <base> --grep '(#' -- <path>` on the residual files shows the squash commit and its PR number, " +
+  "and the PR number is also in the squash commit subject." +
   "{{#item.worktree}}\n\nThis branch is checked out in the linked worktree {{item.worktree}} — " +
   "idle (no live session), clean tree, no open PR — which is the only reason branch gc held it. " +
   "Your verdict decides whether that worktree (and the branch) can be removed: agree only when " +
@@ -951,6 +1091,7 @@ export function buildReport(b) {
   const lines = []
   lines.push(`# Repo maintenance — ${plan?.repoName ?? plan?.repoRoot ?? "unknown repo"}`)
   lines.push("")
+  lines.push(...runHealthLines(b.steps.runHealth))
   lines.push(`Base \`${plan?.base ?? "?"}\` @ \`${(plan?.baseSha ?? "").slice(0, 10)}\`${plan?.anchor ? ` (anchor \`${plan.anchor.slice(0, 10)}\`)` : ""}`)
   lines.push("")
   lines.push("## Worktrees")
@@ -1234,6 +1375,8 @@ export default {
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     maxReviews: { type: "number", description: `Most review candidates to review this run — newest tip first, then the larger residual. The rest are reported as not reviewed this run; tips with a stored verdict are not reviewed again (except the one-time \`rereviewUncited\` re-reviews, which count against this cap and come after every unreviewed tip), so daily runs walk the backlog. Default ${DEFAULT_MAX_REVIEWS}.`, default: DEFAULT_MAX_REVIEWS },
     rereviewUncited: { type: "boolean", description: "Re-review, once per tip, a tip whose stored verdict says superseded (triage and gate), agreed, cites no PR (no `landedIn`, no `#N` in gate.reason/evidence) and sits under branch_gc's line-coverage guard: the verified-pr pass cannot reclaim it without a cited PR. The reviewer is asked to find and cite the merged PR that landed the work, or change the verdict. Re-reviews count against `maxReviews` and are queued after every unreviewed tip (newest first). A tip whose stored verdict already replaced an earlier one (`revision` in the store) is never picked, so a re-review that again cites no PR is not repeated. Off when `requireOperatorBelowGuard` is true. Default true.", default: true },
+    maxEmptyTurnShare: { type: "number", description: `Mark the run \`failed\` (not \`done\`) when more than this share (0..1) of the reviewer turns it started end with an empty turn, commonly an auth failure or an invalid model id. The report then names the model role, model, adapter and profile. Default ${DEFAULT_MAX_EMPTY_TURN_SHARE}.`, default: DEFAULT_MAX_EMPTY_TURN_SHARE },
+    probeReviewer: { type: "boolean", description: "Before the review fan-out, run one cheap probe turn on each review model role the queue needs (same model, adapter and profile as the real turns). A failing probe aborts the run early, as failed, without reviewing anything. Default true.", default: true },
     reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). When the reviewer agreed, the worktree (never its branch) goes: with \`applyMerged\` + \`applyReviewed\`, worktree_gc removes it after re-checking it (same tip, clean, idle, no open PR, agreeing stored verdict) and the report gives each outcome; otherwise the report prints \`agentproto worktree rm <path> --keep-branch\`. Either way the branch is then judged by branch_gc's line-coverage guard. Default true.`, default: true },
     notify: {
       type: "object",
@@ -1300,12 +1443,51 @@ export default {
         }),
     },
     {
-      id: "reviewCandidates",
+      id: "reviewCandidatesPlanned",
       kind: "transform",
       compute: b =>
         (b.steps.reviewQueue?.queue ?? [])
           .slice(0, reviewCap(b.input))
           .map(c => ({ ...c, reviewWorktree: reviewWorktreePath(b.steps.branchGcPlan?.plan?.repoName, c.sha) })),
+    },
+    {
+      id: "reviewProbeTargets",
+      kind: "transform",
+      compute: b => reviewProbeTargets(b),
+    },
+    {
+      // Pre-flight: one trivial turn per model role the queue will use, on the
+      // same model/adapter/profile as the real turns. Tolerant: the verdict is
+      // read by `reviewProbeHealth`, which names the role.
+      id: "reviewProbe",
+      kind: "map",
+      over: "$steps.reviewProbeTargets",
+      parallelism: 1,
+      onError: "collect",
+      steps: [
+        {
+          id: "reviewProbeTurn",
+          kind: "agent",
+          agent: { ref: REVIEWER_REF },
+          cwd: "$item.cwd",
+          prompt: PROBE_PROMPT,
+          model: b => b.item?.model || undefined,
+          adapter: b => b.item?.adapter || undefined,
+          access: b => (b.item?.profile ? { profileRef: b.item.profile } : undefined),
+          route: b => b.item?.route || undefined,
+        },
+      ],
+    },
+    {
+      id: "reviewProbeHealth",
+      kind: "transform",
+      compute: b => reviewProbeHealth(b),
+    },
+    {
+      // The candidates the review map runs: none when the probe failed.
+      id: "reviewCandidates",
+      kind: "transform",
+      compute: b => reviewCandidatesToRun(b),
     },
     {
       id: "reviewWorktreePaths",
@@ -1485,6 +1667,12 @@ export default {
       },
     },
     {
+      // Probe + share of empty reviewer turns: decides whether the run is `failed`.
+      id: "runHealth",
+      kind: "transform",
+      compute: b => computeRunHealth(b),
+    },
+    {
       id: "report",
       kind: "transform",
       compute: b => buildReport(b),
@@ -1547,7 +1735,8 @@ export default {
         const byClass = b.steps.branchGcPlan?.summary?.byClass ?? {}
         const hasReclaimable = Object.values(byClass).some(c => (c?.reclaim ?? 0) > 0)
         const hasReviewCandidates = (b.steps.reviewCandidates ?? []).length > 0
-        return hasReclaimable || hasReviewCandidates
+        // A failed run is always worth an alert (its report says FAILED).
+        return hasReclaimable || hasReviewCandidates || b.steps.runHealth?.failed === true
       },
     },
     {
@@ -1615,6 +1804,31 @@ export default {
         return `${base}\n\nnotify skipped: ${notifySkipReason(first.error)}`
       },
     },
+    {
+      // The run ends `failed`, not `done`, when the reviewer could not run:
+      // the alert above already went out (its report starts with RUN FAILED).
+      id: "maybeFail",
+      kind: "branch",
+      branches: [{ when: "$steps.runHealth.failed", next: "failRun" }],
+      default: "runHealthy",
+      join: "runSettled",
+    },
+    {
+      id: "failRun",
+      kind: "gate",
+      command: "sh",
+      args: ["-c", 'printf "%s\\n" "repo-maintenance maintain FAILED: $0" >&2; exit 1', "$steps.runHealth.summary"],
+    },
+    {
+      id: "runHealthy",
+      kind: "gate",
+      command: "true",
+    },
+    {
+      id: "runSettled",
+      kind: "transform",
+      compute: b => b.steps.reportFinal,
+    },
   ],
   // Always runs — success, failure or cancel: no review worktree outlives the run.
   finally: [
@@ -1628,6 +1842,7 @@ export default {
   result: {
     report: "$steps.reportFinal",
     gaps: "$steps.gaps",
+    runHealth: "$steps.runHealth",
     review: "$steps.review",
     verdictRecords: "$steps.verdictRecords",
     applyMerged: "$input.applyMerged",

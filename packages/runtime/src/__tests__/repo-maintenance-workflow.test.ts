@@ -256,6 +256,10 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "branchGcPlan:tool",
       "checkpointGcPlan:tool",
       "reviewQueue:transform",
+      "reviewCandidatesPlanned:transform",
+      "reviewProbeTargets:transform",
+      "reviewProbe:map",
+      "reviewProbeHealth:transform",
       "reviewCandidates:transform",
       "reviewWorktreePaths:transform",
       "review:map",
@@ -268,6 +272,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "worktreeGcApply:tool",
       "branchGcApply:tool",
       "checkpointGcApply:tool",
+      "runHealth:transform",
       "report:transform",
       "notifyPlan:transform",
       "shouldNotify:transform",
@@ -275,6 +280,10 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "notify:map",
       "skip-notify:gate",
       "reportFinal:transform",
+      "maybeFail:branch",
+      "failRun:gate",
+      "runHealthy:gate",
+      "runSettled:transform",
     ])
     const compiled = compileWorkflow(handle, {
       ...createDaemonToolRegistry(handle, dispatchTool),
@@ -365,7 +374,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const { output } = await runWorkflow({
       workflow: compiled,
       agents: host,
-      input: { repoRoot: "/repo", applyMerged: false, applyReviewed: false },
+      input: { repoRoot: "/repo", probeReviewer: false, applyMerged: false, applyReviewed: false },
     })
 
     // One reviewOne spawn per UNIQUE tip sha, not per ref — the local+remote
@@ -676,7 +685,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const { output } = await runWorkflow({
       workflow: compiled,
       agents: fakeAgentHost(vi.fn(async () => "sess_x")),
-      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+      input: { repoRoot: "/repo", probeReviewer: false, applyMerged: true, applyReviewed: true },
     })
 
     const branchGcCalls = calls.filter(c => c.name === "branch_gc")
@@ -845,7 +854,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const { output } = await runWorkflow({
       workflow: compiled,
       agents: fakeAgentHost(vi.fn(async () => "sess_x")),
-      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+      input: { repoRoot: "/repo", probeReviewer: false, applyMerged: true, applyReviewed: true },
     })
     const report = (output as { report: string }).report
     const queue = report.slice(report.indexOf("## Human decision queue"))
@@ -901,7 +910,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const { output } = await runWorkflow({
       workflow: compiled,
       agents: fakeAgentHost(vi.fn(async () => "sess_x")),
-      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+      input: { repoRoot: "/repo", probeReviewer: false, applyMerged: true, applyReviewed: true },
     })
     const report = (output as { report: string }).report
     expect(report).toContain("reviewed: 1 reclaimed (includeReviewed true), 3 refused by the line-coverage guard")
@@ -995,7 +1004,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const { output } = await runWorkflow({
       workflow: compiled,
       agents: fakeAgentHost(vi.fn(async () => "sess_x")),
-      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+      input: { repoRoot: "/repo", probeReviewer: false, applyMerged: true, applyReviewed: true },
     })
     const report = (output as { report: string }).report
     // The plan step is a dry run, but the run applied: the header says so.
@@ -1040,7 +1049,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
-    await runWorkflow({ workflow: compiled, agents: fakeAgentHost(vi.fn(async () => "sess_x")), input: { repoRoot: "/repo" } })
+    await runWorkflow({ workflow: compiled, agents: fakeAgentHost(vi.fn(async () => "sess_x")), input: { repoRoot: "/repo", probeReviewer: false } })
     const branchGcCalls = calls.filter(c => c.name === "branch_gc")
     expect(branchGcCalls).toHaveLength(3)
     for (const c of branchGcCalls) expect(c.inputs.full).toBe(true)
@@ -1067,7 +1076,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
-    const { output } = await runWorkflow({ workflow: compiled, agents: fakeAgentHost(vi.fn(async () => "sess_x")), input: { repoRoot: "/repo" } })
+    const { output } = await runWorkflow({ workflow: compiled, agents: fakeAgentHost(vi.fn(async () => "sess_x")), input: { repoRoot: "/repo", probeReviewer: false } })
     const report = (output as { report: string }).report
     expect(report).toContain("- 3 branches (4 refs): reclaim=1 review=2 hold=0")
     expect(report).toContain("- unmerged: 2 branches")
@@ -1104,7 +1113,7 @@ describe("repo-maintenance maintain workflow — missing-verdict retry", () => {
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
-    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo" } })
+    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", probeReviewer: false } })
     return { spawns, sends, output: output as { report: string; gaps: unknown[] } }
   }
 
@@ -1214,7 +1223,7 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
-    await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo" } })
+    await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", probeReviewer: false } })
     return prompts
   }
 
@@ -1457,7 +1466,7 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
       // The run cwd (the app's own directory in the daemon) — NOT where
       // reviewers run.
       cwd: tmpdir(),
-      input: { repoRoot: "/repo", ...opts.input },
+      input: { repoRoot: "/repo", probeReviewer: false, ...opts.input },
     })
     return { spawns, sends, calls, output: output as { report: string; gaps: Array<{ name: string }> } }
   }
@@ -1617,7 +1626,7 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
-    await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", applyMerged: false, ...input } })
+    await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", probeReviewer: false, applyMerged: false, ...input } })
     return spawns
   }
 
@@ -1842,7 +1851,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
-    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", ...input } })
+    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", probeReviewer: false, ...input } })
     return { spawns, sends, wtApplyCalls, callOrder, report: (output as { report: string }).report }
   }
 
@@ -2194,7 +2203,7 @@ describe("repo-maintenance maintain workflow - one-time re-review of uncited sup
       ...createDaemonToolRegistry(handle, dispatchTool),
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
-    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", ...opts.input } })
+    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", probeReviewer: false, ...opts.input } })
     return { spawns, sends, output: output as { report: string; gaps: Array<{ name: string; sha: string }> } }
   }
 
@@ -2235,5 +2244,122 @@ describe("repo-maintenance maintain workflow - one-time re-review of uncited sup
       expect(reviewPromptOf(sends, SHA_UNCITED)).toBeUndefined()
       expect(output.report).not.toContain("re-review")
     }
+  })
+})
+
+// ── fail loud: probe + empty-turn share ──────────────────────────────────
+
+describe("repo-maintenance maintain: fail loud on a dead reviewer", () => {
+  const sha = (i: number) => i.toString(16).padStart(40, "0")
+  const EMPTY = "reviewer produced an empty turn (commonly an auth failure or an invalid model id)"
+
+  function plan(n: number) {
+    const entries = Array.from({ length: n }, (_, k) => ({
+      kind: "local",
+      name: `feat/b${k + 1}`,
+      ref: `refs/heads/feat/b${k + 1}`,
+      sha: sha(k + 1),
+      date: "2026-01-01T00:00:00Z",
+      author: "a",
+      subject: "s",
+      ageDays: 10 + k,
+      class: "review",
+      status: "unmerged",
+      history: "current",
+      ahead: 1,
+      behind: 0,
+      residualFiles: ["a.txt"],
+      residualFileCount: 1,
+    }))
+    return {
+      mode: "plan",
+      plan: { repoRoot: "/repo", repoName: "repo", base: "origin/main", baseSha: "c".repeat(40), scopes: ["local"], minLineCoverage: 95, entries },
+      summary: { byClass: { local: { reclaim: 0, review: n, hold: 0 } }, byStatus: {} },
+    }
+  }
+
+  /** `failWhen(prompt)` true ⇒ that agent turn throws `EMPTY`. */
+  async function run(opts: { n: number; failWhen: (prompt: string) => boolean; input?: Record<string, unknown> }) {
+    const notifications: string[] = []
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") return mcpResult(plan(opts.n))
+      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: null })
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "transmit_message") {
+        notifications.push(String(inputs.text))
+        return mcpResult({ ok: true })
+      }
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const spawns: Array<{ stepId?: string; access?: { profileRef?: string } }> = []
+    const host: AgentSessionHost = {
+      spawn: vi.fn(async (_adapter, o) => {
+        spawns.push({ stepId: (o as { stepId?: string }).stepId, access: (o as { access?: { profileRef?: string } }).access })
+        return `sess_${spawns.length}`
+      }),
+      sendPromptAndWait: vi.fn(async (_id: string, prompt: string) => {
+        if (opts.failWhen(prompt)) throw new Error(EMPTY)
+      }),
+      resolveByLabel: vi.fn(() => undefined),
+    }
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const settled = await runWorkflow({
+      workflow: compiled,
+      agents: host,
+      cwd: tmpdir(),
+      input: { repoRoot: "/repo", notify: { provider: "telegram", address: "1" }, ...opts.input },
+    }).then(
+      r => ({ ok: true as const, output: r.output as { report: string; runHealth: { failed: boolean } } }),
+      (e: Error) => ({ ok: false as const, error: String(e.message) }),
+    )
+    return { settled, notifications, spawns }
+  }
+
+  const isReview = (p: string) => p.startsWith("Review the")
+
+  it("28 of 28 empty reviewer turns end the run failed (not done), and the alert names the role, model and profile", async () => {
+    const { settled, notifications } = await run({ n: 4, failWhen: isReview, input: { probeReviewer: false } })
+    expect(settled.ok).toBe(false)
+    expect((settled as { error: string }).error).toContain("step 'failRun'")
+    // The operator is alerted, and the text is a failure, not a success report.
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toContain("RUN FAILED")
+    expect(notifications[0]).toContain("4 of 4 reviewer turns ended with an empty turn (100%, limit 50%)")
+    expect(notifications[0]).toMatch(/role `review\.small`: 4 of 4 turns empty - model .*, adapter .*, profile /)
+  })
+
+  it("a minority of empty turns stays under maxEmptyTurnShare: the run is done", async () => {
+    let seen = 0
+    const { settled } = await run({ n: 4, failWhen: p => isReview(p) && ++seen === 1, input: { probeReviewer: false } })
+    expect(settled.ok).toBe(true)
+    expect((settled as { output: { report: string } }).output.report).not.toContain("RUN FAILED")
+    // The share is configurable.
+    seen = 0
+    const strict = await run({ n: 4, failWhen: p => isReview(p) && ++seen === 1, input: { probeReviewer: false, maxEmptyTurnShare: 0.2 } })
+    expect(strict.settled.ok).toBe(false)
+  })
+
+  it("a failing pre-flight probe aborts before any candidate is reviewed, naming the role", async () => {
+    const { settled, notifications, spawns } = await run({ n: 3, failWhen: p => p.startsWith("Pre-flight check") })
+    expect(settled.ok).toBe(false)
+    expect((settled as { error: string }).error).toContain("step 'failRun'")
+    expect(spawns.filter(s => s.stepId === "reviewOne")).toHaveLength(0)
+    expect(spawns.filter(s => s.stepId === "reviewProbeTurn")).toHaveLength(1)
+    expect(notifications[0]).toContain("pre-flight probe failed; no candidate was reviewed (aborted early)")
+    expect(notifications[0]).toContain("role `review.small`")
+  })
+
+  it("a healthy probe lets the run review as before", async () => {
+    const { settled, spawns } = await run({ n: 2, failWhen: () => false })
+    expect(settled.ok).toBe(true)
+    expect(spawns.filter(s => s.stepId === "reviewProbeTurn")).toHaveLength(1)
+    expect(spawns.filter(s => s.stepId === "reviewOne")).toHaveLength(2)
   })
 })

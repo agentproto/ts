@@ -156,6 +156,10 @@ forge and, below the line-coverage guard, lets the tip go without a human only
 when every file with uncovered lines is explained by that PR, a moved or
 deleted path, or a consumed changeset. Omit it otherwise; never cite a PR you
 did not check. The tool rejects `landedIn` on any other verdict.
+A `superseded` verdict that names no PR can never pass the line guard, so look
+for the PR before recording it: `git log <base> --grep '(#' -- <residual path>`
+shows the squash commit that landed the path and its PR number (the number is
+in the squash commit subject).
 
 A prompt that says "This is a RE-REVIEW" names a tip whose stored superseded
 verdict cites no PR, so it can never pass the line guard. Find the merged PR

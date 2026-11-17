@@ -90,6 +90,22 @@ inputs:
       re-review that again cites no PR is not repeated. Off when
       `requireOperatorBelowGuard` is true.
     default: true
+  maxEmptyTurnShare:
+    type: number
+    description: >-
+      Mark the run `failed` (not `done`) when more than this share (0..1) of
+      the reviewer turns it started end with an empty turn, commonly an auth
+      failure or an invalid model id. The report then names the model role,
+      model, adapter and profile.
+    default: 0.5
+  probeReviewer:
+    type: boolean
+    description: >-
+      Before the review fan-out, run one cheap probe turn on each review model
+      role the queue needs (same model, adapter and profile as the real turns).
+      A failing probe aborts the run early, as failed, without reviewing
+      anything.
+    default: true
   reviewHeldWorktrees:
     type: boolean
     description: >-
@@ -185,10 +201,47 @@ steps:
       `rereviewUncited` (default true) it then appends the one-time
       re-reviews (see "Re-reviewing uncited superseded verdicts" below).
 
-  - id: reviewCandidates
+  - id: reviewCandidatesPlanned
     kind: transform
     name: Take this run's share of the queue
     description: Entry-based — the first `maxReviews` of reviewQueue.
+
+  - id: reviewProbeTargets
+    kind: transform
+    name: One probe target per review model role the queue needs
+    description: >-
+      Entry-based, see entry.mjs's reviewProbeTargets (off with
+      `probeReviewer: false`).
+
+  - id: reviewProbe
+    kind: map
+    name: Pre-flight probe turn on each review model role
+    description: >-
+      One trivial agent turn per role, on the same model, adapter and billing
+      profile as the real review turns. Tolerant (`onError: collect`);
+      `reviewProbeHealth` reads the outcome.
+    over: $steps.reviewProbeTargets
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: reviewProbeTurn
+        kind: agent
+        agent:
+          ref: "@agentproto/repo-maintenance-reviewer"
+        cwd: $item.cwd
+        prompt: Pre-flight check of the review model. Reply with the single word OK. Do not call any tool.
+
+  - id: reviewProbeHealth
+    kind: transform
+    name: Did the probe turn(s) answer
+    description: Entry-based - see entry.mjs's reviewProbeHealth.
+
+  - id: reviewCandidates
+    kind: transform
+    name: The candidates the review map runs
+    description: >-
+      Entry-based - reviewCandidatesPlanned, or none when the probe failed
+      (the run aborts early instead of failing one turn per candidate).
 
   - id: reviewWorktreePaths
     kind: transform
@@ -340,6 +393,11 @@ steps:
       apply: $input.applyMerged
       wait: true
 
+  - id: runHealth
+    kind: transform
+    name: Probe outcome and share of empty reviewer turns
+    description: Entry-based - see entry.mjs's computeRunHealth.
+
   - id: report
     kind: transform
     name: Build the markdown summary
@@ -406,9 +464,38 @@ steps:
       Entry-based — appends `notify skipped: <reason>` when the send was
       rejected (unconfigured provider, missing alias, unapproved template).
 
+  - id: maybeFail
+    kind: branch
+    name: End the run failed when the reviewer could not run
+    branches:
+      - when: $steps.runHealth.failed
+        next: failRun
+    default: runHealthy
+    join: runSettled
+
+  - id: failRun
+    kind: gate
+    name: Fail the run (after the alert went out)
+    command: sh
+    args:
+      - -c
+      - 'printf "%s\n" "repo-maintenance maintain FAILED: $0" >&2; exit 1'
+      - $steps.runHealth.summary
+
+  - id: runHealthy
+    kind: gate
+    name: Reviewer healthy
+    command: "true"
+
+  - id: runSettled
+    kind: transform
+    name: Run settled
+    description: Entry-based - the final report.
+
 result:
   report: $steps.reportFinal
   gaps: $steps.gaps
+  runHealth: $steps.runHealth
   review: $steps.review
   verdictRecords: $steps.verdictRecords
   applyMerged: $input.applyMerged
@@ -565,3 +652,23 @@ No `bash` allowlist entry and no `AGENTPUSH_API_KEY` are needed. A provider
 that is not configured on the daemon (no bot token, no imported alias for the
 named alias) does not fail the run: the report ends with
 `notify skipped: <reason>`.
+
+## Failing loud
+
+The nightly run of 2026-11-16 failed 28 of 28 reviewer turns ("empty turn,
+commonly an auth failure or an invalid model id") and still ended `done` and
+posted a normal report. Two checks now stop that:
+
+- **Pre-flight probe** (`probeReviewer`, default true): before the fan-out, one
+  trivial turn per model role the queue needs (`review.small`, `review.large`),
+  on the same model, adapter and billing profile as the real turns. A failing
+  probe empties `reviewCandidates` (nothing is reviewed) and fails the run.
+- **Empty-turn share** (`maxEmptyTurnShare`, default 0.5): when MORE than this
+  share of the reviewer turns that started ended with an empty turn, the run
+  fails.
+
+Either way the report starts with `RUN FAILED` and names the model role, model,
+adapter and profile behind the empty turns. The operator notification still goes
+out (it is an alert, and its text says FAILED, never a success report); then
+`maybeFail` ends the run `failed` through a failing gate whose error is the
+one-line summary. The run output carries `runHealth`.

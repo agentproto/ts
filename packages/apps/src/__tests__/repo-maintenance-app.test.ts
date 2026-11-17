@@ -43,6 +43,10 @@ describe("repo-maintenance app", () => {
       "branchGcPlan:tool",
       "checkpointGcPlan:tool",
       "reviewQueue:transform",
+      "reviewCandidatesPlanned:transform",
+      "reviewProbeTargets:transform",
+      "reviewProbe:map",
+      "reviewProbeHealth:transform",
       "reviewCandidates:transform",
       "reviewWorktreePaths:transform",
       "review:map",
@@ -55,6 +59,7 @@ describe("repo-maintenance app", () => {
       "worktreeGcApply:tool",
       "branchGcApply:tool",
       "checkpointGcApply:tool",
+      "runHealth:transform",
       "report:transform",
       "notifyPlan:transform",
       "shouldNotify:transform",
@@ -62,6 +67,10 @@ describe("repo-maintenance app", () => {
       "notify:map",
       "skip-notify:gate",
       "reportFinal:transform",
+      "maybeFail:branch",
+      "failRun:gate",
+      "runHealthy:gate",
+      "runSettled:transform",
     ])
     const reviewStep = workflow!.steps.find(s => s.id === "review") as {
       steps: Array<{ id: string; kind: string; agent?: { ref: string }; sessionRef?: string }>
