@@ -20,6 +20,20 @@ import {
 } from "../sessions.js"
 import { claudeCodeProjectDir } from "../conversation-store.js"
 
+// Record every claudeCodeProjectDir() call so a test can assert that a Codex
+// chat never reaches for the `~/.claude/projects/...` path.
+const { projectDirCalls } = vi.hoisted(() => ({ projectDirCalls: [] as string[] }))
+vi.mock("../conversation-store.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../conversation-store.js")>()
+  return {
+    ...actual,
+    claudeCodeProjectDir: (cwd: string, configDir?: string) => {
+      projectDirCalls.push(cwd)
+      return actual.claudeCodeProjectDir(cwd, configDir)
+    },
+  }
+})
+
 let root: string
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "desktop-conv-"))
@@ -539,6 +553,34 @@ describe("askDesktopConversation", () => {
       expect((await ask(parked, "steer")).note).toMatch(/only a next-turn message/)
       const refused = async () => toolOk({ messageId: "m", delivered: { via: "inbox" }, desktopWake: "unavailable" })
       expect((await ask(refused)).note).toMatch(/answered "unavailable"/)
+    })
+
+    it("does not fabricate a Claude transcript path for a Codex chat that has a cwd but no transcriptPath", async () => {
+      // A Codex thread can carry a cwd and still have no rollout_path. The ask
+      // loop must not fall back to `~/.claude/projects/<slug>/<id>.jsonl` for it.
+      const dir = join(root, "codex", "sessions", "2026", "11", "17")
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, `rollout-2026-11-17T20-04-41-${TID}.jsonl`)
+      await writeFile(
+        file,
+        JSON.stringify({ type: "session_meta", payload: { id: TID, session_id: TID, cwd: "/p" } }) + "\n" + item("user", "avant", 1)
+      )
+      await codexDb([{ id: TID, title: "t", name: "Sans rollout", updated_at: 5, rollout_path: null, cwd: "/p" }])
+      projectDirCalls.length = 0
+      const send = vi.fn(async () => toolOk({ messageId: "m", delivered: { via: "inbox" } }))
+      const r = await askDesktopConversation({
+        ...opts(),
+        pollMs: 10,
+        settleMs: 20,
+        registry: { touchExternal: vi.fn() } as any,
+        send: send as any,
+        app: "codex",
+        id: TID,
+        text: "ping",
+        waitMs: 80,
+      })
+      expect(projectDirCalls).not.toContain("/p")
+      expect(r.reply).toBeNull()
     })
 
     it("the registered MCP tool accepts app codex (schema reachability)", async () => {
