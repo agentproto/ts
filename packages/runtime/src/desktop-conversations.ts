@@ -517,7 +517,7 @@ export async function askDesktopConversation(
   const deadline = Date.now() + waitMs
   const transcriptPath =
     conversation.transcriptPath ??
-    (conversation.cwd
+    (opts.app === "claude" && conversation.cwd
       ? join(claudeCodeProjectDir(conversation.cwd), `${conversation.id}.jsonl`)
       : undefined)
   let lastCount = before.totalMessages
@@ -665,6 +665,8 @@ export interface CodexCreateOptions {
   sandbox?: "read-only" | "workspace-write"
   /** How long to wait for the first turn to end, ms. Default 120000, max 600000. */
   timeoutMs?: number
+  /** Time between SIGTERM and SIGKILL on a timeout, ms. Default 2000. */
+  killGraceMs?: number
   /** Test seam: replaces `spawn`. */
   spawnFn?: typeof spawn
   codexBin?: string
@@ -735,19 +737,35 @@ export async function createCodexConversation(opts: CodexCreateOptions): Promise
     }
   })
   child.stdin?.end(opts.prompt)
+  const killGraceMs = opts.killGraceMs ?? 2_000
   const exit = await new Promise<"exit" | "timeout" | "spawn-error">(resolve => {
+    let timedOut = false
+    let killTimer: ReturnType<typeof setTimeout> | undefined
+    let hardTimer: ReturnType<typeof setTimeout> | undefined
+    const clear = () => {
+      clearTimeout(timer)
+      clearTimeout(killTimer)
+      clearTimeout(hardTimer)
+    }
+    // A timeout stops the child for real: SIGTERM, then SIGKILL after a grace
+    // period, and the call returns only once the child has closed (with a last
+    // resort so a held-open pipe cannot hang the tool).
     const timer = setTimeout(() => {
+      timedOut = true
       child.kill("SIGTERM")
-      resolve("timeout")
+      killTimer = setTimeout(() => {
+        child.kill("SIGKILL")
+        hardTimer = setTimeout(() => resolve("timeout"), 1_000)
+      }, killGraceMs)
     }, timeoutMs)
     child.once("error", err => {
-      clearTimeout(timer)
+      clear()
       error = (err as Error).message
       resolve("spawn-error")
     })
     child.once("close", () => {
-      clearTimeout(timer)
-      resolve("exit")
+      clear()
+      resolve(timedOut ? "timeout" : "exit")
     })
   })
   if (buf.trim()) onLine(buf)
@@ -783,7 +801,9 @@ export function registerDesktopConversationCreateTool(server: McpServer): void {
     "desktop_conversation_create",
     "Create a new Codex conversation from agentproto: runs `codex exec` with your first message in `cwd` " +
       "and returns the new thread id (`codex:<id>`) and its first answer. Codex only: Claude Desktop has no " +
-      "supported way to create a chat from outside the app. Runs read-only unless you ask `workspace-write`. " +
+      "supported way to create a chat from outside the app. Runs read-only unless you ask `workspace-write`; " +
+      "`cwd` may be any absolute path and `workspace-write` is not scoped to agentproto workspaces: it can write " +
+      "anywhere the daemon user can. " +
       "The thread is stored as a `codex exec` thread: the Desktop sidebar may not show it, but " +
       "desktop_conversation_list / read / ask can reach it.",
     {
@@ -811,7 +831,11 @@ export function registerDesktopConversationCreateTool(server: McpServer): void {
       try {
         const { app: _app, ...rest } = input
         const result = await createCodexConversation(rest)
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] }
+        // A failed or timed-out creation is an error result, like `ask`'s failures.
+        return {
+          ...(result.status !== "completed" ? { isError: true } : {}),
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        }
       } catch (err) {
         return { isError: true, content: [{ type: "text" as const, text: (err as Error).message }] }
       }

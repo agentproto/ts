@@ -1,14 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { EventEmitter } from "node:events"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createCodexConversation } from "../desktop-conversations.js"
+import { createCodexConversation, registerDesktopConversationCreateTool } from "../desktop-conversations.js"
 
 let root: string
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "desktop-create-"))
 })
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await rm(root, { recursive: true, force: true })
 })
 
@@ -71,5 +76,62 @@ describe("createCodexConversation", () => {
     await expect(createCodexConversation({ cwd: join(root, "nope"), prompt: "x" })).rejects.toThrow(/not a directory/)
     const r = await createCodexConversation({ cwd: root, prompt: "x", codexBin: join(root, "absent") })
     expect(r).toMatchObject({ status: "failed", threadId: null })
+  })
+})
+
+describe("timeout kills the child for real", () => {
+  it("sends SIGTERM, then SIGKILL after the grace period, and returns only once the child closed", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: { end: () => {} },
+      stdout: new EventEmitter(),
+      kill: vi.fn((sig: string) => {
+        // an agent that ignores SIGTERM and dies on SIGKILL
+        if (sig === "SIGKILL") setTimeout(() => child.emit("close", null), 5)
+        return true
+      }),
+    })
+    const t0 = Date.now()
+    const r = await createCodexConversation({
+      cwd: root,
+      prompt: "x",
+      timeoutMs: 1_000,
+      killGraceMs: 50,
+      spawnFn: (() => child) as any,
+    })
+    expect(child.kill.mock.calls.map(c => c[0])).toEqual(["SIGTERM", "SIGKILL"])
+    expect(r.status).toBe("timeout")
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(1_050)
+  })
+})
+
+describe("the registered tool", () => {
+  async function call(events: object[]) {
+    const f = await fakeCodex(events)
+    // the tool spawns plain `codex`: put the fake first on PATH
+    vi.stubEnv("PATH", `${root}:${process.env.PATH}`)
+    void f
+    const server = new McpServer({ name: "t", version: "0" })
+    registerDesktopConversationCreateTool(server)
+    const [c, sv] = InMemoryTransport.createLinkedPair()
+    await server.connect(sv)
+    const client = new Client({ name: "c", version: "0" })
+    await client.connect(c)
+    try {
+      return (await client.callTool({ name: "desktop_conversation_create", arguments: { app: "codex", cwd: root, prompt: "x" } })) as {
+        isError?: boolean
+        content: Array<{ text: string }>
+      }
+    } finally {
+      await client.close()
+      await server.close()
+    }
+  }
+
+  it("flags a failed creation as an error result, like ask does, and a completed one as success", async () => {
+    const failed = await call([{ type: "thread.started", thread_id: TID }, { type: "turn.failed", error: { message: "boom" } }])
+    expect(failed.isError).toBe(true)
+    expect(JSON.parse(failed.content[0]!.text)).toMatchObject({ status: "failed", threadId: TID })
+    const ok = await call([{ type: "thread.started", thread_id: TID }, { type: "turn.completed" }])
+    expect(ok.isError).toBeFalsy()
   })
 })
