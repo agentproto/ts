@@ -1360,6 +1360,7 @@ const branchGcDoneView = (
   ...(result.mode === "apply"
     ? {
         restoreLog: result.restoreLog ?? null,
+        bundle: result.bundle ?? null,
         outcomeCounts: result.outcomes.reduce<Record<string, number>>((acc, o) => {
           acc[o.result] = (acc[o.result] ?? 0) + 1
           return acc

@@ -214,6 +214,8 @@ export interface BranchGcApplySummary {
   byScope: Record<BranchGcKind, BranchGcApplyScopeCounts>
   byResult: Partial<Record<BranchGcOutcomeView["result"], number>>
   restoreLog: string | null
+  /** Verified `git bundle` of the unmerged tips this apply deleted; `null` when there were none (or the bundle failed and the apply was refused). */
+  bundle: string | null
 }
 
 export type BranchGcApplyResult = {
@@ -223,6 +225,8 @@ export type BranchGcApplyResult = {
   outcomes: BranchGcOutcomeView[]
   /** Restore log written before the first delete; `null` when nothing was deleted. */
   restoreLog: string | null
+  /** Bundle of the unmerged tips deleted, verified before the first delete. */
+  bundle?: string | null
   /** Same value as `applySummary.status`, hoisted so a caller can branch on it. */
   status?: BranchGcApplySummary["status"]
   applySummary?: BranchGcApplySummary
@@ -254,7 +258,7 @@ export function summarizeBranchGcApply(result: BranchGcApplyResult): BranchGcApp
       : totals.failed > 0 || aborted > 0
         ? "partial"
         : "ok"
-  return { status, totals, byScope, byResult, restoreLog: result.restoreLog ?? null }
+  return { status, totals, byScope, byResult, restoreLog: result.restoreLog ?? null, bundle: result.bundle ?? null }
 }
 
 /** Attach `status` + `applySummary` to an apply result; a plan passes through. */

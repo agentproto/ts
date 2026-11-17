@@ -249,13 +249,13 @@ async function runBranchGcCommand(args: readonly string[]): Promise<number> {
     else printPlan(plan, summary)
     return 0
   }
-  const { outcomes, restoreLog } = await applyBranchGc(plan, {
+  const { outcomes, restoreLog, bundle } = await applyBranchGc(plan, {
     scopes: scopes as BranchRefKind[],
     forge: await createForgeClient(repoRoot),
     verdicts: new FileBranchVerdictStore(),
   })
-  if (values.json) process.stdout.write(JSON.stringify({ outcomes, restoreLog }, null, 2) + "\n")
-  else printOutcomes(outcomes, restoreLog)
+  if (values.json) process.stdout.write(JSON.stringify({ outcomes, restoreLog, bundle }, null, 2) + "\n")
+  else printOutcomes(outcomes, restoreLog, bundle ?? null)
   return outcomes.some((o) => o.result === "failed") ? 1 : 0
 }
 
@@ -456,7 +456,7 @@ function printPlan(plan: BranchGcPlan, summary: BranchGcSummary): void {
   process.stdout.write("\nDry run — pass --apply --scopes <kinds> to delete reclaim entries.\n")
 }
 
-function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: string | null): void {
+function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: string | null, bundle: string | null = null): void {
   for (const o of outcomes) {
     if (o.result === "held" || o.result === "skipped-review") continue
     let detail: string = o.result
@@ -479,7 +479,7 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
   }
   const deleted = outcomes.filter((o) => o.result === "deleted").length
   const failed = outcomes.filter((o) => o.result === "failed").length
-  process.stdout.write(`\n${deleted} deleted, ${failed} failed.${restoreLog ? ` Restore log: ${restoreLog}` : ""}\n`)
+  process.stdout.write(`\n${deleted} deleted, ${failed} failed.${restoreLog ? ` Restore log: ${restoreLog}` : ""}${bundle ? ` Bundle: ${bundle}` : ""}\n`)
 }
 
 /**
@@ -504,12 +504,12 @@ export function makeBranchGcRunner(): BranchGcRunner {
     const summary = summarizeBranchGcPlan(plan)
     if (!apply) return { mode: "plan", plan, summary }
     if (!scopes?.length) throw new Error("branch_gc: apply requires explicit scopes")
-    const { outcomes, restoreLog } = await applyBranchGc(plan, {
+    const { outcomes, restoreLog, bundle } = await applyBranchGc(plan, {
       scopes,
       forge: await createForgeClient(repoRoot),
       verdicts: new FileBranchVerdictStore(),
     })
-    return { mode: "apply", plan, summary, outcomes, restoreLog }
+    return { mode: "apply", plan, summary, outcomes, restoreLog, bundle }
   }
 }
 

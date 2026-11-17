@@ -96,7 +96,7 @@ missed, and only when the work branch is merged.
 | `--require-operator-below-guard` | `false` | Turn the [verified-pr](#verified-pr-pass), [dep-bump](#dep-bump-pass) and [history-covered](#history-covered-pass) passes off: below the guard only an operator approval reclaims. |
 | `--anchor <sha>` | auto | Old-history twin of a re-rooted base's root. It's auto-detected when base has a single root and some tips share no history with it. |
 | `--apply` | `false` | Execute the plan for `--scopes`. |
-| `--json` | `false` | Emit `{ plan, summary }` (or `{ outcomes, restoreLog }` with `--apply`) as JSON. |
+| `--json` | `false` | Emit `{ plan, summary }` (or `{ outcomes, restoreLog, bundle }` with `--apply`) as JSON. |
 
 Before each delete, `--apply` lists the refs again and re-classifies the entry
 from scratch. A tip that moved, vanished, or now classifies differently is
@@ -104,6 +104,14 @@ aborted instead of deleted. The restore log
 (`~/.agentproto/branch-gc/<repo>/restore-<ts>.json`, with the sha and exact
 re-create command per ref) is written before the first delete. Undo it with
 [`gc restore`](#gc-restore).
+
+When `--include-reviewed` is about to delete unmerged refs (verdict-based
+reclaims), `--apply` also writes `restore-<ts>.bundle` next to the log: one
+`git bundle` of all those tips (refs first, `^<base>` last). It is verified, and
+every tip must be listed in it. The log's `bundle` field and the apply summary
+carry its path; `git fetch <bundle> <ref>:<ref>` restores a tip even after the
+remote dropped the sha (the repo must have base). If the bundle fails, the apply
+is refused and nothing is deleted.
 
 #### Verified-pr pass
 

@@ -2817,6 +2817,12 @@ export interface BranchGcApplyResult {
   outcomes: BranchGcApplyOutcome[]
   /** Restore log for this run, `null` when nothing was deleted. */
   restoreLog: string | null
+  /**
+   * `git bundle` holding every unmerged (`reviewed`) tip this run deleted,
+   * written and verified before the first delete. `null` when the run deleted
+   * no unmerged ref (nothing to keep) or was refused because the bundle failed.
+   */
+  bundle?: string | null
 }
 
 export const BRANCH_GC_STATE_DIR = (): string => resolve(homedir(), ".agentproto", "branch-gc")
@@ -2846,6 +2852,8 @@ export interface BranchGcRestoreLog {
   base: string
   baseSha: string
   createdAt: string
+  /** Verified `git bundle` of the unmerged tips deleted by this run (`git fetch <bundle> <ref>` restores them even once the remote dropped the shas). */
+  bundle?: string
   entries: BranchGcRestoreEntry[]
 }
 
@@ -2879,6 +2887,35 @@ function passedGuardOf(e: BranchGcPlanEntry): Pick<BranchGcRestoreEntry, "guard"
   if (e.depBump) return { guard: "dep-bump", depBump: e.depBump }
   if (e.historyCovered) return { guard: "history-covered", historyCovered: e.historyCovered }
   return {}
+}
+
+/**
+ * Write one `git bundle` of `entries`' tips (refs first, `^<baseSha>` last, so
+ * the bundle only carries what base lacks) and verify it. Never throws.
+ */
+async function bundleTips(
+  repoRoot: string,
+  path: string,
+  entries: readonly BranchGcPlanEntry[],
+  baseSha: string,
+): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+  const oneLine = (r: ExecResult): string => (r.stderr || r.stdout).trim().split("\n")[0] || `exit ${r.exitCode}`
+  try {
+    await mkdir(dirname(path), { recursive: true })
+    const refs = [...new Set(entries.map((e) => e.ref))]
+    const made = await git(repoRoot, ["bundle", "create", path, ...refs, `^${baseSha}`])
+    if (made.exitCode !== 0) return { ok: false, message: oneLine(made) }
+    const verified = await git(repoRoot, ["bundle", "verify", path])
+    if (verified.exitCode !== 0) return { ok: false, message: `verify: ${oneLine(verified)}` }
+    const listed = await git(repoRoot, ["bundle", "list-heads", path])
+    const heads = new Map(listed.stdout.split("\n").filter(Boolean).map((l) => [l.split(" ")[1], l.split(" ")[0]] as const))
+    for (const e of entries) {
+      if (heads.get(e.ref) !== e.sha) return { ok: false, message: `bundle lacks ${e.ref} at ${e.sha.slice(0, 9)}` }
+    }
+    return { ok: true, path }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 let atomicWriteSeq = 0
@@ -2972,15 +3009,30 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
   if (confirmed.length === 0) return { outcomes, restoreLog: null }
 
   const createdAt = new Date().toISOString()
+  const stateRepoDir = join(options.stateDir ?? BRANCH_GC_STATE_DIR(), plan.repoName)
+  const stamp = createdAt.replace(/[:.]/g, "-")
+  // Unmerged tips (`reviewed` verdicts) exist nowhere else once a remote
+  // drops them: keep one verified bundle of them before the first delete.
+  let bundlePath: string | null = null
+  const unmerged = confirmed.filter((e) => e.reclaimReason === "reviewed")
+  if (plan.includeReviewed && unmerged.length > 0) {
+    const made = await bundleTips(repoRoot, join(stateRepoDir, `restore-${stamp}.bundle`), unmerged, snap.env.ctx.baseSha)
+    if (!made.ok) {
+      for (const e of confirmed) outcomes.push({ kind: e.kind, name: e.name, sha: e.sha, result: "failed", message: `refused: backup bundle failed (${made.message}); nothing was deleted` })
+      return { outcomes, restoreLog: null, bundle: null }
+    }
+    bundlePath = made.path
+  }
   const log: BranchGcRestoreLog = {
     schema: "branch-gc-restore/v1",
     repoRoot,
     base: plan.base,
     baseSha: snap.env.ctx.baseSha,
     createdAt,
+    ...(bundlePath ? { bundle: bundlePath } : {}),
     entries: confirmed.map((e) => restoreEntry(repoRoot, e, snap.env.remote)),
   }
-  const logPath = join(options.stateDir ?? BRANCH_GC_STATE_DIR(), plan.repoName, `restore-${createdAt.replace(/[:.]/g, "-")}.json`)
+  const logPath = join(stateRepoDir, `restore-${stamp}.json`)
   await writeJsonAtomic(logPath, log)
 
   const results = new Map<string, { ok: true } | { ok: false; message: string }>()
@@ -3060,7 +3112,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
     }
     else outcomes.push({ ...id, result: "failed", message: r && !r.ok ? r.message : "not attempted" })
   }
-  return { outcomes, restoreLog: logPath }
+  return { outcomes, restoreLog: logPath, bundle: bundlePath }
 }
 
 /** Read a restore log written by `applyBranchGc`. */

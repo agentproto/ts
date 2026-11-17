@@ -2653,3 +2653,88 @@ describe("branch gc: history-covered guard pass", () => {
     expect(e.historyRefusal).toBeUndefined()
   })
 })
+
+// ── backup bundle before deleting unmerged refs ──────────────────────────
+
+describe("branch gc: backup bundle of unmerged tips", () => {
+  async function reviewedTip(repo: string): Promise<string> {
+    await commitFiles(repo, { "src/a.ts": "export const base = 1\n" }, "a")
+    const tip = await branchWith(repo, "feat/lost", {
+      "src/a.ts": "export const base = 1\nexport function lostWork() { return 42 }\nexport const alsoLost = 'value'\n",
+    })
+    await commitFiles(repo, { "src/a.ts": "export const base = 2\n" }, "base edits a.ts")
+    return tip
+  }
+
+  async function approvedStore(repo: string, tip: string): Promise<InMemoryBranchVerdictStore> {
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: {
+        name: "feat/lost",
+        sha: tip,
+        reviewer: "flash reviewer",
+        triage: { verdict: "superseded", confidence: 0.9, reason: "landed" },
+        gate: { agree: true, verdict: "superseded", reason: "base has it", evidence: ["base has src/a.ts"] },
+        operator: { by: "jeremy", note: "checked by hand" },
+      },
+    })
+    return verdicts
+  }
+
+  it("writes a verified bundle of the unmerged tip before deleting it, and records it in the log", async () => {
+    const repo = await makeRepo()
+    const tip = await reviewedTip(repo)
+    const verdicts = await approvedStore(repo, tip)
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    expect(entry(p, "feat/lost")).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+
+    const stateDir = await tmp("branch-gc-state-")
+    const res = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir })
+    expect(res.outcomes).toContainEqual(expect.objectContaining({ name: "feat/lost", result: "deleted" }))
+    expect(res.bundle).toMatch(/restore-.*\.bundle$/)
+    expect(res.bundle?.startsWith(join(stateDir, "fixture"))).toBe(true)
+    const log = await readBranchGcRestoreLog(res.restoreLog as string)
+    expect(log.bundle).toBe(res.bundle)
+
+    // The branch is gone, yet the bundle verifies and still carries its tip.
+    expect(await refExists(repo, "refs/heads/feat/lost")).toBe(false)
+    expect((await execGit(repo, ["bundle", "verify", res.bundle as string])).exitCode).toBe(0)
+    const heads = (await execGit(repo, ["bundle", "list-heads", res.bundle as string])).stdout
+    expect(heads).toContain(`${tip} refs/heads/feat/lost`)
+    // ... and it restores into a clone of base that never had the tip.
+    const fresh = join(await tmp("branch-gc-fresh-"), "clone")
+    await execArgv("git", ["clone", "-q", "--no-local", repo, fresh], repo)
+    expect((await execArgv("git", ["-C", fresh, "cat-file", "-e", tip], fresh)).exitCode).not.toBe(0)
+    await execGit(fresh, ["fetch", "--quiet", res.bundle as string, "refs/heads/feat/lost:refs/heads/restored"])
+    expect(await sha(fresh, "restored")).toBe(tip)
+  })
+
+  it("refuses the apply, deleting nothing, when the bundle cannot be written", async () => {
+    const repo = await makeRepo()
+    const tip = await reviewedTip(repo)
+    const verdicts = await approvedStore(repo, tip)
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+
+    // A regular file where the state dir should be: mkdir for the bundle fails.
+    const blocker = join(await tmp("branch-gc-block-"), "not-a-dir")
+    await writeFile(blocker, "x")
+    const res = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: blocker })
+    expect(res.restoreLog).toBeNull()
+    expect(res.bundle).toBeNull()
+    expect(res.outcomes).toContainEqual(expect.objectContaining({ name: "feat/lost", result: "failed", message: expect.stringContaining("backup bundle failed") }))
+    expect(await refExists(repo, "refs/heads/feat/lost")).toBe(true)
+  })
+
+  it("writes no bundle when only merged refs are deleted", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "feat/ff", { "a.txt": "a\n" })
+    await execGit(repo, ["merge", "-q", "--ff-only", "feat/ff"])
+    const p = await plan(repo, { includeReviewed: true })
+    const res = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-") })
+    expect(res.outcomes).toContainEqual(expect.objectContaining({ name: "feat/ff", result: "deleted" }))
+    expect(res.bundle).toBeNull()
+  })
+})
