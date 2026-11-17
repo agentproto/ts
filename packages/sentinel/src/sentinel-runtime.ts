@@ -46,6 +46,7 @@ import {
   type Envelope,
   type LedgerLine,
   type LedgerOutcome,
+  type Tier,
 } from "@agentproto/delivery"
 
 import type { MessageUrgency, SendMessageResult, SessionMessage } from "./local-types.js"
@@ -78,6 +79,7 @@ import {
 } from "./sentinel-webhook-outbox.js"
 import type { DeliveryReplay } from "./platform.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
+import { isStaleCiEvent, trackHead } from "./sentinel-head-tracker.js"
 import {
   RecentKeys,
   classifySentinelEvent,
@@ -105,6 +107,20 @@ const CLOSED_SUBJECTS_CAP = 500
  *  polling even while `orphaned` (design §2: "the provider-side watch is
  *  never cancelled just because a session died"). */
 const POLLABLE_STATUSES: ReadonlySet<SentinelStatus> = new Set(["active", "orphaned"])
+
+const URGENCY_RANK: Record<MessageUrgency, number> = {
+  fyi: 0,
+  "next-turn": 1,
+  steer: 2,
+  interrupt: 3,
+}
+
+/** `urgency`, lowered to `cap` when above it (a `drop` cap reads as `fyi`:
+ *  capping never drops). */
+function capUrgency(urgency: MessageUrgency, cap: Tier): MessageUrgency {
+  const ceiling: MessageUrgency = cap === "drop" ? "fyi" : cap
+  return URGENCY_RANK[urgency] > URGENCY_RANK[ceiling] ? ceiling : urgency
+}
 
 function agentprotoHome(): string {
   return process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
@@ -790,7 +806,16 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     const level = levelFromDecision(effectiveTriage.decision)
     const tier = applied ? levelToTier(level) : undefined
     // A level-0 tier is the applied drop, never a target urgency.
-    const targetUrgency: MessageUrgency = tier === undefined || tier === "drop" ? target.urgency : tier
+    const classified: MessageUrgency = tier === undefined || tier === "drop" ? target.urgency : tier
+    // A superseded CI event (see sentinel-head-tracker.ts) is about a commit
+    // that is no longer the PR head: it carries `levelHint: 1` and the GitHub
+    // `superseded` classifier ranks it level 1, but with delivery.apply off
+    // (the default) the classification is only observed. Being stale is a
+    // fact, not a learned preference, so its level caps the target urgency
+    // either way: it never wakes anyone.
+    const targetUrgency: MessageUrgency = isStaleCiEvent(envelope)
+      ? capUrgency(classified, levelToTier(envelope.levelHint ?? 1))
+      : classified
     const key = coalesceKeyFor(event)
     return {
       sentinel,
@@ -906,13 +931,6 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       lastEventTs: nowMs(),
     })
     if (updated) await applyLifetime(updated, prepared.event, prepared.provider)
-  }
-
-  const URGENCY_RANK: Record<MessageUrgency, number> = {
-    fyi: 0,
-    "next-turn": 1,
-    steer: 2,
-    interrupt: 3,
   }
 
   function highestUrgency(items: readonly PreparedDelivery[]): MessageUrgency {
@@ -1134,8 +1152,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     let heldForBatch = false
     let delivered = 0
 
-    for (const event of events) {
-      const current = store.get(sentinelId)
+    for (const incoming of events) {
+      let current = store.get(sentinelId)
       if (!current) {
         stoppedEarly = true // removed mid-batch
         break
@@ -1154,12 +1172,22 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         break
       }
 
-      if (store.isSeen(current.id, event.id)) continue
-      if (pendingBatchKeys.has(batchKey(current.id, event.id))) {
+      if (store.isSeen(current.id, incoming.id)) continue
+      if (pendingBatchKeys.has(batchKey(current.id, incoming.id))) {
         // Still waiting on its flush: not delivered yet, so the poll must not ack it.
         heldForBatch = true
         continue
       }
+
+      // Superseded-head marking (webhook, agentpush and poll alike): a CI
+      // event whose sha is a KNOWN superseded sha of its PR is marked and
+      // demoted to fyi, never dropped; an unknown sha is unchanged (fail
+      // open). Runs before the per-clause `types` filter so a sentinel whose
+      // types omit `pull_request.*` still learns heads from the events its
+      // provider delivers anyway.
+      const tracked = trackHead(incoming, current.prHeads)
+      const event = tracked.event
+      if (tracked.heads) current = store.update(current.id, { prHeads: tracked.heads }) ?? current
 
       const closedNow = trackClosure(current, event)
       if (closedNow && !event.terminal) {

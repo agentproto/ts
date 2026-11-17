@@ -157,6 +157,9 @@ function normalizePullRequest(payload: Record<string, unknown>, base: BaseFields
   const url = str(pr, "html_url") ?? ""
   const actor = actorOf(payload, pr)
   const headSha = str(asObject(pr?.head), "sha") ?? ""
+  // `synchronize` carries the previous head as `before`: the superseded-head
+  // tracker needs it to know which sha a push replaced.
+  const before = str(payload, "before")
 
   const summary =
     action === "closed"
@@ -184,6 +187,7 @@ function normalizePullRequest(payload: Record<string, unknown>, base: BaseFields
         url,
         actor,
         head_sha: headSha,
+        ...(before ? { before } : {}),
       },
       summary,
       subjects: subjectsFor(parts.owner, parts.repo, number),

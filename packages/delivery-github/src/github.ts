@@ -147,7 +147,22 @@ function tableClassifier(row: GithubTriageRuleRow): Classifier {
   }
 }
 
+/** A CI event the producer marked as being about a superseded head commit
+ *  (`data.stale === true`, see `@agentproto/sentinel`'s head tracker): its
+ *  verdict no longer describes the PR, so it is information, never a wake.
+ *  Runs before the failure rule so a stale FAILURE is not ranked actionable. */
+export function isSupersededEvent(event: Pick<Envelope, "data">): boolean {
+  return event.data.stale === true
+}
+
+const supersededClassifier: Classifier = {
+  id: "superseded",
+  types: ["github.check_suite.*", "github.workflow_run.*"],
+  classify: env => (isSupersededEvent(env) ? decisionToLevel("fyi") : undefined),
+}
+
 export const GITHUB_CLASSIFIERS: readonly Classifier[] = [
+  supersededClassifier,
   failureClassifier,
   ...GITHUB_TRIAGE_RULE_TABLE.map(tableClassifier),
 ]

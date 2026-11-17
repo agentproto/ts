@@ -28,6 +28,7 @@ import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises
 import { sentinelPlatform } from "./platform.js"
 import type { SentinelHandle, SentinelSpec, SentinelTarget } from "./sentinel-providers/types.js"
 import type { SentinelRouteStamp } from "./sentinel-routes.js"
+import type { PrHeads } from "./sentinel-head-tracker.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -65,6 +66,12 @@ export interface Sentinel {
    *  is parked instead of delivered. Independent of `spec.until`. Absent on
    *  sentinels persisted before this field existed. */
   closedSubjects?: string[]
+  /** Per concrete PR subject (`github:o/r#N`): the last known head sha and
+   *  the shas it superseded, learned from `github.pull_request.*` events. A
+   *  CI event whose head sha is a known superseded sha is marked (see
+   *  `sentinel-head-tracker.ts`); an unknown sha is never marked. Absent on
+   *  sentinels persisted before this field existed. */
+  prHeads?: PrHeads
   /** ISO timestamp after which the wiring sweep cancels and removes the
    *  sentinel. Defaulted for session-target sentinels (see
    *  {@link DEFAULT_SENTINEL_TTL_MS}); webhook targets have no owning session,
@@ -92,7 +99,7 @@ export interface SentinelCreateInput {
 export type SentinelUpdatePatch = Partial<
   Pick<
     Sentinel,
-    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects" | "expiresAt"
+    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects" | "prHeads" | "expiresAt"
   >
 >
 

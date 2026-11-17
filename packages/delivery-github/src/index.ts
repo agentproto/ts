@@ -14,6 +14,7 @@ export {
   githubCoalesceKeyFor,
   githubRepeatKeyFor,
   isFailureEvent,
+  isSupersededEvent,
   verdictOf,
 } from "./github.js"
 export type {

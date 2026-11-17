@@ -88,6 +88,23 @@ To add a provider for another system, see
    dropped from `sentinels-parked.jsonl`, so it is not sent twice. Events
    parked only because their PR/issue had already closed are never replayed.
 
+   **Superseded commits.** After a push, GitHub keeps reporting the CI that
+   ran on the previous head (a `check_suite` or `workflow_run` completing
+   minutes later). From the `pull_request` events it sees, the sentinel keeps
+   each PR's current head and the commits it replaced (a push's `before` sha,
+   and any previously recorded head). A CI event for one of those replaced
+   commits is delivered marked instead of as-is: `data.stale: true`,
+   `data.current_head_sha`, a `[superseded]` prefix on the summary, and `fyi`
+   urgency, so it never wakes the session and never ends the watch. It is not
+   dropped: the agent can still read it. A CI event for a commit the sentinel
+   has never seen (for example the new head, when its CI result beats the push
+   event) is delivered unchanged, so a real failure is never demoted. Heads
+   are learned before the sentinel's `types` filter, so the `webhook`
+   provider tracks them even when `types` omits `pull_request.*`; an
+   `agentpush` sentinel only receives the types it subscribes to, so keep a
+   `github.pull_request.*` type (the default set has `synchronize`) or nothing
+   is marked. `local-gh` only ever reports the current head.
+
 ## Listing, stopping, expiry
 
 ```bash
