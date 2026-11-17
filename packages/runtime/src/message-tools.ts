@@ -210,7 +210,18 @@ function view(m: SessionMessage): Record<string, unknown> {
   }
 }
 
-export function registerMessageTools(server: McpServer, opts: RegisterMessageToolsOptions): void {
+/** What `registerMessageTools` hands back: the exact send path of
+ *  `message_send` (caller resolution, permission decision, anonymous-send
+ *  policy, delivery funnel), for tools that send on the caller's behalf. */
+export interface MessageSendApi {
+  sendAsCaller(
+    tool: string,
+    toId: string,
+    input: { text: string; kind?: MessageKind; urgency?: MessageUrgency },
+  ): Promise<ToolResult>
+}
+
+export function registerMessageTools(server: McpServer, opts: RegisterMessageToolsOptions): MessageSendApi {
   const { registry, callerScope, callerSessionId, allowSiblings, allowInterrupt } = opts
   /** `defaults.messaging.allowSameWorkspace` - ON unless the operator turned
    *  it off. */
@@ -845,4 +856,16 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       return ok({ messages: r.messages.map(view), timedOut: r.timedOut, pendingChildren })
     },
   )
+  return {
+    async sendAsCaller(tool, toId, input) {
+      const self = resolveCaller(tool)
+      if (isResult(self)) {
+        // Same split as `message_send`: a known caller that failed is a
+        // refusal, only an absent identity is what `noCallerIdentity` governs.
+        if (rawCallerId) return self
+        return anonymousSend(tool, toId, input)
+      }
+      return send(tool, self, toId, input)
+    },
+  }
 }

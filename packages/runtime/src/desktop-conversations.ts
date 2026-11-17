@@ -23,7 +23,8 @@ import { join } from "node:path"
 import { z } from "zod"
 import type { ExportedSession } from "./transcript-export.js"
 import type { SessionsRegistry } from "./sessions.js"
-import { createSessionMessage, type MessageUrgency } from "./session-message.js"
+import type { MessageUrgency } from "./session-message.js"
+import type { MessageSendApi } from "./message-tools.js"
 
 export type DesktopApp = "claude" | "codex"
 
@@ -372,13 +373,13 @@ export function registerDesktopConversationReadTool(server: McpServer): void {
   )
 }
 
-export type DesktopAskRegistry = Pick<
-  SessionsRegistry,
-  "touchExternal" | "sendMessage"
->
+export type DesktopAskRegistry = Pick<SessionsRegistry, "touchExternal">
+/** The send path of `message_send`: same permission decision as that tool. */
+export type DesktopAskSend = MessageSendApi["sendAsCaller"]
 
 export interface DesktopAskOptions extends DesktopListOptions {
   registry: DesktopAskRegistry
+  send: DesktopAskSend
   app: DesktopApp
   id: string
   text: string
@@ -433,20 +434,27 @@ export async function askDesktopConversation(
       ? { hostSessionId: conversation.appSessionId }
       : {}),
   })
-  const msg = createSessionMessage({
-    to: conversation.externalId,
-    from: { relation: "human", label: "agentproto desktop_conversation_ask" },
-    text: opts.text,
-    kind: "question",
-    urgency: opts.urgency ?? "next-turn",
-  })
-  const sent = await opts.registry.sendMessage(msg, {
-    source: "desktop_conversation_ask",
-    origin: "desktop_conversation_ask",
-  })
+  const toolResult = await opts.send(
+    "desktop_conversation_ask",
+    conversation.externalId,
+    {
+      text: opts.text,
+      kind: "question",
+      urgency: opts.urgency ?? "next-turn",
+    }
+  )
+  const sent = JSON.parse(toolResult.content[0]!.text) as {
+    ok: boolean
+    message?: string
+    messageId?: string
+    delivered?: unknown
+  }
+  // A refusal (permissions, no caller identity, ...) is the answer: surfaced as is, nothing is sent.
+  if (toolResult.isError || !sent.ok)
+    throw new Error(sent.message ?? "desktop_conversation_ask: send refused")
   const base: DesktopAskResult = {
     conversation,
-    messageId: msg.id,
+    messageId: sent.messageId ?? "",
     delivered: sent.delivered,
     reply: null,
   }
@@ -489,7 +497,7 @@ export async function askDesktopConversation(
 
 export function registerDesktopConversationAskTool(
   server: McpServer,
-  ops: { registry: DesktopAskRegistry }
+  ops: { registry: DesktopAskRegistry; send: DesktopAskSend }
 ): void {
   server.tool(
     "desktop_conversation_ask",
@@ -521,6 +529,7 @@ export function registerDesktopConversationAskTool(
         const result = await askDesktopConversation({
           ...input,
           registry: ops.registry,
+          send: ops.send,
         })
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],

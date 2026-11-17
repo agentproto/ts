@@ -8,6 +8,9 @@ import {
   listDesktopConversations,
   readDesktopConversation,
 } from "../desktop-conversations.js"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { registerMessageTools } from "../message-tools.js"
+import { createSessionsRegistry } from "../sessions.js"
 import { claudeCodeProjectDir } from "../conversation-store.js"
 
 let root: string
@@ -214,6 +217,12 @@ describe("readDesktopConversation", () => {
   })
 })
 
+const toolOk = (body: Record<string, unknown>) => ({
+  content: [
+    { type: "text" as const, text: JSON.stringify({ ok: true, ...body }) },
+  ],
+})
+
 describe("askDesktopConversation", () => {
   const cwd = () => join(root, "proj")
   const jl = (role: string, text: string, i: number) =>
@@ -245,7 +254,7 @@ describe("askDesktopConversation", () => {
   it("registers the chat, sends to its cc address and returns the answer the chat wrote", async () => {
     const file = await setup()
     const touchExternal = vi.fn()
-    const sendMessage = vi.fn(async (msg: any) => {
+    const sendMessage = vi.fn(async (_tool: string, to: string, msg: any) => {
       // the live chat answers after the wake
       setTimeout(
         () =>
@@ -255,17 +264,13 @@ describe("askDesktopConversation", () => {
           ),
         20
       )
-      return {
-        messageId: msg.id,
-        delivered: { via: "socket" },
-        queued: false,
-        urgencyApplied: msg.urgency,
-      }
+      return toolOk({ messageId: "msg_1", to, delivered: { via: "socket" } })
     })
     const r = await askDesktopConversation({
       ...opts(),
       ...fast,
-      registry: { touchExternal, sendMessage } as any,
+      registry: { touchExternal } as any,
+      send: sendMessage as any,
       app: "claude",
       id: "cli-a",
       text: "ping",
@@ -278,8 +283,11 @@ describe("askDesktopConversation", () => {
         hostSessionId: "local_a",
       })
     )
-    expect(sendMessage.mock.calls[0]![0]).toMatchObject({
-      to: "cc:cli-a",
+    expect(sendMessage.mock.calls[0]!.slice(0, 2)).toEqual([
+      "desktop_conversation_ask",
+      "cc:cli-a",
+    ])
+    expect(sendMessage.mock.calls[0]![2]).toMatchObject({
       text: "ping",
       kind: "question",
       urgency: "next-turn",
@@ -290,16 +298,14 @@ describe("askDesktopConversation", () => {
 
   it("says so when the message is only parked in the inbox", async () => {
     await setup()
-    const sendMessage = vi.fn(async (msg: any) => ({
-      messageId: msg.id,
-      delivered: { via: "inbox" },
-      queued: false,
-      urgencyApplied: msg.urgency,
-    }))
+    const sendMessage = vi.fn(async () =>
+      toolOk({ messageId: "msg_2", delivered: { via: "inbox" } })
+    )
     const r = await askDesktopConversation({
       ...opts(),
       ...fast,
-      registry: { touchExternal: vi.fn(), sendMessage } as any,
+      registry: { touchExternal: vi.fn() } as any,
+      send: sendMessage as any,
       app: "claude",
       id: "cli-a",
       text: "ping",
@@ -311,16 +317,14 @@ describe("askDesktopConversation", () => {
 
   it("waitMs 0 only sends, and codex is refused for now", async () => {
     await setup()
-    const sendMessage = vi.fn(async (msg: any) => ({
-      messageId: msg.id,
-      delivered: { via: "inbox" },
-      queued: false,
-      urgencyApplied: msg.urgency,
-    }))
-    const registry = { touchExternal: vi.fn(), sendMessage } as any
+    const sendMessage = vi.fn(async () =>
+      toolOk({ messageId: "msg_2", delivered: { via: "inbox" } })
+    )
+    const registry = { touchExternal: vi.fn() } as any
     const r = await askDesktopConversation({
       ...opts(),
       registry,
+      send: sendMessage as any,
       app: "claude",
       id: "cli-a",
       text: "x",
@@ -331,6 +335,7 @@ describe("askDesktopConversation", () => {
       askDesktopConversation({
         ...opts(),
         registry,
+        send: sendMessage as any,
         app: "codex",
         id: "t",
         text: "x",
@@ -340,10 +345,36 @@ describe("askDesktopConversation", () => {
       askDesktopConversation({
         ...opts(),
         registry,
+        send: sendMessage as any,
         app: "claude",
         id: "nope",
         text: "x",
       })
     ).rejects.toThrow(/no claude Desktop conversation/)
+  })
+
+  it("goes through message_send's own permission decision: a refusal sends nothing and is surfaced", async () => {
+    await setup()
+    const registry = createSessionsRegistry({ persist: false })
+    // No caller identity and the default noCallerIdentity "block": message_send refuses.
+    const { sendAsCaller } = registerMessageTools(
+      new McpServer({ name: "t", version: "0" }),
+      { registry }
+    )
+    await expect(
+      askDesktopConversation({
+        ...opts(),
+        registry,
+        send: sendAsCaller,
+        app: "claude",
+        id: "cli-a",
+        text: "ping",
+        waitMs: 0,
+      })
+    ).rejects.toThrow(
+      /no_caller_identity|cannot identify the calling session|identity/i
+    )
+    expect(registry.get("cc:cli-a")?.kind).toBe("external")
+    expect(registry.listInbox("cc:cli-a") ?? []).toEqual([])
   })
 })
