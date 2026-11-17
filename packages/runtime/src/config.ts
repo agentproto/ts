@@ -223,6 +223,8 @@ export interface DaemonConfig {
   claudeSocketWake?: boolean
   /** Local opt-in for private IPC wake notifications in these Codex Desktop chat UUIDs. */
   codexDesktopWakeThreadIds?: string[]
+  /** Exact local chat UUIDs opted into bounded untrusted input on wake. */
+  codexDesktopWakeDirectThreadIds?: string[]
   /** On-disk retention for REVIEW-LANE sessions (`origin: "review"` /
    *  `review:` label): a terminal review session whose last activity is older
    *  than this many days has its `~/.agentproto/sessions/<id>/` dir DELETED

@@ -2688,6 +2688,8 @@ export async function createGateway(
   const daemonConfig = await loadConfig()
   const rawCodexWakeThreadIds = daemonConfig.daemon?.codexDesktopWakeThreadIds
   const codexWakeThreadIds = Array.isArray(rawCodexWakeThreadIds) ? rawCodexWakeThreadIds : []
+  const rawCodexDirectWakeThreadIds = daemonConfig.daemon?.codexDesktopWakeDirectThreadIds
+  const codexDirectWakeThreadIds = Array.isArray(rawCodexDirectWakeThreadIds) ? rawCodexDirectWakeThreadIds : []
   // Operator-only read-only grants for apps (`apps.readGrants`); validated and
   // logged once at boot. Never sourced from an app manifest.
   const appReadGrants = createAppReadGrantResolver(daemonConfig.apps?.readGrants, { daemonWorkspace: workspace })
@@ -2973,8 +2975,8 @@ export async function createGateway(
       ? { externalSessionLivenessMs }
       : {}),
     ...(daemonConfig.daemon?.claudeSocketWake ? { claudeSocketWake: { enabled: true } } : {}),
-    ...(codexWakeThreadIds.length > 0
-      ? { codexDesktopWake: { threadIds: codexWakeThreadIds } }
+    ...(codexWakeThreadIds.length > 0 || codexDirectWakeThreadIds.length > 0
+      ? { codexDesktopWake: { threadIds: codexWakeThreadIds, directThreadIds: codexDirectWakeThreadIds } }
       : {}),
     onOpenedPr: sentinelAutoLinker.onOpenedPr,
     ...(daemonConfig.sessions?.eventsDir
