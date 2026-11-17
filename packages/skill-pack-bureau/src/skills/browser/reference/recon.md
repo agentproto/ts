@@ -1,50 +1,52 @@
-# Browser — recon: find + drive a site's internal API (the SOP-of-SOP)
+# Browser: recon, find and drive a site's internal API
 
 **Modern apps already have a clean internal JSON API; the UI just calls it.
 Drive THAT, from inside the authenticated page.** The DOM is the slow,
-obfuscated, anti-scraping surface; the API is ground truth. (Exception:
-news/content sites → the content IS the HTML → readability, not API; see
-`news-media`.)
+obfuscated, anti-scraping surface; the API is ground truth. The exception is
+news and content sites, where the content IS the HTML: use readability instead
+(the news recipe covers consent walls and paywalls).
 
 ## The 7 steps
 
-1. **Authenticated transport** — `transport.md` (chain, tabs/focus, fail-fast).
-2. **Find the internal API** — open the app, do the action;
-   `list_network_requests`. Spot its API: `/graphql`, `/api/v1/`,
-   `/youtubei/v1/`, `/i/api/graphql/`, XHR JSON. Note URL + method + params +
-   auth headers.
-3. **Replicate auth from page cookies (the key trick)** — same-origin requests
-   authenticate via cookies + ONE of:
-   - **CSRF echo** — a cookie copied into a header (LinkedIn
-     `csrf-token`=JSESSIONID, IG `x-csrftoken`=csrftoken, X `x-csrf-token`=ct0),
-   - **bearer constant** in the JS (X's public web bearer),
-   - **app-id / API key** in page config (IG `x-ig-app-id`, YouTube
-     `INNERTUBE_API_KEY` in `ytcfg`),
-   - **signed token** computed by the app's JS (YouTube `SAPISIDHASH`, TikTok
-     `X-Bogus`/`msToken`) — replicate in-page or call the app's own loaded
-     signer. The fetch runs **in the page (same origin)** → cookies ride; you
-     add only the header(s).
-4. **Fetch primitive** —
-   `evaluate_script(async () => { … fetch(url,{headers}) … return await r.json() })`.
-   Wrap as `appFetch(endpoint, vars)`.
-5. **Typed query library** — one fn per endpoint; **capture the live id/hash
-   each session (they DRIFT)**. Parse JSON → a small entity model
-   (Person/Post/Edge or the app's nouns).
-6. **Playbooks (compose)** — dossier (aggregate an entity), graph
-   (who-engages-whom), discover→dossier→act (search→score→research→gated
-   outreach). Same shapes across apps.
-7. **Writes: gated + minimal-DOM** — see `writes.md`.
+1. **Open the right account.** Use the browser skill: `browser_list_instances`,
+   `browser_list_accounts`, then open your own tab on the chosen account.
+2. **Find the internal API.** Do the action in the UI and read
+   `browser_list_requests`. Spot its API: a `/graphql` or `/api/` endpoint
+   answering JSON. Note URL, method, params and auth headers.
+3. **Replicate auth from the page (the key trick).** Same-origin requests
+   authenticate through the profile's cookies plus one of these:
+   - **CSRF echo**: a cookie value copied into a request header.
+   - **Bearer constant** shipped in the site's JavaScript.
+   - **App id or API key** in the page's config object.
+   - **Signed token** computed by the page's own JavaScript: call the signer
+     the page already loaded instead of reimplementing it.
+
+   The fetch runs in the page, so cookies ride along; you add only the header
+   or two the request needs.
+4. **Fetch primitive.** `browser_evaluate` with an async expression that does
+   `fetch(url, {headers})` and returns `await r.json()`. Wrap it as
+   `appFetch(endpoint, vars)`.
+5. **Typed query library.** One function per endpoint. Capture the live id or
+   hash each session, because they drift. Parse JSON into a small entity model
+   (Person, Post, Edge, or the site's own nouns).
+6. **Playbooks (compose).** Dossier (aggregate an entity), graph
+   (who-engages-whom), discover, dossier, act (search, score, research, gated
+   outreach). The same shapes recur across sites.
+7. **Writes: gated and minimal DOM.** See `writes.md`.
 
 ## Cross-app discipline
 
-- **Cache to workspace** — local KB per app; query cache first, fetch deltas.
-- **ids/hashes/selectors DRIFT** — capture live; never hardcode.
-- **API-first, DOM-last** (news is the inverse). Screenshot only to verify/show.
-- **Auth stays in-page** — don't exfiltrate raw cookies/tokens.
+- **Cache to the workspace**: a local knowledge base per site; query the cache
+  first, fetch deltas.
+- **ids, hashes and selectors DRIFT**: capture live, never hardcode.
+- **API first, DOM last** (news is the inverse). Screenshot only to verify or
+  show.
+- **Auth stays in the page**: never exfiltrate raw cookies or tokens.
+- **`browser_get_request_body` is for recon**, not a bulk data source; an
+  in-page fetch is the reusable read.
 
-## Proven instance
+## Site recipes
 
-LinkedIn/Voyager (the `linkedin` skill): in-page fetch of `/voyager/api/graphql`
-with `csrf-token`=JSESSIONID → 214 KB structured feed; engagement edge (who
-reacted + type + headline + profile) straight from the post snapshot. The
-template every other site skill follows.
+A site recipe packages this pattern for one site: its endpoints, its auth
+header and its write flows. Recipes ship separately from Bureau and are
+installed per site; this reference stays site-neutral.

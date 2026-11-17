@@ -1,10 +1,9 @@
 # @agentproto/skill-pack-bureau
 
-The `bureau-plugin` skill pack — source of truth for the skills that teach
-an agent to drive real authenticated browsers and social platforms through
-the Bureau stack (Camofox stealth + daemon) or the local-browser chain:
-browser automation, LinkedIn, X/Twitter, YouTube, Instagram, TikTok,
-news/media extraction, and marketplace scraping.
+The `bureau-plugin` skill pack: the skills that teach an agent to drive real,
+already-authenticated browsers through Bureau's MCP tools (`browser`, `bureau`),
+plus the legacy local-browser chain (`local-browser`). Site recipes ship
+separately and are not part of this pack.
 
 ## Editing
 
