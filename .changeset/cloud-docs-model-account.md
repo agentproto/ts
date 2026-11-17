@@ -1,5 +1,6 @@
 ---
 "@agentproto/adapter-claude-code-cloud": patch
+"@agentproto/runtime": patch
 "@agentproto/skill-pack-agentproto": patch
 ---
 
