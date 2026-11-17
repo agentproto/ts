@@ -5742,7 +5742,13 @@ async function spawnAgentSessionOnce(
         roleRegistry,
         delegationReach,
       ),
-      ...(await composeContextFiles(role)),
+      // Skipped for device sandbox spawns (host-side read, same as AGENTS.md /
+      // RULES.md) and when `composeRoleContext` fell back to the executor
+      // disposition (the role's files belong with its disposition).
+      ...(isDeviceSandboxSpawn ||
+      (role.toolPolicy.delegation === "allow" && delegationReach && !delegationReach.reachable)
+        ? []
+        : await composeContextFiles(role)),
       ...agentsMdParts,
       parentContextLine,
       // No-channel fallback for `appendSystemPrompt` (decision above): the

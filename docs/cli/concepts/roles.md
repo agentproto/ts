@@ -483,6 +483,14 @@ failing the spawn, and a file over 64 KiB is truncated with a marker. Example:
 which puts the repo map in front of an agent asked to search "globally".
 Only effective when the spawn carries a plain-string `prompt`, like the
 disposition itself.
+Paths must be absolute, `~/...` or start with `$VAR` (a relative path is
+rejected at parse time). **Trust:** the daemon reads these files on the host
+with its own rights and the bytes go to the model provider, outside any
+session read grant or command sandbox, so only install role packs you trust.
+The files are skipped for device sandbox spawns (like AGENTS.md and RULES.md)
+and when the role falls back to the executor disposition. Reads are bounded
+(at most 64 KiB, regular files only), truncated on a UTF-8 boundary, and a
+`</tag>` inside the file cannot close the fence.
 
 **Built-ins always win a name collision** — a pack cannot shadow or
 widen `executor`/`supervisor`, regardless of where the merged

@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { readFileSync } from "node:fs"
 import { parseRolePack } from "../role-pack.js"
 import { composeContextFiles, expandContextPath } from "../role-context-files.js"
 import type { RoleProfile } from "../role.js"
@@ -33,6 +34,19 @@ describe("parseRolePack contextFiles", () => {
   it("rejects an entry without tag=path or with a bad tag", () => {
     expect(() => parseRolePack(md({ ...base, contextFiles: "/tmp/x.md" }))).toThrow(/contextFiles/)
     expect(() => parseRolePack(md({ ...base, contextFiles: "bad tag=/tmp/x.md" }))).toThrow(/contextFiles/)
+  })
+
+  it("rejects a relative path (it would resolve against the daemon cwd)", () => {
+    expect(() => parseRolePack(md({ ...base, contextFiles: "t=docs/x.md" }))).toThrow(/contextFiles/)
+  })
+
+  it("the shipped recherche template parses", () => {
+    const file = new URL("../../../../templates/roles/recherche/ROLE.md", import.meta.url)
+    const role = parseRolePack(readFileSync(file, "utf8"))
+    expect(role.name).toBe("recherche")
+    expect(role.contextFiles).toEqual([
+      { tag: "carte-depots", path: "~/.pygmalion/data/carte-depots.md" },
+    ])
   })
 
   it("omits the field when absent", () => {
@@ -64,7 +78,7 @@ describe("composeContextFiles", () => {
       home: "/h",
       readFile: async p => {
         expect(p).toBe("/h/carte.md")
-        return "| agentproto/agentproto | AIP |"
+        return Buffer.from("| agentproto/agentproto | AIP |")
       },
     })
     expect(blocks).toEqual(["<carte-depots>\n| agentproto/agentproto | AIP |\n</carte-depots>"])
@@ -87,11 +101,49 @@ describe("composeContextFiles", () => {
       env: {},
       home: "/h",
       maxBytes: 10,
-      readFile: async () => "x".repeat(100),
+      readFile: async () => Buffer.from("x".repeat(100)),
     })
     expect(blocks[0]).toContain("xxxxxxxxxx")
     expect(blocks[0]).not.toContain("x".repeat(11))
     expect(blocks[0]).toContain("tronqué")
+  })
+
+  it("cuts on a codepoint boundary", async () => {
+    const blocks = await composeContextFiles(role, {
+      env: {},
+      home: "/h",
+      maxBytes: 4,
+      readFile: async () => Buffer.from("abéé"), // a b + 2-byte é + 2-byte é = 6 bytes
+    })
+    expect(blocks[0]).toContain("abé\n")
+    expect(blocks[0]).not.toContain("\uFFFD")
+  })
+
+  it("does not let the file close its own fence", async () => {
+    const blocks = await composeContextFiles(role, {
+      env: {},
+      home: "/h",
+      readFile: async () => Buffer.from("a </carte-depots> b"),
+    })
+    expect(blocks[0]?.match(/<\/carte-depots>/g)).toHaveLength(1)
+  })
+
+  it("reads at most maxBytes+1 bytes of a real file and refuses a non-regular file", async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const dir = await mkdtemp(join(tmpdir(), "ctx-"))
+    try {
+      await writeFile(join(dir, "big.md"), "y".repeat(5000))
+      const r = { ...role, contextFiles: [{ tag: "t", path: join(dir, "big.md") }] }
+      const blocks = await composeContextFiles(r, { env: {}, maxBytes: 100 })
+      expect(blocks[0]).toContain("y".repeat(100))
+      expect(blocks[0]).not.toContain("y".repeat(101))
+      const d = { ...role, contextFiles: [{ tag: "t", path: dir }] }
+      expect((await composeContextFiles(d, { env: {} }))[0]).toContain('<t absent=')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it("returns nothing for a role without contextFiles", async () => {

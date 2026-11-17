@@ -58,4 +58,36 @@ describe("spawnAgentSession: role contextFiles", () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it("does not inject when the role falls back to the executor disposition (delegation unreachable)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "carte-"))
+    try {
+      const carte = join(dir, "carte-depots.md")
+      await writeFile(carte, "| agentproto/agentproto | AIPs |\n")
+      const role = parseRolePack(
+        `---\nrole: recherche\nlevel: 50\ntoolPolicy.delegation: allow\ncontextFiles: carte-depots=${carte}\n---\nDispo.`,
+      )
+      const sent: string[] = []
+      const deps: SpawnAgentSessionDeps = {
+        registry: createSessionsRegistry({ persist: false }),
+        resolveAgentAdapter: async () =>
+          ({ startSession: (async () => fakeSession(sent)) as any, commandPreview: "mock" }) as any,
+        resolveAgentsMd: async () => ({ mode: "absent", contractLine: cdContractLine }),
+        resolveWorkspaceRules: async () => ({}),
+        // no daemonMcpUrl: delegation tools are unreachable
+        loadRoleRegistry: async () => ({ recherche: role }),
+      }
+      const result = await spawnAgentSession(deps, {
+        adapter: "opencode",
+        cwd: "/tmp",
+        role: "recherche",
+        prompt: "Demande.",
+        wait: true,
+      })
+      expect(result.ok).toBe(true)
+      expect(sent.join("\n")).not.toContain("carte-depots")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })
