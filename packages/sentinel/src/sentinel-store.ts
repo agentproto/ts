@@ -65,6 +65,12 @@ export interface Sentinel {
    *  is parked instead of delivered. Independent of `spec.until`. Absent on
    *  sentinels persisted before this field existed. */
   closedSubjects?: string[]
+  /** Last known head commit sha per concrete PR subject (`github:o/r#N`),
+   *  learned from `github.pull_request.*` events. A CI event for any other
+   *  sha is marked superseded (see `sentinel-head-tracker.ts`). Absent on
+   *  sentinels persisted before this field existed, and a subject missing
+   *  here means "head unknown": nothing is marked. */
+  headShas?: Record<string, string>
   /** ISO timestamp after which the wiring sweep cancels and removes the
    *  sentinel. Defaulted for session-target sentinels (see
    *  {@link DEFAULT_SENTINEL_TTL_MS}); webhook targets have no owning session,
@@ -92,7 +98,7 @@ export interface SentinelCreateInput {
 export type SentinelUpdatePatch = Partial<
   Pick<
     Sentinel,
-    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects" | "expiresAt"
+    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects" | "headShas" | "expiresAt"
   >
 >
 

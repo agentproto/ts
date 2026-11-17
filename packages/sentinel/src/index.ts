@@ -166,6 +166,15 @@ export type {
 export { GITHUB_DEFAULT_PR_TYPES, normalizeGithubEvent } from "./sentinel-github-normalize.js"
 export type { GithubNormalizeInput, GithubNormalizeResult } from "./sentinel-github-normalize.js"
 
+export {
+  HEAD_SHAS_CAP,
+  SUPERSEDED_SUMMARY_PREFIX,
+  isSupersededEvent,
+  markSuperseded,
+  trackHead,
+} from "./sentinel-head-tracker.js"
+export type { HeadTrackResult } from "./sentinel-head-tracker.js"
+
 export { autoSelectProviderSlug } from "./sentinel-provider-select.js"
 export type { AutoSelectDeps } from "./sentinel-provider-select.js"
 

@@ -8,6 +8,7 @@ import {
   GITHUB_TRIAGE_RULE_TABLE,
   githubCoalesceKeyFor,
   githubRepeatKeyFor,
+  isSupersededEvent,
   verdictOf,
 } from "../github.js"
 
@@ -69,6 +70,30 @@ describe("GitHub classification table", () => {
     expect(
       reg.classify(env("github.issue_comment.created", { data: { actor: "dependabot[bot]" } }), ctx),
     ).toEqual({ level: 1, rule: "github-triage-table:issue-comment-bot" })
+  })
+})
+
+describe("superseded CI events", () => {
+  it("a stale failure is fyi (rule superseded), a stale-free failure still wakes", () => {
+    const reg = createClassifierRegistry(GITHUB_CLASSIFIERS)
+    for (const type of ["github.check_suite.completed", "github.workflow_run.completed", "github.check_run.completed"]) {
+      expect(reg.classify(env(type, { data: { conclusion: "failure", stale: true } }), ctx)).toEqual({
+        level: 1,
+        rule: "superseded",
+      })
+    }
+    expect(reg.classify(env("github.check_suite.completed", { data: { conclusion: "failure", stale: false } }), ctx)).toEqual({
+      level: 2,
+      rule: "failure",
+    })
+    expect(isSupersededEvent(env("x", { data: { stale: true } }))).toBe(true)
+  })
+
+  it("does not claim non-CI events", () => {
+    const reg = createClassifierRegistry(GITHUB_CLASSIFIERS)
+    expect(
+      reg.classify(env("github.pull_request_review.submitted", { data: { state: "changes_requested", stale: true } }), ctx),
+    ).toEqual({ level: 2, rule: "failure" })
   })
 })
 

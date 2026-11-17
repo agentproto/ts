@@ -87,6 +87,19 @@ targets with no real usage yet, then what sentinels don't do.
    dropped from `sentinels-parked.jsonl`, so it is not sent twice. Events
    parked only because their PR/issue had already closed are never replayed.
 
+   **Superseded commits.** After a push, GitHub keeps reporting the CI that
+   ran on the previous head (a `check_suite` or `workflow_run` completing
+   minutes later). The sentinel remembers each PR's current head from the
+   `pull_request` events it sees (opened, synchronize, reopened, ...), and a
+   CI event for any other commit is delivered marked instead of as-is:
+   `data.stale: true`, `data.current_head_sha`, a `[superseded]` prefix on
+   the summary, and `fyi` urgency, so it never wakes the session and never
+   ends the watch. It is not dropped: the agent can still read it. When the
+   head is unknown (the sentinel was created after the last push, or no
+   `pull_request` event has arrived yet), nothing is marked. `local-gh`
+   only ever reports the current head, so this matters for the `webhook` and
+   `agentpush` providers.
+
 ## Listing, stopping, expiry
 
 ```bash
