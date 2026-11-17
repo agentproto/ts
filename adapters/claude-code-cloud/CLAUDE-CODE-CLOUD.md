@@ -17,7 +17,7 @@ relays the vendor's own client + sessions API onto ACP.
 | `session/new`          | Validates `cwd` per AIP-66 §3 BEFORE any vendor side effect: a git checkout, clean working tree, an `origin` remote, and a HEAD contained in some `origin/*` ref. Refuses `mcpServers` (AIP-66 §4). |
 | `session/prompt`       | First prompt → `claude --cloud "<prompt>"` under a PTY (start; answers the first-run folder-trust prompt), later prompts → `claude -p "<text>" --cloud <session id>` (send-only). Then polls `GET /v1/code/sessions/{id}/events` (2s, backing off to 10s) until a NEW `result` event arrives. |
 | `session/cancel`       | UNSUPPORTED — the vendor exposes no interrupt verb; the call throws (AIP-66 §6). The in-flight cloud turn is not aborted and is never reported cancelled.                        |
-| `session/set_config_option` | Empty configurable set (no model menu — the vendor picks the model).                                                                                                       |
+| `session/set_config_option` | Empty configurable set: no live model switch. The model is fixed at spawn instead (see "Model" below).                                                                    |
 
 ## Message mapping
 
@@ -146,8 +146,18 @@ stripped from every vendor CLI child env.
 `bundles`, `browser`, `appServe`, `inference` have no meaning for a
 vendor-owned harness. The host MUST refuse a cloud spawn that sets any of
 them; this adapter's ACP server also refuses `mcpServers` at `session/new`
-as a fail-closed backstop. `model` / `effort` / `mode` are not exposed: the
-CLI's cloud path accepts no model flag, and the vendor picks the model.
+as a fail-closed backstop. `effort` / `mode` are not exposed.
+
+## Model
+
+The CLI's cloud path takes no model flag, but it honours `ANTHROPIC_MODEL`.
+The manifest declares one free-form `model` option applied as
+`ANTHROPIC_MODEL` in every claude child env, so `agent_start({ cloud:
+"anthropic", model: "claude-sonnet-5-5" })` runs the cloud session on that
+model (checked 2026-11-17: the vendor `result` event reported
+`claude-sonnet-5-5`). Without `model`, the vendor default runs. The model is
+fixed for the session: `session/set_config_option` exposes nothing, so there
+is no live switch.
 
 ## Auth / secrets
 
@@ -158,6 +168,20 @@ The credential is the user's claude.ai OAuth login, owned by the claude CLI
 into descriptors, events or transcripts (AIP-66 §8). Every claude child
 process gets `ANTHROPIC_API_KEY` and the Bedrock/Vertex/Foundry/… redirect
 toggles DELETED from its env so the CLI cannot authenticate another way.
+
+**One account: the daemon user's login.** A cloud spawn does not resolve
+`access.profileRef`, account slots or the harness default preset (the spawn
+path skips them for `cloud`). To use another claude.ai account, the daemon
+user's `claude` must be logged in to it.
+
+**A `claude setup-token` credential cannot run cloud sessions.** Setup tokens
+(`sk-ant-oat01-…`, what agentproto `oauth-bearer` profiles and
+`CLAUDE_CODE_OAUTH_TOKEN` usually hold) carry only the `user:inference` scope.
+Checked 2026-11-17: `claude --cloud` with such a token fails with "Unable to
+get organization UUID"; with `CLAUDE_CODE_ORGANIZATION_UUID` pinned it gets
+further and fails with `Cloud session create failed: ... 403`; and the
+sessions API answers `401 oauth_scope_insufficient`. A full
+`claude auth login` is required.
 A CLI authenticated by API key, or not logged in, is refused with a pointer
 to `claude auth login`.
 

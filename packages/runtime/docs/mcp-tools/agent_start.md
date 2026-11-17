@@ -987,6 +987,13 @@ restart or `resumeSessionId` re-attach resumes the VENDOR's own session
 (AIP-66 §5) rather than starting a new one. No credential is ever carried
 through `cloud`, `meta.cloud` or the relay's side file (AIP-66 §8).
 
+`model` applies: the relay sets it as `ANTHROPIC_MODEL` and the cloud runs
+that model (omit it for the vendor default). The ACCOUNT does not follow
+`access`: the spawn skips `access.profileRef`, account slots and the harness
+default preset, and the session runs on the daemon user's claude.ai login. A
+`claude setup-token` credential cannot create cloud sessions (403, scope
+`user:inference` only); it takes a full `claude auth login`.
+
 ## appServe
 
 Serve an agentproto app's UI from INSIDE the sandbox box and return its
