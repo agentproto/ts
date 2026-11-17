@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-code
 
+## 2.8.1
+
+### Patch Changes
+
+- Updated dependencies [b24f77a]
+- Updated dependencies [97f8867]
+  - @agentproto/model-catalog@0.15.3
+
 ## 2.8.0
 
 ### Minor Changes

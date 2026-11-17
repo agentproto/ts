@@ -1,5 +1,71 @@
 # @agentproto/runtime
 
+## 6.4.0
+
+### Minor Changes
+
+- 8f5a1e7: Account health and multi-account slots.
+
+  `@agentproto/runtime`:
+
+  - Persistent per-account circuit breaker in `~/.agentproto/account-health.json` (new `account-health.ts`: `markAccountExhausted`, `accountHealthOf`, `listAccountHealth`, `clearAccountHealth`, `parseExhaustionUntil`, `createAccountHealthStore`). A turn that ends in a usage cap closes the billed profile until the provider's own reset time (`resets in 1d 9h`, `resets 12pm (Europe/Paris)`, retry-after), a quota reader's `resetsAt`, or a 30 min / 2 h / 6 h / 24 h strike backoff; `until` passing reopens it (state `probing`), a clean turn clears it. Anthropic quota readers close an account at 0 percent. The free-tier per-IP cap never closes an account.
+  - An empty wallet is a usage cap: 402, `payment required`, `insufficient balance / credits / funds / quota` and `credit balance is too low` now classify as `usage-limit` instead of `auth` (401, 403 and a rejected key stay `auth`). The real OpenCode Go message `Insufficient balance. Top up at ...` is pinned. A wallet or plan-window message no longer cools a model daemon-wide or an egress address. `turnRetry.on` / `rotateOn` also accept the AIP-46 name `quota-exhausted` as an alias of `usage-limit`.
+  - `accountSlots.<name>` accepts an ordered list of profile ids besides one id. `slot:<name>` resolves to the first account that is enabled, may run the model and is not exhausted; every account spent is the typed `account_slot_exhausted` (`details.retryAfter`). A session that runs dry on an account of such a slot is restarted with context on the next account, same model, before `rotate` and `turnRetry.fallback`.
+  - MCP: `account_health_list`, `account_health_clear`, `account_slots_prefer`; `account_slots_list` shows each account's health on a multi-account slot; `daemon_health` carries `accountHealth`. `agent_start` can fail with `account_slot_exhausted`.
+
+  `@agentproto/cli`: `agentproto accounts health [--clear <profile>]` and `agentproto accounts prefer <slot> <profile> [--move-alive] [--dry-run]`; `accounts slots` prints a multi-account slot with each account's health.
+
+- 0483150: Wake allowlisted local Codex Desktop chats on next-turn inbox messages
+- c38b62d: Session-follow digests no longer present restart catch-up as news.
+
+  After a daemon restart the PR settlement sweep re-asks the forge for every un-settled PR of every live registry session, so PRs merged weeks ago were emitted as `pr-merged` stamped with the sweep time and delivered to followers as fresh events from long-dead sessions.
+
+  - `makePrStateResolver` reads `state,mergedAt`; a merged PR's activity carries `endedAt` (the real merge time) and the `pr-merged` follow event uses it as its timestamp (`PrResolution` is exported; a resolver may still return a bare state).
+  - A `pr-merged` event older than 24 h (`FOLLOW_STALE_EVENT_MS`) is ignored and logged, never delivered as new.
+  - Every digest line now carries the event time: `[il y a 18 j, 29/10 05:27Z]`, and `[fusionnée il y a 18 j, 29/10 05:28Z]` for a pr-merged.
+
+- 02114df: A harness preset can omit `profileRef` and `defaultModel`. No `profileRef` means the harness bills on its own login (`claude-code-cloud`, or `claude-code`/`codex` logged in): a spawn through that default passes no `access`, exactly like an `agent_start` without `access`. No `defaultModel` means the vendor picks its own default (no model sent). An explicit `profileRef` keeps the existing exists/enabled/allowlist checks. `harness_preset_create`, `harness_preset_list`, default resolution at spawn, `agentproto preset resolve`, reviewer preset resolution `user_preset_resolve` and the config UI's display handle the absent fields (creating one from the config UI form is not supported yet).
+- 4561871: Relay a session's Bureau live browser stream over the daemon. `GET /sessions/:id/live.mjpeg` picks the newest open tab Bureau lists as owned by `:id` (like `screencast.jpg`), calls `browser_live_view` as `:id` with `reuse: true`, and pipes the MJPEG verbatim with an `x-live-stream-id` header. `GET|HEAD /sessions/:id/live/:streamId/replay.mp4` relays the kept video of one of the last 5 streams relayed for that session, passing the `range` header through. Both routes use the screencast gate (daemon bearer, or a link token whose `sessionId` / `browserSessionId` claim is `:id`), accept only loopback Bureau URLs and never expose them, answer one uniform `404 no_live_stream` on any miss, never stop the stream, and cap relays at 3 per session and 12 per daemon (`429 live_relay_busy`).
+- 69c8996: Let operator delegate descendants write the operator ws task board
+- 080d865: Add per-chat opt-in for bounded direct Codex Desktop wake messages.
+
+### Patch Changes
+
+- c0260c6: Reach Bureau natively from stdio clients, and stop the daemon browser relays from misleading agents.
+
+  `@agentproto/cli`: `agentproto mcp-bridge --import <alias|importId>` dials the daemon's `/mcp/imported/<id>` instead of `/mcp`, so a stdio client (Codex app, Claude Desktop) gets one imported server (for example `bureau`) under its own tool names. Same auth and caller identity as `/mcp`; refused together with `--surface`. `agentproto install-mcp --import <alias>` writes such an entry (cursor, codex, claude-desktop, windsurf), named after the alias.
+
+  `@agentproto/runtime`: every relayed `browser_*` tool's description now starts by saying it is a deprecated relay and names the Bureau tool it runs; the `deprecated` note on results says how to reach Bureau (a `bureau` MCP server, or `mcp_imported_call` with alias `bureau`). `browser_press_key` refuses `selector` and `count` with an error instead of forwarding them to a Bureau tool that ignores them. Stale comments and README lines about `browser_new_tab` / `browser_upload_file` corrected.
+
+  `@agentproto/apps`: the `agentproto_bureau_sessions` panel description says what it is (a legacy chrome-live browser-session list, not Bureau).
+
+- 36be481: A daemon restart no longer kills external (Claude Code / Desktop) rows. The graceful shutdown sweep now persists a live external row as `exited` with no `endedReason` (the open-inbox shape the crash/boot path already used), so sentinel and follow deliveries reach it, socket wake included, right after the restart instead of bouncing until the session acts on its own. Rows an older daemon already persisted as `killed`/`daemon-restart` are healed on boot; an operator kill or retire still ends the row.
+- 16b1d92: Imported MCP servers mounted at `/mcp/imported/<id>` now show their MCP Apps widgets (tool `_meta.ui` and `ui://` resources) in hosts such as Claude Desktop.
+- 686e88a: Derive Desktop follow identity from per-call chat metadata
+- 686e88a: Derive Desktop follow identity from per-call Codex thread metadata in the MCP bridge, using a request-local connection so concurrent chats cannot share identity, and report `external-inbox` delivery for external followers without claiming a Desktop wake.
+- 448f435: A restarted session keeps its predecessor's display name. `restartAgentSession` copied `label` but not the derived `title` or the `renamedByUser` flag, so the successor re-derived its title from the resume prompt and that title outranked the carried label. New `registry.inheritDisplayName` carries both across.
+- 318b1e2: A restarted or continued session keeps its predecessor's slug instead of
+  drifting to `x-2`, `x-3`, ... (one long-lived session had reached `-32`).
+  Restart (host and box), the PTY restart and `session_continue_fresh` now pass an
+  internal `replaces` to the spawn: the new row takes over the replaced row's slug
+  verbatim (a `session_rename` included) and the replaced row gives it up. The
+  transfer happens whatever the replaced row's status, since a restart mints while
+  its predecessor is still running. `agent_start.succeeds` is unchanged (the
+  predecessor stays live and keeps its slug) and `resolveSessionRef` is untouched.
+  A superseded session is now addressed by its id, no longer by its old slug.
+- 48d49e2: The `/sessions/*` token gate now accepts a same-origin GET/HEAD from a daemon-served app UI page (`Sec-Fetch-Site: same-origin` plus a `Referer` under `/apps/` on the same host). Browsers send no `Origin` on a same-origin GET and loopback has no bearer, so session-chat opened at `http://127.0.0.1:<port>/apps/...` got a 401 on `GET /sessions/:id/attachments/:file` and cold-loaded images rendered broken. Agent-made artifact pages (`/sessions/:id/artifacts/:key/raw`) stay refused.
+- Updated dependencies [c0260c6]
+- Updated dependencies [b24f77a]
+- Updated dependencies [97f8867]
+- Updated dependencies [02114df]
+- Updated dependencies [a786b17]
+  - @agentproto/apps@0.27.2
+  - @agentproto/model-catalog@0.15.3
+  - @agentproto/sentinel@0.7.0
+  - @agentproto/delivery-github@0.3.0
+  - @agentproto/providers-store@0.4.6
+  - @agentproto/inference-endpoint@1.0.4
+
 ## 6.3.0
 
 ### Minor Changes

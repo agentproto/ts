@@ -1,5 +1,12 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.3.6
+
+### Patch Changes
+
+- 44277f5: Docs: a cloud spawn's `model` does apply (through `ANTHROPIC_MODEL`), the account is always the daemon user's claude.ai login (`access`, slots and presets are skipped), and a `claude setup-token` credential cannot create cloud sessions.
+  - @agentproto/adapter-claude-sdk@0.7.36
+
 ## 0.3.5
 
 ### Patch Changes

@@ -1,5 +1,51 @@
 # @agentproto/cli
 
+## 1.36.0
+
+### Minor Changes
+
+- 8f5a1e7: Account health and multi-account slots.
+
+  `@agentproto/runtime`:
+
+  - Persistent per-account circuit breaker in `~/.agentproto/account-health.json` (new `account-health.ts`: `markAccountExhausted`, `accountHealthOf`, `listAccountHealth`, `clearAccountHealth`, `parseExhaustionUntil`, `createAccountHealthStore`). A turn that ends in a usage cap closes the billed profile until the provider's own reset time (`resets in 1d 9h`, `resets 12pm (Europe/Paris)`, retry-after), a quota reader's `resetsAt`, or a 30 min / 2 h / 6 h / 24 h strike backoff; `until` passing reopens it (state `probing`), a clean turn clears it. Anthropic quota readers close an account at 0 percent. The free-tier per-IP cap never closes an account.
+  - An empty wallet is a usage cap: 402, `payment required`, `insufficient balance / credits / funds / quota` and `credit balance is too low` now classify as `usage-limit` instead of `auth` (401, 403 and a rejected key stay `auth`). The real OpenCode Go message `Insufficient balance. Top up at ...` is pinned. A wallet or plan-window message no longer cools a model daemon-wide or an egress address. `turnRetry.on` / `rotateOn` also accept the AIP-46 name `quota-exhausted` as an alias of `usage-limit`.
+  - `accountSlots.<name>` accepts an ordered list of profile ids besides one id. `slot:<name>` resolves to the first account that is enabled, may run the model and is not exhausted; every account spent is the typed `account_slot_exhausted` (`details.retryAfter`). A session that runs dry on an account of such a slot is restarted with context on the next account, same model, before `rotate` and `turnRetry.fallback`.
+  - MCP: `account_health_list`, `account_health_clear`, `account_slots_prefer`; `account_slots_list` shows each account's health on a multi-account slot; `daemon_health` carries `accountHealth`. `agent_start` can fail with `account_slot_exhausted`.
+
+  `@agentproto/cli`: `agentproto accounts health [--clear <profile>]` and `agentproto accounts prefer <slot> <profile> [--move-alive] [--dry-run]`; `accounts slots` prints a multi-account slot with each account's health.
+
+- c0260c6: Reach Bureau natively from stdio clients, and stop the daemon browser relays from misleading agents.
+
+  `@agentproto/cli`: `agentproto mcp-bridge --import <alias|importId>` dials the daemon's `/mcp/imported/<id>` instead of `/mcp`, so a stdio client (Codex app, Claude Desktop) gets one imported server (for example `bureau`) under its own tool names. Same auth and caller identity as `/mcp`; refused together with `--surface`. `agentproto install-mcp --import <alias>` writes such an entry (cursor, codex, claude-desktop, windsurf), named after the alias.
+
+  `@agentproto/runtime`: every relayed `browser_*` tool's description now starts by saying it is a deprecated relay and names the Bureau tool it runs; the `deprecated` note on results says how to reach Bureau (a `bureau` MCP server, or `mcp_imported_call` with alias `bureau`). `browser_press_key` refuses `selector` and `count` with an error instead of forwarding them to a Bureau tool that ignores them. Stale comments and README lines about `browser_new_tab` / `browser_upload_file` corrected.
+
+  `@agentproto/apps`: the `agentproto_bureau_sessions` panel description says what it is (a legacy chrome-live browser-session list, not Bureau).
+
+### Patch Changes
+
+- c38b62d: Session-follow digests no longer present restart catch-up as news.
+
+  After a daemon restart the PR settlement sweep re-asks the forge for every un-settled PR of every live registry session, so PRs merged weeks ago were emitted as `pr-merged` stamped with the sweep time and delivered to followers as fresh events from long-dead sessions.
+
+  - `makePrStateResolver` reads `state,mergedAt`; a merged PR's activity carries `endedAt` (the real merge time) and the `pr-merged` follow event uses it as its timestamp (`PrResolution` is exported; a resolver may still return a bare state).
+  - A `pr-merged` event older than 24 h (`FOLLOW_STALE_EVENT_MS`) is ignored and logged, never delivered as new.
+  - Every digest line now carries the event time: `[il y a 18 j, 29/10 05:27Z]`, and `[fusionnée il y a 18 j, 29/10 05:28Z]` for a pr-merged.
+
+- 02114df: A harness preset can omit `profileRef` and `defaultModel`. No `profileRef` means the harness bills on its own login (`claude-code-cloud`, or `claude-code`/`codex` logged in): a spawn through that default passes no `access`, exactly like an `agent_start` without `access`. No `defaultModel` means the vendor picks its own default (no model sent). An explicit `profileRef` keeps the existing exists/enabled/allowlist checks. `harness_preset_create`, `harness_preset_list`, default resolution at spawn, `agentproto preset resolve`, reviewer preset resolution `user_preset_resolve` and the config UI's display handle the absent fields (creating one from the config UI form is not supported yet).
+- 686e88a: Derive Desktop follow identity from per-call chat metadata
+- 686e88a: Derive Desktop follow identity from per-call Codex thread metadata in the MCP bridge, using a request-local connection so concurrent chats cannot share identity, and report `external-inbox` delivery for external followers without claiming a Desktop wake.
+- Updated dependencies [c0260c6]
+- Updated dependencies [b24f77a]
+- Updated dependencies [97f8867]
+- Updated dependencies [02114df]
+- Updated dependencies [a786b17]
+  - @agentproto/apps@0.27.2
+  - @agentproto/model-catalog@0.15.3
+  - @agentproto/sentinel@0.7.0
+  - @agentproto/inference-endpoint@1.0.4
+
 ## 1.35.0
 
 ### Minor Changes
