@@ -135,7 +135,7 @@ subject.
 | Slug | Transport | Notes |
 |------|-----------|-------|
 | `local-gh` | Poll (~15-60s) | Zero infra - uses the host's authenticated `gh` CLI. Does not watch comments (`github.issue_comment.created`); add `webhook` or `agentpush` for that. |
-| `webhook` (Experimental) | Push | Near-real-time via a GitHub repo hook. Needs a public daemon URL (a named tunnel or `AGENTPROTO_PUBLIC_URL`) and a `gh` token with `admin:repo_hook`. |
+| `webhook` | Push | Near-real-time via a GitHub repo hook; picked automatically when a public URL is known. Needs a public daemon URL (a named tunnel or `AGENTPROTO_PUBLIC_URL`) and a `gh` token with `admin:repo_hook`. |
 | `agentpush` (Experimental) | Push or poll | Hosted durable subscription; events queue server-side even while the daemon is down. Needs an agentpush workspace API key. Not selectable from this CLI's `--provider` flag directly - set up via `setup_sentinel_provider` and it is then picked automatically when ready. |
 | `session` | Poll (~15-60s, in-process) | Zero infra, no credentials - watches another AGENTPROTO SESSION's own lifecycle (not GitHub). Only understands a `session:<id>` subject, and is always picked for one regardless of the other providers' readiness. Non-durable: a daemon restart loses any buffered-but-undelivered events. |
 

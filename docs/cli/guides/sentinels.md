@@ -1,6 +1,6 @@
 # Wake an agent when CI or a review lands on its PR
 
-Status: Stable for `local-gh` (136 sentinels in real use)
+Status: Stable for `local-gh` and `webhook`
 
 An agent that opens a PR and then just sits there idle wastes a turn: CI
 takes minutes, a human review can take hours. A sentinel is a persisted
@@ -9,9 +9,10 @@ the PR closing - and delivers it straight into the owning session's inbox,
 re-prompting the session so it can act on the result without a human
 polling `gh pr checks` on its behalf.
 
-This guide covers the `local-gh` provider end to end - zero infrastructure,
-the only path with real production usage today - then two experimental
-targets with no real usage yet, then what sentinels don't do.
+This guide covers the `local-gh` provider end to end - zero infrastructure -
+then the `webhook` and `agentpush` providers, then what sentinels don't do.
+To add a provider for another system, see
+[Write a sentinel provider](./sentinel-providers.md).
 
 ## End to end
 
@@ -108,12 +109,10 @@ is torn down and it's flipped to `status: expired` (still visible in
 
 Full reference, including every flag: [`sentinel.md`](../verbs/sentinel.md).
 
-## Experimental: webhook and agentpush targets
+## Push providers: webhook and agentpush
 
-Status: Experimental - no real usage yet (`local-gh` is the only provider
-with production sentinels today).
-
-- **`webhook`** - near-real-time push via a GitHub repo webhook, instead of
+- **`webhook`** (in daily use: when the daemon has a public URL, the
+  automatic `auto:pr#N` sentinels pick it over `local-gh`) - near-real-time push via a GitHub repo webhook, instead of
   polling. Needs a **public URL** for the daemon (a named tunnel via
   [`tunnel.md`](../verbs/tunnel.md), or the `AGENTPROTO_PUBLIC_URL`
   environment variable) and a `gh` token scoped `admin:repo_hook` (or
@@ -127,7 +126,8 @@ with production sentinels today).
   via the `setup_sentinel_provider` MCP tool (not reachable through this
   CLI's `--provider` flag directly - once configured, auto-selection picks
   it over `webhook`/`local-gh` automatically). It's a separate, paid hosted
-  service, not something the daemon runs itself.
+  service, not something the daemon runs itself. Experimental: no real usage
+  yet.
 
 With neither configured, `--provider` omitted always resolves to `local-gh`.
 
@@ -153,9 +153,11 @@ With neither configured, `--provider` omitted always resolves to `local-gh`.
 - **A deliberately closed session is never resumed** to receive an event -
   the notice is rerouted to a live parent (if any) instead, never silently
   dropped, but also never forces a closed session back open.
-- **No cross-repo or non-GitHub coverage today.** Every built-in provider
-  watches GitHub subjects; there's no sentinel for, say, a CI system that
-  isn't GitHub Actions reporting through GitHub's check-run API.
+- **No non-GitHub external source built in.** The built-in providers watch
+  GitHub subjects and this daemon's own sessions (`session:<id>`); there's no
+  built-in sentinel for, say, a CI system that isn't GitHub Actions reporting
+  through GitHub's check-run API. A package can add one: see
+  [Write a sentinel provider](./sentinel-providers.md).
 
 To wake a session on what *other sessions* do (turn ends, exits, crashes, PRs
 opened/merged) rather than on GitHub events, see

@@ -20,6 +20,7 @@
     "harness-upgrades",
     "workflows",
     "sentinels",
+    "sentinel-providers",
     "daemon-memory",
     "agent-comms",
     "signals-and-wake"
