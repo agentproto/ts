@@ -209,6 +209,7 @@ import {
   DEFAULT_ROLE_DEPTH_CUTOFF,
   resolveRole,
   composeRoleContext,
+  isExecutorFallback,
   canSpawn,
   mergeRoleRegistry,
   unknownDefaultAgents,
@@ -257,6 +258,7 @@ import {
   resolveWorkspaceRules as realResolveWorkspaceRules,
   type WorkspaceRulesResolution,
 } from "./workspace-rules.js"
+import { composeContextFiles } from "./role-context-files.js"
 import { deriveSessionTitle } from "./session-title.js"
 import { resolveOperatorBinding } from "./session-operator.js"
 import { isAbsolute, join } from "node:path"
@@ -5741,6 +5743,12 @@ async function spawnAgentSessionOnce(
         roleRegistry,
         delegationReach,
       ),
+      // Skipped for device sandbox spawns (host-side read, same as AGENTS.md /
+      // RULES.md) and when `composeRoleContext` fell back to the executor
+      // disposition (the role's files belong with its disposition).
+      ...(isDeviceSandboxSpawn || isExecutorFallback(role, delegationReach)
+        ? []
+        : await composeContextFiles(role)),
       ...agentsMdParts,
       parentContextLine,
       // No-channel fallback for `appendSystemPrompt` (decision above): the

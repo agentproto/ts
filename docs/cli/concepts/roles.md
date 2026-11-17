@@ -473,6 +473,31 @@ when parsed directly, but registry loading treats a broken pack as
 partial-discovery-safe — it's skipped, not fatal to the whole
 registry.
 
+`contextFiles` (optional, comma-separated `tag=path` entries) names files
+whose content the daemon injects into the spawn prompt, fenced by
+`<tag>...</tag>`, right after the role disposition. `~`, `$VAR` and `${VAR}`
+are expanded in the path (an entry whose variable is unset is skipped). A
+missing or unreadable file is announced as `<tag absent="path"/>` instead of
+failing the spawn, and a file over 64 KiB is truncated with a marker. Example:
+[`templates/roles/recherche/ROLE.md`](../../../templates/roles/recherche/ROLE.md),
+which puts the repo map in front of an agent asked to search "globally".
+Only effective when the spawn carries a plain-string `prompt`, like the
+disposition itself.
+**Spec status:** `contextFiles` is a host extension of the pack-carried role
+surface, which no AIP defines. AIP-46 (§"There is no `role` on this surface")
+treats the spawn-time `role` as a deprecated private alias for a built-in
+AGENT, and AIP-47's `ROLE.md` (`role/v1`, an organizational role) is a different
+document. The spec-aligned home for "context injected at spawn" is an AIP-42
+AGENT field; until the spec gains one, this stays a documented host extension.
+Paths must be absolute, `~/...` or start with `$VAR` (a relative path is
+rejected at parse time). **Trust:** the daemon reads these files on the host
+with its own rights and the bytes go to the model provider, outside any
+session read grant or command sandbox, so only install role packs you trust.
+The files are skipped for device sandbox spawns (like AGENTS.md and RULES.md)
+and when the role falls back to the executor disposition. Reads are bounded
+(at most 64 KiB, regular files only), truncated on a UTF-8 boundary, and a
+`</tag>` inside the file cannot close the fence.
+
 **Built-ins always win a name collision** — a pack cannot shadow or
 widen `executor`/`supervisor`, regardless of where the merged
 registry is consumed (`resolveRole`, `listRoles`, `spawnableRolesFor`
