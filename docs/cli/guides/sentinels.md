@@ -111,8 +111,10 @@ Full reference, including every flag: [`sentinel.md`](../verbs/sentinel.md).
 
 ## Push providers: webhook and agentpush
 
-- **`webhook`** (in daily use: when the daemon has a public URL, the
-  automatic `auto:pr#N` sentinels pick it over `local-gh`) - near-real-time push via a GitHub repo webhook, instead of
+- **`webhook`** (in daily use: when a stable public URL and a hook-capable
+  `gh` token are configured, the automatic `auto:pr#N` sentinels pick it over
+  `local-gh`; a quick tunnel is public but not stable, so it is not picked) -
+  near-real-time push via a GitHub repo webhook, instead of
   polling. Needs a **public URL** for the daemon (a named tunnel via
   [`tunnel.md`](../verbs/tunnel.md), or the `AGENTPROTO_PUBLIC_URL`
   environment variable) and a `gh` token scoped `admin:repo_hook` (or

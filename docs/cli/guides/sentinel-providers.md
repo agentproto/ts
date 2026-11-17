@@ -88,8 +88,10 @@ The daemon discovers providers on disk with the shared provider-kit walker
 (`packages/provider-kit/src/discover.ts`):
 
 1. **Name the package** `@<scope>/agentproto-adapter-<slug>` (first-party:
-   `@agentproto/adapter-<slug>`). The `agentproto-sentinel-<name>` convention
-   in the AIP-60 design doc is NOT what the walker matches.
+   `@agentproto/adapter-<slug>`). The walker also accepts the
+   `agentproto-harness-<slug>` spellings, but those are meant for harnesses.
+   The `agentproto-sentinel-<name>` convention in the AIP-60 design doc is not
+   matched at all.
 2. **Export the provider** as a factory `(creds) => handle` or a ready handle,
    under one of: `<camelSlug>SentinelProvider`, `<camelSlug>`, `default`, or
    `handle` (`registry.ts`, `importThirdPartyProvider`). A module that exports
