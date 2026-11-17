@@ -129,6 +129,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "decision_validate_verdict",
   "delete_tool",
   "desktop_conversation_ask",
+  "desktop_conversation_create",
   "desktop_conversation_list",
   "desktop_conversation_read",
   "device_add",
