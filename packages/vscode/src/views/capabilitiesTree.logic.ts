@@ -99,6 +99,10 @@ function bundleNodes(snapshot: CapabilitiesSnapshot): CapabilityNode[] {
     const lines = [`**${b.label}** (\`${b.id}\`)`]
     if (b.description) lines.push(b.description)
     lines.push(`MCP imports: ${b.mcpImports === "*" ? "*" : b.mcpImports.join(", ") || "none"}`)
+    for (const [importId, f] of Object.entries(b.toolFilters ?? {})) {
+      const rules = [f.allow?.length ? `allow ${f.allow.join(", ")}` : "", f.deny?.length ? `deny ${f.deny.join(", ")}` : ""]
+      lines.push(`tool filter ${importId}: ${rules.filter(Boolean).join("; ")}`)
+    }
     if (b.skills.length > 0) lines.push(`skills: ${b.skills.join(", ")}`)
     if (b.dangling.length > 0) lines.push(`dangling imports (skipped at spawn): ${b.dangling.join(", ")}`)
     return {

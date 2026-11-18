@@ -56,4 +56,24 @@ describe("mountImports", () => {
     expect(r.mounts.map(m => m.name)).toEqual(["beta"])
     expect(r.warnings[0]).toContain('removed MCP import "ghost"')
   })
+
+  it("appends encoded allowTools/denyTools only for imports that have a filter", () => {
+    const r = mountImports(
+      ["a:1", "b"],
+      ctx({ toolFilters: { "a:1": { allow: ["list_*", "get x"], deny: ["list_secrets"] } } }),
+    )
+    const q = new URL(r.mounts[0]!.ref!).searchParams
+    expect(q.get("callerSessionId")).toBe("sess 1")
+    expect(q.get("allowTools")).toBe("list_*,get x")
+    expect(q.get("denyTools")).toBe("list_secrets")
+    expect(r.mounts[0]!.ref).toContain("allowTools=list_*%2Cget%20x")
+    expect(r.mounts[1]!.ref).toBe("http://127.0.0.1:1/mcp/imported/b?callerSessionId=sess%201")
+  })
+
+  it("applies filters keyed by import id under \"*\" and ignores empty lists", () => {
+    const r = mountImports("*", ctx({ toolFilters: { b: { allow: [], deny: ["x"] } } }))
+    expect(r.mounts[0]!.ref!).not.toContain("Tools=")
+    expect(r.mounts[1]!.ref).toContain("&denyTools=x")
+    expect(r.mounts[1]!.ref).not.toContain("allowTools")
+  })
 })

@@ -375,6 +375,7 @@ import {
   BundleValidationError,
   type Bundle,
 } from "./bundles.js"
+import { matchesAnyToolPattern } from "./tool-name-pattern.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
@@ -2953,8 +2954,9 @@ export async function startHttpServer(
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
     const allowTools = parseToolListQuery(req.url ?? "", "allowTools")
     const allowed = (name: string): boolean => {
-      if (denyTools?.has(name)) return false
-      if (allowTools && !allowTools.has(name)) return false
+      // Entries are exact names or `*` patterns (`list_*`); imported mount only.
+      if (denyTools && matchesAnyToolPattern(denyTools, name)) return false
+      if (allowTools && !matchesAnyToolPattern(allowTools, name)) return false
       return true
     }
     const aliases = await proxy.listAliases()
@@ -5599,6 +5601,7 @@ export async function startHttpServer(
               ...(body?.description ? { description: body.description } : {}),
               mcpImports: Array.isArray(body?.mcpImports) ? body.mcpImports : body?.mcpImports === "*" ? "*" : [],
               ...(body?.includeDaemon !== undefined ? { includeDaemon: body.includeDaemon } : {}),
+              ...(body?.toolFilters !== undefined ? { toolFilters: body.toolFilters } : {}),
               skills: Array.isArray(body?.skills) ? body.skills : [],
             })
             res.writeHead(201, { "content-type": "application/json" })

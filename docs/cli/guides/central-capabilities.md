@@ -85,6 +85,23 @@ curl -s $DAEMON/bundles
 are lowercase kebab-case. A bundle can also set `"includeDaemon": true` to
 mount the daemon's own `/mcp` next to the imports.
 
+To expose only part of an import, add `toolFilters`, keyed by import id (each
+key must be in `mcpImports`):
+
+```json
+"toolFilters": {
+  "claude-code:global:demo-echo": { "allow": ["list_*", "get_issue"], "deny": ["list_secrets"] }
+}
+```
+
+At spawn the daemon adds `allowTools` / `denyTools` to that import's mount URL.
+The mount hides filtered tools from `tools/list` and rejects `tools/call` for
+them; `deny` wins over `allow`. Entries are exact tool names or `*` patterns
+(`list_*`, `*_issue`); no other wildcard syntax. A non-empty `allow` is
+required when present (omit it to allow every tool). `bundle_update` replaces
+`toolFilters` wholesale; pass `{}` to clear. Patterns work only on
+`/mcp/imported/<id>`; the plain `/mcp` gateway still takes exact names.
+
 Attach the bundle when you start an agent:
 
 ```bash

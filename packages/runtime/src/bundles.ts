@@ -14,6 +14,15 @@ import { dirname, resolve as resolvePath } from "node:path"
 import { z } from "zod"
 import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 
+/** Per-import tool filter, applied on the `/mcp/imported/<id>` mount as
+ *  `?allowTools=` / `?denyTools=`. Entries are exact tool names or `*`
+ *  patterns (`list_*`). `deny` wins over `allow`. */
+export interface BundleToolFilter {
+  /** Only these tools are visible/callable. Non-empty when present. */
+  allow?: string[]
+  deny?: string[]
+}
+
 export interface Bundle {
   /** Stable machine-local id, e.g. `research`. */
   id: string
@@ -25,6 +34,10 @@ export interface Bundle {
    *  Opt-in only: no default config ships a bundle with `"*"` (dozens of
    *  tools per import would flood every harness palette). */
   mcpImports: string[] | "*"
+  /** Optional per-import tool filters, keyed by import id (each key must be
+   *  in `mcpImports`, or any id when `mcpImports` is `"*"`). Imports without
+   *  an entry expose every tool. */
+  toolFilters?: Record<string, BundleToolFilter>
   /** Also mount the daemon's own scoped `/mcp` — the same entry the
    *  claude-code/hermes self-mount default builds. */
   includeDaemon?: boolean
@@ -36,11 +49,22 @@ const bundleIdSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9-]*$/, "id must be lowercase kebab-case (letters, digits, hyphens)")
 
+const toolPatternSchema = z
+  .string()
+  .min(1)
+  .refine(v => !v.includes(","), "tool names/patterns cannot contain a comma")
+
+const toolFilterSchema = z.object({
+  allow: z.array(toolPatternSchema).min(1, "allow must be non-empty (omit it to allow every tool)").optional(),
+  deny: z.array(toolPatternSchema).optional(),
+})
+
 const bundleSchema = z.object({
   id: bundleIdSchema,
   label: z.string().min(1),
   description: z.string().min(1).optional(),
   mcpImports: z.union([z.array(z.string().min(1)), z.literal("*")]),
+  toolFilters: z.record(z.string().min(1), toolFilterSchema).optional(),
   includeDaemon: z.boolean().optional(),
   skills: z.array(z.string().min(1)),
 }) satisfies z.ZodType<Bundle>
@@ -151,12 +175,27 @@ async function assertImportsKnown(mcpImports: string[] | "*"): Promise<void> {
   }
 }
 
+/** Every `toolFilters` key must be an id in `mcpImports` (any id when it is
+ *  `"*"`, which expands at spawn time) — a filter for an unmounted import
+ *  would silently do nothing. */
+function assertToolFiltersKnown(bundle: Pick<Bundle, "mcpImports" | "toolFilters">): void {
+  if (!bundle.toolFilters || bundle.mcpImports === "*") return
+  const mounted = new Set(bundle.mcpImports)
+  const stray = Object.keys(bundle.toolFilters).filter(id => !mounted.has(id))
+  if (stray.length > 0) {
+    throw new BundleValidationError(
+      `toolFilters key(s) not in mcpImports: ${stray.join(", ")}. Add them to mcpImports or drop the filter.`,
+    )
+  }
+}
+
 /** Create a new bundle. Throws (Zod) on a malformed shape, or
  *  `BundleValidationError` when `mcpImports` names an unknown import id.
  *  Rejects when `id` already exists — use `updateBundle` to modify one. */
 export async function createBundle(bundle: Bundle): Promise<Bundle> {
   const validated = bundleSchema.parse(bundle)
   await assertImportsKnown(validated.mcpImports)
+  assertToolFiltersKnown(validated)
   const file = await loadBundles()
   if (file.bundles.some(b => b.id === validated.id)) {
     throw new BundleValidationError(`bundle "${validated.id}" already exists — use bundle_update.`)
@@ -181,6 +220,7 @@ export async function updateBundle(
   const existing = file.bundles[index]!
   const merged = bundleSchema.parse({ ...existing, ...patch, id })
   await assertImportsKnown(merged.mcpImports)
+  assertToolFiltersKnown(merged)
   file.bundles[index] = merged
   await writeBundles(file)
   return merged

@@ -107,6 +107,50 @@ describe("bundle store", () => {
     ).rejects.toThrow(BundleValidationError)
   })
 
+  it("toolFilters: round-trips, and every key must be in mcpImports", async () => {
+    await importFixture("chrome-devtools")
+    const created = await createBundle({
+      id: "scoped",
+      label: "Scoped",
+      mcpImports: ["chrome-devtools"],
+      toolFilters: { "chrome-devtools": { allow: ["list_*"], deny: ["list_secrets"] } },
+      skills: [],
+    })
+    expect((await getBundle("scoped"))?.toolFilters).toEqual(created.toolFilters)
+
+    await expect(
+      createBundle({
+        id: "stray",
+        label: "Stray",
+        mcpImports: ["chrome-devtools"],
+        toolFilters: { other: { deny: ["x"] } },
+        skills: [],
+      }),
+    ).rejects.toThrow(/not in mcpImports: other/)
+
+    // update re-validates the merged shape: shrinking mcpImports strands the filter
+    await expect(updateBundle("scoped", { mcpImports: [] })).rejects.toThrow(BundleValidationError)
+    // ...and clearing the filters is a wholesale replace
+    const cleared = await updateBundle("scoped", { toolFilters: {} })
+    expect(cleared.toolFilters).toEqual({})
+  })
+
+  it('toolFilters: any key is accepted under mcpImports "*"; empty allow or comma names are rejected', async () => {
+    await createBundle({
+      id: "all",
+      label: "All",
+      mcpImports: "*",
+      toolFilters: { anything: { deny: ["x"] } },
+      skills: [],
+    })
+    await expect(
+      createBundle({ id: "e", label: "E", mcpImports: "*", toolFilters: { a: { allow: [] } }, skills: [] }),
+    ).rejects.toThrow()
+    await expect(
+      createBundle({ id: "c", label: "C", mcpImports: "*", toolFilters: { a: { deny: ["a,b"] } }, skills: [] }),
+    ).rejects.toThrow()
+  })
+
   it("bundle_update rejects an id that doesn't exist", async () => {
     await expect(
       updateBundle("nope", { label: "x" }),

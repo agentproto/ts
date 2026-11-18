@@ -4086,6 +4086,18 @@ export function registerSessionTools(
         .describe(
           "Imported-MCP ids from `mcp_imported_list`, or \"*\" for every import present at spawn time (opt-in; floods the tool palette). Default [].",
         ),
+      toolFilters: z
+        .record(
+          z.string().min(1),
+          z.object({
+            allow: z.array(z.string().min(1)).min(1, "allow must be non-empty (omit it to allow every tool)").optional(),
+            deny: z.array(z.string().min(1)).optional(),
+          }),
+        )
+        .optional()
+        .describe(
+          "Per-import tool filters keyed by import id (must be in mcpImports): {allow?: string[], deny?: string[]}. Entries are exact tool names or `*` patterns (e.g. `list_*`); deny wins; a non-empty allow limits the import to those tools.",
+        ),
       includeDaemon: z
         .boolean()
         .optional()
@@ -4102,6 +4114,7 @@ export function registerSessionTools(
           label: input.label,
           ...(input.description ? { description: input.description } : {}),
           mcpImports: input.mcpImports ?? [],
+          ...(input.toolFilters ? { toolFilters: input.toolFilters } : {}),
           ...(input.includeDaemon !== undefined ? { includeDaemon: input.includeDaemon } : {}),
           skills: input.skills ?? [],
         })
@@ -4133,6 +4146,17 @@ export function registerSessionTools(
       label: z.string().min(1).optional(),
       description: z.string().min(1).optional(),
       mcpImports: z.union([z.array(z.string().min(1)), z.literal("*")]).optional(),
+      toolFilters: z
+        .record(
+          z.string().min(1),
+          z.object({
+            allow: z.array(z.string().min(1)).min(1, "allow must be non-empty (omit it to allow every tool)").optional(),
+            deny: z.array(z.string().min(1)).optional(),
+          }),
+        )
+        .optional().describe(
+        "Replaces the bundle's toolFilters wholesale (pass {} to clear). Same shape as bundle_create.",
+      ),
       includeDaemon: z.boolean().optional(),
       skills: z.array(z.string().min(1)).optional(),
     },

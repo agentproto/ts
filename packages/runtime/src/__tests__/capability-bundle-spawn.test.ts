@@ -551,5 +551,33 @@ describe("spawnAgentSession — native default mounts (P2)", () => {
     // appends the two wildcard imports.
     expect(captured[0]?.mcpServers?.map(e => e.name)).toEqual(["agentproto", "one", "two"])
   })
-})
 
+  it("a bundle's toolFilters become encoded allowTools/denyTools on that import's mount only", async () => {
+    const { deps, captured } = baseDeps({
+      loadBundlesConfig: async () =>
+        bundlesFile([
+          {
+            id: "scoped",
+            label: "Scoped",
+            mcpImports: ["imp1", "imp2"],
+            toolFilters: { imp1: { allow: ["list_*", "get_issue"], deny: ["list_secrets"] } },
+            skills: [],
+          },
+        ]),
+      loadImportedMcpsConfig: async () =>
+        importedMcps([
+          { id: "imp1", alias: "one" },
+          { id: "imp2", alias: "two" },
+        ]),
+    })
+    const result = await spawnAgentSession(deps, { adapter: "opencode", cwd: "/tmp", bundles: ["scoped"] })
+    expect(result.ok).toBe(true)
+    const refs = Object.fromEntries((captured[0]?.mcpServers ?? []).map(e => [e.name, e.ref]))
+    const q = new URL(refs.one as string).searchParams
+    expect(q.get("allowTools")).toBe("list_*,get_issue")
+    expect(q.get("denyTools")).toBe("list_secrets")
+    expect(refs.one).toContain("allowTools=list_*%2Cget_issue")
+    expect(refs.two).not.toContain("allowTools")
+    expect(refs.two).not.toContain("denyTools")
+  })
+})
