@@ -5082,7 +5082,10 @@ export async function createGateway(
     // Claude Desktop / Codex Desktop conversation list (local app stores, read-only).
     registerDesktopConversationListTool(server)
     registerDesktopConversationReadTool(server)
-    registerDesktopConversationCreateTool(server)
+    registerDesktopConversationCreateTool(server, {
+      registry: sessions,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
     // Conversation exporter — WRITE side of the cross-adapter pivot above:
     // copies a daemon session's events.jsonl transcript into a target
     // adapter's native conversation store (today claude-code JSONL) and

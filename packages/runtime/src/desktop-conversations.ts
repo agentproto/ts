@@ -672,6 +672,53 @@ export interface CodexCreateOptions {
   /** Test seam: replaces `spawn`. */
   spawnFn?: typeof spawn
   codexBin?: string
+  /** Models Codex completed turns with on this account, most recent first.
+   *  Only consulted to explain a "model not supported" refusal. Default: read
+   *  from `<codexHome>/state_5.sqlite`. */
+  workingModels?: () => Promise<string[]>
+  codexHome?: string
+}
+
+/** Fallback named in the "not supported" error when no thread history is readable. */
+const FALLBACK_WORKING_MODELS = ["gpt-5.6-terra"]
+
+/** Models whose Codex threads consumed tokens (so a turn really ran), newest first. */
+export async function recentCodexWorkingModels(codexHome: string): Promise<string[]> {
+  const dbPath = join(codexHome, "state_5.sqlite")
+  try {
+    await stat(dbPath)
+    const { DatabaseSync } = (await import(/* @vite-ignore */ NODE_SQLITE)) as typeof import("node:sqlite")
+    const db = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const rows = db
+        .prepare(
+          "SELECT model FROM threads WHERE model IS NOT NULL AND model != '' AND tokens_used > 0 " +
+            "GROUP BY model ORDER BY MAX(COALESCE(updated_at_ms, updated_at * 1000)) DESC LIMIT 6"
+        )
+        .all() as Array<{ model?: unknown }>
+      return rows.map(r => str(r.model)).filter((m): m is string => !!m)
+    } finally {
+      db.close()
+    }
+  } catch {
+    return []
+  }
+}
+
+async function explainModelRefusal(message: string, opts: CodexCreateOptions): Promise<string> {
+  if (!/not supported/i.test(message)) return message
+  const refused = message.match(/['"`]([\w.:-]+)['"`]/)?.[1]
+  const history = await (opts.workingModels ?? (() => recentCodexWorkingModels(opts.codexHome ?? join(homedir(), ".codex"))))().catch(
+    () => [] as string[]
+  )
+  const works = [...new Set([...history, ...FALLBACK_WORKING_MODELS])].filter(m => m !== refused)
+  return (
+    `${message} ` +
+    (opts.model
+      ? `The model "${opts.model}" is refused by this Codex account. `
+      : `No \`model\` was given, so Codex used the model of its own config${refused ? ` ("${refused}")` : ""}, which this account refuses. `) +
+    `Models that worked on this account: ${works.join(", ")}. Pass \`model\` (e.g. "${works[0]}") or fix \`model\` in ~/.codex/config.toml.`
+  )
 }
 
 export interface CodexCreateResult {
@@ -794,12 +841,13 @@ export async function createCodexConversation(opts: CodexCreateOptions): Promise
     }
   }
   const status = finished ?? "failed"
+  const failure = status === "failed" ? await explainModelRefusal(error ?? "codex exec ended without a finished turn", opts) : undefined
   return {
     threadId,
     externalId,
     status,
     reply: status === "completed" ? reply : null,
-    ...(status === "failed" ? { error: error ?? "codex exec ended without a finished turn" } : {}),
+    ...(failure ? { error: failure } : {}),
     note:
       status === "completed"
         ? "created through `codex exec` (source exec): listed and readable through the desktop_conversation_* tools; the Desktop sidebar may not show it"
@@ -807,7 +855,18 @@ export async function createCodexConversation(opts: CodexCreateOptions): Promise
   }
 }
 
-export function registerDesktopConversationCreateTool(server: McpServer): void {
+export function registerDesktopConversationCreateTool(
+  server: McpServer,
+  ops: {
+    /** Where the new thread is registered, with its creator as owner. */
+    registry?: DesktopAskRegistry
+    /** The attested calling session: becomes the thread's owner. Absent: no owner. */
+    callerSessionId?: string
+    workspaceOfCwd?: DesktopAskOptions["workspaceOfCwd"]
+    /** Test seam. */
+    codexBin?: string
+  } = {},
+): void {
   server.tool(
     "desktop_conversation_create",
     "Create a new Codex conversation from agentproto: runs `codex exec` with your first message in `cwd` " +
@@ -841,7 +900,21 @@ export function registerDesktopConversationCreateTool(server: McpServer): void {
       }
       try {
         const { app: _app, ...rest } = input
-        const result = await createCodexConversation(rest)
+        const result = await createCodexConversation({ ...rest, ...(ops.codexBin ? { codexBin: ops.codexBin } : {}) })
+        // The creator owns what it created: record it so a later
+        // desktop_conversation_ask passes the messaging ACL (parent relation),
+        // while every other session is still refused.
+        if (result.externalId && ops.registry && ops.callerSessionId) {
+          const slug = (ops.workspaceOfCwd ?? createWorkspaceOfCwd())(rest.cwd)
+          ops.registry.touchExternal({
+            id: result.externalId,
+            host: "codex",
+            cwd: rest.cwd,
+            hostSessionId: result.threadId ?? undefined,
+            ownerSessionId: ops.callerSessionId,
+            ...(slug ? { workspaceSlug: slug } : {}),
+          })
+        }
         // A failed or timed-out creation is an error result, like `ask`'s failures.
         return {
           ...(result.status !== "completed" ? { isError: true } : {}),

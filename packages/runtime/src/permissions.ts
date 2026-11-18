@@ -430,6 +430,8 @@ export function collectMessageRelations(
       if (sender.id === recipient.id) return []
       const out: MessageRelation[] = []
       if (recipient.parentSessionId === sender.id) out.push("parent")
+      // The creator of a desktop conversation owns it (touchExternal ownerSessionId).
+      else if (recipient.ownerSessionId === sender.id) out.push("parent")
       if (sender.parentSessionId === recipient.id) out.push("child")
       const sibling =
         !!sender.parentSessionId && sender.parentSessionId === recipient.parentSessionId

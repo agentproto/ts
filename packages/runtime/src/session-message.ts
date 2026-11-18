@@ -152,6 +152,9 @@ export interface MessageTreeNode {
   kind?: string
   /** `kind: "external"` only: the claimed host (e.g. `claude-desktop`). */
   externalHost?: string
+  /** `kind: "external"` only: the daemon session that created this host
+   *  conversation. It is the creator's `parent` relation to it. */
+  ownerSessionId?: string
   /** The workspace the session belongs to. Two sessions of the SAME
    *  workspace may message each other even without a tree edge - see
    *  {@link sameWorkspace} and `defaults.messaging.allowSameWorkspace`. */
@@ -174,6 +177,7 @@ export function resolveRelation(
   if (!sender) return "human"
   if (sender.id === recipient.id) return undefined
   if (recipient.parentSessionId === sender.id) return "parent"
+  if (recipient.ownerSessionId === sender.id) return "parent"
   if (sender.parentSessionId === recipient.id) return "child"
   if (sender.parentSessionId && sender.parentSessionId === recipient.parentSessionId) {
     return "sibling"
