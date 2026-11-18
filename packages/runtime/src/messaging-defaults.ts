@@ -67,6 +67,10 @@ export interface ResolvedMessagingDefaults {
    *  capped at steer. "block": an unverified session sender outside the usual
    *  relations is refused (`forbidden_recipient`). */
   anonymousSend: "block" | "label"
+  /** `defaults.messaging.labelAddressing` - "tree" (default): a label given by a
+   *  supervisor to a child is a family name (parent + siblings only); "open":
+   *  any session may address any label; "operator": only operator-stamped labels. */
+  labelAddressing: "open" | "tree" | "operator"
 }
 
 /** Same unset-defaults as before this resolver existed — a missing/malformed
@@ -82,6 +86,7 @@ export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
   agentInterrupt: "deny",
   pendingPromptStaleMinutes: 5,
   anonymousSend: "label",
+  labelAddressing: "tree",
 }
 
 export async function resolveMessagingDefaults(
@@ -103,6 +108,7 @@ export async function resolveMessagingDefaults(
       pendingPromptStaleMinutes:
         d?.messaging?.pendingPromptStaleMinutes ?? DEFAULT_MESSAGING_DEFAULTS.pendingPromptStaleMinutes,
       anonymousSend: d?.messaging?.anonymousSend ?? DEFAULT_MESSAGING_DEFAULTS.anonymousSend,
+      labelAddressing: d?.messaging?.labelAddressing ?? DEFAULT_MESSAGING_DEFAULTS.labelAddressing,
     }
   } catch {
     return DEFAULT_MESSAGING_DEFAULTS

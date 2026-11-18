@@ -537,6 +537,7 @@ async function continueAgentSessionFreshOnce(
 
   const fresh = result.descriptor
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
+  if (prev.labelAddressing) registry.setLabelAddressing(fresh.id, prev.labelAddressing)
   if (prev.operator) registry.setOperator(fresh.id, prev.operator, prev.operatorDigest)
   if (prev.toolDenyGrants) registry.setToolDenyGrants(fresh.id, prev.toolDenyGrants)
   if (prev.exposedToolOptIn) registry.setExposedToolOptIn(fresh.id, prev.exposedToolOptIn)

@@ -416,6 +416,28 @@ describe("session_restart", () => {
     registry.shutdown()
   })
 
+  it("carries labelAddressing forward onto the restarted session's new id", async () => {
+    const { client, registry, close } = await buildHarness()
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.setOperatorLabel(prev.id, "bass")
+    registry.setLabelAddressing(prev.id, "open")
+    registry.kill(prev.id)
+
+    const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+    expect(registry.get(desc.id as string)?.operatorLabel).toBe("bass")
+    expect(registry.get(desc.id as string)?.labelAddressing).toBe("open")
+
+    await close()
+    registry.shutdown()
+  })
+
   it("carries allowPromptFrom forward onto the restarted session's new id", async () => {
     const { client, registry, close } = await buildHarness()
 

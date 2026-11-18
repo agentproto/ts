@@ -293,6 +293,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .object({
         allowSiblings: z.boolean().optional(),
         allowSameWorkspace: z.boolean().optional(),
+        labelAddressing: z.enum(["open", "tree", "operator"]).optional(),
         peerGroups: z.array(z.array(z.string().min(1))).optional(),
         grants: z.array(configMessageGrantSchema).optional(),
         peerBinding: z.enum(["slug", "verified"]).optional(),
@@ -2157,6 +2158,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Allow sibling messaging",
     help: "Let message_send/message_reply reach a sibling session (same parent). Takes effect on the next call.",
     default: false,
+  },
+  {
+    path: "defaults.messaging.labelAddressing",
+    schema: z.enum(["open", "tree", "operator"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Label addressing policy",
+    help: "Who may reach a session with message_send to:\"label:<x>\" (and agent_prompt/interrupt/kill id:\"label:<x>\"). tree (default): a label a supervisor gives a child at agent_start is a family name, resolvable only by its parent and siblings and unique in the family. open: any session can address any label (a clash is ambiguous_label). operator: only labels an operator or an owner stamped (agent_set_operator_label); nothing is stamped from agent_start by a session. Per session: agent_start labelAddressing. Takes effect on the next call.",
+    default: "tree",
   },
   {
     path: "defaults.messaging.allowSameWorkspace",
