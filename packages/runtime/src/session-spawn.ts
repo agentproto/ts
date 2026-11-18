@@ -1634,6 +1634,8 @@ export function mountImports(
     }
     taken.add(name)
     const filter = ctx.toolFilters?.[importId]
+    // An empty `allow: []` can only come from a hand-edited bundles.json (the
+    // schema forbids it); treat it as "no allow filter" rather than "deny all".
     const ref =
       `${ctx.mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
       `?callerSessionId=${encodeURIComponent(ctx.sessionId)}` +

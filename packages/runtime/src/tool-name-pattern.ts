@@ -6,11 +6,13 @@
  * the plain `/mcp` gateway keeps exact-name `Set` semantics.
  */
 
+const MAX_COMPILED = 256
 const compiled = new Map<string, RegExp>()
 
 function toRegExp(pattern: string): RegExp {
   let re = compiled.get(pattern)
   if (!re) {
+    if (compiled.size >= MAX_COMPILED) compiled.clear() // bound the cache; patterns come from query params
     re = new RegExp(
       `^${pattern.split("*").map(part => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`,
     )

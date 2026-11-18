@@ -4090,7 +4090,7 @@ export function registerSessionTools(
         .record(
           z.string().min(1),
           z.object({
-            allow: z.array(z.string().min(1)).optional(),
+            allow: z.array(z.string().min(1)).min(1, "allow must be non-empty (omit it to allow every tool)").optional(),
             deny: z.array(z.string().min(1)).optional(),
           }),
         )
@@ -4150,7 +4150,7 @@ export function registerSessionTools(
         .record(
           z.string().min(1),
           z.object({
-            allow: z.array(z.string().min(1)).optional(),
+            allow: z.array(z.string().min(1)).min(1, "allow must be non-empty (omit it to allow every tool)").optional(),
             deny: z.array(z.string().min(1)).optional(),
           }),
         )
