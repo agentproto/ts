@@ -819,6 +819,12 @@ export interface AcpAgentConfigEntry {
   provider?: string
   /** Shown when `bin` is missing from PATH (how to install the CLI). */
   install_hint?: string
+  /** Declare `capabilities.deferredToolDiscovery`: the CLI can call an MCP tool
+   *  that the daemon hid from `tools/list` after finding it via `tool_search`.
+   *  Only set it after proving that live: it makes the daemon's self-mount
+   *  deferred by default for this harness (a small-context CLI otherwise loads
+   *  every daemon tool schema up front and starts near its context limit). */
+  deferred_tool_discovery?: boolean
 }
 
 /**

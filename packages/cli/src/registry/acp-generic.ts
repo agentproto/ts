@@ -152,6 +152,7 @@ export function acpHandleFromSpec(spec: AcpAgentSpec): AgentCliHandle {
       tool_calls: true,
       file_io: true,
       resumable,
+      ...(spec.deferred_tool_discovery ? { deferredToolDiscovery: true } : {}),
     },
     ...(resumable
       ? {
@@ -236,6 +237,12 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
       allowed: ["mistral-medium-3.5", "devstral-small", "local"],
     },
     install_hint: "uv tool install mistral-vibe",
+    // Proved live 2026-11-18 (Vibe 2.24.1): with `deferredTools:true` a Vibe
+    // session found `daemon_health` through `tool_search`, called it and
+    // answered; context stayed at 16% (31k of 200k) versus 85-88% (170-175k)
+    // with every daemon tool schema loaded eagerly, which made a sub-session
+    // hit the 88% continue-fresh threshold on its first turn.
+    deferred_tool_discovery: true,
   },
   {
     slug: "kimi-cli",

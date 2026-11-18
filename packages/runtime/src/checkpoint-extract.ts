@@ -136,7 +136,7 @@ export function extractGoal(messages: ExportedMessage[]): string | undefined {
   const text = first?.text?.trim()
   if (!text) return undefined
   if (text.startsWith("[continued session")) {
-    const m = /(?:^|\n)## goal\n([\s\S]*?)(?=\n## |\n*$)/.exec(text)
+    const m = /(?:^|\n)## goal(?:[ \t]+\([^\n]*)?[ \t]*\n([\s\S]*?)(?=\n## |\n*$)/.exec(text)
     const carried = m?.[1]?.trim()
     return carried ? clip(carried, GOAL_CHAR_CAP, "head") : undefined
   }
@@ -245,9 +245,15 @@ export function formatOpenTasks(tasks: CheckpointOpenTask[]): string {
 }
 
 /** Last message-style line of the session as a next-step hint. */
-export function formatLastAgentMessage(text: string): string {
-  return `Last agent message (no open tasks recorded):\n${text}`
+export function formatLastAgentMessage(text: string, ledgerKnown = false): string {
+  return ledgerKnown
+    ? `${LAST_MESSAGE_LEDGER_EMPTY}:\n${text}`
+    : `Last agent message (task state unknown, work may be unfinished):\n${text}`
 }
+
+/** Prefix emitted only when the task ledger was consulted and held no open
+ *  task: the one positive signal that a session has nothing left to do. */
+export const LAST_MESSAGE_LEDGER_EMPTY = "Last agent message (no open tasks recorded)"
 
 // ── Handoff turn ──────────────────────────────────────────────────────
 

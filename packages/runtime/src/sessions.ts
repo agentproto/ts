@@ -221,7 +221,7 @@ import {
   renderCheckpointPrompt,
   type ContextCheckpoint,
 } from "./context-checkpoint.js"
-import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import {
   compactOutcome,
   deriveSessionOutcome,
@@ -10657,6 +10657,41 @@ export function createSessionsRegistry(opts?: {
         `[context] continue-fresh failed: ${err instanceof Error ? err.message : String(err)}`,
         "stderr",
       )
+      // A chain of rapid continuations is a loop, not a long task: stop THIS
+      // link (hard stop, no further successor) and tell the parent, instead
+      // of letting every hop replay the handoff.
+      if (err instanceof ContinueFreshSpawnError && err.code === "continuation_cap") {
+        const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed) ?? 100
+        await performContextHardStop(rt, pct, { deferTranscriptClose: opts?.deferTranscriptClose })
+        await notifyContinuationCap(rt, err)
+      }
+    }
+  }
+
+  /** Signal the parent that a continuation chain was cut (typed `blocker`
+   *  message, delivered after its current turn — never an interrupt). */
+  async function notifyContinuationCap(rt: SessionRuntime, err: ContinueFreshSpawnError): Promise<void> {
+    const parentId = rt.desc.parentSessionId
+    if (!parentId || parentId === rt.desc.id || !sessions.has(parentId)) return
+    const name = rt.desc.label ? `${rt.desc.label} (session ${rt.desc.id})` : `session ${rt.desc.id}`
+    try {
+      await registry.sendMessage(
+        createSessionMessage({
+          to: parentId,
+          from: { relation: "system" },
+          kind: "blocker",
+          urgency: "next-turn",
+          text:
+            `[continuation-loop] ${name} was stopped: its context filled again right after each of the last ` +
+            `${(err.details?.rapidChain as number | undefined) ?? "several"} fresh continuations (cap ` +
+            `${(err.details?.cap as number | undefined) ?? "n/a"}). It was NOT continued again, so the original ` +
+            `task is not being replayed. Check its context size (eager MCP tools on a small-context harness?) ` +
+            `before restarting it.`,
+          data: { kind: "continuation-cap", sessionId: rt.desc.id, ...(err.details ?? {}) },
+        }),
+      )
+    } catch {
+      // Best-effort: the parent may have exited; the session row still shows the hard stop.
     }
   }
 

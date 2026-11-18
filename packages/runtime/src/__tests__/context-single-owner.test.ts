@@ -278,4 +278,62 @@ describe("context compaction has one owner", () => {
       expect(outputOf(id).join("\n")).toMatch(/continued fresh to /)
     })
   })
+  // The 2026-11-18 Vibe loop, reproduced: every fresh continuation fills its
+  // window on its first turn (eager MCP tool schemas), so it is continued
+  // again, replaying the handoff each time. The chain must stop, nothing more
+  // may be created, and the parent must be told.
+  describe("S6: a chain of rapid continuations is cut and reported to the parent", () => {
+    it("stops after the cap, hard-stops the last link, creates no further session, messages the parent", async () => {
+      const fresh: Harness[] = []
+      const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+        startSession: async () => {
+          // Each successor is already over the continue-fresh threshold on turn 1.
+          const f = harness({ used: 150_000, size: 200_000 })
+          fresh.push(f)
+          return f
+        },
+        commandPreview: "fake",
+      })
+      makeRegistry({ resolveAgentAdapter })
+      const parentHarness = harness({ used: 1_000, size: 200_000 })
+      const parent = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: tmp,
+        agentSession: parentHarness,
+        adapterSlug: "fake",
+        contextContinuity: { ...CONTEXT_CONTINUITY_DEFAULTS, mode: "manual" },
+      })
+      const childHarness = harness({ used: 150_000, size: 200_000 })
+      const child = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: tmp,
+        agentSession: childHarness,
+        adapterSlug: "fake",
+        label: "vibe-test-fille",
+        parentSessionId: parent.id,
+        contextContinuity: { ...CONTEXT_CONTINUITY_DEFAULTS, mode: "auto" },
+      })
+      await reg.sendPrompt(child.id, "Call agent_start to create a sub-session")
+
+      await vi.waitFor(
+        () => expect(parentHarness.prompts.some(p => p.includes("[continuation-loop]"))).toBe(true),
+        { timeout: 15_000 },
+      )
+      // Link 1 -> 2 -> refused at link 3: two successors, never more.
+      expect(fresh.length).toBeLessThanOrEqual(2)
+      const before = fresh.length
+      await sleep(500)
+      expect(fresh).toHaveLength(before)
+      // The last link is stopped, not left running to loop on.
+      const alive = reg.list().filter(d => d.status === "running" || d.status === "starting")
+      expect(alive.map(d => d.id)).toEqual([parent.id])
+      // Each successor's first prompt is the structured handoff, status first.
+      for (const f of fresh) {
+        const first = f.prompts[0] ?? ""
+        expect(first).toContain("[continued session")
+        expect(first).toContain("## status:")
+        expect(first.indexOf("## status:")).toBeLessThan(first.indexOf("## goal"))
+      }
+    })
+  })
 })

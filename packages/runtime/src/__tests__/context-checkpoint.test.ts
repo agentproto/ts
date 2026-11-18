@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "../context-checkpoint.js"
+import {
+  buildContextCheckpoint,
+  checkpointTaskState,
+  persistCheckpoint,
+  renderCheckpointPrompt,
+} from "../context-checkpoint.js"
+import { extractGoal } from "../checkpoint-extract.js"
 import type { SessionDescriptor } from "../sessions.js"
 
 vi.mock("../transcript-export.js", () => ({
@@ -148,5 +154,72 @@ describe("renderCheckpointPrompt", () => {
     expect(prompt).toContain("## goal")
     expect(prompt).toContain("## Recent turns digest")
     expect(prompt).toContain("hello")
+  })
+
+  // A fresh continuation must not take the original prompt as a new order:
+  // the Vibe loop replayed "call agent_start ..." on every hop.
+  it("a finished source renders status DONE and the goal only as reference, never as an instruction", async () => {
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 88 })
+    const done = {
+      ...checkpoint,
+      sections: {
+        ...checkpoint.sections,
+        goal: "Call agent_start to create a sub-session labelled X",
+        nextStep: "Last agent message (no open tasks recorded):\nAll done.",
+      },
+    }
+    expect(checkpointTaskState(done)).toBe("done")
+    const prompt = renderCheckpointPrompt(done)
+    expect(prompt).toContain("## status: DONE")
+    expect(prompt).toContain("Do NOT run it again")
+    expect(prompt).toContain("## goal (reference only")
+    // The status comes before the original task text.
+    expect(prompt.indexOf("## status: DONE")).toBeLessThan(prompt.indexOf("Call agent_start"))
+    expect(prompt).toContain("never re-execute the original task")
+  })
+
+  it("an unfinished source renders status IN PROGRESS with the remaining work, goal still reference only", async () => {
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 88 })
+    const open = {
+      ...checkpoint,
+      sections: { ...checkpoint.sections, nextStep: "Open tasks:\n- finish the review" },
+    }
+    expect(checkpointTaskState(open)).toBe("in-progress")
+    const prompt = renderCheckpointPrompt(open)
+    expect(prompt).toContain("## status: IN PROGRESS")
+    expect(prompt).toContain("finish the review")
+    expect(prompt).toContain("## goal (reference only")
+  })
+
+  // The automatic continuation path passes no `sources` and no handoff reply.
+  // With no ledger consulted the state is unknown, which must not read as DONE.
+  it("an automatic continuation (no sources, no reply) renders IN PROGRESS with the goal", async () => {
+    vi.mocked(exportDaemonEventsSession).mockResolvedValue({
+      meta: {},
+      messages: [
+        { role: "user", text: "Refactor the parser module" },
+        { role: "assistant", text: "Working on the tokenizer now." },
+      ],
+    })
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 80 })
+    expect(checkpointTaskState(checkpoint)).toBe("in-progress")
+    const prompt = renderCheckpointPrompt(checkpoint)
+    expect(prompt).toContain("## status: IN PROGRESS")
+    expect(prompt).not.toContain("status: DONE")
+    expect(prompt).toContain("Refactor the parser module")
+  })
+
+  it("a consulted, empty task ledger still proves DONE", async () => {
+    const checkpoint = await buildContextCheckpoint(baseDesc(), {
+      contextPct: 80,
+      sources: { openTasks: () => [] },
+    })
+    expect(checkpointTaskState(checkpoint)).toBe("done")
+    expect(renderCheckpointPrompt(checkpoint)).toContain("## status: DONE")
+  })
+
+  it("extractGoal does not treat a `## goals` heading as the goal section", () => {
+    const text = "[continued session x]\n## goals\nnot this\n\n## goal (reference only: done)\nreal goal\n\n## other\nx"
+    expect(extractGoal([{ role: "user", text }])).toBe("real goal")
   })
 })

@@ -118,6 +118,26 @@ describe("acpHandleFromSpec", () => {
 
 // ── ACP_CATALOG: every curated entry is valid ───────────────────────────
 
+describe("ACP_CATALOG — mistral-vibe deferred tool discovery", () => {
+  // 2026-11-18: with every daemon tool schema loaded eagerly a Vibe session
+  // started at 85-88% of its window and was continued fresh on its first turn
+  // (an 11-hop loop). Proved live: with deferredTools Vibe found and called a
+  // hidden tool via tool_search and stayed at 16%.
+  it("declares deferredToolDiscovery, so the daemon self-mount is not forced eager", () => {
+    const vibe = ACP_CATALOG.find((e) => e.slug === "mistral-vibe")!
+    const handle = acpHandleFromSpec(vibe)
+    // `resolveSpawnDeferredTools` (runtime) only forces eager when this flag
+    // is absent/false, so declaring it is what lets the role default apply.
+    expect(handle.capabilities?.deferredToolDiscovery).toBe(true)
+  })
+
+  it("leaves a generic harness without the proof eager (hidden tools would be rejected client-side)", () => {
+    const gemini = ACP_CATALOG.find((e) => e.slug === "gemini-cli")!
+    const handle = acpHandleFromSpec(gemini)
+    expect(handle.capabilities?.deferredToolDiscovery).toBeUndefined()
+  })
+})
+
 describe("ACP_CATALOG — mistral-vibe models", () => {
   it("declares only the ids Vibe 2.24.1 accepts (no devstral-latest etc.)", () => {
     const vibe = ACP_CATALOG.find((e) => e.slug === "mistral-vibe")!

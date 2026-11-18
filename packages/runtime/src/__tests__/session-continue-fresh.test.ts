@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import {
   CONTINUED_SOURCES_MAX,
+  ContinueFreshSpawnError,
+  MAX_RAPID_CONTINUATIONS,
+  RAPID_CONTINUATION_WINDOW_MS,
   continueAgentSessionFresh,
   resetContinueFreshMemoForTests,
 } from "../session-continue-fresh.js"
@@ -786,5 +789,83 @@ describe("continueAgentSessionFresh: account slots", () => {
       else process.env.HOME = prevHome
       await rm(home, { recursive: true, force: true })
     }
+  })
+
+  // The 2026-11-18 Vibe loop: each fresh continuation filled its window on
+  // its first turn (eager MCP tool schemas), was continued again ~90 s later
+  // and replayed the original task, 11 hops in a row.
+  describe("chain cap (rapid continuations)", () => {
+    const linkAt = (id: string, ageMs: number, lifetimeMs: number, continuedFrom?: string): SessionDescriptor => {
+      const startedMs = Date.now() - ageMs
+      return {
+        ...makePrev(),
+        id,
+        startedAt: new Date(startedMs).toISOString(),
+        ...(lifetimeMs >= 0 ? { endedAt: new Date(startedMs + lifetimeMs).toISOString() } : {}),
+        ...(continuedFrom ? { continuedFrom } : {}),
+      } as SessionDescriptor
+    }
+    const wire = (rows: SessionDescriptor[]): void => {
+      fakeRegistry.get = vi.fn((id: string) => rows.find(r => r.id === id))
+    }
+
+    it("refuses another continuation after MAX consecutive rapid links, spawns nothing, code continuation_cap", async () => {
+      const links: SessionDescriptor[] = []
+      let parent: string | undefined
+      // Oldest first: each lived 90 s, like the Vibe daughters.
+      for (let i = 0; i < MAX_RAPID_CONTINUATIONS; i++) {
+        links.push(linkAt(`loop_${i}`, (MAX_RAPID_CONTINUATIONS - i) * 100_000, 90_000, parent))
+        parent = `loop_${i}`
+      }
+      const prev = linkAt("loop_head", 30_000, -1, parent) // still running, 30 s old
+      links.push(prev)
+      wire(links)
+
+      const err = await continueAgentSessionFresh(
+        { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+        prev,
+        { baseDir: "/tmp/checkpoints" },
+      ).catch(e => e)
+
+      expect(err).toBeInstanceOf(ContinueFreshSpawnError)
+      expect(err.code).toBe("continuation_cap")
+      expect(err.details).toMatchObject({ cap: MAX_RAPID_CONTINUATIONS })
+      expect(spawnAgentSession).not.toHaveBeenCalled()
+    })
+
+    it("still continues when the chain is shorter than the cap", async () => {
+      const a = linkAt("short_a", 200_000, 90_000)
+      const prev = linkAt("short_b", 30_000, -1, "short_a")
+      wire([a, prev])
+      vi.mocked(spawnAgentSession).mockResolvedValue({
+        ok: true,
+        descriptor: { id: "sess_new" } as SessionDescriptor,
+      })
+      await continueAgentSessionFresh(
+        { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+        prev,
+        { baseDir: "/tmp/checkpoints" },
+      )
+      expect(spawnAgentSession).toHaveBeenCalledOnce()
+    })
+
+    it("a long-lived ancestor breaks the chain: a brain that runs for hours keeps continuing", async () => {
+      const links = [
+        linkAt("hours_0", 10 * RAPID_CONTINUATION_WINDOW_MS, 4 * RAPID_CONTINUATION_WINDOW_MS),
+        linkAt("hours_1", 5 * RAPID_CONTINUATION_WINDOW_MS, 90_000, "hours_0"),
+      ]
+      const prev = linkAt("hours_2", 30_000, -1, "hours_1")
+      wire([...links, prev])
+      vi.mocked(spawnAgentSession).mockResolvedValue({
+        ok: true,
+        descriptor: { id: "sess_new" } as SessionDescriptor,
+      })
+      await continueAgentSessionFresh(
+        { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+        prev,
+        { baseDir: "/tmp/checkpoints" },
+      )
+      expect(spawnAgentSession).toHaveBeenCalledOnce()
+    })
   })
 })

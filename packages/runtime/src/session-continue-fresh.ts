@@ -65,6 +65,10 @@ export class ContinueFreshSpawnError extends Error {
 }
 
 export interface ContinueAgentSessionFreshOptions {
+  /** Max consecutive rapid continuations (see {@link MAX_RAPID_CONTINUATIONS});
+   *  the refusal is a {@link ContinueFreshSpawnError} with code
+   *  `continuation_cap`. Tests / explicit operator overrides only. */
+  maxRapidContinuations?: number
   /** Optional policy override for the fresh session. */
   contextContinuity?: import("./context-continuity.js").ContextContinuityPolicy
   /** Optional base directory for checkpoint storage (tests). */
@@ -257,6 +261,24 @@ export function continueAgentSessionFresh(
 ): Promise<ContinueAgentSessionFreshResult> {
   const requestKey = continuationRequestKey(opts)
   const existing = continuedSources.get(prev.id)
+  if (!existing) {
+    const rapid = countRapidContinuationChain(deps.registry, prev)
+    const max =
+      Number.isInteger(opts.maxRapidContinuations) && (opts.maxRapidContinuations as number) >= 1
+        ? (opts.maxRapidContinuations as number)
+        : MAX_RAPID_CONTINUATIONS
+    if (rapid >= max) {
+      return Promise.reject(
+        new ContinueFreshSpawnError(
+          "continuation_cap",
+          `Session ${prev.id} is link ${rapid} of a chain of continuations that each lasted under ` +
+            `${Math.round(RAPID_CONTINUATION_WINDOW_MS / 60_000)} min (cap ${max}): refusing another fresh ` +
+            `continuation, which would replay the same handoff in a loop. Stop and report to the parent.`,
+          { continuedFrom: prev.id, rapidChain: rapid, cap: max },
+        ),
+      )
+    }
+  }
   if (existing) {
     if (existing.requestKey === requestKey) return existing.promise
     const target = existing.result ? ` as "${existing.result.descriptor.id}"` : " (still in progress)"
@@ -291,6 +313,38 @@ export function continueAgentSessionFresh(
     },
   )
   return promise
+}
+
+/** A continuation link counts as "rapid" when its session lived less than
+ *  this before being continued again. A healthy long-lived session (a brain
+ *  that runs for hours) is never rapid; a session that fills its window almost
+ *  at once (eager MCP tool schemas on a small-context harness) is. */
+export const RAPID_CONTINUATION_WINDOW_MS = 15 * 60_000
+
+/** Consecutive rapid continuations allowed before the chain is stopped. */
+export const MAX_RAPID_CONTINUATIONS = 3
+
+/** Length of the chain of consecutive rapid sessions ending at `prev`
+ *  (`prev` included), walking `continuedFrom`. Bounded, and tolerant of a
+ *  missing/pruned ancestor row (the walk just stops there). */
+export function countRapidContinuationChain(
+  registry: { get(id: string): SessionDescriptor | undefined },
+  prev: SessionDescriptor,
+  now: number = Date.now(),
+): number {
+  let count = 0
+  let cursor: SessionDescriptor | undefined = prev
+  const seen = new Set<string>()
+  while (cursor && !seen.has(cursor.id) && count < 64) {
+    seen.add(cursor.id)
+    const started = Date.parse(cursor.startedAt)
+    const ended = cursor.endedAt ? Date.parse(cursor.endedAt) : now
+    if (!Number.isFinite(started) || !Number.isFinite(ended)) break
+    if (ended - started >= RAPID_CONTINUATION_WINDOW_MS) break
+    count += 1
+    cursor = cursor.continuedFrom ? registry.get(cursor.continuedFrom) : undefined
+  }
+  return count
 }
 
 export const CONTINUED_SOURCES_MAX = 128
