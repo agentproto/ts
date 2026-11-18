@@ -204,4 +204,13 @@ describe("createCodexConversation without a model", () => {
     const r = await createCodexConversation({ cwd: root, prompt: "x", codexBin: f.bin, workingModels: async () => ["a"] })
     expect(r.error).toBe("rate limited")
   })
+
+  it("does not rewrite an unrelated 'not supported' failure", async () => {
+    const f = await fakeCodex([
+      { type: "thread.started", thread_id: TID },
+      { type: "turn.failed", error: { message: "image input is not supported here" } },
+    ])
+    const r = await createCodexConversation({ cwd: root, prompt: "x", codexBin: f.bin, workingModels: async () => ["a"] })
+    expect(r.error).toBe("image input is not supported here")
+  })
 })

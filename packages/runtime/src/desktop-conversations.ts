@@ -706,8 +706,10 @@ export async function recentCodexWorkingModels(codexHome: string): Promise<strin
 }
 
 async function explainModelRefusal(message: string, opts: CodexCreateOptions): Promise<string> {
-  if (!/not supported/i.test(message)) return message
-  const refused = message.match(/['"`]([\w.:-]+)['"`]/)?.[1]
+  // Only the Codex "<model> model is not supported" shape: an unrelated
+  // "... not supported" failure is passed through untouched.
+  if (!/\bmodel\b[^.\n]{0,80}\bnot supported\b/i.test(message)) return message
+  const refused = message.match(/['"`]([\w.:-]+)['"`]\s+model\b/i)?.[1]
   const history = await (opts.workingModels ?? (() => recentCodexWorkingModels(opts.codexHome ?? join(homedir(), ".codex"))))().catch(
     () => [] as string[]
   )
