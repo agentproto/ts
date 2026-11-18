@@ -131,7 +131,7 @@ describe("timeout kills the child for real", () => {
 })
 
 describe("the registered tool", () => {
-  async function call(events: object[]) {
+  async function call(events: object[], args: Record<string, unknown> = {}) {
     const f = await fakeCodex(events)
     // the tool spawns plain `codex`: put the fake first on PATH
     vi.stubEnv("PATH", `${root}:${process.env.PATH}`)
@@ -143,7 +143,7 @@ describe("the registered tool", () => {
     const client = new Client({ name: "c", version: "0" })
     await client.connect(c)
     try {
-      return (await client.callTool({ name: "desktop_conversation_create", arguments: { app: "codex", cwd: root, prompt: "x" } })) as {
+      return (await client.callTool({ name: "desktop_conversation_create", arguments: { app: "codex", cwd: root, prompt: "x", ...args } })) as {
         isError?: boolean
         content: Array<{ text: string }>
       }
@@ -152,6 +152,22 @@ describe("the registered tool", () => {
       await server.close()
     }
   }
+
+  it("prepares a Claude Code composer link without starting a turn", async () => {
+    const prompt = "À revoir & confirmer + #scope?\nMerci"
+    const cwd = join(root, "a folder")
+    const result = await call([], { app: "claude", cwd, prompt })
+    expect(result.isError).toBeFalsy()
+    const draft = JSON.parse(result.content[0]!.text)
+    expect(draft).toMatchObject({ status: "draft", threadId: null, externalId: null, reply: null })
+    expect(draft.note).toMatch(/send/i)
+    const url = new URL(draft.url)
+    expect(url.origin).toBe("null")
+    expect(url.protocol).toBe("claude:")
+    expect(url.hostname).toBe("code")
+    expect(url.pathname).toBe("/new")
+    expect(Object.fromEntries(url.searchParams)).toEqual({ q: prompt, folder: cwd })
+  })
 
   it("flags a failed creation as an error result, like ask does, and a completed one as success", async () => {
     const failed = await call([{ type: "thread.started", thread_id: TID }, { type: "turn.failed", error: { message: "boom" } }])

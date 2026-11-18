@@ -194,6 +194,27 @@ setting is not `accept`: Claude Code holds the frame, so the message is also
 parked and the inbox hook delivers it (`agentproto doctor --fix` fixes the
 setting).
 
+### Find or start a Code-tab conversation from Agentproto
+
+Use `desktop_conversation_list { app: "claude", q: "part of the title" }`
+to match titles in the Claude Desktop Code tab. Matching is case-insensitive
+and runs before the result limit. Add `onlyAlive: true` to require a live
+Agentproto external registration. Registration tracks recent contact with the
+daemon and does not tell you whether the Claude window is open. Use the
+returned `externalId` with `message_send`, or the `id` with
+`desktop_conversation_ask`. A wake also depends on the daemon's wake settings
+and whether the Claude process can receive it.
+
+`desktop_conversation_create { app: "claude", cwd, prompt }` returns a
+`status: "draft"` result and a [Claude Desktop Code composer link][claude-link].
+Open the link on the machine running Claude Desktop, confirm the folder,
+then send the prompt in the app to create the conversation. The link
+contains the prompt and folder as URL parameters. The conversation appears
+in `desktop_conversation_list` once Claude assigns it a CLI session ID.
+Use `agent_start` with a Claude harness for a daemon-managed session.
+
+[claude-link]: https://support.claude.com/en/articles/14729294-open-claude-desktop-with-a-link
+
 ## `hook pr-stamp`
 
 A Claude Code `PostToolUse` hook (matcher `Bash`) for sessions the daemon did

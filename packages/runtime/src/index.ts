@@ -5080,7 +5080,7 @@ export async function createGateway(
     // resolves straight off HOME), so it needs no injected deps.
     registerConversationLocateTool(server)
     // Claude Desktop / Codex Desktop conversation list (local app stores, read-only).
-    registerDesktopConversationListTool(server)
+    registerDesktopConversationListTool(server, sessions)
     registerDesktopConversationReadTool(server)
     registerDesktopConversationCreateTool(server)
     // Conversation exporter — WRITE side of the cross-adapter pivot above:
