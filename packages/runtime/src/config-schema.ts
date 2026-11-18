@@ -649,6 +649,7 @@ const acpAgentConfigEntrySchema: z.ZodType<AcpAgentConfigEntry> = z
       .optional(),
     provider: z.string().optional(),
     install_hint: z.string().optional(),
+    deferred_tool_discovery: z.boolean().optional(),
   })
   .passthrough()
 
@@ -2446,6 +2447,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "harnesses",
     label: "ACP agent install hint",
     help: "Shown when `bin` is missing from PATH. Set via `agentproto acp add`.",
+  },
+  {
+    path: "acpAgents.*.deferred_tool_discovery",
+    schema: bool,
+    apply: "hot",
+    writable: false,
+    section: "harnesses",
+    label: "ACP agent deferred tool discovery",
+    help: "True when the CLI can call an MCP tool the daemon hid from tools/list after finding it via tool_search (proved live). Makes the daemon self-mount deferred by default for this agent.",
   },
 
   // ── advanced: terminal/TUI presets ──

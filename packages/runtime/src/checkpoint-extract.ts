@@ -136,7 +136,7 @@ export function extractGoal(messages: ExportedMessage[]): string | undefined {
   const text = first?.text?.trim()
   if (!text) return undefined
   if (text.startsWith("[continued session")) {
-    const m = /(?:^|\n)## goal\n([\s\S]*?)(?=\n## |\n*$)/.exec(text)
+    const m = /(?:^|\n)## goal[^\n]*\n([\s\S]*?)(?=\n## |\n*$)/.exec(text)
     const carried = m?.[1]?.trim()
     return carried ? clip(carried, GOAL_CHAR_CAP, "head") : undefined
   }

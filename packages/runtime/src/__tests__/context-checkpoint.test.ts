@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "../context-checkpoint.js"
+import {
+  buildContextCheckpoint,
+  checkpointTaskState,
+  persistCheckpoint,
+  renderCheckpointPrompt,
+} from "../context-checkpoint.js"
 import type { SessionDescriptor } from "../sessions.js"
 
 vi.mock("../transcript-export.js", () => ({
@@ -148,5 +153,40 @@ describe("renderCheckpointPrompt", () => {
     expect(prompt).toContain("## goal")
     expect(prompt).toContain("## Recent turns digest")
     expect(prompt).toContain("hello")
+  })
+
+  // A fresh continuation must not take the original prompt as a new order:
+  // the Vibe loop replayed "call agent_start ..." on every hop.
+  it("a finished source renders status DONE and the goal only as reference, never as an instruction", async () => {
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 88 })
+    const done = {
+      ...checkpoint,
+      sections: {
+        ...checkpoint.sections,
+        goal: "Call agent_start to create a sub-session labelled X",
+        nextStep: "Last agent message (no open tasks recorded):\nAll done.",
+      },
+    }
+    expect(checkpointTaskState(done)).toBe("done")
+    const prompt = renderCheckpointPrompt(done)
+    expect(prompt).toContain("## status: DONE")
+    expect(prompt).toContain("Do NOT run it again")
+    expect(prompt).toContain("## goal (reference only")
+    // The status comes before the original task text.
+    expect(prompt.indexOf("## status: DONE")).toBeLessThan(prompt.indexOf("Call agent_start"))
+    expect(prompt).toContain("never re-execute the original task")
+  })
+
+  it("an unfinished source renders status IN PROGRESS with the remaining work, goal still reference only", async () => {
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 88 })
+    const open = {
+      ...checkpoint,
+      sections: { ...checkpoint.sections, nextStep: "Open tasks:\n- finish the review" },
+    }
+    expect(checkpointTaskState(open)).toBe("in-progress")
+    const prompt = renderCheckpointPrompt(open)
+    expect(prompt).toContain("## status: IN PROGRESS")
+    expect(prompt).toContain("finish the review")
+    expect(prompt).toContain("## goal (reference only")
   })
 })

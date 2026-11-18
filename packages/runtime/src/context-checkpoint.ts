@@ -472,10 +472,31 @@ export function renderCheckpointPrompt(checkpoint: ContextCheckpoint): string {
     "notes",
     "config",
   ]
+  // The original prompt must never come back as a bare instruction: a fresh
+  // session that re-reads "call agent_start ..." as its task redoes it (and
+  // its side effects) on every hop. It gets the STATE first (done / what
+  // remains) and the original task only as labelled reference.
+  const state = checkpointTaskState(checkpoint)
+  lines.push(
+    state === "done"
+      ? "## status: DONE — the previous session finished its turn and recorded no open task. " +
+          "The original task below has been handled. Do NOT run it again or repeat any of its actions " +
+          "(starting sessions, sending messages, writing files, calling tools with side effects). " +
+          "Reply with one line saying nothing remains."
+      : "## status: IN PROGRESS — continue ONLY with the 'next step' / open tasks below. " +
+          "Anything the transcript shows as already done stays done: never repeat it.",
+  )
+  lines.push("")
   for (const key of sectionOrder) {
     const value = checkpoint.sections[key]
     if (value) {
-      lines.push(key === "notes" ? "## notes (from the operator)" : `## ${key}`)
+      lines.push(
+        key === "notes"
+          ? "## notes (from the operator)"
+          : key === "goal"
+            ? "## goal (reference only: already given to the previous session, never execute it again from here)"
+            : `## ${key}`,
+      )
       lines.push(value)
       lines.push("")
     }
@@ -486,11 +507,20 @@ export function renderCheckpointPrompt(checkpoint: ContextCheckpoint): string {
   lines.push("")
   lines.push(
     checkpoint.sections.nextStep
-      ? "Continue from the 'next step' above. Do not re-run completed work unless asked."
-      : "Continue from where the recent turns left off. Do not re-run completed work unless asked.",
+      ? "Continue from the 'next step' above. Do not re-run completed work, and never re-execute the original task."
+      : "Continue from where the recent turns left off. Do not re-run completed work, and never re-execute the original task.",
   )
 
   return lines.join("\n")
+}
+
+/** `"done"` when the checkpoint's next step is just the last agent message
+ *  with no open task recorded (the source finished its turn), else
+ *  `"in-progress"`. Derived from the sections already persisted, so older
+ *  checkpoints render the same way. */
+export function checkpointTaskState(checkpoint: ContextCheckpoint): "done" | "in-progress" {
+  const next = checkpoint.sections.nextStep
+  return next?.startsWith("Last agent message (no open tasks recorded)") ? "done" : "in-progress"
 }
 
 /** Resolve a checkpoint file path from an id previously persisted for a session. */
