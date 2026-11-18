@@ -23,7 +23,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { spawn } from "node:child_process"
 import { readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { isAbsolute, join } from "node:path"
+import { isAbsolute, join, posix, win32 } from "node:path"
 import { z } from "zod"
 import type { ExportedSession } from "./transcript-export.js"
 import type { SessionsRegistry } from "./sessions.js"
@@ -56,6 +56,7 @@ export interface DesktopConversation {
 export interface DesktopListOptions {
   app?: DesktopApp
   includeArchived?: boolean
+  q?: string
   /** Default 50, max 500. */
   limit?: number
   /** Test seams. Default to the real per-user locations. */
@@ -234,9 +235,11 @@ export async function listCodexDesktopConversations(
 }
 
 export async function listDesktopConversations(
-  opts: DesktopListOptions = {}
+  opts: DesktopListOptions = {},
+  isAlive?: (externalId: string) => boolean,
 ): Promise<DesktopConversation[]> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500)
+  const query = opts.q?.trim().normalize().toLowerCase()
   const [claude, codex] = await Promise.all([
     opts.app === "codex"
       ? []
@@ -251,6 +254,8 @@ export async function listDesktopConversations(
   ])
   return [...claude, ...codex]
     .filter(c => opts.includeArchived === true || !c.archived)
+    .filter(c => !query || c.title.normalize().toLowerCase().includes(query))
+    .filter(c => !isAlive || isAlive(c.externalId))
     .sort((a, b) => (b.lastActivityMs ?? 0) - (a.lastActivityMs ?? 0))
     .slice(0, limit)
 }
@@ -328,7 +333,10 @@ export async function readDesktopConversation(
   }
 }
 
-export function registerDesktopConversationListTool(server: McpServer): void {
+export function registerDesktopConversationListTool(
+  server: McpServer,
+  registry: Pick<SessionsRegistry, "get">,
+): void {
   server.tool(
     "desktop_conversation_list",
     "List the conversations of the Claude Desktop (Code tab) and Codex Desktop apps, newest first, " +
@@ -341,6 +349,14 @@ export function registerDesktopConversationListTool(server: McpServer): void {
         .enum(["claude", "codex"])
         .optional()
         .describe("Only this app. Default: both."),
+      q: z
+        .string()
+        .optional()
+        .describe("Case-insensitive substring of the conversation title."),
+      onlyAlive: z
+        .boolean()
+        .optional()
+        .describe("Only chats with a live Agentproto external session. Does not check whether a chat window is open."),
       includeArchived: z
         .boolean()
         .optional()
@@ -354,7 +370,15 @@ export function registerDesktopConversationListTool(server: McpServer): void {
         .describe("Max rows, default 50."),
     },
     async input => {
-      const conversations = await listDesktopConversations(input)
+      const conversations = await listDesktopConversations(
+        input,
+        input.onlyAlive
+          ? id => {
+              const row = registry.get(id)
+              return row?.kind === "external" && row.alive === true
+            }
+          : undefined,
+      )
       return {
         content: [
           {
@@ -811,8 +835,9 @@ export function registerDesktopConversationCreateTool(server: McpServer): void {
   server.tool(
     "desktop_conversation_create",
     "Create a new Codex conversation from agentproto: runs `codex exec` with your first message in `cwd` " +
-      "and returns the new thread id (`codex:<id>`) and its first answer. Codex only: Claude Desktop has no " +
-      "supported way to create a chat from outside the app. Runs read-only unless you ask `workspace-write`; " +
+      "and returns the new thread id (`codex:<id>`) and its first answer. For Claude Desktop, returns a draft link " +
+      "to a prefilled Code composer. Open it on the caller's desktop, confirm the folder and send the first message in Claude. " +
+      "Codex runs read-only unless you ask `workspace-write`; " +
       "`cwd` may be any absolute path and `workspace-write` is not scoped to agentproto workspaces: it can write " +
       "anywhere the daemon user can. " +
       "The thread is stored as a `codex exec` thread: the Desktop sidebar may not show it, but " +
@@ -821,25 +846,37 @@ export function registerDesktopConversationCreateTool(server: McpServer): void {
       app: z.enum(["codex", "claude"]),
       cwd: z.string().min(1).describe("Absolute working directory."),
       prompt: z.string().min(1).max(20_000).describe("The first message."),
-      model: z.string().min(1).max(100).optional(),
-      sandbox: z.enum(["read-only", "workspace-write"]).optional().describe("Default read-only."),
-      timeoutMs: z.number().int().min(1_000).max(600_000).optional().describe("Default 120000."),
+      model: z.string().min(1).max(100).optional().describe("Codex only."),
+      sandbox: z.enum(["read-only", "workspace-write"]).optional().describe("Codex only. Default read-only."),
+      timeoutMs: z.number().int().min(1_000).max(600_000).optional().describe("Codex only. Default 120000."),
     },
     async input => {
-      if (input.app !== "codex") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text:
-                "desktop_conversation_create: Claude Desktop cannot create a chat from outside the app. " +
-                "A `claude -p` session is not shown in its Code tab; start a daemon session with agent_start instead.",
-            },
-          ],
-        }
-      }
       try {
+        if (input.app === "claude") {
+          if (!posix.isAbsolute(input.cwd) && !win32.isAbsolute(input.cwd)) {
+            throw new Error("desktop_conversation_create: cwd must be an absolute path on the machine opening Claude Desktop")
+          }
+          if (input.prompt.length > 14_000) throw new Error("desktop_conversation_create: Claude Desktop links support prompts up to 14000 characters")
+          if (input.model !== undefined || input.sandbox !== undefined || input.timeoutMs !== undefined) {
+            throw new Error("desktop_conversation_create: model, sandbox, and timeoutMs are Codex-only options")
+          }
+          const url = new URL("claude://code/new")
+          url.searchParams.set("q", input.prompt)
+          url.searchParams.set("folder", input.cwd)
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                status: "draft",
+                url: url.toString(),
+                threadId: null,
+                externalId: null,
+                reply: null,
+                note: "Open the link in Claude Desktop, confirm the folder, and send the first message to create the conversation.",
+              }),
+            }],
+          }
+        }
         const { app: _app, ...rest } = input
         const result = await createCodexConversation(rest)
         // A failed or timed-out creation is an error result, like `ask`'s failures.

@@ -8,6 +8,7 @@ import {
   listDesktopConversations,
   readDesktopConversation,
   registerDesktopConversationAskTool,
+  registerDesktopConversationListTool,
 } from "../desktop-conversations.js"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -196,6 +197,52 @@ describe("listDesktopConversations", () => {
     expect(
       (await listDesktopConversations({ ...opts(), limit: 2 })).map(c => c.id)
     ).toEqual(["c3", "c2"])
+  })
+
+  it("finds a Claude title before applying the result limit", async () => {
+    const home = join(root, "home")
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("USERPROFILE", home)
+    const dir = join(home, "Library", "Application Support", "Claude", "claude-code-sessions", "acct", "org")
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, "local_newer.json"), JSON.stringify({
+      cliSessionId: "newer",
+      title: "Unrelated",
+      lastActivityAt: 2,
+    }))
+    await writeFile(join(dir, "local_match.json"), JSON.stringify({
+      cliSessionId: "match",
+      title: "Réunion produit",
+      lastActivityAt: 1,
+    }))
+    const registry = createSessionsRegistry({ persist: false })
+    registry.touchExternal({ id: "cc:newer", host: "claude-desktop" })
+    const server = new McpServer({ name: "t", version: "0" })
+    registerDesktopConversationListTool(server, registry)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "c", version: "0" })
+    await client.connect(clientTransport)
+    try {
+      const list = async (onlyAlive = false) => {
+        const result = await client.callTool({
+          name: "desktop_conversation_list",
+          arguments: { app: "claude", q: "  RÉUNION ", limit: 1, onlyAlive },
+        }) as { content: Array<{ text: string }> }
+        return JSON.parse(result.content[0]!.text)
+      }
+      const expected = {
+        count: 1,
+        conversations: [{ externalId: "cc:match", title: "Réunion produit" }],
+      }
+      expect(await list()).toMatchObject(expected)
+      expect(await list(true)).toEqual({ count: 0, conversations: [] })
+      registry.touchExternal({ id: "cc:match", host: "claude-desktop" })
+      expect(await list(true)).toMatchObject(expected)
+    } finally {
+      await client.close()
+      await server.close()
+    }
   })
 })
 
