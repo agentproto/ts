@@ -966,6 +966,8 @@ export interface SessionListCompactItem {
   // Usage scalars (small, and codified as session_list output by
   // session-usage-mcp.test.ts): cheap badge signals for list views.
   usageSource?: SessionDescriptor["usageSource"]
+  billing?: SessionDescriptor["billing"]
+  paidCostUsd?: number
   costUsd?: number
   tokensIn?: number
   tokensOut?: number
@@ -1062,6 +1064,8 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
     ? { continuationGeneration: s.continuationGeneration }
     : {}),
   usageSource: s.usageSource,
+  billing: s.billing,
+  paidCostUsd: s.paidCostUsd,
   costUsd: s.costUsd,
   tokensIn: s.tokensIn,
   tokensOut: s.tokensOut,

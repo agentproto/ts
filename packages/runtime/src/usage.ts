@@ -33,6 +33,10 @@ import {
 } from "@agentproto/model-catalog/route-identity"
 import { WIDENING_ROUTES, normalizeRouterPrefixedId } from "./router-routes.js"
 
+/** How a session's usage is billed: flat-rate `subscription`, pay-per-token
+ *  `api-key`, a `free` model, or `unknown` (not determined). */
+export type UsageBilling = "subscription" | "api-key" | "free" | "unknown"
+
 /** Where a session's `costUsd` came from — see the module doc. */
 export type UsageSource = "adapter" | "computed" | "no-pricing" | "none"
 
@@ -112,6 +116,8 @@ export interface UsageReadResult {
   cacheReadTokens?: number
   cacheWriteTokens?: number
   reasoningTokens?: number
+  /** Billing mode, when the reader can tell (native-TUI terminals). */
+  billing?: UsageBilling
 }
 
 /** Where a reader should look for the session's native store — the spawn's
@@ -146,6 +152,11 @@ export interface SessionUsage extends UsageDetail {
   contextSize?: number
   contextUsed?: number
   source: UsageSource
+  /** Billing mode of the usage (see {@link UsageBilling}); absent = not
+   *  determined (agent-cli sessions today). `costUsd` stays the value at API
+   *  price; `paidCostUsd` is what the account actually pays. */
+  billing?: UsageBilling
+  paidCostUsd?: number
 }
 
 /**
@@ -284,6 +295,8 @@ export interface UsageDescriptorFields
   contextSize?: number
   contextUsed?: number
   usageSource?: UsageSource
+  billing?: UsageBilling
+  paidCostUsd?: number
   /** Surfaced as `turns`. */
   turnsCompleted?: number
 }
@@ -309,5 +322,7 @@ export function projectSessionUsage(desc: UsageDescriptorFields): SessionUsage {
     ...(desc.contextSize !== undefined ? { contextSize: desc.contextSize } : {}),
     ...(contextUsed !== undefined ? { contextUsed } : {}),
     source: desc.usageSource ?? "none",
+    ...(desc.billing !== undefined ? { billing: desc.billing } : {}),
+    ...(desc.paidCostUsd !== undefined ? { paidCostUsd: desc.paidCostUsd } : {}),
   }
 }

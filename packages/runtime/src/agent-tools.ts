@@ -2299,6 +2299,8 @@ export function registerAgentTools(
     depth: s.depth,
     parentSessionId: s.parentSessionId,
     usageSource: s.usageSource,
+    billing: s.billing,
+    paidCostUsd: s.paidCostUsd,
     costUsd: s.costUsd,
     tokensIn: s.tokensIn,
     tokensOut: s.tokensOut,
