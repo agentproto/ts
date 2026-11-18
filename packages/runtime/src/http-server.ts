@@ -11472,7 +11472,7 @@ async function handleSentinels(
  *
  *   POST   /follows            → 201 follow (created) | 200 follow (upserted by `key`)
  *   GET    /follows[?follower=] → { follows: SessionFollow[] }
- *   DELETE /follows/:idOrKey   → { ok: true, id }
+ *   DELETE /follows/:idOrKey[?follower=] → { ok: true, id } (a key is per follower)
  *
  * Errors: 400 `invalid_input` | `invalid_selector` | `no_follower`,
  * 404 `session_not_found` (unknown follower on POST), 404 `follow_not_found`.
@@ -11514,7 +11514,8 @@ async function handleFollows(
   const idOrKey = decodeURIComponent(match[1] ?? "")
 
   if (req.method === "DELETE") {
-    const removed = removeSessionFollow(deps, idOrKey)
+    const keyFollower = new URL(req.url ?? "/", "http://localhost").searchParams.get("follower") ?? undefined
+    const removed = removeSessionFollow(deps, idOrKey, keyFollower)
     if (!removed) {
       json(404, { error: "follow_not_found", id: idOrKey })
       return true

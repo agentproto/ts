@@ -122,15 +122,17 @@ export interface SessionFollowInput {
 
 export interface SessionFollowStore {
   get(id: string): SessionFollow | undefined
-  /** Look up by id first, then by `key`. */
-  find(idOrKey: string): SessionFollow | undefined
+  /** Look up by id first, then by `key`. A key is scoped to its follower:
+   *  pass `follower` to resolve it inside that follower's own follows. */
+  find(idOrKey: string, follower?: string): SessionFollow | undefined
   list(filter?: { follower?: string }): SessionFollow[]
-  /** UPSERT by `key` when given (keeps `id` + `createdAt`), else create. */
+  /** UPSERT by (`follower`, `key`) when a key is given (keeps `id` +
+   *  `createdAt`), else create. Two followers may use the same key. */
   upsert(input: SessionFollowInput): { follow: SessionFollow; created: boolean }
   /** Re-point a follow at another follower session (a revived follower). */
   setFollower(id: string, follower: string): SessionFollow | undefined
-  /** Remove by id or key. */
-  remove(idOrKey: string): SessionFollow | undefined
+  /** Remove by id or key (key scoped to `follower` when given). */
+  remove(idOrKey: string, follower?: string): SessionFollow | undefined
   /** Synchronous flush for shutdown paths. */
   flushSync(): void
 }
@@ -288,21 +290,23 @@ export function createSessionFollowStore(opts?: SessionFollowStoreOptions): Sess
     }
   }
 
-  const findByKey = (key: string): SessionFollow | undefined => {
-    for (const f of follows.values()) if (f.key === key) return f
+  const findByKey = (key: string, follower?: string): SessionFollow | undefined => {
+    for (const f of follows.values()) {
+      if (f.key === key && (follower === undefined || f.follower === follower)) return f
+    }
     return undefined
   }
 
   return {
     get: id => follows.get(id),
-    find: idOrKey => follows.get(idOrKey) ?? findByKey(idOrKey),
+    find: (idOrKey, follower) => follows.get(idOrKey) ?? findByKey(idOrKey, follower),
     list(filter) {
       const all = Array.from(follows.values())
       return filter?.follower ? all.filter(f => f.follower === filter.follower) : all
     },
     upsert(input) {
       const resolved = resolveFollowDefaults(input)
-      const existing = input.key ? findByKey(input.key) : undefined
+      const existing = input.key ? findByKey(input.key, resolved.follower) : undefined
       if (existing) {
         const next: SessionFollow = {
           id: existing.id,
@@ -338,8 +342,8 @@ export function createSessionFollowStore(opts?: SessionFollowStoreOptions): Sess
       schedulePersist()
       return next
     },
-    remove(idOrKey) {
-      const existing = follows.get(idOrKey) ?? findByKey(idOrKey)
+    remove(idOrKey, follower) {
+      const existing = follows.get(idOrKey) ?? findByKey(idOrKey, follower)
       if (!existing) return undefined
       follows.delete(existing.id)
       schedulePersist()
