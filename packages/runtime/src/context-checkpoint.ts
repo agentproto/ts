@@ -26,6 +26,7 @@ import {
   formatGateResult,
   formatHandoffTests,
   formatLastAgentMessage,
+  LAST_MESSAGE_LEDGER_EMPTY,
   formatOpenTasks,
   formatTestRun,
   parseHandoffReply,
@@ -348,7 +349,9 @@ function buildNextStepSection(
   if (reply?.nextStep) return [reply.nextStep, tasksText].filter(Boolean).join("\n\n")
   if (tasksText) return tasksText
   const last = extractLastAgentMessage(messages)
-  return last ? formatLastAgentMessage(last) : undefined
+  // Only a consulted, empty task ledger proves there is nothing left; with no
+  // ledger the session's state is unknown and must not read as finished.
+  return last ? formatLastAgentMessage(last, sources?.openTasks !== undefined) : undefined
 }
 
 function suggestNextAction(
@@ -520,7 +523,7 @@ export function renderCheckpointPrompt(checkpoint: ContextCheckpoint): string {
  *  checkpoints render the same way. */
 export function checkpointTaskState(checkpoint: ContextCheckpoint): "done" | "in-progress" {
   const next = checkpoint.sections.nextStep
-  return next?.startsWith("Last agent message (no open tasks recorded)") ? "done" : "in-progress"
+  return next?.startsWith(LAST_MESSAGE_LEDGER_EMPTY) ? "done" : "in-progress"
 }
 
 /** Resolve a checkpoint file path from an id previously persisted for a session. */

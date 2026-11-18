@@ -8,6 +8,7 @@ import {
   persistCheckpoint,
   renderCheckpointPrompt,
 } from "../context-checkpoint.js"
+import { extractGoal } from "../checkpoint-extract.js"
 import type { SessionDescriptor } from "../sessions.js"
 
 vi.mock("../transcript-export.js", () => ({
@@ -188,5 +189,37 @@ describe("renderCheckpointPrompt", () => {
     expect(prompt).toContain("## status: IN PROGRESS")
     expect(prompt).toContain("finish the review")
     expect(prompt).toContain("## goal (reference only")
+  })
+
+  // The automatic continuation path passes no `sources` and no handoff reply.
+  // With no ledger consulted the state is unknown, which must not read as DONE.
+  it("an automatic continuation (no sources, no reply) renders IN PROGRESS with the goal", async () => {
+    vi.mocked(exportDaemonEventsSession).mockResolvedValue({
+      meta: {},
+      messages: [
+        { role: "user", text: "Refactor the parser module" },
+        { role: "assistant", text: "Working on the tokenizer now." },
+      ],
+    })
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 80 })
+    expect(checkpointTaskState(checkpoint)).toBe("in-progress")
+    const prompt = renderCheckpointPrompt(checkpoint)
+    expect(prompt).toContain("## status: IN PROGRESS")
+    expect(prompt).not.toContain("status: DONE")
+    expect(prompt).toContain("Refactor the parser module")
+  })
+
+  it("a consulted, empty task ledger still proves DONE", async () => {
+    const checkpoint = await buildContextCheckpoint(baseDesc(), {
+      contextPct: 80,
+      sources: { openTasks: () => [] },
+    })
+    expect(checkpointTaskState(checkpoint)).toBe("done")
+    expect(renderCheckpointPrompt(checkpoint)).toContain("## status: DONE")
+  })
+
+  it("extractGoal does not treat a `## goals` heading as the goal section", () => {
+    const text = "[continued session x]\n## goals\nnot this\n\n## goal (reference only: done)\nreal goal\n\n## other\nx"
+    expect(extractGoal([{ role: "user", text }])).toBe("real goal")
   })
 })

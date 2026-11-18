@@ -263,7 +263,10 @@ export function continueAgentSessionFresh(
   const existing = continuedSources.get(prev.id)
   if (!existing) {
     const rapid = countRapidContinuationChain(deps.registry, prev)
-    const max = opts.maxRapidContinuations ?? MAX_RAPID_CONTINUATIONS
+    const max =
+      Number.isInteger(opts.maxRapidContinuations) && (opts.maxRapidContinuations as number) >= 1
+        ? (opts.maxRapidContinuations as number)
+        : MAX_RAPID_CONTINUATIONS
     if (rapid >= max) {
       return Promise.reject(
         new ContinueFreshSpawnError(
