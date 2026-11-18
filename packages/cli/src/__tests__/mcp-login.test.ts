@@ -7,7 +7,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { openMcpClient } from "@agentproto/runtime/mcp-client-pool"
 import type { ImportedMcpsConfig } from "@agentproto/runtime/mcp-imports"
 import { loginMcpOAuth, type McpOAuthSecretIO } from "@agentproto/runtime/mcp-oauth"
-import { mcpLogin, mcpLogout } from "../commands/mcp.js"
+import { PassThrough } from "node:stream"
+import { mcpLogin, mcpLogout, parseLoginTimeout, readPastedCallback } from "../commands/mcp.js"
 
 const URL_RO = "https://mcp.example/multi-organization/mcp"
 
@@ -274,5 +275,59 @@ describe("mcp login / logout", () => {
     h.secrets.set("agentproto/mcp-import/manual:cli:x#oauth:state", "{}")
     await mcpLogout("x", h.deps)
     expect(h.secrets.get("agentproto/mcp-import/manual:cli:x#oauth:state")).toBe("")
+  })
+
+  it("passes timeoutMs and the manual callback through to the login", async () => {
+    const h = harness()
+    const manualCallback = async () => "http://127.0.0.1:1/callback?code=c&state=s"
+    await mcpLogin("bank", { url: URL_RO }, { ...h.deps, timeoutMs: 1_800_000, manualCallback })
+    expect(h.calls[0]!.timeoutMs).toBe(1_800_000)
+    expect(h.calls[0]!.manualCallback).toBe(manualCallback)
+    const plain = harness()
+    await mcpLogin("bank", { url: URL_RO }, plain.deps)
+    expect(plain.calls[0]).not.toHaveProperty("timeoutMs")
+    expect(plain.calls[0]).not.toHaveProperty("manualCallback")
+  })
+})
+
+describe("parseLoginTimeout", () => {
+  it("accepts s/m/h and bare seconds", () => {
+    expect(parseLoginTimeout("30m")).toBe(1_800_000)
+    expect(parseLoginTimeout("1800s")).toBe(1_800_000)
+    expect(parseLoginTimeout("2h")).toBe(7_200_000)
+    expect(parseLoginTimeout("90")).toBe(90_000)
+  })
+  it("rejects garbage and out-of-range values with a clear message", () => {
+    expect(() => parseLoginTimeout("soon")).toThrow(/invalid --timeout/)
+    expect(() => parseLoginTimeout("-5m")).toThrow(/invalid --timeout/)
+    expect(() => parseLoginTimeout("3h")).toThrow(/out of range \(min 10s, max 2h\)/)
+    expect(() => parseLoginTimeout("1s")).toThrow(/out of range/)
+  })
+})
+
+describe("readPastedCallback", () => {
+  const sink = { write: () => true }
+
+  it("resolves with a valid pasted line (close must not pre-empt the resolve)", async () => {
+    const input = new PassThrough()
+    const p = readPastedCallback(new AbortController().signal, input, sink)
+    input.write("http://127.0.0.1:1234/callback?code=abc&state=xyz\n")
+    await expect(p).resolves.toBe("http://127.0.0.1:1234/callback?code=abc&state=xyz")
+  })
+
+  it("EOF without a line never rejects (loopback may still win); abort settles it", async () => {
+    const input = new PassThrough()
+    const ac = new AbortController()
+    const p = readPastedCallback(ac.signal, input, sink)
+    let settled = false
+    p.then(
+      () => (settled = true),
+      () => (settled = true)
+    )
+    input.end()
+    await new Promise(r => setTimeout(r, 50))
+    expect(settled).toBe(false)
+    ac.abort()
+    await expect(p).rejects.toThrow(/aborted/)
   })
 })

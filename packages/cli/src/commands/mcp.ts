@@ -15,6 +15,7 @@
  *                               enabled by default; ids must already be imported.
  *
  *   login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
+ *         [--timeout <duration>] [--manual|--paste]
  *                               OAuth login for a remote (http/sse) MCP that
  *                               answers 401 + resource_metadata. Discovers the
  *                               server, registers a client, prints the consent
@@ -32,6 +33,7 @@
  */
 
 import { spawn } from "node:child_process"
+import { createInterface } from "node:readline"
 import { KeychainStore } from "@agentproto/auth"
 import { createBundle, getBundle, updateBundle, type Bundle } from "@agentproto/runtime/bundles"
 import { loadConfig, saveConfig, type AgentprotoConfig } from "@agentproto/runtime/config"
@@ -53,6 +55,7 @@ Usage:
   agentproto mcp migrate-secrets [--apply]
   agentproto mcp mount-default <adapter> <importId...>
   agentproto mcp login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
+                       [--timeout <duration>] [--manual|--paste]
   agentproto mcp logout <alias|importId>
 
 migrate-secrets lists the header/env values in imported-mcps.json that would
@@ -69,6 +72,10 @@ RFC 9728 resource metadata). It prints the authorization URL and the scopes
 being requested; the consent click is yours. Tokens go to the OS keychain,
 never to imported-mcps.json. The daemon refreshes them on its own; when they
 are revoked it reports "oauth login required" until you run login again.
+--timeout <duration> (30m, 1800s, 90s; default 5m, max 2h) bounds the wait.
+--manual (alias --paste) also accepts the full callback URL pasted on stdin after consent, next
+to the loopback listener (for a browser on another machine); the state is
+checked and neither code nor state is ever printed.
 `
 
 export interface MigrateSecretsDeps {
@@ -228,6 +235,23 @@ export interface McpLoginDeps {
   verify: (entry: ImportedMcpEntry) => Promise<string[]>
   login?: typeof loginMcpOAuth
   timeoutMs?: number
+  /** Second path to the callback: resolves with a pasted callback URL. */
+  manualCallback?: (signal: AbortSignal) => Promise<string>
+}
+
+export const MIN_LOGIN_TIMEOUT_MS = 10_000
+export const MAX_LOGIN_TIMEOUT_MS = 2 * 60 * 60_000
+
+/** `30m`, `1800s`, `2h`, `90` (bare number = seconds) → ms, within [10s, 2h]. */
+export function parseLoginTimeout(raw: string): number {
+  const m = /^(\d+)\s*(s|m|h)?$/i.exec(raw.trim())
+  if (!m) throw new Error(`invalid --timeout '${raw}' (use e.g. 90s, 30m, 2h)`)
+  const unit = (m[2] ?? "s").toLowerCase()
+  const ms = Number(m[1]) * (unit === "h" ? 3_600_000 : unit === "m" ? 60_000 : 1000)
+  if (ms < MIN_LOGIN_TIMEOUT_MS || ms > MAX_LOGIN_TIMEOUT_MS) {
+    throw new Error(`--timeout '${raw}' is out of range (min 10s, max 2h)`)
+  }
+  return ms
 }
 
 export interface McpLoginReport {
@@ -290,6 +314,7 @@ export async function mcpLogin(
     io: deps.io,
     onAuthorizationUrl: deps.onAuthorizationUrl,
     ...(deps.timeoutMs ? { timeoutMs: deps.timeoutMs } : {}),
+    ...(deps.manualCallback ? { manualCallback: deps.manualCallback } : {}),
   })
   const next: ImportedMcpEntry = {
     ...entry,
@@ -336,25 +361,73 @@ function parseLoginArgs(rest: readonly string[]): {
   url?: string
   scope?: string
   noOpen: boolean
+  timeoutMs?: number
+  manual: boolean
   error?: string
 } {
   let key: string | undefined
   let url: string | undefined
   let scope: string | undefined
   let noOpen = false
+  let manual = false
+  let timeoutMs: number | undefined
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!
     if (a === "--no-open") noOpen = true
-    else if (a === "--url" || a === "--scope") {
+    else if (a === "--manual" || a === "--paste") manual = true
+    else if (a === "--url" || a === "--scope" || a === "--timeout") {
       const v = rest[++i]
-      if (!v) return { noOpen, error: `${a} needs a value` }
+      if (!v) return { noOpen, manual, error: `${a} needs a value` }
       if (a === "--url") url = v
-      else scope = v
-    } else if (a.startsWith("-")) return { noOpen, error: `unexpected option '${a}'` }
+      else if (a === "--scope") scope = v
+      else {
+        try {
+          timeoutMs = parseLoginTimeout(v)
+        } catch (err) {
+          return { noOpen, manual, error: (err as Error).message }
+        }
+      }
+    } else if (a.startsWith("-")) return { noOpen, manual, error: `unexpected option '${a}'` }
     else if (!key) key = a
-    else return { noOpen, error: `unexpected argument '${a}'` }
+    else return { noOpen, manual, error: `unexpected argument '${a}'` }
   }
-  return { ...(key ? { key } : {}), ...(url ? { url } : {}), ...(scope ? { scope } : {}), noOpen }
+  return {
+    ...(key ? { key } : {}),
+    ...(url ? { url } : {}),
+    ...(scope ? { scope } : {}),
+    ...(timeoutMs ? { timeoutMs } : {}),
+    noOpen,
+    manual,
+  }
+}
+
+/**
+ * One line of pasted callback URL (prompt on `prompt`, default stderr).
+ * Resolves on the first line. On EOF (closed / non-interactive stdin) it does
+ * NOT reject: it stays pending so the loopback path can still win the race;
+ * it only settles on a line or when `signal` aborts.
+ */
+export function readPastedCallback(
+  signal: AbortSignal,
+  input: NodeJS.ReadableStream = process.stdin,
+  prompt: { write(s: string): unknown } = process.stderr
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const rl = createInterface({ input, terminal: false })
+    prompt.write("Paste the full callback URL (http://127.0.0.1:PORT/callback?code=…&state=…) and press Enter:\n")
+    rl.once("line", line => {
+      rl.close()
+      resolve(line)
+    })
+    signal.addEventListener(
+      "abort",
+      () => {
+        rl.close()
+        reject(new Error("aborted"))
+      },
+      { once: true }
+    )
+  })
 }
 
 async function runLoginLogout(verb: "login" | "logout", rest: readonly string[]): Promise<number> {
@@ -390,6 +463,12 @@ async function runLoginLogout(verb: "login" | "logout", rest: readonly string[])
         load: () => loadImportedMcps(),
         save: c => saveImportedMcps(c),
         io,
+        ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
+        ...(args.manual
+          ? {
+              manualCallback: readPastedCallback,
+            }
+          : {}),
         onAuthorizationUrl: url => {
           const scopes = url.searchParams.get("scope")
           process.stdout.write(
