@@ -268,6 +268,11 @@ export interface SpawnDefaultsConfig {
      *  unverified senders reach any live session, labelled and capped at
      *  steer. "block": unverified session senders keep the refusal. */
     anonymousSend?: "block" | "label"
+    /** `defaults.messaging.labelAddressing` - "tree" (default): a label a
+     *  supervisor gives a child is a family name (parent + siblings only);
+     *  "open": any session may address any label; "operator": only
+     *  operator-stamped labels. */
+    labelAddressing?: "open" | "tree" | "operator"
   }
   /** Caller identity (ts#2165 step 5). */
   identity?: {

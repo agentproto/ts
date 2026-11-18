@@ -31,12 +31,16 @@ async function connect(
   registry: ReturnType<typeof createSessionsRegistry>,
   callerSessionId?: string,
   callerScope?: OrchestratorScope,
+  // These tests predate the per-family default ("tree"); they pin the
+  // "operator" policy, where a label resolves for everyone.
+  messagingLabelAddressing: "open" | "tree" | "operator" = "operator",
 ) {
   const server = new McpServer({ name: "label-drive", version: "0.0.0" })
   registerAgentTools(server, {
     registry,
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(callerScope ? { callerScope } : {}),
+    messagingLabelAddressing,
   })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)

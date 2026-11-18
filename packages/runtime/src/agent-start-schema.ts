@@ -145,7 +145,13 @@ export const agentStartInputShape = {
   label: z
     .string()
     .optional()
-    .describe("Free-text label shown in `agent_sessions_list` and the UI."),
+    .describe("Free-text label shown in `agent_sessions_list` and the UI. When a session spawns the child, it is also stamped as the child's `label:` address unless the policy is \"operator\" (see `labelAddressing`)."),
+  labelAddressing: z
+    .enum(["open", "tree", "operator"])
+    .optional()
+    .describe(
+      "Who may reach this session by name (`label:<x>`): \"tree\" (default `defaults.messaging.labelAddressing`) = a family name for the parent and siblings only, unique in the family; \"open\" = anyone, no uniqueness check; \"operator\" = only an operator-stamped label.",
+    ),
   mode: z
     .string()
     .optional()

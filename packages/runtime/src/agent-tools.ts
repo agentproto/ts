@@ -102,6 +102,7 @@ import type { Grant } from "@agentproto/policy"
 import {
   defaultUrgencyForKind,
   registerMessageTools,
+  findOperatorLabelHolder,
   resolveLiveLabelAddress,
   type ToolResult,
   type RegisterMessageToolsOptions,
@@ -614,6 +615,8 @@ export interface RegisterAgentToolsOptions {
    *  "block". Forwarded to `message_send` / `message_reply` and
    *  `permissions_explain`. */
   messagingAnonymousSend?: "block" | "label"
+  /** config.json `defaults.messaging.labelAddressing` - "tree" (default) | "open" | "operator". */
+  messagingLabelAddressing?: "open" | "tree" | "operator"
   /** `mcp.noCallerIdentity` — how the MCP gateway treats a call with no
    *  caller identity: `block` (default) refuses, `accept` allows an
    *  anonymous `message_send` as `claude-code`, `ask` parks it on a human
@@ -656,6 +659,7 @@ export function registerAgentTools(
     messagingAgentInterrupt,
     deliveryApply,
     messagingAnonymousSend,
+    messagingLabelAddressing,
     noCallerIdentity,
     requestAnonymousMessageApproval,
     ensureLlmEndpointRunning,
@@ -715,6 +719,8 @@ export function registerAgentTools(
       tool,
       to: arg,
       verb: "drive",
+      ...(messagingLabelAddressing ? { defaultMode: messagingLabelAddressing } : {}),
+      ...(effectiveCaller() !== undefined ? { callerId: effectiveCaller()! } : {}),
       mayReach: d => {
         // agent_kill from a scoped orchestrator is also bounded by its subtree.
         if (tool === "agent_kill" && callerScope) {
@@ -835,7 +841,7 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, full: _full, fields: _fields, parent: declaredParent, ...spawnInput } = input
+      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, full: _full, fields: _fields, parent: declaredParent, labelAddressing: spawnLabelAddressing, ...spawnInput } = input
       // Declared parent (`agent_start.parent`): for a caller the daemon cannot
       // identify. A call that already carries an identity attaches under it
       // automatically, so a declaration there is refused rather than allowed to
@@ -1010,6 +1016,16 @@ export function registerAgentTools(
         // match on. Check the resolved descriptor because `attach` /
         // `autoParentSessionId` can derive a parent.
         const spawnLabel = input.label?.trim()
+        if (spawnLabelAddressing && !result.deduped) {
+          try {
+            registry.setLabelAddressing(result.descriptor.id, spawnLabelAddressing)
+          } catch (err) {
+            attachWarnings.push(
+              `labelAddressing apply failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+        }
+        const spawnMode = spawnLabelAddressing ?? messagingLabelAddressing ?? "tree"
         const hasResolvedParent =
           typeof result.descriptor.parentSessionId === "string" &&
           result.descriptor.parentSessionId.length > 0
@@ -1025,6 +1041,38 @@ export function registerAgentTools(
             attachWarnings.push(
               `operatorLabel apply failed: ${err instanceof Error ? err.message : String(err)}`,
             )
+          }
+        } else if (
+          // Family name: a session that spawns a child with a label owns that
+          // name inside its family (itself + its children). Only the parent
+          // can set it; a sibling or an outsider cannot, and a clash with a
+          // sibling is refused (the child still starts, unlabelled).
+          spawnLabel &&
+          !result.deduped &&
+          hasResolvedParent &&
+          effectiveCaller() !== undefined &&
+          result.descriptor.parentSessionId === effectiveCaller() &&
+          spawnMode !== "operator"
+        ) {
+          const holder = findOperatorLabelHolder(
+            registry,
+            { ...result.descriptor, labelAddressing: spawnMode },
+            spawnLabel,
+            messagingLabelAddressing,
+          )
+          if (holder) {
+            attachWarnings.push(
+              `label "${spawnLabel}" not usable as a \`label:\` address: already carried by session ` +
+                `"${holder.id}" in the same family; address the new session by id.`,
+            )
+          } else {
+            try {
+              registry.setOperatorLabel(result.descriptor.id, spawnLabel)
+            } catch (err) {
+              attachWarnings.push(
+                `operatorLabel apply failed: ${err instanceof Error ? err.message : String(err)}`,
+              )
+            }
           }
         }
         // The shared `claude-desktop` identity declares `parent: "cc:<id>"`, so
@@ -1619,6 +1667,7 @@ export function registerAgentTools(
     ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
     ...(messagingAnonymousSend ? { anonymousSend: messagingAnonymousSend } : {}),
+    ...(messagingLabelAddressing ? { labelAddressing: messagingLabelAddressing } : {}),
     ...(noCallerIdentity ? { noCallerIdentity } : {}),
     ...(requestAnonymousMessageApproval ? { requestAnonymousMessageApproval } : {}),
     ...(deliveryApply ? { deliveryApply } : {}),
@@ -2035,23 +2084,9 @@ export function registerAgentTools(
         if (operatorLabel !== undefined) {
           // Any non-archived holder counts, dead or retired: a brain that is
           // down between two restarts still owns its name and takes it back on
-          // rebirth. A predecessor of the target (its restart/continue-fresh
-          // chain ends at the target) is the same lineage, not a rival.
-          const continuesInto = (d: SessionDescriptor, id: string): boolean => {
-            for (let i = 0, cur: SessionDescriptor | undefined = d; i < 256 && cur?.continuedTo; i++) {
-              if (cur.continuedTo === id) return true
-              cur = registry.get(cur.continuedTo)
-            }
-            return false
-          }
-          const holder = registry
-            .list()
-            .find(
-              d =>
-                d.id !== target.id &&
-                d.operatorLabel === operatorLabel &&
-                !continuesInto(d, target.id),
-            )
+          // rebirth. For a child the namespace is its family (siblings) plus
+          // root labels; a predecessor in its restart chain is the same lineage.
+          const holder = findOperatorLabelHolder(registry, target, operatorLabel, messagingLabelAddressing)
           if (holder) {
             const state = isRetired(holder) ? `${holder.status}, retired` : holder.status
             return {

@@ -65,6 +65,8 @@ export interface RegisterMessageToolsOptions {
   registry: SessionsRegistry
   callerScope?: OrchestratorScope
   callerSessionId?: string
+  /** `defaults.messaging.labelAddressing` - who may resolve `label:<x>` (default "tree"). */
+  labelAddressing?: LabelAddressing
   /** `defaults.messaging.allowSiblings` - sibling↔sibling messages. Off by
    *  default. */
   allowSiblings?: boolean
@@ -165,18 +167,46 @@ export function resolveLiveLabelAddress(input: {
   mayReach: (d: SessionDescriptor) => boolean
   /** What the caller may not do to the hidden candidates, for the error text. */
   verb?: "message" | "drive"
+  /** The calling session, when there is one. A label on a session that has a
+   *  parent is a family name: it resolves only for that parent and the
+   *  parent's other children. Without a caller, only root labels resolve. */
+  callerId?: string
+  /** `defaults.messaging.labelAddressing` (default "tree"). */
+  defaultMode?: LabelAddressing
 }): { id: string } | ToolResult {
-  const { registry, tool, to, mayReach, verb = "message" } = input
+  const { registry, tool, to, mayReach, verb = "message", callerId, defaultMode } = input
   if (!to.startsWith("label:")) return { id: to }
   const label = to.slice("label:".length)
   if (label.trim() === "") {
     return fail("invalid_label", `${tool}: \`label:\` needs a label after the colon.`)
   }
-  const live = registry.list().filter(d => d.operatorLabel === label && isLiveRecipient(d))
+  const carriers = registry.list().filter(d => d.operatorLabel === label && isLiveRecipient(d))
+  // Family names (label on a child) are visible inside their family only and
+  // win over a root's operator label of the same name; root labels stay global.
+  // The carrier's own policy decides who may resolve its name: "open" and
+  // "operator" resolve for everyone, "tree" only inside the family.
+  const visible = carriers.filter(
+    d =>
+      d.parentSessionId === undefined ||
+      effectiveLabelAddressing(d, defaultMode) !== "tree" ||
+      inLabelFamily(callerId, d, registry),
+  )
+  const family = visible.filter(
+    d => d.parentSessionId !== undefined && effectiveLabelAddressing(d, defaultMode) === "tree",
+  )
+  const live = family.length > 0 ? family : visible
   if (live.length === 0) {
+    const outside = carriers.length > 0
     return fail(
       "no_live_session_for_label",
-      `${tool}: no live session carries the label "${label}". A killed or retired session never matches.`,
+      `${tool}: no live session carries the label "${label}"` +
+        `${outside ? " that you may address by name (a label on a child session is a family name: only its parent and its siblings resolve it; address it by id from elsewhere)" : ""}. ` +
+        "A killed or retired session never matches. " +
+        "`label:` matches only the immutable operator label (policy `defaults.messaging.labelAddressing`: " +
+        "open | tree | operator, or `agent_start.labelAddressing` per session). It is auto-stamped on sessions an " +
+        "operator starts and, unless the policy is `operator`, on children a session spawns with `agent_start.label`; " +
+        "the mutable label never matches. A supervisor can also label a child it owns with " +
+        "`agent_set_operator_label`; otherwise address the session by id (`agent_start` returns it).",
     )
   }
   if (live.length > 1) {
@@ -191,6 +221,62 @@ export function resolveLiveLabelAddress(input: {
     )
   }
   return { id: live[0]!.id }
+}
+
+/** A label on a session with a parent is a protected family name: only that
+ *  parent and the parent's other children (the labelled session's siblings)
+ *  may resolve it. The labelled session itself is not "inside" (it never
+ *  addresses itself by name). */
+/** How a session's `operatorLabel` may be addressed by name:
+ *  - `operator`: only labels an operator (or an owner, by `agent_set_operator_label`)
+ *    stamped; resolves for everyone. Nothing is stamped from `agent_start.label` by a session.
+ *  - `tree`: a child spawned with a label gets it as a protected family name,
+ *    resolvable only by its parent and siblings, unique in the family.
+ *  - `open`: like `tree` for stamping, but resolvable by everyone and with no
+ *    uniqueness check (a clash is `ambiguous_label`). */
+export type LabelAddressing = "open" | "tree" | "operator"
+export const LABEL_ADDRESSING_DEFAULT: LabelAddressing = "tree"
+
+export function effectiveLabelAddressing(
+  d: Pick<SessionDescriptor, "labelAddressing">,
+  defaultMode?: LabelAddressing,
+): LabelAddressing {
+  return d.labelAddressing ?? defaultMode ?? LABEL_ADDRESSING_DEFAULT
+}
+
+export function inLabelFamily(callerId: string | undefined, carrier: SessionDescriptor, registry?: SessionsRegistry): boolean {
+  if (callerId === undefined || carrier.parentSessionId === undefined) return false
+  if (callerId === carrier.parentSessionId) return true
+  if (callerId === carrier.id) return false
+  const caller = registry?.get(callerId)
+  if (caller) return caller.parentSessionId === carrier.parentSessionId
+  return false
+}
+
+/** Another non-archived session that already holds `label` where `target`
+ *  would collide with it: for a child, a sibling (same parent) or a root
+ *  carrying the same operator label; for a root, any holder. A predecessor of
+ *  the target (continue/restart chain) is the same lineage, not a rival. */
+export function findOperatorLabelHolder(
+  registry: SessionsRegistry,
+  target: Pick<SessionDescriptor, "id" | "parentSessionId" | "labelAddressing">,
+  label: string,
+  defaultMode?: LabelAddressing,
+): SessionDescriptor | undefined {
+  // "open": anyone may take any name, a clash surfaces at resolve time.
+  if (effectiveLabelAddressing(target, defaultMode) === "open") return undefined
+  const continuesInto = (d: SessionDescriptor, id: string): boolean => {
+    for (let i = 0, cur: SessionDescriptor | undefined = d; i < 256 && cur?.continuedTo; i++) {
+      if (cur.continuedTo === id) return true
+      cur = registry.get(cur.continuedTo)
+    }
+    return false
+  }
+  return registry.list().find(d => {
+    if (d.id === target.id || d.operatorLabel !== label || continuesInto(d, target.id)) return false
+    if (target.parentSessionId === undefined || effectiveLabelAddressing(target, defaultMode) === "operator") return true
+    return d.parentSessionId === undefined || d.parentSessionId === target.parentSessionId
+  })
 }
 
 /** Compact wire view of a message for tool results. */
@@ -303,6 +389,8 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       registry,
       tool,
       to,
+      ...(self ? { callerId: self.id } : {}),
+      ...(opts.labelAddressing ? { defaultMode: opts.labelAddressing } : {}),
       mayReach: d => decide(principal, "session.message", { kind: "session", session: d } as const, basePolicy).allow,
     })
   }

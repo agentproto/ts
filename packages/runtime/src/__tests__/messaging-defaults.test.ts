@@ -30,6 +30,7 @@ describe("resolveMessagingDefaults", () => {
           agentInterrupt: "allow",
           pendingPromptStaleMinutes: 12,
           anonymousSend: "block",
+          labelAddressing: "open",
         },
       },
     }))
@@ -43,6 +44,7 @@ describe("resolveMessagingDefaults", () => {
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
       anonymousSend: "block",
+      labelAddressing: "open",
     })
   })
 

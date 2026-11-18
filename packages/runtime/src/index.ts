@@ -4654,6 +4654,7 @@ export async function createGateway(
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
       ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
       messagingAnonymousSend: messagingDefaults.anonymousSend,
+      messagingLabelAddressing: messagingDefaults.labelAddressing,
       noCallerIdentity: mcpNoCallerIdentity,
       // `ask`: park an identity-less send on a human approval. The requester
       // is the operator (an unidentified client is operator context, the

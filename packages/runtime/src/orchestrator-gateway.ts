@@ -814,6 +814,7 @@ export interface OrchestratorGatewayDeps {
   /** EXPLICIT override for config.json `defaults.messaging.anonymousSend`.
    *  Forwarded to `registerAgentTools`. */
   messagingAnonymousSend?: "block" | "label"
+  messagingLabelAddressing?: "open" | "tree" | "operator"
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -886,6 +887,7 @@ export function createOrchestratorMcpServerFactory(
       messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
       ...(messagingDefaults.deliveryApply ? { deliveryApply: messagingDefaults.deliveryApply } : {}),
       messagingAnonymousSend: deps.messagingAnonymousSend ?? messagingDefaults.anonymousSend,
+      messagingLabelAddressing: deps.messagingLabelAddressing ?? messagingDefaults.labelAddressing,
       daemonMcpUrl: deps.daemonMcpUrl,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),
       ...(deps.taskLedger ? { taskLedger: deps.taskLedger } : {}),

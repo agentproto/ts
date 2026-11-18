@@ -2292,6 +2292,10 @@ export interface SessionDescriptor {
    *  `allowPromptFrom` / `operatorDelegates` / a policy principal matches
    *  root sessions only, see `checkSessionOwnerGate`. */
   operatorLabel?: string
+  /** Per-session policy for addressing this session's `operatorLabel` by name
+   *  (`label:<x>`): "open" | "tree" | "operator". Unset = the daemon default
+   *  `defaults.messaging.labelAddressing` ("tree"). See `LabelAddressing`. */
+  labelAddressing?: "open" | "tree" | "operator"
   /** The AIP-9 operator this session runs for, as a canonical AIP-54 ref
    *  (`operator:<slug>[@<owner>/<workspace>]`) - AIP-46 §Operator binding.
    *  Recorded at spawn from `agent_start.operator` once the ref is well formed
@@ -5533,6 +5537,8 @@ export interface SessionsRegistry {
    *  by the `agent_set_operator_label` MCP tool (`agent-tools.ts`), which
    *  gates session callers with `checkOperatorLabelStamp`. */
   setOperatorLabel(id: string, operatorLabel: string | undefined): SessionDescriptor
+  /** Set (or clear) this session's label-addressing policy. */
+  setLabelAddressing(id: string, mode: "open" | "tree" | "operator" | undefined): SessionDescriptor
   /** Carry a predecessor's display name onto its restarted / continued-fresh
    *  successor: the derived `title` and the `renamedByUser` flag (what makes
    *  a human-written `label` outrank the title in `sessionDisplayName`).
@@ -16219,6 +16225,15 @@ export function createSessionsRegistry(opts?: {
       } else {
         rt.desc.operatorLabel = operatorLabel
       }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setLabelAddressing(id, mode) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setLabelAddressing: no session "${id}"`)
+      if (mode === undefined) delete rt.desc.labelAddressing
+      else rt.desc.labelAddressing = mode
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc

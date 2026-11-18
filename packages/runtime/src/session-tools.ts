@@ -806,6 +806,7 @@ export interface RegisterSessionToolsOptions {
   deliveryApply?: RegisterAgentToolsOptions["deliveryApply"]
   /** `defaults.messaging.anonymousSend` - forwarded to `registerAgentTools`. */
   messagingAnonymousSend?: RegisterAgentToolsOptions["messagingAnonymousSend"]
+  messagingLabelAddressing?: RegisterAgentToolsOptions["messagingLabelAddressing"]
   /** `mcp.noCallerIdentity` - forwarded to `registerAgentTools`. */
   noCallerIdentity?: RegisterAgentToolsOptions["noCallerIdentity"]
   /** `mcp.noCallerIdentity: "ask"` - forwarded to `registerAgentTools`. */
