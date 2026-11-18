@@ -1560,3 +1560,59 @@ describe("reconcileModelRoute", () => {
     })
   })
 })
+
+// A harness whose CLI owns its login (copilot-cli): `authSubscription.external`,
+// no provider, no model-derived key. Used to answer "Checking harness…" / an
+// empty model picker: with no billing profile every row was runnable:false, so
+// `runnableOnly` (the chat picker's read) dropped all of them.
+describe("buildCatalogModels — harness that authenticates itself (own CLI login)", () => {
+  const COPILOT: CatalogAdapterInput = {
+    slug: "copilot-cli",
+    models: [{ id: "mai-code-2" }, { id: "mai-code-2-flash" }, { id: "claude-sonnet-5.5" }],
+    authDescriptor: { authSubscription: { external: true } },
+  }
+  const rowsOf = (res: ReturnType<typeof buildCatalogModels>) =>
+    res.vendors.flatMap(v => v.products.flatMap(p => p.routes.map(r => ({ product: p.product, ...r }))))
+
+  it("is runnable with no auth profile when the caller names that harness, and keeps runnableOnly rows", () => {
+    const res = buildCatalogModels({
+      adapters: [COPILOT],
+      profiles: [],
+      query: { adapter: "copilot-cli", runnableOnly: true },
+    })
+    const products = rowsOf(res).map(r => r.product)
+    expect(products).toEqual(expect.arrayContaining(["mai-code-2", "mai-code-2-flash", "claude-sonnet-5.5"]))
+    for (const row of rowsOf(res)) {
+      expect(row.runnable).toBe(true)
+      expect(row.eligibleProfiles).toEqual([])
+    }
+  })
+
+  it("does not make a sibling's route look runnable in a global (no harness named) listing", () => {
+    const res = buildCatalogModels({ adapters: [COPILOT], profiles: [], query: { runnableOnly: true } })
+    expect(rowsOf(res)).toEqual([])
+  })
+
+  it("does not apply to a provider-scoped external login (codex-style still needs a profile)", () => {
+    const CODEX_LIKE: CatalogAdapterInput = {
+      slug: "codex",
+      models: [{ id: "gpt-5.6-sol" }],
+      authDescriptor: { provider: "openai", authSubscription: { external: true } },
+    }
+    const res = buildCatalogModels({
+      adapters: [CODEX_LIKE],
+      profiles: [],
+      query: { adapter: "codex", runnableOnly: true },
+    })
+    expect(rowsOf(res)).toEqual([])
+  })
+
+  it("still hides a harness with no auth descriptor at all", () => {
+    const res = buildCatalogModels({
+      adapters: [{ slug: "bare", models: [{ id: "mai-code-2" }] }],
+      profiles: [],
+      query: { adapter: "bare", runnableOnly: true },
+    })
+    expect(rowsOf(res)).toEqual([])
+  })
+})
