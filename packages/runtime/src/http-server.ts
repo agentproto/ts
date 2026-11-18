@@ -890,6 +890,11 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    * client-side before it reaches the gateway.
    */
   deferredToolDiscovery?: boolean
+  /**
+   * Manifest-declared `capabilities.selfCommands` — the allow-list of slash
+   * commands a session may run on itself via `session_command_self`.
+   */
+  selfCommands?: readonly string[]
 } | null>
 
 /**

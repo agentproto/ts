@@ -111,8 +111,8 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
   "session.drive": {
     routed: true,
     enforcedAt:
-      "permissions.ts decide(), called by the five drive tools through drive-gate.ts (the owner-gate rules are unchanged; explicit session:prompt / session:control grants may admit a caller)",
-    surfaces: ["agent_prompt", "agent_interrupt", "agent_kill", "session_restart", "session_continue_fresh"],
+      "permissions.ts decide(), called by the six drive tools through drive-gate.ts (the owner-gate rules are unchanged; explicit session:prompt / session:control grants may admit a caller)",
+    surfaces: ["agent_prompt", "agent_interrupt", "agent_kill", "session_restart", "session_continue_fresh", "session_handoff"],
   },
   "session.message": {
     routed: true,

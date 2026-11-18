@@ -471,6 +471,16 @@ export interface AgentCliCapabilities {
    */
   deferredToolDiscovery?: boolean
   /**
+   * Slash-commands (bare names, no leading `/`) a session of this harness may
+   * run ON ITSELF through the daemon's `session_command_self` tool — e.g.
+   * `["compact", "clear", "model"]`. It is an ALLOW-LIST: the daemon refuses
+   * any other command, and additionally requires the command to be in the
+   * session's live `availableCommands` when the harness advertised any.
+   * Declare only commands that are safe for an agent to trigger on itself;
+   * absent/empty ⇒ the harness lets sessions run none.
+   */
+  selfCommands?: readonly string[]
+  /**
    * AIP-72 memory projection (section 9): how a digest of in-force memory
    * items reaches a session, and whether native-memory changes can be
    * captured back as proposals. Metadata only, like `hooks`: declaring it

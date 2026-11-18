@@ -153,6 +153,7 @@ export function acpHandleFromSpec(spec: AcpAgentSpec): AgentCliHandle {
       file_io: true,
       resumable,
       ...(spec.deferred_tool_discovery ? { deferredToolDiscovery: true } : {}),
+      ...(spec.self_commands?.length ? { selfCommands: [...spec.self_commands] } : {}),
     },
     ...(resumable
       ? {
@@ -252,6 +253,9 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
     // with every daemon tool schema loaded eagerly, which made a sub-session
     // hit the 88% continue-fresh threshold on its first turn.
     deferred_tool_discovery: true,
+    // `session_command_self` allow-list (also intersected with the commands
+    // Vibe advertises live over ACP).
+    self_commands: ["compact", "clear"],
   },
   {
     slug: "kimi-cli",

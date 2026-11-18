@@ -419,6 +419,11 @@ const capabilitiesSchema = z.object({
    */
   deferredToolDiscovery: z.boolean().optional(),
   /**
+   * Allow-list of slash-command names (no leading `/`) a session may run on
+   * itself via the daemon's `session_command_self` tool. Absent ⇒ none.
+   */
+  selfCommands: z.array(z.string().min(1)).optional(),
+  /**
    * Adapter can ingest a filesystem path that the host UI just placed
    * on disk (host-side drag-drop into a terminal pastes the path
    * here). Implies the adapter has a Read-file tool wired so the
