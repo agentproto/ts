@@ -293,7 +293,9 @@ export interface DesktopReadResult {
 }
 
 /** Read one Desktop conversation's transcript. The id must be one the list
- *  returns: an unknown id is an error, never a guess. */
+ *  returns (its `id`, or its `externalId` — `cc:<id>` / `codex:<id>` — which the
+ *  list also shows and `message_send` takes): an unknown id is an error, never
+ *  a guess. */
 export async function readDesktopConversation(
   opts: DesktopReadOptions
 ): Promise<DesktopReadResult> {
@@ -308,7 +310,7 @@ export async function readDesktopConversation(
         ...(opts.claudeSessionsDirs ? { claudeSessionsDirs: opts.claudeSessionsDirs } : {}),
         ...(opts.codexHome ? { codexHome: opts.codexHome } : {}),
       })
-    ).find(c => c.app === opts.app && c.id === opts.id)
+    ).find(c => c.app === opts.app && (c.id === opts.id || c.externalId === opts.id))
   if (!conversation)
     throw new Error(
       `desktop_conversation_read: no ${opts.app} Desktop conversation "${opts.id}"`
@@ -407,7 +409,7 @@ export function registerDesktopConversationReadTool(server: McpServer): void {
       id: z
         .string()
         .min(1)
-        .describe("The `id` from desktop_conversation_list."),
+        .describe("The `id` from desktop_conversation_list, or its `externalId` (`cc:<id>` / `codex:<id>`)."),
       tail: z
         .number()
         .int()
@@ -644,7 +646,7 @@ export function registerDesktopConversationAskTool(
       id: z
         .string()
         .min(1)
-        .describe("The `id` from desktop_conversation_list."),
+        .describe("The `id` from desktop_conversation_list, or its `externalId` (`cc:<id>` / `codex:<id>`)."),
       text: z.string().min(1).max(20_000),
       urgency: z
         .enum(["fyi", "next-turn", "steer"])

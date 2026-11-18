@@ -9,7 +9,7 @@
  * drifted tables can never diverge again.
  */
 
-import { promises as fs, createReadStream } from "node:fs"
+import { promises as fs, createReadStream, existsSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { createInterface } from "node:readline"
 import { join, resolve } from "node:path"
@@ -169,7 +169,22 @@ export function claudeProjectSlug(cwd: string): string {
  *  only difference is the base dir. */
 export function claudeCodeProjectDir(cwd: string, configDir?: string): string {
   const base = configDir ?? resolve(homedir(), ".claude")
-  return resolve(base, "projects", claudeProjectSlug(cwd))
+  const dir = resolve(base, "projects", claudeProjectSlug(cwd))
+  // Claude Code names the directory after the cwd it resolved (symlinks
+  // followed), but a cwd handed to us may be the path as typed: on macOS
+  // `/tmp/x` is `/private/tmp/x`, so the slug of the typed path points at a
+  // directory that never exists. Only when the typed path has no directory do
+  // we retry with its realpath, so the common case stays a pure computation.
+  if (existsSync(dir)) return dir
+  let real: string
+  try {
+    real = realpathSync(cwd)
+  } catch {
+    return dir
+  }
+  if (real === cwd) return dir
+  const realDir = resolve(base, "projects", claudeProjectSlug(real))
+  return existsSync(realDir) ? realDir : dir
 }
 
 function extractFirstText(content: unknown): string | undefined {

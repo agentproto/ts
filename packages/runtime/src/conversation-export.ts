@@ -19,7 +19,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { promises as fs } from "node:fs"
+import { promises as fs, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -48,9 +48,11 @@ export interface ConversationExportResult {
 }
 
 export interface WriteToNativeStoreOptions {
-  /** cwd that scopes the target store's directory. For claude-code this
-   *  becomes the project slug under `~/.claude/projects/` (via
-   *  `claudeProjectSlug`). Defaults to `process.cwd()`. */
+  /** cwd that scopes the target store's directory. For claude-code the project
+   *  slug under `~/.claude/projects/` is derived (via `claudeProjectSlug`) from
+   *  this path after symlinks are resolved (macOS `/tmp/x` -> `/private/tmp/x`),
+   *  because that is the directory Claude Code reads; a path not on disk is used
+   *  as typed. Defaults to `process.cwd()`. */
   cwd?: string
 }
 
@@ -152,7 +154,17 @@ async function writeClaudeCode(
   cwd: string,
 ): Promise<ConversationExportResult> {
   const conversationId = randomUUID()
-  const dir = join(homedir(), ".claude", "projects", claudeProjectSlug(cwd))
+  // Claude Code reads `projects/<slug of the RESOLVED cwd>`: a symlinked cwd
+  // (macOS /tmp/x -> /private/tmp/x) must be written under that slug or
+  // `claude --resume` never finds the file. A cwd that does not exist yet is
+  // used as typed.
+  let projectCwd = cwd
+  try {
+    projectCwd = realpathSync(cwd)
+  } catch {
+    /* not on disk (yet): keep the typed path */
+  }
+  const dir = join(homedir(), ".claude", "projects", claudeProjectSlug(projectCwd))
   const path = join(dir, `${conversationId}.jsonl`)
 
   const lines: unknown[] = [
