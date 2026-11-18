@@ -25,6 +25,9 @@ import { join, resolve } from "node:path"
 /** Cumulative token usage for one claude-code session. Fields are omitted
  *  when no response reported them (never zero-filled). */
 export interface ClaudeCodeUsage {
+  /** Model of the latest API response (`message.model`), so a native
+   *  terminal session can be priced. Synthetic placeholders are skipped. */
+  model?: string
   tokensIn?: number
   tokensOut?: number
   cacheReadTokens?: number
@@ -38,6 +41,9 @@ interface ResponseUsage {
   cacheRead?: number
   cacheWrite?: number
   reasoning?: number
+  model?: string
+  /** Order of the line within its file (later wins for `model`). */
+  seq?: number
 }
 
 /** Per-response usage keyed by message id, plus the parse cursor. */
@@ -46,6 +52,8 @@ interface FileState {
   offset: number
   responses: Map<string, ResponseUsage>
   anon: number
+  /** Monotonic line counter feeding `ResponseUsage.seq`. */
+  seq: number
 }
 
 const num = (v: unknown): number | undefined =>
@@ -83,6 +91,9 @@ function foldLine(state: FileState, line: string): void {
   if (cacheRead !== undefined) r.cacheRead = cacheRead
   if (cacheWrite !== undefined) r.cacheWrite = cacheWrite
   if (reasoning !== undefined) r.reasoning = reasoning
+  const model = (e.message as { model?: unknown }).model
+  if (typeof model === "string" && model.length > 0 && !model.startsWith("<")) r.model = model
+  r.seq = state.seq++
   const key =
     typeof e.message?.id === "string"
       ? e.message.id
@@ -93,7 +104,7 @@ function foldLine(state: FileState, line: string): void {
 }
 
 function newState(): FileState {
-  return { offset: 0, responses: new Map(), anon: 0 }
+  return { offset: 0, responses: new Map(), anon: 0, seq: 0 }
 }
 
 /** Parse a whole transcript's text in one go. Exposed for tests + one-shot
@@ -107,9 +118,18 @@ export function parseClaudeCodeTranscriptUsage(text: string): ClaudeCodeUsage | 
 function sumResponses(states: readonly FileState[]): ClaudeCodeUsage | null {
   const out: ClaudeCodeUsage = {}
   let any = false
-  const add = (k: keyof ClaudeCodeUsage, v: number | undefined): void => {
+  const add = (k: Exclude<keyof ClaudeCodeUsage, "model">, v: number | undefined): void => {
     if (v === undefined) return
     out[k] = (out[k] ?? 0) + v
+  }
+  // Main transcript (states[0]) decides the model: the latest response of
+  // the conversation proper, not a sub-agent that may run another model.
+  let latestSeq = -1
+  for (const r of states[0]?.responses.values() ?? []) {
+    if (r.model !== undefined && (r.seq ?? 0) >= latestSeq) {
+      latestSeq = r.seq ?? 0
+      out.model = r.model
+    }
   }
   for (const state of states) {
     for (const r of state.responses.values()) {

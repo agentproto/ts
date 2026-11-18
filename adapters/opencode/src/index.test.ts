@@ -308,6 +308,28 @@ describe("readOpenCodeUsage", () => {
     expect(usage).toEqual({ tokensIn: 640, tokensOut: 128 })
   })
 
+  it("reports the session's model as provider/id from the JSON model column", async () => {
+    const dbDir = join(tmp, "opencode")
+    const { mkdirSync } = await import("node:fs")
+    mkdirSync(dbDir, { recursive: true })
+    const sqliteSpecifier = ["node", "sqlite"].join(":")
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as {
+      DatabaseSync: new (p: string) => { exec(sql: string): void; close(): void }
+    }
+    const db = new DatabaseSync(join(dbDir, "opencode.db"))
+    db.exec(
+      "CREATE TABLE session (id TEXT PRIMARY KEY, model TEXT, cost REAL, tokens_input INTEGER, tokens_output INTEGER);" +
+        `INSERT INTO session VALUES ('ses_model', '{"id":"glm-5.3-flash","providerID":"opencode-go"}', 0, 10, 2);`,
+    )
+    db.close()
+    expect(await readOpenCodeUsage("ses_model")).toEqual({
+      model: "opencode-go/glm-5.3-flash",
+      costUsd: 0,
+      tokensIn: 10,
+      tokensOut: 2,
+    })
+  })
+
   it("reads the cache + reasoning split when the schema has those columns", async () => {
     const dbDir = join(tmp, "opencode")
     const { mkdirSync } = await import("node:fs")

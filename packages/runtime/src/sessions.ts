@@ -48,6 +48,7 @@ import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readSandboxLedger } from "./sandbox-ledger.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
 import { readUsageSnapshots as readUsageSnapshotLines } from "./usage-snapshot-log.js"
+import { paidCostFor } from "./terminal-usage.js"
 import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import { runShellGate } from "./supervisor.js"
@@ -2686,6 +2687,14 @@ export interface SessionDescriptor {
    *  deliberately left undefined), or `"none"`. Stamped live on each
    *  cost-bearing usage_update / reader read, and re-derived at turn-end. */
   usageSource?: import("./usage.js").UsageSource
+  /** How the session's usage is billed (flat-rate subscription, pay-per-
+   *  token API key, free model, unknown). Set for native-TUI terminals from
+   *  the harness's own login/provider; see terminal-usage.ts. `costUsd`
+   *  stays the VALUE at API price, `paidCostUsd` is what is actually paid
+   *  (0 on a subscription or free model, = costUsd on an API key, absent
+   *  when billing is unknown). */
+  billing?: import("./usage.js").UsageBilling
+  paidCostUsd?: number
   /** Latest known `available_commands_update` payload (see @agentproto/acp's
    *  `StreamEvent`'s `available-commands` kind) — the slash-commands/skills
    *  the agent currently supports. Each notification REPLACES the previous
@@ -3373,6 +3382,8 @@ export interface SessionSummary {
   contextUsed?: number
   contextSizeSource?: ContextSizeSource
   usageSource?: import("./usage.js").UsageSource
+  billing?: import("./usage.js").UsageBilling
+  paidCostUsd?: number
   awaitingInput?: boolean
   awaitingQuestion?: SessionAwaitingQuestion
   awaitingPermission?: boolean
@@ -3516,6 +3527,8 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     contextUsed: desc.contextUsed,
     contextSizeSource: desc.contextSizeSource,
     usageSource: desc.usageSource,
+    billing: desc.billing,
+    paidCostUsd: desc.paidCostUsd,
     awaitingInput: desc.awaitingInput,
     awaitingQuestion: desc.awaitingQuestion,
     awaitingPermission: desc.awaitingPermission,
@@ -6980,6 +6993,13 @@ export function createSessionsRegistry(opts?: {
    *  root default 5s). Tests pin a small value so `armUsageRefresh`'s polling
    *  can be observed in guest time. */
   usageRefreshIntervalMs?: number
+  /** Native-TUI usage readers by harness slug (`createTerminalUsageReaders`
+   *  in terminal-usage.ts). A conversation-terminal PTY whose native
+   *  conversation is linked (`adapterSessionId`) polls the matching reader,
+   *  so a real `claude` / `codex` / `opencode` TUI gets model, tokens and
+   *  cost like an agent-cli session. Omitted → terminals carry no usage
+   *  (previous behaviour). */
+  terminalUsageReaders?: Record<string, import("./terminal-usage.js").TerminalUsageReader>
   /** How long the context rescue waits, after its auto-compaction turn, for
    *  the usage reading to drop under `hardStopAtPct` before falling back to
    *  continue-fresh / stop. Default 30s. */
@@ -8334,6 +8354,7 @@ export function createSessionsRegistry(opts?: {
           }
           schedulePersist()
           recordConversationLink(rt, candidate.conversationId)
+          armTerminalUsage(rt)
           stop()
         } else if (candidates.length > 1) {
           desc.linkStatus = "ambiguous"
@@ -10114,7 +10135,7 @@ export function createSessionsRegistry(opts?: {
     usage: AdapterUsageRead,
     opts?: { dedupe?: boolean },
   ): void => {
-    if (rt.desc.kind !== "agent-cli") return
+    if (rt.desc.kind !== "agent-cli" && !rt.conversationTerminal) return
     const key = [
       usage.model ?? "",
       usage.costUsd ?? "",
@@ -10172,6 +10193,12 @@ export function createSessionsRegistry(opts?: {
         rt.desc.usageSource = "computed"
       }
     }
+
+    // Native-TUI billing: keep `costUsd` as the value at API price and
+    // derive what the account actually pays from the billing mode.
+    if (usage.billing !== undefined) rt.desc.billing = usage.billing
+    const paid = paidCostFor(rt.desc.billing, rt.desc.costUsd)
+    if (paid !== undefined) rt.desc.paidCostUsd = paid
 
     // Only when the reader actually returned a signal — never
     // synthesize a usage event from nothing. Shape is identical to
@@ -10263,12 +10290,50 @@ export function createSessionsRegistry(opts?: {
    */
   const armUsageRefresh = (rt: SessionRuntime): void => {
     if (!rt.readUsage || rt.usageRefreshTimer) return
-    if (rt.desc.kind !== "agent-cli") return
+    if (rt.desc.kind !== "agent-cli" && !rt.conversationTerminal) return
     const ms = opts?.usageRefreshIntervalMs ?? USAGE_REFRESH_INTERVAL_MS
     const timer = setInterval(() => void pollUsageOnce(rt), ms)
     // Never hold the daemon open for an idle poller.
     timer.unref?.()
     rt.usageRefreshTimer = timer
+  }
+
+  /**
+   * Native-TUI usage capture: once a conversation-terminal PTY is linked to
+   * its provider conversation (`adapterSessionId`), point `readUsage` at the
+   * harness's own journal reader and arm the shared live poller. Idempotent;
+   * a no-op without an injected reader for the harness.
+   */
+  const armTerminalUsage = (rt: SessionRuntime): void => {
+    const desc = rt.desc
+    if (!rt.conversationTerminal || rt.readUsage || !desc.adapterSessionId) return
+    const slug = desc.adapterSlug ?? conversationTerminalSlugFor(desc)
+    const reader = slug ? opts?.terminalUsageReaders?.[slug] : undefined
+    if (!reader) return
+    const sid = desc.adapterSessionId
+    rt.readUsage = () =>
+      reader(sid, {
+        ...(desc.cwd ? { cwd: desc.cwd } : {}),
+        ...(desc.adapterConfigDir ? { configDir: desc.adapterConfigDir } : {}),
+      })
+    void pollUsageOnce(rt)
+    armUsageRefresh(rt)
+  }
+
+  /** One last read when a terminal ends, so the final tokens/cost land
+   *  after the poller is disarmed. Best-effort. */
+  const finalTerminalUsage = async (rt: SessionRuntime): Promise<void> => {
+    stopUsageRefresh(rt)
+    if (!rt.readUsage) return
+    try {
+      const usage = await rt.readUsage()
+      if (usage) {
+        applyUsageRead(rt, usage)
+        schedulePersist()
+      }
+    } catch {
+      // best-effort
+    }
   }
 
   function adapterSupportsCompact(agentSession: AgentSessionLike | undefined): boolean {
@@ -13674,8 +13739,10 @@ export function createSessionsRegistry(opts?: {
       // already knows its conversation (seeded above): record the link
       // now instead of probing.
       if (rt.conversationTerminal) {
-        if (desc.adapterSessionId) recordConversationLink(rt)
-        else startConversationTerminalLinkProbe(rt)
+        if (desc.adapterSessionId) {
+          recordConversationLink(rt)
+          armTerminalUsage(rt)
+        } else startConversationTerminalLinkProbe(rt)
       }
       pty.onData((chunk: string) => {
         // node-pty emits utf-8 strings. Convert once at the boundary
@@ -13723,6 +13790,7 @@ export function createSessionsRegistry(opts?: {
         rt.emitter.emit("exit", evt)
         rt.emitter.emit("status", rt.desc.status)
         void terminalTranscriptWriter.close(rt.desc.id)
+        void finalTerminalUsage(rt)
         schedulePersist()
         emitExited(rt)
       })

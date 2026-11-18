@@ -477,6 +477,18 @@ export function opencodeRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(opencode)
 }
 
+/** opencode stores a session's model as JSON `{"id","providerID"}`. */
+function parseOpenCodeModel(raw: string | null | undefined): string | undefined {
+  if (!raw) return undefined
+  try {
+    const m = JSON.parse(raw) as { id?: unknown; providerID?: unknown }
+    if (typeof m.id !== "string" || !m.id) return undefined
+    return typeof m.providerID === "string" && m.providerID ? `${m.providerID}/${m.id}` : m.id
+  } catch {
+    return raw
+  }
+}
+
 /**
  * Best-effort per-session usage reader, mirroring `readHermesUsage` in
  * `@agentproto/adapter-hermes`. OpenCode's live ACP `usage_update` event only
@@ -492,6 +504,8 @@ export async function readOpenCodeUsage(
   sessionId: string,
   ctx?: { cwd?: string; configDir?: string },
 ): Promise<{
+  /** `providerID/modelID` of the session's model, when recorded. */
+  model?: string
   costUsd?: number
   tokensIn?: number
   tokensOut?: number
@@ -525,6 +539,7 @@ export async function readOpenCodeUsage(
       // columns still reads (the missing ones just stay absent).
       const row = db.prepare("SELECT * FROM session WHERE id = ?").get(sessionId) as
         | {
+            model?: string | null
             cost?: number | null
             tokens_input?: number | null
             tokens_output?: number | null
@@ -534,7 +549,9 @@ export async function readOpenCodeUsage(
           }
         | undefined
       if (!row) return null
+      const model = parseOpenCodeModel(row.model)
       return {
+        ...(model ? { model } : {}),
         ...(row.cost != null ? { costUsd: Number(row.cost) } : {}),
         ...(row.tokens_input != null ? { tokensIn: row.tokens_input } : {}),
         ...(row.tokens_output != null ? { tokensOut: row.tokens_output } : {}),

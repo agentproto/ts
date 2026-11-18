@@ -123,6 +123,7 @@ import {
   type PairingChannelHandle,
   type HostRegistry,
   type JoinTokenRegistry,
+  createTerminalUsageReaders,
 } from "@agentproto/runtime"
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
@@ -1006,6 +1007,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // dep reasoning as above; a worktree the caller explicitly requested
         // is never routed through this port at all.
         runWorktreeAutoReclaim: makeWorktreeAutoReclaimer(),
+        // Native-TUI terminals (`claude`, `codex`, `opencode`, `hermes` in a
+        // PTY) have no ACP stream: read each harness's own usage journal by
+        // the linked conversation id so they carry model/tokens/cost too.
+        terminalUsageReaders: createTerminalUsageReaders({
+          "claude-code": (sid, ctx) => readClaudeCodeUsage(sid, ctx),
+          opencode: (sid, ctx) => readOpenCodeUsage(sid, ctx),
+          hermes: sid => readHermesUsage(sid),
+        }),
         // Injected port behind `sessions.ts`'s exit-time sandbox checkpoint
         // gc (`SandboxCheckpointReclaimer`): a terminal sandboxed session
         // whose `agentproto-checkpoint/<branch>` ref is provably superseded

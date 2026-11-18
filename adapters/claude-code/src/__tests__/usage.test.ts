@@ -16,6 +16,7 @@ const FIXTURE = fileURLToPath(new URL("./fixtures/transcript.jsonl", import.meta
 /** The fixture's expected totals: msg_A counted once despite two lines,
  *  msg_B has no thinking details, msg_C has no usage, junk lines skipped. */
 const FIXTURE_TOTALS = {
+  model: "claude-opus-5-5",
   tokensIn: 5,
   tokensOut: 200,
   cacheReadTokens: 41_000,
@@ -34,6 +35,16 @@ describe("parseClaudeCodeTranscriptUsage", () => {
   it("omits a field no response reported instead of zero-filling it", () => {
     const text = assistant("m1", { input_tokens: 4, output_tokens: 9 })
     expect(parseClaudeCodeTranscriptUsage(text)).toEqual({ tokensIn: 4, tokensOut: 9 })
+  })
+
+  it("reports the latest response's model, ignoring synthetic placeholders", () => {
+    const withModel = (id: string, model: string): string =>
+      JSON.stringify({
+        type: "assistant",
+        message: { id, model, role: "assistant", content: [], usage: { input_tokens: 1, output_tokens: 1 } },
+      })
+    const text = [withModel("m1", "claude-opus-5-5"), withModel("m2", "claude-sonnet-5-5"), withModel("m3", "<synthetic>")].join("\n")
+    expect(parseClaudeCodeTranscriptUsage(text)?.model).toBe("claude-sonnet-5-5")
   })
 
   it("returns null when the transcript has no usage at all", () => {

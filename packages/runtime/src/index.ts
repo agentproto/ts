@@ -1086,6 +1086,17 @@ export {
 } from "./tool-schema-measure.js"
 export { extractHelpSection, getToolHelp, listToolHelpTopics } from "./tool-help.js"
 export { deriveSessionUsage, pickUsageDetail, projectSessionUsage } from "./usage.js"
+export type { UsageBilling } from "./usage.js"
+export {
+  createTerminalUsageReaders,
+  parseCodexRolloutUsage,
+  readCodexRolloutUsage,
+  detectClaudeBilling,
+  detectCodexBilling,
+  opencodeBilling,
+  paidCostFor,
+} from "./terminal-usage.js"
+export type { TerminalUsageReader, TerminalUsageSources } from "./terminal-usage.js"
 export { rollupSessionSubtree } from "./usage-subtree.js"
 export type {
   SessionUsageWithSubtree,
@@ -2077,6 +2088,10 @@ export interface CreateGatewayOptions {
    * worktree is still reclaimable manually or via a scheduled `gc` sweep.
    */
   runWorktreeAutoReclaim?: WorktreeAutoReclaimer
+  /** Native-TUI usage readers by harness slug, forwarded to the sessions
+   *  registry (`createTerminalUsageReaders`). Omitted → terminals carry no
+   *  usage. */
+  terminalUsageReaders?: Record<string, import("./terminal-usage.js").TerminalUsageReader>
   /**
    * Optional best-effort exit-time deletion of one sandboxed session's
    * `agentproto-checkpoint/<branch>` remote ref once its work is provably
@@ -3000,6 +3015,7 @@ export async function createGateway(
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
+    ...(opts.terminalUsageReaders ? { terminalUsageReaders: opts.terminalUsageReaders } : {}),
     ...(opts.runSandboxCheckpointGc ? { runSandboxCheckpointGc: opts.runSandboxCheckpointGc } : {}),
     ...(langfuseTracer ? { langfuseTracer } : {}),
     langfuseTracingDefault: configDefaults?.langfuseTracing ?? false,

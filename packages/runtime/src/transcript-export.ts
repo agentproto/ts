@@ -1380,7 +1380,7 @@ function codexBlocksText(content: unknown): string {
   return acc
 }
 
-async function findCodexRolloutFile(conversationId: string, configDir?: string): Promise<string | undefined> {
+export async function findCodexRolloutFile(conversationId: string, configDir?: string): Promise<string | undefined> {
   const files = await walkCodexRollouts(codexSessionsDir(configDir))
   // Fast path: the uuid is the filename suffix.
   const byName = files.find(f => f.endsWith(`-${conversationId}.jsonl`))
