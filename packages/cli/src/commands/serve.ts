@@ -653,6 +653,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.deferredToolDiscovery === true
           ? { deferredToolDiscovery: true }
           : {}),
+        ...(adapter.handle.capabilities?.selfCommands?.length
+          ? { selfCommands: [...adapter.handle.capabilities.selfCommands] }
+          : {}),
       }
     } catch (err) {
       console.warn(

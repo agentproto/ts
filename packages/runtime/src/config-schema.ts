@@ -654,6 +654,7 @@ const acpAgentConfigEntrySchema: z.ZodType<AcpAgentConfigEntry> = z
     provider: z.string().optional(),
     install_hint: z.string().optional(),
     deferred_tool_discovery: z.boolean().optional(),
+    self_commands: z.array(z.string()).optional(),
   })
   .passthrough()
 
@@ -2491,6 +2492,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "harnesses",
     label: "ACP agent deferred tool discovery",
     help: "True when the CLI can call an MCP tool the daemon hid from tools/list after finding it via tool_search (proved live). Makes the daemon self-mount deferred by default for this agent.",
+  },
+  {
+    path: "acpAgents.*.self_commands",
+    schema: z.array(z.string()),
+    apply: "hot",
+    writable: false,
+    section: "harnesses",
+    label: "ACP agent self-commands",
+    help: "Slash-command names (no leading /) a session of this agent may run on itself through session_command_self, e.g. [\"compact\", \"clear\"]. Absent = none.",
   },
 
   // ── advanced: terminal/TUI presets ──

@@ -200,6 +200,20 @@ auth profile (`access`) are watched. Unset, the check never runs and makes no
 provider call; when set, each read is a one-token probe that uses a sliver of
 that profile's own budget.
 
+## A session hands off on itself (`session_handoff`)
+
+`agentproto sessions handoff` is the operator command. A *session* can do the
+same on itself, through the `session_handoff` MCP tool, and choose how much
+context travels (`context`): `handoff-summary` (default: status + previous
+session id + `transcript_read`), `harness-compact` (native `/compact`, then the
+model switch), `none` (model switch in place, no new session) or `full-resume`
+(replay everything, expensive, discouraged). Model policy and auth-profile
+allow-lists are enforced and a refusal is explicit. See
+`packages/runtime/docs/mcp-tools/session_handoff.md`. To compact or clear
+itself, a session uses `session_command_self` (queued, runs at the end of its
+turn, allow-list per harness).
+
+
 ## See also
 
 - [`sessions` verb reference](../verbs/sessions.md#checkpoint-id-or-name)
