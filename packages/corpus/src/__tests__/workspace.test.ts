@@ -228,7 +228,10 @@ describe("CorpusLinter", () => {
   it("clean fixtures produce only the expected lints", async () => {
     const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
-    const linter = new CorpusLinter({ clock: systemClock })
+    // Pinned clock: the fixture's Summary has updated_at 2026-05-22 and the
+    // max-age-summaries lint is 180d, so systemClock turned this test red on
+    // 2026-11-18T14:30Z regardless of any code change.
+    const linter = new CorpusLinter({ clock: { now: () => new Date("2026-06-01T00:00:00Z"), nowMs: () => Date.parse("2026-06-01T00:00:00Z") } })
     const report = linter.lint(snapshot)
 
     // The KNOWLEDGE.md declares 5 lints:
