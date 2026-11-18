@@ -653,8 +653,12 @@ export async function createAcpClient(
   const applyConfigOptions = async (
     sessionId: string,
     params: { model?: string; effort?: string; mode?: string },
+    advertisedOptions: SessionConfigOption[] = [],
   ): Promise<{ modelApplyRejection?: { requested: string; reason: string } }> => {
     let modelApplyRejection: { requested: string; reason: string } | undefined
+    // A model switch can rebuild the option list (and the server may answer
+    // with the fresh one); resolve the effort id against the newest we know.
+    let currentOptions = advertisedOptions
     if (params.model) {
       const retry = {
         maxAttempts: Math.max(1, options.modelApplyRetry?.maxAttempts ?? 3),
@@ -663,11 +667,14 @@ export async function createAcpClient(
       }
       for (let attempt = 1; ; attempt++) {
         try {
-          await connection.setSessionConfigOption({
+          const applied = await connection.setSessionConfigOption({
             configId: "model",
             value: params.model,
             sessionId,
           } as never)
+          const refreshed = (applied as { configOptions?: SessionConfigOption[] | null } | undefined)
+            ?.configOptions
+          if (Array.isArray(refreshed) && refreshed.length > 0) currentOptions = refreshed
           options.onActivity?.()
           break
         } catch (err) {
@@ -694,7 +701,7 @@ export async function createAcpClient(
     if (params.effort) {
       try {
         await connection.setSessionConfigOption({
-          configId: "effort",
+          configId: resolveEffortConfigId(currentOptions),
           value: params.effort,
           sessionId,
         } as never)
@@ -720,6 +727,13 @@ export async function createAcpClient(
             `(best-effort): ${configOptionErrorDetail(err)}`,
         )
       }
+    }
+    // Persist the list the model switch rebuilt, so a later live
+    // `setConfigOption("effort")` resolves against it, not the stale
+    // connect-time list.
+    const liveState = sessions.get(sessionId)
+    if (liveState && currentOptions !== advertisedOptions) {
+      liveState.configOptions = currentOptions
     }
     return modelApplyRejection ? { modelApplyRejection } : {}
   }
@@ -763,7 +777,7 @@ export async function createAcpClient(
           options.orphanedPromptTimeoutMs ?? DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS,
       }
       sessions.set(sessionId, state)
-      const { modelApplyRejection } = await applyConfigOptions(sessionId, params)
+      const { modelApplyRejection } = await applyConfigOptions(sessionId, params, configOptions)
       return buildSession(
         connection,
         sessionId,
@@ -818,7 +832,7 @@ export async function createAcpClient(
       // silently dropped and the resumed session runs the harness default
       // (opencode: `opencode/big-pickle`, a rate-limited free id). The driver's
       // derived-from-model guard consumes the returned rejection.
-      const { modelApplyRejection } = await applyConfigOptions(params.sessionId, params)
+      const { modelApplyRejection } = await applyConfigOptions(params.sessionId, params, configOptions)
       return buildSession(
         connection,
         params.sessionId,
@@ -1125,13 +1139,23 @@ function buildSession(
         return "unsupported"
       }
     },
-    async setConfigOption(configId, value) {
+    async setConfigOption(requestedConfigId, value) {
+      // `effort` is the harness-neutral name (what `setEffort` passes);
+      // the wire id is whatever this session advertises (`reasoning_effort`
+      // on Copilot), same resolution as the connect-time apply.
+      const configId =
+        requestedConfigId === "effort"
+          ? resolveEffortConfigId(state.configOptions)
+          : requestedConfigId
       try {
-        await connection.setSessionConfigOption({
+        const applied = await connection.setSessionConfigOption({
           configId,
           value,
           sessionId,
         } as never)
+        const refreshed = (applied as { configOptions?: SessionConfigOption[] | null } | undefined)
+          ?.configOptions
+        if (Array.isArray(refreshed) && refreshed.length > 0) state.configOptions = refreshed
         onActivity?.()
         return { applied: true }
       } catch (err) {
@@ -1967,6 +1991,26 @@ function selectOptionValues(
   return (
     options as Array<SessionConfigSelectOption | SessionConfigSelectGroup>
   ).flatMap(entry => ("options" in entry ? entry.options : [entry]))
+}
+
+/**
+ * The `configId` to use for the reasoning-effort `session/set_config_option`.
+ *
+ * Servers disagree on the id: Claude/Codex/OpenCode advertise `effort`,
+ * GitHub Copilot CLI advertises `reasoning_effort`. Resolve it from what the
+ * session actually advertised: `effort`, then `reasoning_effort`, then any
+ * select option with `category:"thought_level"` (the ACP category for it).
+ * When nothing matches (server advertises no options) keep the historical
+ * `"effort"` so existing harnesses behave exactly as before.
+ */
+export function resolveEffortConfigId(configOptions: SessionConfigOption[]): string {
+  const ids = (configOptions ?? []).map(option => option.id)
+  if (ids.includes("effort")) return "effort"
+  if (ids.includes("reasoning_effort")) return "reasoning_effort"
+  const byCategory = (configOptions ?? []).find(
+    option => option.category === "thought_level" && option.type === "select",
+  )
+  return byCategory?.id ?? "effort"
 }
 
 /**

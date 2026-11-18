@@ -1,6 +1,6 @@
 # Secrets — GitHub Copilot CLI
 
-The adapter injects nothing itself; the `copilot` binary reads its own
+The harness injects nothing itself; the `copilot` binary reads its own
 credentials from the spawn environment (or its stored login). The env vars it
 honors, in documented precedence order:
 
@@ -21,4 +21,4 @@ When no token env var is set, the CLI falls back to its stored OAuth login
 `gh auth token`.
 
 For GitHub Enterprise, also set `GH_HOST` to the enterprise hostname — the
-adapter's `github_host` option does this.
+harness's `github_host` option does this.

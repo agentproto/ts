@@ -39,13 +39,13 @@ capabilities:
   tool_calls: true
   sub_agents: false
   file_io: true
-  multimodal: false
+  multimodal: true
   resumable: true
   bidirectional: true
 tags: ["copilot", "github", "acp", "agent-runtime", "coding", "enterprise"]
 ---
 
-# GitHub Copilot CLI adapter
+# GitHub Copilot CLI harness
 
 `@agentproto/adapter-copilot-cli` wraps GitHub's official **Copilot CLI**
 (binary `copilot`, GitHub: `github/copilot-cli`, docs:
@@ -57,19 +57,21 @@ first-party ACP-over-stdio server.
 
 GitHub Copilot CLI ships a first-party Agent Client Protocol server
 (`copilot --acp`, stdio by default; `--acp --port N` for TCP). ACP support was
-added in **0.0.397** (2026-01-28) and is in public preview. The server speaks
-NDJSON JSON-RPC 2.0 over stdio, exposes **model** and **reasoning-effort** ACP
-session config options, and supports **loading existing sessions** (0.0.410+).
+added in **0.0.397** (2026-01-28); everything below is verified live on CLI
+**1.0.113** (ACP `protocolVersion` 1, 2026-11-18). The server speaks NDJSON
+JSON-RPC 2.0 over stdio, exposes **model**, **reasoning-effort** and **mode**
+ACP session config options, supports **loading existing sessions** (0.0.410+),
+accepts **image** prompts, and speaks **MCP over http and sse**.
 
 The CLI also has a headless one-shot mode — `copilot -p "<prompt>"
 --output-format json` emits JSONL, with `--model`, `--resume[=ID]`,
 `--allow-all-tools`, and `--stream` — but ACP is the richer, persistent,
-resumable posture, so this adapter drives ACP. It avoids a bespoke print event
+resumable posture, so this harness drives ACP. It avoids a bespoke print event
 mapper in `@agentproto/driver-agent-cli` (whose `event_schema` enum is closed).
 
 ## Install
 
-Any of the official channels works; the adapter declares all three:
+Any of the official channels works; the harness declares all three:
 
 ```bash
 npm install -g @github/copilot      # npm
@@ -108,23 +110,52 @@ pass them through the spawn `env` if you need it.
 
 ## Models
 
-The model menu is plan/entitlement-dependent and served under one GitHub
-identity, and the exact `--model` slugs are not published in a stable table, so
-this adapter declares **no fixed `models.allowed`**. Pass any id from the CLI's
-`/model` picker through the free-form `model` option (e.g. `claude-sonnet-4.5`,
-`gpt-5`, `auto`); it is applied via the ACP `model` session config option and
-validated by the CLI against your account.
+The harness ships a curated menu (`models.allowed`) read from a real
+`session/new` on 1.0.113: `auto`, `claude-sonnet-5.5` (default),
+`claude-sonnet-5`, `claude-haiku-5.5`, `claude-haiku-4.5`, `gpt-6.1-terra`,
+`gpt-6-luna`, `gpt-5.6-luna`, `gpt-5.3-codex`, `mai-code-1.1-flash`,
+`mai-code-2-flash`, `mai-code-2`, `gemini-3.8-flash`, `gemini-4-hydrogen`,
+`grok-4.7`, `grok-4.6`, `kimi-k3`. The menu is plan/entitlement-dependent and
+the Copilot CLI charges by premium-request multiplier (e.g. `claude-haiku-4.5`
+0.33x, `gemini-3.8-flash` 14x on the tested account), so treat the list as a
+menu, not a guarantee: the free-form `model` option still takes any id from the
+CLI's `/model` picker, applied via the ACP `model` session config option and
+validated by the CLI against your account. The authoritative per-account list is
+what the session returns at `session/new` (`models.availableModels` and the
+`model` config option).
 
-## What's verified vs. assumed
+## Effort
 
-**Verified from the official docs** (2026-10-01): the `copilot` binary name,
-the `--acp --stdio` ACP surface and its stdio/TCP transports, the ACP server's
-model + effort config options and session-load support, the token env
-precedence and token types, the Enterprise host/token variables, and the
-`-p --output-format json` headless surface.
+Effort is the `reasoning_effort` ACP config option on Copilot (`low` / `medium`
+/ `high` / `xhigh` / `max`). The ACP client resolves the config id from the
+options the session advertises (`effort`, then `reasoning_effort`, then the
+`thought_level` category), so the `effort` harness option works unchanged.
 
-**Not live-verified** (the `copilot` binary is not installed in this worktree):
-the exact `copilot --version` stdout shape (the semver parse is conventional),
-the precise ACP config-option ids (`model`/`effort` are assumed from the
-changelog's "ACP model/effort session config options"), and the ACP
-`promptCapabilities` (multimodal declared `false` conservatively).
+## Modes
+
+Copilot's `mode` config option offers three modes: Agent (default), Plan and
+Autopilot (allow-all, experimental). Their wire ids are the full URLs
+`https://agentclientprotocol.com/protocol/session-modes#agent`, `#plan` and
+`#autopilot` (verified on 1.0.113); `agent` / `plan` / `autopilot` below and in
+the manifest are the short names. They come from the session's own
+mode registry, so they appear as the session's available modes and are switched
+through the standard posture controls.
+
+## Concurrent prompts
+
+The server does not advertise `_meta.steering`. A second `session/prompt` sent
+while a turn is running **cancels** the first (`stopReason: cancelled`) and runs
+instead. The harness correctly declares no steering, so the daemon queues the
+second prompt FIFO rather than sending it raw.
+
+## What's verified
+
+Verified live on CLI 1.0.113 (2026-11-18): `copilot --version` stdout
+("GitHub Copilot CLI 1.0.113."), the ACP handshake and capabilities, the
+`model` / `reasoning_effort` / `mode` config option ids (`effort` is rejected:
+"Unknown config option"), image prompts (`promptCapabilities.image: true`; a PNG
+block was described correctly), MCP tool calls, `session/list`, and the token
+and keychain login. From the docs only: the Enterprise host/token variables and
+the `-p --output-format json` headless surface. Not re-tested: resuming a
+session after the process was restarted, and CLIs older than 1.0.x (the
+`>=0.0.410` floor is kept).

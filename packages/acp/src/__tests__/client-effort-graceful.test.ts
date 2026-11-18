@@ -176,3 +176,118 @@ describe("createAcpClient — newSession effort graceful degradation", () => {
     )
   })
 })
+
+// ---------------------------------------------------------------------------
+// Effort config id resolution. Copilot CLI (1.0.113) advertises the effort
+// option as `reasoning_effort` and answers `effort` with "Unknown config
+// option 'effort'"; Claude/Codex/OpenCode advertise `effort`.
+// ---------------------------------------------------------------------------
+
+const selectOption = (id: string, category: string, values: string[]) => ({
+  id,
+  name: id,
+  type: "select" as const,
+  category,
+  currentValue: values[0],
+  options: values.map(value => ({ value, name: value })),
+})
+
+describe("createAcpClient — effort configId resolved from advertised configOptions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockInitialize.mockResolvedValue({ agentCapabilities: {} })
+    mockSetSessionConfigOption.mockResolvedValue({})
+  })
+
+  it("copilot-cli: uses `reasoning_effort` when that is what the session advertises", async () => {
+    mockNewSession.mockResolvedValue({
+      sessionId: "s-copilot",
+      configOptions: [
+        selectOption("model", "model", ["claude-sonnet-5.5", "mai-code-2"]),
+        selectOption("reasoning_effort", "thought_level", ["low", "medium", "high", "xhigh", "max"]),
+        selectOption("mode", "mode", ["agent", "plan", "autopilot"]),
+      ],
+    })
+    const client = await createAcpClient({ ...fakeStreams() })
+    await client.newSession({ cwd: "/tmp", model: "mai-code-2", effort: "high" })
+    expect(mockSetSessionConfigOption).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ configId: "reasoning_effort", value: "high" }),
+    )
+    for (const call of mockSetSessionConfigOption.mock.calls) {
+      expect(call[0].configId).not.toBe("effort")
+    }
+  })
+
+  it("keeps `effort` when the session advertises it (Claude/Codex/OpenCode)", async () => {
+    mockNewSession.mockResolvedValue({
+      sessionId: "s-claude",
+      configOptions: [selectOption("effort", "thought_level", ["low", "high"])],
+    })
+    const client = await createAcpClient({ ...fakeStreams() })
+    await client.newSession({ cwd: "/tmp", effort: "low" })
+    expect(mockSetSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: "effort", value: "low" }),
+    )
+  })
+
+  it("falls back to the thought_level category for an unknown id", async () => {
+    mockNewSession.mockResolvedValue({
+      sessionId: "s-other",
+      configOptions: [selectOption("thinking_budget", "thought_level", ["low", "high"])],
+    })
+    const client = await createAcpClient({ ...fakeStreams() })
+    await client.newSession({ cwd: "/tmp", effort: "high" })
+    expect(mockSetSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: "thinking_budget", value: "high" }),
+    )
+  })
+
+  it("keeps the historical `effort` id when the session advertises no options", async () => {
+    mockNewSession.mockResolvedValue({ sessionId: "s-none" })
+    const client = await createAcpClient({ ...fakeStreams() })
+    await client.newSession({ cwd: "/tmp", effort: "low" })
+    expect(mockSetSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: "effort", value: "low" }),
+    )
+  })
+
+  it("prefers the option list returned by the model switch (effort option rebuilt)", async () => {
+    mockNewSession.mockResolvedValue({
+      sessionId: "s-rebuilt",
+      configOptions: [selectOption("model", "model", ["a", "b"])],
+    })
+    mockSetSessionConfigOption.mockResolvedValueOnce({
+      configOptions: [
+        selectOption("model", "model", ["a", "b"]),
+        selectOption("reasoning_effort", "thought_level", ["low", "high"]),
+      ],
+    })
+    const client = await createAcpClient({ ...fakeStreams() })
+    await client.newSession({ cwd: "/tmp", model: "b", effort: "high" })
+    expect(mockSetSessionConfigOption).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ configId: "reasoning_effort", value: "high" }),
+    )
+  })
+
+  it("copilot-cli: agent/plan/autopilot from the `mode` config option surface as availableModes", async () => {
+    mockNewSession.mockResolvedValue({
+      sessionId: "s-modes",
+      configOptions: [
+        selectOption("mode", "mode", [
+          "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "https://agentclientprotocol.com/protocol/session-modes#plan",
+          "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+        ]),
+      ],
+    })
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    expect(session.availableModes.map(m => m.id.split("#")[1])).toEqual([
+      "agent",
+      "plan",
+      "autopilot",
+    ])
+  })
+})

@@ -57,6 +57,70 @@ describe("AcpClientSession.setConfigOption — mid-session config switch", () =>
     expect(result).toEqual({ applied: true })
   })
 
+  it("mid-session `effort` goes out under the id the session advertises (copilot: reasoning_effort)", async () => {
+    mockSetSessionConfigOption.mockResolvedValue({})
+    mockNewSession.mockResolvedValue({
+      sessionId: "sess-live",
+      configOptions: [
+        {
+          id: "reasoning_effort",
+          name: "Reasoning effort",
+          type: "select",
+          category: "thought_level",
+          currentValue: "low",
+          options: [{ value: "low", name: "low" }, { value: "high", name: "high" }],
+        },
+      ],
+    })
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+
+    const result = await session.setConfigOption("effort", "high")
+
+    expect(mockSetSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: "reasoning_effort", value: "high" }),
+    )
+    expect(result).toEqual({ applied: true })
+  })
+
+  it("mid-session `effort` stays `effort` when the session advertises no options", async () => {
+    mockSetSessionConfigOption.mockResolvedValue({})
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    await session.setConfigOption("effort", "high")
+    expect(mockSetSessionConfigOption).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: "effort", value: "high" }),
+    )
+  })
+
+  it("a later `effort` uses the option list the connect-time model switch rebuilt", async () => {
+    const select = (id: string, category: string) => ({
+      id,
+      name: id,
+      type: "select" as const,
+      category,
+      currentValue: "a",
+      options: [{ value: "a", name: "a" }],
+    })
+    mockNewSession.mockResolvedValue({
+      sessionId: "sess-live",
+      configOptions: [select("model", "model")],
+    })
+    // The model switch answers with the rebuilt list: effort now exists.
+    mockSetSessionConfigOption.mockResolvedValueOnce({
+      configOptions: [select("model", "model"), select("reasoning_effort", "thought_level")],
+    })
+    mockSetSessionConfigOption.mockResolvedValue({})
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp", model: "b" })
+
+    await session.setConfigOption("effort", "high")
+
+    expect(mockSetSessionConfigOption).toHaveBeenLastCalledWith(
+      expect.objectContaining({ configId: "reasoning_effort", value: "high" }),
+    )
+  })
+
   it("is non-fatal on rejection — resolves {applied:false, reason} instead of throwing", async () => {
     mockSetSessionConfigOption.mockRejectedValue(
       new Error("Invalid value for config option model: bogus-id"),
