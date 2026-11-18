@@ -829,6 +829,9 @@ export interface AcpAgentConfigEntry {
    *  deferred by default for this harness (a small-context CLI otherwise loads
    *  every daemon tool schema up front and starts near its context limit). */
   deferred_tool_discovery?: boolean
+  /** Slash-command names (no leading `/`) a session of this agent may run on
+   *  itself via `session_command_self`. Absent/empty ⇒ none. */
+  self_commands?: string[]
 }
 
 /**
