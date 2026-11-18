@@ -1615,4 +1615,105 @@ describe("buildCatalogModels — harness that authenticates itself (own CLI logi
     })
     expect(rowsOf(res)).toEqual([])
   })
+
+  it("does not treat a gateway-bearer adapter as an own-CLI login", () => {
+    const GATEWAY_AUTH: CatalogAdapterInput = {
+      slug: "gateway-bearer",
+      models: [{ id: "mai-code-2" }],
+      authDescriptor: {
+        authSubscription: { external: true },
+        gatewayAuth: { setEnv: "GATEWAY_TOKEN" },
+      },
+    }
+    const res = buildCatalogModels({
+      adapters: [GATEWAY_AUTH],
+      profiles: [],
+      query: { adapter: "gateway-bearer", runnableOnly: true },
+    })
+    expect(rowsOf(res)).toEqual([])
+  })
+
+  it("does not treat a model-derived-api-key adapter as an own-CLI login", () => {
+    const DERIVED: CatalogAdapterInput = {
+      slug: "derived-key",
+      models: [{ id: "mai-code-2" }],
+      authDescriptor: {
+        authSubscription: { external: true },
+        modelDerivedApiKey: true,
+      },
+    }
+    const res = buildCatalogModels({
+      adapters: [DERIVED],
+      profiles: [],
+      query: { adapter: "derived-key", runnableOnly: true },
+    })
+    expect(rowsOf(res)).toEqual([])
+  })
+
+  it("is runnable when EVERY surface of an array authSubscription is external", () => {
+    const MULTI_EXTERNAL: CatalogAdapterInput = {
+      slug: "multi-external",
+      models: [{ id: "mai-code-2" }],
+      authDescriptor: {
+        authSubscription: [{ external: true }, { external: true }],
+      },
+    }
+    const res = buildCatalogModels({
+      adapters: [MULTI_EXTERNAL],
+      profiles: [],
+      query: { adapter: "multi-external", runnableOnly: true },
+    })
+    const rows = rowsOf(res)
+    expect(rows.map(r => r.product)).toContain("mai-code-2")
+    for (const row of rows) {
+      expect(row.runnable).toBe(true)
+      expect(row.eligibleProfiles).toEqual([])
+    }
+  })
+
+  it("is NOT runnable when an array authSubscription mixes an external and a provider surface", () => {
+    const MIXED: CatalogAdapterInput = {
+      slug: "mixed-surfaces",
+      models: [{ id: "mai-code-2" }],
+      authDescriptor: {
+        authSubscription: [{ external: true }, { setEnv: "PROVIDER_TOKEN" }],
+      },
+    }
+    const res = buildCatalogModels({
+      adapters: [MIXED],
+      profiles: [],
+      query: { adapter: "mixed-surfaces", runnableOnly: true },
+    })
+    expect(rowsOf(res)).toEqual([])
+  })
+
+  it("pins that widened/compat rows keep keying on the route, not on their attached free adapter", async () => {
+    // Widened rows are attached to every `routeSelection: "free"` adapter
+    // (`widenedContributions` / `compatibilityContributions`). Those attachments
+    // must NOT by themselves make a row runnable through the harness login:
+    // the only `free` adapters today are provider-scoped (claude-code,
+    // claude-sdk), so `usesOwnCliLogin()` is false for them and their widened
+    // routes stay unrunnable with no profile. This fails the day a `free`
+    // adapter also declares an own-CLI login: its login cannot reach a gateway
+    // route the curated row never declared.
+    await registerBuiltinRoutes({ llmEndpoint: true })
+    const freeSdk: CatalogAdapterInput = {
+      slug: "claude-sdk",
+      models: [{ id: "deepseek/deepseek-v4-pro", provider: "deepseek" }],
+      authDescriptor: {
+        provider: "anthropic",
+        authSubscription: { setEnv: "ANTHROPIC_AUTH_TOKEN" },
+      },
+      routeSelection: "free",
+    }
+    const res = buildCatalogModels({
+      adapters: [freeSdk],
+      profiles: [],
+      query: { adapter: "claude-sdk" },
+    })
+    const widened = findRoute(res, "deepseek", "deepseek-v4-pro", "openrouter")
+    expect(widened?.adapters).toEqual(["claude-sdk"])
+    expect(widened?.curated).toBe(false)
+    expect(widened?.runnable).toBe(false)
+  })
 })

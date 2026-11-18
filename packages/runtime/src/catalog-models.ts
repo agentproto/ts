@@ -701,6 +701,8 @@ export function buildCatalogModels(
     // which pickers render as "Harness login"). Never applied to a global
     // listing: there, a sibling harness curating the same id must not make
     // another route look runnable.
+    // `walletEligible` is deliberately NOT part of this: the harness login
+    // pays for the turn, not the provider wallet the route would imply.
     const runnable =
       eligible.length > 0 ||
       (queryAdapter !== undefined && usesOwnCliLogin(queryAdapter.authDescriptor))
