@@ -34,6 +34,25 @@ describe("session-follow-store", () => {
     expect(Number.isNaN(Date.parse(follow.createdAt))).toBe(false)
   })
 
+  it("scopes a key to its follower: two followers reusing a key do not overwrite each other", () => {
+    const store = createSessionFollowStore({ persist: false })
+    const a = store.upsert({ follower: "A", key: "task-test", selector: { sessionIds: ["x"] } })
+    const b = store.upsert({ follower: "B", key: "task-test", selector: { sessionIds: ["y"] } })
+    expect(a.created).toBe(true)
+    expect(b.created).toBe(true)
+    expect(b.follow.id).not.toBe(a.follow.id)
+    expect(store.list()).toHaveLength(2)
+    // Same follower + same key still upserts in place.
+    const a2 = store.upsert({ follower: "A", key: "task-test", selector: { sessionIds: ["z"] } })
+    expect(a2.created).toBe(false)
+    expect(a2.follow.id).toBe(a.follow.id)
+    expect(store.list()).toHaveLength(2)
+    expect(store.find("task-test", "B")?.id).toBe(b.follow.id)
+    // Removing by key with a follower only touches that follower's follow.
+    expect(store.remove("task-test", "A")?.id).toBe(a.follow.id)
+    expect(store.list().map(f => f.follower)).toEqual(["B"])
+  })
+
   it("gives a follow an expiresAt backstop, and an explicit value wins", () => {
     const now = Date.parse("2026-01-01T00:00:00.000Z")
     const store = createSessionFollowStore({ persist: false, nowMs: () => now })

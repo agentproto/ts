@@ -186,8 +186,9 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
 export function removeSessionFollow(
   deps: Pick<SessionFollowDeps, "store">,
   idOrKey: string,
+  follower?: string,
 ): SessionFollow | undefined {
-  return deps.store.remove(idOrKey)
+  return deps.store.remove(idOrKey, follower)
 }
 
 /** The wire view of a follow — the record itself (no secrets in it). */
@@ -236,12 +237,12 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       "digest lands: \"next-turn\" wakes you for a turn; \"fyi\" parks it in your inbox " +
       "(unread count prefixed on your next message) and never starts a turn — use it " +
       "for high-volume follows you only need to skim. Your own events are never delivered to " +
-      "you; your descendants' only with `excludeFollowerChildren: false`. Upserts by `key` when given. Survives daemon " +
+      "you; your descendants' only with `excludeFollowerChildren: false`. Upserts by `key` when given (a key is per follower: two sessions can reuse the same key). Survives daemon " +
       "restarts. Desktop/external chats require per-call host identity and a host " +
       "wake handler; registering an external inbox alone does not start a Desktop turn.",
     {
       follower: z.string().optional().describe("Session to wake. Defaults to the calling session."),
-      key: z.string().optional().describe("Stable key: re-posting the same key updates that follow in place."),
+      key: z.string().optional().describe("Stable key: re-posting the same key from the same follower updates that follow in place."),
       selector: followSelectorSchema.describe("Which sessions (or task board) to follow (need one of sessionIds / all / cwdPrefix / boardId)."),
       exclude: followExcludeSchema.optional().describe("Sessions to ignore, by id or label."),
       events: z
@@ -299,7 +300,7 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
     "Stop a follow by its id (fol_...) or its key. An unknown id is reported, not thrown.",
     { id: z.string().describe("Follow id (fol_...) or key.") },
     async ({ id }: { id: string }) => {
-      const removed = removeSessionFollow({ store }, id)
+      const removed = removeSessionFollow({ store }, id, callerSessionId)
       if (!removed) return fail("not_found", `session_unfollow: no follow "${id}"`)
       return ok({ removed: true, id: removed.id })
     },
