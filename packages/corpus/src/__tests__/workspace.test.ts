@@ -341,11 +341,7 @@ describe("CorpusLinter", () => {
     })
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     // Pin the clock so test is deterministic
-    const fixedClock: ClockPort = {
-      now: () => new Date("2026-05-22T00:00:00Z"),
-      nowMs: () => Date.parse("2026-05-22T00:00:00Z"),
-    }
-    const report = new CorpusLinter({ clock: fixedClock }).lint(snapshot)
+    const report = new CorpusLinter({ clock: fixtureClock }).lint(snapshot)
     expect(report.warnCount).toBe(1)
     expect(report.issues[0]?.lintId).toBe("stale")
   })
