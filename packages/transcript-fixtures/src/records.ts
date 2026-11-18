@@ -201,6 +201,11 @@ export interface AgentprotoRawSessionMessageSent extends AgentprotoRawTranscript
   to: string
   messageKind: AgentprotoRawSessionMessageEnvelope["kind"]
   urgency: AgentprotoRawSessionMessageEnvelope["urgency"]
+  /** The body the sender wrote, bounded to 4000 chars. Absent on records
+   *  written before the field existed. */
+  text?: string
+  /** True when `text` was cut at the bound. */
+  textTruncated?: true
 }
 
 /** The union of every RAW record kind the daemon transcript writer emits —
