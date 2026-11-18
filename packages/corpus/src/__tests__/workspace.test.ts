@@ -224,11 +224,22 @@ describe("CorpusValidator", () => {
 
 // ── Linter ──────────────────────────────────────────────────────────
 
+/** The fixtures' own `updated_at` instant. Pinning "now" to it keeps every
+ *  max-age lint deterministic (a system clock ages the fixtures past 180d). */
+const FIXTURE_NOW = "2026-05-22T14:30:00.000Z"
+const fixtureClock: ClockPort = {
+  now: () => new Date(FIXTURE_NOW),
+  nowMs: () => Date.parse(FIXTURE_NOW),
+}
+
 describe("CorpusLinter", () => {
   it("clean fixtures produce only the expected lints", async () => {
     const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
-    const linter = new CorpusLinter({ clock: systemClock })
+    // Pinned to the fixture's own timestamp: with systemClock the Summary
+    // (updated_at 2026-05-22, max-age-summaries 180d) went stale on
+    // 2026-11-18T14:30Z and this test turned red regardless of any code change.
+    const linter = new CorpusLinter({ clock: fixtureClock })
     const report = linter.lint(snapshot)
 
     // The KNOWLEDGE.md declares 5 lints:
@@ -330,11 +341,7 @@ describe("CorpusLinter", () => {
     })
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     // Pin the clock so test is deterministic
-    const fixedClock: ClockPort = {
-      now: () => new Date("2026-05-22T00:00:00Z"),
-      nowMs: () => Date.parse("2026-05-22T00:00:00Z"),
-    }
-    const report = new CorpusLinter({ clock: fixedClock }).lint(snapshot)
+    const report = new CorpusLinter({ clock: fixtureClock }).lint(snapshot)
     expect(report.warnCount).toBe(1)
     expect(report.issues[0]?.lintId).toBe("stale")
   })
@@ -343,10 +350,7 @@ describe("CorpusLinter", () => {
 // ── Event Emitter ──────────────────────────────────────────────────
 
 describe("CorpusEventEmitter", () => {
-  const fixedClock: ClockPort = {
-    now: () => new Date("2026-05-22T14:30:00.000Z"),
-    nowMs: () => Date.parse("2026-05-22T14:30:00.000Z"),
-  }
+  const fixedClock = fixtureClock
   const stubIdentity: IdentityPort = {
     resolve: async () => ({
       principal: "ws://operators/test-actor",
