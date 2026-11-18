@@ -48,9 +48,11 @@ export interface ConversationExportResult {
 }
 
 export interface WriteToNativeStoreOptions {
-  /** cwd that scopes the target store's directory. For claude-code this
-   *  becomes the project slug under `~/.claude/projects/` (via
-   *  `claudeProjectSlug`). Defaults to `process.cwd()`. */
+  /** cwd that scopes the target store's directory. For claude-code the project
+   *  slug under `~/.claude/projects/` is derived (via `claudeProjectSlug`) from
+   *  this path after symlinks are resolved (macOS `/tmp/x` -> `/private/tmp/x`),
+   *  because that is the directory Claude Code reads; a path not on disk is used
+   *  as typed. Defaults to `process.cwd()`. */
   cwd?: string
 }
 
