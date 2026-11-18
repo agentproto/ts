@@ -297,8 +297,8 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
 
   server.tool(
     "session_unfollow",
-    "Stop a follow by its id (fol_...) or its key. An unknown id is reported, not thrown.",
-    { id: z.string().describe("Follow id (fol_...) or key.") },
+    "Stop a follow by its id (fol_...) or by its key; a key is scoped to your own follows (a follow created for another follower is removed by its fol_ id). An unknown id is reported, not thrown.",
+    { id: z.string().describe("Follow id (fol_...), or a key of one of your own follows.") },
     async ({ id }: { id: string }) => {
       const removed = removeSessionFollow({ store }, id, callerSessionId)
       if (!removed) return fail("not_found", `session_unfollow: no follow "${id}"`)
