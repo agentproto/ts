@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { validateConfig, validateConfigKeyValue } from "../config-schema.js"
 import {
   isTrustedSender, normalizeTrustedSenders, resolveTrustedSenders, type TrustedSenderSession,
 } from "../desktop-trusted-senders.js"
+import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
+import { cdContractLine } from "../agents-md.js"
+import type { AgentAdapterResolver } from "../http-server.js"
 
 const rows: Record<string, TrustedSenderSession> = {
   root: { kind: "agent", operatorLabel: "brain" },
@@ -11,6 +15,8 @@ const rows: Record<string, TrustedSenderSession> = {
   orphan: { kind: "agent", parentSessionId: "gone" },
   loopA: { kind: "agent", parentSessionId: "loopB" },
   loopB: { kind: "agent", parentSessionId: "loopA" },
+  detached: { kind: "agent", detached: true },
+  detachedChild: { kind: "agent", parentSessionId: "detached" },
   "cc:ext": { kind: "external" },
   "claude-desktop": { kind: "external" },
 }
@@ -39,6 +45,13 @@ describe("isTrustedSender", () => {
     expect(isTrustedSender("tree", from("loopA"), lookup)).toBe(false)
   })
 
+  it("mode: a detached (attach: false) root is not an operator root and anchors no tree", () => {
+    for (const policy of ["operator", "tree"] as const) {
+      expect(isTrustedSender(policy, from("detached"), lookup)).toBe(false)
+      expect(isTrustedSender(policy, from("detachedChild"), lookup)).toBe(false)
+    }
+  })
+
   it("never trusts system, anonymous, external rows or an unverified sender under a mode", () => {
     for (const policy of ["operator", "tree"] as const) {
       expect(isTrustedSender(policy, { relation: "system" }, lookup)).toBe(false)
@@ -48,6 +61,11 @@ describe("isTrustedSender", () => {
     }
     expect(isTrustedSender(["human", "root"], { relation: "system" }, lookup)).toBe(false)
     expect(isTrustedSender(["root"], from("root", { anonymous: true }), lookup)).toBe(false)
+  })
+
+  it("list: an explicitly listed external row is trusted as-is", () => {
+    expect(isTrustedSender(["cc:ext"], from("cc:ext"), lookup)).toBe(true)
+    expect(isTrustedSender(["claude-desktop"], from("claude-desktop", { unverified: true }), lookup)).toBe(true)
   })
 
   it("list: exact session ids, operator labels, human; unverified claude-desktop only when listed", () => {
@@ -83,5 +101,68 @@ describe("config", () => {
     expect(validateConfig({ daemon: { desktopTrustedSendersByThread: { nope: "tree" } } }).ok).toBe(false)
     expect(validateConfigKeyValue("daemon.desktopTrustedSenders", "tree").ok).toBe(false)
     expect(validateConfigKeyValue("daemon.desktopTrustedSendersByThread", {}).ok).toBe(false)
+  })
+})
+
+/**
+ * The trust check reads `SessionDescriptor.detached`, so the spawn path must
+ * actually persist it: `agent_start { attach: false }` asks for a parentless
+ * root that is NOT one the operator started, and trusting it under
+ * `operator`/`tree` would let a nested agent inherit the operator's authority.
+ */
+function fakeAgentSession(): AgentSessionLike {
+  return {
+    sessionId: "acp_test",
+    // eslint-disable-next-line require-yield
+    async *send(): AsyncIterable<AgentStreamEvent> {
+      return
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
+function makeSpawnDeps(): SpawnAgentSessionDeps {
+  const registry = createSessionsRegistry({ persist: false })
+  const startSession = vi.fn(async () => fakeAgentSession())
+  const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+    startSession: startSession as never,
+    commandPreview: "mock-adapter",
+  })
+  return {
+    registry,
+    resolveAgentAdapter,
+    resolveAgentsMd: async () => ({ mode: "absent", contractLine: cdContractLine }),
+    resolveWorkspaceRules: async () => ({}),
+    resolveSpawnAttach: async () => "on-request",
+  }
+}
+
+async function spawnRow(deps: SpawnAgentSessionDeps, extra: Record<string, unknown> = {}) {
+  const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", dedupe: false, ...extra })
+  if (!result.ok) throw new Error(`spawn failed: ${result.message}`)
+  const row = deps.registry.get(result.descriptor.id)
+  if (!row) throw new Error("spawned session missing from registry")
+  return row
+}
+
+describe("detached spawns are not trusted senders", () => {
+  const lookupOf = (deps: SpawnAgentSessionDeps) => (id: string) => deps.registry.get(id)
+
+  it("persists attach:false as detached and denies operator/tree trust", async () => {
+    const deps = makeSpawnDeps()
+    const row = await spawnRow(deps, { attach: false })
+    expect(row.detached).toBe(true)
+    expect(row.parentSessionId).toBeUndefined()
+    const lookup = lookupOf(deps)
+    expect(isTrustedSender("operator", from(row.id), lookup)).toBe(false)
+    expect(isTrustedSender("tree", from(row.id), lookup)).toBe(false)
+  })
+
+  it("control: a normal root is not detached and keeps operator trust", async () => {
+    const deps = makeSpawnDeps()
+    const row = await spawnRow(deps)
+    expect(row.detached).toBeUndefined()
+    expect(isTrustedSender("operator", from(row.id), lookupOf(deps))).toBe(true)
   })
 })

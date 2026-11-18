@@ -1810,6 +1810,10 @@ async function restartAgentSessionOnce(
       ...(prev.origin ? { origin: prev.origin } : {}),
       ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
       ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
+      // A detached predecessor stays detached across the restart — otherwise the
+      // respawn would re-run the attach policy and attach a session the caller
+      // explicitly rooted (`attach: false`).
+      ...(prev.detached ? { detached: true } : {}),
       // Immutable spawn-time flags survive a restart exactly like
       // `continueAgentSessionFresh` carries `keepAlive`/`notifyParentOnCrash`
       // forward (session-continue-fresh.ts) — these are never axes a restart
@@ -2637,6 +2641,7 @@ async function restartAgentSessionOnce(
       ...(prev.origin ? { origin: prev.origin } : {}),
       ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
       ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
+      ...(prev.detached ? { detached: true } : {}),
       ...(prev.keepAlive ? { keepAlive: true } : {}),
       ...(prev.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),

@@ -11,19 +11,23 @@
  * Policy words (same vocabulary as `defaults.messaging.labelAddressing`):
  *   - `off`      (default) nobody is trusted.
  *   - `operator` the operator's own sessions: a session the operator started
- *                (a root session, no parent) and a human sender (CLI / HTTP).
+ *                (a root session, no parent, and not one that asked for
+ *                `attach: false`) and a human sender (CLI / HTTP).
  *   - `tree`     `operator`, plus every session spawned beneath such a root
- *                (the whole orchestra). The lineage must resolve to a root.
+ *                (the whole orchestra). The lineage must resolve to such a
+ *                root — a detached (`attach: false`) root anchors no tree.
  *   - a list     explicit entries: a session id (`sess_…`), `label:<operatorLabel>`
  *                (an operator-stamped label, never the display label), `human`,
  *                or the shared `claude-desktop` identity.
  *
  * Never trusted, whatever the policy: a `system` message (daemon notices carry
- * third-party text such as PR titles), an anonymous sender, and an `external`
+ * third-party text such as PR titles) and an anonymous sender. An `external`
  * session row (`cc:` / `codex:` rows are registered, not spawned by the
- * operator). An `unverified` sender (the shared `claude-desktop` identity,
- * which any local process can claim) is trusted ONLY when its id is listed
- * explicitly; `operator` and `tree` never admit it. `declaredSender` is ignored.
+ * operator) is never trusted by the `operator` / `tree` modes, but a list may
+ * name one explicitly — a listed id is trusted as-is. An `unverified` sender
+ * (the shared `claude-desktop` identity, which any local process can claim) is
+ * trusted ONLY when its id is listed explicitly; `operator` and `tree` never
+ * admit it. `declaredSender` is ignored.
  */
 
 import { z } from "zod"
@@ -38,6 +42,9 @@ export const trustedSendersSchema = z.union([z.enum(["off", "operator", "tree"])
 export interface TrustedSenderSession {
   kind: string
   parentSessionId?: string
+  /** The row asked for `attach: false` — a parentless root, but NOT one the
+   *  operator started (see `SessionDescriptor.detached`). */
+  detached?: boolean
   operatorLabel?: string
 }
 export type TrustedSenderLookup = (sessionId: string) => TrustedSenderSession | undefined
@@ -68,7 +75,7 @@ function rootedInOperator(sessionId: string, lookup: TrustedSenderLookup): boole
     seen.add(id)
     const session = lookup(id)
     if (!session || session.kind === "external") return false
-    if (session.parentSessionId === undefined) return true
+    if (session.parentSessionId === undefined) return !session.detached
     id = session.parentSessionId
   }
   return false
@@ -97,5 +104,10 @@ export function isTrustedSender(
   if (!id) return false
   if (policy === "tree") return rootedInOperator(id, lookup)
   const session = lookup(id)
-  return session !== undefined && session.kind !== "external" && session.parentSessionId === undefined
+  return (
+    session !== undefined &&
+    session.kind !== "external" &&
+    session.parentSessionId === undefined &&
+    !session.detached
+  )
 }
