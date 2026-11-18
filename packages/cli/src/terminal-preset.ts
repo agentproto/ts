@@ -24,6 +24,7 @@ export interface ResolvedTerminalPreset {
   workspace?: string
   name?: string
   label?: string
+  accessProfile?: string
 }
 
 export type TerminalPresetResolution =
@@ -37,6 +38,7 @@ export interface TerminalPresetCliValues {
   workspace?: string
   name?: string
   label?: string
+  accessProfile?: string
 }
 
 /**
@@ -48,6 +50,7 @@ export interface TerminalPresetCliValues {
  *   preset.workspace < explicit --workspace
  *   preset.name      < explicit --name
  *   preset.label     < explicit --label
+ *   preset.accessProfile < explicit --access
  *   env is preset-only; there is no CLI `--env` surface to override with.
  */
 export function resolveTerminalPreset(
@@ -78,6 +81,7 @@ export function resolveTerminalPreset(
       workspace: cli.workspace ?? preset.workspace,
       name: cli.name ?? preset.name,
       label: cli.label ?? preset.label,
+      accessProfile: cli.accessProfile ?? preset.accessProfile,
     },
   }
 }
@@ -172,6 +176,16 @@ export function validateTerminalPreset(
       }
     }
     out.label = raw.label
+  }
+
+  if (raw.accessProfile !== undefined) {
+    if (typeof raw.accessProfile !== "string" || raw.accessProfile.length === 0) {
+      return {
+        ok: false,
+        error: `terminal preset "${name}" accessProfile must be a non-empty string.`,
+      }
+    }
+    out.accessProfile = raw.accessProfile
   }
 
   return { ok: true, preset: out }

@@ -540,6 +540,12 @@ export const NATIVE_LAUNCH_ARGV: Record<string, string[]> = {
 const BARE_LAUNCH_BINS: Record<string, readonly string[]> = {
   opencode: ["opencode"],
   mastracode: ["mastracode"],
+  // `agentproto sessions terminal -- codex` / `-- copilot`: the interactive
+  // TUI of these harnesses is launched by its bare bin. Classified so the PTY
+  // is an addressable provider TUI (it can receive `message_send`) instead of
+  // an opaque shell-like row.
+  codex: ["codex"],
+  "copilot-cli": ["copilot"],
 }
 
 // ── Conversation-terminal classification ───────────────────────────────

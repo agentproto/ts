@@ -661,6 +661,7 @@ const terminalPresetSchema: z.ZodType<TerminalPreset> = z
     workspace: z.string().optional(),
     name: z.string().optional(),
     label: z.string().optional(),
+    accessProfile: z.string().optional(),
   })
   .passthrough()
 
@@ -2546,6 +2547,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "advanced",
     label: "Terminal preset label",
     help: "Human-readable label surfaced in session listings. Not writable through config_set.",
+  },
+  {
+    path: "terminalPresets.*.accessProfile",
+    schema: str,
+    apply: "hot",
+    writable: false,
+    section: "advanced",
+    label: "Terminal preset access profile",
+    help: "Named auth profile the provider TUI bills instead of the daemon's ambient login. Not writable through config_set.",
   },
 
   {

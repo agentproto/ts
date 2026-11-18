@@ -466,6 +466,12 @@ sessions start flags:
                                  session). Mirrors MCP agent_start.browser.
 
 sessions terminal flags:
+  --access <profile>           bill this named auth profile (e.g.
+                                 claude-subs-agentik) instead of the daemon's
+                                 ambient login; also a preset's accessProfile.
+                                 Provider TUIs (claude, codex, opencode, …) are
+                                 also addressable: a message_send to the
+                                 session is typed into the TUI once it is idle.
   --preset <name>              use a named 'terminalPresets' entry from
                                  ~/.agentproto/config.json. The preset may define
                                  argv, env, cwd, workspace, name and label.
@@ -3526,6 +3532,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
       workspace: { type: "string" },
       name: { type: "string" },
       label: { type: "string" },
+      access: { type: "string" },
       cols: { type: "string" },
       rows: { type: "string" },
       attach: { type: "boolean" },
@@ -3548,6 +3555,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
   let resolvedWorkspace = values.workspace
   let resolvedName = values.name
   let resolvedLabel = values.label
+  let resolvedAccess = values.access
 
   if (values.preset) {
     const cfg = await loadConfig()
@@ -3557,6 +3565,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
       workspace: values.workspace,
       name: values.name,
       label: values.label,
+      accessProfile: values.access,
     }
     const result = resolveTerminalPreset(values.preset, cfg, cliValues)
     if (!result.ok) {
@@ -3578,6 +3587,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
     resolvedWorkspace ??= preset.workspace
     resolvedName ??= preset.name
     resolvedLabel ??= preset.label
+    resolvedAccess ??= preset.accessProfile
   } else {
     if (explicitArgv.length === 0) {
       process.stderr.write(
@@ -3620,6 +3630,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
   if (resolvedName) body.name = resolvedName
   if (resolvedLabel) body.label = resolvedLabel
   if (presetEnv) body.env = presetEnv
+  if (resolvedAccess) body.accessProfile = resolvedAccess
 
   let desc: SessionDescriptor
   try {

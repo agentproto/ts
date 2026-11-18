@@ -881,6 +881,11 @@ export interface TerminalPreset {
   name?: string
   /** Human-readable label surfaced in session listings. */
   label?: string
+  /** Named auth profile (e.g. `claude-subs-agentik`, an OpenCode Go profile)
+   *  the provider TUI bills instead of the daemon's ambient login. Resolved
+   *  by the daemon at spawn (`resolveTerminalAccess`); an unresolvable
+   *  profile refuses the spawn rather than falling back. */
+  accessProfile?: string
 }
 
 export interface AppsConfig {

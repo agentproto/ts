@@ -197,3 +197,26 @@ describe("resolveTerminalPreset", () => {
     expect(result.error).toContain("bad")
   })
 })
+
+describe("terminal preset accessProfile", () => {
+  const config = {
+    terminalPresets: {
+      agentik: { argv: ["claude"], accessProfile: "claude-subs-agentik" },
+    },
+  }
+
+  it("carries the preset's access profile", () => {
+    const result = resolveTerminalPreset("agentik", config, {})
+    expect(result.ok && result.preset.accessProfile).toBe("claude-subs-agentik")
+  })
+
+  it("lets --access override the preset", () => {
+    const result = resolveTerminalPreset("agentik", config, { accessProfile: "opencode-go" })
+    expect(result.ok && result.preset.accessProfile).toBe("opencode-go")
+  })
+
+  it("rejects an empty accessProfile", () => {
+    const result = validateTerminalPreset({ argv: ["claude"], accessProfile: "" }, "bad")
+    expect(result.ok).toBe(false)
+  })
+})

@@ -340,6 +340,7 @@ import { buildOccurrenceKey } from "./action-hooks/occurrence-key.js"
 import { computeContextPct, layerContextSettings, withContextPolicy } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
+import { resolveTerminalAccess } from "./terminal-access.js"
 import { spawnAgentSession, resolveAccessProfileAuth, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
 import { CREDENTIAL_RELAY_PATH, grantRelayedCredential, parseCredentialRelayRequest } from "./credential-relay.js"
@@ -8890,6 +8891,27 @@ code { color: #9ad; }
       // so it can never be grouped or filtered by project.
       workspaceSlug = (await resolveSlugFromCwd(cwd)) ?? "default"
     }
+    // Optional billing pin: the same named profile an agent-cli spawn takes,
+    // resolved into the PTY's env (credential set, conflicting vars scrubbed).
+    // Fail closed — a profile that cannot be resolved never falls back to the
+    // daemon's ambient login.
+    let access: Awaited<ReturnType<typeof resolveTerminalAccess>> | undefined
+    const profileRef =
+      typeof b.accessProfile === "string" && b.accessProfile.length > 0 ? b.accessProfile : undefined
+    if (profileRef) {
+      if (!resolveAgentAdapter) {
+        json(501, {
+          error: "agent_resolver_not_configured",
+          message: "accessProfile on POST /sessions/terminal needs the host to inject `resolveAgentAdapter`.",
+        })
+        return true
+      }
+      access = await resolveTerminalAccess({ argv, profileRef, resolveAgentAdapter })
+      if (!access.ok) {
+        json(400, { error: access.code, message: access.message })
+        return true
+      }
+    }
     try {
       const desc = registry.spawnPty({
         argv,
@@ -8897,8 +8919,16 @@ code { color: #9ad; }
         workspaceSlug,
         cols,
         rows,
-        ...(b.env && typeof b.env === "object"
-          ? { env: b.env as Record<string, string> }
+        ...(access?.ok
+          ? { accessProfile: access.echo, unsetEnv: access.unsetEnv }
+          : {}),
+        ...(b.env && typeof b.env === "object" || access?.ok
+          ? {
+              env: {
+                ...(b.env && typeof b.env === "object" ? (b.env as Record<string, string>) : {}),
+                ...(access?.ok ? access.env : {}),
+              },
+            }
           : {}),
         ...(typeof b.slug === "string" ? { slug: b.slug } : {}),
         ...(typeof b.name === "string" ? { name: b.name } : {}),
