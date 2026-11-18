@@ -61,10 +61,13 @@ describe("terminal sessions receive messages", () => {
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     registry.shutdown()
     vi.useRealTimers()
-    rmSync(fakeHome, { recursive: true, force: true })
+    // The terminal transcript writer flushes asynchronously: let it settle,
+    // and retry the removal if it is still creating files under the dir.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   })
 
   const spawn = (argv: string[]) =>
