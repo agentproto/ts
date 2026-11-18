@@ -13,6 +13,7 @@
  * for fs/exec.
  */
 
+import { resolveTerminalAccess } from "./terminal-access.js"
 import { addReviewWorktree, ownerRepoOfReviewWorktree, removeReviewWorktrees } from "./review-worktree.js"
 import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import type { ReviewRunner } from "./review-runner.js"
@@ -8230,7 +8231,7 @@ export function registerSessionTools(
       "ANSI escapes, alt-screen sequences) flow through the daemon's byte ring " +
       "buffer; subscribers attach via the WS at /sessions/:id/pty. Use for " +
       "interactive TUIs (claude, vim, htop) or to orchestrate shells from another " +
-      "agent. Returns the session descriptor.",
+      "agent. A provider TUI (claude, codex, opencode, hermes, …) can also receive message_send: the message is typed into the PTY as keyboard input once the TUI is idle, so it can collide with a prompt a person is composing in an attached window. Plain shells are never addressable. Returns the session descriptor.",
     {
       argv: z
         .array(z.string())
@@ -8264,6 +8265,14 @@ export function registerSessionTools(
         .optional()
         .describe(
           "Free-text label surfaced in agent_sessions_list and the UI."
+        ),
+      accessProfile: z
+        .string()
+        .optional()
+        .describe(
+          "Named auth profile (e.g. 'claude-subs-agentik') this provider TUI bills " +
+            "instead of the daemon's ambient login. Only for a recognised harness " +
+            "argv (claude, codex, opencode, …); refused when it cannot be resolved."
         ),
     },
     async input => {
@@ -8362,6 +8371,26 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      let access: Awaited<ReturnType<typeof resolveTerminalAccess>> | undefined
+      if (input.accessProfile) {
+        if (!resolveAgentAdapter) {
+          return {
+            content: [{ type: "text", text: "terminal_start: accessProfile needs an adapter resolver; none is configured." }],
+            isError: true,
+          }
+        }
+        access = await resolveTerminalAccess({
+          argv: input.argv,
+          profileRef: input.accessProfile,
+          resolveAgentAdapter,
+        })
+        if (!access.ok) {
+          return {
+            content: [{ type: "text", text: `terminal_start: ${access.message}` }],
+            isError: true,
+          }
+        }
+      }
       try {
         const desc = registry.spawnPty({
           argv: input.argv,
@@ -8369,6 +8398,9 @@ export function registerSessionTools(
           workspaceSlug: resolvedSlug,
           cols: input.cols ?? 80,
           rows: input.rows ?? 24,
+          ...(access?.ok
+            ? { env: access.env, unsetEnv: access.unsetEnv, accessProfile: access.echo }
+            : {}),
           ...(input.name ? { name: input.name } : {}),
           ...(input.label ? { label: input.label } : {}),
           // Parent attribution + depth (orchestrator WP4) — same rule as

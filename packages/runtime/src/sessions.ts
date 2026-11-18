@@ -3575,6 +3575,19 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
 
 interface SessionRuntime {
   desc: SessionDescriptor
+  /** Poll timer of the terminal inbox injector (conversation terminals only):
+   *  armed while a non-`fyi` message waits in the inbox for the TUI to go
+   *  quiet, cleared as soon as the inbox is drained or the PTY exits. */
+  terminalInjectTimer?: ReturnType<typeof setInterval>
+  /** True between typing an injected message and its Enter keystroke, so a
+   *  poll tick cannot start a second injection on top of it. */
+  terminalInjecting?: boolean
+  /** Epoch ms of the last PTY paint that counts as TUI activity (see
+   *  `notePtyPaint`) — the injector's idle clock. Distinct from
+   *  `desc.lastOutputAt`, which any byte (a title-bar clock tick) bumps. */
+  lastPaintAt?: number
+  /** Epoch ms of the last visible chunk, activity or not (burst detection). */
+  lastVisibleAt?: number
   /** True while the latest `usage_update` carrying `used` was dropped by
    *  `plausibleContextUsed` (more tokens than the window holds). The held
    *  `desc.contextUsed` is then a stale reading, so context-continuity must
@@ -3974,6 +3987,29 @@ export function scanBracketedPaste(
  *  fix. */
 export function shouldWrapBracketedPaste(mode: BracketedPasteMode, text: string): boolean {
   return mode === "on" && text.includes("\n")
+}
+
+/**
+ * True when a PTY chunk paints something visible: text after dropping OSC
+ * sequences (window-title updates), CSI sequences (cursor moves, colours,
+ * mode toggles) and bare ESC pairs. Some TUIs emit such invisible chunks
+ * forever while idle — Hermes rewrites its window title with a clock every
+ * second — so "no bytes for N ms" would never read as idle; "no visible paint
+ * for N ms" does, while a working TUI (spinner, streamed tokens) keeps
+ * painting visible characters.
+ */
+export function hasVisiblePaint(chunk: string): boolean {
+  const stripped = chunk
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    // Remaining two-byte escapes: charset designators (ESC ( X / ESC ) X) and
+    // ESC + one of `@`–`Z`, `\`, `]`–`_` (Fe), `=` / `>` (keypad modes).
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[()][0-9A-Za-z]|\x1b[@-Z\\-_=>]/g, "")
+  // eslint-disable-next-line no-control-regex
+  return /[^\s\x00-\x1f\x7f]/.test(stripped)
 }
 
 /** Wrap `text` in the bracketed-paste markers. Callers should gate this
@@ -6622,6 +6658,11 @@ export interface SpawnPtyInput {
    *  pty-native/pty-plain branches (session-tools.ts). */
   resumedFrom?: string
   resumeVia?: string
+  /** The named access profile the caller already resolved into `env` /
+   *  `unsetEnv` for this PTY (see `resolveTerminalAccess`). Recorded on the
+   *  descriptor as the non-secret `accessProfile` echo so the Sessions list
+   *  names the wallet, exactly like an agent-cli row. */
+  accessProfile?: SessionAccessProfileEcho
   /** The row this PTY replaces (a restart): it takes over that row's `slug`
    *  and the replaced row gives it up. See {@link SpawnAgentInput.replaces}.
    *  The replaced row may still be alive here (the PTY restart does not stop
@@ -6995,6 +7036,16 @@ export function createSessionsRegistry(opts?: {
    *  PTY is alive and unlinked. Tests pin tiny values; production default
    *  is `{ initialMs: 3_000, intervalMs: 15_000 }`. */
   conversationLinkProbeMs?: { initialMs: number; intervalMs: number }
+  /** Terminal inbox injector cadence (see `scheduleTerminalInjection`):
+   *  `quietMs` of PTY silence = the TUI is idle and may receive a typed
+   *  message; `pollMs` is how often the injector re-checks; `submitDelayMs`
+   *  separates the typed text from its Enter so a paste-detecting TUI sees
+   *  the CR as a keystroke. Tests pin tiny values; production default is
+   *  `{ quietMs: 2_000, pollMs: 500, submitDelayMs: 200, burstMs: 600 }`.
+   *  `burstMs`: a visible paint only counts as activity when another one
+   *  came within that window (a working TUI repaints several times a
+   *  second; an idle status-bar clock ticks once a second). */
+  terminalInject?: { quietMs?: number; pollMs?: number; submitDelayMs?: number; burstMs?: number }
   /** Override for the live-usage poll cadence (`USAGE_REFRESH_INTERVAL_MS`,
    *  root default 5s). Tests pin a small value so `armUsageRefresh`'s polling
    *  can be observed in guest time. */
@@ -7548,6 +7599,7 @@ export function createSessionsRegistry(opts?: {
     rt.thoughtBuf = ""
     // A dead PTY has no transcript left to discover — stop its link probe.
     rt.linkProbeStop?.()
+    stopTerminalInjection(rt)
     // A dying session must never leave a held permission RPC dangling — cancel
     // its parked requests (resolves them as `cancelled`) before anything else.
     // Runs even when no bus is wired, so the driver RPC always settles.
@@ -8287,6 +8339,111 @@ export function createSessionsRegistry(opts?: {
       flushDirtyIndexes()
     }, INDEX_WRITE_THROTTLE_MS)
     indexFlushTimer.unref?.()
+  }
+
+  /**
+   * Terminal inbox injector — what makes a native provider TUI launched with
+   * `agentproto sessions terminal -- <harness>` RECEIVE messages (a PTY has no
+   * agent turn loop, so `enqueuePrompt` can never reach it).
+   *
+   * Design: a message addressed to a conversation terminal (a PTY the daemon
+   * classified as a provider TUI — never a plain shell, where typed text would
+   * be EXECUTED) is parked in its inbox like any other recipient's. A poll
+   * timer then types it into the PTY as a prompt and presses Enter, but only
+   * once the TUI has been silent for `quietMs`: a TUI that is mid-turn keeps
+   * repainting (spinner, streamed tokens), so silence is the harness-agnostic
+   * "idle at the prompt" signal. One message per quiet window — typing it
+   * produces output, which re-arms the wait for the next one.
+   */
+  const terminalInject = {
+    quietMs: opts?.terminalInject?.quietMs ?? 2_000,
+    pollMs: opts?.terminalInject?.pollMs ?? 500,
+    submitDelayMs: opts?.terminalInject?.submitDelayMs ?? 200,
+    burstMs: opts?.terminalInject?.burstMs ?? 600,
+  }
+  /** Feed the injector's idle clock from one PTY chunk. Invisible chunks
+   *  (title updates, cursor moves) never count. A visible chunk counts when
+   *  it is the first the TUI ever painted or follows another visible one
+   *  within `burstMs`: Hermes idles with a once-a-second status-bar elapsed
+   *  counter ("9" → "10s") that is visible but not activity, while a turn
+   *  in progress (spinner, streamed tokens) repaints several times a second. */
+  const notePtyPaint = (rt: SessionRuntime, chunk: string): void => {
+    if (!hasVisiblePaint(chunk)) return
+    const now = Date.now()
+    const prev = rt.lastVisibleAt
+    rt.lastVisibleAt = now
+    if (rt.lastPaintAt === undefined || (prev !== undefined && now - prev < terminalInject.burstMs)) {
+      rt.lastPaintAt = now
+    }
+  }
+  /** A PTY that can be addressed by `message_send`: a live provider TUI. */
+  const isAddressableTerminal = (rt: SessionRuntime): boolean =>
+    rt.desc.kind === "terminal" &&
+    rt.pty !== undefined &&
+    rt.conversationTerminal === true &&
+    (rt.desc.status === "running" || rt.desc.status === "starting")
+  const stopTerminalInjection = (rt: SessionRuntime): void => {
+    if (rt.terminalInjectTimer) clearInterval(rt.terminalInjectTimer)
+    rt.terminalInjectTimer = undefined
+  }
+  /** Messages waiting to be typed: everything but `fyi` (inbox-only by
+   *  contract — it never wakes the recipient). */
+  const pendingTerminalMessages = (rt: SessionRuntime): SessionMessage[] =>
+    (rt.desc.inbox ?? []).filter(m => m.urgency !== "fyi")
+  const tickTerminalInjection = (rt: SessionRuntime): void => {
+    if (!isAddressableTerminal(rt)) return stopTerminalInjection(rt)
+    const pending = pendingTerminalMessages(rt)
+    if (pending.length === 0) return stopTerminalInjection(rt)
+    if (rt.terminalInjecting) return
+    // Never typed into a TUI that is still painting (mid-turn), and never
+    // before it painted anything at all (still booting).
+    if (!rt.lastPaintAt || Date.now() - rt.lastPaintAt < terminalInject.quietMs) return
+    const msg = pending[0]!
+    const at = new Date().toISOString()
+    const stamped: SessionMessage = { ...msg, delivered: { via: "turn", at } }
+    let content = renderSessionMessage(stamped)
+    if (!rt.desc.messagePreambleSent) content = `${MESSAGE_PREAMBLE}\n\n${content}`
+    // Bracketed paste keeps the multi-line envelope one input; without it a
+    // raw "\n" would submit early, so the envelope is flattened instead.
+    const typed =
+      rt.bracketedPaste?.mode === "on"
+        ? wrapBracketedPaste(content)
+        : content.replace(/\s*\n+\s*/g, " ")
+    rt.terminalInjecting = true
+    try {
+      rt.pty!.write(typed)
+    } catch {
+      rt.terminalInjecting = false
+      return
+    }
+    rt.desc.messagePreambleSent = true
+    removeFromInbox(rt, new Set([msg.id]))
+    transcriptWriter.recordSessionMessage?.(rt.desc.id, stamped)
+    emitSessionMessage(stamped)
+    appendLine(rt, `[message] ${msg.id} from ${msg.from.relation} typed into the terminal`, "stdout")
+    const submit = setTimeout(() => {
+      rt.terminalInjecting = false
+      // The typed text counts as paint: restart the quiet window.
+      rt.lastPaintAt = Date.now()
+      try {
+        rt.pty?.write("\r")
+      } catch (err) {
+        // The text is already in the TUI's composer, so re-queueing it would
+        // type it twice: leave a trace instead of failing silently. A dead PTY
+        // is the usual cause (the exit handler reports the session itself).
+        appendLine(
+          rt,
+          `[message] ${msg.id} was typed but its Enter could not be written: ${err instanceof Error ? err.message : String(err)}`,
+          "stderr",
+        )
+      }
+    }, terminalInject.submitDelayMs)
+    submit.unref?.()
+  }
+  const scheduleTerminalInjection = (rt: SessionRuntime): void => {
+    if (rt.terminalInjectTimer) return
+    rt.terminalInjectTimer = setInterval(() => tickTerminalInjection(rt), terminalInject.pollMs)
+    rt.terminalInjectTimer.unref?.()
   }
 
   /**
@@ -13688,6 +13845,7 @@ export function createSessionsRegistry(opts?: {
           ? { nativeTerminalResume: true }
           : {}),
         ...(conversationConfigDir ? { adapterConfigDir: conversationConfigDir } : {}),
+        ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
         ...(resumeArgvId && conversationStore
           ? {
               adapterSessionId: resumeArgvId,
@@ -13765,6 +13923,7 @@ export function createSessionsRegistry(opts?: {
           buf
         )
         appendBytes(rt, buf)
+        notePtyPaint(rt, chunk)
       })
       pty.onExit(evt => {
         // An operator-targeted kill() already flipped status to "killed"
@@ -14466,6 +14625,27 @@ export function createSessionsRegistry(opts?: {
           ...(wake ? { wake } : {}),
           ...(desktopWake ? { desktopWake } : {}),
         }
+      }
+      // A provider TUI in a PTY has no turn loop to enqueue onto: park the
+      // message in its inbox and let the injector type it once the TUI is
+      // idle (see `scheduleTerminalInjection`). Interrupt/steer cannot cut or
+      // steer a native TUI's turn, so every non-`fyi` urgency lands as
+      // `next-turn`.
+      if (isAddressableTerminal(rt)) {
+        const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
+        if (!addToInbox(rt, parked)) {
+          return {
+            messageId: msg.id,
+            delivered: null,
+            queued: false,
+            urgencyApplied: msg.urgency,
+            refused: "inbox-full",
+          }
+        }
+        recordSent(parked)
+        emitSessionMessage(parked)
+        scheduleTerminalInjection(rt)
+        return { messageId: msg.id, delivered: null, queued: true, urgencyApplied: "next-turn" }
       }
       // An un-granted interrupt never cuts a turn: the fastest thing short
       // of that is steering it in.
