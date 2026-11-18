@@ -415,5 +415,6 @@ export const SESSION_MESSAGE_RECORDS: [AgentprotoRawSessionMessage, AgentprotoRa
     to: CANONICAL_SESSION_ID,
     messageKind: "done",
     urgency: "next-turn",
+    text: "PR opened: https://github.com/agentproto/ts/pull/124",
   },
 ]
