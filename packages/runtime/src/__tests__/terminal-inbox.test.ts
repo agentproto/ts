@@ -23,12 +23,15 @@ function ptyHarness(): {
   factory: PtyFactory
   writes: string[]
   feed: (chunk: string) => void
+  failEnter: { on: boolean }
 } {
   const writes: string[] = []
+  const failEnter = { on: false }
   const handlers: Array<(chunk: string) => void> = []
   const factory: PtyFactory = () => ({
     pid: 4242,
     write: (d: string) => {
+      if (failEnter.on && d === "\r") throw new Error("pty closed")
       writes.push(d)
     },
     resize: () => {},
@@ -38,7 +41,7 @@ function ptyHarness(): {
     },
     onExit: () => {},
   })
-  return { factory, writes, feed: chunk => handlers.forEach(h => h(chunk)) }
+  return { factory, writes, failEnter, feed: chunk => handlers.forEach(h => h(chunk)) }
 }
 
 describe("terminal sessions receive messages", () => {
@@ -103,6 +106,19 @@ describe("terminal sessions receive messages", () => {
     expect(registry.listInbox(desc.id)).toEqual([])
     await vi.advanceTimersByTimeAsync(10 * QUIET)
     expect(harness.writes).toHaveLength(2)
+  })
+
+  it("leaves a trace when the typed text could not be submitted", async () => {
+    const desc = spawn(["claude"])
+    harness.feed("> ")
+    harness.failEnter.on = true
+    await registry.sendMessage(message(desc.id, "lost enter"))
+    await vi.advanceTimersByTimeAsync(QUIET + POLL + SUBMIT)
+    expect(harness.writes.some(w => w.includes("lost enter"))).toBe(true)
+    expect(harness.writes).not.toContain("\r")
+    // Not re-queued (it is already in the composer), but not silent either.
+    expect(registry.listInbox(desc.id)).toEqual([])
+    expect(registry.readOutputTail(desc.id, 20).join("\n")).toMatch(/typed but its Enter could not be written: pty closed/)
   })
 
   it("never types while the TUI is still painting (mid-turn)", async () => {
