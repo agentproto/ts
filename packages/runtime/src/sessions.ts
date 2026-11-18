@@ -14343,6 +14343,12 @@ export function createSessionsRegistry(opts?: {
               delivered: { via: "socket", at: new Date().toISOString() },
             }
             recordSent(delivered)
+            // Not parked in the inbox, so the receiver's copy must be recorded
+            // here: `findReceivedMessage` (hence `message_reply`) reads the
+            // recent buffer / transcript, and without this a reply to a
+            // socket-delivered message fails with `unknown_message`.
+            transcriptWriter.recordSessionMessage?.(rt.desc.id, delivered)
+            rememberReceived(rt, [delivered])
             emitSessionMessage(delivered)
             return {
               messageId: msg.id,

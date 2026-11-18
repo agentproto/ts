@@ -304,6 +304,26 @@ describe("claude-socket wake through the sessions registry", () => {
     expect((h.frames[1]!.message as { content: string }).content).toBe(renderSessionMessage(msg))
   })
 
+  it("keeps a socket-delivered message findable so the receiver can message_reply to it", async () => {
+    const msg = createSessionMessage({
+      to: "cc:chat-1",
+      from: { relation: "system" },
+      kind: "question",
+      urgency: "next-turn",
+      text: "answer me",
+    })
+    const res = await registry.sendMessage(msg)
+    expect(res.delivered).toEqual({ via: "socket" })
+    // Not parked in the inbox, yet the receiver must still be able to find it by id
+    // (this is what message_reply does; it failed with unknown_message).
+    expect(registry.listInbox("cc:chat-1")).toEqual([])
+    expect(registry.findReceivedMessage("cc:chat-1", msg.id)).toMatchObject({
+      id: msg.id,
+      to: "cc:chat-1",
+      delivered: { via: "socket" },
+    })
+  })
+
   it("wakes with the rendered envelope, keeping the reply address and sender attribution", async () => {
     const msg = createSessionMessage({
       to: "cc:chat-1",
