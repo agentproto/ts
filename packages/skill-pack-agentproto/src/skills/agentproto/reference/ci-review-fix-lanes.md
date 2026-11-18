@@ -306,8 +306,11 @@ from the **base branch** (`ci.yml` maintainer judge + `alwaysEscalateGlobs` +
 the `AGENTFLOW_AUTOMERGE` repo var). A PR touching the merge machinery itself
 (`.github/workflows/**`, `agentic-review.json`, `.github/actions/**`,
 `scripts/maintainer.mjs`, `scripts/agentflow/**`) is escalated outright
-(`ci.yml:558-579`). **Never `gh pr merge`** from an agent — that routes around
-every gate (the 2026-07-15 incident `AGENTS.md` exists to prevent).
+(`ci.yml:558-579`). **Never `gh pr merge`** on an agent's own initiative — that routes around
+every gate (the 2026-07-15 incident `AGENTS.md` exists to prevent). The only
+exception is an explicit merge request from Jeremy (the operator) naming the PR,
+with the PR re-checked (green, approved, CLEAN, every review observation
+addressed) and a squash merge of that PR only; see `AGENTS.md`.
 
 The forward-looking unification is a **capability model** — collapse the
 scattered flags (`fixDelivery`, `blocking`, `merge.*`) into explicit grants and
@@ -352,7 +355,9 @@ not a fixed sleep.
 ## Hard rules (non-negotiable)
 
 - **No AI attribution** in commits/PR bodies (`hygiene-check` fails the PR).
-- **Never `gh pr merge`** from an agent session.
+- **Never `gh pr merge`** on your own initiative, and no auto-merge. Only on an
+  explicit request from Jeremy naming the PR, after re-checking it, with
+  `--squash`, touching no other PR (see `AGENTS.md`).
 - **Never echo** `GITHUB_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` / any secret — the
   prompt blocks reference env vars by name only.
 - **Don't hand-write changesets** — the reviewer writes them; `changeset-check`
