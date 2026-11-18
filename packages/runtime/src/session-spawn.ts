@@ -1897,6 +1897,14 @@ export interface SpawnAgentSessionInput {
    *  the depth-gated worktree/role guards — declaring a logical parent is not
    *  the same as being a nested (scoped) spawn. */
   parentSessionId?: string
+  /** Daemon-internal: force the new descriptor to record
+   *  {@link SessionDescriptor.detached} without deriving it from the attach
+   *  policy. Used by continue-fresh to carry a detached predecessor's status
+   *  forward while STILL passing its `parentSessionId` (lineage must survive;
+   *  `attach: false` would drop the parent). OR-ed with
+   *  `attachDecision.detached` at the two descriptor literals below — internal,
+   *  not part of the `agent_start` tool schema. */
+  detached?: boolean
   /** Daemon-internal: the call carried no caller identity and
    *  `mcp.noCallerIdentity` let it through. Stamped as `meta.anonymous`; it
    *  grants nothing (no ACL elevation). Set by `agent_start`, never by input. */
@@ -6208,6 +6216,7 @@ async function spawnAgentSessionOnce(
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
+        ...(attachDecision.detached || input.detached ? { detached: true } : {}),
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
         ...(notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
@@ -6923,6 +6932,7 @@ async function spawnAgentSessionOnce(
       // the scope-derived depth for a scoped spawn, else the hint parent's
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
+      ...(attachDecision.detached || input.detached ? { detached: true } : {}),
       ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
       ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
       ...(notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),

@@ -238,6 +238,53 @@ the `untrusted_input` tool output. Use `inbox_list` for the full envelopes,
 including any structured data. If the serialized direct payload exceeds
 16 KiB in UTF-8, the daemon sends the inbox notification for that batch.
 
+#### Trusted senders: let an orchestra instruct a Codex Desktop chat
+
+By default the text of another session is DATA to Codex: it sits in the
+`untrusted_input` output and the fixed turn text says so, so Codex will not carry
+out an instruction another agent sent. To let selected senders instruct a chat,
+opt them in with `daemon.desktopTrustedSenders` (off by default, restart to
+apply, read-only over MCP so an agent cannot grant itself trust). It applies
+to chats in `codexDesktopWakeDirectThreadIds` only. The words match
+`defaults.messaging.labelAddressing`:
+
+| Value | Trusted senders |
+|---|---|
+| `"off"` (default) | nobody: unchanged behaviour |
+| `"operator"` | sessions the operator started (a root session, no parent) and human senders (CLI / HTTP) |
+| `"tree"` | `operator`, plus every session spawned beneath such a root (the whole orchestra); the lineage must resolve to a root |
+| `["sess_abc", "label:brain", "human", "claude-desktop"]` | exactly these: a session id, an operator-stamped label (`label:<x>`, never the display label), `human`, or the shared `claude-desktop` identity |
+
+For a trusted sender the daemon writes the message into the turn text as an
+instruction, with the sender named (session id, label, relation, "verified by the
+agentproto daemon"), and asks the chat to `inbox_ack` the ID. The
+`untrusted_input` output then carries only the message IDs. Other messages in the
+same batch stay untrusted data. A trusted batch over 12 KiB falls back to the
+untrusted path. `daemon.desktopTrustedSendersByThread` (`{ "<thread-uuid>": <value> }`)
+overrides the value for one chat.
+
+Never trusted, under any value: `system` messages (daemon notices carry third-party
+text such as PR titles), anonymous senders, and external `cc:` / `codex:` rows.
+`claude-desktop` is an **unverified** identity (any local process can claim it):
+`operator` and `tree` never admit it; it is trusted only when listed explicitly.
+The thread runs with the permissions you gave it, so a trusted sender can make it
+act: trust the narrowest value that works.
+
+```json
+{
+  "daemon": {
+    "codexDesktopWakeDirectThreadIds": ["00000000-0000-4000-8000-000000000002"],
+    "desktopTrustedSenders": "tree"
+  }
+}
+```
+
+Claude Desktop / Claude Code (`daemon.claudeSocketWake`) needs no counterpart:
+the daemon already writes the rendered message as a user turn on the chat's
+socket, with no "untrusted" wrapper. The only receiver-side gate is Claude Code's
+own `crossSessionInbound` and permission classifier, which agentproto does not
+control.
+
 The wake result describes the IPC attempt. Both modes retain the inbox copy
 until the chat acknowledges or consumes it through MCP. Messages delivered
 directly to an active `inbox_wait` and messages marked `fyi` do not start a

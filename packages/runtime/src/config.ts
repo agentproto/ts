@@ -225,6 +225,10 @@ export interface DaemonConfig {
   codexDesktopWakeThreadIds?: string[]
   /** Exact local chat UUIDs opted into bounded untrusted input on wake. */
   codexDesktopWakeDirectThreadIds?: string[]
+  /** Senders trusted as instructions in a Codex Desktop direct wake: `off` (default) | `operator` | `tree` | explicit list (session ids, `label:<operatorLabel>`, `human`, `claude-desktop`). */
+  desktopTrustedSenders?: "off" | "operator" | "tree" | string[]
+  /** Per-thread override of `desktopTrustedSenders`, keyed by Codex Desktop chat UUID. */
+  desktopTrustedSendersByThread?: Record<string, "off" | "operator" | "tree" | string[]>
   /** On-disk retention for REVIEW-LANE sessions (`origin: "review"` /
    *  `review:` label): a terminal review session whose last activity is older
    *  than this many days has its `~/.agentproto/sessions/<id>/` dir DELETED

@@ -494,6 +494,10 @@ async function continueAgentSessionFreshOnce(
     // Preserve lineage so the fresh session nests under the same parent
     // rather than becoming a detached root.
     ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
+    // A predecessor that was explicitly rooted (`attach: false`) stays detached
+    // across the handoff. Carried as the internal `detached` flag rather than
+    // `attach: false`, which would also drop the lineage above.
+    ...(prev.detached ? { detached: true } : {}),
     // Carry forward useful lifecycle flags.
     keepAlive: prev.keepAlive,
     notifyParentOnCrash: prev.notifyParentOnCrash,

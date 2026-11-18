@@ -354,6 +354,7 @@ import { registerApprovalTools } from "./approvals/tools.js"
 import { buildApprovalCardsServer } from "./approvals/card-surface.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { wireApprovalWake } from "./approvals/wake.js"
+import { normalizeTrustedSenders } from "./desktop-trusted-senders.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
 import { createSessionTurnObserver } from "./cron-turn-observer.js"
@@ -2992,7 +2993,17 @@ export async function createGateway(
       : {}),
     ...(daemonConfig.daemon?.claudeSocketWake ? { claudeSocketWake: { enabled: true } } : {}),
     ...(codexWakeThreadIds.length > 0 || codexDirectWakeThreadIds.length > 0
-      ? { codexDesktopWake: { threadIds: codexWakeThreadIds, directThreadIds: codexDirectWakeThreadIds } }
+      ? {
+        codexDesktopWake: {
+          threadIds: codexWakeThreadIds,
+          directThreadIds: codexDirectWakeThreadIds,
+          trustedSenders: normalizeTrustedSenders(daemonConfig.daemon?.desktopTrustedSenders),
+          trustedSendersByThread: Object.fromEntries(
+            Object.entries(daemonConfig.daemon?.desktopTrustedSendersByThread ?? {})
+              .map(([thread, value]) => [thread, normalizeTrustedSenders(value)]),
+          ),
+        },
+      }
       : {}),
     onOpenedPr: sentinelAutoLinker.onOpenedPr,
     ...(daemonConfig.sessions?.eventsDir

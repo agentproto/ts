@@ -2855,6 +2855,11 @@ export interface SessionDescriptor {
    *  per-parent child quota (orchestrator WP4). Persisted so the tree
    *  survives a daemon restart. */
   parentSessionId?: string
+  /** This session asked to stay OFF its spawner's lineage (`attach: false`):
+   *  a deliberately detached root, recorded by the daemon at spawn so a
+   *  parentless row can be told apart from one the operator started. Not
+   *  caller-settable. Persisted with the descriptor. */
+  detached?: boolean
   /** A REMOTE parent: this session lives in a BOX daemon's registry while its
    *  parent lives in the HOST daemon's registry (see
    *  `docs/lineage-handover.md`, "Known gap - sessions running INSIDE a box"
@@ -6346,6 +6351,10 @@ export interface SpawnAgentInput {
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
    *  0 when omitted (direct/root spawn). */
   depth?: number
+  /** The spawn was declared detached (`attach: false`), so a restart must not
+   *  attach it to any parent. Recorded on
+   *  {@link SessionDescriptor.detached} — see that field's doc. */
+  detached?: boolean
   /** Free-form spawn-time hints, recorded verbatim onto
    *  {@link SessionDescriptor.meta} (e.g. `agent_start.boardId` →
    *  `meta.boardId`). See that field's doc for the contract. */
@@ -7127,7 +7136,12 @@ export function createSessionsRegistry(opts?: {
       : DEFAULT_EXTERNAL_SESSION_LIVENESS_MS
   const externalNowMs = opts?.externalNow ?? Date.now
   const claudeSocketWake = opts?.claudeSocketWake
-  const codexDesktopWake = opts?.codexDesktopWake ? createCodexDesktopWake(opts.codexDesktopWake) : undefined
+  const codexDesktopWake = opts?.codexDesktopWake
+    ? createCodexDesktopWake({
+      senderLookup: id => sessions.get(id)?.desc,
+      ...opts.codexDesktopWake,
+    })
+    : undefined
   const wakeWarningsByReceiver = new Map<string, WakeWarning>()
   /** Lazily expire an `external` row whose last sighting fell out of the
    *  liveness window: there is no process whose exit could flip it, so every
@@ -13200,6 +13214,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        ...(input.detached ? { detached: true } : {}),
         // The relay TOKEN stays in memory (see `remoteParentFields`) - the
         // descriptor (and therefore the persisted row) carries only the
         // parent session id and the relay URL.
@@ -13458,6 +13473,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        ...(input.detached ? { detached: true } : {}),
         // The relay TOKEN stays in memory (see `remoteParentFields`) - the
         // descriptor (and therefore the persisted row) carries only the
         // parent session id and the relay URL.
