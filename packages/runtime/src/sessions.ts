@@ -7050,7 +7050,12 @@ export function createSessionsRegistry(opts?: {
       : DEFAULT_EXTERNAL_SESSION_LIVENESS_MS
   const externalNowMs = opts?.externalNow ?? Date.now
   const claudeSocketWake = opts?.claudeSocketWake
-  const codexDesktopWake = opts?.codexDesktopWake ? createCodexDesktopWake(opts.codexDesktopWake) : undefined
+  const codexDesktopWake = opts?.codexDesktopWake
+    ? createCodexDesktopWake({
+      senderLookup: id => sessions.get(id)?.desc,
+      ...opts.codexDesktopWake,
+    })
+    : undefined
   const wakeWarningsByReceiver = new Map<string, WakeWarning>()
   /** Lazily expire an `external` row whose last sighting fell out of the
    *  liveness window: there is no process whose exit could flip it, so every

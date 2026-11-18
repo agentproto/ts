@@ -14,6 +14,7 @@
  */
 
 import { CODEX_DESKTOP_THREAD_ID } from "./codex-desktop-wake.js"
+import { trustedSendersSchema } from "./desktop-trusted-senders.js"
 import { z } from "zod"
 import type { Grant } from "@agentproto/policy"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
@@ -441,6 +442,8 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     claudeSocketWake: z.boolean().optional(),
     codexDesktopWakeThreadIds: z.array(z.string().regex(CODEX_DESKTOP_THREAD_ID)).optional(),
     codexDesktopWakeDirectThreadIds: z.array(z.string().regex(CODEX_DESKTOP_THREAD_ID)).optional(),
+    desktopTrustedSenders: trustedSendersSchema.optional(),
+    desktopTrustedSendersByThread: z.record(z.string().regex(CODEX_DESKTOP_THREAD_ID), trustedSendersSchema).optional(),
   })
   .passthrough()
 
@@ -1383,6 +1386,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Codex Desktop direct wake allowlist",
     help: "Experimental. Wake these exact local Codex Desktop chat UUIDs with bounded, untrusted message text.",
     default: [],
+  },
+  {
+    path: "daemon.desktopTrustedSenders",
+    schema: trustedSendersSchema,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Desktop trusted senders",
+    help: "Experimental. Whose message a Codex Desktop direct-wake thread (daemon.codexDesktopWakeDirectThreadIds) carries out as an instruction instead of reading it as untrusted data: off (default) | operator (sessions the operator started, and human senders) | tree (those, plus every session spawned beneath them) | an explicit list of session ids, label:<operatorLabel>, human, or claude-desktop. The unverified claude-desktop identity is trusted only when listed; system and anonymous senders never are.",
+    default: "off",
+  },
+  {
+    path: "daemon.desktopTrustedSendersByThread",
+    schema: z.record(z.string().regex(CODEX_DESKTOP_THREAD_ID), trustedSendersSchema),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Desktop trusted senders, per thread",
+    help: "Experimental. Per Codex Desktop chat UUID override of daemon.desktopTrustedSenders (same values).",
+    default: {},
   },
   {
     path: "sessions.eventsDir",
