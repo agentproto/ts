@@ -36,6 +36,8 @@ import {
   stripAnsi,
 } from "./agent-tools.js"
 import { effectiveCallerSessionId } from "./session-owner.js"
+import { SELF_COMMAND_MAX_ARGS, planSelfCommand } from "./session-self-command.js"
+import { HANDOFF_CONTEXT_MODES, HandoffError, performSessionHandoff } from "./session-handoff.js"
 import { SESSION_SCREENCAST_NO_FRAME_MESSAGE, type SessionScreencastReader } from "./session-screencast.js"
 import { checkDrive } from "./drive-gate.js"
 import { registerLineageTools } from "./lineage-tools.js"
@@ -3108,6 +3110,219 @@ export function registerSessionTools(
           ],
           isError: true,
         }
+      }
+    },
+  )
+
+  // ── session_command_self ─────────────────────────────────────────
+  server.tool(
+    "session_command_self",
+    "Run a harness slash-command (/compact, /clear, /model <id>, ...) ON YOURSELF. " +
+      "A session can't type into itself, and can't compact in the middle of a turn: " +
+      "the command is QUEUED on your own prompt queue and runs when your current turn " +
+      "ENDS, exactly as if the operator had typed it. Only commands the adapter " +
+      "manifest allows for your harness (`capabilities.selfCommands`) and that your " +
+      "harness currently advertises (`session_commands`) are accepted; anything else " +
+      "returns a clear refusal with the allowed list. A session whose policy sets " +
+      "`contextContinuity.compactRequiresOperator` still can't compact itself.",
+    {
+      command: z.string().min(1).describe('Command name, with or without the slash: "compact", "/clear", "model".'),
+      args: z.string().max(SELF_COMMAND_MAX_ARGS).optional().describe('One-line arguments, e.g. "claude-fable-5-2" for /model.'),
+    },
+    async input => {
+      const asError = (obj: Record<string, unknown>) => ({
+        content: [{ type: "text" as const, text: JSON.stringify(obj) }],
+        isError: true as const,
+      })
+      const caller = effectiveCallerSessionId(callerScope, callerSessionId)
+      if (!caller) {
+        return asError({
+          error:
+            "session_command_self: the calling session can't be identified (it only works from a session). " +
+            "An operator drives a session with agent_prompt.",
+        })
+      }
+      const desc = registry.get(caller)
+      if (!desc || desc.kind !== "agent-cli") {
+        return asError({ error: `session_command_self: "${caller}" is not a live agent-cli session.` })
+      }
+      const slug = desc.harness ?? desc.adapterSlug
+      let allow: readonly string[] | undefined
+      try {
+        const resolved = slug && resolveAgentAdapter ? await resolveAgentAdapter(slug) : null
+        allow = resolved?.selfCommands
+      } catch {
+        allow = undefined
+      }
+      const plan = planSelfCommand({
+        command: input.command,
+        ...(input.args !== undefined ? { args: input.args } : {}),
+        harness: slug,
+        allow,
+        available: desc.availableCommands,
+      })
+      if (!plan.ok) return asError({ error: plan.message, code: plan.code, allowed: plan.allowed })
+      try {
+        await registry.enqueuePrompt(caller, plan.text, { queue: true, source: `agent:${caller}`, origin: "agent" })
+      } catch (err) {
+        return asError({
+          error: `session_command_self: "${plan.text}" refused: ${err instanceof Error ? err.message : String(err)}`,
+          code: "enqueue_refused",
+        })
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              queued: true,
+              command: plan.text,
+              harness: slug,
+              runsAt: "end-of-current-turn",
+              note: "It runs when this turn ends; finish your answer first. Check session_context_status afterwards.",
+            }),
+          },
+        ],
+      }
+    },
+  )
+
+  // ── session_handoff ──────────────────────────────────────────────
+  server.tool(
+    "session_handoff",
+    "Hand a session's work to ANOTHER MODEL and/or HARNESS — callable on " +
+      "yourself (omit the session ref: \"I'm a Sonnet session, pass me to " +
+      "Fable\"). The successor takes over the label, the parent, the children, " +
+      "the follows and the declared succession (`succeeds`); the old session is " +
+      "closed only after the new one is confirmed running. `context` decides " +
+      "how much of the conversation travels: `handoff-summary` (default) = a " +
+      "structured status plus the previous session id and how to re-read it " +
+      "(`transcript_read`); `harness-compact` = the harness's native /compact, " +
+      "then the model switch (in place when the harness stays); `none` = only " +
+      "the model, in place, no new session (same harness; refused when the " +
+      "harness can't switch live); `full-resume` = replay the WHOLE transcript " +
+      "(expensive, cache rebuilt, discouraged). Model policy and auth-profile " +
+      "allow-lists are enforced: a refused model returns an explicit " +
+      "`model_refused` and nothing is switched.",
+    {
+      ...sessionRefSchema(z),
+      context: z
+        .enum(HANDOFF_CONTEXT_MODES)
+        .optional()
+        .describe(
+          "What travels. `handoff-summary` (default) | `harness-compact` | `none` | `full-resume` (costly, discouraged).",
+        ),
+      model: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Target model (e.g. claude-fable-5-2). Omitted = keep the current model."),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Target harness slug (e.g. codex). Omitted = keep the current harness. Not allowed with context `none`."),
+      access: z
+        .object({ profileRef: z.string().min(1) })
+        .optional()
+        .describe("Named auth profile (billing wallet) for the successor. Eligibility is validated like agent_start."),
+      notes: z
+        .string()
+        .max(3000)
+        .optional()
+        .describe(
+          "Your own status for the next agent: goal, decisions, what is done, the next step. " +
+            "When you hand off YOURSELF this is the summary (you can't be asked mid-turn), so write it.",
+        ),
+      closeSource: z
+        .boolean()
+        .optional()
+        .describe("Close the old session once the new one runs (default true). Ignored for in-place modes."),
+      askSource: z
+        .boolean()
+        .optional()
+        .describe("handoff-summary only: ask the live source to summarise itself first (default true; always false on a self-handoff)."),
+    },
+    async input => {
+      const asError = (obj: Record<string, unknown>) => ({
+        content: [{ type: "text" as const, text: JSON.stringify(obj) }],
+        isError: true as const,
+      })
+      if (!resolveAgentAdapter) {
+        return asError({ error: "session_handoff requires an adapter resolver; none is configured." })
+      }
+      const caller = effectiveCallerSessionId(callerScope, callerSessionId)
+      const hasRef = Boolean(
+        refString(input.sessionId) ?? refString((input as { id?: unknown }).id) ?? refString(input.idOrName) ?? refString(input.slug),
+      )
+      const desc = hasRef
+        ? resolveSessionDesc(registry, input)
+        : caller !== undefined
+          ? registry.get(caller)
+          : undefined
+      if (!desc) {
+        return asError({
+          error: hasRef
+            ? `no session "${sessionRefQuery(input)}" found`
+            : "session_handoff: no session given and the caller can't be identified — pass sessionId.",
+        })
+      }
+      if (desc.kind !== "agent-cli") {
+        return asError({ error: `session "${desc.id}" is not an agent-cli session` })
+      }
+      const gate = checkDrive({
+        registry,
+        ...(opts.messagingGrants !== undefined ? { grants: opts.messagingGrants } : {}),
+        callerSessionId: caller,
+        target: desc,
+        tool: "session_handoff",
+      })
+      if (!gate.ok) return asError({ error: `session_handoff: ${gate.message}` })
+      const spawnDeps: SpawnAgentSessionDeps = {
+        registry,
+        resolveAgentAdapter,
+        ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+        ...(opts.buildOrchestratorMcp ? { buildOrchestratorMcp: opts.buildOrchestratorMcp } : {}),
+        ...(opts.webhookNotifier ? { webhookNotifier: opts.webhookNotifier } : {}),
+        ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+        ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+        ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
+        ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
+        ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(opts.ensureLlmEndpointRunning ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning } : {}),
+      }
+      try {
+        const result = await performSessionHandoff(
+          {
+            spawn: spawnDeps,
+            ...(caller !== undefined ? { callerSessionId: caller } : {}),
+            sources: checkpointSources,
+            restart: {
+              ...(listCatalogModels ? { listCatalogModels } : {}),
+              ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+              ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+            },
+            ...(opts.cronScheduler
+              ? { rearmCrons: (from: string, to: string) => opts.cronScheduler!.rearmSessionTarget(from, to) }
+              : {}),
+          },
+          withContextPolicy(desc).source,
+          {
+            ...(input.context !== undefined ? { context: input.context } : {}),
+            ...(input.model !== undefined ? { model: input.model } : {}),
+            ...(input.harness !== undefined ? { harness: input.harness } : {}),
+            ...(input.access !== undefined ? { access: input.access } : {}),
+            ...(input.notes !== undefined ? { notes: input.notes } : {}),
+            ...(input.closeSource !== undefined ? { closeSource: input.closeSource } : {}),
+            ...(input.askSource !== undefined ? { askSource: input.askSource } : {}),
+          },
+        )
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] }
+      } catch (err) {
+        if (err instanceof HandoffError) {
+          return asError({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) })
+        }
+        return asError({ error: `session_handoff failed: ${err instanceof Error ? err.message : String(err)}` })
       }
     },
   )
