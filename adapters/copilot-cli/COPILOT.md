@@ -133,8 +133,11 @@ options the session advertises (`effort`, then `reasoning_effort`, then the
 
 ## Modes
 
-Copilot's `mode` config option offers three modes: `agent` (default), `plan`
-and `autopilot` (allow-all, experimental). They come from the session's own
+Copilot's `mode` config option offers three modes: Agent (default), Plan and
+Autopilot (allow-all, experimental). Their wire ids are the full URLs
+`https://agentclientprotocol.com/protocol/session-modes#agent`, `#plan` and
+`#autopilot` (verified on 1.0.113); `agent` / `plan` / `autopilot` below and in
+the manifest are the short names. They come from the session's own
 mode registry, so they appear as the session's available modes and are switched
 through the standard posture controls.
 

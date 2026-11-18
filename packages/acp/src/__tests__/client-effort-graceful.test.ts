@@ -274,10 +274,20 @@ describe("createAcpClient — effort configId resolved from advertised configOpt
   it("copilot-cli: agent/plan/autopilot from the `mode` config option surface as availableModes", async () => {
     mockNewSession.mockResolvedValue({
       sessionId: "s-modes",
-      configOptions: [selectOption("mode", "mode", ["agent", "plan", "autopilot"])],
+      configOptions: [
+        selectOption("mode", "mode", [
+          "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "https://agentclientprotocol.com/protocol/session-modes#plan",
+          "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+        ]),
+      ],
     })
     const client = await createAcpClient({ ...fakeStreams() })
     const session = await client.newSession({ cwd: "/tmp" })
-    expect(session.availableModes.map(m => m.id)).toEqual(["agent", "plan", "autopilot"])
+    expect(session.availableModes.map(m => m.id.split("#")[1])).toEqual([
+      "agent",
+      "plan",
+      "autopilot",
+    ])
   })
 })

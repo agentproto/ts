@@ -1132,13 +1132,23 @@ function buildSession(
         return "unsupported"
       }
     },
-    async setConfigOption(configId, value) {
+    async setConfigOption(requestedConfigId, value) {
+      // `effort` is the harness-neutral name (what `setEffort` passes);
+      // the wire id is whatever this session advertises (`reasoning_effort`
+      // on Copilot), same resolution as the connect-time apply.
+      const configId =
+        requestedConfigId === "effort"
+          ? resolveEffortConfigId(state.configOptions)
+          : requestedConfigId
       try {
-        await connection.setSessionConfigOption({
+        const applied = await connection.setSessionConfigOption({
           configId,
           value,
           sessionId,
         } as never)
+        const refreshed = (applied as { configOptions?: SessionConfigOption[] | null } | undefined)
+          ?.configOptions
+        if (Array.isArray(refreshed) && refreshed.length > 0) state.configOptions = refreshed
         onActivity?.()
         return { applied: true }
       } catch (err) {
