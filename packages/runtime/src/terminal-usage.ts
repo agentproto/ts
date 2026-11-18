@@ -92,6 +92,7 @@ export function parseCodexRolloutUsage(text: string): UsageReadResult | null {
 /** Bytes of a rollout tail read per poll. token_count and turn_context
  *  lines recur every turn, so the tail holds the latest of each. */
 const CODEX_TAIL_BYTES = 768 * 1024
+const CODEX_CACHE_MAX = 64
 const codexCache = new Map<string, { size: number; result: UsageReadResult | null }>()
 
 /** Best-effort cumulative usage of a Codex conversation. Never throws. */
@@ -124,6 +125,8 @@ export async function readCodexRolloutUsage(
     // The model line can sit before the tail window: keep the previous one.
     if (result && !result.model && hit?.result?.model) result = { ...result, model: hit.result.model }
     codexCache.set(file, { size, result })
+    // Bounded: drop the oldest entry (Map keeps insertion order).
+    if (codexCache.size > CODEX_CACHE_MAX) codexCache.delete(codexCache.keys().next().value as string)
     return result
   } catch {
     return null
@@ -210,7 +213,8 @@ export function paidCostFor(
  */
 export function normalizeTerminalUsage(r: UsageReadResult | null): UsageReadResult | null {
   if (!r) return null
-  const tokens = (r.tokensIn ?? 0) + (r.tokensOut ?? 0) + (r.cacheReadTokens ?? 0)
+  const tokens =
+    (r.tokensIn ?? 0) + (r.tokensOut ?? 0) + (r.cacheReadTokens ?? 0) + (r.cacheWriteTokens ?? 0)
   if (r.costUsd === 0 && tokens > 0) {
     const { costUsd: _drop, ...rest } = r
     return rest

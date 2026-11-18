@@ -10144,6 +10144,7 @@ export function createSessionsRegistry(opts?: {
       usage.cacheReadTokens ?? "",
       usage.cacheWriteTokens ?? "",
       usage.reasoningTokens ?? "",
+      usage.billing ?? "",
     ].join("|")
     if (opts?.dedupe && rt.lastUsageReadKey === key) return
     rt.lastUsageReadKey = key
