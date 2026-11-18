@@ -139,11 +139,24 @@ describe("ACP_CATALOG — mistral-vibe deferred tool discovery", () => {
 })
 
 describe("ACP_CATALOG — mistral-vibe models", () => {
-  it("declares only the ids Vibe 2.24.1 accepts (no devstral-latest etc.)", () => {
+  it("defaults to Mistral Large 4 and declares only ids Vibe 3.1.3 accepts", () => {
     const vibe = ACP_CATALOG.find((e) => e.slug === "mistral-vibe")!
-    expect(vibe.models?.default).toBe("mistral-medium-3.5")
-    expect(vibe.models?.allowed).toEqual(["mistral-medium-3.5", "devstral-small", "local"])
-    expect(vibe.models?.allowed).not.toContain("devstral-latest")
+    expect(vibe.models?.default).toBe("mistral-large-4-0")
+    expect(vibe.models?.allowed).toEqual([
+      "mistral-large-4-0",
+      "mistral-medium-latest",
+      "mistral-medium-3.5",
+      "zai-glm-5-3",
+      "zai-glm-5-3-flash",
+    ])
+    expect(vibe.models?.allowed).toContain(vibe.models?.default)
+  })
+
+  it("does not declare retired or rejected ids (devstral*, local)", () => {
+    const vibe = ACP_CATALOG.find((e) => e.slug === "mistral-vibe")!
+    for (const id of vibe.models?.allowed ?? []) {
+      expect(id).not.toMatch(/devstral|^local$/)
+    }
   })
 })
 

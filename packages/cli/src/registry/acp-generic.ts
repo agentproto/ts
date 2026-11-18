@@ -225,16 +225,25 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
       "Mistral AI's Vibe coding CLI, driven over the Agent Client Protocol via its bundled `vibe-acp` binary. Auth via MISTRAL_API_KEY (`vibe --setup`).",
     bin: "vibe-acp",
     provider: "mistral",
-    // The ids Vibe 2.24.1 actually accepts as the ACP `model` config option
-    // (read from a real `session/new`, 2026-11-18): `mistral-medium-3.5`
-    // (default, alias mistral-vibe-cli-latest), `devstral-small`
-    // (devstral-small-latest) and `local` (devstral). Any other id, e.g.
-    // `devstral-latest`, fails with "Unsupported config option model" and the
-    // session silently stays on the default. The per-install list is whatever
-    // `session/new` returns (`availableConfigOptions`).
+    // Read from a real `session/new` on Vibe 3.1.3 (2026-11-18, account
+    // catalog), cross-checked with Mistral `GET /v1/models` and the models
+    // overview page. `mistral-large-4-0` is Mistral Large 4 (v26.03, 1M
+    // context, flagship for agentic and coding use): the default. Mistral
+    // Medium 3.5 follows (`mistral-medium-latest`; `mistral-medium-3.5` is an
+    // accepted alias). Z.ai GLM 5.3 / 5.3 Flash are hosted by Mistral.
+    // Devstral is retired (absent from /v1/models; Devstral 2 and Small 2
+    // end-of-life in 2026) and Vibe 3.x rejects `devstral-small` and `local`
+    // with "Unknown model", so they are not declared. The per-install list is
+    // whatever `session/new` returns (`availableConfigOptions`).
     models: {
-      default: "mistral-medium-3.5",
-      allowed: ["mistral-medium-3.5", "devstral-small", "local"],
+      default: "mistral-large-4-0",
+      allowed: [
+        "mistral-large-4-0",
+        "mistral-medium-latest",
+        "mistral-medium-3.5",
+        "zai-glm-5-3",
+        "zai-glm-5-3-flash",
+      ],
     },
     install_hint: "uv tool install mistral-vibe",
     // Proved live 2026-11-18 (Vibe 2.24.1): with `deferredTools:true` a Vibe
