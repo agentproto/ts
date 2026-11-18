@@ -74,6 +74,21 @@ export function sessionTranscriptDir(sessionId: string, baseDir?: string): strin
   return join(baseDir ?? defaultTranscriptBaseDir(), sessionId)
 }
 
+/** Longest message body kept on a `session-message-sent` record, in UTF-16
+ *  code units. Longer bodies are cut and flagged `textTruncated`. */
+export const SENT_MESSAGE_TEXT_MAX = 4000
+
+/** `text` (and `textTruncated` when cut) for a sent record; nothing for an
+ *  absent or empty body. A cut never splits a surrogate pair. */
+export function boundSentText(text: string | undefined): { text?: string; textTruncated?: true } {
+  if (!text) return {}
+  if (text.length <= SENT_MESSAGE_TEXT_MAX) return { text }
+  let end = SENT_MESSAGE_TEXT_MAX
+  const last = text.charCodeAt(end - 1)
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1
+  return { text: text.slice(0, end), textTruncated: true }
+}
+
 export function sessionEventsPath(sessionId: string, baseDir?: string): string {
   return join(sessionTranscriptDir(sessionId, baseDir), "events.jsonl")
 }
@@ -590,6 +605,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         messageKind: record.kind,
         urgency: record.urgency,
         ...(record.replyAddress ? { replyAddress: record.replyAddress } : {}),
+        ...boundSentText(record.text),
       })
     },
     recordMirrorEvents(sessionId, records) {

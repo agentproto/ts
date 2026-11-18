@@ -210,6 +210,7 @@ describe("child messages to a busy parent", () => {
       messageId: res.messageId,
       to: parent.id,
       messageKind: "report",
+      text: "done: 3 files patched",
     })
     registry.shutdown()
   })

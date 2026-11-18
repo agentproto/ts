@@ -9,6 +9,8 @@ import {
   sessionTranscriptDir,
   setDefaultSessionsBaseDir,
   defaultTranscriptBaseDir,
+  boundSentText,
+  SENT_MESSAGE_TEXT_MAX,
 } from "../transcript-writer.js"
 
 describe("default sessions base dir (sessions.eventsDir)", () => {
@@ -67,6 +69,41 @@ describe("createTranscriptWriter", () => {
     }
     return out
   }
+
+  it("records the sent message body on session-message-sent", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordSessionMessageSent("sess_s", {
+      messageId: "msg_1",
+      to: "cc:abc",
+      kind: "question",
+      urgency: "next-turn",
+      text: "what is the status?",
+    })
+    writer.recordSessionMessageSent("sess_s", {
+      messageId: "msg_2",
+      to: "cc:abc",
+      kind: "question",
+      urgency: "next-turn",
+    })
+    await writer.close("sess_s")
+    const [withText, without] = readLines("sess_s")
+    expect(withText).toMatchObject({ kind: "session-message-sent", messageId: "msg_1", text: "what is the status?" })
+    expect(withText).not.toHaveProperty("textTruncated")
+    expect(without).not.toHaveProperty("text")
+  })
+
+  it("bounds a long sent body and never splits a surrogate pair", () => {
+    expect(boundSentText(undefined)).toEqual({})
+    expect(boundSentText("")).toEqual({})
+    expect(boundSentText("x".repeat(SENT_MESSAGE_TEXT_MAX))).toEqual({ text: "x".repeat(SENT_MESSAGE_TEXT_MAX) })
+    const cut = boundSentText("x".repeat(SENT_MESSAGE_TEXT_MAX + 50))
+    expect(cut.text).toHaveLength(SENT_MESSAGE_TEXT_MAX)
+    expect(cut.textTruncated).toBe(true)
+    const emoji = "x".repeat(SENT_MESSAGE_TEXT_MAX - 1) + "😀tail"
+    const cutEmoji = boundSentText(emoji)
+    expect(cutEmoji.text).toBe("x".repeat(SENT_MESSAGE_TEXT_MAX - 1))
+    expect(cutEmoji.textTruncated).toBe(true)
+  })
 
   it("writes a user-prompt record for recordPrompt", async () => {
     const writer = createTranscriptWriter({ baseDir: tmp })

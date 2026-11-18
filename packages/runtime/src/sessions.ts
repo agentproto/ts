@@ -11373,6 +11373,7 @@ export function createSessionsRegistry(opts?: {
       to: msg.to,
       kind: msg.kind,
       urgency: msg.urgency,
+      text: msg.text,
       ...(msg.replyAddress ? { replyAddress: msg.replyAddress } : {}),
     })
   }
@@ -14097,15 +14098,7 @@ export function createSessionsRegistry(opts?: {
       const envelope = opts?.envelope
       if (envelope) {
         // Sender-side trace, once, at acceptance — whichever arm delivers it.
-        if (envelope.from.sessionId) {
-          transcriptWriter.recordSessionMessageSent?.(envelope.from.sessionId, {
-            messageId: envelope.id,
-            to: envelope.to,
-            kind: envelope.kind,
-            urgency: envelope.urgency,
-            ...(envelope.replyAddress ? { replyAddress: envelope.replyAddress } : {}),
-          })
-        }
+        recordSent(envelope)
       }
       if (opts?.queue && (rtPre.busy || rtPre.contextRescue)) {
         // Coalesce-in-place (sentinel notices, mostly): a newer enqueue that

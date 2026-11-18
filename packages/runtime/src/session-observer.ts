@@ -21,6 +21,11 @@ export interface SessionMessageSentRecord {
   urgency: MessageUrgency
   /** The declared reply address the sender attached, when any. */
   replyAddress?: string
+  /** The message body the sender wrote, so a viewer can show what was sent
+   *  without reading the recipient's transcript (which a recipient that is
+   *  not a daemon session, or a scoped link, cannot offer). The transcript
+   *  writer bounds it (`SENT_MESSAGE_TEXT_MAX` in transcript-writer.ts). */
+  text?: string
 }
 
 export interface SessionObserver {
