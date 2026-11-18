@@ -177,10 +177,10 @@ export function resolveLiveLabelAddress(input: {
     return fail(
       "no_live_session_for_label",
       `${tool}: no live session carries the label "${label}". A killed or retired session never matches. ` +
-        "`label:` matches only the immutable operator label, which is stamped on sessions an operator " +
-        "starts (no caller session, no parent); a child spawned by another session, or a label set with " +
-        "`agent_start.label` from a session, never carries one. Address such a session by id " +
-        "(`agent_start` returns it; share ids between siblings with a directory message).",
+        "`label:` matches only the immutable operator label. It is auto-stamped only on sessions an operator " +
+        "starts (no caller session, no parent); the mutable label set by `agent_start.label` from a session " +
+        "never matches. A supervisor can give a child it owns a matching label with `agent_set_operator_label`; " +
+        "otherwise address the session by id (`agent_start` returns it; share ids between siblings with a directory message).",
     )
   }
   if (live.length > 1) {
@@ -627,8 +627,8 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       "your own workspace, or to any session whose workspace sits in the same " +
       "`defaults.messaging.peerGroups` group as yours. `to: \"label:<label>\"` " +
       "addresses the single LIVE session carrying that operator-assigned label " +
-      "(it survives a restart that changes the session id; only operator-started sessions carry one, " +
-      "so children spawned by a session are addressed by id); the same permission " +
+      "(it survives a restart that changes the session id; operator-started sessions carry one " +
+      "automatically; a supervisor can stamp one on a child it owns with agent_set_operator_label, otherwise use the id); the same permission " +
       "rules then apply to the session it resolves to. The daemon attests the sender " +
       "(you) in the header the recipient sees; you never set it. Not a delegation " +
       "tool: it reaches only neighbours and grants no control. If the recipient is " +
