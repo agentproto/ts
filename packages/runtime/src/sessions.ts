@@ -3091,6 +3091,11 @@ export interface SessionDescriptor {
    *  chat (e.g. Claude's `hostSessionId`), so the daemon row can be matched
    *  back to the client that registered it. */
   externalHostSessionId?: string
+  /** `kind: "external"` only: the daemon session that created this host
+   *  conversation (`desktop_conversation_create`). It holds the `parent`
+   *  messaging relation to it, so it may ask it afterwards without opening
+   *  messaging to anyone else. Set once, never rewritten. */
+  ownerSessionId?: string
   /** `kind: "external"` only: the host's own entrypoint tag for this chat,
    *  as its registration file reports it (Claude Desktop: `claude-desktop-3p`).
    *  Read-only metadata; nothing in the daemon branches on it. */
@@ -4915,6 +4920,8 @@ export interface SessionsRegistry {
     name?: string
     cwd?: string
     hostSessionId?: string
+    /** Daemon session that created the conversation; first writer wins. */
+    ownerSessionId?: string
     /** Workspace the host conversation belongs to (resolved from its cwd);
      *  absent leaves the stored one as is. */
     workspaceSlug?: string
@@ -13946,6 +13953,7 @@ export function createSessionsRegistry(opts?: {
         if (input.name) desc.name = input.name
         if (input.cwd) desc.cwd = input.cwd
         if (input.hostSessionId) desc.externalHostSessionId = input.hostSessionId
+        if (input.ownerSessionId && !desc.ownerSessionId) desc.ownerSessionId = input.ownerSessionId
         if (input.workspaceSlug) desc.workspaceSlug = input.workspaceSlug
         if (input.entrypoint) desc.externalEntrypoint = input.entrypoint
         if (input.permissionMode) desc.externalPermissionMode = input.permissionMode
@@ -13966,6 +13974,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.name ? { name: input.name } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.hostSessionId ? { externalHostSessionId: input.hostSessionId } : {}),
+        ...(input.ownerSessionId ? { ownerSessionId: input.ownerSessionId } : {}),
         ...(input.entrypoint ? { externalEntrypoint: input.entrypoint } : {}),
         ...(input.permissionMode ? { externalPermissionMode: input.permissionMode } : {}),
       }

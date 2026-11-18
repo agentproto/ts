@@ -177,3 +177,56 @@ describe("the registered tool", () => {
     expect(ok.isError).toBeFalsy()
   })
 })
+
+describe("createCodexConversation without a model", () => {
+  it("passes no -m flag so Codex picks its own model", async () => {
+    const f = await fakeCodex([
+      { type: "thread.started", thread_id: TID },
+      { type: "item.completed", item: { type: "agent_message", text: "ok" } },
+      { type: "turn.completed" },
+    ])
+    await createCodexConversation({ cwd: root, prompt: "x", codexBin: f.bin })
+    expect((await f.called()).argv).not.toContain("-m")
+  })
+
+  it("turns a 'not supported' refusal into an error naming models that work", async () => {
+    const f = await fakeCodex([
+      { type: "thread.started", thread_id: TID },
+      {
+        type: "turn.failed",
+        error: { message: "400 The 'gpt-6.1-terra' model is not supported when using Codex with a ChatGPT account." },
+      },
+    ])
+    const r = await createCodexConversation({
+      cwd: root,
+      prompt: "x",
+      codexBin: f.bin,
+      workingModels: async () => ["gpt-5.6-terra", "gpt-6.1-terra", "gpt-5.6-luna"],
+    })
+    expect(r.status).toBe("failed")
+    expect(r.error).toContain("not supported")
+    expect(r.error).toContain("gpt-5.6-terra")
+    expect(r.error).toContain("gpt-5.6-luna")
+    expect(r.error).toMatch(/Pass `model`/)
+    // the refused model is not offered back as one that works
+    expect(r.error!.split("Models that worked")[1]).not.toContain("gpt-6.1-terra")
+  })
+
+  it("does not rewrite other failures", async () => {
+    const f = await fakeCodex([
+      { type: "thread.started", thread_id: TID },
+      { type: "turn.failed", error: { message: "rate limited" } },
+    ])
+    const r = await createCodexConversation({ cwd: root, prompt: "x", codexBin: f.bin, workingModels: async () => ["a"] })
+    expect(r.error).toBe("rate limited")
+  })
+
+  it("does not rewrite an unrelated 'not supported' failure", async () => {
+    const f = await fakeCodex([
+      { type: "thread.started", thread_id: TID },
+      { type: "turn.failed", error: { message: "image input is not supported here" } },
+    ])
+    const r = await createCodexConversation({ cwd: root, prompt: "x", codexBin: f.bin, workingModels: async () => ["a"] })
+    expect(r.error).toBe("image input is not supported here")
+  })
+})
