@@ -16,7 +16,7 @@ import { parseArgs } from "node:util"
 import { listAdaptersWithCatalog } from "../registry/resolve.js"
 import { CATALOG } from "../registry/catalog.js"
 import { loadProviders, providerEnvVar } from "@agentproto/runtime/providers-store"
-import { LLM_PRICING_CATALOG, resolveContextWindow, formatTokens } from "@agentproto/model-catalog/llm"
+import { LLM_PRICING_CATALOG, effectivePricing, resolveContextWindow, formatTokens } from "@agentproto/model-catalog/llm"
 
 const USAGE = `agentproto models — list runnable models per adapter
 
@@ -68,13 +68,24 @@ function providerOf(modelId: string, pricing: PricingEntry | undefined): string 
 /** Best-effort lookup into the bare-id-keyed pricing catalog: try the full id,
  *  then the segment after the first slash, then after the last slash. */
 function pricingOf(modelId: string): PricingEntry | undefined {
-  const cat = LLM_PRICING_CATALOG as Record<string, PricingEntry>
-  if (cat[modelId]) return cat[modelId]
+  const cat = LLM_PRICING_CATALOG as Record<string, Parameters<typeof effectivePricing>[0] & PricingEntry>
   const first = modelId.slice(modelId.indexOf("/") + 1)
-  if (cat[first]) return cat[first]
   const last = modelId.slice(modelId.lastIndexOf("/") + 1)
-  return cat[last]
+  // effectivePricing: a lapsed dated promo (e.g. MAI Code 2 after 2027-05-17)
+  // resolves to its standard price instead of the stale promo one.
+  const hit = cat[modelId] ?? cat[first] ?? cat[last]
+  return hit ? effectivePricing(hit) : undefined
 }
+
+/** Adapters whose models are reached through the adapter's OWN login (a
+ *  Copilot subscription), not through per-provider API keys. For these,
+ *  "runnable" is the adapter's readiness, not `hasKey(provider)`: a Copilot
+ *  user needs no ANTHROPIC_API_KEY to run `claude-sonnet-5.5`, and
+ *  `mai-code-2` has no provider key at all. */
+const ADAPTER_OWNS_AUTH: ReadonlySet<string> = new Set(["copilot-cli"])
+
+/** Why a row shows no price: never a silent blank. */
+const NO_PRICE_REASON = "no price in the catalog (not in the vendor's sync nor in Copilot's price list)"
 
 /** A provider has a key if it's in this env OR the stored providers file. */
 async function loadKeyChecker(): Promise<(provider: string) => boolean> {
@@ -150,9 +161,10 @@ export async function runModels(args: readonly string[]): Promise<number> {
               return {
                 id,
                 provider,
-                runnable: hasKey(provider),
+                runnable: ADAPTER_OWNS_AUTH.has(a.slug) ? a.status === "ready" : hasKey(provider),
                 inputPer1M: pricing?.inputPer1M ?? null,
                 outputPer1M: pricing?.outputPer1M ?? null,
+                ...(pricing?.inputPer1M == null ? { priceNote: NO_PRICE_REASON } : {}),
                 contextWindow: formatTokens(ctx?.contextWindow),
                 maxOutput: formatTokens(ctx?.maxOutput),
               }
@@ -172,12 +184,13 @@ export async function runModels(args: readonly string[]): Promise<number> {
     for (const id of a.models) {
       const pricing = pricingOf(id)
       const provider = providerOf(id, pricing)
-      const ok = hasKey(provider)
-      if (!ok) missing.add(provider)
+      const ownsAuth = ADAPTER_OWNS_AUTH.has(a.slug)
+      const ok = ownsAuth ? a.status === "ready" : hasKey(provider)
+      if (!ok && !ownsAuth) missing.add(provider)
       const price =
         pricing?.inputPer1M != null
           ? `  $${pricing.inputPer1M}/$${pricing.outputPer1M ?? "?"} per 1M`
-          : ""
+          : `  price n/a: ${NO_PRICE_REASON}`
       const ctx = resolveContextWindow(id)
       const ctxText =
         ctx?.contextWindow != null

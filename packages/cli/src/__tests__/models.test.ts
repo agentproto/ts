@@ -83,3 +83,38 @@ describe("runModels — contextWindow/maxOutput surfacing", () => {
     expect(unknown?.maxOutput).toBeNull()
   })
 })
+
+describe("runModels — copilot-cli (adapter-owned auth, Copilot price list)", () => {
+  const COPILOT = {
+    slug: "copilot-cli",
+    status: "ready",
+    models: ["mai-code-2", "mai-code-2-flash", "claude-sonnet-5.5", "auto", "brand-new-model"],
+  }
+
+  it("prices MAI Code 2 / Flash and marks them runnable without any provider key", async () => {
+    delete process.env.ANTHROPIC_API_KEY
+    mocked.mockResolvedValue([COPILOT as never])
+    const { out } = await capture([])
+    expect(out.split("\n").find(l => l.includes("mai-code-2-flash"))).toMatch(/^ {2}✓ .*\$0\.05\/\$0\.25 per 1M/)
+    expect(out.split("\n").find(l => / mai-code-2 /.test(l))).toMatch(/^ {2}✓ .*\$0\.5\/\$2\.5 per 1M/)
+    expect(out.split("\n").find(l => l.includes("claude-sonnet-5.5"))).toMatch(/^ {2}✓ .*\$2\/\$10 per 1M/)
+  })
+
+  it("never shows a silent blank: an unpriced id says why, in text and in --json", async () => {
+    mocked.mockResolvedValue([COPILOT as never])
+    const { out } = await capture([])
+    expect(out.split("\n").find(l => l.includes("brand-new-model"))).toContain("price n/a:")
+    const json = JSON.parse((await capture(["--json"])).out) as {
+      adapters: Array<{ models: Array<{ id: string; inputPer1M: number | null; priceNote?: string }> }>
+    }
+    const row = json.adapters[0]!.models.find(m => m.id === "brand-new-model")
+    expect(row?.inputPer1M).toBeNull()
+    expect(row?.priceNote).toMatch(/no price/)
+  })
+
+  it("a copilot-cli adapter that is not ready marks its models unavailable", async () => {
+    mocked.mockResolvedValue([{ ...COPILOT, status: "available" } as never])
+    const { out } = await capture([])
+    expect(out.split("\n").find(l => l.includes("mai-code-2-flash"))).toMatch(/^ {2}✗ /)
+  })
+})
