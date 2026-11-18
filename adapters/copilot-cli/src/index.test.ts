@@ -27,7 +27,22 @@ describe("@agentproto/adapter-copilot-cli", () => {
   it("has no catalog provider — Copilot bills through the GitHub subscription", () => {
     expect(copilotCli.provider).toBeUndefined()
     expect(copilotCli.modelDerivedApiKey).toBeUndefined()
-    expect(copilotCli.models).toBeUndefined()
+  })
+
+  it("exposes the real Copilot model menu (verified on 1.0.113), applied via ACP config", () => {
+    expect(copilotCli.models?.apply).toBe("config")
+    expect(copilotCli.models?.default).toBe("claude-sonnet-5.5")
+    const allowed = copilotCli.models?.allowed ?? []
+    expect(allowed).toEqual(
+      expect.arrayContaining(["auto", "claude-sonnet-5.5", "mai-code-2", "mai-code-2-flash"]),
+    )
+    expect(allowed).not.toContain("gpt-5")
+    expect(allowed).not.toContain("claude-sonnet-4.5")
+  })
+
+  it("declares image prompts (proved live on 1.0.113) and no steering-dependent behaviour", () => {
+    expect(copilotCli.capabilities?.multimodal).toBe(true)
+    expect(copilotCli.capabilities?.resumable).toBe(true)
   })
 
   it("applies model + effort through ACP session config, and GH_HOST via env", () => {
