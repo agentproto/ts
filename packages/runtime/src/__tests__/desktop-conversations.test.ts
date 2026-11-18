@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -283,6 +283,49 @@ describe("readDesktopConversation", () => {
     ).rejects.toThrow(/no claude Desktop conversation/)
     await expect(
       readDesktopConversation({ ...opts(), app: "codex", id: "cli-a" })
+    ).rejects.toThrow(/no codex Desktop conversation/)
+  })
+})
+
+describe("readDesktopConversation: cwd given through a symlink", () => {
+  // macOS: `/tmp/x` is `/private/tmp/x`. The Desktop store keeps the cwd as the
+  // user typed it, Claude Code names its projects/<slug> directory after the
+  // resolved path, so the slug of the typed path never existed ("JSONL file not
+  // found" on read and ask). Reproduced with a symlinked directory.
+  async function symlinkedChat() {
+    const realCwd = join(root, "real-proj")
+    await mkdir(realCwd, { recursive: true })
+    const linkCwd = join(root, "link-proj")
+    await symlink(realCwd, linkCwd)
+    await claudeFile("local_s.json", { cliSessionId: "cli-s", cwd: linkCwd, title: "S" })
+    vi.stubEnv("HOME", join(root, "home"))
+    // Claude Code wrote the transcript under the RESOLVED path's slug.
+    const slugDir = claudeCodeProjectDir(await realpath(realCwd))
+    await mkdir(slugDir, { recursive: true })
+    await writeFile(
+      join(slugDir, "cli-s.jsonl"),
+      JSON.stringify({
+        type: "user",
+        uuid: "u1",
+        timestamp: "2026-11-17T10:00:01Z",
+        sessionId: "cli-s",
+        message: { role: "user", content: "bonjour" },
+      }) + "\n"
+    )
+  }
+
+  it("finds the transcript of a chat whose cwd is a symlink to the real directory", async () => {
+    await symlinkedChat()
+    const r = await readDesktopConversation({ ...opts(), app: "claude", id: "cli-s" })
+    expect(r.messages.map(m => m.text)).toEqual(["bonjour"])
+  })
+
+  it("accepts the externalId the list shows (cc:<id>) as well as the bare id", async () => {
+    await symlinkedChat()
+    const r = await readDesktopConversation({ ...opts(), app: "claude", id: "cc:cli-s" })
+    expect(r.conversation.id).toBe("cli-s")
+    await expect(
+      readDesktopConversation({ ...opts(), app: "codex", id: "cc:cli-s" })
     ).rejects.toThrow(/no codex Desktop conversation/)
   })
 })

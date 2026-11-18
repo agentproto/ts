@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs"
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, utimesSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -22,6 +22,43 @@ import {
 // Claude Code's real rule replaces EVERY non-alnum character with "-",
 // one-for-one, with no collapsing of consecutive runs. These cases are
 // chosen to fail loudly under the old (wrong) implementation.
+
+describe("claudeCodeProjectDir with a symlinked cwd", () => {
+  let tmp: string
+  let originalHome: string | undefined
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+    if (tmp) rmSync(tmp, { recursive: true, force: true })
+  })
+
+  function setup() {
+    originalHome = process.env.HOME
+    tmp = mkdtempSync(join(tmpdir(), "proj-dir-symlink-"))
+    process.env.HOME = join(tmp, "home")
+    const real = join(tmp, "real")
+    mkdirSync(real)
+    const link = join(tmp, "link")
+    symlinkSync(real, link)
+    return { real: realpathSync(real), link }
+  }
+
+  it("falls back to the realpath slug when only that directory exists (macOS /tmp -> /private/tmp)", () => {
+    const { real, link } = setup()
+    const realDir = claudeCodeProjectDir(real)
+    mkdirSync(realDir, { recursive: true })
+    expect(claudeCodeProjectDir(link)).toBe(realDir)
+  })
+
+  it("keeps the typed-path slug when it exists, and when neither directory exists", () => {
+    const { real, link } = setup()
+    const linkDir = claudeCodeProjectDir(link)
+    expect(claudeCodeProjectDir(link)).toBe(linkDir) // neither exists: pure computation
+    mkdirSync(claudeCodeProjectDir(real), { recursive: true })
+    mkdirSync(linkDir, { recursive: true })
+    expect(claudeCodeProjectDir(link)).toBe(linkDir) // typed path wins when it exists
+  })
+})
 
 describe("claudeProjectSlug", () => {
   it("replaces slashes with dashes (the part the old encoder already got right)", () => {
