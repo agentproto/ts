@@ -332,6 +332,24 @@ describe("continueAgentSessionFresh", () => {
     expect(newDesc.checkpointId).toBeDefined()
   })
 
+  it("carries labelAddressing forward to the fresh session's new id", async () => {
+    const prev = { ...makePrev(), operatorLabel: "bass", labelAddressing: "open" } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const setLabelAddressing = vi.fn()
+    fakeRegistry.setLabelAddressing = setLabelAddressing
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(setLabelAddressing).toHaveBeenCalledWith("sess_new", "open")
+  })
+
   it("carries allowPromptFrom forward to the fresh session's new id", async () => {
     const prev = {
       ...makePrev(),
