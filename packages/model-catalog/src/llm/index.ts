@@ -21,6 +21,7 @@ export {
   calculateLLMCreditCost,
   getCacheStats,
   selectPricingTier,
+  effectivePricing,
 } from "./catalog.js"
 export type {
   LLMPricing,

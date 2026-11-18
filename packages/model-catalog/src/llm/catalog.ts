@@ -62,6 +62,18 @@ export interface LLMPricing {
    */
   tiers?: readonly LLMPricingTier[]
   /**
+   * Dated promotional price. The flat fields are the PROMO rates; from
+   * `until` (ISO date, inclusive: the promo is over ON that day) `then`
+   * replaces them. Read through {@link effectivePricing} (every resolver here
+   * does) rather than the raw fields. Generator-owned (`sync-copilot.mjs`).
+   * Without `then` the stated price is kept: the weekly sync picks up the
+   * new price once the vendor publishes it.
+   */
+  promo?: {
+    until: string
+    then?: { inputPer1M: number; outputPer1M: number; cacheReadMultiplier?: number }
+  }
+  /**
    * Router / SDK used to call the model. Same model can be reachable via
    * multiple providers — `claude-sonnet-4-5` is `provider: "anthropic"`
    * when called through the Anthropic SDK and `provider: "openrouter"`
@@ -114,11 +126,16 @@ export interface LLMPricing {
    *     (`sync-moonshot.mjs`).
    *   - `"minimax"` — `platform.minimax.io/docs/guides/pricing-paygo.md`
    *     (`sync-minimax.mjs`).
+   *   - `"github-copilot"` — GitHub Copilot's own price list
+   *     (`data/tables/copilot/models-and-pricing.yml` in github/docs,
+   *     `sync-copilot.mjs`): what Copilot bills for ids the native vendors do
+   *     not spell the same way (dotted `claude-sonnet-5.5`) or do not serve
+   *     (`mai-code-2`, Microsoft's MAI models).
    *   - `"openrouter"` — OpenRouter's rate, used where the vendor's page
    *     does not list the id. For Moonshot that is the price of whichever
    *     host OpenRouter routes to, not Moonshot's own.
    */
-  priceSource?: "openai" | "anthropic" | "moonshot" | "minimax" | "openrouter"
+  priceSource?: "openai" | "anthropic" | "moonshot" | "minimax" | "openrouter" | "github-copilot"
   /**
    * Which list this row's ID came from. Also generator-owned and
    * informational. `"openrouter"` marks an id that the provider's own
@@ -197,6 +214,7 @@ import {
 } from "./openai-pricing.generated.js"
 import { MINIMAX_GENERATED_PRICING } from "./minimax-pricing.generated.js"
 import { XAI_GENERATED_PRICING } from "./xai-pricing.generated.js"
+import { COPILOT_GENERATED_PRICING } from "./copilot-pricing.generated.js"
 
 /**
  * Explicit, named, reasoned manual pricing — the ONLY sanctioned form of
@@ -359,6 +377,12 @@ export const LLM_PRICING_CATALOG = {
   // an id a generator already prices, even where they used to disagree; see
   // the PR body's divergence table. `PRICING_OVERRIDES` above is the only
   // surviving hand-written pricing, spread last, one reasoned entry per id.
+  // Copilot's own price list goes FIRST so every native generator below wins
+  // on an id both spell identically; it only supplies ids nobody else prices
+  // (mai-code-*, dotted claude-sonnet-5.5, ...). See sync-copilot.mjs.
+  // Widened to LLMPricing: Copilot rows carry no route `provider` (Copilot is
+  // not a CatalogProvider), and consumers read `.provider` off every row.
+  ...(COPILOT_GENERATED_PRICING as Readonly<Record<keyof typeof COPILOT_GENERATED_PRICING, LLMPricing>>),
   ...MISTRAL_GENERATED_PRICING,
   ...MOONSHOT_GENERATED_PRICING,
   ...ANTHROPIC_GENERATED_PRICING,
@@ -546,6 +570,26 @@ const PRICING_BY_ID: Record<string, LLMPricing> = LLM_PRICING_CATALOG
 const ALIAS_BY_ID: Record<string, string> = MODEL_ALIASES
 
 /**
+ * `pricing` with a lapsed {@link LLMPricing.promo} resolved: on/after
+ * `promo.until`, the promo's `then` rates replace the flat ones (a tiered
+ * row's `tiers` are dropped, since `then` states no tiers). A row with no
+ * promo, a promo still running, or no `then` comes back unchanged.
+ */
+export function effectivePricing<T extends LLMPricing>(pricing: T, now?: Date): T
+export function effectivePricing(pricing: LLMPricing | undefined, now?: Date): LLMPricing | undefined
+export function effectivePricing(pricing: LLMPricing | undefined, now: Date = new Date()): LLMPricing | undefined {
+  const promo = pricing?.promo
+  if (!pricing || !promo?.then || now.toISOString().slice(0, 10) < promo.until) return pricing
+  const { promo: _promo, tiers: _tiers, ...rest } = pricing
+  return {
+    ...rest,
+    inputPer1M: promo.then.inputPer1M,
+    outputPer1M: promo.then.outputPer1M,
+    cacheReadMultiplier: promo.then.cacheReadMultiplier ?? pricing.cacheReadMultiplier,
+  }
+}
+
+/**
  * Resolves a model id to its pricing entry. Tries direct match → alias →
  * partial-prefix match. Used both for cost computation and BYOK shadow
  * accounting; semantics are load-bearing for migration.
@@ -554,13 +598,13 @@ export function resolvePricing(rawModelId: string): LLMPricing | undefined {
   // A `[1m]` context-lane hint is not part of the model's identity.
   const modelId = splitContextWindowHint(rawModelId).id
   // Direct match
-  if (PRICING_BY_ID[modelId]) return PRICING_BY_ID[modelId]
+  if (PRICING_BY_ID[modelId]) return effectivePricing(PRICING_BY_ID[modelId])
   // Alias
   const alias = ALIAS_BY_ID[modelId]
-  if (alias && PRICING_BY_ID[alias]) return PRICING_BY_ID[alias]
+  if (alias && PRICING_BY_ID[alias]) return effectivePricing(PRICING_BY_ID[alias])
   // Partial match (e.g. "claude-sonnet-4-6-20260301" → "claude-sonnet-4")
   for (const key of Object.keys(PRICING_BY_ID)) {
-    if (modelId.includes(key)) return PRICING_BY_ID[key]
+    if (modelId.includes(key)) return effectivePricing(PRICING_BY_ID[key])
   }
   return undefined
 }
@@ -581,10 +625,10 @@ export function resolvePricingExact(rawModelId: string): LLMPricing | undefined 
   // A `[1m]` context-lane hint is not part of the model's identity.
   const modelId = splitContextWindowHint(rawModelId).id
   // Direct match
-  if (PRICING_BY_ID[modelId]) return PRICING_BY_ID[modelId]
+  if (PRICING_BY_ID[modelId]) return effectivePricing(PRICING_BY_ID[modelId])
   // Alias (exact key only — no substring fallback)
   const alias = ALIAS_BY_ID[modelId]
-  if (alias && PRICING_BY_ID[alias]) return PRICING_BY_ID[alias]
+  if (alias && PRICING_BY_ID[alias]) return effectivePricing(PRICING_BY_ID[alias])
   return undefined
 }
 
