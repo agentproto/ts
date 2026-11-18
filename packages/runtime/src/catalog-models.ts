@@ -570,6 +570,24 @@ function profileAllowsModel(profile: AuthProfile, ref: string, _vendorProduct: s
   return profileAllowsModelId(profile, ref, { direct: !ref.includes("@") })
 }
 
+/** True for a harness whose CLI owns its login and bills no provider API key:
+ *  an `external` subscription surface, no fixed provider, no model-derived
+ *  key, no gateway bearer. Such a harness is runnable without any auth
+ *  profile. A provider-scoped external surface (codex, gemini) is NOT this
+ *  case: it still bills a provider and keeps going through profiles. */
+function usesOwnCliLogin(descriptor: AdapterAuthDescriptor | undefined): boolean {
+  if (!descriptor) return false
+  if (descriptor.provider || descriptor.modelDerivedApiKey || descriptor.gatewayAuth) {
+    return false
+  }
+  const surfaces = descriptor.authSubscription
+    ? Array.isArray(descriptor.authSubscription)
+      ? descriptor.authSubscription
+      : [descriptor.authSubscription]
+    : []
+  return surfaces.length > 0 && surfaces.every(surface => surface.external === true)
+}
+
 /** The pure join (SPEC §5): adapter-declared models + router widening +
  *  the #470 eligibility predicate → the vendor/product/route tree. No I/O —
  *  callers (the HTTP route / MCP tool) own loading adapters + profiles. */
@@ -676,7 +694,18 @@ export function buildCatalogModels(
             profileAllowsModel(p, row.ref, `${row.vendor}/${row.product}`),
           )
         : []
-    const runnable = eligible.length > 0
+    // A harness that authenticates itself (its CLI owns the login: copilot-cli,
+    // antigravity) needs no billing profile, so it has no profile to be
+    // "eligible" for. When the caller named that harness, its own curated rows
+    // are runnable through the harness login (`eligibleProfiles` stays empty,
+    // which pickers render as "Harness login"). Never applied to a global
+    // listing: there, a sibling harness curating the same id must not make
+    // another route look runnable.
+    // `walletEligible` is deliberately NOT part of this: the harness login
+    // pays for the turn, not the provider wallet the route would imply.
+    const runnable =
+      eligible.length > 0 ||
+      (queryAdapter !== undefined && usesOwnCliLogin(queryAdapter.authDescriptor))
     if (query.runnableOnly && !runnable) continue
 
     const ctx = resolveContextWindow(row.product)
