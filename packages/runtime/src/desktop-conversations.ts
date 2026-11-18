@@ -409,7 +409,7 @@ export function registerDesktopConversationReadTool(server: McpServer): void {
       id: z
         .string()
         .min(1)
-        .describe("The `id` from desktop_conversation_list."),
+        .describe("The `id` from desktop_conversation_list, or its `externalId` (`cc:<id>` / `codex:<id>`)."),
       tail: z
         .number()
         .int()
@@ -646,7 +646,7 @@ export function registerDesktopConversationAskTool(
       id: z
         .string()
         .min(1)
-        .describe("The `id` from desktop_conversation_list."),
+        .describe("The `id` from desktop_conversation_list, or its `externalId` (`cc:<id>` / `codex:<id>`)."),
       text: z.string().min(1).max(20_000),
       urgency: z
         .enum(["fyi", "next-turn", "steer"])

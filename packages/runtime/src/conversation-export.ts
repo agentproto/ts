@@ -19,7 +19,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { promises as fs } from "node:fs"
+import { promises as fs, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -152,7 +152,17 @@ async function writeClaudeCode(
   cwd: string,
 ): Promise<ConversationExportResult> {
   const conversationId = randomUUID()
-  const dir = join(homedir(), ".claude", "projects", claudeProjectSlug(cwd))
+  // Claude Code reads `projects/<slug of the RESOLVED cwd>`: a symlinked cwd
+  // (macOS /tmp/x -> /private/tmp/x) must be written under that slug or
+  // `claude --resume` never finds the file. A cwd that does not exist yet is
+  // used as typed.
+  let projectCwd = cwd
+  try {
+    projectCwd = realpathSync(cwd)
+  } catch {
+    /* not on disk (yet): keep the typed path */
+  }
+  const dir = join(homedir(), ".claude", "projects", claudeProjectSlug(projectCwd))
   const path = join(dir, `${conversationId}.jsonl`)
 
   const lines: unknown[] = [

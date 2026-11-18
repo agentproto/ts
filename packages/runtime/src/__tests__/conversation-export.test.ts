@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -100,6 +100,20 @@ describe("writeToNativeStore claude-code round-trips through exportClaudeCodeSes
     expect(result.path).toBe(join(fakeHome, ".claude", "projects", encoded, `${result.conversationId}.jsonl`))
     expect(result.resumeCommand).toBe(`claude --resume ${result.conversationId}`)
     expect(result.messageCount).toBe(SAMPLE_MESSAGES.length)
+  })
+
+  it("writes under the slug of the RESOLVED cwd when the cwd is a symlink (claude --resume reads that one)", async () => {
+    setupFakeHome()
+    const real = join(fakeHome, "real-proj")
+    mkdirSync(real)
+    const link = join(fakeHome, "link-proj")
+    symlinkSync(real, link)
+    const session: ExportedSession = { meta: { source: "daemon-events" }, messages: SAMPLE_MESSAGES }
+
+    const result = await writeToNativeStore(session, "claude-code", { cwd: link })
+
+    const encoded = realpathSync(real).replace(/[^a-zA-Z0-9]/g, "-")
+    expect(result.path).toBe(join(fakeHome, ".claude", "projects", encoded, `${result.conversationId}.jsonl`))
   })
 
   it("writing then reading back preserves every message (assistant + tool_result)", async () => {
