@@ -288,8 +288,8 @@ export const PRICING_OVERRIDES: Record<string, LLMPricing & { reason: string }> 
   // the generated sibling's pricing directly instead of retyping it, so a
   // re-sync that changes the dated price changes this too, automatically.
   "mistral-large-latest": {
-    reason: "\"-latest\" alias spelling has no generated counterpart of its own; derives from the dated sibling mistral-large-2512 (MISTRAL_GENERATED_PRICING) rather than a hand-typed number.",
-    ...MISTRAL_GENERATED_PRICING["mistral-large-2512"],
+    reason: "\"-latest\" alias spelling has no generated counterpart of its own; derives from mistral-large-4-0 (Mistral Large 4, the current flagship: /v1/models lists mistral-large-latest as its alias, checked 2026-11-18; price from the OpenRouter feed of the generator).",
+    ...MISTRAL_GENERATED_PRICING["mistral-large-4-0"],
   },
 
   "mistral-small-latest": {
@@ -308,14 +308,13 @@ export const PRICING_OVERRIDES: Record<string, LLMPricing & { reason: string }> 
   },
 
   "mistral-medium-latest": {
-    reason:
-      "PLACEHOLDER, explicitly marked `// TODO verify pricing` in the row this replaces -- copy-pasted 0.5/1.5 template value, never real. Unlike the four rows above, this one is NOT auto-derived from a generated sibling: MISTRAL_GENERATED_PRICING has THREE medium candidates (mistral-medium-3, mistral-medium-3-5, mistral-medium-3.5) and which one \"-latest\" currently means is an editorial call this sync can't safely make -- picking wrong would silently misprice, which is worse than an honestly-labeled unverified placeholder. Needs a human to confirm which dated id is current, then wire it the same way as mistral-large-latest above.",
-    inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
+    reason: "\"-latest\" alias of Mistral Medium 3.5: /v1/models (2026-11-18) lists mistral-medium-latest, -3-5, -3.5 and -2604 as aliases of one model; derives from mistral-medium-3-5 instead of the old 0.5/1.5 placeholder.",
+    ...MISTRAL_GENERATED_PRICING["mistral-medium-3-5"],
   },
 
   "devstral-latest": {
     reason:
-      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. No generated counterpart at all (Mistral's chat-model sync doesn't currently return a devstral id).",
+      "LEGACY (Devstral is retired; absent from Mistral /v1/models on 2026-11-18, replaced by Mistral Medium 3.5). PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. No generated counterpart at all (Mistral's chat-model sync doesn't currently return a devstral id).",
     inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
   },
 
@@ -327,7 +326,7 @@ export const PRICING_OVERRIDES: Record<string, LLMPricing & { reason: string }> 
 
   "devstral-medium-latest": {
     reason:
-      "PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. No generated counterpart at all.",
+      "LEGACY (Devstral is retired; absent from Mistral /v1/models on 2026-11-18, replaced by Mistral Medium 3.5). PLACEHOLDER, explicitly marked `// TODO verify pricing` -- copy-pasted 0.5/1.5 template value, never real. No generated counterpart at all.",
     inputPer1M: 0.5, outputPer1M: 1.5, vendor: "mistral", provider: "mistral",
   },
 
