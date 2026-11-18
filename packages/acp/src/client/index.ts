@@ -728,6 +728,13 @@ export async function createAcpClient(
         )
       }
     }
+    // Persist the list the model switch rebuilt, so a later live
+    // `setConfigOption("effort")` resolves against it, not the stale
+    // connect-time list.
+    const liveState = sessions.get(sessionId)
+    if (liveState && currentOptions !== advertisedOptions) {
+      liveState.configOptions = currentOptions
+    }
     return modelApplyRejection ? { modelApplyRejection } : {}
   }
 
