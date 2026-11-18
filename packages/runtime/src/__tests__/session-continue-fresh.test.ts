@@ -340,6 +340,7 @@ describe("continueAgentSessionFresh", () => {
     })
     const setLabelAddressing = vi.fn()
     fakeRegistry.setLabelAddressing = setLabelAddressing
+    fakeRegistry.setOperatorLabel = vi.fn()
 
     await continueAgentSessionFresh(
       { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
