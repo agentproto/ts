@@ -288,6 +288,93 @@ describe("generic OAuth for imported MCPs", () => {
     expect(wrongStatus).toBe(400)
   })
 
+  describe("manual callback paste", () => {
+    /** Consent without touching the listener: capture the callback URL the browser would be sent to. */
+    const consent = async (url: URL): Promise<string> =>
+      (await fetch(url, { redirect: "manual" })).headers.get("location")!
+    const manualLogin = (
+      manualCallback: (signal: AbortSignal) => Promise<string>,
+      timeoutMs = 10_000
+    ) => {
+      let location = ""
+      const done = loginMcpOAuth({
+        importId: "manual:cli:bank",
+        alias: "bank",
+        serverUrl: server.url,
+        io,
+        timeoutMs,
+        onAuthorizationUrl: async url => void (location = await consent(url)),
+        manualCallback: async signal => {
+          // the consent URL has been shown by now
+          return manualCallback(signal).then(f => {
+            if (!f.startsWith("FORGE:")) return f.replace("LOCATION", location)
+            const forged = new URL(location)
+            forged.searchParams.set("state", "forged")
+            return forged.toString()
+          })
+        },
+      })
+      return done
+    }
+
+    it("completes from a pasted callback URL (listener never hit)", async () => {
+      const res = await manualLogin(async () => "LOCATION")
+      expect(res.grantedScope).toBe("accounts.read offline_access")
+      const { config } = await resolveImportConnection(entryFor(server), {
+        resolveMcpSecret: io.read,
+        storeMcpSecret: io.write,
+      })
+      const client = await openMcpClient(config, { label: 'import "bank"', oauthSecrets: io })
+      await client.close()
+    })
+
+    it("rejects a pasted URL with a forged state, without echoing it", async () => {
+      const err = await manualLogin(async () => "FORGE:LOCATION").catch(e => e as Error)
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toMatch(/mismatched state/)
+      expect((err as Error).message).not.toContain("forged")
+    })
+
+    it("rejects a pasted URL without a code, and a non-URL", async () => {
+      await expect(manualLogin(async () => "http://127.0.0.1:1/callback?state=x")).rejects.toThrow(/no authorization code/)
+      await expect(manualLogin(async () => "not a url")).rejects.toThrow(/not a valid URL/)
+    })
+
+    it("a pending paste does not block the loopback path, and is aborted afterwards", async () => {
+      let aborted = false
+      await loginMcpOAuth({
+        importId: "manual:cli:bank",
+        alias: "bank",
+        serverUrl: server.url,
+        io,
+        timeoutMs: 10_000,
+        onAuthorizationUrl: approve,
+        manualCallback: signal =>
+          new Promise<string>((_, reject) =>
+            signal.addEventListener("abort", () => {
+              aborted = true
+              reject(new Error("aborted"))
+            })
+          ),
+      })
+      expect(aborted).toBe(true)
+    })
+
+    it("times out when nothing arrives", async () => {
+      await expect(
+        loginMcpOAuth({
+          importId: "manual:cli:bank",
+          alias: "bank",
+          serverUrl: server.url,
+          io,
+          timeoutMs: 300,
+          onAuthorizationUrl: () => {},
+          manualCallback: signal => new Promise<string>((_, rej) => signal.addEventListener("abort", () => rej(new Error("x")))),
+        })
+      ).rejects.toThrow(/no authorization response within/)
+    })
+  })
+
   it("requests an explicit scope when configured", async () => {
     await login("accounts.read")
     expect(server.authorizeScopes[0]).toBe("accounts.read")

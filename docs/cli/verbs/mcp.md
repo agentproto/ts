@@ -4,6 +4,7 @@
 agentproto mcp migrate-secrets [--apply]
 agentproto mcp mount-default <adapter> <importId...>
 agentproto mcp login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
+                     [--timeout <duration>] [--manual]
 agentproto mcp logout <alias|importId>
 ```
 
@@ -99,6 +100,7 @@ second reads `linked` or `already linked`. Running sessions are not affected.
 
 ```text
 agentproto mcp login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
+                     [--timeout <duration>] [--manual]
 agentproto mcp logout <alias|importId>
 ```
 
@@ -120,6 +122,18 @@ dynamic client registration, PKCE). `login` runs the whole consent:
 | `--url <url>` | — | Create a manual http import when the alias is unknown. |
 | `--scope "a b"` | server default | Space-separated OAuth scopes to request. |
 | `--no-open` | off | Print the URL without opening a browser. |
+| `--timeout <duration>` | `5m` | How long to wait for the consent (`90s`, `30m`, `2h`; a bare number is seconds). Min 10s, max 2h; anything else is rejected. |
+| `--manual` (`--paste`) | off | Also accept the callback URL pasted on stdin (see below). |
+
+**Manual mode.** When the browser is on another machine (SSH, remote box), the
+loopback redirect can't reach the listener. After consent the browser lands on
+an error page at `http://127.0.0.1:PORT/callback?code=…&state=…`; with
+`--manual`, paste that full URL on stdin. The listener stays open in parallel
+(the registered `redirect_uri` is still the listener's), so whichever arrives
+first finishes the login. The `state` is checked against the one this login
+generated; a URL without a code or with a wrong state is refused, and the
+code, state and tokens are never printed. The URL is read from stdin only: the
+state is fresh per login, so a URL can't be supplied up front as a flag.
 
 The import must already be a remote (http/sse) MCP, or be creatable via
 `--url`. Stored state is bound to the server origin, so a live-repointed

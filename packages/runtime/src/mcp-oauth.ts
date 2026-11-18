@@ -259,11 +259,48 @@ export interface McpOAuthLoginOptions {
    *  print and/or open it. The scope being requested is in `url.searchParams`. */
   onAuthorizationUrl: (url: URL) => void | Promise<void>
   timeoutMs?: number
+  /**
+   * Second path to the same result: resolve with the full callback URL the
+   * user pasted (`http://127.0.0.1:PORT/callback?code=…&state=…`). The
+   * loopback listener stays open (the registered `redirect_uri` is still the
+   * listener's), and whichever arrives first settles the login. Called after
+   * the consent URL was shown; `signal` aborts when the login finished.
+   * The URL's code/state are validated like a loopback hit and never logged.
+   */
+  manualCallback?: (signal: AbortSignal) => Promise<string>
 }
 
 export interface McpOAuthLoginResult {
   /** Scope string the server actually granted, when it reports one. */
   grantedScope?: string
+}
+
+export const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60_000
+
+/**
+ * Extract and validate `code` + `state` from a pasted callback URL. Errors
+ * never echo the URL, code or state (they are credentials in flight).
+ */
+export async function parseAuthorizationCallback(
+  raw: string,
+  stateOk: (state: string) => Promise<boolean>
+): Promise<{ code: string; state: string }> {
+  let url: URL
+  try {
+    url = new URL(raw.trim())
+  } catch {
+    throw new Error("oauth: the pasted callback is not a valid URL (expected http://127.0.0.1:PORT/callback?code=…&state=…)")
+  }
+  const q = url.searchParams
+  const error = q.get("error")
+  if (error) throw new Error(`oauth: authorization denied (${error})`)
+  const code = q.get("code")
+  const state = q.get("state")
+  if (!code) throw new Error("oauth: the pasted callback URL has no authorization code")
+  if (!state || !(await stateOk(state))) {
+    throw new Error("oauth: the pasted callback URL has a missing or mismatched state — refusing it")
+  }
+  return { code, state }
 }
 
 /**
@@ -273,13 +310,11 @@ export interface McpOAuthLoginResult {
  */
 export async function loginMcpOAuth(opts: McpOAuthLoginOptions): Promise<McpOAuthLoginResult> {
   let provider: McpOAuthProvider | undefined
-  const callback = await listenForCallback(
-    opts.timeoutMs ?? 5 * 60_000,
-    async s => {
-      const expected = await provider?.expectedState()
-      return expected !== undefined && expected === s
-    }
-  )
+  const stateOk = async (s: string): Promise<boolean> => {
+    const expected = await provider?.expectedState()
+    return expected !== undefined && expected === s
+  }
+  const callback = await listenForCallback(opts.timeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS, stateOk)
   try {
     provider = new McpOAuthProvider({
       importId: opts.importId,
@@ -293,7 +328,21 @@ export async function loginMcpOAuth(opts: McpOAuthLoginOptions): Promise<McpOAut
     const authOpts = { serverUrl: opts.serverUrl, ...(opts.scope ? { scope: opts.scope } : {}) }
     const first = await auth(provider, authOpts)
     if (first === "AUTHORIZED") return await grantedOf(provider)
-    const { code } = await callback.result
+    const manual = new AbortController()
+    let code: string
+    try {
+      const paths = [callback.result]
+      if (opts.manualCallback) {
+        const pasted = opts
+          .manualCallback(manual.signal)
+          .then(raw => parseAuthorizationCallback(raw, stateOk))
+        pasted.catch(() => {}) // a loser (or aborted) path must not go unhandled
+        paths.push(pasted)
+      }
+      ;({ code } = await Promise.race(paths))
+    } finally {
+      manual.abort()
+    }
     const second = await auth(provider, { ...authOpts, authorizationCode: code })
     if (second !== "AUTHORIZED") throw new Error("oauth: authorization code exchange did not complete")
     return await grantedOf(provider)
