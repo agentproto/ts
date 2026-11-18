@@ -309,6 +309,27 @@ describe("/mcp/imported/<id> — denyTools/allowTools query filter (#2050)", () 
     }
   })
 
+  it("`*` patterns: allowTools=pi* keeps ping; denyTools=*_tool hides secret_tool and rejects the call", async () => {
+    const { http, port } = await startWith([secretTool])
+    try {
+      for (const [query, expected] of [
+        ["allowTools=pi*", ["ping"]],
+        ["denyTools=*_tool", ["ping"]],
+        ["allowTools=*&denyTools=sec*", ["ping"]],
+      ] as const) {
+        const client = new Client({ name: "imported-glob-test", version: "0.0.1" })
+        await client.connect(
+          new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/imported/fake:mcp?${query}`)),
+        )
+        expect((await client.listTools()).tools.map(t => t.name)).toEqual(expected)
+        await expect(client.callTool({ name: "secret_tool", arguments: {} })).rejects.toThrow()
+        await client.close()
+      }
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("no params = unchanged behaviour (both tools listed and callable)", async () => {
 
     const { http, port } = await startWith([secretTool])

@@ -1591,6 +1591,10 @@ export interface MountImportsContext {
   imported: ImportedMcpsConfig
   /** `mcpServers` already on the spawn — an entry with the same name wins. */
   existing: readonly AcpMcpServer[]
+  /** The bundle's per-import tool filters (keyed by import id). Baked into
+   *  the mount ref as `allowTools` / `denyTools`; the imported-MCP mount
+   *  enforces them (deny wins). */
+  toolFilters?: Record<string, { allow?: string[]; deny?: string[] }>
 }
 
 /**
@@ -1629,9 +1633,12 @@ export function mountImports(
       continue
     }
     taken.add(name)
+    const filter = ctx.toolFilters?.[importId]
     const ref =
       `${ctx.mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
-      `?callerSessionId=${encodeURIComponent(ctx.sessionId)}`
+      `?callerSessionId=${encodeURIComponent(ctx.sessionId)}` +
+      (filter?.allow?.length ? `&allowTools=${encodeURIComponent(filter.allow.join(","))}` : "") +
+      (filter?.deny?.length ? `&denyTools=${encodeURIComponent(filter.deny.join(","))}` : "")
     mounts.push({ name, transport: "http", ref })
   }
   return { mounts, warnings }
@@ -4554,6 +4561,7 @@ async function spawnAgentSessionOnce(
         sessionId: mintedSessionId,
         imported: importedConfig,
         existing: mcpServers ?? [],
+        ...(bundle.toolFilters ? { toolFilters: bundle.toolFilters } : {}),
       })
       spawnWarnings.push(...mounted.warnings)
       if (mounted.mounts.length > 0) mcpServers = [...(mcpServers ?? []), ...mounted.mounts]

@@ -1739,6 +1739,7 @@ export interface CapabilityBundle {
   label: string
   description?: string
   mcpImports: string[] | "*"
+  toolFilters?: Record<string, { allow?: string[]; deny?: string[] }>
   includeDaemon?: boolean
   skills: string[]
   dangling: string[]
