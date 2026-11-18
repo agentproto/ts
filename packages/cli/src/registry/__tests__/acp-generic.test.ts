@@ -118,6 +118,15 @@ describe("acpHandleFromSpec", () => {
 
 // ── ACP_CATALOG: every curated entry is valid ───────────────────────────
 
+describe("ACP_CATALOG — mistral-vibe models", () => {
+  it("declares only the ids Vibe 2.24.1 accepts (no devstral-latest etc.)", () => {
+    const vibe = ACP_CATALOG.find((e) => e.slug === "mistral-vibe")!
+    expect(vibe.models?.default).toBe("mistral-medium-3.5")
+    expect(vibe.models?.allowed).toEqual(["mistral-medium-3.5", "devstral-small", "local"])
+    expect(vibe.models?.allowed).not.toContain("devstral-latest")
+  })
+})
+
 describe("ACP_CATALOG", () => {
   it("is non-empty and has unique slugs", () => {
     expect(ACP_CATALOG.length).toBeGreaterThan(0)
