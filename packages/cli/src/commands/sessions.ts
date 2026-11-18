@@ -472,6 +472,10 @@ sessions terminal flags:
                                  Provider TUIs (claude, codex, opencode, …) are
                                  also addressable: a message_send to the
                                  session is typed into the TUI once it is idle.
+                                 It is typed like keyboard input, so it can
+                                 collide with a prompt someone is composing in
+                                 an attached window. Plain shells are not
+                                 addressable.
   --preset <name>              use a named 'terminalPresets' entry from
                                  ~/.agentproto/config.json. The preset may define
                                  argv, env, cwd, workspace, name and label.

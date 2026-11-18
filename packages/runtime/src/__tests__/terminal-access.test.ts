@@ -39,6 +39,39 @@ describe("resolveTerminalAccess", () => {
     )
   })
 
+  it("refuses a gateway-route profile: a PTY cannot be pointed at its endpoint", async () => {
+    const gateway = (extra: object) =>
+      (async () => ({
+        ok: true as const,
+        authSpec: {
+          mode: "api-key" as const,
+          credential: "k",
+          setEnv: "OPENROUTER_API_KEY",
+          unsetEnv: [],
+          explicit: true,
+          enforce: "always" as const,
+          ...extra,
+        },
+        accessProfileEcho: echo,
+      })) as unknown as typeof resolveAccessProfileAuth
+    for (const extra of [{ baseUrl: "https://gw.example/v1" }, {}]) {
+      const out = await resolveTerminalAccess({
+        argv: ["claude"],
+        profileRef: "gw",
+        resolveAgentAdapter: async () => adapter,
+        resolveProfile: extra.baseUrl
+          ? gateway(extra)
+          : ((async () => ({
+              ok: true as const,
+              resolvedRouteGateway: "openrouter",
+              authSpec: undefined,
+              accessProfileEcho: echo,
+            })) as unknown as typeof resolveAccessProfileAuth),
+      })
+      expect(out).toMatchObject({ ok: false, code: "access_profile_unsupported_route" })
+    }
+  })
+
   it("refuses an argv that is not a provider TUI (a shell has no billing)", async () => {
     const out = await resolveTerminalAccess({
       argv: ["bash"],

@@ -12,7 +12,7 @@
 
 import type { AgentAdapterResolver } from "./http-server.js"
 import { conversationTerminalSlugFor } from "./conversation-store.js"
-import { resolveAccessProfileAuth } from "./session-spawn.js"
+import type { resolveAccessProfileAuth } from "./session-spawn.js"
 import type { SessionAccessProfileEcho } from "./sessions.js"
 
 export interface TerminalAccessResolved {
@@ -50,7 +50,12 @@ export async function resolveTerminalAccess(input: {
   if (!resolved) {
     return { ok: false, code: "adapter_not_found", message: `no adapter "${adapter}" to resolve the profile against.` }
   }
-  const result = await (input.resolveProfile ?? resolveAccessProfileAuth)({
+  // Loaded lazily: session-spawn.ts sits in a deep import cycle with the
+  // modules that import this one, and a static import here changes module
+  // init order enough to break unrelated spawn paths (cwd resolution).
+  const resolveProfile =
+    input.resolveProfile ?? (await import("./session-spawn.js")).resolveAccessProfileAuth
+  const result = await resolveProfile({
     adapter,
     profileRef: input.profileRef,
     authDescriptor: resolved.authDescriptor,
@@ -59,12 +64,25 @@ export async function resolveTerminalAccess(input: {
   })
   if (!result.ok) return { ok: false, code: result.code, message: result.message }
   const spec = result.authSpec
+  // A gateway route needs a `base_url` the client must be pointed at (agent-cli
+  // threads it into adapter options). A PTY has no such channel, so pinning the
+  // credential alone would bill the profile while the TUI talks to the vendor's
+  // default endpoint: refuse instead of mis-routing.
+  if (spec?.baseUrl !== undefined || result.resolvedRouteGateway !== undefined) {
+    return {
+      ok: false,
+      code: "access_profile_unsupported_route",
+      message:
+        `profile "${input.profileRef}" resolves to a gateway route that needs its own endpoint; ` +
+        `a PTY cannot be pointed at one. Use an agent session, or a profile that bills the harness's direct endpoint.`,
+    }
+  }
   const env: Record<string, string> = { ...(spec?.extraEnv ?? {}) }
   if (spec?.credential !== undefined && spec.setEnv) env[spec.setEnv] = spec.credential
   return {
     ok: true,
     env,
     unsetEnv: spec?.unsetEnv ?? [],
-    echo: result.accessProfileEcho as SessionAccessProfileEcho,
+    echo: result.accessProfileEcho,
   }
 }

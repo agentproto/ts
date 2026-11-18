@@ -3972,8 +3972,6 @@ export function shouldWrapBracketedPaste(mode: BracketedPasteMode, text: string)
   return mode === "on" && text.includes("\n")
 }
 
-/** Wrap `text` in the bracketed-paste markers. Callers should gate this
- *  with `shouldWrapBracketedPaste` first. */
 /**
  * True when a PTY chunk paints something visible: text after dropping OSC
  * sequences (window-title updates), CSI sequences (cursor moves, colours,
@@ -3989,12 +3987,16 @@ export function hasVisiblePaint(chunk: string): boolean {
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    // Remaining two-byte escapes: charset designators (ESC ( X / ESC ) X) and
+    // ESC + one of `@`–`Z`, `\`, `]`–`_` (Fe), `=` / `>` (keypad modes).
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b[()][0-9A-Za-z]|\x1b[@-Z\\-_=>]/g, "")
   // eslint-disable-next-line no-control-regex
   return /[^\s\x00-\x1f\x7f]/.test(stripped)
 }
 
+/** Wrap `text` in the bracketed-paste markers. Callers should gate this
+ *  with `shouldWrapBracketedPaste` first. */
 export function wrapBracketedPaste(text: string): string {
   return `\x1b[200~${text}\x1b[201~`
 }
@@ -8399,8 +8401,15 @@ export function createSessionsRegistry(opts?: {
       rt.lastPaintAt = Date.now()
       try {
         rt.pty?.write("\r")
-      } catch {
-        // PTY died between the two writes — nothing left to submit.
+      } catch (err) {
+        // The text is already in the TUI's composer, so re-queueing it would
+        // type it twice: leave a trace instead of failing silently. A dead PTY
+        // is the usual cause (the exit handler reports the session itself).
+        appendLine(
+          rt,
+          `[message] ${msg.id} was typed but its Enter could not be written: ${err instanceof Error ? err.message : String(err)}`,
+          "stderr",
+        )
       }
     }, terminalInject.submitDelayMs)
     submit.unref?.()

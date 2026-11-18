@@ -8226,7 +8226,7 @@ export function registerSessionTools(
       "ANSI escapes, alt-screen sequences) flow through the daemon's byte ring " +
       "buffer; subscribers attach via the WS at /sessions/:id/pty. Use for " +
       "interactive TUIs (claude, vim, htop) or to orchestrate shells from another " +
-      "agent. Returns the session descriptor.",
+      "agent. A provider TUI (claude, codex, opencode, hermes, …) can also receive message_send: the message is typed into the PTY as keyboard input once the TUI is idle, so it can collide with a prompt a person is composing in an attached window. Plain shells are never addressable. Returns the session descriptor.",
     {
       argv: z
         .array(z.string())
