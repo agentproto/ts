@@ -7,7 +7,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { openMcpClient } from "@agentproto/runtime/mcp-client-pool"
 import type { ImportedMcpsConfig } from "@agentproto/runtime/mcp-imports"
 import { loginMcpOAuth, type McpOAuthSecretIO } from "@agentproto/runtime/mcp-oauth"
-import { mcpLogin, mcpLogout, parseLoginTimeout } from "../commands/mcp.js"
+import { PassThrough } from "node:stream"
+import { mcpLogin, mcpLogout, parseLoginTimeout, readPastedCallback } from "../commands/mcp.js"
 
 const URL_RO = "https://mcp.example/multi-organization/mcp"
 
@@ -301,5 +302,32 @@ describe("parseLoginTimeout", () => {
     expect(() => parseLoginTimeout("-5m")).toThrow(/invalid --timeout/)
     expect(() => parseLoginTimeout("3h")).toThrow(/out of range \(min 10s, max 2h\)/)
     expect(() => parseLoginTimeout("1s")).toThrow(/out of range/)
+  })
+})
+
+describe("readPastedCallback", () => {
+  const sink = { write: () => true }
+
+  it("resolves with a valid pasted line (close must not pre-empt the resolve)", async () => {
+    const input = new PassThrough()
+    const p = readPastedCallback(new AbortController().signal, input, sink)
+    input.write("http://127.0.0.1:1234/callback?code=abc&state=xyz\n")
+    await expect(p).resolves.toBe("http://127.0.0.1:1234/callback?code=abc&state=xyz")
+  })
+
+  it("EOF without a line never rejects (loopback may still win); abort settles it", async () => {
+    const input = new PassThrough()
+    const ac = new AbortController()
+    const p = readPastedCallback(ac.signal, input, sink)
+    let settled = false
+    p.then(
+      () => (settled = true),
+      () => (settled = true)
+    )
+    input.end()
+    await new Promise(r => setTimeout(r, 50))
+    expect(settled).toBe(false)
+    ac.abort()
+    await expect(p).rejects.toThrow(/aborted/)
   })
 })

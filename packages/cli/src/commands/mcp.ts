@@ -15,7 +15,7 @@
  *                               enabled by default; ids must already be imported.
  *
  *   login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
- *         [--timeout <duration>] [--manual]
+ *         [--timeout <duration>] [--manual|--paste]
  *                               OAuth login for a remote (http/sse) MCP that
  *                               answers 401 + resource_metadata. Discovers the
  *                               server, registers a client, prints the consent
@@ -55,7 +55,7 @@ Usage:
   agentproto mcp migrate-secrets [--apply]
   agentproto mcp mount-default <adapter> <importId...>
   agentproto mcp login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
-                       [--timeout <duration>] [--manual]
+                       [--timeout <duration>] [--manual|--paste]
   agentproto mcp logout <alias|importId>
 
 migrate-secrets lists the header/env values in imported-mcps.json that would
@@ -73,7 +73,7 @@ being requested; the consent click is yours. Tokens go to the OS keychain,
 never to imported-mcps.json. The daemon refreshes them on its own; when they
 are revoked it reports "oauth login required" until you run login again.
 --timeout <duration> (30m, 1800s, 90s; default 5m, max 2h) bounds the wait.
---manual also accepts the full callback URL pasted on stdin after consent, next
+--manual (alias --paste) also accepts the full callback URL pasted on stdin after consent, next
 to the loopback listener (for a browser on another machine); the state is
 checked and neither code nor state is ever printed.
 `
@@ -401,18 +401,32 @@ function parseLoginArgs(rest: readonly string[]): {
   }
 }
 
-/** One line of pasted callback URL from stdin (prompt on stderr). Rejects on EOF/abort. */
-function readPastedCallback(signal: AbortSignal): Promise<string> {
+/**
+ * One line of pasted callback URL (prompt on `prompt`, default stderr).
+ * Resolves on the first line. On EOF (closed / non-interactive stdin) it does
+ * NOT reject: it stays pending so the loopback path can still win the race;
+ * it only settles on a line or when `signal` aborts.
+ */
+export function readPastedCallback(
+  signal: AbortSignal,
+  input: NodeJS.ReadableStream = process.stdin,
+  prompt: { write(s: string): unknown } = process.stderr
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const rl = createInterface({ input: process.stdin, terminal: false })
-    const finish = (fn: () => void): void => {
+    const rl = createInterface({ input, terminal: false })
+    prompt.write("Paste the full callback URL (http://127.0.0.1:PORT/callback?code=…&state=…) and press Enter:\n")
+    rl.once("line", line => {
       rl.close()
-      fn()
-    }
-    process.stderr.write("Paste the full callback URL (http://127.0.0.1:PORT/callback?code=…&state=…) and press Enter:\n")
-    rl.once("line", line => finish(() => resolve(line)))
-    rl.once("close", () => reject(new Error("oauth: stdin closed before a callback URL was pasted")))
-    signal.addEventListener("abort", () => finish(() => reject(new Error("aborted"))), { once: true })
+      resolve(line)
+    })
+    signal.addEventListener(
+      "abort",
+      () => {
+        rl.close()
+        reject(new Error("aborted"))
+      },
+      { once: true }
+    )
   })
 }
 

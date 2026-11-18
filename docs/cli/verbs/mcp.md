@@ -4,7 +4,7 @@
 agentproto mcp migrate-secrets [--apply]
 agentproto mcp mount-default <adapter> <importId...>
 agentproto mcp login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
-                     [--timeout <duration>] [--manual]
+                     [--timeout <duration>] [--manual|--paste]
 agentproto mcp logout <alias|importId>
 ```
 
@@ -100,7 +100,7 @@ second reads `linked` or `already linked`. Running sessions are not affected.
 
 ```text
 agentproto mcp login <alias|importId> [--url <url>] [--scope "a b"] [--no-open]
-                     [--timeout <duration>] [--manual]
+                     [--timeout <duration>] [--manual|--paste]
 agentproto mcp logout <alias|importId>
 ```
 
@@ -131,9 +131,12 @@ an error page at `http://127.0.0.1:PORT/callback?code=…&state=…`; with
 `--manual`, paste that full URL on stdin. The listener stays open in parallel
 (the registered `redirect_uri` is still the listener's), so whichever arrives
 first finishes the login. The `state` is checked against the one this login
-generated; a URL without a code or with a wrong state is refused, and the
-code, state and tokens are never printed. The URL is read from stdin only: the
-state is fresh per login, so a URL can't be supplied up front as a flag.
+generated; a URL without a code or with a wrong state is refused. The consent
+URL that `login` prints does carry a `state` (it is meant to be opened); what
+is never printed is the pasted callback URL, the authorization code and the
+tokens. The URL is read from stdin only: the state is fresh per login, so a
+URL can't be supplied up front as a flag. If stdin is closed (non-interactive
+shell) the paste path just stays idle and the loopback listener keeps waiting.
 
 The import must already be a remote (http/sse) MCP, or be creatable via
 `--url`. Stored state is bound to the server origin, so a live-repointed
