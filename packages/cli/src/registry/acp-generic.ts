@@ -224,22 +224,16 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
       "Mistral AI's Vibe coding CLI, driven over the Agent Client Protocol via its bundled `vibe-acp` binary. Auth via MISTRAL_API_KEY (`vibe --setup`).",
     bin: "vibe-acp",
     provider: "mistral",
+    // The ids Vibe 2.24.1 actually accepts as the ACP `model` config option
+    // (read from a real `session/new`, 2026-11-18): `mistral-medium-3.5`
+    // (default, alias mistral-vibe-cli-latest), `devstral-small`
+    // (devstral-small-latest) and `local` (devstral). Any other id, e.g.
+    // `devstral-latest`, fails with "Unsupported config option model" and the
+    // session silently stays on the default. The per-install list is whatever
+    // `session/new` returns (`availableConfigOptions`).
     models: {
-      default: "mistral-vibe-cli-latest",
-      allowed: [
-        "mistral-vibe-cli-latest",
-        "mistral-vibe-cli-fast",
-        "mistral-vibe-cli-with-tools",
-        "mistral-medium-latest",
-        "mistral-medium-3-5",
-        "mistral-large-latest",
-        "mistral-small-latest",
-        "codestral-latest",
-        "devstral-latest",
-        "devstral-medium-latest",
-        "magistral-small-latest",
-        "ministral-8b-latest",
-      ],
+      default: "mistral-medium-3.5",
+      allowed: ["mistral-medium-3.5", "devstral-small", "local"],
     },
     install_hint: "uv tool install mistral-vibe",
   },
