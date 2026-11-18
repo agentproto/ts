@@ -187,7 +187,7 @@ for its own sake. Merge conditions — review decision, the maintainer's risk
 judgement, the always-escalate paths, the auto-merge switch — are read from the
 **base branch**, deliberately out of any PR's reach (`.github/workflows/ci.yml:1437`
 comment; the switch logic itself now lives in `scripts/agentflow/merge-gate.mjs`
-(`decideMergeGate`), called from `ci.yml:1449`; "a PR gets no vote on how it is merged",
+(`decideMergeGate`), called from the `Compute merge-gate decision` step of `ci.yml`; "a PR gets no vote on how it is merged",
 commit `4d5dca1` / #343). The only thing that enables auto-merge at all is
 the repo variable `vars.AGENTFLOW_AUTOMERGE`, set in repo settings — a PR,
 and therefore an agent, cannot reach it either way. An agent running
