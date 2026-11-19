@@ -1501,6 +1501,24 @@ export function registerSessionTools(
     reviewRunner,
     listAgentAdapters,
   } = opts
+  /** The spawn dependencies shared by the continuation-style tools
+   *  (`session_continue_fresh`, `session_handoff`, `session_migrate`). */
+  const buildSpawnDeps = (
+    resolve: NonNullable<typeof resolveAgentAdapter>,
+  ): SpawnAgentSessionDeps => ({
+    registry,
+    resolveAgentAdapter: resolve,
+    ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+    ...(opts.buildOrchestratorMcp ? { buildOrchestratorMcp: opts.buildOrchestratorMcp } : {}),
+    ...(opts.webhookNotifier ? { webhookNotifier: opts.webhookNotifier } : {}),
+    ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
+    ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+    ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
+    ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
+    ...(listCatalogModels ? { listCatalogModels } : {}),
+    ...(opts.ensureLlmEndpointRunning ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning } : {}),
+  })
+
   const checkpointSources = createCheckpointSources({
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     ...(opts.taskLedger ? { taskLedger: opts.taskLedger } : {}),
@@ -3053,21 +3071,7 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      const spawnDeps: SpawnAgentSessionDeps = {
-        registry,
-        resolveAgentAdapter,
-        ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
-        ...(opts.buildOrchestratorMcp ? { buildOrchestratorMcp: opts.buildOrchestratorMcp } : {}),
-        ...(opts.webhookNotifier ? { webhookNotifier: opts.webhookNotifier } : {}),
-        ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
-        ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
-        ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
-        ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
-        ...(listCatalogModels ? { listCatalogModels } : {}),
-        ...(opts.ensureLlmEndpointRunning
-          ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning }
-          : {}),
-      }
+      const spawnDeps = buildSpawnDeps(resolveAgentAdapter)
       try {
         const result = await continueAgentSessionFresh(spawnDeps, withContextPolicy(desc).source, {
           ...(input.harness !== undefined ? { harness: input.harness } : {}),
@@ -3201,8 +3205,7 @@ export function registerSessionTools(
       "(`transcript_read`); `harness-compact` = the harness's native /compact, " +
       "then the model switch (in place when the harness stays); `none` = only " +
       "the model, in place, no new session (same harness; refused when the " +
-      "harness can't switch live); `full-resume` = replay the WHOLE transcript " +
-      "(expensive, cache rebuilt, discouraged). Model policy and auth-profile " +
+      "harness can't switch live). Model policy and auth-profile " +
       "allow-lists are enforced: a refused model returns an explicit " +
       "`model_refused` and nothing is switched.",
     {
@@ -3211,7 +3214,7 @@ export function registerSessionTools(
         .enum(HANDOFF_CONTEXT_MODES)
         .optional()
         .describe(
-          "What travels. `handoff-summary` (default) | `harness-compact` | `none` | `full-resume` (costly, discouraged).",
+          "What travels. `handoff-summary` (default) | `harness-compact` | `none`.",
         ),
       model: z
         .string()
@@ -3279,30 +3282,13 @@ export function registerSessionTools(
         tool: "session_handoff",
       })
       if (!gate.ok) return asError({ error: `session_handoff: ${gate.message}` })
-      const spawnDeps: SpawnAgentSessionDeps = {
-        registry,
-        resolveAgentAdapter,
-        ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
-        ...(opts.buildOrchestratorMcp ? { buildOrchestratorMcp: opts.buildOrchestratorMcp } : {}),
-        ...(opts.webhookNotifier ? { webhookNotifier: opts.webhookNotifier } : {}),
-        ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
-        ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
-        ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
-        ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
-        ...(listCatalogModels ? { listCatalogModels } : {}),
-        ...(opts.ensureLlmEndpointRunning ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning } : {}),
-      }
+      const spawnDeps = buildSpawnDeps(resolveAgentAdapter)
       try {
         const result = await performSessionHandoff(
           {
             spawn: spawnDeps,
             ...(caller !== undefined ? { callerSessionId: caller } : {}),
             sources: checkpointSources,
-            restart: {
-              ...(listCatalogModels ? { listCatalogModels } : {}),
-              ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
-              ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
-            },
             ...(opts.cronScheduler
               ? { rearmCrons: (from: string, to: string) => opts.cronScheduler!.rearmSessionTarget(from, to) }
               : {}),
@@ -3367,19 +3353,7 @@ export function registerSessionTools(
       if (!resolveAgentAdapter) return fail("session_migrate requires an adapter resolver; none is configured.")
       const desc = resolveSessionDesc(registry, input)
       if (!desc) return fail(`no session "${sessionRefQuery(input)}" found`, "no_such_session")
-      const spawnDeps: SpawnAgentSessionDeps = {
-        registry,
-        resolveAgentAdapter,
-        ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
-        ...(opts.buildOrchestratorMcp ? { buildOrchestratorMcp: opts.buildOrchestratorMcp } : {}),
-        ...(opts.webhookNotifier ? { webhookNotifier: opts.webhookNotifier } : {}),
-        ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
-        ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
-        ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
-        ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
-        ...(listCatalogModels ? { listCatalogModels } : {}),
-        ...(opts.ensureLlmEndpointRunning ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning } : {}),
-      }
+      const spawnDeps = buildSpawnDeps(resolveAgentAdapter)
       try {
         const result = await migrateSandboxSession(spawnDeps, desc, {
           ...(input.sandbox !== undefined ? { sandbox: input.sandbox } : {}),

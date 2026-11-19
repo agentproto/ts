@@ -1,32 +1,23 @@
 /**
- * `session_handoff` core — hand a session's work to a new model and/or a new
- * harness, optionally ON ITSELF ("I'm a Sonnet session, pass me to Fable").
+ * `session_handoff` core: hand a session's work to a new model and/or harness,
+ * optionally ON ITSELF ("I'm a Sonnet session, pass me to Fable").
  *
- * It is a thin orchestration layer over three primitives that already exist:
- *   - `continueAgentSessionFresh` (checkpoint + fresh session; carries label,
- *     parent, operator label, pin, lifecycle flags, hands over children and
- *     declares the succession — `succeeds` / `succeededBy`; follows and
- *     sentinels are re-pointed by the retirement cleanup),
- *   - `SessionsRegistry.setModel` (live in-place model switch),
- *   - `restartAgentSession` (full conversation resume with axis overrides).
+ * It is NOT a second continuation path. The new-session case delegates to
+ * `continueAgentSessionFresh` (the same function `session_continue_fresh` and
+ * `POST /sessions/:id/handoff` use: checkpoint, label/parent/pin carry,
+ * children handover, `succeeds`). What this adds is only the `context` axis
+ * and closing the source once the successor is confirmed running.
  *
- * What it adds on top is the `context` axis — HOW MUCH of the old
- * conversation travels — and the close-after-confirmation of the old row.
+ * | context           | what happens                                              |
+ * | ----------------- | --------------------------------------------------------- |
+ * | `handoff-summary` | (default) checkpoint -> NEW session; the prompt names the |
+ * |                   | previous session id and `transcript_read`.                |
+ * | `harness-compact` | native `/compact` on the source, then the model switch:   |
+ * |                   | in place when the harness stays, else a summary handoff.  |
+ * | `none`            | model change in place, no new session. Same harness only. |
  *
- * | context            | what happens                                              |
- * | ------------------ | --------------------------------------------------------- |
- * | `handoff-summary`  | (default) checkpoint -> NEW session; the prompt names the |
- * |                    | previous session id and how to re-read it               |
- * |                    | (`transcript_read`). Model and/or harness may change.   |
- * | `harness-compact`  | native `/compact` on the source, then the model switch:   |
- * |                    | in place when the harness stays, else a summary handoff   |
- * |                    | taken from the (now compact) source.                     |
- * | `none`             | model change in place, no new session, no transfer.       |
- * |                    | Same harness only; refuses cleanly when it can't.         |
- * | `full-resume`      | the whole transcript is replayed into the new session     |
- * |                    | (`session_restart` with overrides). EXPENSIVE (cache is   |
- * |                    | rebuilt) and the new model inherits the old one's text:   |
- * |                    | discouraged, kept for completeness.                      |
+ * (A full replay of the transcript is `session_restart`, not offered here: it
+ * rebuilds the prompt cache and is the costly mode this tool exists to avoid.)
  */
 
 import { getAuthProfile } from "@agentproto/auth"
@@ -35,16 +26,12 @@ import { checkModelPolicy } from "./model-policy.js"
 import { getModelListSource } from "./model-list-store.js"
 import { continueAgentSessionFresh, ContinueFreshSpawnError } from "./session-continue-fresh.js"
 import type { ContinueAgentSessionFreshOptions } from "./session-continue-fresh.js"
-import {
-  handOverOrchestratorScopes,
-  restartAgentSession,
-  type RestartAgentSessionOptions,
-} from "./session-restart-core.js"
+import { handOverOrchestratorScopes } from "./session-restart-core.js"
 import { compactCommandNameFor } from "./session-self-command.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import type { SessionDescriptor, SetSessionModelResult } from "./sessions.js"
 
-export const HANDOFF_CONTEXT_MODES = ["handoff-summary", "harness-compact", "none", "full-resume"] as const
+export const HANDOFF_CONTEXT_MODES = ["handoff-summary", "harness-compact", "none"] as const
 export type HandoffContextMode = (typeof HANDOFF_CONTEXT_MODES)[number]
 export const DEFAULT_HANDOFF_CONTEXT: HandoffContextMode = "handoff-summary"
 
@@ -56,7 +43,6 @@ export type HandoffErrorCode =
   | "in_place_not_supported"
   | "compact_from_self"
   | "compact_failed"
-  | "full_resume_from_self"
   | "successor_not_started"
   | "spawn_refused"
 
@@ -98,8 +84,6 @@ export interface SessionHandoffDeps {
   callerSessionId?: string
   /** Last policy gate / open tasks lookups for the checkpoint. */
   sources?: ContinueAgentSessionFreshOptions["sources"]
-  /** Extra restart options (`full-resume`): catalog lister, sandbox, MCP url. */
-  restart?: Omit<RestartAgentSessionOptions, "overrides" | "forceAgentResume">
   /** Re-point cron jobs that named the retired session. */
   rearmCrons?: (from: string, to: string) => string[]
   /** How long to wait for the successor to be live / the source to compact. */
@@ -111,7 +95,6 @@ export interface SessionHandoffDeps {
   pollMs?: number
   // Test seams — default to the real primitives.
   continueFresh?: typeof continueAgentSessionFresh
-  restartSession?: typeof restartAgentSession
   sleep?: (ms: number) => Promise<void>
   precheckModel?: (desc: SessionDescriptor, model: string) => Promise<string | undefined>
 }
@@ -127,11 +110,12 @@ export interface SessionHandoffResult {
   harness: string | undefined
   /** Source closed (new-session only). */
   sourceClosed: boolean
+  /** Self-handoff: the source is the caller and is closed shortly AFTER this
+   *  result returns (`sourceClosed` stays false until it really is). */
+  sourceClosePending?: boolean
   /** The source is the caller: it is closed right after this result returns. */
   selfHandoff: boolean
   checkpointId?: string
-  /** How the successor re-reads the previous session. */
-  previousSession?: { sessionId: string; readWith: string }
   /** Compaction requested before the switch (harness-compact). */
   compacted?: boolean
   /** The mode that actually ran when it differs from the one asked. */
@@ -144,21 +128,6 @@ const isLive = (d: SessionDescriptor | undefined): boolean =>
   !!d && (d.status === "running" || d.status === "starting")
 
 const realSleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
-
-/** `transcript_read` call a successor can paste to re-read its predecessor. */
-export function transcriptReadHint(previousId: string): string {
-  return `transcript_read {"sessionId":"${previousId}","query":"<keyword>"} (bounded excerpts; add "since" to page)`
-}
-
-/** Notes block appended to the checkpoint so the successor knows where the
- *  old conversation lives and how to read just the parts it needs. */
-export function previousSessionNote(previousId: string): string {
-  return (
-    `Previous session: ${previousId}. This handoff is a summary, not a replacement: when you need a ` +
-    `detail it does not give you, read the old transcript yourself instead of guessing — ` +
-    `${transcriptReadHint(previousId)}.`
-  )
-}
 
 async function defaultPrecheckModel(desc: SessionDescriptor, model: string): Promise<string | undefined> {
   const verdict = checkModelPolicy(model, desc.modelPolicy, getModelListSource())
@@ -237,37 +206,6 @@ export async function performSessionHandoff(
     return result
   }
 
-  // ── full-resume: replay everything (expensive) ─────────────────────
-  if (context === "full-resume") {
-    if (selfHandoff) {
-      throw new HandoffError(
-        "full_resume_from_self",
-        `session_handoff context "full-resume" can't run from inside the session's own turn (it closes the ` +
-          `source immediately). Ask the parent session to call it, or use "handoff-summary".`,
-      )
-    }
-    await refuseIfModelRefused()
-    const restartFn = deps.restartSession ?? restartAgentSession
-    try {
-      const restarted = await restartFn(registry, deps.spawn.resolveAgentAdapter as never, prev, {
-        ...deps.restart,
-        forceAgentResume: true,
-        overrides: {
-          ...(input.model !== undefined ? { model: input.model } : {}),
-          ...(input.harness !== undefined ? { harness: input.harness } : {}),
-          ...(input.access !== undefined ? { access: input.access } : {}),
-        },
-      })
-      result.to = restarted.desc.id
-      result.sourceClosed = true // restartAgentSession closes the source itself ("restarted")
-      result.previousSession = { sessionId: prev.id, readWith: transcriptReadHint(prev.id) }
-      if (deps.rearmCrons) result.rearmedCrons = deps.rearmCrons(prev.id, restarted.desc.id)
-      return result
-    } catch (err) {
-      throw asHandoffError(err)
-    }
-  }
-
   // ── harness-compact: compact natively, then switch ─────────────────
   let askSourceDefault = input.askSource
   if (context === "harness-compact") {
@@ -293,7 +231,6 @@ export async function performSessionHandoff(
   }
 
   // ── handoff-summary (also the tail of harness-compact) ─────────────
-  const notes = [input.notes, previousSessionNote(prev.id)].filter(Boolean).join("\n\n")
   const continueFresh = deps.continueFresh ?? continueAgentSessionFresh
   let fresh: Awaited<ReturnType<typeof continueAgentSessionFresh>>
   try {
@@ -301,7 +238,7 @@ export async function performSessionHandoff(
       ...(input.harness !== undefined ? { harness: input.harness } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.access !== undefined ? { access: input.access } : {}),
-      notes: notes.slice(0, 4000),
+      ...(input.notes !== undefined ? { notes: input.notes } : {}),
       // A self-caller is mid-turn: asking it for a summary would only time out.
       askSource: selfHandoff ? false : (askSourceDefault ?? true),
       ...(deps.sources ? { sources: deps.sources } : {}),
@@ -312,7 +249,6 @@ export async function performSessionHandoff(
   const to = fresh.descriptor.id
   result.to = to
   result.checkpointId = fresh.checkpoint.checkpointId
-  result.previousSession = { sessionId: prev.id, readWith: transcriptReadHint(prev.id) }
 
   // Confirm the successor started BEFORE the source goes away.
   const confirmed = await waitUntil(
@@ -348,7 +284,7 @@ export async function performSessionHandoff(
         }
       }, deps.selfCloseDelayMs ?? 2_000)
       if (typeof t === "object" && "unref" in t) t.unref()
-      result.sourceClosed = true
+      result.sourceClosePending = true
       warnings.push(`source ${prev.id} (this session) closes in ~${(deps.selfCloseDelayMs ?? 2_000) / 1000}s.`)
     } else {
       try {
@@ -381,10 +317,26 @@ async function compactAndWait(deps: SessionHandoffDeps, prev: SessionDescriptor)
   if (!isLive(prev)) {
     throw new HandoffError("compact_failed", `session_handoff: ${prev.id} is not live, cannot compact it.`)
   }
+  const name = compactCommandNameFor(prev.harness ?? prev.adapterSlug)
+  const cmd = `/${name}`
+  // Without this, a harness that doesn't know the command would end its turn
+  // normally and the handoff would look compacted when it was not.
+  const advertised = registry.get(prev.id)?.availableCommands ?? prev.availableCommands
+  if (advertised && advertised.length > 0 && !advertised.some(c => c.name.toLowerCase() === name || c._meta?.bareName?.toLowerCase() === name)) {
+    throw new HandoffError(
+      "compact_failed",
+      `session_handoff: ${prev.harness ?? prev.adapterSlug ?? "this harness"} does not advertise ${cmd}; nothing was switched.`,
+    )
+  }
   try {
-    await registry.sendPrompt(prev.id, `/${compactCommandNameFor(prev.harness ?? prev.adapterSlug)}`, {
-      source: `agent:${deps.callerSessionId ?? "session_handoff"}`,
-    })
+    // No calling session = the operator called the tool: send it source-less so
+    // `compactRequiresOperator` sees the operator's agreement; a calling
+    // session keeps its `agent:` provenance and stays subject to that policy.
+    await registry.sendPrompt(
+      prev.id,
+      cmd,
+      deps.callerSessionId ? { source: `agent:${deps.callerSessionId}` } : undefined,
+    )
   } catch (err) {
     throw new HandoffError(
       "compact_failed",
