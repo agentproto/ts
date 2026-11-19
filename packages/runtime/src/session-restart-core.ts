@@ -48,6 +48,7 @@
  */
 
 import type { MemoryStore } from "@agentproto/memory"
+import { adapterProviderField, effectiveAdapterProvider } from "./model-wire.js"
 import { resolveContextContinuityPolicy, type ContextContinuityPolicy } from "./context-continuity.js"
 import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
 import { carryAgentIdentityMeta, stageSpawningCaller } from "./spawning-caller-context.js"
@@ -1545,7 +1546,7 @@ async function restartAgentSessionOnce(
         authSpec,
         declaredOptions: resolved.declaredOptions,
         routeSelection: resolved.routeSelection,
-        adapterProvider: resolved.authDescriptor?.provider,
+        adapterProvider: effectiveAdapterProvider(adapterSlug, resolved.authDescriptor?.provider, effRoute?.gateway),
         modelDerivedApiKey: resolved.authDescriptor?.modelDerivedApiKey,
         prefix: "restart",
       })
@@ -1753,9 +1754,7 @@ async function restartAgentSessionOnce(
       ...(resolved.routeSelection !== undefined
         ? { routeSelection: resolved.routeSelection }
         : {}),
-      ...(resolved.authDescriptor?.provider !== undefined
-        ? { adapterProvider: resolved.authDescriptor.provider }
-        : {}),
+      ...adapterProviderField(adapterSlug, resolved.authDescriptor?.provider, effRoute?.gateway),
       ...(resolved.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
@@ -2616,9 +2615,7 @@ async function restartAgentSessionOnce(
       ...(resolved?.routeSelection !== undefined
         ? { routeSelection: resolved.routeSelection }
         : {}),
-      ...(resolved?.authDescriptor?.provider !== undefined
-        ? { adapterProvider: resolved.authDescriptor.provider }
-        : {}),
+      ...adapterProviderField(adapterSlug, resolved?.authDescriptor?.provider, effRoute?.gateway),
       ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
