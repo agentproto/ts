@@ -50,7 +50,16 @@ export interface ModelWireOptions {
    * stripped to bare before the wire, same as today).
    */
   modelDerivedApiKey?: boolean
+  /**
+   * Adapter slug. Hermes (ACP) keeps `model.provider` from its own
+   * config.yaml and ignores HERMES_INFERENCE_PROVIDER, so the only per-session
+   * way to pick a provider is the `/model <provider>:<model>` picker form.
+   */
+  adapter?: string
 }
+
+/** Gateways hermes must be told about explicitly (`<gateway>:<model>`). */
+const HERMES_PROVIDER_PREFIX_GATEWAYS: readonly string[] = ["huggingface"]
 
 /**
  * Normalize a catalog model id to the value the adapter's wire actually
@@ -69,6 +78,14 @@ export function normalizeModelForWire(
 ): string {
   if (opts.routeSelection === "derived-from-model") {
     const bare = stripRouteSuffix(model)
+    if (
+      opts.adapter === "hermes" &&
+      opts.gateway &&
+      HERMES_PROVIDER_PREFIX_GATEWAYS.includes(opts.gateway) &&
+      !bare.startsWith(`${opts.gateway}:`)
+    ) {
+      return `${opts.gateway}:${bare}`
+    }
     // Re-add the router as a literal leading segment for a model-derived-
     // API-key adapter billed through a widening gateway — see
     // `ModelWireOptions.modelDerivedApiKey`'s doc. `startsWith` guards

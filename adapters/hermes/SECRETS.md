@@ -20,6 +20,10 @@ slots:
     description: Google Gemini API key.
     required: false
     sensitivity: high
+  - name: HF_TOKEN
+    description: Hugging Face token — enables the Inference Providers router (huggingface provider).
+    required: false
+    sensitivity: high
   - name: GROQ_API_KEY
     description: Groq inference API key.
     required: false
@@ -32,6 +36,7 @@ constraints:
       - OPENAI_API_KEY
       - GEMINI_API_KEY
       - GROQ_API_KEY
+      - HF_TOKEN
 tags: [hermes, secrets, model-providers]
 ---
 

@@ -15048,6 +15048,7 @@ export function createSessionsRegistry(opts?: {
             gateway: rt.desc.route?.gateway,
             fixedProvider: adapterProvider,
             modelDerivedApiKey,
+            adapter: adapterSlug,
           })
       const verdict = checkModelPolicy(modelId, rt.desc.modelPolicy, getModelListSource())
       if (!verdict.ok) return { applied: false, reason: `policy:${verdict.code}: ${verdict.reason}` }

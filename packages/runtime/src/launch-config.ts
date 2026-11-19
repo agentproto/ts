@@ -175,6 +175,7 @@ export function buildRouteAwareLaunchConfig(
         gateway: input.route?.gateway,
         fixedProvider: input.adapterProvider,
         modelDerivedApiKey: input.modelDerivedApiKey,
+        adapter: input.adapter,
       })
     : undefined
 
