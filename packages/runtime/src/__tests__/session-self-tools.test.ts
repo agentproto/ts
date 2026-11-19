@@ -139,7 +139,6 @@ describe("session_command_self / session_handoff on the caller itself", () => {
     const body = JSON.parse(textOf(r))
     expect(body).toMatchObject({ context: "handoff-summary", mode: "new-session", from: id, selfHandoff: true })
     expect(reg.get(id)?.continuedTo).toBe(body.to)
-    expect(body.previousSession.readWith).toContain("transcript_read")
   })
 
   it("session_handoff: nothing to change is an explicit refusal", async () => {

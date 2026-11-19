@@ -460,6 +460,10 @@ export function renderCheckpointPrompt(checkpoint: ContextCheckpoint): string {
   lines.push(
     `Original transcript: ${checkpoint.originalTranscriptPath} (preserved; this prompt is a summary, not a replacement).`,
   )
+  lines.push(
+    `Need a detail this summary lacks? Read the previous session yourself instead of guessing: ` +
+      `transcript_read {"sessionId":"${checkpoint.sourceSessionId}","query":"<keyword>"} (bounded excerpts).`,
+  )
   lines.push("")
 
   const sectionOrder: Array<keyof ContextCheckpointSections> = [

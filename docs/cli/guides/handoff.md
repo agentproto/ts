@@ -206,10 +206,9 @@ that profile's own budget.
 same on itself, through the `session_handoff` MCP tool, and choose how much
 context travels (`context`): `handoff-summary` (default: status + previous
 session id + `transcript_read`), `harness-compact` (native `/compact`, then the
-model switch), `none` (model switch in place, no new session) or `full-resume`
-(replay everything, expensive, discouraged). Model policy and auth-profile
+model switch) or `none` (model switch in place, no new session). Model policy and auth-profile
 allow-lists are enforced and a refusal is explicit. See
-`packages/runtime/docs/mcp-tools/session_handoff.md`. To compact or clear
+`packages/runtime/docs/mcp-tools/session_handoff.md`. To compact
 itself, a session uses `session_command_self` (queued, runs at the end of its
 turn, allow-list per harness).
 

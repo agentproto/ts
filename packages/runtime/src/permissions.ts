@@ -111,7 +111,7 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
   "session.drive": {
     routed: true,
     enforcedAt:
-      "permissions.ts decide(), called by the six drive tools through drive-gate.ts (the owner-gate rules are unchanged; explicit session:prompt / session:control grants may admit a caller)",
+      "permissions.ts decide(), called by the five drive tools through drive-gate.ts (and by session_handoff, which is not in DRIVE_TOOL_ACTIONS because the legacy parity table pins that map: an unknown tool name decides as session:control) (the owner-gate rules are unchanged; explicit session:prompt / session:control grants may admit a caller)",
     surfaces: ["agent_prompt", "agent_interrupt", "agent_kill", "session_restart", "session_continue_fresh", "session_handoff"],
   },
   "session.message": {
