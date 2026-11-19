@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { HandoffError, performSessionHandoff, previousSessionNote } from "../session-handoff.js"
+import { HandoffError, performSessionHandoff } from "../session-handoff.js"
 import { ContinueFreshSpawnError } from "../session-continue-fresh.js"
 import type { SessionDescriptor } from "../sessions.js"
 
@@ -45,16 +45,13 @@ function setup(prev = mkPrev(), opts: { freshStatus?: string; setModel?: unknown
 }
 
 describe("session_handoff", () => {
-  it("handoff-summary (default): new session, previous id + transcript_read in notes, source closed after confirmation", async () => {
+  it("handoff-summary (default): new session, notes carried, source closed after confirmation", async () => {
     const t = setup()
     const r = await performSessionHandoff(t.deps, mkPrev(), { model: "claude-fable-5-2", notes: "next: ship it" })
     expect(r).toMatchObject({ context: "handoff-summary", mode: "new-session", from: "sess_old", to: "sess_new", sourceClosed: true })
     const passed = t.continueFresh.mock.calls[0]![2] as { notes: string; model: string }
     expect(passed.model).toBe("claude-fable-5-2")
-    expect(passed.notes).toContain("next: ship it")
-    expect(passed.notes).toContain("sess_old")
-    expect(passed.notes).toContain("transcript_read")
-    expect(r.previousSession?.readWith).toContain("transcript_read")
+    expect(passed.notes).toBe("next: ship it")
     expect(t.kill).toHaveBeenCalledWith("sess_old", "SIGTERM", "restarted")
   })
 
@@ -81,6 +78,8 @@ describe("session_handoff", () => {
       const r = await p
       expect((t.continueFresh.mock.calls[0]![2] as { askSource: boolean }).askSource).toBe(false)
       expect(r.selfHandoff).toBe(true)
+      expect(r.sourceClosed).toBe(false)
+      expect(r.sourceClosePending).toBe(true)
       expect(t.kill).not.toHaveBeenCalled() // deferred
       vi.advanceTimersByTime(5)
       expect(t.kill).toHaveBeenCalledWith("sess_old", "SIGTERM", "restarted")
@@ -140,16 +139,36 @@ describe("session_handoff", () => {
   it("harness-compact (same harness): /compact, wait idle, then model switch in place", async () => {
     const t = setup()
     const r = await performSessionHandoff(t.deps, mkPrev(), { context: "harness-compact", model: "claude-fable-5-2" })
-    expect(t.sendPrompt).toHaveBeenCalledWith("sess_old", "/compact", expect.anything())
+    // operator call (no caller session): source-less, so the operator's agreement counts
+    expect(t.sendPrompt).toHaveBeenCalledWith("sess_old", "/compact", undefined)
     expect(t.setModel).toHaveBeenCalled()
     expect(r).toMatchObject({ mode: "in-place", compacted: true })
+  })
+
+  it("harness-compact called by a parent session keeps the agent: source", async () => {
+    const t = setup()
+    await performSessionHandoff({ ...t.deps, callerSessionId: "sess_parent" }, mkPrev(), {
+      context: "harness-compact",
+      model: "claude-fable-5-2",
+    })
+    expect(t.sendPrompt).toHaveBeenCalledWith("sess_old", "/compact", { source: "agent:sess_parent" })
+  })
+
+  it("harness-compact refuses when the harness advertises commands but not /compact", async () => {
+    const prev = mkPrev({ availableCommands: [{ name: "clear" }] } as never)
+    const t = setup(prev)
+    await expect(performSessionHandoff(t.deps, prev, { context: "harness-compact", model: "m2" })).rejects.toMatchObject({
+      code: "compact_failed",
+    })
+    expect(t.sendPrompt).not.toHaveBeenCalled()
+    expect(t.setModel).not.toHaveBeenCalled()
   })
 
   it("harness-compact on hermes sends /compress", async () => {
     const hermes = mkPrev({ harness: "hermes", adapterSlug: "hermes" })
     const t = setup(hermes)
     await performSessionHandoff(t.deps, hermes, { context: "harness-compact", model: "m2" })
-    expect(t.sendPrompt).toHaveBeenCalledWith("sess_old", "/compress", expect.anything())
+    expect(t.sendPrompt).toHaveBeenCalledWith("sess_old", "/compress", undefined)
   })
 
   it("harness-compact + harness change: compacts, then a summary handoff", async () => {
@@ -165,26 +184,4 @@ describe("session_handoff", () => {
     ).rejects.toMatchObject({ code: "compact_from_self" })
   })
 
-  it("full-resume goes through the restart path with the overrides", async () => {
-    const t = setup()
-    const restartSession = vi.fn(async (..._a: unknown[]) => ({ desc: { id: "sess_resumed" }, resumedFrom: "sess_old", resumeVia: "acp" }))
-    const r = await performSessionHandoff({ ...t.deps, restartSession: restartSession as never }, mkPrev(), {
-      context: "full-resume",
-      model: "claude-fable-5-2",
-    })
-    expect(restartSession.mock.calls[0]![3]).toMatchObject({ forceAgentResume: true, overrides: { model: "claude-fable-5-2" } })
-    expect(r).toMatchObject({ to: "sess_resumed", sourceClosed: true })
-    expect(t.continueFresh).not.toHaveBeenCalled()
-  })
-
-  it("full-resume from itself is refused", async () => {
-    const t = setup()
-    await expect(
-      performSessionHandoff({ ...t.deps, callerSessionId: "sess_old" }, mkPrev(), { context: "full-resume", model: "m2" }),
-    ).rejects.toMatchObject({ code: "full_resume_from_self" })
-  })
-
-  it("previousSessionNote names the id and transcript_read", () => {
-    expect(previousSessionNote("sess_x")).toMatch(/sess_x[\s\S]*transcript_read/)
-  })
 })

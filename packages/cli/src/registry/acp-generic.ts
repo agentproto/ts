@@ -255,7 +255,7 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
     deferred_tool_discovery: true,
     // `session_command_self` allow-list (also intersected with the commands
     // Vibe advertises live over ACP).
-    self_commands: ["compact", "clear"],
+    self_commands: ["compact"],
   },
   {
     slug: "kimi-cli",

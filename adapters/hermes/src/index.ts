@@ -182,7 +182,7 @@ export const hermes: AgentCliHandle = defineHarness({
   capabilities: {
     // `session_command_self` allow-list (see harness types). The daemon also
     // requires the command to be in the session's live `availableCommands`.
-    selfCommands: ["compress", "new", "reset", "model", "usage"],
+    selfCommands: ["compress", "model"],
     streaming: true,
     tool_calls: true,
     sub_agents: true,

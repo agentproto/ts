@@ -28,15 +28,17 @@ harness's own dispatcher needs).
 
 ## Allow-list per harness
 
-The effective set is *allow-list ∩ what the installed harness advertises*.
+Manifests declare **only the commands confirmed in this repo**; nothing is
+invented. Everything else is decided at run time: the command must be in the
+list the harness advertises for the session (`session_commands`), and a
+manifest that declares none refuses all.
 
-| harness | allowed self-commands |
+| harness | declared in the manifest |
 | --- | --- |
-| claude-code | `compact`, `clear`, `model`, `context`, `cost`, `status` |
-| codex | `compact`, `new`, `status`, `model` |
-| opencode | `compact`, `summarize`, `new`, `models` |
-| copilot-cli | `compact`, `clear`, `model`, `context`, `usage` |
-| mistral-vibe | `compact`, `clear` |
-| hermes | `compress`, `new`, `reset`, `model`, `usage` |
+| claude-code, codex, opencode, copilot-cli, mistral-vibe | `compact` |
+| hermes | `compress`, `model` |
 
-Other harnesses declare none until their adapter lists some.
+To allow another command for a harness, add it to its adapter's
+`capabilities.selfCommands` once it is verified (ACP agents added by hand:
+`acpAgents.<slug>.self_commands`). `/clear` and `/new` are deliberately not
+declared: they drop context.
