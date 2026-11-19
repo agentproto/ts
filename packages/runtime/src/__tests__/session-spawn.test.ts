@@ -5867,6 +5867,44 @@ describe("resolveAccessProfileAuth — catalog_models eligibility parity (route-
   })
 })
 
+// hermes + a Hugging Face access profile: the profile-aware route fallback
+// must resolve the `huggingface` gateway so HF_TOKEN (from the keychain, never
+// a plaintext file) is injected and the router base URL applies.
+describe("resolveAccessProfileAuth — hermes on the Hugging Face router", () => {
+  const HERMES: AdapterAuthDescriptor = { provider: "openrouter" }
+  beforeEach(() => {
+    authProfileState.profiles = {
+      "huggingface-api": {
+        id: "huggingface-api",
+        endpoint: "huggingface",
+        method: "api-key",
+        credentialRef: "agentproto.auth.huggingface",
+      },
+    }
+    authProfileState.keychain = { "agentproto.auth.huggingface": "hf_test" }
+  })
+
+  it.each([
+    ["bare model", undefined],
+    ["explicit gateway", { gateway: "huggingface" }],
+  ] as const)("injects HF_TOKEN with the router base URL (%s)", async (_label, route) => {
+    const result = await resolveAccessProfileAuth({
+      adapter: "hermes",
+      profileRef: "huggingface-api",
+      authDescriptor: HERMES,
+      ...(route ? { route } : {}),
+      model: "Qwen/Qwen3.8-27B@huggingface",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.authSpec?.setEnv).toBe("HF_TOKEN")
+    expect(result.authSpec?.credential).toBe("hf_test")
+    expect(result.authSpec?.baseUrl).toBe("https://router.huggingface.co/v1")
+    expect(result.authEcho?.provider).toBe("huggingface")
+    if (!route) expect(result.resolvedRouteGateway).toBe("huggingface")
+  })
+})
+
 // An OpenCode console org login serves BOTH the `opencode-go` and `opencode`
 // (Zen) routes with one token + org selection. Zen bills the org's PAYG wallet,
 // so the Zen route admits the org profile only through an explicit allow-list.

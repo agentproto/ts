@@ -232,3 +232,42 @@ describe("buildRouteAwareLaunchConfig", () => {
     expect(result.wireModel).toBe("anthropic/claude-sonnet-4-5")
   })
 })
+
+describe("buildRouteAwareLaunchConfig — hermes on the Hugging Face router", () => {
+  const hermes = (model: string, gateway?: string) =>
+    buildRouteAwareLaunchConfig({
+      adapter: "hermes",
+      model,
+      ...(gateway ? { route: { gateway } } : {}),
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+    })
+
+  it("selects the provider with the `<provider>:<model>` /model form", () => {
+    expect(hermes("Qwen/Qwen3.8-27B@huggingface", "huggingface").wireModel).toBe(
+      "huggingface:Qwen/Qwen3.8-27B",
+    )
+  })
+
+  it("is idempotent when the provider prefix is already there", () => {
+    expect(hermes("huggingface:Qwen/Qwen3.8-27B", "huggingface").wireModel).toBe(
+      "huggingface:Qwen/Qwen3.8-27B",
+    )
+  })
+
+  it("leaves OpenRouter spawns untouched", () => {
+    expect(hermes("z-ai/glm-5.2@openrouter", "openrouter").wireModel).toBe("z-ai/glm-5.2")
+    expect(hermes("z-ai/glm-5.2").wireModel).toBe("z-ai/glm-5.2")
+  })
+
+  it("does not touch other adapters on the same route", () => {
+    const out = buildRouteAwareLaunchConfig({
+      adapter: "pi",
+      model: "Qwen/Qwen3.8-27B",
+      route: { gateway: "huggingface" },
+      routeSelection: "derived-from-model",
+    })
+    expect(out.wireModel).not.toContain("huggingface:")
+  })
+})
+

@@ -109,7 +109,7 @@ export const hermes: AgentCliHandle = defineHarness({
     // No ANTHROPIC_API_KEY — hermes is the budget arm and deliberately does
     // not route to Anthropic (see models.deny). Anthropic stays exclusive to
     // the claude-code adapter.
-    state: { env: ["OPENROUTER_API_KEY", "OPENAI_API_KEY"] },
+    state: { env: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "HF_TOKEN"] },
   },
   // Billing-auth (opt-in — no authEnforce, so unconfigured spawns stay
   // ambient). Single-provider adapter: api-key mode SETS providerEnvVar
@@ -173,6 +173,10 @@ export const hermes: AgentCliHandle = defineHarness({
     env: {
       openrouter: "OPENROUTER_API_KEY",
       openai: "OPENAI_API_KEY",
+      // Hugging Face Inference Providers router (hermes' native `huggingface`
+      // provider reads HF_TOKEN). Selected per session through the
+      // `huggingface:<model>` /model form — see `normalizeModelForWire`.
+      huggingface: "HF_TOKEN",
     },
     // hermes keeps its own configured default when given a model via the
     // ACP session config — selection must go through a `/model <id>`
