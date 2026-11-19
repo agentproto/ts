@@ -322,7 +322,7 @@ async function compactAndWait(deps: SessionHandoffDeps, prev: SessionDescriptor)
   // Without this, a harness that doesn't know the command would end its turn
   // normally and the handoff would look compacted when it was not.
   const advertised = registry.get(prev.id)?.availableCommands ?? prev.availableCommands
-  if (advertised && advertised.length > 0 && !advertised.some(c => c.name.toLowerCase() === name)) {
+  if (advertised && advertised.length > 0 && !advertised.some(c => c.name.toLowerCase() === name || c._meta?.bareName?.toLowerCase() === name)) {
     throw new HandoffError(
       "compact_failed",
       `session_handoff: ${prev.harness ?? prev.adapterSlug ?? "this harness"} does not advertise ${cmd}; nothing was switched.`,

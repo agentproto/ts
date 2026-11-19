@@ -164,6 +164,13 @@ describe("session_handoff", () => {
     expect(t.setModel).not.toHaveBeenCalled()
   })
 
+  it("harness-compact accepts a command advertised under its bareName (same lookup as session_command_self)", async () => {
+    const prev = mkPrev({ availableCommands: [{ name: "agent:compact", _meta: { bareName: "compact" } }] } as never)
+    const t = setup(prev)
+    await performSessionHandoff(t.deps, prev, { context: "harness-compact", model: "m2" })
+    expect(t.sendPrompt).toHaveBeenCalledWith("sess_old", "/compact", undefined)
+  })
+
   it("harness-compact on hermes sends /compress", async () => {
     const hermes = mkPrev({ harness: "hermes", adapterSlug: "hermes" })
     const t = setup(hermes)
