@@ -21,6 +21,7 @@
  */
 
 import {
+  DEFAULT_PRICING,
   resolvePricing,
   selectPricingTier,
   splitContextWindowHint,
@@ -204,9 +205,37 @@ export function resolveSessionPricing(model: string): LLMPricing | undefined {
   const id = splitContextWindowHint(model).id
   const ref = tryParseModelRef(normalizeRouterPrefixedId(id))
   if (ref && (WIDENING_ROUTES as readonly string[]).includes(ref.route)) {
-    return resolveLlmModelRoute(ref)?.pricing
+    const pricing = resolveLlmModelRoute(ref)?.pricing
+    // The HF route branch falls back to the catalogue's DEFAULT_PRICING when
+    // none of a model's live providers publishes a price — a placeholder, not
+    // a price. Report that as unpriced rather than a made-up figure.
+    if (
+      ref.route === "huggingface" &&
+      pricing !== undefined &&
+      pricing.inputPer1M === DEFAULT_PRICING.inputPer1M &&
+      pricing.outputPer1M === DEFAULT_PRICING.outputPer1M
+    ) {
+      return undefined
+    }
+    return pricing
   }
   return resolvePricing(model)
+}
+
+/**
+ * The model id to price a session under. A session billed through the
+ * Hugging Face router prices per model/provider from the HF route table
+ * (`<model>@huggingface`), never by substring-matching the bare HF id onto a
+ * direct-vendor row.
+ */
+export function pricingModelId(model: string, gateway?: string): string {
+  if (gateway === "huggingface" && !model.includes("@")) return `${model}@huggingface`
+  return model
+}
+
+/** Pricing resolver for a session billed through `gateway` (see {@link pricingModelId}). */
+export function pricingResolverFor(gateway?: string): PricingResolver {
+  return model => resolveSessionPricing(pricingModelId(model, gateway))
 }
 
 const defaultResolver: PricingResolver = model => resolveSessionPricing(model)

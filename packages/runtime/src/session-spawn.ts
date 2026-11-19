@@ -10,6 +10,7 @@ import type { AcpMcpServer } from "@agentproto/acp"
 import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
+import { effectiveAdapterProvider } from "./model-wire.js"
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, APP_AGENT_META_KEY, CALLER_SESSION_ID_HEADER, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import {
@@ -5589,7 +5590,7 @@ async function spawnAgentSessionOnce(
       options: spawnDefaults.options,
       declaredOptions: resolved?.declaredOptions,
       routeSelection: resolved?.routeSelection,
-      adapterProvider: resolved?.authDescriptor?.provider,
+      adapterProvider: effectiveAdapterProvider(input.adapter, resolved?.authDescriptor?.provider, (input.route ?? profileResolvedRoute)?.gateway),
       modelDerivedApiKey: resolved?.authDescriptor?.modelDerivedApiKey,
       skills: spawnDefaults.skills,
       prefix: "agent_start",
@@ -6193,8 +6194,8 @@ async function spawnAgentSessionOnce(
         ...(resolved?.routeSelection !== undefined
           ? { routeSelection: resolved.routeSelection }
           : {}),
-        ...(resolved?.authDescriptor?.provider !== undefined
-          ? { adapterProvider: resolved.authDescriptor.provider }
+        ...(effectiveAdapterProvider(input.adapter, resolved?.authDescriptor?.provider, descriptorRoute?.gateway) !== undefined
+          ? { adapterProvider: effectiveAdapterProvider(input.adapter, resolved?.authDescriptor?.provider, descriptorRoute?.gateway) }
           : {}),
         ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
           ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
@@ -6881,8 +6882,8 @@ async function spawnAgentSessionOnce(
       ...(resolved?.routeSelection !== undefined
         ? { routeSelection: resolved.routeSelection }
         : {}),
-      ...(resolved?.authDescriptor?.provider !== undefined
-        ? { adapterProvider: resolved.authDescriptor.provider }
+      ...(effectiveAdapterProvider(input.adapter, resolved?.authDescriptor?.provider, descriptorRoute?.gateway) !== undefined
+        ? { adapterProvider: effectiveAdapterProvider(input.adapter, resolved?.authDescriptor?.provider, descriptorRoute?.gateway) }
         : {}),
       ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }

@@ -62,6 +62,23 @@ export interface ModelWireOptions {
 const HERMES_PROVIDER_PREFIX_GATEWAYS: readonly string[] = ["huggingface"]
 
 /**
+ * Provider to record on a session descriptor (`adapterProvider`). A hermes
+ * session routed through a prefix gateway (Hugging Face) is billed by THAT
+ * gateway, not by the adapter's manifest provider (`openrouter`), so the
+ * descriptor must name the gateway.
+ */
+export function effectiveAdapterProvider(
+  adapter: string | undefined,
+  manifestProvider: string | undefined,
+  gateway: string | undefined,
+): string | undefined {
+  if (adapter === "hermes" && gateway && HERMES_PROVIDER_PREFIX_GATEWAYS.includes(gateway)) {
+    return gateway
+  }
+  return manifestProvider
+}
+
+/**
  * Normalize a catalog model id to the value the adapter's wire actually
  * expects.
  *

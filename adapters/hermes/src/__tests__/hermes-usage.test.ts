@@ -28,4 +28,15 @@ describe("hermesRowUsage", () => {
       tokensOut: 2,
     })
   })
+
+  it("drops hermes' own cost estimate on a Hugging Face router session (bogus units)", () => {
+    expect(
+      hermesRowUsage({
+        billing_provider: "huggingface",
+        estimated_cost_usd: 4494.555,
+        input_tokens: 18163,
+        output_tokens: 206,
+      }),
+    ).toEqual({ tokensIn: 18163, tokensOut: 206 })
+  })
 })

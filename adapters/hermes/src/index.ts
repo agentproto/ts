@@ -418,6 +418,7 @@ export interface HermesUsage {
 }
 
 interface HermesSessionUsageRow {
+  billing_provider?: string | null
   estimated_cost_usd?: number | null
   input_tokens?: number | null
   output_tokens?: number | null
@@ -429,8 +430,13 @@ interface HermesSessionUsageRow {
 /** Project a `sessions` row to `HermesUsage`, dropping NULL / missing
  *  columns instead of coercing them to 0. */
 export function hermesRowUsage(row: HermesSessionUsageRow): HermesUsage {
+  // hermes' own estimate for a Hugging Face router session comes from the
+  // router's models API and is not a per-token USD price (observed: $4494 for
+  // 18k tokens). Drop it so the daemon prices the tokens from the catalogue's
+  // per-model/provider HF table, or reports the cost as unknown.
+  const untrustedCost = row.billing_provider === "huggingface"
   return {
-    ...(row.estimated_cost_usd != null ? { costUsd: row.estimated_cost_usd } : {}),
+    ...(row.estimated_cost_usd != null && !untrustedCost ? { costUsd: row.estimated_cost_usd } : {}),
     ...(row.input_tokens != null ? { tokensIn: row.input_tokens } : {}),
     ...(row.output_tokens != null ? { tokensOut: row.output_tokens } : {}),
     ...(row.cache_read_tokens != null ? { cacheReadTokens: row.cache_read_tokens } : {}),

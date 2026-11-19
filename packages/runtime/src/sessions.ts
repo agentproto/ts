@@ -162,6 +162,7 @@ import {
 } from "./terminal-transcript-writer.js"
 import {
   deriveSessionUsage,
+  pricingResolverFor,
   pickUsageDetail,
   plausibleContextUsed,
   type SessionUsage,
@@ -9355,7 +9356,7 @@ export function createSessionsRegistry(opts?: {
             evt.used > 0
               ? { tokensIn: evt.used }
               : {}),
-          })
+          }, pricingResolverFor(rt.desc.route?.gateway))
           if (
             usage.source === "computed" &&
             usage.costUsd !== undefined &&
@@ -10216,7 +10217,7 @@ export function createSessionsRegistry(opts?: {
       ...pickUsageDetail({ ...rt.desc, turns: rt.desc.turnsCompleted }),
       ...(rt.desc.contextSize !== undefined ? { contextSize: rt.desc.contextSize } : {}),
       ...(rt.desc.contextUsed !== undefined ? { contextUsed: rt.desc.contextUsed } : {}),
-    })
+    }, pricingResolverFor(rt.desc.route?.gateway))
 
   /**
    * Report a native compaction: the harness compacted its context on its own
@@ -10365,7 +10366,7 @@ export function createSessionsRegistry(opts?: {
         ...(usage.tokensOut !== undefined ? { tokensOut: usage.tokensOut } : {}),
         ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
         ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
-      })
+      }, pricingResolverFor(rt.desc.route?.gateway))
       if (derived.source === "computed" && derived.costUsd !== undefined) {
         rt.desc.costUsd = derived.costUsd
         rt.desc.usageSource = "computed"
