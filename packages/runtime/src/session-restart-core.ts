@@ -48,7 +48,7 @@
  */
 
 import type { MemoryStore } from "@agentproto/memory"
-import { effectiveAdapterProvider } from "./model-wire.js"
+import { adapterProviderField, effectiveAdapterProvider } from "./model-wire.js"
 import { resolveContextContinuityPolicy, type ContextContinuityPolicy } from "./context-continuity.js"
 import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
 import { carryAgentIdentityMeta, stageSpawningCaller } from "./spawning-caller-context.js"
@@ -1754,9 +1754,7 @@ async function restartAgentSessionOnce(
       ...(resolved.routeSelection !== undefined
         ? { routeSelection: resolved.routeSelection }
         : {}),
-      ...(effectiveAdapterProvider(adapterSlug, resolved.authDescriptor?.provider, effRoute?.gateway) !== undefined
-        ? { adapterProvider: effectiveAdapterProvider(adapterSlug, resolved.authDescriptor?.provider, effRoute?.gateway) }
-        : {}),
+      ...adapterProviderField(adapterSlug, resolved.authDescriptor?.provider, effRoute?.gateway),
       ...(resolved.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
@@ -2617,9 +2615,7 @@ async function restartAgentSessionOnce(
       ...(resolved?.routeSelection !== undefined
         ? { routeSelection: resolved.routeSelection }
         : {}),
-      ...(effectiveAdapterProvider(adapterSlug, resolved?.authDescriptor?.provider, effRoute?.gateway) !== undefined
-        ? { adapterProvider: effectiveAdapterProvider(adapterSlug, resolved?.authDescriptor?.provider, effRoute?.gateway) }
-        : {}),
+      ...adapterProviderField(adapterSlug, resolved?.authDescriptor?.provider, effRoute?.gateway),
       ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),

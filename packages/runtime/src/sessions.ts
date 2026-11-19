@@ -109,7 +109,7 @@ import {
   type ClaudeSocketWakeOutcome,
 } from "./claude-socket-wake.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
-import { normalizeModelForWire } from "./model-wire.js"
+import { effectiveAdapterProvider, normalizeModelForWire } from "./model-wire.js"
 import {
   composeSessionObservers,
   filterSessionObserver,
@@ -15016,7 +15016,11 @@ export function createSessionsRegistry(opts?: {
             adapterProvider === undefined &&
             resolved?.authDescriptor?.provider !== undefined
           ) {
-            adapterProvider = resolved.authDescriptor.provider
+            adapterProvider = effectiveAdapterProvider(
+              adapterSlug,
+              resolved.authDescriptor.provider,
+              rt.desc.route?.gateway,
+            )
             rt.desc.adapterProvider = adapterProvider
             hydrated = true
           }

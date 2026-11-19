@@ -78,6 +78,16 @@ export function effectiveAdapterProvider(
   return manifestProvider
 }
 
+/** Spreadable `{ adapterProvider }` (or nothing) — see {@link effectiveAdapterProvider}. */
+export function adapterProviderField(
+  adapter: string | undefined,
+  manifestProvider: string | undefined,
+  gateway: string | undefined,
+): { adapterProvider?: string } {
+  const adapterProvider = effectiveAdapterProvider(adapter, manifestProvider, gateway)
+  return adapterProvider !== undefined ? { adapterProvider } : {}
+}
+
 /**
  * Normalize a catalog model id to the value the adapter's wire actually
  * expects.
