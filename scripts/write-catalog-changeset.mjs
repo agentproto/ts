@@ -19,12 +19,14 @@
  * snapshot change bumps `@agentproto/catalog-sync` too. Test-only edits
  * (`src/` files under `__tests__/`, `*.test.*`) are not publish-affecting.
  *
- * Usage: node scripts/write-catalog-changeset.mjs [--out <path>]
+ * Usage: node scripts/write-catalog-changeset.mjs [--out <path>] [--message <text>]
+ * `--message` lets another bot (update-deps) reuse the same deterministic writer.
  * Exit 0 always on success, including "nothing to write".
  */
 
 import { execSync } from 'node:child_process'
 import { writeFileSync, unlinkSync, readdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   publishablePackageMap,
   changedPublishablePackages,
@@ -62,6 +64,11 @@ function isOnOriginMain(relPath) {
 }
 
 const outFlag = process.argv.indexOf('--out')
+const msgFlag = process.argv.indexOf('--message')
+const MESSAGE =
+  msgFlag !== -1
+    ? process.argv[msgFlag + 1]
+    : 'Sync generated catalog data from the pinned provider sources.'
 const OUT = outFlag !== -1 ? process.argv[outFlag + 1] : defaultOutPath()
 
 const changedFiles = execSync('git diff --name-only', {
@@ -92,7 +99,7 @@ for (const name of readdirSync(`${ROOT}/.changeset`)) {
   if (!name.startsWith('catalog-sync-auto') || !name.endsWith('.md')) continue
   const relPath = `.changeset/${name}`
   const stale = `${ROOT}/${relPath}`
-  if (stale === OUT) continue
+  if (stale === resolve(OUT)) continue
   if (isOnOriginMain(relPath)) continue
   unlinkSync(stale)
 }
@@ -100,7 +107,7 @@ for (const name of readdirSync(`${ROOT}/.changeset`)) {
 const frontmatter = packages.map((name) => `"${name}": patch`).join('\n')
 writeFileSync(
   OUT,
-  `---\n${frontmatter}\n---\n\nSync generated catalog data from the pinned provider sources.\n`
+  `---\n${frontmatter}\n---\n\n${MESSAGE}\n`
 )
 
 console.log(`Changeset written to ${OUT} for: ${packages.join(', ')}`)
