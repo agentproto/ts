@@ -17,14 +17,16 @@ function zeroPricedOpencodeIds(): string[] {
 }
 
 const FREE_IDS = zeroPricedOpencodeIds()
-if (FREE_IDS.length < 2) {
-  throw new Error("the opencode route table needs at least two zero-priced models for the tests")
+if (FREE_IDS.length < 3) {
+  throw new Error("the opencode route table needs at least three zero-priced models for the tests")
 }
 
 /** A zero-priced OpenCode id from the live catalog. */
 export const FREE_MODEL: string = FREE_IDS[0]!
 /** A second, different zero-priced id (for "another model" cases). */
 export const OTHER_FREE_MODEL: string = FREE_IDS[1]!
+/** A third, different zero-priced id (for chains of three models). */
+export const THIRD_FREE_MODEL: string = FREE_IDS[2]!
 
 /** The shipped default-rotation list, read from the seed, never copied. */
 export const ROTATION_IDS: readonly string[] =
