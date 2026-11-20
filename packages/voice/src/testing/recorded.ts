@@ -176,6 +176,11 @@ export function makeReplaySocket(
           }
           return
         }
+        // Recorded `in` frames that preceded this out frame are delivered first.
+        while (!closed && cursor < exchange.frames.length && exchange.frames[cursor]!.dir === "in") {
+          const f = exchange.frames[cursor++]!
+          for (const cb of cbs.message) cb(typeof f.data === "string" ? f.data : JSON.stringify(f.data))
+        }
         const next = exchange.frames[cursor]
         if (!next || next.dir !== "out") {
           if (strict) mismatches.push(`unexpected out frame: ${text.slice(0, 120)}`)
