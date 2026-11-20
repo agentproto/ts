@@ -34,7 +34,7 @@ vi.setConfig({ testTimeout: 30_000 })
 // 2026-11-20) and the spawn path validates the model against the catalog.
 const FREE_MODEL = (() => {
   const route = listRouterLlmRoutes("opencode").find(
-    r => r.pricing?.inputPer1M === 0 && r.pricing.outputPer1M === 0,
+    r => r.pricing.inputPer1M === 0 && r.pricing.outputPer1M === 0,
   )
   if (!route) throw new Error("the opencode route table has no zero-priced model")
   return formatModelRef(route.ref)
