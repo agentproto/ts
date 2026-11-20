@@ -317,7 +317,7 @@ describe("turn retry fallback", () => {
     await h.registry.sendPrompt(desc.id, "go")
     await until(() => h.prompts.length === 3, "fallback turn")
 
-    expect(h.trace).not.toContain("setModel:opencode/gpt-5.1-codex")
+    expect(h.trace).not.toContain(`setModel:${PAID_MODEL}`)
     expect(h.registry.get(desc.id)?.model).toBe(FREE_B)
     expect(h.fallbackEvents[0]).toMatchObject({ transition: "live", to: { model: FREE_B } })
     expect(h.notices.join("\n")).toContain("policy:")
