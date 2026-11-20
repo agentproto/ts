@@ -1,9 +1,9 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-copilot.mjs
 // (ids + pricing: github/docs data/tables/copilot/models-and-pricing.yml + the
 // promo footnotes of models-and-pricing.md, i.e. GitHub Copilot's own price list;
-// ids are Copilot's spelling, e.g. dotted "claude-sonnet-5.5". synced 2026-11-18T14:36:07.459Z)
+// ids are Copilot's spelling, e.g. dotted "claude-sonnet-5.5". synced 2026-11-20T16:07:51.935Z)
 // `promo`: the row carries the PROMOTIONAL price; `promo.then` is the standard
-// price from the day after `promo.until` (see effectivePricing in catalog.ts).
+// price from `promo.until` on (see effectivePricing in catalog.ts).
 
 export const COPILOT_GENERATED_PRICING = {
   "claude-fable-5": { inputPer1M: 10, outputPer1M: 50, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "github-copilot", vendor: "anthropic" },
@@ -21,6 +21,7 @@ export const COPILOT_GENERATED_PRICING = {
   "gemini-4-argon": { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.05, promo: { until: "2026-12-01" }, priceSource: "github-copilot", vendor: "google" },
   "gemini-4-carbon": { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.05, promo: { until: "2026-12-01", then: { inputPer1M: 4, outputPer1M: 20, cacheReadMultiplier: 0.05 } }, priceSource: "github-copilot", vendor: "google" },
   "gemini-4-hydrogen": { inputPer1M: 1.5, outputPer1M: 7.5, cacheReadMultiplier: 0.05, priceSource: "github-copilot", vendor: "google" },
+  "gemini-4-neon": { inputPer1M: 3, outputPer1M: 15, cacheReadMultiplier: 0.05, priceSource: "github-copilot", vendor: "google" },
   "gpt-5.3-codex": { inputPer1M: 1.75, outputPer1M: 14, cacheReadMultiplier: 0.1, priceSource: "github-copilot", vendor: "openai" },
   "gpt-5.4-nano": { inputPer1M: 0.2, outputPer1M: 1.25, cacheReadMultiplier: 0.1, priceSource: "github-copilot", vendor: "openai" },
   "gpt-5.6-luna": { inputPer1M: 0.2, outputPer1M: 1.2, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, tiers: [{ aboveInputTokens: 200000, inputPer1M: 0.4, outputPer1M: 1.8, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25 }], priceSource: "github-copilot", vendor: "openai" },

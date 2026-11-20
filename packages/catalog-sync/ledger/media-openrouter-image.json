@@ -107,6 +107,14 @@
     "hash": "15f8a3d3156d89ebb0cd4d2f9d5cc7af8c7b74898a6ada4a675c26588ce3dc03",
     "fetchedAt": "2026-11-02"
   },
+  "microsoft/mai-image-2.7": {
+    "hash": "e2532ead1da2ce894fc9add2c5c81c30837a10928ba425b610c506214303d116",
+    "fetchedAt": "2026-11-20"
+  },
+  "microsoft/mai-image-2.7-flash": {
+    "hash": "0c0e9150a06dee6a68419714b3da2b6f3a2826eb3c1957ecafc82ceda15be6c7",
+    "fetchedAt": "2026-11-20"
+  },
   "minimax/minimax-h3-image": {
     "hash": "30dd0538e59856e50d6d5f423706cd966a71ac8f1dc8a7ffa4b8d347175a2e17",
     "fetchedAt": "2026-11-15"
