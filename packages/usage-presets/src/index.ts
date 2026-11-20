@@ -214,7 +214,6 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     placePolicy: "local-preferred",
     candidates: [
       CANDIDATES.localDeepseekFree,
-      CANDIDATES.localGlmFlash,
       CANDIDATES.sandboxDeepseekFree, // explicit sandbox candidate for overflow
     ],
   },
@@ -223,7 +222,6 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     label: "Implémentation",
     placePolicy: "local-preferred",
     candidates: [
-      CANDIDATES.localGlmFlash,
       CANDIDATES.localDeepseekFree,
       CANDIDATES.sandboxDeepseekFree, // explicit sandbox candidate for overflow
     ],
