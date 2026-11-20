@@ -381,7 +381,7 @@ jobs:
       # Guards the weekly adapter pin freshness report, including the
       # indeterminate decision when a registry lookup fails.
       - name: Run adapter pin check tests
-        run: node --test scripts/check-adapter-pins.test.mjs
+        run: node --test scripts/check-adapter-pins.test.mjs scripts/bump-adapter-pins.test.mjs scripts/adapter-pin-smoke.test.mjs
 
       # The sandbox-agent + gh_open_pr tests import the built git-cas dist
       # (CAS push command rendering and casPush itself).
