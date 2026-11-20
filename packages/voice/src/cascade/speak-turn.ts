@@ -16,7 +16,7 @@ import { SentencePipeliner } from "./sentence-pipeliner.js"
  * The turn pushes the brain's text deltas straight into it; the server chunks
  * with `chunk_length_schedule` and PCM surfaces through the opener's
  * `onChunk`. Declared structurally so the call pipeline can be tested with a
- * fake; `startCascade` adapts an AIP-75 `TtsStream` to it.
+ * fake; `startCascade` adapts an AIP-VOICE `TtsStream` to it.
  */
 export interface CallTtsStreamHandle {
   /** Resolves on WS open; rejects on handshake error or timeout. */

@@ -1,5 +1,5 @@
 /**
- * The ONE defaults file of @agentproto/voice (AIP-75, "Kit defaults").
+ * The ONE defaults file of @agentproto/voice (AIP-VOICE, "Kit defaults").
  *
  * Every value carries its origin: the studio file:line it was tuned in, and
  * the PR when there is one. Paths: `calls/` is `projects/simone/apps/voice/src/calls/`,
@@ -141,7 +141,7 @@ export const VOICE_DEFAULTS = {
   },
 } as const
 
-/** The standard environment variable names (AIP-75, Variables). */
+/** The standard environment variable names (AIP-VOICE, Variables). */
 export const VOICE_ENV = {
   provider: "VOICE_PROVIDER",
   sttProvider: "VOICE_STT_PROVIDER",

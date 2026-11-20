@@ -1,5 +1,5 @@
 /**
- * `defineVoiceProvider` (AIP-75): a provider package declares what its
+ * `defineVoiceProvider` (AIP-VOICE): a provider package declares what its
  * vendor can do and which variables it reads. Nothing else about it is a
  * document.
  */

@@ -1,7 +1,7 @@
 # @agentproto/voice
 
-Reference implementation of [AIP-75 VOICE](https://agentproto.sh/docs/aip-75)
-(`voice/v1`, Draft): three provider contracts, one voice session with two
+Reference implementation of AIP-VOICE ([agentproto/agentproto#169](https://github.com/agentproto/agentproto/pull/169),
+`voice/v1`, Draft): three provider contracts, one voice session with two
 engines, and the variables that choose them.
 
 **Private for now.** This package is not published (`"private": true`). It
@@ -19,7 +19,7 @@ becomes publishable at the publication step of the kits work, not before.
 - The `VOICE_PROVIDER` / `VOICE_STT_PROVIDER` / `VOICE_TTS_PROVIDER` /
   `VOICE_ID` priority rule (`src/selection.ts`).
 - One defaults file, `src/defaults.ts`, every value with its origin.
-- `@agentproto/voice/testing`: fake providers and AIP-75 conformance cases.
+- `@agentproto/voice/testing`: fake providers and AIP-VOICE conformance cases.
 
 No provider lives here (they are `@agentproto/voice-<slug>` packages) and no
 agent framework is imported.
@@ -60,3 +60,10 @@ if (sel.engine === "cascade") {
   })
 }
 ```
+
+## Spec number
+
+The spec is referred to as AIP-VOICE in this package until it has a number in
+the canonical registry (draft: agentproto/agentproto#169). `check-aip-refs`
+fails on an AIP number that does not resolve yet; the number goes back in once
+the spec merges.

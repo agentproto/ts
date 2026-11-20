@@ -1,7 +1,7 @@
 /**
- * AIP-75 VOICE: the three provider contracts and the voice session.
+ * AIP-VOICE VOICE: the three provider contracts and the voice session.
  *
- * Source of truth: specs/aip-75.mdx in agentproto/agentproto. Names and
+ * Source of truth: the VOICE spec in agentproto/agentproto. Names and
  * rules below follow that document; a rule quoted here is quoted from it.
  *
  * No agent framework is imported here or anywhere in this package.
