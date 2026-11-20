@@ -8,14 +8,12 @@
  * that maps a catalog slug to a concrete {@link SandboxProviderHandle}
  * (`./sandbox-providers/registry.js`).
  *
- * Kit primitives used:
- *   - `makeCredsStore`      → per-slug 0600 creds under `~/.agentproto/sandbox-creds/`
- *   - `makeSetupLedger`     → `~/.agentproto/setup/<slug>.json`
- *   - `makeAdapterResolver` → wraps the throwing `load` into null-on-miss
- *   - `makeAdapterLister`   → catalog → status-classified `AdapterEntry[]`
- *   - `makeListTool`        → registers `list_sandbox_providers`
- *   - `makeSetupTool`       → registers `setup_sandbox_provider` (multi-field
- *                             form: e2b's `apiKey`, sensitive)
+ * Built on `makeProviderFamily` (`@agentproto/provider-kit`), which owns the
+ * creds store, the setup ledger, the catalog listing, the resolver, the
+ * setup schema and the `list_sandbox_providers` / `setup_sandbox_provider`
+ * tools. `legacySetup` keeps the setup semantics this module had before it
+ * moved onto the factory (optional-unless-`required:true`, replace-not-merge,
+ * store errors propagate).
  *
  * This is pure additive plumbing (introspection + setup) — it does NOT wire
  * a `sandbox` field into `agent_start`. That lands in a follow-up PR; the
@@ -32,15 +30,14 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import {
   makeCredsStore,
   makeSetupLedger,
-  makeAdapterResolver,
-  makeAdapterLister,
   makeListTool,
-  makeSetupTool,
+  makeMemorySetupLedger,
+  makeProviderFamily,
   type AdapterCatalog,
   type AdapterLister,
   type AdapterResolver,
   type CredsStore,
-  type SetupField,
+  type ProviderFamily,
   type SetupLedger,
 } from "@agentproto/provider-kit"
 
@@ -233,19 +230,50 @@ export function makeSandboxCredsStore(home?: string): CredsStore<SandboxCreds> {
   })
 }
 
+/** Build the sandbox family on the kit's factory. `legacySetup` keeps the
+ *  setup semantics this module had before it moved onto the factory. */
+function makeSandboxFamily(opts: {
+  credsStore: CredsStore<SandboxCreds>
+  ledger: SetupLedger
+  /** Replaces the registry resolution (tests, injected resolvers). */
+  resolver?: SandboxProviderResolver
+  importPackage?: (packageName: string) => Promise<Record<string, unknown>>
+}): ProviderFamily<SandboxProviderHandle, SandboxAdapterInfo> {
+  return makeProviderFamily<SandboxProviderHandle, SandboxAdapterInfo>({
+    family: SANDBOX_FAMILY,
+    catalog: SANDBOX_CATALOG,
+    toInfo: toSandboxInfo,
+    credsStore: opts.credsStore,
+    ledger: opts.ledger,
+    legacySetup: true,
+    setupHint: slug => `${slug} configured \u2014 status is now ready`,
+    // Called for any slug, catalog or not: `auto` is a composite slug that is
+    // deliberately not in the catalog.
+    load: async (slug, ctx) => {
+      if (opts.resolver) return opts.resolver(slug)
+      return resolveSandboxProvider(slug, {
+        creds: ctx.creds,
+        // A composite slug (`auto`) resolves its nested providers with THEIR
+        // own creds rows, not the composite's (which has none).
+        credsFor: nested => ctx.credsFor(nested),
+        ...(opts.importPackage ? { importPackage: opts.importPackage } : {}),
+      })
+    },
+  })
+}
+
 /**
- * Resolve a catalog slug to a concrete handle via the provider registry —
+ * Resolve a catalog slug to a concrete handle via the provider registry,
  * `local` in-process, `e2b`/`modal`/`daytona` dynamic-imported. Reads
  * stored creds first so `e2b` (and any future catalog entry) resolves
  * configured when possible; unconfigured slugs resolve to a descriptor-only
- * handle (listing never calls `start()`/`check()`). Throws on an unknown
- * slug so the kit's resolver wraps it to `null` ("supported but not
- * installed").
+ * handle (listing never calls `start()`/`check()`). An unknown slug
+ * resolves to `null` ("supported but not installed").
  */
 export function makeSandboxResolver(
   credsStore: CredsStore<SandboxCreds>,
   opts?: {
-    /** Injectable for tests — a one-shot importer that bypasses the shared
+    /** Injectable for tests: a one-shot importer that bypasses the shared
      *  probe cache. Left unset (production), third-party imports run through
      *  `provider-probes.ts`: bounded, coalesced, and synchronously
      *  preflighted so an unpublished placeholder (`modal`/`daytona`) never
@@ -253,77 +281,33 @@ export function makeSandboxResolver(
     importPackage?: (packageName: string) => Promise<Record<string, unknown>>
   },
 ): SandboxProviderResolver {
-  return makeAdapterResolver<SandboxProviderHandle>({
-    load: async (slug: string): Promise<SandboxProviderHandle> => {
-      const creds = await credsStore.read(slug)
-      const handle = await resolveSandboxProvider(slug, {
-        creds,
-        // A composite slug (`auto`) resolves its nested providers with THEIR
-        // own creds rows, not the composite's (which has none).
-        credsFor: nested => credsStore.read(nested),
-        ...(opts?.importPackage ? { importPackage: opts.importPackage } : {}),
-      })
-      if (!handle) throw new Error(`unknown sandbox adapter slug: ${slug}`)
-      return handle
-    },
-  })
+  return makeSandboxFamily({
+    credsStore,
+    ledger: makeMemorySetupLedger(), // resolver only: the ledger is never read
+    ...(opts?.importPackage ? { importPackage: opts.importPackage } : {}),
+  }).resolve
 }
 
-/** Build the family lister: catalog → status-classified entries. */
+/** Build the family lister: catalog to status-classified entries. */
 export function makeSandboxLister(opts: {
   credsStore: CredsStore<SandboxCreds>
   ledger: SetupLedger
   resolver?: SandboxProviderResolver
 }): SandboxProviderLister {
-  return makeAdapterLister<SandboxProviderHandle, SandboxAdapterInfo>({
-    catalog: SANDBOX_CATALOG,
-    resolver: opts.resolver ?? makeSandboxResolver(opts.credsStore),
-    ledger: opts.ledger,
+  return makeSandboxFamily({
     credsStore: opts.credsStore,
-    toInfo: toSandboxInfo,
-  })
-}
-
-/**
- * Resolve every catalog slug and union the `setupFields` of whichever
- * resolve with a non-empty declaration, for the `setup_sandbox_provider`
- * tool. Because one tool spans providers with disjoint fields, the unioned
- * shape is relaxed to all-optional at the zod layer (`required: false`);
- * the genuine per-provider required-ness is enforced in `onSetup` against
- * the chosen provider's handle.
- */
-async function collectSetupSchema(
-  resolver: SandboxProviderResolver,
-): Promise<{ validSlugs: string[]; fields: SetupField[] }> {
-  const handles: SandboxProviderHandle[] = []
-  for (const entry of SANDBOX_CATALOG) {
-    const handle = await resolver(entry.slug)
-    if (handle) handles.push(handle)
-  }
-  const setupHandles = handles.filter(
-    (h) => h.setupFields && h.setupFields.length > 0,
-  )
-
-  const validSlugs = setupHandles.map((h) => h.slug)
-  const fieldByName = new Map<string, SetupField>()
-  for (const h of setupHandles) {
-    for (const f of h.setupFields ?? []) {
-      // First declaration wins; relax to optional for the cross-provider tool.
-      if (!fieldByName.has(f.name)) {
-        fieldByName.set(f.name, { ...f, required: false })
-      }
-    }
-  }
-  return { validSlugs, fields: [...fieldByName.values()] }
+    ledger: opts.ledger,
+    ...(opts.resolver ? { resolver: opts.resolver } : {}),
+  }).list
 }
 
 export interface RegisterSandboxAdapterToolsOptions {
   /** Home dir override (tests). Defaults to `AGENTPROTO_HOME ?? ~/.agentproto`. */
   home?: string
-  /** Override the family's default resolver — mirrors `resolveAgentAdapter`
+  /** Override the family's default resolver, mirrors `resolveAgentAdapter`
    *  injection. Defaults to `makeSandboxResolver(credsStore)`. */
   resolveSandboxProvider?: SandboxProviderResolver
-  /** Override the family's default lister — mirrors `listAgentAdapters`
+  /** Override the family's default lister, mirrors `listAgentAdapters`
    *  injection. Defaults to a catalog-driven lister built off the resolver. */
   listSandboxProviders?: SandboxProviderLister
 }
@@ -342,70 +326,38 @@ export async function registerSandboxAdapterTools(
 ): Promise<void> {
   const credsStore = makeSandboxCredsStore(opts.home)
   const ledger = makeSetupLedger(opts.home ? { home: opts.home } : {})
-  const resolver = opts.resolveSandboxProvider ?? makeSandboxResolver(credsStore)
-  const lister =
-    opts.listSandboxProviders ?? makeSandboxLister({ credsStore, ledger, resolver })
+  const family = makeSandboxFamily({
+    credsStore,
+    ledger,
+    ...(opts.resolveSandboxProvider ? { resolver: opts.resolveSandboxProvider } : {}),
+  })
 
-  makeListTool<SandboxAdapterInfo>({
-    server,
-    toolName: "list_sandbox_providers",
+  const listSpec = {
+    name: "list_sandbox_providers",
     description:
       "List known sandbox providers with their status (supported/available/" +
       "ready), version, and declared capabilities (networkEgress, mounts, " +
       "lifecyclePause, readOnly). Credentials are never returned. Use " +
       "`setup_sandbox_provider` to configure a provider that needs creds.",
-    lister,
-  })
+  }
+  // An injected lister replaces the family's own, so register it directly.
+  if (opts.listSandboxProviders) {
+    makeListTool<SandboxAdapterInfo>({
+      server,
+      toolName: listSpec.name,
+      description: listSpec.description,
+      lister: opts.listSandboxProviders,
+    })
+  }
 
-  const { validSlugs, fields } = await collectSetupSchema(resolver)
-
-  makeSetupTool({
-    server,
-    toolName: "setup_sandbox_provider",
-    description:
-      "Configure a sandbox provider that requires credentials (e.g. e2b). " +
-      "Each field is SENSITIVE — stored 0600 and never echoed back in tool " +
-      "results. Only the fields a given provider declares are stored.",
-    validSlugs,
-    fields,
-    onSetup: async (slug: string, fieldValues: Record<string, string>) => {
-      // Resolve the chosen provider so its OWN setupFields drive
-      // validation — works for built-ins and third-party providers alike.
-      const handle = await resolver(slug)
-      const declared = handle?.setupFields
-      if (!handle || !declared || declared.length === 0) {
-        return { ok: false, hint: `provider '${slug}' is not configurable` }
-      }
-
-      const missing = declared
-        .filter((f) => f.required === true)
-        .map((f) => f.name)
-        .filter((name) => {
-          const v = fieldValues[name]
-          return v === undefined || v.length === 0
-        })
-      if (missing.length > 0) {
-        return {
-          ok: false,
-          hint: `missing required field(s): ${missing.join(", ")}`,
-        }
-      }
-
-      // Persist only the provider's declared, non-empty fields.
-      const creds: SandboxCreds = {}
-      for (const f of declared) {
-        const v = fieldValues[f.name]
-        if (v !== undefined && v.length > 0) creds[f.name] = v
-      }
-      await credsStore.write(slug, creds)
-
-      const now = new Date().toISOString()
-      await ledger.write(slug, {
-        slug,
-        completedAt: now,
-        steps: [{ id: "creds", completedAt: now }],
-      })
-      return { ok: true, hint: `${slug} configured — status is now ready` }
+  await family.registerTools(server, {
+    ...(opts.listSandboxProviders ? {} : { list: listSpec }),
+    setup: {
+      name: "setup_sandbox_provider",
+      description:
+        "Configure a sandbox provider that requires credentials (e.g. e2b). " +
+        "Each field is SENSITIVE \u2014 stored 0600 and never echoed back in tool " +
+        "results. Only the fields a given provider declares are stored.",
     },
   })
 }
