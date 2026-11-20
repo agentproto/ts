@@ -11,7 +11,6 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { formatModelRef, listRouterLlmRoutes } from "@agentproto/model-catalog/route-identity"
 import {
   buildEscalationPrompt,
   createBoundedEscalation,
@@ -25,20 +24,11 @@ import { resolveExecProfile, type DecisionExecProfile, type ResolvedTarget } fro
 import { createEventRing } from "../event-ring.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 
 vi.setConfig({ testTimeout: 30_000 })
 
-// A zero-priced OpenCode id taken from the live catalog, not a pinned one: the
-// weekly Catalog Sync retires ids (opencode/glm-5.3-flash-free vanished on
-// 2026-11-20) and the spawn path validates the model against the catalog.
-const FREE_MODEL = (() => {
-  const route = listRouterLlmRoutes("opencode").find(
-    r => r.pricing.inputPer1M === 0 && r.pricing.outputPer1M === 0,
-  )
-  if (!route) throw new Error("the opencode route table has no zero-priced model")
-  return formatModelRef(route.ref)
-})()
 
 const CHOICES = ["light", "standard", "deep"] as const
 

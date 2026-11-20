@@ -27,20 +27,21 @@ describe("usage registry (names the work, not the model)", () => {
   })
 })
 
-describe("pr-fix: sandbox + free model, never local", () => {
+describe("pr-fix: sandbox, never local", () => {
   const spec = USAGE_PRESETS["pr-fix"]!
-  it("first candidate is free", () => {
-    expect(isFreeCandidate(spec.candidates[0]!)).toBe(true)
+  it("first candidate is the sandbox workhorse, on the subscription rail (not a free route)", () => {
+    expect(spec.candidates[0]).toBe(CANDIDATES.sandboxGlmFlash)
+    expect(isFreeCandidate(spec.candidates[0]!)).toBe(false)
   })
-  it("resolves to a free model in the sandbox", () => {
+  it("resolves to the workhorse model in the sandbox", () => {
     const plan = resolveUsagePlan("pr-fix", { freeLocalInUse: 0 })
     expect(plan.place).toBe("sandbox")
-    expect(plan.resolvedModel).toBe("opencode/glm-5.3-flash-free")
+    expect(plan.resolvedModel).toBe(CANDIDATES.sandboxGlmFlash.model)
     expect(plan.sandbox).toEqual({ provider: "computer" })
     expect(plan.spawn).toMatchObject({
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
-      access: { profileRef: "opencode-api-zen-ws03" },
+      model: CANDIDATES.sandboxGlmFlash.model,
+      access: { profileRef: CANDIDATES.sandboxGlmFlash.profileRef },
       sandbox: "computer",
       label: "usage:pr-fix",
     })
@@ -55,7 +56,7 @@ describe("pr-fix: sandbox + free model, never local", () => {
       { ...spec, candidates: [{ ...CANDIDATES.sandboxPaidStrong }] },
       { freeLocalInUse: 0 },
     )
-    expect(plan.resolvedModel).toBe("opencode-go/glm-5.3")
+    expect(plan.resolvedModel).toBe(CANDIDATES.localPaidStrong.model)
     expect(isFreeCandidate(spec.candidates[1]!)).toBe(false)
     expect(plan.place).toBe("sandbox")
   })
@@ -69,7 +70,7 @@ describe("sensitive usage (deploy): free models refused", () => {
   })
   it("resolves to the paid local rail", () => {
     const plan = resolveUsagePlan("deploy", { freeLocalInUse: 0 })
-    expect(plan.resolvedModel).toBe("opencode-go/glm-5.3")
+    expect(plan.resolvedModel).toBe(CANDIDATES.localPaidStrong.model)
     expect(plan.place).toBe("local")
     expect(isFreeCandidate({ ...CANDIDATES.localPaidStrong })).toBe(false)
   })
@@ -80,7 +81,7 @@ describe("sensitive usage (deploy): free models refused", () => {
       placePolicy: "local-paid",
       sensitive: true,
       candidates: [
-        { ...CANDIDATES.localGlmFree, free: true },
+        { ...CANDIDATES.localGlmFlash, free: true },
         ...spec.candidates,
       ],
     }
@@ -91,7 +92,7 @@ describe("sensitive usage (deploy): free models refused", () => {
       expect(err).toBeInstanceOf(SensitivityRefusalError)
       const msg = (err as Error).message
       expect(msg).toContain("sensible")
-      expect(msg).toContain("opencode/glm-5.3-flash-free")
+      expect(msg).toContain(CANDIDATES.localGlmFlash.model)
     }
   })
 })
@@ -114,9 +115,9 @@ describe("the 2-free-agents-local cap", () => {
     // the local-declared deepseek one, free is fine inside the box, the IP
     // that bled was the local one.
     const selected = USAGE_PRESETS["explore"]!.candidates[plan.fallbackUsed]!
-    expect(selected).toBe(CANDIDATES.sandboxGlmFree)
+    expect(selected).toBe(CANDIDATES.sandboxDeepseekFree)
     expect(isFreeCandidate(selected)).toBe(true)
-    expect(plan.resolvedModel).toBe("opencode/glm-5.3-flash-free")
+    expect(plan.resolvedModel).toBe(CANDIDATES.sandboxDeepseekFree.model)
     expect(plan.spawn.sandbox).toBe("computer")
   })
   it("a single-candidate free spec keeps its model but moves it into the box", () => {
@@ -128,7 +129,7 @@ describe("the 2-free-agents-local cap", () => {
     }
     const plan = resolveFromSpec(spec, { freeLocalInUse: 2 })
     expect(plan.place).toBe("sandbox")
-    expect(plan.resolvedModel).toBe("opencode/deepseek-v4.1-flash-free")
+    expect(plan.resolvedModel).toBe(CANDIDATES.localDeepseekFree.model)
     expect(plan.spawn.sandbox).toBe("computer")
   })
 })

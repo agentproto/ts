@@ -27,6 +27,7 @@ import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 import { commandPreflightProbe, defaultPreflightRegistry, type PreflightProbe } from "../sandbox-preflight.js"
 import { egressHealthLedger } from "../egress-health.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
 const CI_USAGE_LIMIT =
   "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"
@@ -184,7 +185,7 @@ describe("agent_start sandbox preflight", () => {
     execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
       sandbox: "fake",
       preflight: ["model-answers"],
     })
@@ -199,7 +200,7 @@ describe("agent_start sandbox preflight", () => {
       sandboxId: "sbx_fake_pf",
     })
     expect(res.message).toContain(EGRESS)
-    expect(execCalls[0]?.command).toBe("opencode run -m 'opencode/glm-5.3-flash-free' 'reply ok' < /dev/null")
+    expect(execCalls[0]?.command).toBe(`opencode run -m '${FREE_MODEL}' 'reply ok' < /dev/null`)
     expect(stopSpy).toHaveBeenCalledTimes(1)
     expect(pauseSpy).not.toHaveBeenCalled()
     expect(receivedStarts).toHaveLength(0)
@@ -209,7 +210,7 @@ describe("agent_start sandbox preflight", () => {
   it("ok: the agent starts and the box stays up", async () => {
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
       sandbox: "fake",
       preflight: ["model-answers"],
     })
@@ -236,7 +237,7 @@ describe("agent_start sandbox preflight", () => {
     execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
       sandbox: "fake",
       auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
       preflight: ["model-answers"],
@@ -253,7 +254,7 @@ describe("agent_start sandbox preflight", () => {
     registerProbe(
       commandPreflightProbe({
         id: "zen-free-answers",
-        command: "opencode run -m opencode/glm-5.3-flash-free 'reply ok' < /dev/null",
+        command: `opencode run -m ${FREE_MODEL} 'reply ok' < /dev/null`,
         koWhen: [{ match: "Free usage limit reached", errorClass: "usage-limit" }],
         phase: "prelaunch",
       }),
@@ -261,7 +262,7 @@ describe("agent_start sandbox preflight", () => {
     execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
       sandbox: "fake",
       auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
       preflight: ["zen-free-answers"],
@@ -286,7 +287,7 @@ describe("agent_start sandbox preflight", () => {
     execImpl = async () => result({ exitCode: 0, stdout: "/usr/bin/gh\n", stderr: "" })
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
       sandbox: "fake",
       auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
       preflight: ["has-gh"],
@@ -306,7 +307,7 @@ describe("agent_start sandbox preflight", () => {
     )
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
       sandbox: "fake",
       auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
       preflight: ["needs-credential"],
@@ -329,7 +330,7 @@ describe("agent_start sandbox preflight", () => {
     execImpl = async () => result({ exitCode: 0, stdout: "/usr/bin/gh\n", stderr: "" })
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
       sandbox: "fake",
       auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
       preflight: ["legacy-alias"],
@@ -413,7 +414,7 @@ describe("agent_start sandbox preflight", () => {
   })
   it("a usage-cap ko cools the box's egress address down for the model", async () => {
     execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
-    const model = "opencode/glm-5.3-flash-free"
+    const model = FREE_MODEL
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
       model,

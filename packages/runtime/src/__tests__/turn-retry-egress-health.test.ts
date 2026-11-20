@@ -15,8 +15,9 @@ import { createModelCooldowns } from "../model-cooldowns.js"
 import { createTurnRetryController } from "../turn-retry.js"
 import { createEgressHealthLedger } from "../egress-health.js"
 import { resolveTurnRetryPolicy } from "../turn-retry-policy.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
-const MODEL = "opencode/glm-5.3-flash-free"
+const MODEL = FREE_MODEL
 const IP = "203.0.113.9"
 const CI_USAGE_LIMIT =
   "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"

@@ -20,11 +20,12 @@ import {
   type PreflightContext,
   type PreflightProbe,
 } from "../sandbox-preflight.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
 /** The exact string the CI reviewer run died on. */
 const CI_USAGE_LIMIT =
   "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"
-const MODEL = "opencode/glm-5.3-flash-free"
+const MODEL = FREE_MODEL
 
 const result = (over: Partial<SandboxExecResult> = {}): SandboxExecResult => ({
   exitCode: 0,
@@ -336,7 +337,7 @@ describe("commandPreflightProbe (config-declared, nothing harness-specific)", ()
   it("koWhen wins over an ok exit and carries the declared class (the zen free cap)", async () => {
     const spec = {
       id: "zen-free-answers",
-      command: "opencode run -m opencode/glm-5.3-flash-free 'reply ok' < /dev/null",
+      command: `opencode run -m ${FREE_MODEL} 'reply ok' < /dev/null`,
       koWhen: [{ match: "Free usage limit reached", errorClass: "usage-limit" as const }],
     }
     const out = await run(spec, { exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })

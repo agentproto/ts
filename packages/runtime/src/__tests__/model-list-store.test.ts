@@ -15,6 +15,7 @@ import {
   saveModelList,
   seedModelListSource,
   DEFAULT_ROTATION_LIST_ID,
+  SEED_MODEL_LISTS,
   ZERO_COST_LIST_ID,
 } from "../model-list-store.js"
 
@@ -36,22 +37,15 @@ describe("model list store", () => {
   it("writes both seeds when the file is absent, mode 0600", async () => {
     const file = await loadModelLists()
     expect(file.version).toBe(1)
-    expect(file.lists).toEqual([
-      {
-        id: ZERO_COST_LIST_ID,
-        label: "Zero-cost models",
-        include: [{ kind: "tag", value: "price:zero" }],
-      },
-      {
-        id: DEFAULT_ROTATION_LIST_ID,
-        label: "Default rotation targets",
-        ids: [
-          "opencode/mimo-v2.6-flash-free",
-          "opencode/deepseek-v4.1-flash-free",
-          "opencode/glm-5.3-flash-free",
-        ],
-      },
-    ])
+    // The file holds exactly the shipped seeds; which models the rotation
+    // names is the seed's business, not this test's.
+    expect(file.lists).toEqual([...SEED_MODEL_LISTS])
+    expect(file.lists[0]).toEqual({
+      id: ZERO_COST_LIST_ID,
+      label: "Zero-cost models",
+      include: [{ kind: "tag", value: "price:zero" }],
+    })
+    expect(file.lists.map(l => l.id)).toEqual([ZERO_COST_LIST_ID, DEFAULT_ROTATION_LIST_ID])
     const mode = (await stat(modelListsPath())).mode & 0o777
     expect(mode).toBe(0o600)
     expect(JSON.parse(await readFile(modelListsPath(), "utf8"))).toMatchObject({
@@ -69,7 +63,7 @@ describe("model list store", () => {
           {
             id: DEFAULT_ROTATION_LIST_ID,
             label: "Mine",
-            ids: ["opencode/big-pickle"],
+            ids: ["acme/listed-model"],
           },
         ],
       }),
@@ -83,7 +77,7 @@ describe("model list store", () => {
     expect(first.lists.find(list => list.id === DEFAULT_ROTATION_LIST_ID)).toEqual({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Mine",
-      ids: ["opencode/big-pickle"],
+      ids: ["acme/listed-model"],
     })
 
     // A second load does not duplicate the seed it just added.
@@ -147,7 +141,7 @@ describe("model list store", () => {
       JSON.stringify({
         version: 1,
         lists: [
-          { id: ZERO_COST_LIST_ID, ids: ["opencode/gpt-5.1-codex"] },
+          { id: ZERO_COST_LIST_ID, ids: ["acme/paid-model"] },
           { id: "pinned", ids: ["custom/model"] },
         ],
       }),
@@ -161,7 +155,7 @@ describe("model list store", () => {
       include: [{ kind: "tag", value: "price:zero" }],
     })
     const source = modelListSourceFromLists(file.lists)
-    expect(inModelList("opencode/gpt-5.1-codex", ZERO_COST_LIST_ID, source)).toBe(false)
+    expect(inModelList("acme/paid-model", ZERO_COST_LIST_ID, source)).toBe(false)
     expect(source.get("pinned")).toEqual({ id: "pinned", ids: ["custom/model"] })
   })
 
