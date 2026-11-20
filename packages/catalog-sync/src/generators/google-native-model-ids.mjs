@@ -21,4 +21,13 @@ export const GOOGLE_NATIVE_MODEL_IDS = new Set([
   "gemini-3.1-pro-preview",
   "gemini-3-flash-preview",
   "gemini-3.1-flash-lite",
+  // Added 2026-11-20, cross-checked against Google's model list
+  // (aistudio.google.com/docs/models) and the OpenRouter `google/` routes.
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash",
+  "gemini-3.8-flash",
+  "gemini-4-argon",
+  "gemini-4-carbon",
+  "gemini-4-hydrogen",
+  "gemini-4-neon",
 ])
