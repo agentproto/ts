@@ -34,13 +34,20 @@ describe("antigravity adapter manifest", () => {
     expect(antigravity.authSubscription).toEqual({ external: true })
   })
 
-  it("declares no fixed models list and no argv model/effort option (agy acp has no such flags)", () => {
+  it("declares no fixed models list; a free-form model option carries the slug over ACP", () => {
     expect(antigravity.models).toBeUndefined()
     expect(antigravity.options?.map((o) => o.id)).toEqual([
+      "model",
       "agent",
       "dangerously_skip_permissions",
       "terminal_sandbox",
     ])
+    // agy acp has no --model flag: the option must not patch argv.
+    const model = antigravity.options?.find((o) => o.id === "model")
+    expect(model?.type).toBe("string")
+    expect(model).not.toHaveProperty("bin_args_template")
+    expect(model).not.toHaveProperty("bin_args_append")
+    expect(model).not.toHaveProperty("bin_args_append_when_true")
   })
 
   it("validates cleanly against the AIP-45 AGENT-CLI frontmatter schema", () => {

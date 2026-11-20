@@ -76,7 +76,8 @@ export const antigravity: AgentCliHandle = defineHarness({
   // a per-provider api-key route the catalog could bill. Declaring a fixed
   // `models.allowed`/`provider` here would assert routing facts we haven't
   // verified; the honest surface is the free-form `model` option below, which
-  // forwards any slug from `agy models` straight to `--model`.
+  // `agy acp` applies over the ACP session config at connect (there is no
+  // `--model` argv flag).
   capabilities: {
     streaming: true,
     tool_calls: true,
@@ -92,6 +93,20 @@ export const antigravity: AgentCliHandle = defineHarness({
     bidirectional: true,
   },
   options: [
+    {
+      // Free-form: no `bin_args_template`/`bin_args_append_*` by design.
+      // `agy acp` takes no `--model` flag; the harness sends an explicit
+      // model over the ACP session config when it connects (see
+      // `define-agent-cli.ts`, where `models.apply` defaults to "config").
+      // Declaring it here is what lets `agent_start({ model })` pass manifest
+      // validation instead of failing as an unknown option.
+      id: "model",
+      type: "string",
+      description:
+        "Model slug to request (see `agy models`, e.g. " +
+        "`gemini-3.5-flash-medium`). Applied over the ACP session config when " +
+        "the harness connects; not an argv flag.",
+    },
     {
       id: "agent",
       type: "string",
@@ -141,7 +156,8 @@ export const antigravity: AgentCliHandle = defineHarness({
         "gemini-3.5-flash-medium, gemini-3.1-pro-high, claude-sonnet-4-6 — " +
         "plus GPT-OSS variants. The full list is version-dependent and only " +
         "partially documented, so no fixed `models.allowed` is declared; pass " +
-        "any slug through the `model` option.",
+        "any slug through the `model` option, applied over the ACP session " +
+        "config at connect.",
     },
     auth: {
       checked: "2026-08-06",
