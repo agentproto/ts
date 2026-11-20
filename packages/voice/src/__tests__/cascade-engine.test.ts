@@ -343,6 +343,24 @@ describe("startCascade", () => {
       await session.close()
     })
 
+    it("continuous mode keeps text that arrives before the stream has opened, in order", async () => {
+      const { emit } = recorder([])
+      const tts = makeFakeTts({ openDelayMs: 200 })
+      const session = await startCascade({
+        emit,
+        hooks: {},
+        stt: makeFakeStt(),
+        tts,
+        ttsMode: "continuous",
+        vad: { silenceEndMs: SILENCE },
+        brain: () => words("Début de phrase, ", "milieu, ", "fin."),
+      })
+      await speak(session, 200, SILENCE + 400)
+      expect(tts.streams).toHaveLength(1)
+      expect(tts.streams[0]!.texts.join("")).toBe("Début de phrase, milieu, fin.")
+      await session.close()
+    })
+
     it("a file-only TTS provider speaks through synthesize()", async () => {
       const { events, emit } = recorder([])
       const tts = makeFakeTts({ streaming: false })

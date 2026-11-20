@@ -108,6 +108,8 @@ export interface FakeTtsOptions {
   /** Streams opened after the Nth one deliver after `slowMs` (a TTS that is still generating). */
   slowAfterStreams?: number
   slowMs?: number
+  /** `openStream` resolves only after this delay (a handshake still in progress). */
+  openDelayMs?: number
   timeline?: Timeline
 }
 
@@ -135,6 +137,7 @@ export function makeFakeTts(opts: FakeTtsOptions = {}): FakeTts {
     streams,
     synthesized,
     async openStream(): Promise<TtsStream> {
+      if (opts.openDelayMs) await new Promise(r => setTimeout(r, opts.openDelayMs))
       const rec = { texts: [] as string[], ended: false, cancelled: false, flushes: 0 }
       streams.push(rec)
       const cbs = { audio: [] as Array<(f: AudioFrame) => void>, done: [] as Array<() => void>, error: [] as Array<(e: Error) => void> }

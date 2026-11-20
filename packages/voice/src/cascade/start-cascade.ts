@@ -144,6 +144,10 @@ function makeContinuousOpener(tts: TtsProvider, voiceId: string | undefined, lan
   return {
     open({ onChunk, signal }): CallTtsStreamHandle {
       let stream: TtsStream | undefined
+      // Text pushed before the vendor stream has opened is kept, in order,
+      // and sent as soon as it has; it is never dropped.
+      let early: string[] = []
+      let cancelled = false
       let hadAudio = false
       let chain: Promise<void> = Promise.resolve()
       let resolveClosed!: () => void
@@ -156,6 +160,10 @@ function makeContinuousOpener(tts: TtsProvider, voiceId: string | undefined, lan
           ...(signal ? { signal } : {}),
         })
         .then(s => {
+          if (cancelled) {
+            s.cancel()
+            return
+          }
           stream = s
           s.on("audio", frame => {
             hadAudio = true
@@ -163,18 +171,27 @@ function makeContinuousOpener(tts: TtsProvider, voiceId: string | undefined, lan
           })
           s.on("done", () => resolveClosed())
           s.on("error", () => resolveClosed())
+          const queued = early
+          early = []
+          for (const t of queued) s.sendText(t)
         })
       ready.catch(() => resolveClosed())
       return {
         ready,
         closed,
-        pushText: delta => stream?.sendText(delta),
+        pushText: delta => {
+          if (stream) stream.sendText(delta)
+          else early.push(delta)
+        },
         end: async () => {
+          await ready.catch(() => undefined)
           stream?.end()
           await closed
           await chain
         },
         abort: () => {
+          cancelled = true
+          early = []
           stream?.cancel()
           resolveClosed()
         },
