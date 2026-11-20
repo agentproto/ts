@@ -1,7 +1,7 @@
 ---
 name: gemini
 id: gemini
-description: Google's Gemini CLI in ACP mode (`gemini --experimental-acp`) — an open-source terminal agent driving Gemini models over the Agent Client Protocol via stdio JSON-RPC. Native adapter (over the generic `gemini-cli` catalog entry) so subscription billing-auth — "use my existing Gemini login" — is a verified, money-safe opt-in.
+description: DEPRECATED, replaced by the antigravity adapter (`agy acp`). Google's Gemini CLI in ACP mode (`gemini --experimental-acp`) — an open-source terminal agent driving Gemini models over the Agent Client Protocol via stdio JSON-RPC. Native adapter (over the generic `gemini-cli` catalog entry) so subscription billing-auth — "use my existing Gemini login" — is a verified, money-safe opt-in.
 version: 0.1.0
 bin: gemini
 bin_args: ["--experimental-acp"]
@@ -54,6 +54,11 @@ capabilities:
   bidirectional: true
 tags: ["gemini", "google", "acp", "agent-runtime", "coding"]
 ---
+
+> **Deprecated.** Gemini CLI is replaced by Google Antigravity. Use the
+> `antigravity` harness (`@agentproto/adapter-antigravity`, `agy acp`). A
+> `gemini` launch can fail with "client not supported"; this adapter is kept only
+> so existing setups keep resolving.
 
 # Gemini adapter
 

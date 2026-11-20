@@ -110,11 +110,12 @@ export const CATALOG: readonly CatalogEntry[] = [
   {
     type: "agent-cli",
     slug: "gemini",
-    name: "Gemini",
+    name: "Gemini (deprecated, use antigravity)",
     description:
-      "Google's Gemini CLI in ACP mode (`gemini --experimental-acp`). Native billing-auth: \"use my existing Gemini login\".",
+      "DEPRECATED: Gemini CLI is replaced by Google Antigravity; use the `antigravity` harness (`agy acp`). " +
+      "Kept only for existing setups: Google's Gemini CLI in ACP mode (`gemini --experimental-acp`).",
     packageName: "@agentproto/adapter-gemini",
-    hint: "google · ACP · resumable",
+    hint: "deprecated · use antigravity",
   },
   {
     type: "agent-cli",
