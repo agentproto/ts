@@ -7,13 +7,17 @@ or `OPENAI_API_KEY` for other agents.
 
 ## What this means for headless / programmatic use
 
-`agy -p …` (headless mode) reuses whatever credentials were cached by a prior
+`agy acp` (and headless `agy -p`) reuse whatever credentials were cached by a prior
 interactive login. So:
 
 1. **Authenticate once, interactively, on this machine:** run `agy` (no `-p`)
    and complete the Google Sign-In in the browser it opens. The tokens land in
    your OS keyring.
-2. Only then will headless runs work. Per the official docs, *"In a
+2. Only then will ACP sessions work: `session/new` without a login returns
+   `-32000 "Authentication required"`. (`agy acp --login` runs the Google login
+   interactively, then exits.) The ACP `initialize` also lists a
+   `gemini-api-key` and an `agent-platform` auth method; this adapter has not
+   verified or wired either. Per the official docs, *"In a
    non-interactive environment with no terminal (for example, CI), a run that is
    not already authenticated exits with an authentication required error instead
    of hanging."*

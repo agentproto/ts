@@ -1,14 +1,14 @@
 {
   "name": "@agentproto/adapter-antigravity",
   "version": "0.3.15",
-  "description": "@agentproto/adapter-antigravity — AIP-45 AGENT-CLI adapter for Google Antigravity's headless CLI (`agy`). Spawns `agy -p --output-format stream-json`; Antigravity has no ACP mode yet (feature request google-antigravity/antigravity-cli#31).",
+  "description": "@agentproto/adapter-antigravity — AIP-45 AGENT-CLI adapter for Google Antigravity's headless CLI (`agy`). Spawns `agy acp` (Agent Client Protocol over stdio, agy >= 1.5.13).",
   "keywords": [
     "agentproto",
     "aip-45",
     "antigravity",
     "agy",
     "google",
-    "print",
+    "acp",
     "agent-cli",
     "adapter"
   ],
@@ -35,6 +35,7 @@
   "files": [
     "dist",
     "ANTIGRAVITY.md",
+    "antigravity-acp.ACP.md",
     "README.md",
     "LICENSE"
   ],

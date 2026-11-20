@@ -35,6 +35,7 @@ export const gemini: AgentCliHandle = defineHarness({
   name: "gemini",
   id: "gemini",
   description:
+    "DEPRECATED: replaced by the `antigravity` adapter (`agy acp`); Gemini CLI is no longer the supported path to Gemini. " +
     "Google's Gemini CLI in ACP mode (`gemini --experimental-acp`) — an open-source terminal agent driving Gemini models over the Agent Client Protocol via stdio JSON-RPC. Native adapter (over the generic `gemini-cli` catalog entry) so subscription billing-auth — \"use my existing Gemini login\" — is a verified, money-safe opt-in.",
   version: "0.1.0",
   bin: "gemini",

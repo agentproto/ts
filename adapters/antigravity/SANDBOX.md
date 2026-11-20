@@ -13,10 +13,10 @@ execution is governed by policy, not interactive prompts:
   `"command(git)"`, `"command(npm run (build|lint|test))"`,
   `"write_file(src/)"`.
 - **Bypass (use with care).** The adapter's `dangerously_skip_permissions`
-  option maps to `agy --dangerously-skip-permissions`, which auto-approves
+  option maps to `agy acp --dangerously-skip-permissions`, which auto-approves
   **every** tool call (file writes and command execution). Prefer scoped
   `permissions.allow` rules unless you fully trust the prompt and environment.
-- **Terminal sandbox.** The `terminal_sandbox` option maps to `agy --sandbox`,
+- **Terminal sandbox.** The `terminal_sandbox` option maps to `agy acp --sandbox`,
   running the agent with agy's own terminal sandbox restrictions enabled.
 
 ## Headless mode

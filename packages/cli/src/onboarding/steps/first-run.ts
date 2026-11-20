@@ -16,7 +16,7 @@ export const CONTROL_CENTER_APP = "@agentik/session-chat"
 const PANEL_APP = "@agentproto/sessions-panel"
 
 /** Most-capable-first; the first usable one is the test harness. */
-const PREFERRED_HARNESSES = ["claude-code", "codex", "opencode", "gemini", "claude-sdk", "grok-cli", "hermes", "pi"]
+const PREFERRED_HARNESSES = ["claude-code", "codex", "opencode", "antigravity", "gemini", "claude-sdk", "grok-cli", "hermes", "pi"]
 
 export function pickHarness(agentChecks: readonly StepCheck[]): string | null {
   const usable = agentChecks
