@@ -61,7 +61,7 @@
     "@agentproto/driver": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -58,9 +58,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/harness": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.32.1",
-    "@agentproto/harness": "workspace:*"
+    "@modelcontextprotocol/sdk": "^1.32.2"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

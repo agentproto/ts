@@ -58,7 +58,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "ws": "^8.22.0"
+    "ws": "^8.23.0"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
