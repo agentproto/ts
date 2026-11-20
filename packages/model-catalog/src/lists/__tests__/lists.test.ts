@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { OPENCODE_ZEN_ROUTES } from "../../llm/opencode-zen-routes.generated.js"
 import {
   ModelListError,
   clearModelListCache,
@@ -85,6 +86,16 @@ describe("resolveModelList exclusion and ordering", () => {
   })
 
   it("listed keeps insertion order, cheapest / largest-context / newest sort deterministically", () => {
+    // The pins' addedAt is regenerated data: the weekly Catalog Sync rewrites
+    // it and upstream retires ids (glm-5.3-flash-free vanished in the
+    // 2026-11-20 refresh, Catalog Sync run 70). Derive which pin is newer from
+    // the same data instead of hardcoding it; the ordering logic is what is
+    // under test. The guard keeps the assertion non-vacuous.
+    const addedAt = (id: string) => OPENCODE_ZEN_ROUTES[id]?.addedAt ?? ""
+    const [pinOlder, pinNewer] = ["opencode/big-pickle", "opencode/glm-5.3"].sort(
+      (a, b) => addedAt(a).localeCompare(addedAt(b)),
+    ) as [string, string]
+    expect(addedAt(pinNewer) > addedAt(pinOlder)).toBe(true)
     const src = sourceOf(
       {
         id: "listed",
@@ -103,7 +114,7 @@ describe("resolveModelList exclusion and ordering", () => {
       },
       {
         id: "newest",
-        ids: ["opencode/big-pickle", "opencode/glm-5.3-flash-free"],
+        ids: [pinOlder, pinNewer],
         order: "newest",
       },
     )
@@ -113,7 +124,7 @@ describe("resolveModelList exclusion and ordering", () => {
     ])
     expect(resolveModelList("cheapest", src)[0]).toBe("openai/gpt-4o-mini")
     expect(resolveModelList("context", src)[0]).toBe("claude-fable-5")
-    expect(resolveModelList("newest", src)[0]).toBe("opencode/glm-5.3-flash-free")
+    expect(resolveModelList("newest", src)[0]).toBe(pinNewer)
   })
 
   it("memoizes subject ids and clears them with the candidate cache", () => {
