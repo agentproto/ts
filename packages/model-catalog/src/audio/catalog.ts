@@ -321,10 +321,12 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
     description: "OpenAI streaming realtime transcription",
     agentVisible: true,
   },
-  // Gemini Live (Live API). Published per-minute audio rates: $0.005/min in +
+  // Gemini Live (Live API). Internal ids follow the existing
+  // `google/gemini-live-<version>` family; `providerId` is the exact API model.
+  // Published per-minute audio rates: $0.005/min in +
   // $0.018/min out = $0.023/min blended. Both variants share one pricing block.
-  "google/gemini-3.8-live": {
-    id: "google/gemini-3.8-live",
+  "google/gemini-live-3.8": {
+    id: "google/gemini-live-3.8",
     name: "Gemini 3.8 Live",
     providerId: "gemini-3.8-live",
     provider: "google",
@@ -340,8 +342,8 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
     description: "Google Gemini 3.8 Live realtime speech-to-speech",
     agentVisible: false,
   },
-  "google/gemini-3.8-live-extended-thinking": {
-    id: "google/gemini-3.8-live-extended-thinking",
+  "google/gemini-live-3.8-extended-thinking": {
+    id: "google/gemini-live-3.8-extended-thinking",
     name: "Gemini 3.8 Live (extended thinking)",
     providerId: "gemini-3.8-live-extended-thinking",
     provider: "google",
@@ -357,8 +359,8 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
     description: "Google Gemini 3.8 Live with extended thinking",
     agentVisible: false,
   },
-  "google/gemini-3.5-live-translate-preview": {
-    id: "google/gemini-3.5-live-translate-preview",
+  "google/gemini-live-3.5-translate-preview": {
+    id: "google/gemini-live-3.5-translate-preview",
     name: "Gemini 3.5 Live Translate (preview)",
     providerId: "gemini-3.5-live-translate-preview",
     provider: "google",

@@ -1,11 +1,15 @@
 /**
  * Native Google/Gemini model ids the catalog-sync pipeline is allowed to
  * emit via the OpenRouter remap (Google's native API is billing-blocked —
- * see `llm-context-windows.ts`), verified against `adapters/gemini/src/index.ts`
- * (`models.allowed`) and the hand-maintained Google rows in
- * `model-catalog/src/llm/catalog.ts` — the two places that would break if a
- * wrong id slipped in. Do not add to this list from OpenRouter data alone;
- * a new entry needs the same cross-check.
+ * see `llm-context-windows.ts`). A new entry needs a cross-check, and OpenRouter
+ * data alone is not one: confirm the id on Google's own model list
+ * (aistudio.google.com/docs/models) and that the `google/<id>` route exists in
+ * the OpenRouter snapshot. The `google/...` routes resolve through
+ * `OPENROUTER_ROUTES` in `model-catalog/src/llm/catalog.ts`, so no alias row is
+ * needed. (The older recipe also named `adapters/gemini/src/index.ts`
+ * `models.allowed`; that adapter is deprecated and antigravity, which
+ * supersedes it, declares no allow-list. If a Gemini CLI adapter list is ever
+ * reinstated, keep it in step with this one.)
  *
  * Plain `.mjs` (no TypeScript syntax) so both `llm-context-windows.ts` (the
  * context-window generator, imported as compiled JS via the `.js` extension

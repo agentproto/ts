@@ -101,6 +101,14 @@ describe("llm:context-windows generator", () => {
     const notAllowed = googleRoutes.filter(id => !GOOGLE_NATIVE_MODEL_IDS.has(id.slice("google/".length)))
     expect(notAllowed.length).toBeGreaterThan(0)
     for (const id of notAllowed) expect(emitted).not.toContain(id.slice("google/".length))
+    // Values come from the snapshot, never guessed: each emitted Google entry
+    // carries the snapshot route's context length.
+    const byId = new Map(snapshot.data.map(m => [m.id, m as { id: string; context_length?: number }]))
+    for (const id of emitted) {
+      const route = byId.get(`google/${id}`)
+      expect(route, `google/${id} in the snapshot`).toBeDefined()
+      expect(src).toContain(`"${id}": { contextWindow: ${route!.context_length}`)
+    }
   })
 
   it("is byte-identical across two generate calls (deterministic)", async () => {
