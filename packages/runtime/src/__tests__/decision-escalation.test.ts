@@ -24,9 +24,11 @@ import { resolveExecProfile, type DecisionExecProfile, type ResolvedTarget } fro
 import { createEventRing } from "../event-ring.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 
 vi.setConfig({ testTimeout: 30_000 })
+
 
 const CHOICES = ["light", "standard", "deep"] as const
 
@@ -54,10 +56,10 @@ describe("parseEscalationReply — closed set only", () => {
 const TARGET: Extract<ResolvedTarget, { ok: true }> = {
   ok: true,
   adapter: "opencode",
-  model: "opencode/glm-5.3-flash-free",
+  model: FREE_MODEL,
   profileRef: "zen",
   fingerprint: "fp",
-  spawn: { adapter: "opencode", model: "opencode/glm-5.3-flash-free" },
+  spawn: { adapter: "opencode", model: FREE_MODEL },
 }
 const OWNER = { runId: "run-1", workflowId: "decision-route", stepId: "escalate" }
 
@@ -87,7 +89,7 @@ describe("createBoundedEscalation — one attempt, failures as data", () => {
     createBoundedEscalation({ host, target: TARGET, choices: CHOICES, timeoutMs: 5_000, owner: OWNER, label: "decide:escalate", parentSessionId: "parent-1" })
 
   it("decides from a valid reply and records who ran, where and why", async () => {
-    const host = fakeHost({ status: "ended", text: '{"choice":"deep"}', sessionId: "s1", model: "opencode/glm-5.3-flash-free", toolControls: controls })
+    const host = fakeHost({ status: "ended", text: '{"choice":"deep"}', sessionId: "s1", model: FREE_MODEL, toolControls: controls })
     const esc = make(host)
     expect(await esc.escalate({ packet: "p" })).toEqual({ ok: true, choice: "deep" })
     expect(esc.record()).toMatchObject({
@@ -95,8 +97,8 @@ describe("createBoundedEscalation — one attempt, failures as data", () => {
       status: "decided",
       wait: "turn",
       adapter: "opencode",
-      model: "opencode/glm-5.3-flash-free",
-      actualModel: "opencode/glm-5.3-flash-free",
+      model: FREE_MODEL,
+      actualModel: FREE_MODEL,
       sessionId: "s1",
       toolControls: controls,
     })
@@ -226,7 +228,7 @@ function setup(behaviour: Behaviour, profileId = "local-free") {
 }
 
 const runInput = (over: Partial<EscalationHostRun> = {}): EscalationHostRun => ({
-  spawn: { adapter: "opencode", model: "opencode/glm-5.3-flash-free" },
+  spawn: { adapter: "opencode", model: FREE_MODEL },
   prompt: buildEscalationPrompt("packet", CHOICES),
   label: "decide:escalate",
   timeoutMs: 10_000,

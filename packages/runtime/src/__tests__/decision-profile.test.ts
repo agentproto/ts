@@ -11,6 +11,7 @@ import {
   validateSpawnTarget,
   type PresetLookups,
 } from "../decision-profile.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
 const free = () => {
   const r = resolveExecProfile({ profile: "local-free" })
@@ -26,7 +27,7 @@ const sub = () => {
 const lookups = (over: Partial<PresetLookups> = {}): PresetLookups => ({
   getHarnessPreset: async id =>
     ({
-      "oc-free": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: "opencode/glm-5.3-flash-free", isDefault: false },
+      "oc-free": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: FREE_MODEL, isDefault: false },
       "oc-big": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: "big-pickle", isDefault: false },
       "oc-paid": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: "kimi-k2-thinking", isDefault: false },
       "cc-sonnet": { id, harnessSlug: "claude-code", name: id, profileRef: "claude-sub", defaultModel: "claude-sonnet-4-5", isDefault: false },
@@ -36,19 +37,19 @@ const lookups = (over: Partial<PresetLookups> = {}): PresetLookups => ({
   getUserPreset: async id =>
     ({
       "user-free": { id, label: id, adapter: "opencode", model: "opencode/deepseek-v4.1-flash-free" },
-      "user-route": { id, label: id, adapter: "opencode", model: "opencode/glm-5.3-flash-free", route: "gateway" },
+      "user-route": { id, label: id, adapter: "opencode", model: FREE_MODEL, route: "gateway" },
       "user-rotate-paid": {
         id,
         label: id,
         adapter: "opencode",
-        model: "opencode/glm-5.3-flash-free",
+        model: FREE_MODEL,
         turnRetry: { rotate: [{ model: "claude-sonnet-4-5" }] },
       },
       "user-rotate-free": {
         id,
         label: id,
         adapter: "opencode",
-        model: "opencode/glm-5.3-flash-free",
+        model: FREE_MODEL,
         turnRetry: { rotate: [{ model: "opencode/deepseek-v4.1-flash-free" }] },
       },
       "user-openrouter": { id, label: id, adapter: "opencode", model: "openrouter/foo-free" },
@@ -101,7 +102,7 @@ describe("validateSpawnTarget", () => {
   })
 
   it("free-only permits only ids in the zero-cost model list", () => {
-    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free" })).toMatchObject({ ok: true })
+    expect(validateSpawnTarget(free(), { adapter: "opencode", model: FREE_MODEL })).toMatchObject({ ok: true })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "big-pickle" })).toMatchObject({ ok: true })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "kimi-k2-thinking" })).toMatchObject({ ok: false, code: "not_entitled" })
     expect(validateSpawnTarget(free(), { adapter: "claude-code", model: "claude-sonnet-4-5" })).toMatchObject({ ok: false, code: "not_entitled" })
@@ -118,19 +119,19 @@ describe("validateSpawnTarget", () => {
     expect(validateSpawnTarget(free(), { adapter: "opencode" })).toMatchObject({ ok: false, code: "unknown_model" })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "glm-free@fast" })).toMatchObject({ ok: false })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "openrouter/x-free" })).toMatchObject({ ok: false })
-    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", route: "gw" })).toMatchObject({ ok: false, code: "route_not_free" })
+    expect(validateSpawnTarget(free(), { adapter: "opencode", model: FREE_MODEL, route: "gw" })).toMatchObject({ ok: false, code: "route_not_free" })
   })
 
   it("checks every rotate fallback, and ignores sandbox placement entirely", () => {
     expect(
-      validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", rotate: [{ model: "claude-sonnet-4-5" }] }),
+      validateSpawnTarget(free(), { adapter: "opencode", model: FREE_MODEL, rotate: [{ model: "claude-sonnet-4-5" }] }),
     ).toMatchObject({ ok: false, code: "rotate_not_entitled" })
     expect(
-      validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", rotate: [{ model: "mystery-model" }] }),
+      validateSpawnTarget(free(), { adapter: "opencode", model: FREE_MODEL, rotate: [{ model: "mystery-model" }] }),
     ).toMatchObject({ ok: false, code: "unknown_rotate" })
     // E2B (or any) placement grants no entitlement and removes none.
     expect(validateSpawnTarget(free(), { adapter: "claude-code", model: "claude-sonnet-4-5", sandbox: { provider: "e2b" } })).toMatchObject({ ok: false })
-    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", sandbox: { provider: "e2b" } })).toMatchObject({ ok: true })
+    expect(validateSpawnTarget(free(), { adapter: "opencode", model: FREE_MODEL, sandbox: { provider: "e2b" } })).toMatchObject({ ok: true })
   })
 })
 

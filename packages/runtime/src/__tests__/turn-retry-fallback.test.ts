@@ -27,9 +27,10 @@ import { createRotationTargetCheck } from "../turn-retry-eligibility.js"
 import { resolveTurnRetryPolicy } from "../turn-retry-policy.js"
 import type { ModelPolicy } from "../model-policy.js"
 import { ZERO_COST_LIST_ID } from "../model-list-store.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
 const FAST = { baseDelayMs: 5, factor: 1, maxDelayMs: 5 }
-const FREE_A = "opencode/glm-5.3-flash-free"
+const FREE_A = FREE_MODEL
 const FREE_B = "opencode/deepseek-v4.1-flash-free"
 const FREE_C = "opencode/big-pickle"
 const OPENCODE_LIMIT =

@@ -44,9 +44,10 @@ import { registerDaemonHealthTools } from "../daemon-health-tools.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
 const FAST = { baseDelayMs: 5, factor: 1, maxDelayMs: 5 }
-const FREE_A = "opencode/glm-5.3-flash-free"
+const FREE_A = FREE_MODEL
 const FREE_B = "opencode/deepseek-v4.1-flash-free"
 const FREE_C = "opencode/big-pickle"
 const PAID = "opencode/gpt-5.1-codex"
@@ -472,7 +473,7 @@ describe("daemon-wide model cooldowns", () => {
 
 describe("zero-cost list membership and policy checks", () => {
   it.each([
-    ["opencode/glm-5.3-flash-free", true],
+    [FREE_MODEL, true],
     ["opencode/big-pickle", true],
     ["big-pickle", true],
     ["opencode-go/beam-free@opencode", true],

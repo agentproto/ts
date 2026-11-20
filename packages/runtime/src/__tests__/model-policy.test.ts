@@ -10,9 +10,10 @@ import { checkModelPolicy, modelPolicyInputSchema, normalizeModelPolicy } from "
 import { agentStartInputSchema } from "../agent-start-schema.js"
 import { spawnAgentSession } from "../session-spawn.js"
 import { createSessionsRegistry } from "../sessions.js"
+import { ROTATION_MODEL } from "./helpers/catalog-models.js"
 
 const LISTS: Record<string, ModelList> = {
-  cheap: { id: "cheap", ids: ["opencode/glm-5.3-flash-free", "acme/small"] },
+  cheap: { id: "cheap", ids: [ROTATION_MODEL, "acme/small"] },
   pricey: { id: "pricey", ids: ["acme/large"] },
   mixed: { id: "mixed", ids: ["acme/small", "acme/large"] },
 }
@@ -138,7 +139,7 @@ describe("spawnAgentSession enforces the policy on every merge layer", () => {
     const result = await spawnAgentSession(d.deps as never, {
       adapter: "opencode",
       cwd: "/tmp",
-      model: "opencode/glm-5.3-flash-free",
+      model: ROTATION_MODEL,
       modelPolicy: { block: ["default-rotation"] },
     } as never)
     expect(result.ok).toBe(false)
@@ -152,7 +153,7 @@ describe("spawnAgentSession enforces the policy on every merge layer", () => {
     const result = await spawnAgentSession(d.deps as never, {
       adapter: "opencode",
       cwd: "/tmp",
-      model: "opencode/not-a-cataloged-model",
+      model: "acme/not-a-cataloged-model",
       modelPolicy: { allow: ["default-rotation"] },
     } as never)
     expect(result.ok).toBe(false)
@@ -165,7 +166,7 @@ describe("spawnAgentSession enforces the policy on every merge layer", () => {
     const result = await spawnAgentSession(d.deps as never, {
       adapter: "opencode",
       cwd: "/tmp",
-      model: "opencode/glm-5.3-flash-free",
+      model: ROTATION_MODEL,
       modelPolicy: { allow: ["no-such-list"] },
     } as never)
     expect(result.ok).toBe(false)
@@ -217,7 +218,7 @@ describe("spawnAgentSession enforces the policy on every merge layer", () => {
     const result = await spawnAgentSession(d.deps as never, {
       adapter: "opencode",
       cwd: "/tmp",
-      model: "opencode/glm-5.3-flash-free",
+      model: ROTATION_MODEL,
       modelPolicy: { allow: ["default-rotation"] },
     } as never)
     expect(result.ok).toBe(true)

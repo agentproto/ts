@@ -24,6 +24,7 @@ import { createOrchestratorInjector, createScopeTokenRegistry } from "../orchest
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+import { ROTATION_MODEL } from "./helpers/catalog-models.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -1005,9 +1006,9 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       expect(startSession).not.toHaveBeenCalled()
       // A well-formed policy the model satisfies spawns; one it does not is a
       // 400 refusal on both routes, never a 500.
-      expect((await spawn("/sessions/agent", { allow: ["default-rotation"] }, "opencode/glm-5.3-flash-free")).status).toBe(201)
+      expect((await spawn("/sessions/agent", { allow: ["default-rotation"] }, ROTATION_MODEL)).status).toBe(201)
       for (const path of ["/sessions/agent", "/sessions/chat"]) {
-        const refused = await spawn(path, { block: ["default-rotation"] }, "opencode/glm-5.3-flash-free")
+        const refused = await spawn(path, { block: ["default-rotation"] }, ROTATION_MODEL)
         expect(refused.status).toBe(400)
         expect(await refused.json()).toMatchObject({ error: "model_policy_refused" })
       }

@@ -63,13 +63,20 @@ describe("zero-cost list equivalence with the old free predicate", () => {
   })
 
   it("resolves the bare and @route-suffixed forms the same as the old predicate", () => {
-    for (const form of [
-      "big-pickle",
-      "glm-5.3-flash-free",
-      "opencode/big-pickle",
-      "opencode-go/beam-free@opencode",
-      "opencode/glm-5.3-flash-free@opencode",
-    ]) {
+    // Forms are built from ids found in the live catalog, not pinned ids: an
+    // upstream sync retires ids (glm-5.3-flash-free vanished on 2026-11-20).
+    const catalogIds = [...catalogPricing().keys()]
+    const freeId = catalogIds.find(id => oldIsOpencodeFreeModel(id))
+    expect(freeId, "the catalog has at least one old-predicate free id").toBeDefined()
+    const unrouted = freeId!.split("@")[0]!
+    const bare = unrouted.split("/").pop()!
+    const forms = [bare, freeId!]
+    // Only add an @route form when the id does not already carry one.
+    if (unrouted === freeId) forms.push(`${unrouted}@opencode`)
+    // And a paid id, so the negative side is covered too.
+    const paid = catalogIds.find(id => !oldIsOpencodeFreeModel(id) && catalogPricing().get(id)?.inputPer1M)
+    if (paid) forms.push(paid)
+    for (const form of forms) {
       expect(inModelList(form, ZERO_COST_LIST_ID, source), form).toBe(
         oldIsOpencodeFreeModel(form),
       )
