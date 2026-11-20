@@ -69,6 +69,12 @@ export function makeElevenLabsRealtime(cfg: ElevenLabsRealtimeConfig = {}): Real
       const url = agent.signedUrl ?? `${cfg.wsBaseUrl ?? DEFAULT_WS_BASE_URL}/v1/convai/conversation?agent_id=${agent.agentId}`
       const headers = agent.signedUrl ? undefined : { "xi-api-key": resolveApiKey(cfg) }
       const { emit, hooks } = opts
+      let systemPrompt: string | undefined
+      try {
+        systemPrompt = await hooks.getSystemPrompt?.()
+      } catch {
+        systemPrompt = undefined
+      }
       const meter = makeUsageMeter("realtime")
       let outRate = 16000
       let closed = false
@@ -86,7 +92,7 @@ export function makeElevenLabsRealtime(cfg: ElevenLabsRealtimeConfig = {}): Real
       const init: Record<string, unknown> = { type: "conversation_initiation_client_data", dynamic_variables: agent.dynamicVariables ?? {} }
       const override: Record<string, unknown> = {}
       const prompt: Record<string, unknown> = {}
-      void hooks.getSystemPrompt?.().then(p => p && (prompt.prompt = p)).catch(() => undefined)
+      if (systemPrompt) prompt.prompt = systemPrompt
       if (agent.overrides?.llm) prompt.llm = agent.overrides.llm
       if (opts.voiceId || agent.overrides?.ttsModelId) {
         override.tts = { ...(opts.voiceId ? { voice_id: opts.voiceId } : {}), ...(agent.overrides?.ttsModelId ? { model_id: agent.overrides.ttsModelId } : {}) }

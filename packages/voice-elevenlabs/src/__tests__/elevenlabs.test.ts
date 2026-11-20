@@ -349,6 +349,32 @@ describe("hosted agent (realtime), scripted protocol frames", () => {
     expect(s.sent[0]).toMatchObject({ type: "conversation_initiation_client_data" })
   })
 
+  it("attaches an async getSystemPrompt to the conversation config override", async () => {
+    const s = mkSocket()
+    await makeElevenLabsRealtime({ apiKey: KEY, socket: s.factory }).start({
+      emit: emitSpy().emit,
+      hooks: { getSystemPrompt: async () => "You are a helpful voice concierge." },
+      provider: AGENT,
+    })
+    await tick()
+    expect(s.sent[0]).toMatchObject({
+      type: "conversation_initiation_client_data",
+      conversation_config_override: { agent: { prompt: { prompt: "You are a helpful voice concierge." } } },
+    })
+  })
+
+  it("still connects when getSystemPrompt rejects", async () => {
+    const s = mkSocket()
+    await makeElevenLabsRealtime({ apiKey: KEY, socket: s.factory }).start({
+      emit: emitSpy().emit,
+      hooks: { getSystemPrompt: async () => { throw new Error("no prompt") } },
+      provider: AGENT,
+    })
+    await tick()
+    expect(s.sent[0]).toMatchObject({ type: "conversation_initiation_client_data" })
+    expect(s.sent[0]).not.toHaveProperty("conversation_config_override")
+  })
+
   it("a signed URL needs no key on the socket", async () => {
     const s = mkSocket()
     await makeElevenLabsRealtime({ socket: s.factory }).start({ emit: emitSpy().emit, hooks: {}, provider: { signedUrl: "wss://example.test/signed?x=1" } })
