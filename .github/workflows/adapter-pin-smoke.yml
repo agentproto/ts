@@ -1,0 +1,124 @@
+name: Adapter pin smoke
+
+# Proof for an adapter pin change. When a PR changes an npm pin an adapter
+# declares (the weekly chore/adapter-pins-auto PR, or a human bump), every
+# changed adapter is spawned for real through the repo's own CLI
+# (`agentproto run <slug>`), asked one question with a fixed answer, and must
+# reply PONG within a timeout.
+#
+# Three outcomes per adapter, all visible in the job summary:
+#   proven   the harness answered with the new pin
+#   failed   the job is red
+#   skipped  no credential in this repo for that adapter: a loud warning, and
+#            explicitly NOT proof. Only an adapter that says `proven` is proven.
+#
+# Credentials read (repo secrets, none invented here): ANTHROPIC_API_KEY
+# (claude-code, mastracode), OPENAI_API_KEY (codex), GEMINI_API_KEY (gemini).
+# opencode needs none: it uses a zero-priced model discovered at run time.
+
+on:
+  pull_request:
+    paths:
+      - "adapters/*/src/**"
+      - "scripts/adapter-pin-smoke.mjs"
+      - ".github/workflows/adapter-pin-smoke.yml"
+  workflow_dispatch:
+    inputs:
+      adapters:
+        description: "Comma separated adapter slugs to smoke (manual run)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adapter-pin-smoke-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan (which pins changed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Run smoke helper tests
+        run: node --test scripts/adapter-pin-smoke.test.mjs
+
+      - name: Compute changed adapter pins
+        id: plan
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+          MANUAL: ${{ inputs.adapters }}
+        run: |
+          if [ -n "$MANUAL" ]; then
+            node -e '
+              const list = process.env.MANUAL.split(",").map((s) => s.trim()).filter(Boolean)
+              process.stdout.write(JSON.stringify({ include: list.map((adapter) => ({ adapter })) }))
+            ' > /tmp/plan.json
+          else
+            node scripts/adapter-pin-smoke.mjs plan --base "origin/$BASE_REF" > /tmp/plan.json
+          fi
+          node -e '
+            const fs = require("fs")
+            const plan = JSON.parse(fs.readFileSync("/tmp/plan.json", "utf8"))
+            const matrix = JSON.stringify({ include: plan.include })
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${matrix}\ncount=${plan.include.length}\n`)
+            const names = plan.include.map((row) => row.adapter).join(", ") || "none"
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Adapter pin smoke\n\nAdapters with a changed pin: ${names}\n`)
+          '
+
+  smoke:
+    name: Smoke ${{ matrix.adapter }}
+    needs: plan
+    # Same-repo only: a fork PR has no secrets, so every credentialed row
+    # would just skip. Nothing to prove when no pin changed.
+    if: >
+      needs.plan.outputs.count != '0' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build local agentproto CLI + adapter
+        run: pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ matrix.adapter }}..."
+        env:
+          TURBO_API: https://turbo-cache.agentik.net
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+
+      - name: Smoke turn (${{ matrix.adapter }})
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node scripts/adapter-pin-smoke.mjs run --adapter "${{ matrix.adapter }}" --timeout-ms 240000

@@ -1,8 +1,14 @@
 name: Adapter pin freshness
 
-# Weekly report of adapter package pins against the npm registry. This job
-# only observes: it opens or updates one tracking issue when a pin drifts, and
-# never edits an adapter pin, pushes a branch, or merges anything.
+# Weekly check of adapter package pins against the npm registry.
+#
+#   - Any drift is reported in one tracking issue (the fallback: it is always
+#     kept, whatever happens to the PR below).
+#   - Minor/patch drift of an explicit spawn pin also opens or updates ONE PR
+#     (branch chore/adapter-pins-auto, fixed title) that rewrites the pins.
+#     Major drift is only reported. The PR is not merged here: its
+#     `Adapter pin smoke` check (adapter-pin-smoke.yml) spawns each bumped
+#     adapter for real and is the proof the harness still works.
 
 on:
   schedule:
@@ -14,7 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write # push the chore/adapter-pins-auto branch
+  pull-requests: write # open the update PR
   issues: write
 
 jobs:
@@ -23,6 +30,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # Same App the catalog-sync PR uses. GitHub does NOT trigger workflows on
+      # a PR opened with the default GITHUB_TOKEN, so without the App the pin PR
+      # would get no CI and no smoke check. Falls back to GITHUB_TOKEN when no
+      # App is configured (the PR is then checkless, but the job still works).
+      - name: Mint bot token (GitHub App, optional)
+        id: bot
+        if: ${{ vars.BOT_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -35,7 +54,7 @@ jobs:
           package-manager-cache: false
 
       - name: Run checker tests
-        run: node --test scripts/check-adapter-pins.test.mjs
+        run: node --test scripts/check-adapter-pins.test.mjs scripts/bump-adapter-pins.test.mjs scripts/adapter-pin-smoke.test.mjs
 
       - name: Check pins and build report
         id: pins
@@ -64,7 +83,7 @@ jobs:
             body += `\nIndeterminate: the registry lookup failed for ${unknown.map((row) => `\`${row.package}\``).join(", ")}. A fresh result is not proven while these remain unknown, so an existing issue is left open.\n`;
             console.log(`::warning::Adapter pin lookup failed for ${unknown.map((row) => row.package).join(", ")}; not treating the run as fresh.`);
           }
-          body += `\nThis workflow only reports drift. It does not edit adapter pins and does not merge.\n`;
+          body += `\nMinor/patch drift of an explicit spawn pin is proposed in the PR titled \`chore(adapters): bump adapter pins\` (branch \`chore/adapter-pins-auto\`). Major drift and range-floor-only pins are never bumped automatically. This workflow does not merge.\n`;
 
           fs.writeFileSync("/tmp/adapter-pins.md", body);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `drifted=${drifted.length > 0}\n`);
@@ -75,6 +94,45 @@ jobs:
 
       - name: Report to step summary
         run: cat /tmp/adapter-pins.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Rewrites explicit spawn pins for minor/patch drift in the working tree
+      # (no network: it reads the JSON produced above).
+      - name: Bump drifted pins
+        id: bump
+        run: |
+          node scripts/bump-adapter-pins.mjs --report /tmp/adapter-pins.json \
+            --plan-out /tmp/adapter-pins-plan.json --body-out /tmp/adapter-pins-pr.md
+          COUNT=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/adapter-pins-plan.json","utf8")).bumped.length')
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          cat /tmp/adapter-pins-pr.md >> "$GITHUB_STEP_SUMMARY"
+
+      # changeset-check fails a PR that touches a publishable package without a
+      # changeset. Written deterministically from the working-tree diff, with a
+      # unique name so it diffs as ADDED against main (see the script header).
+      - name: Write changeset for the bumped adapters
+        if: steps.bump.outputs.count != '0'
+        run: |
+          node scripts/write-catalog-changeset.mjs \
+            --out ".changeset/adapter-pins-auto-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD).md" \
+            --message "Bump adapter npm pins to the latest minor/patch (smoke tested on the update PR)."
+
+      # One PR on a fixed branch with a fixed title: create-pull-request force
+      # updates the branch and edits the existing PR, so a weekly run never opens
+      # a second one. Failure here must not hide the issue report below.
+      - name: Open or update pin PR
+        if: steps.bump.outputs.count != '0'
+        continue-on-error: true
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          branch: chore/adapter-pins-auto
+          base: main
+          commit-message: "chore(adapters): bump adapter pins"
+          title: "chore(adapters): bump adapter pins"
+          body-path: /tmp/adapter-pins-pr.md
+          labels: |
+            automated
+          delete-branch: true
 
       # Dedup: look up the fixed title first and edit its body, so a weekly run
       # never opens a fresh issue per drifted pin.
