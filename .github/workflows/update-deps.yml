@@ -283,6 +283,22 @@ jobs:
           fi
           git commit -m "chore(deps): weekly minor/patch bump"
 
+          # A same-day re-run finds the branch already on the remote (an earlier
+          # run pushed it). git-cas requires the local tip to descend from the
+          # expected remote sha, which a fresh checkout of main does not: the
+          # 2026-11-20 re-run died with `not-descendant`. Keep this run's tree,
+          # re-parent it onto the remote tip so the push is a fast-forward.
+          if [ -n "${{ steps.ctx.outputs.remote_sha }}" ]; then
+            RP=0
+            bash scripts/reparent-onto-remote.sh origin "$BRANCH" \
+              "${{ steps.ctx.outputs.remote_sha }}" "chore(deps): weekly minor/patch bump" || RP=$?
+            if [ "$RP" -eq 3 ]; then
+              echo "::error::head_moved: $BRANCH moved since job start; the update was not pushed. Re-run after the branch settles (this workflow never pulls, rebases or retries)."
+              exit 1
+            fi
+            [ "$RP" -eq 0 ] || { echo "::error::could not re-parent onto the existing $BRANCH (exit $RP)."; exit 1; }
+          fi
+
           # Compare-and-swap push: only update the branch if it still points
           # where the job-start `git ls-remote` found it (or is still absent).
           # On head_moved we stop and fail; we never pull/rebase/retry.
