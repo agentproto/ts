@@ -44,13 +44,13 @@ import { registerDaemonHealthTools } from "../daemon-health-tools.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { FREE_MODEL } from "./helpers/catalog-models.js"
+import { FREE_MODEL, OTHER_FREE_MODEL, PAID_MODEL, THIRD_FREE_MODEL } from "./helpers/catalog-models.js"
 
 const FAST = { baseDelayMs: 5, factor: 1, maxDelayMs: 5 }
 const FREE_A = FREE_MODEL
-const FREE_B = "opencode/deepseek-v4.1-flash-free"
-const FREE_C = "opencode/big-pickle"
-const PAID = "opencode/gpt-5.1-codex"
+const FREE_B = OTHER_FREE_MODEL
+const FREE_C = THIRD_FREE_MODEL
+const PAID = PAID_MODEL
 
 async function until(predicate: () => boolean, label: string): Promise<void> {
   for (let i = 0; i < 400; i++) {
@@ -379,7 +379,7 @@ describe("turn retry rotation — runtime", () => {
       turnRetry: {
         on: ["rate-limit"],
         // A different route prefix ⇒ the live-switch route guard answers requires-restart.
-        rotate: [{ model: "opencode-go/minimax-m3.1-flash-free" }, { model: FREE_B }],
+        rotate: [{ model: "other-route/some-model" }, { model: FREE_B }],
         ...FAST,
       },
     })
@@ -387,7 +387,7 @@ describe("turn retry rotation — runtime", () => {
     await h.registry.sendPrompt(desc.id, "go")
     await until(() => h.prompts.length === 2, "continuation")
     expect(h.registry.get(desc.id)?.model).toBe(FREE_B)
-    expect(h.notices.find(n => n.includes("rotating model"))).toContain("opencode-go/minimax-m3.1-flash-free: switch not applied")
+    expect(h.notices.find(n => n.includes("rotating model"))).toContain("other-route/some-model: switch not applied")
     h.done()
   })
 })
@@ -474,11 +474,10 @@ describe("daemon-wide model cooldowns", () => {
 describe("zero-cost list membership and policy checks", () => {
   it.each([
     [FREE_MODEL, true],
-    ["opencode/big-pickle", true],
-    ["big-pickle", true],
-    ["opencode-go/beam-free@opencode", true],
-    ["opencode/gpt-5.1-codex", false],
-    ["opencode-go/glm-5.3", false],
+    [FREE_MODEL.split("/").pop()!, true],
+    [`${FREE_MODEL}@opencode`, true],
+    [PAID_MODEL, false],
+    ["acme/unlisted-model", false],
     ["anthropic/claude-free-tier-not", false],
   ])("zero-cost membership (%s) = %s", (model, expected) => {
     expect(inModelList(model, ZERO_COST_LIST_ID, seedModelListSource())).toBe(expected)
@@ -544,7 +543,7 @@ describe("turnRetry policy parsing", () => {
   })
   it("rejects malformed rotate input whole", () => {
     expect(parseTurnRetryPolicy({ on: ["rate-limit"], rotate: [{ model: "" }] })).toBeUndefined()
-    expect(parseTurnRetryPolicy({ on: ["rate-limit"], rotate: "big-pickle" })).toBeUndefined()
+    expect(parseTurnRetryPolicy({ on: ["rate-limit"], rotate: "a-model-id" })).toBeUndefined()
     expect(parseTurnRetryPolicy({ on: ["rate-limit"], cooldownMs: 0 })).toBeUndefined()
   })
 })

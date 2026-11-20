@@ -25,11 +25,12 @@ import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 
 // The shipped default rotation, read from the seed, never copied: its members
-// change when a model is retired. FREE_MODEL below is one member of it.
+// change when a model is retired. ROTATION_MEMBER is one member of it (the
+// last one: not necessarily a free model, only a rotation-list member).
 const FREE_ROTATE_IDS: string[] = [
   ...(SEED_MODEL_LISTS.find(l => l.id === DEFAULT_ROTATION_LIST_ID)?.ids ?? []),
 ]
-const FREE_MODEL = FREE_ROTATE_IDS[FREE_ROTATE_IDS.length - 1]!
+const ROTATION_MEMBER = FREE_ROTATE_IDS[FREE_ROTATE_IDS.length - 1]!
 const [ROT_FIRST, ROT_SECOND] = FREE_ROTATE_IDS as [string, string]
 
 async function freePort(): Promise<number> {
@@ -148,11 +149,11 @@ describe("agent_start turnRetry default for executor agents", () => {
     cleanups.push(() => Promise.resolve(registry.shutdown()))
     const deps = makeDeps(registry)
 
-    const free = await descriptorOf(deps, { role: "executor", model: FREE_MODEL })
+    const free = await descriptorOf(deps, { role: "executor", model: ROTATION_MEMBER })
     const policy = turnRetryOf(free)
     expect(policy?.rotateOn).toEqual(["rate-limit", "upstream-5xx", "no-output-stall"])
     expect(policy?.rotate?.map(t => t.model)).toEqual(
-      FREE_ROTATE_IDS.filter(m => m !== FREE_MODEL),
+      FREE_ROTATE_IDS.filter(m => m !== ROTATION_MEMBER),
     )
     for (const target of policy?.rotate ?? []) {
       expect(inModelList(target.model, ZERO_COST_LIST_ID, seedModelListSource())).toBe(true)
@@ -260,9 +261,9 @@ describe("agent_start turnRetry default for sandbox agents", () => {
 describe("default rotation is a list, filtered by the session policy", () => {
   it("defaultTurnRetryForSpawn for a free opencode model is the default-rotation list minus the current model", async () => {
     const { defaultTurnRetryForSpawn, validateTurnRetryRotate } = await import("../turn-retry-policy.js")
-    const input = defaultTurnRetryForSpawn(FREE_MODEL)
+    const input = defaultTurnRetryForSpawn(ROTATION_MEMBER)
     expect(input.rotate?.map(t => t.model)).toEqual(
-      FREE_ROTATE_IDS.filter(m => m !== FREE_MODEL),
+      FREE_ROTATE_IDS.filter(m => m !== ROTATION_MEMBER),
     )
     expect(validateTurnRetryRotate(input.rotate, { allow: [ZERO_COST_LIST_ID] })).toBeUndefined()
     expect(validateTurnRetryRotate(input.rotate, undefined)).toBeUndefined()
@@ -277,9 +278,9 @@ describe("default rotation is a list, filtered by the session policy", () => {
 
   it("resolveTurnRetryPolicy leaves the default's rotate list intact", async () => {
     const { defaultTurnRetryForSpawn, resolveTurnRetryPolicy } = await import("../turn-retry-policy.js")
-    const policy = resolveTurnRetryPolicy(defaultTurnRetryForSpawn(FREE_MODEL))
+    const policy = resolveTurnRetryPolicy(defaultTurnRetryForSpawn(ROTATION_MEMBER))
     expect(policy.rotate?.map(t => t.model)).toEqual(
-      FREE_ROTATE_IDS.filter(m => m !== FREE_MODEL),
+      FREE_ROTATE_IDS.filter(m => m !== ROTATION_MEMBER),
     )
   })
 
@@ -288,12 +289,12 @@ describe("default rotation is a list, filtered by the session policy", () => {
     await saveModelList({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Default rotation targets",
-      ids: ["acme/unlisted-model", FREE_MODEL, ROT_SECOND],
+      ids: ["acme/unlisted-model", ROTATION_MEMBER, ROT_SECOND],
     })
     const input = defaultTurnRetryForSpawn(ROT_SECOND)
     expect(input.rotate?.map(t => t.model)).toEqual([
       "acme/unlisted-model",
-      FREE_MODEL,
+      ROTATION_MEMBER,
     ])
   })
 
@@ -302,14 +303,14 @@ describe("default rotation is a list, filtered by the session policy", () => {
     await saveModelList({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Default rotation targets",
-      ids: ["acme/codex-model", "acme/unlisted-model", FREE_MODEL],
+      ids: ["acme/codex-model", "acme/unlisted-model", ROTATION_MEMBER],
     })
     await saveModelList({ id: "no-codex", ids: ["acme/codex-model"] })
     expect(
-      defaultTurnRetryForSpawn(FREE_MODEL).rotate?.map(t => t.model),
+      defaultTurnRetryForSpawn(ROTATION_MEMBER).rotate?.map(t => t.model),
     ).toEqual(["acme/codex-model", "acme/unlisted-model"])
     expect(
-      defaultTurnRetryForSpawn(FREE_MODEL, { block: ["no-codex"] }).rotate?.map(t => t.model),
+      defaultTurnRetryForSpawn(ROTATION_MEMBER, { block: ["no-codex"] }).rotate?.map(t => t.model),
     ).toEqual(["acme/unlisted-model"])
   })
 })
