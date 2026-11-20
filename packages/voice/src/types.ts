@@ -297,3 +297,24 @@ export interface VoiceProvider {
     realtime?: RealtimeCapabilities
   }
 }
+
+// ── Transport seam for provider packages ────────────────────────────
+
+/**
+ * The part of a WebSocket the provider packages use. A provider takes a
+ * `VoiceSocketFactory` so tests can replay recorded vendor exchanges without
+ * a network; the default factory of a provider wraps the `ws` package.
+ */
+export interface VoiceSocket {
+  send(data: string | Uint8Array): void
+  close(code?: number): void
+  on(event: "open", cb: () => void): void
+  on(event: "message", cb: (data: string) => void): void
+  on(event: "error", cb: (err: Error) => void): void
+  on(event: "close", cb: (code?: number) => void): void
+}
+
+export type VoiceSocketFactory = (
+  url: string,
+  init?: { headers?: Record<string, string> },
+) => VoiceSocket
