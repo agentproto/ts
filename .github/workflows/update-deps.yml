@@ -249,6 +249,15 @@ jobs:
             echo "Branch is \`chore/update-deps-<date>\` and the PR title is exactly \`chore(deps): weekly minor/patch bump\`. The local \`plugin-updater-weekly\` cron skips its bump when a PR with that title is already open, and this workflow's \`update-deps\` concurrency group (cancel-in-progress: false) serializes overlapping triggers — so a same-day run never opens a second PR."
           } > /tmp/pr-body.md
 
+          # The pre-push agentflow hook (changeset gate) blocks the push when a
+          # publishable package changed without a changeset; every scheduled run
+          # since 2026-11-02 died there (33 manifests bumped, no changeset).
+          # Written deterministically from the working-tree diff, before `git
+          # add -A`, with a unique name so it diffs as ADDED against main.
+          node scripts/write-catalog-changeset.mjs \
+            --out ".changeset/update-deps-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD).md" \
+            --message "Weekly dependency refresh (pnpm up -r)."
+
           git add -A
           if git diff --cached --quiet; then
             echo "No staged changes after install — nothing to PR."
