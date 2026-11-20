@@ -87,6 +87,65 @@ describe("wrapSttStream", () => {
   })
 })
 
+describe("wrapSttStream: discard and concurrent commits", () => {
+  const controllable = () => {
+    const finals: Array<(t: { text: string }) => void> = []
+    let commits = 0
+    const fake = {
+      pushAudio() {},
+      commit() { commits++ },
+      async close() {},
+      on(event: string, cb: never) { if (event === "final") finals.push(cb) },
+    }
+    return { fake, deliver: (text: string) => finals.forEach(cb => cb({ text })), commits: () => commits }
+  }
+
+  it("a discarded utterance whose flush never answers does not swallow the next real final", async () => {
+    vi.useFakeTimers()
+    const c = controllable()
+    const session = wrapSttStream(c.fake as never, { sampleRate: 16000, finalTimeoutMs: 100 })
+    session.discard() // the vendor never answers this flush
+    await vi.advanceTimersByTimeAsync(500)
+    const next = session.commit(1000)
+    c.deliver("réel")
+    expect(await next).toBe("réel")
+    vi.useRealTimers()
+  })
+
+  it("a discard that is answered still swallows its own final", async () => {
+    const c = controllable()
+    const session = wrapSttStream(c.fake as never, { sampleRate: 16000, finalTimeoutMs: 1000 })
+    session.discard()
+    c.deliver("écho")
+    const next = session.commit(1000)
+    c.deliver("réel")
+    expect(await next).toBe("réel")
+  })
+
+  it("a second commit() while one is pending settles the first with null instead of orphaning it", async () => {
+    const c = controllable()
+    const session = wrapSttStream(c.fake as never, { sampleRate: 16000, finalTimeoutMs: 1000 })
+    const first = session.commit(1000)
+    const second = session.commit(1000)
+    expect(await first).toBeNull()
+    c.deliver("deuxième")
+    expect(await second).toBe("deuxième")
+  })
+
+  it("the timeout of an earlier commit does not settle a later one", async () => {
+    vi.useFakeTimers()
+    const c = controllable()
+    const session = wrapSttStream(c.fake as never, { sampleRate: 16000, finalTimeoutMs: 1000 })
+    void session.commit(100)
+    await vi.advanceTimersByTimeAsync(50)
+    const second = session.commit(1000)
+    await vi.advanceTimersByTimeAsync(80) // the first commit's 100 ms timer fires here
+    c.deliver("tard")
+    expect(await second).toBe("tard")
+    vi.useRealTimers()
+  })
+})
+
 describe("startRealtime", () => {
   it("delegates to the provider and keeps usage final after close", async () => {
     const provider = makeFakeRealtime()

@@ -71,8 +71,12 @@ export function wrapSttStream(
 ): SttSession {
   let ready = true
   let seq = 0
-  // Finals still owed to a discarded utterance: their text is dropped.
-  let ignoreFinals = 0
+  // Finals still owed to a discarded utterance: their text is dropped. Each
+  // debt expires after the final-wait bound, so a vendor that never answers a
+  // discard cannot swallow the next genuine final.
+  let ignoreUntil: number[] = []
+  // One pending commit at a time; a later commit supersedes (and null-settles)
+  // the earlier one, and a timer only settles the commit that armed it.
   let waiter: ((text: string | null) => void) | undefined
 
   const settle = (text: string | null) => {
@@ -82,18 +86,22 @@ export function wrapSttStream(
   }
 
   stream.on("final", (t: SttTranscript) => {
-    if (ignoreFinals > 0) {
-      ignoreFinals--
+    const now = Date.now()
+    ignoreUntil = ignoreUntil.filter(until => until > now)
+    if (ignoreUntil.length > 0) {
+      ignoreUntil.shift()
       return
     }
     settle(t.text)
   })
   stream.on("error", () => {
     ready = false
+    ignoreUntil = []
     settle(null)
   })
   stream.on("closed", () => {
     ready = false
+    ignoreUntil = []
     settle(null)
   })
 
@@ -110,22 +118,27 @@ export function wrapSttStream(
     },
     commit(timeoutMs = opts.finalTimeoutMs) {
       if (!ready) return Promise.resolve(null)
+      settle(null) // supersede a pending commit: its caller falls back
       return new Promise<string | null>(resolve => {
-        const timer = setTimeout(() => settle(null), timeoutMs)
-        waiter = text => {
+        const mine = (text: string | null) => {
           clearTimeout(timer)
           resolve(text)
         }
+        const timer = setTimeout(() => {
+          if (waiter === mine) settle(null)
+        }, timeoutMs)
+        waiter = mine
         stream.commit()
       })
     },
     discard() {
       if (!ready) return
-      ignoreFinals++
+      ignoreUntil.push(Date.now() + opts.finalTimeoutMs)
       stream.commit()
     },
     close() {
       ready = false
+      ignoreUntil = []
       settle(null)
       void stream.close().catch(() => undefined)
     },
