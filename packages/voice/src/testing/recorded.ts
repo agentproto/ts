@@ -132,17 +132,30 @@ export interface ReplaySocketResult {
  * `out` frame (use it when a provider's keepalive or timing legitimately
  * differs); mismatches are always reported.
  */
-export function makeReplaySocket(exchange: RecordedWsExchange, opts: { strictOut?: boolean } = {}): ReplaySocketResult {
+export function makeReplaySocket(
+  exchange: RecordedWsExchange,
+  opts: {
+    strictOut?: boolean
+    /**
+     * Lenient mode, for generic conformance cases whose own text differs from
+     * the recording: every `out` frame is accepted without comparison, nothing
+     * is delivered until `releaseWhen(frame)` is true for a sent frame, then
+     * every remaining recorded `in` frame is delivered in order.
+     */
+    releaseWhen?: (sent: Record<string, unknown>) => boolean
+  } = {},
+): ReplaySocketResult {
   const mismatches: string[] = []
   const urls: string[] = []
   let cursor = 0
-  const strict = opts.strictOut ?? true
+  const lenient = opts.releaseWhen !== undefined
+  const strict = lenient ? false : (opts.strictOut ?? true)
   const factory: VoiceSocketFactory = (url): VoiceSocket => {
     urls.push(url)
     const cbs: { open: Array<() => void>; message: Array<(d: string) => void>; error: Array<(e: Error) => void>; close: Array<(c?: number) => void> } = { open: [], message: [], error: [], close: [] }
     let closed = false
     const pump = () => {
-      while (!closed && cursor < exchange.frames.length && exchange.frames[cursor]!.dir === "in") {
+      while (!lenient && !closed && cursor < exchange.frames.length && exchange.frames[cursor]!.dir === "in") {
         const f = exchange.frames[cursor++]!
         const data = typeof f.data === "string" ? f.data : JSON.stringify(f.data)
         for (const cb of cbs.message) cb(data)
@@ -151,6 +164,18 @@ export function makeReplaySocket(exchange: RecordedWsExchange, opts: { strictOut
     const sock: VoiceSocket = {
       send(data) {
         const text = typeof data === "string" ? data : Buffer.from(data).toString("base64")
+        if (lenient) {
+          let parsedLenient: Record<string, unknown> = {}
+          try { parsedLenient = JSON.parse(text) } catch { /* raw */ }
+          if (!closed && opts.releaseWhen!(parsedLenient)) {
+            // Skip the recorded out frames, deliver every recorded in frame.
+            while (cursor < exchange.frames.length) {
+              const f = exchange.frames[cursor++]!
+              if (f.dir === "in") for (const cb of cbs.message) cb(typeof f.data === "string" ? f.data : JSON.stringify(f.data))
+            }
+          }
+          return
+        }
         const next = exchange.frames[cursor]
         if (!next || next.dir !== "out") {
           if (strict) mismatches.push(`unexpected out frame: ${text.slice(0, 120)}`)

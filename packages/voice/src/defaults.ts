@@ -115,6 +115,7 @@ export const VOICE_DEFAULTS = {
       useSpeakerBoost: d(true, "af/tts-providers.ts:324-329"),
       vadThreshold: d(0.5, "af/voice-provider-factory.ts:44"),
       sttModel: d("scribe_v2_realtime", "calls/stt-stream.ts:145 (PR #1227)"),
+      sttFileModel: d("scribe_v1", "ElevenLabs speech-to-text API; accepted by the live API when the voice-elevenlabs fixtures were recorded (2026-11-21)"),
       chunkLengthSchedule: d([80, 120, 200, 290] as readonly number[], "af/tts-providers.ts:56-72 (PR #1226)"),
       /** A premade public voice of the vendor, not an account object. */
       voiceId: d("21m00Tcm4TlvDq8ikWAM", "af/start-voice-server.ts:647-648"),
