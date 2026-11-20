@@ -598,3 +598,44 @@ for that.
 
 ### llm:opencode-zen
 - Added: opencode/hy4-flash-free
+
+## 2026-11-20
+
+### llm:openrouter
+- Added: google/gemini-4-neon, google/gemini-4-neon:batch, mistralai/pixtral-large-2502, openai/gpt-6.2-astra, openai/gpt-6.2-astra-pro, openai/gpt-6.2-astra-pro:batch, openai/gpt-6.2-astra:batch, openai/gpt-6.2-sol, openai/gpt-6.2-sol-pro, openai/gpt-6.2-sol-pro:batch, openai/gpt-6.2-sol:batch, tencent/hy4-flash, z-ai/glm-5.2:batch
+- Removed: meta-llama/llama-3.2-1b-instruct, x-ai/grok-build-0.1
+
+### llm:requesty
+- Added: azure/gpt-6.2-astra@eastus, azure/gpt-6.2-astra@francecentral, azure/gpt-6.2-astra@germanywestcentral, azure/gpt-6.2-astra@swedencentral, azure/gpt-6.2-astra@westeurope, azure/gpt-6.2-sol@eastus, azure/gpt-6.2-sol@francecentral, azure/gpt-6.2-sol@germanywestcentral, azure/gpt-6.2-sol@swedencentral, azure/gpt-6.2-sol@westeurope, nebius/beam-1.0-501b-a23b, nebius/deepseek-v4-pro-0813, nebius/deepseek-v4.1-flash-1017, nebius/glm-5.3, nebius/glm-5.3-flash, nebius/inkling-2-small, nebius/kimi-k3.1-pro, nebius/minimax-m3.1-flash, nebius/muse-spark-open, nebius/nemotron-3.5-lightning-30b-a3b, nebius/nemotron-3.5-super-vl, nebius/qwen3.8-27b, novita/deepseek-v4.1-flash-1017, novita/glm-5.3-flashx, novita/hy4, novita/hy4-flash, novita/kimi-k3.1-pro-highspeed, novita/qwen3-vl-plus, novita/qwen4-max, novita/step-5-preview, openai/gpt-6.2-astra, openai/gpt-6.2-sol, relace/deepseek-v4-pro-0424, relace/deepseek-v4-pro-0813, relace/deepseek-v4.1-flash, relace/deepseek-v4.1-flash-1017, relace/glm-5.3, tencent/hy4, tencent/hy4-flash, vertex/gemini-4-neon, vertex/gemini-4-neon@eu, vertex/gemini-4-neon@us
+- Removed: azure/gpt-5.6-luna@polandcentral, azure/gpt-5.6-sol@polandcentral, azure/gpt-5.6-terra@polandcentral, azure/gpt-6-luna@polandcentral, azure/gpt-6-sol@polandcentral, azure/gpt-6.1-sol@polandcentral, azure/gpt-6.1-terra@polandcentral, nebius/deepseek-v4-pro-0424, nebius/zai-org/glm-5.1, sference/kimi-k3, xiaomi/mimo-v2.5, xiaomi/mimo-v2.5-pro
+
+### llm:opencode-go
+- Removed: opencode-go/glm-5.2
+
+### llm:opencode-zen
+- Added: opencode/gemini-4-neon, opencode/gpt-6.2-astra, opencode/gpt-6.2-sol, opencode/tidepool-alpha-free
+- Removed: opencode/gemini-3-flash, opencode/gemini-3.1-pro, opencode/glm-5, opencode/glm-5.1, opencode/glm-5.2, opencode/glm-5.3-flash-free, opencode/inkling-2-small-free, opencode/minimax-m3.1-flash-free
+
+### llm:huggingface
+- Added: ByteDance-Seed/UI-TARS-1.5-7B, Gryphe/MythoMax-L2-13b, LiquidAI/LFM3-1.7B, NousResearch/Hermes-4-405B, Qwen/Qwen2.5-Coder-32B-Instruct, Qwen/Qwen3-30B-A3B-Instruct-2507, Qwen/Qwen3-Coder-30B-A3B-Instruct, Qwen/Qwen3-Coder-480B-A35B-Instruct, Qwen/Qwen3-Coder-Next, Qwen/Qwen3-VL-8B-Instruct, RadixArk/DaisyRose-27B, RekaAI/reka-edge-2603, Sao10K/L3-8B-Lunaris-v1, Undi95/ReMM-SLERP-L2-13B, anthracite-org/magnum-v4-72b, cyankiwi/Qwen3.5-9B-AWQ-4bit, deepseek-ai/DeepSeek-V3.2-Exp, dphn/Dolphin-Mistral-24B-Venice-Edition, google/gemma-2-27b-it, meta-llama/Llama-3.1-70B-Instruct, meta-llama/Llama-3.2-3B-Instruct, meta-llama/Llama-4-Maverick-17B-128E-Instruct, mistralai/Mistral-Large-4-1T-A52B, moondream/moondream3-preview, moondream/moondream3.1-9B-A2B, moonshotai/Kimi-K2-Thinking, nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16, nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8, nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16, nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16, tencent/Hy4, tencent/Hy4-flash
+- Removed: CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8
+
+### llm:context-windows
+- Removed: grok-build-0.1
+
+### image:openrouter
+- Added: microsoft/mai-image-2.7, microsoft/mai-image-2.7-flash
+
+### llm:copilot
+- Added: gemini-4-neon
+
+### llm:openai
+- Added: gpt-6.2-astra, gpt-6.2-astra-pro, gpt-6.2-astra-pro:batch, gpt-6.2-astra:batch, gpt-6.2-sol, gpt-6.2-sol-pro, gpt-6.2-sol-pro:batch, gpt-6.2-sol:batch
+
+### llm:xai
+- Removed: grok-build-0.1, grok-code-fast, grok-code-fast-1, grok-code-fast-1-0825
+
+## 2026-11-20
+
+### llm:context-windows
+- Added: gemini-3.5-flash-lite, gemini-3.6-flash, gemini-3.8-flash, gemini-4-argon, gemini-4-carbon, gemini-4-hydrogen, gemini-4-neon

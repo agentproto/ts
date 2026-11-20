@@ -601,7 +601,7 @@ const TRANSIENT = ['rate-limit', 'upstream-5xx', 'no-output-stall']
 const FREE_ROTATION = [
   { model: 'opencode/mimo-v2.6-flash-free' },
   { model: 'opencode/deepseek-v4.1-flash-free' },
-  { model: 'opencode/glm-5.3-flash-free' },
+  { model: 'opencode-go/glm-5.3-flash' },
 ]
 const FULL_RETRY = {
   on: [...TRANSIENT, 'usage-limit'],

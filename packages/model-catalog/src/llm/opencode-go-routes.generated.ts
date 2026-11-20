@@ -60,14 +60,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "google",
     provider: "opencode-go",
   },
-  "opencode-go/glm-5.2": {
-    inputPer1M: 1.4,
-    outputPer1M: 4.4,
-    cacheReadMultiplier: 0.185714,
-    addedAt: "2026-06-13",
-    vendor: "z-ai",
-    provider: "opencode-go",
-  },
   "opencode-go/glm-5.3": {
     inputPer1M: 1.4,
     outputPer1M: 4.4,

@@ -15,8 +15,10 @@ import {
   saveModelList,
   seedModelListSource,
   DEFAULT_ROTATION_LIST_ID,
+  SEED_MODEL_LISTS,
   ZERO_COST_LIST_ID,
 } from "../model-list-store.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
 let home: string
 
@@ -36,22 +38,20 @@ describe("model list store", () => {
   it("writes both seeds when the file is absent, mode 0600", async () => {
     const file = await loadModelLists()
     expect(file.version).toBe(1)
-    expect(file.lists).toEqual([
-      {
-        id: ZERO_COST_LIST_ID,
-        label: "Zero-cost models",
-        include: [{ kind: "tag", value: "price:zero" }],
-      },
-      {
-        id: DEFAULT_ROTATION_LIST_ID,
-        label: "Default rotation targets",
-        ids: [
-          "opencode/mimo-v2.6-flash-free",
-          "opencode/deepseek-v4.1-flash-free",
-          "opencode/glm-5.3-flash-free",
-        ],
-      },
-    ])
+    // Which models the rotation names is the seed's business, not this
+    // test's: assert the persisted file mirrors the shipped seeds AND that the
+    // seeds have the expected shape (so the mirror check cannot pass on an
+    // empty or malformed seed).
+    expect(SEED_MODEL_LISTS.map(l => l.id)).toEqual([ZERO_COST_LIST_ID, DEFAULT_ROTATION_LIST_ID])
+    const rotation = SEED_MODEL_LISTS.find(l => l.id === DEFAULT_ROTATION_LIST_ID)
+    expect(rotation?.ids?.length).toBeGreaterThanOrEqual(2)
+    expect(file.lists).toEqual([...SEED_MODEL_LISTS])
+    expect(file.lists[0]).toEqual({
+      id: ZERO_COST_LIST_ID,
+      label: "Zero-cost models",
+      include: [{ kind: "tag", value: "price:zero" }],
+    })
+    expect(file.lists.map(l => l.id)).toEqual([ZERO_COST_LIST_ID, DEFAULT_ROTATION_LIST_ID])
     const mode = (await stat(modelListsPath())).mode & 0o777
     expect(mode).toBe(0o600)
     expect(JSON.parse(await readFile(modelListsPath(), "utf8"))).toMatchObject({
@@ -69,7 +69,7 @@ describe("model list store", () => {
           {
             id: DEFAULT_ROTATION_LIST_ID,
             label: "Mine",
-            ids: ["opencode/big-pickle"],
+            ids: ["acme/listed-model"],
           },
         ],
       }),
@@ -83,7 +83,7 @@ describe("model list store", () => {
     expect(first.lists.find(list => list.id === DEFAULT_ROTATION_LIST_ID)).toEqual({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Mine",
-      ids: ["opencode/big-pickle"],
+      ids: ["acme/listed-model"],
     })
 
     // A second load does not duplicate the seed it just added.
@@ -102,7 +102,7 @@ describe("model list store", () => {
   it("serves the seed before boot, and refreshes the sync source on save/delete", async () => {
     expect(getModelListSource().get(ZERO_COST_LIST_ID)).toBeDefined()
     expect(seedModelListSource().get(ZERO_COST_LIST_ID)).toBeDefined()
-    expect(inModelList("big-pickle", ZERO_COST_LIST_ID, getModelListSource())).toBe(true)
+    expect(inModelList(FREE_MODEL, ZERO_COST_LIST_ID, getModelListSource())).toBe(true)
 
     await loadModelListSource()
     await saveModelList({ id: "pinned", ids: ["custom/model"] })
@@ -147,7 +147,7 @@ describe("model list store", () => {
       JSON.stringify({
         version: 1,
         lists: [
-          { id: ZERO_COST_LIST_ID, ids: ["opencode/gpt-5.1-codex"] },
+          { id: ZERO_COST_LIST_ID, ids: ["acme/paid-model"] },
           { id: "pinned", ids: ["custom/model"] },
         ],
       }),
@@ -161,7 +161,7 @@ describe("model list store", () => {
       include: [{ kind: "tag", value: "price:zero" }],
     })
     const source = modelListSourceFromLists(file.lists)
-    expect(inModelList("opencode/gpt-5.1-codex", ZERO_COST_LIST_ID, source)).toBe(false)
+    expect(inModelList("acme/paid-model", ZERO_COST_LIST_ID, source)).toBe(false)
     expect(source.get("pinned")).toEqual({ id: "pinned", ids: ["custom/model"] })
   })
 
@@ -180,10 +180,10 @@ describe("model list store", () => {
   })
 
   it("fails closed when a list is missing or cyclic instead of throwing", () => {
-    expect(isInModelList("big-pickle", "missing")).toBe(false)
+    expect(isInModelList("acme/some-model", "missing")).toBe(false)
     expect(
       isInModelList(
-        "big-pickle",
+        "acme/some-model",
         "a",
         modelListSourceFromLists([
           { id: "a", include: [{ kind: "list", id: "b" }] },

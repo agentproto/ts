@@ -53,8 +53,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # Same GitHub App as catalog-sync.yml and ci.yml. GitHub deliberately does
+      # NOT trigger workflows for events made with the default GITHUB_TOKEN, so
+      # a bump PR opened with it lands with zero checks (PR #2786, 2026-11-20).
+      # The App token is used for the checkout credentials (so the branch push
+      # fires `pull_request: synchronize`) and for opening/editing the PR (so
+      # `opened` fires). Falls back to secrets.BOT_PAT (documented in
+      # docs/review-fix-loop.md), then to GITHUB_TOKEN when neither is configured:
+      # the job still works, the PR is then checkless again.
+      - name: Mint bot token (GitHub App, optional)
+        id: bot
+        if: ${{ vars.BOT_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          token: ${{ steps.bot.outputs.token || secrets.BOT_PAT || github.token }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -192,7 +210,7 @@ jobs:
       - name: Commit, push & open PR
         if: steps.apply.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.BOT_PAT || github.token }}
         run: |
           set -e
           git config user.name "deps-updater"
@@ -264,6 +282,22 @@ jobs:
             exit 0
           fi
           git commit -m "chore(deps): weekly minor/patch bump"
+
+          # A same-day re-run finds the branch already on the remote (an earlier
+          # run pushed it). git-cas requires the local tip to descend from the
+          # expected remote sha, which a fresh checkout of main does not: the
+          # 2026-11-20 re-run died with `not-descendant`. Keep this run's tree,
+          # re-parent it onto the remote tip so the push is a fast-forward.
+          if [ -n "${{ steps.ctx.outputs.remote_sha }}" ]; then
+            RP=0
+            bash scripts/reparent-onto-remote.sh origin "$BRANCH" \
+              "${{ steps.ctx.outputs.remote_sha }}" "chore(deps): weekly minor/patch bump" || RP=$?
+            if [ "$RP" -eq 3 ]; then
+              echo "::error::head_moved: $BRANCH moved since job start; the update was not pushed. Re-run after the branch settles (this workflow never pulls, rebases or retries)."
+              exit 1
+            fi
+            [ "$RP" -eq 0 ] || { echo "::error::could not re-parent onto the existing $BRANCH (exit $RP)."; exit 1; }
+          fi
 
           # Compare-and-swap push: only update the branch if it still points
           # where the job-start `git ls-remote` found it (or is still absent).

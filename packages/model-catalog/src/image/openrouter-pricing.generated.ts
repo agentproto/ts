@@ -34,6 +34,8 @@ export const OPENROUTER_IMAGE_PRICING: Record<string, MediaPricing> = {
   "microsoft/mai-image-2.5-pro": { unit: "per_token", priceUsd: 0.000108, source: "openrouter", fetchedAt: "2026-11-02" },
   "microsoft/mai-image-2.6": { unit: "per_token", priceUsd: 0.000038, source: "openrouter", fetchedAt: "2026-11-02" },
   "microsoft/mai-image-2.6-flash": { unit: "per_token", priceUsd: 0.000019, source: "openrouter", fetchedAt: "2026-11-02" },
+  "microsoft/mai-image-2.7": { unit: "per_token", priceUsd: 0.000034, source: "openrouter", fetchedAt: "2026-11-20" },
+  "microsoft/mai-image-2.7-flash": { unit: "per_token", priceUsd: 0.00001, source: "openrouter", fetchedAt: "2026-11-20" },
   "minimax/minimax-h3-image": { unit: "per_token", priceUsd: 0.0000038, source: "openrouter", fetchedAt: "2026-11-15" },
   "minimax/minimax-h3-image-highspeed": { unit: "per_token", priceUsd: 0.0000076, source: "openrouter", fetchedAt: "2026-11-15" },
   "openai/gpt-5-image": { unit: "per_token", priceUsd: 0.00004, source: "openrouter", fetchedAt: "2026-11-02" },

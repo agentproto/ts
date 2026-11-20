@@ -18,13 +18,20 @@ import type { SandboxProvider } from "@agentproto/sandbox"
 
 import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { inModelList } from "@agentproto/model-catalog/lists"
-import { DEFAULT_ROTATION_LIST_ID, saveModelList, seedModelListSource, ZERO_COST_LIST_ID } from "../model-list-store.js"
+import { DEFAULT_ROTATION_LIST_ID, SEED_MODEL_LISTS, saveModelList, seedModelListSource, ZERO_COST_LIST_ID } from "../model-list-store.js"
 import { createGateway, type GatewayHandle } from "../index.js"
 import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry, type AgentStreamEvent } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 
-const FREE_ROTATE_IDS = ["opencode/mimo-v2.6-flash-free", "opencode/deepseek-v4.1-flash-free", "opencode/glm-5.3-flash-free"]
+// The shipped default rotation, read from the seed, never copied: its members
+// change when a model is retired. ROTATION_MEMBER is one member of it (the
+// last one: not necessarily a free model, only a rotation-list member).
+const FREE_ROTATE_IDS: string[] = [
+  ...(SEED_MODEL_LISTS.find(l => l.id === DEFAULT_ROTATION_LIST_ID)?.ids ?? []),
+]
+const ROTATION_MEMBER = FREE_ROTATE_IDS[FREE_ROTATE_IDS.length - 1]!
+const [ROT_FIRST, ROT_SECOND] = FREE_ROTATE_IDS as [string, string]
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -142,11 +149,11 @@ describe("agent_start turnRetry default for executor agents", () => {
     cleanups.push(() => Promise.resolve(registry.shutdown()))
     const deps = makeDeps(registry)
 
-    const free = await descriptorOf(deps, { role: "executor", model: "opencode/glm-5.3-flash-free" })
+    const free = await descriptorOf(deps, { role: "executor", model: ROTATION_MEMBER })
     const policy = turnRetryOf(free)
     expect(policy?.rotateOn).toEqual(["rate-limit", "upstream-5xx", "no-output-stall"])
     expect(policy?.rotate?.map(t => t.model)).toEqual(
-      FREE_ROTATE_IDS.filter(m => m !== "opencode/glm-5.3-flash-free"),
+      FREE_ROTATE_IDS.filter(m => m !== ROTATION_MEMBER),
     )
     for (const target of policy?.rotate ?? []) {
       expect(inModelList(target.model, ZERO_COST_LIST_ID, seedModelListSource())).toBe(true)
@@ -252,11 +259,11 @@ describe("agent_start turnRetry default for sandbox agents", () => {
 })
 
 describe("default rotation is a list, filtered by the session policy", () => {
-  it("defaultTurnRetryForSpawn for opencode/glm-5.3-flash-free is the default-rotation list minus the current model", async () => {
+  it("defaultTurnRetryForSpawn for a free opencode model is the default-rotation list minus the current model", async () => {
     const { defaultTurnRetryForSpawn, validateTurnRetryRotate } = await import("../turn-retry-policy.js")
-    const input = defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free")
+    const input = defaultTurnRetryForSpawn(ROTATION_MEMBER)
     expect(input.rotate?.map(t => t.model)).toEqual(
-      FREE_ROTATE_IDS.filter(m => m !== "opencode/glm-5.3-flash-free"),
+      FREE_ROTATE_IDS.filter(m => m !== ROTATION_MEMBER),
     )
     expect(validateTurnRetryRotate(input.rotate, { allow: [ZERO_COST_LIST_ID] })).toBeUndefined()
     expect(validateTurnRetryRotate(input.rotate, undefined)).toBeUndefined()
@@ -265,15 +272,15 @@ describe("default rotation is a list, filtered by the session policy", () => {
   it("a model outside default-rotation gets no default rotate list", async () => {
     const { defaultTurnRetryForSpawn } = await import("../turn-retry-policy.js")
     expect(defaultTurnRetryForSpawn("claude-sonnet-4-5").rotate).toBeUndefined()
-    expect(defaultTurnRetryForSpawn("opencode/big-pickle").rotate).toBeUndefined()
+    expect(defaultTurnRetryForSpawn("acme/unlisted-model").rotate).toBeUndefined()
     expect(defaultTurnRetryForSpawn(undefined).rotate).toBeUndefined()
   })
 
   it("resolveTurnRetryPolicy leaves the default's rotate list intact", async () => {
     const { defaultTurnRetryForSpawn, resolveTurnRetryPolicy } = await import("../turn-retry-policy.js")
-    const policy = resolveTurnRetryPolicy(defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free"))
+    const policy = resolveTurnRetryPolicy(defaultTurnRetryForSpawn(ROTATION_MEMBER))
     expect(policy.rotate?.map(t => t.model)).toEqual(
-      FREE_ROTATE_IDS.filter(m => m !== "opencode/glm-5.3-flash-free"),
+      FREE_ROTATE_IDS.filter(m => m !== ROTATION_MEMBER),
     )
   })
 
@@ -282,12 +289,12 @@ describe("default rotation is a list, filtered by the session policy", () => {
     await saveModelList({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Default rotation targets",
-      ids: ["opencode/big-pickle", "opencode/glm-5.3-flash-free", "opencode/deepseek-v4.1-flash-free"],
+      ids: ["acme/unlisted-model", ROTATION_MEMBER, ROT_SECOND],
     })
-    const input = defaultTurnRetryForSpawn("opencode/deepseek-v4.1-flash-free")
+    const input = defaultTurnRetryForSpawn(ROT_SECOND)
     expect(input.rotate?.map(t => t.model)).toEqual([
-      "opencode/big-pickle",
-      "opencode/glm-5.3-flash-free",
+      "acme/unlisted-model",
+      ROTATION_MEMBER,
     ])
   })
 
@@ -296,14 +303,14 @@ describe("default rotation is a list, filtered by the session policy", () => {
     await saveModelList({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Default rotation targets",
-      ids: ["opencode/gpt-5.1-codex", "opencode/big-pickle", "opencode/glm-5.3-flash-free"],
+      ids: ["acme/codex-model", "acme/unlisted-model", ROTATION_MEMBER],
     })
-    await saveModelList({ id: "no-codex", ids: ["opencode/gpt-5.1-codex"] })
+    await saveModelList({ id: "no-codex", ids: ["acme/codex-model"] })
     expect(
-      defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free").rotate?.map(t => t.model),
-    ).toEqual(["opencode/gpt-5.1-codex", "opencode/big-pickle"])
+      defaultTurnRetryForSpawn(ROTATION_MEMBER).rotate?.map(t => t.model),
+    ).toEqual(["acme/codex-model", "acme/unlisted-model"])
     expect(
-      defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free", { block: ["no-codex"] }).rotate?.map(t => t.model),
-    ).toEqual(["opencode/big-pickle"])
+      defaultTurnRetryForSpawn(ROTATION_MEMBER, { block: ["no-codex"] }).rotate?.map(t => t.model),
+    ).toEqual(["acme/unlisted-model"])
   })
 })

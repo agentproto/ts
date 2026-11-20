@@ -116,6 +116,7 @@
         "name": "GLM-5.2",
         "family": "glm",
         "release_date": "2026-06-13",
+        "status": "deprecated",
         "cost": {
           "input": 1.4,
           "output": 4.4,

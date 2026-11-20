@@ -1,6 +1,138 @@
 {
   "data": [
     {
+      "id": "microsoft/mai-image-2.7-flash",
+      "canonical_slug": "microsoft/mai-image-2.7-flash-20261117",
+      "hugging_face_id": null,
+      "name": "Microsoft AI: MAI-Image-2.7 Flash",
+      "created": 1794938265,
+      "description": "MAI-Image-2.7 Flash is the lower-latency, lower-cost member of the [MAI-Image-2.7](/microsoft/mai-image-2.7) family from Microsoft AI, built for latency-sensitive, high-throughput image generation and editing at comparable quality to the precision tier. It...",
+      "context_length": 4096,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000175",
+        "completion": "0",
+        "image_token": "0.00001",
+        "image_output": "0.00001"
+      },
+      "top_provider": {
+        "context_length": 4096,
+        "max_completion_tokens": 1024,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "max_completion_tokens",
+        "max_tokens",
+        "temperature"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/microsoft/mai-image-2.7-flash-20261117/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ],
+      "benchmarks": {
+        "design_arena": [
+          {
+            "arena": "models",
+            "category": "image",
+            "elo": 1314,
+            "win_rate": 62,
+            "rank": 3
+          },
+          {
+            "arena": "models",
+            "category": "imageediting",
+            "elo": 1275,
+            "win_rate": 61.9,
+            "rank": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "microsoft/mai-image-2.7",
+      "canonical_slug": "microsoft/mai-image-2.7-20261117",
+      "hugging_face_id": null,
+      "name": "Microsoft AI: MAI-Image-2.7",
+      "created": 1794938261,
+      "description": "MAI-Image-2.7 is an image generation and editing model from Microsoft AI, the precision tier of the MAI-Image-2.7 family alongside the faster [MAI-Image-2.7 Flash](/microsoft/mai-image-2.7-flash). It is suited for design-ready visuals and...",
+      "context_length": 4096,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000005",
+        "completion": "0",
+        "image_token": "0.000034",
+        "image_output": "0.000034"
+      },
+      "top_provider": {
+        "context_length": 4096,
+        "max_completion_tokens": 1024,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "max_completion_tokens",
+        "max_tokens",
+        "temperature"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/microsoft/mai-image-2.7-20261117/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ],
+      "benchmarks": {
+        "design_arena": [
+          {
+            "arena": "models",
+            "category": "image",
+            "elo": 1338,
+            "win_rate": 64.5,
+            "rank": 1
+          },
+          {
+            "arena": "models",
+            "category": "imageediting",
+            "elo": 1276,
+            "win_rate": 62.1,
+            "rank": 1
+          }
+        ]
+      }
+    },
+    {
       "id": "recraft/recraft-v4.1-flash-v2",
       "canonical_slug": "recraft/recraft-v4.1-flash-v2-20261113",
       "hugging_face_id": null,
@@ -1048,16 +1180,16 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1302,
-            "win_rate": 61.1,
-            "rank": 2
+            "elo": 1296,
+            "win_rate": 60.8,
+            "rank": 4
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1223,
-            "win_rate": 51.8,
-            "rank": 4
+            "elo": 1215,
+            "win_rate": 50.5,
+            "rank": 6
           },
           {
             "arena": "models",
@@ -1128,16 +1260,16 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1291,
-            "win_rate": 60.4,
-            "rank": 3
+            "elo": 1284,
+            "win_rate": 60,
+            "rank": 5
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1235,
-            "win_rate": 56.9,
-            "rank": 2
+            "elo": 1227,
+            "win_rate": 55.9,
+            "rank": 4
           },
           {
             "arena": "models",
@@ -1991,9 +2123,9 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1082,
+            "elo": 1075,
             "win_rate": 46.6,
-            "rank": 7
+            "rank": 9
           }
         ]
       }
@@ -2253,9 +2385,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1344,
-            "win_rate": 68.8,
-            "rank": 1
+            "elo": 1337,
+            "win_rate": 67.9,
+            "rank": 2
           },
           {
             "arena": "models",
@@ -2267,9 +2399,9 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1284,
-            "win_rate": 62.1,
-            "rank": 1
+            "elo": 1276,
+            "win_rate": 60.7,
+            "rank": 2
           }
         ]
       },
@@ -2407,16 +2539,16 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1216,
-            "win_rate": 54.5,
-            "rank": 6
+            "elo": 1210,
+            "win_rate": 54.4,
+            "rank": 8
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1203,
-            "win_rate": 53.1,
-            "rank": 5
+            "elo": 1195,
+            "win_rate": 52.4,
+            "rank": 7
           },
           {
             "arena": "models",
@@ -3112,9 +3244,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1258,
+            "elo": 1252,
             "win_rate": 65.1,
-            "rank": 4
+            "rank": 6
           },
           {
             "arena": "models",
@@ -3292,9 +3424,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1045,
+            "elo": 1039,
             "win_rate": 38.6,
-            "rank": 12
+            "rank": 14
           },
           {
             "arena": "models",
@@ -3306,9 +3438,9 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1032,
-            "win_rate": 38.6,
-            "rank": 8
+            "elo": 1026,
+            "win_rate": 38.5,
+            "rank": 10
           }
         ]
       }
@@ -3477,9 +3609,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1182,
-            "win_rate": 54.8,
-            "rank": 7
+            "elo": 1175,
+            "win_rate": 54.7,
+            "rank": 9
           },
           {
             "arena": "models",
@@ -3551,9 +3683,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1177,
-            "win_rate": 49.1,
-            "rank": 8
+            "elo": 1171,
+            "win_rate": 49,
+            "rank": 10
           },
           {
             "arena": "models",
@@ -3565,9 +3697,9 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1111,
-            "win_rate": 46.7,
-            "rank": 6
+            "elo": 1105,
+            "win_rate": 46.6,
+            "rank": 8
           }
         ]
       }
@@ -3652,9 +3784,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1225,
+            "elo": 1219,
             "win_rate": 62.1,
-            "rank": 5
+            "rank": 7
           },
           {
             "arena": "models",
@@ -3666,9 +3798,9 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1227,
+            "elo": 1221,
             "win_rate": 66,
-            "rank": 3
+            "rank": 5
           }
         ]
       },
@@ -3754,9 +3886,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1165,
+            "elo": 1159,
             "win_rate": 51,
-            "rank": 11
+            "rank": 13
           },
           {
             "arena": "models",
@@ -3849,9 +3981,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1173,
+            "elo": 1167,
             "win_rate": 53.9,
-            "rank": 9
+            "rank": 11
           },
           {
             "arena": "models",
@@ -3944,9 +4076,9 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1168,
+            "elo": 1162,
             "win_rate": 55.6,
-            "rank": 10
+            "rank": 12
           },
           {
             "arena": "models",
@@ -4061,7 +4193,7 @@
       },
       "top_provider": {
         "context_length": null,
-        "max_completion_tokens": 64000,
+        "max_completion_tokens": 128000,
         "is_moderated": false
       },
       "per_request_limits": null,
@@ -4135,7 +4267,7 @@
       },
       "top_provider": {
         "context_length": null,
-        "max_completion_tokens": 64000,
+        "max_completion_tokens": 128000,
         "is_moderated": false
       },
       "per_request_limits": null,
@@ -4180,7 +4312,7 @@
       ]
     }
   ],
-  "total_count": 72,
+  "total_count": 74,
   "links": {
     "next": null
   }

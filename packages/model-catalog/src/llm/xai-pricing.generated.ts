@@ -1,4 +1,4 @@
-// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-xai.mjs (data: xAI /v1/models native pricing, synced 2026-11-16T14:16:37.966Z)
+// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-xai.mjs (data: xAI /v1/models native pricing, synced 2026-11-20T16:08:19.778Z)
 //
 // Prices are xAI's NATIVE rates (no OpenRouter passthrough): raw
 // `prompt_text_token_price` / `completion_text_token_price` /
@@ -62,9 +62,5 @@ export const XAI_GENERATED_PRICING = {
   "grok-4.5-latest": { inputPer1M: 2, outputPer1M: 6, cacheReadMultiplier: 0.15, tiers: [{ aboveInputTokens: 200000, inputPer1M: 4, outputPer1M: 12, cacheReadMultiplier: 0.15 }], vendor: "xai", provider: "xai" },
   "grok-4.6": { inputPer1M: 2, outputPer1M: 6, cacheReadMultiplier: 0.25, tiers: [{ aboveInputTokens: 200000, inputPer1M: 4, outputPer1M: 12, cacheReadMultiplier: 0.25 }], vendor: "xai", provider: "xai" },
   "grok-4.7": { inputPer1M: 2, outputPer1M: 6, cacheReadMultiplier: 0.25, tiers: [{ aboveInputTokens: 200000, inputPer1M: 4, outputPer1M: 12, cacheReadMultiplier: 0.25 }], vendor: "xai", provider: "xai" },
-  "grok-build-0.1": { inputPer1M: 1, outputPer1M: 2, cacheReadMultiplier: 0.2, tiers: [{ aboveInputTokens: 200000, inputPer1M: 2, outputPer1M: 4, cacheReadMultiplier: 0.2 }], vendor: "xai", provider: "xai" },
   "grok-build-latest": { inputPer1M: 2, outputPer1M: 6, cacheReadMultiplier: 0.15, tiers: [{ aboveInputTokens: 200000, inputPer1M: 4, outputPer1M: 12, cacheReadMultiplier: 0.15 }], vendor: "xai", provider: "xai" },
-  "grok-code-fast": { inputPer1M: 1, outputPer1M: 2, cacheReadMultiplier: 0.2, tiers: [{ aboveInputTokens: 200000, inputPer1M: 2, outputPer1M: 4, cacheReadMultiplier: 0.2 }], vendor: "xai", provider: "xai" },
-  "grok-code-fast-1": { inputPer1M: 1, outputPer1M: 2, cacheReadMultiplier: 0.2, tiers: [{ aboveInputTokens: 200000, inputPer1M: 2, outputPer1M: 4, cacheReadMultiplier: 0.2 }], vendor: "xai", provider: "xai" },
-  "grok-code-fast-1-0825": { inputPer1M: 1, outputPer1M: 2, cacheReadMultiplier: 0.2, tiers: [{ aboveInputTokens: 200000, inputPer1M: 2, outputPer1M: 4, cacheReadMultiplier: 0.2 }], vendor: "xai", provider: "xai" },
 } as const satisfies Record<string, XAIPricingEntry>

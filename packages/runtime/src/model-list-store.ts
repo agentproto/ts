@@ -94,7 +94,7 @@ export const SEED_MODEL_LISTS: readonly ModelList[] = [
     ids: [
       "opencode/mimo-v2.6-flash-free",
       "opencode/deepseek-v4.1-flash-free",
-      "opencode/glm-5.3-flash-free",
+      "opencode-go/glm-5.3-flash",
     ],
   },
 ]

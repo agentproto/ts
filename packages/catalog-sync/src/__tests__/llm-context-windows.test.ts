@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { GOOGLE_NATIVE_MODEL_IDS } from "../generators/google-native-model-ids.mjs"
 import { llmContextWindowsGenerator } from "../generators/llm-context-windows.js"
 import { runGenerators } from "../runner.js"
 import type { GeneratorContext } from "../types.js"
@@ -70,9 +71,9 @@ describe("llm:context-windows generator", () => {
     expect(src).toContain('"grok-4.5": { contextWindow: 500000, provider: "xai" }')
     expect(src).toContain('"kimi-k2.6": { contextWindow: 262144, provider: "moonshot" }')
     expect(src).toContain('"codestral-2508": { contextWindow: 256000, provider: "mistral" }')
-    // Google — sourced from OpenRouter, remapped from `google/gemini-2.5-pro`
-    // to the bare native id, with maxOutput from `top_provider.max_completion_tokens`.
-    expect(src).toContain('"gemini-2.5-pro": { contextWindow: 1048576, maxOutput: 65536, provider: "google" }')
+    // Google — sourced from OpenRouter, remapped to bare native ids. Which
+    // ids are confirmed is data (GOOGLE_NATIVE_MODEL_IDS, extended on every
+    // Google release), so no id is named here: see the allow-list test below.
 
     // xAI's null-context models (video) are excluded, not emitted as 0/null.
     expect(src).not.toContain("grok-imagine-video")
@@ -81,17 +82,33 @@ describe("llm:context-windows generator", () => {
     // surfaced as `displayName` for mistral entries.
     expect(src).not.toContain('"mistral-code-latest": { contextWindow: 256000, displayName:')
 
-    // Google — only the 7 confirmed native ids are emitted. Batch routes,
-    // image/preview/customtools variants, non-Gemini families, and newer
-    // unconfirmed Gemini lines are all skipped, not guessed.
-    expect(src).not.toContain('"gemini-2.5-pro:batch"')
-    expect(src).not.toContain('"gemini-3-pro-image"')
-    expect(src).not.toContain('"gemini-2.5-pro-preview"')
-    expect(src).not.toContain('"gemini-3.1-pro-preview-customtools"')
-    expect(src).not.toContain('"gemma-3-27b-it"')
-    expect(src).not.toContain('"lyria-3-pro-preview"')
-    expect(src).not.toContain('"gemini-3.6-flash"')
-    expect(src).not.toContain('"gemini-3.7-flash"')
+  })
+
+  it("emits Google entries only for the confirmed native allow-list, nothing guessed", async () => {
+    const files = await llmContextWindowsGenerator.generate(offlineCtx())
+    const src = files[OUTPUT_PATH]!
+    const emitted = [...src.matchAll(/^\s+"([^"]+)": \{[^}]*provider: "google"/gm)].map(m => m[1]!)
+    expect(emitted.length).toBeGreaterThan(0)
+    // Every emitted Google id is allow-listed (batch routes, image/preview
+    // variants, other families and unconfirmed lines are skipped)...
+    for (const id of emitted) expect(GOOGLE_NATIVE_MODEL_IDS.has(id), id).toBe(true)
+    // ...and the generator drops the Google routes of the snapshot that are
+    // NOT allow-listed, so the assertion above is not vacuous.
+    const snapshot = JSON.parse(await readFile(join(SNAPSHOTS_DIR, "llm-openrouter.json"), "utf8")) as {
+      data: Array<{ id: string }>
+    }
+    const googleRoutes = snapshot.data.map(m => m.id).filter(id => id.startsWith("google/"))
+    const notAllowed = googleRoutes.filter(id => !GOOGLE_NATIVE_MODEL_IDS.has(id.slice("google/".length)))
+    expect(notAllowed.length).toBeGreaterThan(0)
+    for (const id of notAllowed) expect(emitted).not.toContain(id.slice("google/".length))
+    // Values come from the snapshot, never guessed: each emitted Google entry
+    // carries the snapshot route's context length.
+    const byId = new Map(snapshot.data.map(m => [m.id, m as { id: string; context_length?: number }]))
+    for (const id of emitted) {
+      const route = byId.get(`google/${id}`)
+      expect(route, `google/${id} in the snapshot`).toBeDefined()
+      expect(src).toContain(`"${id}": { contextWindow: ${route!.context_length}`)
+    }
   })
 
   it("is byte-identical across two generate calls (deterministic)", async () => {
