@@ -6,6 +6,7 @@
  * Subcommands:
  *   plan --base <git-ref>     print the matrix of adapters whose pin differs
  *                             from <git-ref> (JSON: {"include":[{"adapter":..}]})
+ *   verdict --results <dir>   fold the per-adapter results into a loud summary
  *   run  --adapter <slug>     real spawn + one turn; writes a result and exits
  *        [--cli <cli.mjs>] [--timeout-ms <n>] [--result-out <file>]
  *
@@ -21,7 +22,7 @@
  */
 
 import { execFile, spawn } from "node:child_process"
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -101,9 +102,10 @@ export function diffPins(basePins, headPins) {
   const changed = new Map()
   for (const pin of headPins) {
     const before = base.get(key(pin))
-    if (before !== undefined && before !== pin.pinned) {
+    // A pin that is new on the head side counts as changed (before === undefined).
+    if (before !== pin.pinned) {
       const list = changed.get(pin.adapter) ?? []
-      list.push({ package: pin.package, from: before, to: pin.pinned })
+      list.push({ package: pin.package, from: before ?? null, to: pin.pinned })
       changed.set(pin.adapter, list)
     }
   }
@@ -203,6 +205,25 @@ function report(result) {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`)
 }
 
+/** Fold per-adapter results into a loud verdict. Pure. */
+export function buildVerdict(results) {
+  const proven = results.filter((r) => r.status === "proven").map((r) => r.adapter)
+  const skipped = results.filter((r) => r.status === "skipped")
+  const failed = results.filter((r) => r.status === "failed")
+  const lines = ["## Proof verdict", ""]
+  lines.push(`- proven (really exercised): ${proven.length ? proven.join(", ") : "NONE"}`)
+  lines.push(`- skipped (NOT proven): ${skipped.length ? skipped.map((r) => `${r.adapter} (${r.detail})`).join("; ") : "none"}`)
+  lines.push(`- failed: ${failed.length ? failed.map((r) => r.adapter).join(", ") : "none"}`)
+  const warning =
+    results.length === 0
+      ? "no smoke result was produced for the planned adapters: nothing is proven"
+      : proven.length === 0 && failed.length === 0
+        ? "every planned adapter was skipped: this PR's pin change is NOT proven by this check"
+        : null
+  if (warning) lines.push("", `**${warning}**`)
+  return { text: `${lines.join("\n")}\n`, warning, proven, skipped, failed }
+}
+
 function flag(argv, name) {
   const index = argv.indexOf(name)
   return index === -1 ? null : argv[index + 1]
@@ -228,6 +249,18 @@ async function main() {
     const out = flag(argv, "--result-out")
     if (out) writeFileSync(out, `${JSON.stringify(result)}\n`)
     process.exitCode = result.status === "failed" ? 1 : 0
+    return
+  }
+  if (command === "verdict") {
+    const dir = flag(argv, "--results")
+    if (!dir) throw new Error("verdict needs --results <dir>")
+    const results = existsSync(dir)
+      ? readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")))
+      : []
+    const verdict = buildVerdict(results)
+    console.log(verdict.text)
+    if (verdict.warning) console.log(`::warning title=Adapter pin smoke proves nothing::${verdict.warning}`)
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, verdict.text)
     return
   }
   throw new Error("usage: adapter-pin-smoke.mjs plan --base <ref> | run --adapter <slug>")

@@ -69,6 +69,12 @@ test("rewrites pkg@version and the exact range guard, nothing else", () => {
   }
 })
 
+test("does not match a longer package name that ends with the same name", () => {
+  const { text, count } = rewriteText("x other-alpha@1.2.0 and @scope/alpha@1.2.0 and alpha@1.2.0", "alpha", "1.2.0", "1.3.0")
+  assert.equal(count, 1)
+  assert.equal(text, "x other-alpha@1.2.0 and @scope/alpha@1.2.0 and alpha@1.3.0")
+})
+
 test("applyBumps edits src, tests and docs but not CHANGELOG, and reports the rest", () => {
   const source = fixtureDir()
   try {

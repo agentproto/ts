@@ -58,7 +58,7 @@ function listFiles(dir) {
 
 /** Pure text rewrite: `pkg@from` -> `pkg@to`, and an exact `range: "=from"` guard. */
 export function rewriteText(text, pkg, from, to) {
-  const spec = new RegExp(`${escapeRegExp(pkg)}@${escapeRegExp(from)}(?![\\w-]|\\.\\d)`, "g")
+  const spec = new RegExp(`(?<![\\w@./-])${escapeRegExp(pkg)}@${escapeRegExp(from)}(?![\\w-]|\\.\\d)`, "g")
   let count = 0
   let next = text.replace(spec, () => {
     count++

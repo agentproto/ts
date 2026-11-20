@@ -5,6 +5,7 @@ import {
   PROMPT,
   RECIPES,
   diffPins,
+  buildVerdict,
   evaluateReply,
   pickFreeModel,
   resolveRecipe,
@@ -59,7 +60,7 @@ test("returns null when no model is free or the output is garbage", () => {
   assert.equal(pickFreeModel("prov/x\n{ not json\n}\n"), null)
 })
 
-test("diffPins lists only adapters whose pin changed", () => {
+test("diffPins lists adapters whose pin changed or is new", () => {
   const base = [
     { adapter: "a", package: "pa", pinned: "1.0.0" },
     { adapter: "b", package: "pb", pinned: "2.0.0" },
@@ -74,6 +75,27 @@ test("diffPins lists only adapters whose pin changed", () => {
   assert.deepEqual(diffPins(base, head), [
     { adapter: "a", changes: [{ package: "pa", from: "1.0.0", to: "1.1.0" }] },
     { adapter: "c", changes: [{ package: "pc", from: "3.0.0", to: "3.0.1" }] },
+    { adapter: "new", changes: [{ package: "pn", from: null, to: "1.0.0" }] },
   ])
   assert.deepEqual(diffPins(head, head), [])
+})
+
+test("diffPins also plans a pin that is new on the head side", () => {
+  assert.deepEqual(diffPins([], [{ adapter: "n", package: "pn", pinned: "1.0.0" }]), [
+    { adapter: "n", changes: [{ package: "pn", from: null, to: "1.0.0" }] },
+  ])
+})
+
+test("the verdict warns loudly when nothing was proven", () => {
+  const skippedOnly = buildVerdict([{ adapter: "codex", status: "skipped", detail: "no credential" }])
+  assert.match(skippedOnly.warning, /NOT proven/)
+  assert.match(skippedOnly.text, /proven \(really exercised\): NONE/)
+  assert.match(buildVerdict([]).warning, /nothing is proven/)
+  const mixed = buildVerdict([
+    { adapter: "opencode", status: "proven", detail: "" },
+    { adapter: "codex", status: "skipped", detail: "no credential" },
+  ])
+  assert.equal(mixed.warning, null)
+  assert.deepEqual(mixed.proven, ["opencode"])
+  assert.match(mixed.text, /skipped \(NOT proven\): codex/)
 })

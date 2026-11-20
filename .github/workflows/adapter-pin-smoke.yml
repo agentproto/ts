@@ -109,8 +109,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build local agentproto CLI + adapter
-        run: pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ matrix.adapter }}..."
+        run: pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${ADAPTER}..."
         env:
+          ADAPTER: ${{ matrix.adapter }}
           TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -118,7 +119,54 @@ jobs:
 
       - name: Smoke turn (${{ matrix.adapter }})
         env:
+          ADAPTER: ${{ matrix.adapter }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: node scripts/adapter-pin-smoke.mjs run --adapter "${{ matrix.adapter }}" --timeout-ms 240000
+        run: node scripts/adapter-pin-smoke.mjs run --adapter "$ADAPTER" --timeout-ms 240000 --result-out "$RUNNER_TEMP/result.json"
+
+      - name: Keep the result for the summary job
+        if: always()
+        env:
+          ADAPTER: ${{ matrix.adapter }}
+        run: |
+          mkdir -p smoke-result
+          if [ -f "$RUNNER_TEMP/result.json" ]; then
+            cp "$RUNNER_TEMP/result.json" "smoke-result/$ADAPTER.json"
+          else
+            printf '{"adapter":"%s","status":"failed","detail":"no result written"}\n' "$ADAPTER" > "smoke-result/$ADAPTER.json"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pin-smoke-${{ matrix.adapter }}
+          path: smoke-result/
+          retention-days: 7
+
+  verdict:
+    name: Proof verdict
+    needs: [plan, smoke]
+    if: ${{ always() && needs.plan.outputs.count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pin-smoke-*
+          path: results
+          merge-multiple: true
+
+      # Loud, never red: a PR whose only rows are skipped must not read as
+      # proof. This job states exactly which adapters were exercised.
+      - name: Summarize what is actually proven
+        env:
+          PLANNED: ${{ needs.plan.outputs.matrix }}
+        run: node scripts/adapter-pin-smoke.mjs verdict --results results

@@ -99,6 +99,9 @@ jobs:
       # (no network: it reads the JSON produced above).
       - name: Bump drifted pins
         id: bump
+        # Fails soft: the issue report below must still run. The steps that
+        # push a PR check `steps.bump.outcome == 'success'` themselves.
+        continue-on-error: true
         run: |
           node scripts/bump-adapter-pins.mjs --report /tmp/adapter-pins.json \
             --plan-out /tmp/adapter-pins-plan.json --body-out /tmp/adapter-pins-pr.md
@@ -110,7 +113,8 @@ jobs:
       # changeset. Written deterministically from the working-tree diff, with a
       # unique name so it diffs as ADDED against main (see the script header).
       - name: Write changeset for the bumped adapters
-        if: steps.bump.outputs.count != '0'
+        # An empty `count` (the bump step died) must not pass: `'' != '0'` is true.
+        if: ${{ steps.bump.outcome == 'success' && steps.bump.outputs.count != '' && steps.bump.outputs.count != '0' }}
         run: |
           node scripts/write-catalog-changeset.mjs \
             --out ".changeset/adapter-pins-auto-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD).md" \
@@ -120,7 +124,8 @@ jobs:
       # updates the branch and edits the existing PR, so a weekly run never opens
       # a second one. Failure here must not hide the issue report below.
       - name: Open or update pin PR
-        if: steps.bump.outputs.count != '0'
+        # Same guard: a half-applied bump is never pushed.
+        if: ${{ steps.bump.outcome == 'success' && steps.bump.outputs.count != '' && steps.bump.outputs.count != '0' }}
         continue-on-error: true
         uses: peter-evans/create-pull-request@v7
         with:
@@ -137,7 +142,9 @@ jobs:
       # Dedup: look up the fixed title first and edit its body, so a weekly run
       # never opens a fresh issue per drifted pin.
       - name: Open or update tracking issue
-        if: steps.pins.outputs.drifted == 'true'
+        # `!cancelled()` so a failure in the bump/changeset steps above (which
+        # carry an implicit success()) can never skip the fallback report.
+        if: ${{ !cancelled() && steps.pins.outputs.drifted == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -156,7 +163,7 @@ jobs:
           fi
 
       - name: Close tracking issue when the report is fresh
-        if: steps.pins.outputs.fresh == 'true'
+        if: ${{ !cancelled() && steps.pins.outputs.fresh == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
