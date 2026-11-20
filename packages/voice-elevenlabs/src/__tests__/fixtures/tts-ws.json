@@ -1,0 +1,253 @@
+{
+  "kind": "ws",
+  "provider": "elevenlabs",
+  "url": "wss://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream-input?model_id=eleven_flash_v2_5&output_format=pcm_24000",
+  "recordedAt": "2026-11-20",
+  "frames": [
+    {
+      "dir": "out",
+      "data": {
+        "text": " ",
+        "voice_settings": {
+          "stability": 0.5,
+          "similarity_boost": 0.75,
+          "style": 0,
+          "use_speaker_boost": true
+        },
+        "generation_config": {
+          "chunk_length_schedule": [
+            80,
+            120,
+            200,
+            290
+          ]
+        }
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "text": "Bonjour, "
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "text": "ceci est un test."
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "text": ""
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "audio": "BQAGAAoADQAPAA0ADAAKAAMAAgADAAQAAwAFAAUABAAEAAUABwAIAAgACAAGAAQABAACAAEAAAAAAP/////+//7//f/9//3/",
+        "isFinal": null,
+        "normalizedAlignment": {
+          "chars": [
+            " ",
+            "B",
+            "o",
+            "n",
+            "j",
+            "o",
+            "u",
+            "r",
+            ",",
+            " ",
+            "c",
+            "e",
+            "c",
+            "i",
+            " ",
+            "e",
+            "s",
+            "t",
+            " ",
+            "u",
+            "n",
+            " ",
+            "t",
+            "e",
+            "s",
+            "t",
+            ".",
+            " "
+          ],
+          "charStartTimesMs": [
+            0,
+            23,
+            93,
+            163,
+            232,
+            313,
+            383,
+            430,
+            499,
+            569,
+            615,
+            697,
+            778,
+            848,
+            906,
+            964,
+            987,
+            1010,
+            1045,
+            1115,
+            1149,
+            1173,
+            1231,
+            1277,
+            1393,
+            1474,
+            1591,
+            1660
+          ],
+          "charDurationsMs": [
+            23,
+            70,
+            70,
+            69,
+            81,
+            70,
+            47,
+            69,
+            70,
+            46,
+            82,
+            81,
+            70,
+            58,
+            58,
+            23,
+            23,
+            35,
+            70,
+            34,
+            24,
+            58,
+            46,
+            116,
+            81,
+            117,
+            69,
+            151
+          ]
+        },
+        "alignment": {
+          "chars": [
+            "B",
+            "o",
+            "n",
+            "j",
+            "o",
+            "u",
+            "r",
+            ",",
+            " ",
+            "c",
+            "e",
+            "c",
+            "i",
+            " ",
+            "e",
+            "s",
+            "t",
+            " ",
+            "u",
+            "n",
+            " ",
+            "t",
+            "e",
+            "s",
+            "t",
+            ".",
+            " "
+          ],
+          "charStartTimesMs": [
+            0,
+            93,
+            163,
+            232,
+            313,
+            383,
+            430,
+            499,
+            569,
+            615,
+            697,
+            778,
+            848,
+            906,
+            964,
+            987,
+            1010,
+            1045,
+            1115,
+            1149,
+            1173,
+            1231,
+            1277,
+            1393,
+            1474,
+            1591,
+            1660
+          ],
+          "charDurationsMs": [
+            93,
+            70,
+            69,
+            81,
+            70,
+            47,
+            69,
+            70,
+            46,
+            82,
+            81,
+            70,
+            58,
+            58,
+            23,
+            23,
+            35,
+            70,
+            34,
+            24,
+            58,
+            46,
+            116,
+            81,
+            117,
+            69,
+            151
+          ]
+        }
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "audio": "mfsE+pr4WPi58hDyKO+d6wrrbexQ60rqou9v8hDyrPJi8+n1m/RT9671APQ+9533ifYc9An60flj+CP8U/uh+S35fvq791v3",
+        "isFinal": null,
+        "normalizedAlignment": null,
+        "alignment": null
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "audio": null,
+        "isFinal": true,
+        "normalizedAlignment": null,
+        "alignment": null
+      }
+    }
+  ],
+  "audioTruncatedTo": 96
+}
