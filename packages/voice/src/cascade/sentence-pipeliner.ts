@@ -2,10 +2,10 @@
  * Ported from agentik-studio packages/agent-framework/src/voice/sentence-pipeliner.ts (PR #1114).
  */
 /**
- * Sentence Pipeliner — streams LLM tokens into TTS calls at sentence
+ * Sentence Pipeliner - streams LLM tokens into TTS calls at sentence
  * boundaries so we don't have to wait for the full reply before audio
  * starts. Time-to-first-audio drops from "STT + full LLM + TTS first
- * chunk" to "STT + first-sentence LLM + TTS first chunk" — typically
+ * chunk" to "STT + first-sentence LLM + TTS first chunk" - typically
  * a 1–2 second improvement.
  *
  * Usage:
@@ -22,7 +22,7 @@
  *     explicit reorder queue. Trade-off: if TTS for sentence N is slow,
  *     sentence N+1 waits. In practice TTS streams fast enough that this
  *     stays smooth (the bottleneck is LLM token generation).
- *   - Min sentence length: don't fire TTS on a stray "Ok." — small
+ *   - Min sentence length: don't fire TTS on a stray "Ok." - small
  *     fragments produce awkward audio and waste TTS round-trips. Below
  *     `minLength` we keep buffering until a longer sentence builds up.
  *   - Markdown stripping: voice mode prompt already discourages it, but
@@ -171,20 +171,20 @@ export class SentencePipeliner {
 /**
  * Strip markdown that would sound bad if read aloud. Voice-mode prompt
  * usually prevents the model from emitting these, but the model
- * sometimes still slips — strip defensively so the TTS layer never has
+ * sometimes still slips - strip defensively so the TTS layer never has
  * to deal with `**bold**` etc.
  */
 export function stripMarkdownForTts(text: string): string {
   return (
     text
-      // Bold/italic markers — keep the inner text
+      // Bold/italic markers - keep the inner text
       .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
       .replace(/_{1,3}([^_]+)_{1,3}/g, "$1")
       // Inline code
       .replace(/`([^`]+)`/g, "$1")
-      // Markdown links — keep the label, drop the URL
+      // Markdown links - keep the label, drop the URL
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      // Bare URLs — drop entirely (read-aloud URLs are awful)
+      // Bare URLs - drop entirely (read-aloud URLs are awful)
       .replace(/https?:\/\/\S+/g, "")
       // Heading hashes / bullet markers at line start
       .replace(/^[#\->*]+\s+/gm, "")

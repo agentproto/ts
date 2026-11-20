@@ -5,7 +5,7 @@
 // for this file because the studio does not type-check its test files.
 /**
  * T11 e2e: WebRTC call session factory + sequential cascade with mocked
- * STT / onTurn / TTS. No real WebRTC, Redis, or providers — the transport
+ * STT / onTurn / TTS. No real WebRTC, Redis, or providers - the transport
  * is exercised through the pipeline boundary (PCM frames in, audio messages
  * out via transport.send), which is what the cascade actually depends on.
  */
