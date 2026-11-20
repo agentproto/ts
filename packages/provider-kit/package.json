@@ -60,6 +60,16 @@
       "import": "./dist/wizard.mjs",
       "default": "./dist/wizard.mjs"
     },
+    "./family": {
+      "types": "./dist/family.d.ts",
+      "import": "./dist/family.mjs",
+      "default": "./dist/family.mjs"
+    },
+    "./memory-stores": {
+      "types": "./dist/memory-stores.d.ts",
+      "import": "./dist/memory-stores.mjs",
+      "default": "./dist/memory-stores.mjs"
+    },
     "./discover": {
       "types": "./dist/discover.d.ts",
       "import": "./dist/discover.mjs",
