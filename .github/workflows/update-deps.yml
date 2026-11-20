@@ -58,7 +58,8 @@ jobs:
       # a bump PR opened with it lands with zero checks (PR #2786, 2026-11-20).
       # The App token is used for the checkout credentials (so the branch push
       # fires `pull_request: synchronize`) and for opening/editing the PR (so
-      # `opened` fires). Falls back to GITHUB_TOKEN when no App is configured:
+      # `opened` fires). Falls back to secrets.BOT_PAT (documented in
+      # docs/review-fix-loop.md), then to GITHUB_TOKEN when neither is configured:
       # the job still works, the PR is then checkless again.
       - name: Mint bot token (GitHub App, optional)
         id: bot
@@ -71,7 +72,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          token: ${{ steps.bot.outputs.token || github.token }}
+          token: ${{ steps.bot.outputs.token || secrets.BOT_PAT || github.token }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -209,7 +210,7 @@ jobs:
       - name: Commit, push & open PR
         if: steps.apply.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.BOT_PAT || github.token }}
         run: |
           set -e
           git config user.name "deps-updater"
