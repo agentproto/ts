@@ -76,3 +76,19 @@ describe("makeReplayFetch", () => {
     expect((await f("https://example.test/other")).status).toBe(599)
   })
 })
+
+describe("makeReplaySocket lenient mode", () => {
+  it("accepts any out frame and delivers the recorded in frames once releaseWhen is true", async () => {
+    const r = makeReplaySocket(ws, { releaseWhen: f => f.commit === true })
+    const sock = r.factory(ws.url)
+    const got: string[] = []
+    sock.on("message", d => got.push(d))
+    await new Promise<void>(res => sock.on("open", () => res()))
+    await Promise.resolve()
+    sock.send(JSON.stringify({ something: "else" }))
+    expect(got).toHaveLength(0)
+    sock.send(JSON.stringify({ commit: true }))
+    expect(got).toHaveLength(2)
+    expect(r.mismatches).toEqual([])
+  })
+})
