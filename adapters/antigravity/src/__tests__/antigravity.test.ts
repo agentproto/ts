@@ -3,25 +3,16 @@ import { agentCliFrontmatterSchema } from "@agentproto/harness"
 import { antigravity } from "../index.js"
 
 describe("antigravity adapter manifest", () => {
-  it("is a print/headless arm (no ACP — feature request #31)", () => {
-    expect(antigravity.protocol).toBe("print")
-    expect(antigravity.acp).toBeUndefined()
-  })
-
-  it("spawns the real `agy` binary with -p and --output-format stream-json", () => {
+  it("is an ACP arm spawned as `agy acp`", () => {
+    expect(antigravity.protocol).toBe("acp")
+    expect(antigravity.acp).toBe("./antigravity-acp.ACP.md")
     expect(antigravity.bin).toBe("agy")
-    expect(antigravity.print?.prompt_flag).toBe("-p")
-    expect(antigravity.print?.output_format).toEqual(["--output-format", "stream-json"])
+    expect(antigravity.bin_args).toEqual(["acp"])
+    expect(antigravity.print).toBeUndefined()
   })
 
-  it("declares agy's bespoke event schema, not the Claude default", () => {
-    // agy's stream-json events are `{event: …}` envelopes, not Claude's
-    // `{type: …}` — see print-arm.ts's antigravity mapper.
-    expect(antigravity.print?.event_schema).toBe("antigravity-stream-json")
-  })
-
-  it("resumes a prior conversation via --conversation <id>", () => {
-    expect(antigravity.print?.resume).toEqual({ flag: "--conversation", kind: "value" })
+  it("is persistent and resumable via ACP session/load", () => {
+    expect(antigravity.session?.mode).toBe("persistent")
     expect(antigravity.capabilities?.resumable).toBe(true)
     expect(antigravity.continuation?.supported).toContain("native-resume")
   })
@@ -43,17 +34,13 @@ describe("antigravity adapter manifest", () => {
     expect(antigravity.authSubscription).toEqual({ external: true })
   })
 
-  it("declares no fixed models list (exact slugs unverified — free-form `model` option instead)", () => {
+  it("declares no fixed models list and no argv model/effort option (agy acp has no such flags)", () => {
     expect(antigravity.models).toBeUndefined()
-    const modelOpt = antigravity.options?.find((o) => o.id === "model")
-    expect(modelOpt?.bin_args_template).toEqual(["--model", "{value}"])
-  })
-
-  it("wires effort as a low/medium/high enum option", () => {
-    const effort = antigravity.options?.find((o) => o.id === "effort")
-    expect(effort?.type).toBe("enum")
-    expect(effort?.enum).toEqual(["low", "medium", "high"])
-    expect(effort?.bin_args_template).toEqual(["--effort", "{value}"])
+    expect(antigravity.options?.map((o) => o.id)).toEqual([
+      "agent",
+      "dangerously_skip_permissions",
+      "terminal_sandbox",
+    ])
   })
 
   it("validates cleanly against the AIP-45 AGENT-CLI frontmatter schema", () => {
@@ -71,7 +58,8 @@ describe("antigravity adapter manifest", () => {
       auth: antigravity.auth,
       sandbox: antigravity.sandbox,
       protocol: antigravity.protocol,
-      print: antigravity.print,
+      bin_args: antigravity.bin_args,
+      acp: antigravity.acp,
       session: antigravity.session,
       capabilities: antigravity.capabilities,
       options: antigravity.options,

@@ -1,11 +1,11 @@
 /**
- * @agentproto/adapter-antigravity — AIP-45 adapter for Google Antigravity.
+ * @agentproto/adapter-antigravity — AIP-44 adapter for Google Antigravity.
  *
- * Antigravity ships a headless CLI, `agy`, but NO ACP mode (open feature
- * request google-antigravity/antigravity-cli#31). So — exactly like the
- * `mastracode` adapter — this is a `protocol: "print"` (headless) arm, not
- * an ACP one. We spawn `agy -p "<prompt>" --output-format stream-json` per
- * turn and map its NDJSON events.
+ * Antigravity's CLI `agy` ships a first-party ACP server since 1.5.x:
+ * `agy acp` (JSON-RPC 2.0 over stdio, protocolVersion 1; verified on 1.5.13).
+ * So this is a `protocol: "acp"` arm. It replaces the earlier print/headless
+ * arm (`agy -p --output-format stream-json`), written when ACP was only an
+ * open feature request (google-antigravity/antigravity-cli#31).
  *
  *   import { antigravity, antigravityRuntime } from "@agentproto/adapter-antigravity"
  *   const session = await antigravityRuntime().start()
@@ -14,25 +14,7 @@
  *   }
  *   await session.close()
  *
- * ## Why a bespoke event schema (`antigravity-stream-json`)
- *
- * `agy`'s headless FLAG surface visibly mirrors Claude Code's (`-p`,
- * `--output-format stream-json`, `--continue`), which is a trap: the WIRE
- * events do NOT match Claude's `{ type: "system" | "assistant" | "result",
- * session_id }` taxonomy. Verified against the sample outputs at
- * antigravity.google/docs/cli/headless, every `agy` stream-json line is:
- *
- *   {"event":"init","conversation_id":"…","init":{…}}
- *   {"event":"step_update","step_update":{conversation_id,step_index,state,
- *       step_type,text_delta?,tool_name?,tool_info?,…}}
- *   {"event":"result","result":{conversation_id,status,response,error?,usage}}
- *
- * i.e. discriminated by `event` (not `type`), payload nested under a matching
- * key, session id a nested `conversation_id`, text as incremental
- * `text_delta` fragments. That is a genuinely different taxonomy, so the
- * print arm carries a dedicated `event_schema: "antigravity-stream-json"`
- * mapper (packages/driver/agent-cli/src/protocol/print-arm.ts) rather than
- * reusing the Claude one.
+ * Wire profile: ./antigravity-acp.ACP.md. Auth: ./SECRETS.md.
  */
 
 import {
@@ -41,33 +23,28 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
-import {
-  deriveDeclaredCapabilities,
-  type CapabilityStrategy,
-} from "@agentproto/provider-kit"
 
 export const antigravity: AgentCliHandle = defineHarness({
   name: "antigravity",
   id: "antigravity",
   description:
-    "Google Antigravity's headless CLI (`agy`) — a multi-model coding agent " +
-    "(Gemini 3.x, Claude, GPT-OSS) run non-interactively via `agy -p " +
-    "--output-format stream-json`. No ACP mode yet (feature request " +
-    "google-antigravity/antigravity-cli#31), so this is a print/headless arm.",
-  version: "0.1.0",
+    "Google Antigravity's CLI (`agy acp`) — a multi-model coding agent " +
+    "(Gemini 3.x, Claude, GPT-OSS) driven over the Agent Client Protocol.",
+  version: "0.2.0",
   bin: "agy",
+  // First-party ACP server over stdio (the default transport).
+  bin_args: ["acp"],
   // Not on npm — the only documented install is the official curl installer,
   // which drops `agy` into ~/.local/bin (antigravity.google/docs/cli/headless).
   install: [
     { method: "curl", url: "https://antigravity.google/cli/install.sh" },
   ],
-  // `agy --version` is the conventional probe; the exact stdout is UNVERIFIED
-  // (the headless flag table doesn't document a --version flag), so the range
-  // is deliberately permissive. Tighten once a real version string is known.
+  // `agy --version` prints a bare semver (verified: "1.5.13"). `agy acp` is
+  // verified on 1.5.13; the floor is that version.
   version_check: {
     cmd: "agy --version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: ">=0.1.0",
+    range: ">=1.5.13",
     timeout_ms: 15_000,
   },
   // Antigravity authenticates through the OS keyring + a Google Sign-In
@@ -85,27 +62,12 @@ export const antigravity: AgentCliHandle = defineHarness({
   // cached login. No api-key route exists, so there is nothing to scrub.
   authSubscription: { external: true },
   sandbox: "./SANDBOX.md",
-  protocol: "print",
-  print: {
-    // `agy -p "<prompt>"` runs a single prompt non-interactively.
-    prompt_flag: "-p",
-    output_format: ["--output-format", "stream-json"],
-    // No Claude-style `--no-interactive`; `-p` already selects headless.
-    pre_prompt: [],
-    // `--conversation <id>` resumes a specific prior run by its
-    // `conversation_id`. (`--continue`/`-c` resumes the *most recent*, but a
-    // value-carrying flag is what the print arm wires from the captured id.)
-    resume: { flag: "--conversation", kind: "value" },
-    // See the file header + print-arm.ts: agy's events are `{event: …}`
-    // envelopes, NOT Claude's `{type: …}` — hence its own mapper.
-    event_schema: "antigravity-stream-json",
-  },
+  protocol: "acp",
+  acp: "./antigravity-acp.ACP.md",
   session: {
-    // The print arm spawns a fresh `agy` per turn; continuity comes from
-    // `--conversation <id>`, not a long-lived process.
-    mode: "ephemeral",
+    mode: "persistent",
     idle_timeout_ms: 1_800_000,
-    context_carryover: false,
+    context_carryover: true,
   },
   // No `models` block by design. The docs' `agy models` output shows real
   // slugs (e.g. `gemini-3.5-flash-medium`, `claude-sonnet-4-6`), but the list
@@ -125,44 +87,17 @@ export const antigravity: AgentCliHandle = defineHarness({
     file_io: true,
     // Unverified — declared false rather than overclaiming.
     multimodal: false,
-    // `agy --conversation <id>` genuinely resumes a prior conversation
-    // (docs: "Resume prior context with --continue … or --conversation with
-    // an ID from a previous run's conversation_id"). `print.resume` drives it.
+    // `initialize` advertises loadSession + sessionCapabilities.resume.
     resumable: true,
-    bidirectional: false,
+    bidirectional: true,
   },
   options: [
-    {
-      id: "model",
-      type: "string",
-      description:
-        "Model slug for this run (see `agy models`), e.g. " +
-        "`gemini-3.5-flash-medium` or `claude-sonnet-4-6`. Forwarded to " +
-        "`--model`. Headless mode fails loudly on an unknown slug rather than " +
-        "silently falling back.",
-      bin_args_template: ["--model", "{value}"],
-    },
-    {
-      id: "effort",
-      type: "enum",
-      enum: ["low", "medium", "high"],
-      description: "Reasoning effort passed to `agy --effort`.",
-      bin_args_template: ["--effort", "{value}"],
-    },
     {
       id: "agent",
       type: "string",
       description:
         "Agent to run this prompt as (see `agy agents`). Forwarded to `--agent`.",
       bin_args_template: ["--agent", "{value}"],
-    },
-    {
-      id: "print_timeout",
-      type: "string",
-      description:
-        "Maximum time `agy` waits for a response, as a duration string " +
-        "(e.g. `15m`). Forwarded to `--print-timeout` (default 5m).",
-      bin_args_template: ["--print-timeout", "{value}"],
     },
     {
       id: "dangerously_skip_permissions",
@@ -187,11 +122,16 @@ export const antigravity: AgentCliHandle = defineHarness({
   },
   metadata: {
     acp: {
-      checked: "2026-08-06",
+      checked: "2026-11-20",
       result:
-        "Antigravity has no ACP mode. Tracked upstream as feature request " +
-        "google-antigravity/antigravity-cli#31; until it ships this adapter " +
-        "stays a print/headless arm.",
+        "`agy acp` (Antigravity CLI 1.5.13) answers `initialize` with " +
+        "protocolVersion 1, agentInfo \"Antigravity ACP Server\", loadSession, " +
+        "sessionCapabilities {resume, close, load, list, additionalDirectories}, " +
+        "promptCapabilities {image, embeddedContext} and authMethods " +
+        "oauth-personal / oauth-business / gemini-api-key / agent-platform. " +
+        "`session/new` without a cached login returns -32000 " +
+        "\"Authentication required\". The session/prompt turn itself is NOT " +
+        "verified end to end (no Google login was available when this was written).",
     },
     models: {
       checked: "2026-08-06",
@@ -211,33 +151,11 @@ export const antigravity: AgentCliHandle = defineHarness({
         "headless run.",
     },
   },
-  tags: ["antigravity", "agy", "google", "print", "agent-runtime", "coding"],
+  tags: ["antigravity", "agy", "google", "acp", "agent-runtime", "coding"],
 })
 
 export function antigravityRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(antigravity)
-}
-
-/**
- * Antigravity exposes no per-provider api-key store to discover (auth is a
- * keyring-backed Google login), so there are no providers to enrich — the
- * manifest projection for providers/models/authStores stays untouched. The
- * one honest override is the print arm's application contract: model/posture
- * are baked into the spawn argv (`--model`, options), applied per fresh
- * subprocess, so a live switch is `arg`-based and uncoupled — same as the
- * `mastracode` print arm. The strategy still ran and returned real adapter
- * knowledge (not a caught throw), so `source` is `"discovered"` — but nothing
- * here came from probing disk/env/process, so `discoverable` stays
- * `"declared"`.
- */
-export const antigravityCapabilities: CapabilityStrategy = async (def) => {
-  const base = deriveDeclaredCapabilities(def)
-  return {
-    ...base,
-    source: "discovered",
-    discoverable: "declared",
-    application: { modelApply: "arg", postureApply: "arg", coupled: false },
-  }
 }
 
 export type { AgentCliHandle, AgentCliRuntime }
