@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { DEFAULT_PRICING } from "@agentproto/model-catalog"
 import { listRouterLlmRoutes } from "@agentproto/model-catalog/route-identity"
 import { effectiveAdapterProvider } from "../model-wire.js"
 import { deriveSessionUsage, pricingResolverFor } from "../usage.js"
@@ -15,7 +16,16 @@ describe("hermes on the huggingface gateway", () => {
     // neither the id nor the expected cost is pinned: take any HF route that
     // carries a price and expect its own table price for 1M in + 1M out.
     const route = listRouterLlmRoutes("huggingface").find(
-      r => r.pricing && r.pricing.inputPer1M > 0 && r.pricing.outputPer1M > 0,
+      r =>
+        r.pricing &&
+        r.pricing.inputPer1M > 0 &&
+        r.pricing.outputPer1M > 0 &&
+        // DEFAULT_PRICING is a placeholder the resolver reports as unpriced,
+        // not a real route price.
+        !(
+          r.pricing.inputPer1M === DEFAULT_PRICING.inputPer1M &&
+          r.pricing.outputPer1M === DEFAULT_PRICING.outputPer1M
+        ),
     )
     expect(route, "the HF route table has at least one priced model").toBeDefined()
     const { vendor, product } = route!.ref

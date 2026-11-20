@@ -68,8 +68,11 @@ describe("zero-cost list equivalence with the old free predicate", () => {
     const catalogIds = [...catalogPricing().keys()]
     const freeId = catalogIds.find(id => oldIsOpencodeFreeModel(id))
     expect(freeId, "the catalog has at least one old-predicate free id").toBeDefined()
-    const bare = (freeId!.split("@")[0] ?? freeId!).split("/").pop()!
-    const forms = [bare, freeId!, `${freeId!.split("@")[0]}@opencode`]
+    const unrouted = freeId!.split("@")[0]!
+    const bare = unrouted.split("/").pop()!
+    const forms = [bare, freeId!]
+    // Only add an @route form when the id does not already carry one.
+    if (unrouted === freeId) forms.push(`${unrouted}@opencode`)
     // And a paid id, so the negative side is covered too.
     const paid = catalogIds.find(id => !oldIsOpencodeFreeModel(id) && catalogPricing().get(id)?.inputPer1M)
     if (paid) forms.push(paid)
