@@ -23,6 +23,10 @@ function scenario() {
   git(seed, 'add', '.')
   git(seed, ...ident, 'commit', '-qm', 'main')
   git(seed, 'push', '-q', 'origin', 'HEAD:main')
+  // Re-run: fresh checkout of main taken BEFORE the earlier run's branch
+  // exists locally, so the old tip is not an object here (the real failure:
+  // "Not a valid commit name").
+  git(root, 'clone', '-q', remote, fresh)
   // Earlier run: branch pushed with its own commit.
   git(seed, 'switch', '-qc', 'bump')
   writeFileSync(join(seed, 'dep.txt'), 'old bump\n')
@@ -30,13 +34,10 @@ function scenario() {
   git(seed, ...ident, 'commit', '-qm', 'old bump')
   git(seed, 'push', '-q', 'origin', 'bump')
   const oldTip = git(seed, 'rev-parse', 'HEAD')
-  // Re-run: fresh checkout of main + a new, unrelated bump commit.
-  git(root, 'clone', '-q', remote, fresh)
   git(fresh, 'switch', '-qc', 'bump')
   writeFileSync(join(fresh, 'dep.txt'), 'new bump\n')
   git(fresh, 'add', '.')
   git(fresh, ...ident, 'commit', '-qm', 'new bump')
-  // The remote branch is not a local object of the fresh clone's own history.
   return { root, remote, fresh, oldTip, seed }
 }
 
@@ -45,8 +46,8 @@ const isAncestor = (cwd, a, b) =>
 
 test('control: without re-parenting, the new commit does not descend from the remote tip', () => {
   const { fresh, oldTip } = scenario()
-  // This is the exact condition git-cas rejected as not-descendant.
-  git(fresh, 'fetch', '-q', 'origin', 'bump')
+  // The exact git-cas failure: the old tip is not even an object here.
+  assert.notEqual(spawnSync('git', ['cat-file', '-e', oldTip], { cwd: fresh }).status, 0)
   assert.equal(isAncestor(fresh, oldTip, 'HEAD'), false)
 })
 
@@ -78,4 +79,25 @@ test('head_moved: exits 3 when the branch is not where the job started', () => {
   })
   assert.equal(r.status, 3)
   assert.match(r.stderr, /head_moved/)
+})
+
+test('identical tree: no empty commit, HEAD becomes the remote tip', () => {
+  const { fresh, oldTip, seed } = scenario()
+  // Make this run's tree equal to the remote branch's tree.
+  const tree = git(seed, 'rev-parse', `${oldTip}^{tree}`)
+  git(fresh, 'fetch', '-q', 'origin', 'bump')
+  git(fresh, ...ident, 'commit-tree', tree, '-m', 'same') // sanity: object reachable
+  git(fresh, 'checkout', '-q', oldTip, '--', '.')
+  git(fresh, ...ident, 'commit', '-qm', 'same tree', '--allow-empty')
+  const r = spawnSync('bash', [SCRIPT, 'origin', 'bump', oldTip, 'chore: bump'], { cwd: fresh, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(git(fresh, 'rev-parse', 'HEAD'), oldTip)
+})
+
+test('branch deleted since job start: exits 3 (head_moved)', () => {
+  const { fresh, oldTip, seed } = scenario()
+  git(seed, 'push', '-q', 'origin', '--delete', 'bump')
+  const r = spawnSync('bash', [SCRIPT, 'origin', 'bump', oldTip, 'chore: bump'], { cwd: fresh, encoding: 'utf8' })
+  assert.equal(r.status, 3)
+  assert.match(r.stderr, /no longer exists/)
 })

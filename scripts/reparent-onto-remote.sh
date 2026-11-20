@@ -8,6 +8,11 @@
 # The new tree (main + this run's bump) is kept byte for byte; only the parent
 # changes. Never rebases, never merges, never retries (the workflow contract).
 #
+# The branch is owned by the workflow (chore/update-deps-<date>, created by the
+# bot): this run's tree supersedes whatever the earlier run pushed, so a manual
+# commit on it would be replaced. The dropped diff is printed (stat) so it is
+# visible in the job log and recoverable from history.
+#
 # Usage: reparent-onto-remote.sh <remote> <branch> <expected-remote-sha> <message>
 # Exit 0 on success (HEAD moved to the new commit), 3 if the branch moved since
 # the expected sha was read (head_moved).
@@ -15,12 +20,25 @@ set -euo pipefail
 
 REMOTE="$1"; BRANCH="$2"; EXPECTED="$3"; MESSAGE="$4"
 
-git fetch --no-tags "$REMOTE" "refs/heads/$BRANCH"
+if ! git fetch --no-tags "$REMOTE" "refs/heads/$BRANCH"; then
+  # Branch deleted between job start and now: nothing to fast-forward onto.
+  echo "head_moved: $BRANCH no longer exists on $REMOTE (was $EXPECTED)" >&2
+  exit 3
+fi
 TIP="$(git rev-parse FETCH_HEAD)"
 if [ "$TIP" != "$EXPECTED" ]; then
   echo "head_moved: $BRANCH is at $TIP, expected $EXPECTED" >&2
   exit 3
 fi
+if [ "$(git rev-parse "$EXPECTED^{tree}")" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+  # Same tree as the branch already carries: no empty commit, no CI churn.
+  # HEAD becomes the remote tip, so the CAS push is a no-op.
+  git reset --hard "$EXPECTED" >/dev/null
+  echo "tree identical to $EXPECTED: nothing to push"
+  exit 0
+fi
+echo "superseding the earlier tip $EXPECTED (changes vs this run's tree):"
+git diff --stat "$EXPECTED" HEAD | tail -5
 NEW="$(git commit-tree "HEAD^{tree}" -p "$EXPECTED" -m "$MESSAGE")"
 git reset --hard "$NEW" >/dev/null
 echo "re-parented onto $EXPECTED: $NEW"
