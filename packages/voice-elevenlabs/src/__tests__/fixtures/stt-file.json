@@ -1,0 +1,131 @@
+{
+  "kind": "http",
+  "provider": "elevenlabs",
+  "recordedAt": "2026-11-20",
+  "request": {
+    "method": "POST",
+    "url": "https://api.elevenlabs.io/v1/speech-to-text",
+    "body": {
+      "model_id": "scribe_v1",
+      "file": "<file>"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "language_code": "fra",
+      "language_probability": 0.9570109844207764,
+      "text": "Bonjour, ceci est un test de la voix.",
+      "words": [
+        {
+          "text": "Bonjour,",
+          "start": 0.08,
+          "end": 0.54,
+          "type": "word",
+          "logprob": -0.00004251204245520057
+        },
+        {
+          "text": " ",
+          "start": 0.54,
+          "end": 0.84,
+          "type": "spacing",
+          "logprob": -0.00043084874050691724
+        },
+        {
+          "text": "ceci",
+          "start": 0.84,
+          "end": 1.1,
+          "type": "word",
+          "logprob": -0.00043084874050691724
+        },
+        {
+          "text": " ",
+          "start": 1.1,
+          "end": 1.12,
+          "type": "spacing",
+          "logprob": -1.1920928244535389e-7
+        },
+        {
+          "text": "est",
+          "start": 1.12,
+          "end": 1.24,
+          "type": "word",
+          "logprob": -1.1920928244535389e-7
+        },
+        {
+          "text": " ",
+          "start": 1.24,
+          "end": 1.28,
+          "type": "spacing",
+          "logprob": 0
+        },
+        {
+          "text": "un",
+          "start": 1.28,
+          "end": 1.4,
+          "type": "word",
+          "logprob": 0
+        },
+        {
+          "text": " ",
+          "start": 1.4,
+          "end": 1.46,
+          "type": "spacing",
+          "logprob": -9.536738616588991e-7
+        },
+        {
+          "text": "test",
+          "start": 1.46,
+          "end": 1.68,
+          "type": "word",
+          "logprob": -9.536738616588991e-7
+        },
+        {
+          "text": " ",
+          "start": 1.68,
+          "end": 1.78,
+          "type": "spacing",
+          "logprob": 0
+        },
+        {
+          "text": "de",
+          "start": 1.78,
+          "end": 1.86,
+          "type": "word",
+          "logprob": 0
+        },
+        {
+          "text": " ",
+          "start": 1.86,
+          "end": 1.9,
+          "type": "spacing",
+          "logprob": -0.000011324817933200393
+        },
+        {
+          "text": "la",
+          "start": 1.9,
+          "end": 1.96,
+          "type": "word",
+          "logprob": -0.000011324817933200393
+        },
+        {
+          "text": " ",
+          "start": 1.96,
+          "end": 2.02,
+          "type": "spacing",
+          "logprob": -0.0002315968304174021
+        },
+        {
+          "text": "voix.",
+          "start": 2.02,
+          "end": 2.24,
+          "type": "word",
+          "logprob": -0.003018296288792044
+        }
+      ],
+      "transcription_id": "Jzb04vJr925l2HeaRLtU",
+      "audio_duration_secs": 2.461375
+    },
+    "contentType": "application/json"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "kind": "http",
+  "provider": "elevenlabs",
+  "recordedAt": "2026-11-20",
+  "request": {
+    "method": "POST",
+    "url": "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream?output_format=pcm_24000",
+    "body": {
+      "text": "Bonjour, ceci est un test de la voix.",
+      "model_id": "eleven_flash_v2_5",
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75,
+        "style": 0,
+        "use_speaker_boost": true
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "bodyBase64": "BQADAAcACgAMAAwACgAKAAMAAgACAAIAAwAEAAQABAAEAAUABwAJAAgACAAIAAcABwAGAAQABAAEAAMAAwACAAIAAwACAAIA",
+    "contentType": "audio/pcm"
+  }
+}
