@@ -47,7 +47,7 @@ test("picks a zero-priced model from verbose model output, never a paid one", ()
     block("prov/paid-a", 1, 2),
     block("prov/zeta-free", 0, 0),
     block("prov/alpha-free", 0, 0),
-    block("prov/half", 0, 3),
+    block("prov/aaa-half", 0, 3),
     block("prov/old-free", 0, 0, "deprecated"),
   ].join("")
   assert.equal(pickFreeModel(out), "prov/alpha-free")
