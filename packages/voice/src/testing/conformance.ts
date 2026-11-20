@@ -1,5 +1,5 @@
 /**
- * AIP-75 conformance cases, framework-free: each case is a name and an async
+ * AIP-VOICE conformance cases, framework-free: each case is a name and an async
  * function that throws on failure, so a provider package runs them under its
  * own test runner against a fake transport or recorded vendor exchanges.
  *

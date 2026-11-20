@@ -2,17 +2,17 @@
   "name": "@agentproto/voice",
   "version": "0.0.0",
   "private": true,
-  "description": "@agentproto/voice: AIP-75 VOICE reference implementation. Three provider contracts (SttProvider, TtsProvider, RealtimeProvider), defineVoiceProvider, a provider registry, and one VoiceSession with two engines, realtime and cascade. No provider and no agent framework in this package.",
+  "description": "@agentproto/voice: AIP-VOICE VOICE reference implementation. Three provider contracts (SttProvider, TtsProvider, RealtimeProvider), defineVoiceProvider, a provider registry, and one VoiceSession with two engines, realtime and cascade. No provider and no agent framework in this package.",
   "keywords": [
     "agentproto",
-    "aip-75",
+    "aip-voice",
     "voice",
     "stt",
     "tts",
     "realtime",
     "defineVoiceProvider"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-75",
+  "homepage": "https://github.com/agentproto/agentproto/pull/169",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",

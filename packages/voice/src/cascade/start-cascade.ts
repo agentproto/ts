@@ -1,5 +1,5 @@
 /**
- * The `cascade` engine of AIP-75: STT provider, a host brain, TTS provider,
+ * The `cascade` engine of AIP-VOICE: STT provider, a host brain, TTS provider,
  * with the local VAD, barge-in, bounded outbound queue and brain guards of
  * `createCallPipeline` (ported from the studio call pipeline).
  *
@@ -139,7 +139,7 @@ function makeSentenceTts(tts: TtsProvider, voiceId: string | undefined, language
   }
 }
 
-/** Adapt an AIP-75 `TtsStream` to the structural handle `streamTurn` uses. */
+/** Adapt an AIP-VOICE `TtsStream` to the structural handle `streamTurn` uses. */
 function makeContinuousOpener(tts: TtsProvider, voiceId: string | undefined, language: string | undefined, sampleRate: number): CallTtsStreamOpener {
   return {
     open({ onChunk, signal }): CallTtsStreamHandle {

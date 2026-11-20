@@ -1,5 +1,5 @@
 /**
- * The `realtime` engine of AIP-75: a thin delegation to a `RealtimeProvider`.
+ * The `realtime` engine of AIP-VOICE: a thin delegation to a `RealtimeProvider`.
  * Turn detection and interruption happen at the vendor; the session only
  * reports them. The kit adds one guarantee on top of the provider's session:
  * `getUsage()` stays readable and final after `close()`.

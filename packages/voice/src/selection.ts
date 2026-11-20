@@ -1,5 +1,5 @@
 /**
- * Provider selection from the standard variables (AIP-75, Variables):
+ * Provider selection from the standard variables (AIP-VOICE, Variables):
  * the priority rule, evaluated in order, with no existing value changing
  * meaning.
  *

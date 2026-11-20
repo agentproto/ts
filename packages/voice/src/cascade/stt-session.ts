@@ -1,6 +1,6 @@
 /**
  * The streaming STT session the cascade pipeline drives, and its adapter over
- * an AIP-75 `SttStream`.
+ * an AIP-VOICE `SttStream`.
  *
  * The session shape is the one the studio pipeline already used
  * (`calls/stt-stream.ts` `SttSession`): audio goes in as the caller speaks,

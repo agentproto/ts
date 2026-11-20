@@ -1,5 +1,5 @@
 /**
- * Sequential call pipeline (the local part of the AIP-75 cascade engine).
+ * Sequential call pipeline (the local part of the AIP-VOICE cascade engine).
  *
  * PCM inbound (frames from the transport) is aggregated into utterances with
  * a simple silence VAD, transcribed, handed to `onTurn`, and the reply PCM is

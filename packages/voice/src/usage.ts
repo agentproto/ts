@@ -1,5 +1,5 @@
 /**
- * Usage meter: the cumulative, monotonic record a session reports (AIP-75,
+ * Usage meter: the cumulative, monotonic record a session reports (AIP-VOICE,
  * Usage record). Numbers only; no price, no content.
  */
 import type { VoiceEngineId, VoiceTokenBuckets, VoiceUsage, VoiceUsageEntry } from "./types.js"
