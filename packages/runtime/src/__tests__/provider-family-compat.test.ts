@@ -4,7 +4,7 @@
  * tests do not exercise these three paths, so flipping `legacySetup` to false
  * left them green; each test below fails in that case.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -122,6 +122,14 @@ describe("tunnel setup keeps its pre-factory semantics", () => {
     expect(first.hint).toBe("ngrok configured \u2014 status is now ready")
     await setupTunnelProvider("ngrok", { authToken: "tok-2", domain: "" }, s)
     expect(await s.credsStore.read("ngrok")).toEqual({ authToken: "tok-2" })
+  })
+
+  it("setup resolves the provider without reading the stored creds", async () => {
+    const read = vi.fn(async () => ({ authToken: "stored" }))
+    const s = stores({ credsStore: { read } })
+    const res = await setupTunnelProvider("ngrok", { authToken: "tok-1" }, s)
+    expect(res.ok).toBe(true)
+    expect(read).not.toHaveBeenCalled()
   })
 
   it("a creds store failure propagates instead of becoming ok:false", async () => {

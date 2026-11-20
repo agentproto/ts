@@ -317,7 +317,11 @@ export async function setupTunnelProvider(
   const ledger = opts.ledger ?? makeSetupLedger(opts.home ? { home: opts.home } : {})
   // The family resolves the chosen provider so its OWN setupFields (and
   // `validateSetup`) drive validation, built-ins and third-party alike.
-  return makeTunnelFamily({ credsStore, ledger }).setup(slug, fields)
+  // Setup resolves it with `creds = null`, as it always did: the family
+  // reads stored creds only to resolve, so hide them here. Writes still go
+  // to the real store.
+  const unconfigured: CredsStore<TunnelCreds> = { ...credsStore, read: async () => null }
+  return makeTunnelFamily({ credsStore: unconfigured, ledger }).setup(slug, fields)
 }
 
 /**
