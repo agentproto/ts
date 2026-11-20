@@ -186,6 +186,235 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
     description: "Cost-efficient OpenAI realtime speech-to-speech",
     agentVisible: false,
   },
+  // ─── 2026-11-20 refresh: newest OpenAI + Google realtime / live audio ───
+  // Sources (fetched 2026-11-20): developers.openai.com/api/docs/models,
+  // developers.openai.com/api/docs/pricing, aistudio.google.com/docs/models and
+  // /docs/pricing. GPT-Live is served on `v1/live/sessions`, NOT `v1/realtime`:
+  // a Realtime integration is not compatible, the call site must target Live.
+  // `baseCost` for the live engines is the published per-minute rate (GPT-Live
+  // also has a $0.02/min standby tier for WebRTC sessions while inference is
+  // paused; backend model and tool usage is billed separately).
+  "openai/gpt-live-1.1": {
+    id: "openai/gpt-live-1.1",
+    name: "OpenAI GPT-Live 1.1",
+    providerId: "gpt-live-1.1",
+    provider: "openai",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      // $0.05/min active (billed per second), $0.02/min standby.
+      baseCost: 0.05,
+    },
+    description:
+      "OpenAI full-duplex voice model (Live API, v1/live/sessions) — listens while it speaks",
+    agentVisible: false,
+  },
+  // Token-billed realtime models. `baseCost` is an ESTIMATE of the blended
+  // USD/min assuming ~600 audio-in and ~1200 audio-out tokens per active
+  // minute at the published audio rates (2.1: $32 in / $64 out per 1M tokens;
+  // 2.1-mini: $10 / $20). Refresh via the drift-check script.
+  "openai/gpt-realtime-2.1": {
+    id: "openai/gpt-realtime-2.1",
+    name: "OpenAI Realtime 2.1",
+    providerId: "gpt-realtime-2.1",
+    provider: "openai",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      baseCost: 0.096,
+    },
+    description: "OpenAI realtime speech-to-speech with reasoning and tool use",
+    agentVisible: false,
+  },
+  "openai/gpt-realtime-2.1-mini": {
+    id: "openai/gpt-realtime-2.1-mini",
+    name: "OpenAI Realtime 2.1 mini",
+    providerId: "gpt-realtime-2.1-mini",
+    provider: "openai",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      baseCost: 0.03,
+    },
+    description: "OpenAI cost-efficient realtime speech-to-speech with tool use",
+    agentVisible: false,
+  },
+  "openai/gpt-realtime-translate": {
+    id: "openai/gpt-realtime-translate",
+    name: "OpenAI Realtime Translate",
+    providerId: "gpt-realtime-translate",
+    provider: "openai",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      // Published as an estimated per-minute cost (no token rates).
+      baseCost: 0.034,
+    },
+    description: "OpenAI streaming speech-to-speech translation",
+    agentVisible: false,
+  },
+  "openai/gpt-transcribe": {
+    id: "openai/gpt-transcribe",
+    name: "OpenAI GPT Transcribe",
+    providerId: "gpt-transcribe",
+    provider: "openai",
+    capabilities: {
+      stt: true,
+      languages: ["multi"],
+      timestamps: true,
+      languageDetection: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      baseCost: 0.0045,
+    },
+    description: "OpenAI file and Realtime-input transcription",
+    agentVisible: true,
+  },
+  "openai/gpt-live-transcribe": {
+    id: "openai/gpt-live-transcribe",
+    name: "OpenAI GPT-Live Transcribe",
+    providerId: "gpt-live-transcribe",
+    provider: "openai",
+    capabilities: {
+      stt: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      baseCost: 0.017,
+    },
+    description: "OpenAI low-latency realtime transcription",
+    agentVisible: true,
+  },
+  "openai/gpt-realtime-whisper": {
+    id: "openai/gpt-realtime-whisper",
+    name: "OpenAI Realtime Whisper",
+    providerId: "gpt-realtime-whisper",
+    provider: "openai",
+    capabilities: {
+      stt: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      baseCost: 0.017,
+    },
+    description: "OpenAI streaming realtime transcription",
+    agentVisible: true,
+  },
+  // Gemini Live (Live API). Internal ids follow the existing
+  // `google/gemini-live-<version>` family; `providerId` is the exact API model.
+  // Published per-minute audio rates: $0.005/min in +
+  // $0.018/min out = $0.023/min blended. Both variants share one pricing block.
+  "google/gemini-live-3.8": {
+    id: "google/gemini-live-3.8",
+    name: "Gemini 3.8 Live",
+    providerId: "gemini-3.8-live",
+    provider: "google",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      baseCost: 0.023,
+    },
+    description: "Google Gemini 3.8 Live realtime speech-to-speech",
+    agentVisible: false,
+  },
+  "google/gemini-live-3.8-extended-thinking": {
+    id: "google/gemini-live-3.8-extended-thinking",
+    name: "Gemini 3.8 Live (extended thinking)",
+    providerId: "gemini-3.8-live-extended-thinking",
+    provider: "google",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      baseCost: 0.023,
+    },
+    description: "Google Gemini 3.8 Live with extended thinking",
+    agentVisible: false,
+  },
+  "google/gemini-live-3.5-translate-preview": {
+    id: "google/gemini-live-3.5-translate-preview",
+    name: "Gemini 3.5 Live Translate (preview)",
+    providerId: "gemini-3.5-live-translate-preview",
+    provider: "google",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      // Google's own combined estimate (~$0.0368/min).
+      baseCost: 0.0368,
+    },
+    description: "Google Gemini live speech translation (preview)",
+    agentVisible: false,
+  },
+  // Gemini TTS. Priced per audio second from the published ~$0.00225 /
+  // $0.0015 per 10 s of audio. Rates apply through 2026-12-31; Google doubles
+  // them from 2027-01-01 (refresh then).
+  "google/gemini-3.8-flash-tts": {
+    id: "google/gemini-3.8-flash-tts",
+    name: "Gemini 3.8 Flash TTS",
+    providerId: "gemini-3.8-flash-tts",
+    provider: "google",
+    capabilities: {
+      tts: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_second",
+      baseCost: 0.000225,
+    },
+    description: "Google Gemini 3.8 Flash text-to-speech",
+    agentVisible: true,
+  },
+  "google/gemini-3.8-flash-lite-tts": {
+    id: "google/gemini-3.8-flash-lite-tts",
+    name: "Gemini 3.8 Flash Lite TTS",
+    providerId: "gemini-3.8-flash-lite-tts",
+    provider: "google",
+    capabilities: {
+      tts: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_second",
+      baseCost: 0.00015,
+    },
+    description: "Google Gemini 3.8 Flash Lite text-to-speech",
+    agentVisible: true,
+  },
+
   "elevenlabs/conversational": {
     id: "elevenlabs/conversational",
     name: "ElevenLabs Conversational",

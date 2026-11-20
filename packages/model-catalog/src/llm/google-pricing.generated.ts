@@ -1,4 +1,4 @@
-// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-google.mjs (data: OpenRouter remap — Google native API blocked, see llm-context-windows.ts, synced 2026-11-20T16:07:52.152Z)
+// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-google.mjs (data: OpenRouter remap — Google native API blocked, see llm-context-windows.ts, synced 2026-11-20T21:45:50.424Z)
 
 export const GOOGLE_GENERATED_PRICING = {
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5, cacheReadMultiplier: 0.1, vendor: "google", provider: "google" },
@@ -8,4 +8,11 @@ export const GOOGLE_GENERATED_PRICING = {
   "gemini-3.1-flash-lite": { inputPer1M: 0.25, outputPer1M: 1.5, cacheReadMultiplier: 0.1, vendor: "google", provider: "google" },
   "gemini-3.1-pro-preview": { inputPer1M: 2, outputPer1M: 12, cacheReadMultiplier: 0.1, tiers: [{ aboveInputTokens: 200000, inputPer1M: 4, outputPer1M: 18, cacheReadMultiplier: 0.1 }], vendor: "google", provider: "google" },
   "gemini-3.5-flash": { inputPer1M: 1.5, outputPer1M: 9, cacheReadMultiplier: 0.1, vendor: "google", provider: "google" },
+  "gemini-3.5-flash-lite": { inputPer1M: 0.3, outputPer1M: 2.5, cacheReadMultiplier: 0.1, vendor: "google", provider: "google" },
+  "gemini-3.6-flash": { inputPer1M: 0.75, outputPer1M: 3.75, cacheReadMultiplier: 0.1, vendor: "google", provider: "google" },
+  "gemini-3.8-flash": { inputPer1M: 0.825, outputPer1M: 4.125, cacheReadMultiplier: 0.1, vendor: "google", provider: "google" },
+  "gemini-4-argon": { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.05, vendor: "google", provider: "google" },
+  "gemini-4-carbon": { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.05, vendor: "google", provider: "google" },
+  "gemini-4-hydrogen": { inputPer1M: 1.5, outputPer1M: 7.5, cacheReadMultiplier: 0.05, vendor: "google", provider: "google" },
+  "gemini-4-neon": { inputPer1M: 3, outputPer1M: 15, cacheReadMultiplier: 0.05, vendor: "google", provider: "google" },
 } as const

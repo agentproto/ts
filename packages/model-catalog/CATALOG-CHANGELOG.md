@@ -634,3 +634,8 @@ for that.
 
 ### llm:xai
 - Removed: grok-build-0.1, grok-code-fast, grok-code-fast-1, grok-code-fast-1-0825
+
+## 2026-11-20
+
+### llm:context-windows
+- Added: gemini-3.5-flash-lite, gemini-3.6-flash, gemini-3.8-flash, gemini-4-argon, gemini-4-carbon, gemini-4-hydrogen, gemini-4-neon
