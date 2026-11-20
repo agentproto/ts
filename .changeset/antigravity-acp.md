@@ -1,5 +1,5 @@
 ---
-"@agentproto/adapter-antigravity": minor
+"@agentproto/adapter-antigravity": major
 "@agentproto/adapter-gemini": patch
 "@agentproto/cli": patch
 ---
