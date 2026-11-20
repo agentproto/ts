@@ -18,6 +18,7 @@ import {
   SEED_MODEL_LISTS,
   ZERO_COST_LIST_ID,
 } from "../model-list-store.js"
+import { FREE_MODEL } from "./helpers/catalog-models.js"
 
 let home: string
 
@@ -101,7 +102,7 @@ describe("model list store", () => {
   it("serves the seed before boot, and refreshes the sync source on save/delete", async () => {
     expect(getModelListSource().get(ZERO_COST_LIST_ID)).toBeDefined()
     expect(seedModelListSource().get(ZERO_COST_LIST_ID)).toBeDefined()
-    expect(inModelList("big-pickle", ZERO_COST_LIST_ID, getModelListSource())).toBe(true)
+    expect(inModelList(FREE_MODEL, ZERO_COST_LIST_ID, getModelListSource())).toBe(true)
 
     await loadModelListSource()
     await saveModelList({ id: "pinned", ids: ["custom/model"] })
@@ -179,10 +180,10 @@ describe("model list store", () => {
   })
 
   it("fails closed when a list is missing or cyclic instead of throwing", () => {
-    expect(isInModelList("big-pickle", "missing")).toBe(false)
+    expect(isInModelList("acme/some-model", "missing")).toBe(false)
     expect(
       isInModelList(
-        "big-pickle",
+        "acme/some-model",
         "a",
         modelListSourceFromLists([
           { id: "a", include: [{ kind: "list", id: "b" }] },
