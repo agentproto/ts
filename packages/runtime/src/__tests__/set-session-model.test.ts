@@ -23,6 +23,7 @@ import { registerAgentTools } from "../agent-tools.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+import { OTHER_ROTATION_MODEL, PAID_MODEL, ROTATION_MODEL } from "./helpers/catalog-models.js"
 
 // Deterministic named-profile resolution for the live-switch allow-list gate.
 const authProfileState = vi.hoisted(() => ({
@@ -456,15 +457,15 @@ describe("SessionsRegistry.setModel", () => {
       cwd: "/tmp",
       agentSession: session,
       adapterSlug: "claude-code",
-      model: "opencode/deepseek-v4.1-flash-free",
+      model: OTHER_ROTATION_MODEL,
       modelPolicy: { block: ["default-rotation"] },
     })
 
-    const result = await reg.setModel(desc.id, "opencode/glm-5.3-flash-free")
+    const result = await reg.setModel(desc.id, ROTATION_MODEL)
     expect(result.applied).toBe(false)
     expect(result).toMatchObject({ reason: expect.stringMatching(/^policy:model_blocked: /) })
     expect(session.lastSetModel).toBeUndefined()
-    expect(reg.get(desc.id)?.model).toBe("opencode/deepseek-v4.1-flash-free")
+    expect(reg.get(desc.id)?.model).toBe(OTHER_ROTATION_MODEL)
     reg.shutdown()
   })
 
@@ -476,13 +477,13 @@ describe("SessionsRegistry.setModel", () => {
       cwd: "/tmp",
       agentSession: session,
       adapterSlug: "claude-code",
-      model: "opencode/deepseek-v4.1-flash-free",
+      model: OTHER_ROTATION_MODEL,
       modelPolicy: { allow: ["default-rotation"] },
     })
 
     const refused = await reg.setModel(desc.id, "totally-made-up-model")
     expect(refused).toMatchObject({ applied: false, reason: expect.stringMatching(/^policy:model_not_allowed: /) })
-    const ok = await reg.setModel(desc.id, "opencode/glm-5.3-flash-free")
+    const ok = await reg.setModel(desc.id, ROTATION_MODEL)
     expect(ok.applied).toBe(true)
     reg.shutdown()
   })
@@ -495,9 +496,9 @@ describe("SessionsRegistry.setModel", () => {
       cwd: "/tmp",
       agentSession: session,
       adapterSlug: "claude-code",
-      model: "opencode/glm-5.3-flash-free",
+      model: ROTATION_MODEL,
     })
-    const result = await reg.setModel(desc.id, "opencode/gpt-5.1-codex")
+    const result = await reg.setModel(desc.id, PAID_MODEL)
     expect(result.applied).toBe(true)
     reg.shutdown()
   })

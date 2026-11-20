@@ -36,6 +36,7 @@ import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import type { AuthProfile } from "@agentproto/auth"
 import type { AcpMcpServer } from "@agentproto/acp"
 import { mcpServerMountsOverrideSchema } from "../agent-start-schema.js"
+import { OTHER_ROTATION_MODEL, PAID_MODEL, ROTATION_MODEL } from "./helpers/catalog-models.js"
 
 let acpCounter = 0
 function fakeAgentSession(): AgentSessionLike {
@@ -794,7 +795,7 @@ describe("restartAgentSession - model policy", () => {
       cwd: "/tmp",
       agentSession: fakeAgentSession(),
       adapterSlug: "opencode",
-      model: "opencode/deepseek-v4.1-flash-free",
+      model: OTHER_ROTATION_MODEL,
       modelPolicy,
     })
   }
@@ -807,7 +808,7 @@ describe("restartAgentSession - model policy", () => {
     await expect(
       restartAgentSession(registry, resolver, prev, {
         forceAgentResume: true,
-        overrides: { model: "opencode/glm-5.3-flash-free" },
+        overrides: { model: ROTATION_MODEL },
       }),
     ).rejects.toBeInstanceOf(RestartOverrideError)
     expect(captured).toHaveLength(0)
@@ -821,7 +822,7 @@ describe("restartAgentSession - model policy", () => {
     await expect(
       restartAgentSession(registry, resolver, prev, {
         forceAgentResume: true,
-        overrides: { model: "opencode/not-in-any-list" },
+        overrides: { model: "acme/not-in-any-list" },
       }),
     ).rejects.toThrow(/model policy/)
   })
@@ -833,9 +834,9 @@ describe("restartAgentSession - model policy", () => {
 
     const restarted = await restartAgentSession(registry, resolver, prev, {
       forceAgentResume: true,
-      overrides: { model: "opencode/glm-5.3-flash-free" },
+      overrides: { model: ROTATION_MODEL },
     })
-    expect(restarted.desc.model).toBe("opencode/glm-5.3-flash-free")
+    expect(restarted.desc.model).toBe(ROTATION_MODEL)
     expect(restarted.desc.modelPolicy).toEqual({ allow: ["default-rotation"] })
   })
 
@@ -847,12 +848,12 @@ describe("restartAgentSession - model policy", () => {
       cwd: "/tmp",
       agentSession: fakeAgentSession(),
       adapterSlug: "opencode",
-      model: "opencode/glm-5.3-flash-free",
+      model: ROTATION_MODEL,
     })
     const restarted = await restartAgentSession(registry, resolver, prev, {
       forceAgentResume: true,
-      overrides: { model: "opencode/gpt-5.1-codex" },
+      overrides: { model: PAID_MODEL },
     })
-    expect(restarted.desc.model).toBe("opencode/gpt-5.1-codex")
+    expect(restarted.desc.model).toBe(PAID_MODEL)
   })
 })

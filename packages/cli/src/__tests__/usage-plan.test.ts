@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { CANDIDATES } from "@agentproto/usage-presets"
 import { countFreeLocalSessions, runUsage } from "../commands/usage.js"
+
+// Session rows only need a model string: free is decided by the "-free"
+// suffix rule, so synthetic ids keep these tests independent of the catalog.
+const FREE_A = "acme/alpha-free"
+const FREE_B = "acme/beta-free"
+const PAID_MODEL = "acme/pro"
 
 vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
   const orig = await importOriginal<typeof import("../commands/_daemon-helpers.js")>()
@@ -18,11 +25,11 @@ const httpGetJson = vi.mocked(helpers.httpGetJson)
 describe("countFreeLocalSessions", () => {
   it("counts alive local sessions on a free model", () => {
     const rows = [
-      { id: "a", alive: true, model: "opencode/glm-5.3-flash-free" },
-      { id: "b", alive: true, model: "opencode/deepseek-v4.1-flash-free" },
-      { id: "c", alive: true, model: "opencode-go/glm-5.3" },
-      { id: "d", alive: true, remote: true, model: "opencode/glm-5.3-flash-free" },
-      { id: "e", alive: false, model: "opencode/glm-5.3-flash-free" },
+      { id: "a", alive: true, model: FREE_A },
+      { id: "b", alive: true, model: FREE_B },
+      { id: "c", alive: true, model: PAID_MODEL },
+      { id: "d", alive: true, remote: true, model: FREE_A },
+      { id: "e", alive: false, model: FREE_A },
       { id: "f", alive: true },
     ]
     // a+b count; c is paid, d is sandbox, e is dead, f has no model yet.
@@ -67,10 +74,10 @@ describe("agentproto usage plan", () => {
   it("reads the daemon's { sessions } envelope and applies the 2-free-local cap", async () => {
     httpGetJson.mockResolvedValue({
       sessions: [
-        { id: "a", alive: true, model: "opencode/glm-5.3-flash-free" },
-        { id: "b", alive: true, model: "opencode/deepseek-v4.1-flash-free" },
-        { id: "c", alive: true, model: "opencode-go/glm-5.3" },
-        { id: "d", alive: true, remote: true, model: "opencode/glm-5.3-flash-free" },
+        { id: "a", alive: true, model: FREE_A },
+        { id: "b", alive: true, model: FREE_B },
+        { id: "c", alive: true, model: PAID_MODEL },
+        { id: "d", alive: true, remote: true, model: FREE_A },
       ],
       total: 4,
     })
@@ -83,7 +90,7 @@ describe("agentproto usage plan", () => {
     const body = JSON.parse(stdoutChunks.join(""))
     expect(body.freeLocalInUse).toBe(2)
     expect(body.plan.place).toBe("sandbox")
-    expect(body.plan.resolvedModel).toBe("opencode/glm-5.3-flash-free")
+    expect(body.plan.resolvedModel).toBe(CANDIDATES.sandboxDeepseekFree.model)
     expect(body.freeLocalInUseError).toBeUndefined()
   })
 

@@ -117,19 +117,25 @@ export function isFreeCandidate(candidate: SpawnCandidate): boolean {
 // ── Candidates (models actually available on this install) ──────────────
 
 export const CANDIDATES = {
-  /** Sandbox OVH glm 5.3 flash free, the pr-fix/overflow workhorse. */
-  sandboxGlmFree: {
-    model: "opencode/glm-5.3-flash-free",
-    profileRef: "opencode-api-zen-ws03",
-    free: true,
+  /**
+   * Sandbox glm 5.3 flash on the OpenCode Go subscription (never the full
+   * glm-5.3), the pr-fix/overflow workhorse. It replaces
+   * opencode/glm-5.3-flash-free, which Zen stopped serving (its /models list
+   * has no such id and a call answers "Model is unavailable", 2026-11-20).
+   * Not a free-route candidate: no per-IP limit, covered by the subscription.
+   */
+  sandboxGlmFlash: {
+    model: "opencode-go/glm-5.3-flash",
+    profileRef: "opencode-developerws003",
+    free: false,
     place: "sandbox",
     posture: "bypass",
   },
-  /** Local glm 5.3 flash free (Zen route). */
-  localGlmFree: {
-    model: "opencode/glm-5.3-flash-free",
-    profileRef: "opencode-api-zen-ws03",
-    free: true,
+  /** Local glm 5.3 flash (OpenCode Go subscription). */
+  localGlmFlash: {
+    model: "opencode-go/glm-5.3-flash",
+    profileRef: "opencode-developerws003",
+    free: false,
     place: "local",
     posture: "bypass",
   },
@@ -139,6 +145,14 @@ export const CANDIDATES = {
     profileRef: "opencode-api-zen-ws03",
     free: true,
     place: "local",
+    posture: "bypass",
+  },
+  /** Same free model inside the box: the overflow target of the free cap. */
+  sandboxDeepseekFree: {
+    model: "opencode/deepseek-v4.1-flash-free",
+    profileRef: "opencode-api-zen-ws03",
+    free: true,
+    place: "sandbox",
     posture: "bypass",
   },
   /** Local paid glm 5.3 (OpenCode Go route), no per-IP limit, spends. */
@@ -165,11 +179,11 @@ export const CANDIDATES = {
     place: "sandbox",
     posture: "read-only",
   },
-  /** Reviewer free alternative, read-only, sandbox-safe. */
-  reviewerFree: {
-    model: "opencode/glm-5.3-flash-free",
-    profileRef: "opencode-api-zen-ws03",
-    free: true,
+  /** Reviewer cheap alternative (Go subscription), read-only, sandbox-safe. */
+  reviewerFlash: {
+    model: "opencode-go/glm-5.3-flash",
+    profileRef: "opencode-developerws003",
+    free: false,
     place: "sandbox",
     posture: "read-only",
   },
@@ -189,7 +203,7 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     placePolicy: "sandbox",
     sandboxProvider: "computer",
     candidates: [
-      CANDIDATES.sandboxGlmFree,
+      CANDIDATES.sandboxGlmFlash,
       CANDIDATES.sandboxPaidStrong, // same place, paid rail
     ],
     note: "La PR est fetchée dans la sandbox ; les fichiers locaux ne sont pas nécessaires.",
@@ -199,9 +213,9 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     label: "Exploration",
     placePolicy: "local-preferred",
     candidates: [
-      CANDIDATES.localGlmFree,
       CANDIDATES.localDeepseekFree,
-      CANDIDATES.sandboxGlmFree, // explicit sandbox candidate for overflow
+      CANDIDATES.localGlmFlash,
+      CANDIDATES.sandboxDeepseekFree, // explicit sandbox candidate for overflow
     ],
   },
   implement: {
@@ -209,9 +223,9 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     label: "Implémentation",
     placePolicy: "local-preferred",
     candidates: [
+      CANDIDATES.localGlmFlash,
       CANDIDATES.localDeepseekFree,
-      CANDIDATES.localGlmFree,
-      CANDIDATES.sandboxGlmFree, // explicit sandbox candidate for overflow
+      CANDIDATES.sandboxDeepseekFree, // explicit sandbox candidate for overflow
     ],
   },
   review: {
@@ -221,7 +235,7 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     sandboxProvider: "computer",
     candidates: [
       CANDIDATES.reviewerPaid,
-      CANDIDATES.reviewerFree, // gratuit, toujours read-only
+      CANDIDATES.reviewerFlash, // abonnement Go, toujours read-only
     ],
   },
   deploy: {
