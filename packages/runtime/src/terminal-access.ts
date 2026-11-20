@@ -28,6 +28,22 @@ export interface TerminalAccessRefused {
   message: string
 }
 
+/** `--model X` / `--model=X` (also `-m`) from a provider TUI argv, last one wins. */
+export function modelFromArgv(argv: string[]): string | undefined {
+  let found: string | undefined
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] ?? ""
+    if (a === "--model" || a === "-m") {
+      const v = argv[i + 1]
+      if (v && !v.startsWith("-")) found = v
+    } else if (a.startsWith("--model=")) {
+      const v = a.slice("--model=".length)
+      if (v) found = v
+    }
+  }
+  return found
+}
+
 export async function resolveTerminalAccess(input: {
   argv: string[]
   profileRef: string
@@ -53,13 +69,14 @@ export async function resolveTerminalAccess(input: {
   // Loaded lazily: session-spawn.ts sits in a deep import cycle with the
   // modules that import this one, and a static import here changes module
   // init order enough to break unrelated spawn paths (cwd resolution).
+  const model = input.model ?? modelFromArgv(input.argv)
   const resolveProfile =
     input.resolveProfile ?? (await import("./session-spawn.js")).resolveAccessProfileAuth
   const result = await resolveProfile({
     adapter,
     profileRef: input.profileRef,
     authDescriptor: resolved.authDescriptor,
-    ...(input.model ? { model: input.model } : {}),
+    ...(model ? { model } : {}),
     ...(resolved.defaultModel ? { defaultModel: resolved.defaultModel } : {}),
   })
   if (!result.ok) return { ok: false, code: result.code, message: result.message }

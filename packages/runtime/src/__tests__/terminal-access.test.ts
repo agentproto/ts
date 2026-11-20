@@ -103,4 +103,29 @@ describe("resolveTerminalAccess", () => {
     })
     expect(out).toMatchObject({ ok: false, code: "adapter_not_found" })
   })
+
+  it("checks the --model from argv, not the adapter default, against the profile", async () => {
+    for (const argv of [
+      ["claude", "-p", "hi", "--model", "claude-opus-5-5"],
+      ["claude", "--model=claude-opus-5-5", "-p", "hi"],
+    ]) {
+      const resolveProfile = vi.fn(async () => ({ ok: false as const, code: "x", message: "m" })) as unknown as typeof resolveAccessProfileAuth
+      await resolveTerminalAccess({
+        argv,
+        profileRef: "anthropic-sub-hodl",
+        resolveAgentAdapter: async () => adapter,
+        resolveProfile,
+      })
+      expect(resolveProfile).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-opus-5-5" }))
+    }
+  })
+
+  it("an explicit model input wins over argv; no --model passes none", async () => {
+    const resolveProfile = vi.fn(async () => ({ ok: false as const, code: "x", message: "m" })) as unknown as typeof resolveAccessProfileAuth
+    const base = { profileRef: "p", resolveAgentAdapter: async () => adapter, resolveProfile }
+    await resolveTerminalAccess({ ...base, argv: ["claude", "--model", "a"], model: "b" })
+    expect(resolveProfile).toHaveBeenLastCalledWith(expect.objectContaining({ model: "b" }))
+    await resolveTerminalAccess({ ...base, argv: ["claude"] })
+    expect(resolveProfile).toHaveBeenLastCalledWith(expect.not.objectContaining({ model: expect.anything() }))
+  })
 })
