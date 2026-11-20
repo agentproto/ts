@@ -256,7 +256,7 @@ jobs:
           # add -A`, with a unique name so it diffs as ADDED against main.
           node scripts/write-catalog-changeset.mjs \
             --out ".changeset/update-deps-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD).md" \
-            --message "Weekly dependency refresh (pnpm up -r)."
+            --message "Weekly dependency refresh ($MODE${SCOPE:+: $SCOPE})."
 
           git add -A
           if git diff --cached --quiet; then

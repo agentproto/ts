@@ -26,6 +26,7 @@
 
 import { execSync } from 'node:child_process'
 import { writeFileSync, unlinkSync, readdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   publishablePackageMap,
   changedPublishablePackages,
@@ -98,7 +99,7 @@ for (const name of readdirSync(`${ROOT}/.changeset`)) {
   if (!name.startsWith('catalog-sync-auto') || !name.endsWith('.md')) continue
   const relPath = `.changeset/${name}`
   const stale = `${ROOT}/${relPath}`
-  if (stale === OUT) continue
+  if (stale === resolve(OUT)) continue
   if (isOnOriginMain(relPath)) continue
   unlinkSync(stale)
 }
