@@ -5,7 +5,7 @@
  * left them green; each test below fails in that case.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -19,7 +19,7 @@ import {
   makeSandboxCredsStore,
   registerSandboxAdapterTools,
 } from "../sandbox-adapters.js"
-import { setupTunnelProvider } from "../tunnel-adapters.js"
+import { registerTunnelAdapterTools, setupTunnelProvider } from "../tunnel-adapters.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 
 type Handler = (args: Record<string, unknown>) => Promise<{
@@ -156,5 +156,22 @@ describe("tunnel setup keeps its pre-factory semantics", () => {
     await expect(
       setupTunnelProvider("ngrok", { authToken: "tok-1" }, s),
     ).rejects.toThrow("ledger down")
+  })
+})
+
+describe("tunnel setup tool schema ignores stored creds", () => {
+  it("a corrupt creds file does not hide a provider from setup_tunnel_provider", async () => {
+    const home = mkdtempSync(join(tmpdir(), "family-compat-"))
+    try {
+      mkdirSync(join(home, "tunnel-creds"), { recursive: true })
+      writeFileSync(join(home, "tunnel-creds", "ngrok.json"), "{not json")
+      const { server, tools } = fakeServer()
+      await registerTunnelAdapterTools(server, { home })
+      const res = await tools.get("setup_tunnel_provider")!({ slug: "ngrok", authToken: "" })
+      expect(res.content[0]!.text).not.toContain("unknown slug")
+      expect(res.content[0]!.text).toContain("missing required field(s): authToken")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })

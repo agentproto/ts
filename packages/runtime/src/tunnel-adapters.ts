@@ -150,6 +150,13 @@ export function makeTunnelCredsStore(home?: string): CredsStore<TunnelCreds> {
   })
 }
 
+/** A creds store that reads as empty and writes through. Setup resolves
+ *  providers with `creds = null` (it never read the stored creds to build its
+ *  schema), so a corrupt creds file cannot hide a provider from setup. */
+function withoutStoredCreds(store: CredsStore<TunnelCreds>): CredsStore<TunnelCreds> {
+  return { ...store, read: async () => null }
+}
+
 /** Build the tunnel family on the kit's factory. `legacySetup` keeps the
  *  setup semantics this module had before it moved onto the factory. */
 function makeTunnelFamily(opts: {
@@ -228,6 +235,12 @@ export async function registerTunnelAdapterTools(
         "customDomain, requiresAuth, hasApi). Credentials are never returned. " +
         "Use `setup_tunnel_provider` to configure a provider that needs creds.",
     },
+  })
+
+  // The setup tool's schema is built from providers resolved with creds=null
+  // (as before), so a corrupt stored-creds file cannot hide one from setup.
+  const setupFamily = makeTunnelFamily({ credsStore: withoutStoredCreds(credsStore), ledger })
+  await setupFamily.registerTools(server, {
     setup: {
       name: "setup_tunnel_provider",
       description:
@@ -320,8 +333,7 @@ export async function setupTunnelProvider(
   // Setup resolves it with `creds = null`, as it always did: the family
   // reads stored creds only to resolve, so hide them here. Writes still go
   // to the real store.
-  const unconfigured: CredsStore<TunnelCreds> = { ...credsStore, read: async () => null }
-  return makeTunnelFamily({ credsStore: unconfigured, ledger }).setup(slug, fields)
+  return makeTunnelFamily({ credsStore: withoutStoredCreds(credsStore), ledger }).setup(slug, fields)
 }
 
 /**
