@@ -27,12 +27,12 @@ import { createRotationTargetCheck } from "../turn-retry-eligibility.js"
 import { resolveTurnRetryPolicy } from "../turn-retry-policy.js"
 import type { ModelPolicy } from "../model-policy.js"
 import { ZERO_COST_LIST_ID } from "../model-list-store.js"
-import { FREE_MODEL } from "./helpers/catalog-models.js"
+import { FREE_MODEL, OTHER_FREE_MODEL, PAID_MODEL, THIRD_FREE_MODEL } from "./helpers/catalog-models.js"
 
 const FAST = { baseDelayMs: 5, factor: 1, maxDelayMs: 5 }
 const FREE_A = FREE_MODEL
-const FREE_B = "opencode/deepseek-v4.1-flash-free"
-const FREE_C = "opencode/big-pickle"
+const FREE_B = OTHER_FREE_MODEL
+const FREE_C = THIRD_FREE_MODEL
 const OPENCODE_LIMIT =
   "Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"
 
@@ -309,7 +309,7 @@ describe("turn retry fallback", () => {
       turnRetry: {
         on: ["rate-limit"],
         maxRetries: 1,
-        fallback: [{ model: "opencode/gpt-5.1-codex" }, { model: FREE_B }],
+        fallback: [{ model: PAID_MODEL }, { model: FREE_B }],
         ...FAST,
       },
     })

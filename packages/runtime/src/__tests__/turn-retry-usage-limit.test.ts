@@ -21,12 +21,12 @@ import {
   turnRetryInputSchema,
   TURN_RETRY_DEFAULT_ON,
 } from "../turn-retry-policy.js"
-import { FREE_MODEL } from "./helpers/catalog-models.js"
+import { FREE_MODEL, OTHER_FREE_MODEL, THIRD_FREE_MODEL } from "./helpers/catalog-models.js"
 
 const FAST = { baseDelayMs: 5, factor: 1, maxDelayMs: 5 }
 const FREE_A = FREE_MODEL
-const FREE_B = "opencode/deepseek-v4.1-flash-free"
-const FREE_C = "opencode/big-pickle"
+const FREE_B = OTHER_FREE_MODEL
+const FREE_C = THIRD_FREE_MODEL
 /** The exact string the CI reviewer run died on (fleet boxes share one egress IP). */
 const CI_USAGE_LIMIT =
   "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"

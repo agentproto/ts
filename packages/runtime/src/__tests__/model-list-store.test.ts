@@ -37,8 +37,13 @@ describe("model list store", () => {
   it("writes both seeds when the file is absent, mode 0600", async () => {
     const file = await loadModelLists()
     expect(file.version).toBe(1)
-    // The file holds exactly the shipped seeds; which models the rotation
-    // names is the seed's business, not this test's.
+    // Which models the rotation names is the seed's business, not this
+    // test's: assert the persisted file mirrors the shipped seeds AND that the
+    // seeds have the expected shape (so the mirror check cannot pass on an
+    // empty or malformed seed).
+    expect(SEED_MODEL_LISTS.map(l => l.id)).toEqual([ZERO_COST_LIST_ID, DEFAULT_ROTATION_LIST_ID])
+    const rotation = SEED_MODEL_LISTS.find(l => l.id === DEFAULT_ROTATION_LIST_ID)
+    expect(rotation?.ids?.length).toBeGreaterThanOrEqual(2)
     expect(file.lists).toEqual([...SEED_MODEL_LISTS])
     expect(file.lists[0]).toEqual({
       id: ZERO_COST_LIST_ID,
