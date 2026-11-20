@@ -136,6 +136,10 @@ export interface ProviderFamily<THandle extends FamilyHandle, TInfo> {
    * Union of the setup fields of every resolvable configurable provider,
    * relaxed to optional (one tool spans providers with disjoint fields).
    * Per-provider required-ness is enforced by {@link ProviderFamily.setup}.
+   *
+   * Cost: this resolves every catalog slug, importing each provider package.
+   * {@link ProviderFamily.registerTools} calls it once at registration, so a
+   * host that only exposes `list_*` still pays that import for the setup tool.
    */
   setupSchema: () => Promise<{ validSlugs: string[]; fields: SetupField[] }>
   /**
@@ -250,7 +254,7 @@ export function makeProviderFamily<THandle extends FamilyHandle, TInfo>(
       return { ok: false, hint: `provider '${slug}' is not configurable` }
     }
     const missing = declared
-      .filter(f => f.required === true)
+      .filter(f => f.required !== false)
       .map(f => f.name)
       .filter(name => {
         const v = fields[name]
@@ -266,23 +270,30 @@ export function makeProviderFamily<THandle extends FamilyHandle, TInfo>(
         return { ok: false, hint: err instanceof Error ? err.message : String(err) }
       }
     }
-    // Persist only the provider's declared, non-empty fields.
-    const creds: FamilyCreds = {}
-    for (const f of declared) {
-      const v = fields[f.name]
-      if (v !== undefined && v.length > 0) creds[f.name] = v
-    }
+    // Persist only the provider's declared, non-empty fields. The write
+    // REPLACES the stored record, so start from what is already there and
+    // merge over it: re-setup must not drop previously stored optional creds.
+    const now = new Date().toISOString()
     try {
+      const existing = await credsStore.read(slug)
+      const creds: FamilyCreds = { ...(existing ?? {}) }
+      for (const f of declared) {
+        const v = fields[f.name]
+        if (v !== undefined && v.length > 0) creds[f.name] = v
+      }
       await credsStore.write(slug, creds)
     } catch (err) {
       return { ok: false, hint: err instanceof Error ? err.message : String(err) }
     }
-    const now = new Date().toISOString()
-    await ledger.write(slug, {
-      slug,
-      completedAt: now,
-      steps: [{ id: "creds", completedAt: now }],
-    })
+    try {
+      await ledger.write(slug, {
+        slug,
+        completedAt: now,
+        steps: [{ id: "creds", completedAt: now }],
+      })
+    } catch (err) {
+      return { ok: false, hint: err instanceof Error ? err.message : String(err) }
+    }
     return {
       ok: true,
       hint: opts.setupHint?.(slug) ?? `${slug} configured, status is now ready`,

@@ -51,7 +51,7 @@ function handle(slug: string, over: Partial<FakeHandle> = {}): FakeHandle {
 
 const PAID_FIELDS = [
   { name: "apiKey", description: "key", required: true, sensitive: true },
-  { name: "region", description: "region" },
+  { name: "region", description: "region", required: false },
 ] as const
 
 const MODULES: Record<string, Record<string, unknown>> = {
@@ -182,6 +182,82 @@ describe("makeProviderFamily without daemon or home", () => {
     expect(await family.credsStore.read("paid")).toEqual({ apiKey: "secret-value" }) // empty region dropped
     expect(await family.ledger.exists("paid")).toBe(true)
     expect((await family.list())[0]?.status).toBe("ready")
+  })
+
+  it("setup treats an omitted required as required", async () => {
+    const family = makeProviderFamily<FakeHandle, FakeInfo>({
+      family: "fake",
+      catalog: [CATALOG[0]!],
+      toInfo: h => ({ kind: h.kind }),
+      builtins: {
+        inproc: () =>
+          handle("inproc", {
+            requiresSetup: true,
+            // `required` omitted — the SetupField contract says that is required.
+            setupFields: [{ name: "token", description: "token" }],
+          }),
+      },
+      credsStore: makeMemoryCredsStore(),
+      ledger: makeMemorySetupLedger(),
+    })
+    expect(await family.setup("inproc", {})).toEqual({
+      ok: false,
+      hint: "missing required field(s): token",
+    })
+    expect((await family.setup("inproc", { token: "t" })).ok).toBe(true)
+    expect(await family.credsStore.read("inproc")).toEqual({ token: "t" })
+  })
+
+  it("setup merges over previously stored optional creds", async () => {
+    const family = makeProviderFamily<FakeHandle, FakeInfo>({
+      family: "fake",
+      catalog: [CATALOG[0]!],
+      toInfo: h => ({ kind: h.kind }),
+      builtins: {
+        inproc: () =>
+          handle("inproc", {
+            requiresSetup: true,
+            setupFields: [
+              { name: "apiKey", description: "key", required: true },
+              { name: "region", description: "region", required: false },
+            ],
+          }),
+      },
+      credsStore: makeMemoryCredsStore<Record<string, string>>({
+        inproc: { apiKey: "old", region: "eu" },
+      }),
+      ledger: makeMemorySetupLedger(),
+    })
+    expect((await family.setup("inproc", { apiKey: "new" })).ok).toBe(true)
+    expect(await family.credsStore.read("inproc")).toEqual({
+      apiKey: "new",
+      region: "eu",
+    })
+  })
+
+  it("setup reports a ledger write failure instead of throwing", async () => {
+    const ledger = makeMemorySetupLedger()
+    ledger.write = async () => {
+      throw new Error("ledger down")
+    }
+    const family = makeProviderFamily<FakeHandle, FakeInfo>({
+      family: "fake",
+      catalog: [CATALOG[0]!],
+      toInfo: h => ({ kind: h.kind }),
+      builtins: {
+        inproc: () =>
+          handle("inproc", {
+            requiresSetup: true,
+            setupFields: [{ name: "token", description: "token", required: true }],
+          }),
+      },
+      credsStore: makeMemoryCredsStore(),
+      ledger,
+    })
+    expect(await family.setup("inproc", { token: "t" })).toEqual({
+      ok: false,
+      hint: "ledger down",
+    })
   })
 
   it("registers list and setup tools with the given names", async () => {
