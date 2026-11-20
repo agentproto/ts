@@ -193,7 +193,7 @@ describe("makeProviderFamily without daemon or home", () => {
         inproc: () =>
           handle("inproc", {
             requiresSetup: true,
-            // `required` omitted — the SetupField contract says that is required.
+            // `required` omitted: the SetupField contract says that is required.
             setupFields: [{ name: "token", description: "token" }],
           }),
       },
