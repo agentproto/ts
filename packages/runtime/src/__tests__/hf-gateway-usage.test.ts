@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest"
+import { DEFAULT_PRICING } from "@agentproto/model-catalog"
+import { listRouterLlmRoutes } from "@agentproto/model-catalog/route-identity"
 import { effectiveAdapterProvider } from "../model-wire.js"
 import { deriveSessionUsage, pricingResolverFor } from "../usage.js"
 
@@ -10,13 +12,34 @@ describe("hermes on the huggingface gateway", () => {
   })
 
   it("prices from the HF route table (cheapest live provider), per 1M tokens", () => {
+    // Prices and the set of models are regenerated weekly (Catalog Sync), so
+    // neither the id nor the expected cost is pinned: take any HF route that
+    // carries a price and expect its own table price for 1M in + 1M out.
+    const route = listRouterLlmRoutes("huggingface").find(
+      r =>
+        r.pricing &&
+        r.pricing.inputPer1M > 0 &&
+        r.pricing.outputPer1M > 0 &&
+        // DEFAULT_PRICING is a placeholder the resolver reports as unpriced,
+        // not a real route price.
+        !(
+          r.pricing.inputPer1M === DEFAULT_PRICING.inputPer1M &&
+          r.pricing.outputPer1M === DEFAULT_PRICING.outputPer1M
+        ),
+    )
+    expect(route, "the HF route table has at least one priced model").toBeDefined()
+    const { vendor, product } = route!.ref
+    const model = `${vendor}/${product}`
     const u = deriveSessionUsage(
-      { model: "Qwen/Qwen3-14B", tokensIn: 1_000_000, tokensOut: 1_000_000 },
+      { model, tokensIn: 1_000_000, tokensOut: 1_000_000 },
       pricingResolverFor("huggingface"),
     )
     expect(u.source).toBe("computed")
-    expect(u.costUsd).toBeCloseTo(0.36, 6)
-    expect(u.model).toBe("Qwen/Qwen3-14B")
+    expect(u.costUsd).toBeCloseTo(
+      route!.pricing!.inputPer1M + route!.pricing!.outputPer1M,
+      6,
+    )
+    expect(u.model).toBe(model)
   })
 
   it("reports an HF model whose providers publish no price as unpriced, not DEFAULT_PRICING", () => {
