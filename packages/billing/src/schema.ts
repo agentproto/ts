@@ -1,5 +1,5 @@
 /**
- * AIP-BILLING BILLING.md frontmatter zod schema.
+ * BILLING.md frontmatter zod schema (AIP-BILLING).
  *
  * Mirrors `BILLING.schema.json` (agentproto/agentproto, AIP-BILLING draft). It is
  * written by hand, NOT emitted by `scripts/scaffold-aip.mjs`: the scaffolder
