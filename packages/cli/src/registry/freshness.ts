@@ -15,6 +15,7 @@
  */
 
 import { spawn } from "node:child_process"
+import { withNpmGlobalPrefix } from "../util/npm-prefix.js"
 
 /** How long a single npm registry query may take. Bounded so a stalled
  *  registry can never hang the calling verb; on timeout we report `null`
@@ -71,7 +72,11 @@ export async function npmInstalledVersion(
   pkg: string,
   timeoutMs = NPM_PROBE_TIMEOUT_MS
 ): Promise<string | null> {
-  const out = await probeText("npm", ["ls", "-g", pkg, "--depth=0"], timeoutMs)
+  const out = await probeText(
+    "npm",
+    withNpmGlobalPrefix(["ls", "-g", pkg, "--depth=0"]),
+    timeoutMs
+  )
   if (out === null) return null
   // Line shape: `-- (empty)` on miss; on hit: `-- <pkg>@<version>` (plus
   // a first line with the global root). Take the version off the line

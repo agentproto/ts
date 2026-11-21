@@ -258,4 +258,63 @@ describe("agentproto adapters outdated", () => {
     })
     io.restore()
   })
+
+  it("uses resolved packageVersion for non-global / workspace installs instead of 'version unknown'", async () => {
+    listInstalledAdaptersMock.mockResolvedValue([
+      {
+        slug: "antigravity",
+        name: "antigravity",
+        version: "0.2.0",
+        packageVersion: "0.3.15",
+        packageName: "@agentproto/adapter-antigravity",
+      },
+      {
+        slug: "claude-code",
+        name: "claude-code",
+        version: "0.1.0",
+        packageVersion: "2.8.0",
+        packageName: "@agentproto/adapter-claude-code",
+      },
+    ])
+    spawnScript([
+      {
+        cmd: "npm",
+        argsPrefix: ["view", "@agentproto/adapter-antigravity", "version"],
+        stdout: "0.3.15\n",
+      },
+      {
+        cmd: "npm",
+        argsPrefix: ["view", "@agentproto/adapter-claude-code", "version"],
+        stdout: "2.8.1\n",
+      },
+    ])
+    const io = captureStdio()
+
+    const code = await runAdapters(["outdated", "--json"])
+
+    expect(code).toBe(0)
+    const rows = JSON.parse(io.out.join("")) as Array<Record<string, unknown>>
+    expect(rows).toEqual([
+      {
+        slug: "antigravity",
+        package: "@agentproto/adapter-antigravity",
+        installed: "0.3.15",
+        latest: "0.3.15",
+        status: "current",
+      },
+      {
+        slug: "claude-code",
+        package: "@agentproto/adapter-claude-code",
+        installed: "2.8.0",
+        latest: "2.8.1",
+        status: "behind",
+      },
+    ])
+    // Never needed `npm ls -g` when the local package.json version is known.
+    const lsCalls = spawnMock.mock.calls.filter(
+      ([cmd, args]) => cmd === "npm" && Array.isArray(args) && args[0] === "ls"
+    )
+    expect(lsCalls).toHaveLength(0)
+    io.restore()
+  })
 })
