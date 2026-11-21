@@ -1,0 +1,20 @@
+{
+  "kind": "http",
+  "provider": "openai",
+  "recordedAt": "2026-11-21",
+  "request": {
+    "method": "POST",
+    "url": "https://api.openai.com/v1/audio/speech",
+    "body": {
+      "model": "gpt-4o-mini-tts",
+      "voice": "alloy",
+      "input": "Bonjour, ceci est un test de la voix.",
+      "response_format": "pcm"
+    }
+  },
+  "response": {
+    "status": 200,
+    "bodyBase64": "//////////8AAP///////wAA/////wAA//8AAAAA//8AAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAABAAEAAQACAAIAAgADAAMA",
+    "contentType": "audio/pcm"
+  }
+}

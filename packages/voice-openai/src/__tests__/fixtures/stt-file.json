@@ -1,0 +1,26 @@
+{
+  "kind": "http",
+  "provider": "openai",
+  "recordedAt": "2026-11-21",
+  "request": {
+    "method": "POST",
+    "url": "https://api.openai.com/v1/audio/transcriptions",
+    "body": {
+      "file": "<file>",
+      "model": "whisper-1",
+      "response_format": "json",
+      "language": "fr"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "text": "Bonjour, ceci est un test de la voix.",
+      "usage": {
+        "type": "duration",
+        "seconds": 5
+      }
+    },
+    "contentType": "application/json"
+  }
+}
