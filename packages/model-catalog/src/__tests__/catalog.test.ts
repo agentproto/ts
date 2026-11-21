@@ -961,3 +961,24 @@ describe("OPENAI_GENERATED_UNPRICED_IDS", () => {
     expect(resolvePricing("gpt-5-chat-latest")?.inputPer1M).not.toBe(5.0)
   })
 })
+
+describe("audio catalog: Google s2s entries are bidi Live models", () => {
+  it("no TTS-only provider id rides in a Live seat, and the default matches the wire", async () => {
+    const { AUDIO_MODEL_CATALOG, DEFAULT_GEMINI_LIVE_MODEL, GEMINI_LIVE_MODEL_IDS, isAcceptedGeminiLiveModel } =
+      await import("../audio/catalog.js")
+    const s2s = Object.entries(AUDIO_MODEL_CATALOG).filter(([, m]) => m.provider === "google" && m.capabilities.s2s)
+    expect(s2s.length).toBeGreaterThanOrEqual(5)
+    for (const [, m] of s2s) {
+      // The Live API refuses the `*-tts`/`*preview-tts` variants: they only
+      // take HTTP text input, so a Live seat must never point at one.
+      expect(m.providerId, m.id).not.toMatch(/tts/)
+    }
+    expect(AUDIO_MODEL_CATALOG["google/gemini-live"]!.providerId).toBe("gemini-3.1-flash-live-preview")
+    expect(AUDIO_MODEL_CATALOG["google/gemini-live-pro"]!.providerId).toBe("gemini-2.5-pro-live-preview")
+    expect(AUDIO_MODEL_CATALOG["google/gemini-live-3.1-flash"]!.providerId).toBe("gemini-3.1-flash-live-preview")
+    expect(DEFAULT_GEMINI_LIVE_MODEL).toBe("gemini-3.1-flash-live-preview")
+    expect(isAcceptedGeminiLiveModel(DEFAULT_GEMINI_LIVE_MODEL)).toBe(true)
+    expect(isAcceptedGeminiLiveModel("gemini-2.5-pro-preview-tts")).toBe(false)
+    expect(GEMINI_LIVE_MODEL_IDS).toContain("gemini-2.5-pro-live-preview")
+  })
+})
