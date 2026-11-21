@@ -1,5 +1,5 @@
 /**
- * Refunds and disputes (AIP-74 rules 6 to 8).
+ * Refunds and disputes (AIP-BILLING rules 6 to 8).
  *
  * The money refund is the merchant's decision and the rail's act. The journal
  * only takes back credits, and never more than: the share of the payment that
@@ -12,7 +12,7 @@ import { closePeriod } from "./periods.js"
 import type { BillingDeps, CauseEvent } from "./ports.js"
 import type { DisputeFact, RefundFact } from "./settlement.js"
 
-interface Minted {
+export interface Minted {
   accountId: string
   paid: number
   lots: Lot[]
