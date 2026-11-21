@@ -1,7 +1,9 @@
 {
   "name": "@agentproto/voice-gemini",
   "version": "0.0.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "@agentproto/voice-gemini: Google Gemini Live voice provider for @agentproto/voice (speech-to-speech over the bidirectional Live API). Talks to generativelanguage.googleapis.com directly; no agent framework.",
   "keywords": [
     "agentproto",
