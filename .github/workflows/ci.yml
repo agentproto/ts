@@ -246,6 +246,13 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/lib/bounded-child.test.mjs scripts/list-unpublished-packages.test.mjs scripts/reparent-onto-remote.test.mjs
 
+      # Guards start-watchdog's flagging policy (scripts/start-watchdog.mjs),
+      # including the self-protection that keeps the escalation investigator it
+      # spawns from being killed by the next sweep. Lives outside
+      # packages/**/adapters/**, so `pnpm test` misses it.
+      - name: Run start-watchdog tests
+        run: node --test scripts/start-watchdog.test.mjs
+
       # The tier classification (scripts/gen-status.mjs) and the spec packages
       # doc generator (scripts/gen-spec-packages-doc.mjs) live outside
       # packages/**/adapters/**, so `pnpm test` misses their unit suites.
