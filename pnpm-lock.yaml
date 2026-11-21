@@ -27,6 +27,7 @@ overrides:
   '@modelcontextprotocol/sdk': '>=1.31.0 <2'
   '@modelcontextprotocol/client': '>=2.2.0 <3'
   '@modelcontextprotocol/server': '>=2.3.0 <2.4.0'
+  '@mastra/code-sdk': 1.14.0
   body-parser: '>=2.4.0 <3'
   source-map-js: '>=1.2.2 <2'
   shell-quote: '>=1.11.0 <2'
@@ -826,10 +827,10 @@ importers:
         version: link:../../packages/provider-kit
       '@mastra/core':
         specifier: 1.66.0
-        version: 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+        version: 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       mastracode:
         specifier: 0.39.1
-        version: 0.39.1(@aws-sdk/credential-provider-node@3.972.97)(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(@smithy/signature-v4@5.7.5)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7))
+        version: 0.39.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7))
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -5278,12 +5279,6 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/amazon-bedrock@5.0.146':
-    resolution: {integrity: sha512-QsRDnKVdvF/OZdR0gPzlvnZiP5TWE9vsKJpdI8kXIUe+XICAYyQ5HRDWNBDCPtMfCVm/Ls7HSnmmdP1vDruuzA==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
   '@ai-sdk/anthropic@2.0.115':
     resolution: {integrity: sha512-wc1rU69QIqHksPKeWmcQiwdg1fYJXVFGa5wVlEvIqxqtFWeXe3arISBpX28A+IvS7MvbF7xL/fykr1mpbs/M1A==}
     engines: {node: '>=18'}
@@ -5293,12 +5288,6 @@ packages:
   '@ai-sdk/anthropic@3.0.143':
     resolution: {integrity: sha512-36o4TR2m8JwZ6c+2MkMYPFoTy22BY6q9ZwycR62jU/CDUWoKl1PCgtofFmyR7uZOkpDJcajnce0jl2kDYqUHwg==}
     engines: {node: '>=18'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/anthropic@4.0.107':
-    resolution: {integrity: sha512-7morlNCmT6Qt3Af/QgxAGaeAUXu+W3LvGIvtxL+P8jRs+5Sq7kfH9A8M8FCB9wibzuhDqtLdy6I8tb9qJqGOug==}
-    engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -5374,12 +5363,6 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/openai-compatible@3.0.94':
-    resolution: {integrity: sha512-UY2AE3/QT110AMpiBoBOBXlUJJG8NAL61y8yID6X8dPe9RjRy9QPfW9XdrifEnTOEM5MdEJP+A4Mf+NTJ93g4A==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
   '@ai-sdk/openai@2.0.143':
     resolution: {integrity: sha512-WVUTqVNIs3U/FqN4xrH+FYrVZOggoiV2lw4X9ZzzaXIyJ524QI0JUSQPoX8VW48QBqNgPLt8DlW9EhNRpWEPiw==}
     engines: {node: '>=18'}
@@ -5389,12 +5372,6 @@ packages:
   '@ai-sdk/openai@3.0.144':
     resolution: {integrity: sha512-r/L4QeJ7Y9qkQOH1/tzgzoJbbCXgvBvre0nBLzdkMFx+dPDPEu+6mXgp2K5bT2sLiNXymD0t8y8CzhHuqn3irg==}
     engines: {node: '>=18'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/openai@4.0.122':
-    resolution: {integrity: sha512-8Q2DX7Fte5Sgt5jl/3B9vJFWO3LQQjgr/ErfDpdNdR5e20UC6RCHLXJ/MRhjLV2mMZkKBahV8DoYxBXgMCKGPA==}
-    engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -5434,6 +5411,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@5.0.54':
+    resolution: {integrity: sha512-amqDxFnw9+dpVrDACRDGmExUUNOH9C1D2bhg/DqWJnamEOieDTXBBXLHujSby/0MqHdAFksnpE8Pzfqx6ABMBw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider-utils@5.0.81':
     resolution: {integrity: sha512-pfvvdQ3d1WxdBuug/mnGEP6E48cPokwD8dMBnsFeeAUp0/rb/H2aj0f3mwOiY62gu/Cu5GO44e+SE5nDHyBWMA==}
     engines: {node: '>=22'}
@@ -5461,6 +5444,10 @@ packages:
   '@ai-sdk/provider@3.0.19':
     resolution: {integrity: sha512-5lWq7zSfRaU5ylDESn3sDQjgGl2AI1vjZKO/6JY3aFW70ct4zcP1kN+ZUYOuTXr28fVsYbyu2YFhddLdIgQFZQ==}
     engines: {node: '>=18'}
+
+  '@ai-sdk/provider@4.0.22':
+    resolution: {integrity: sha512-1Jtmn36VNMOBo9CMUQrPqsR744qtqRloEiXpWCYS8ffPlhS2CrSNmoho5lPjp3R7EnkzBsGI6p51TA7fQJQZdA==}
+    engines: {node: '>=22'}
 
   '@ai-sdk/provider@4.0.38':
     resolution: {integrity: sha512-GElz70UUCuDFFyD6m6aQJFgRY0HEABQzB5otzgkrisYaF5mnss7o0upAmbBTSD6KWiM9h7lZm1ls2c7xzHR8CA==}
@@ -6579,27 +6566,25 @@ packages:
       '@mastra/core': '>=1.22.0-0 <2.0.0-0'
       zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/agent-browser@0.6.0':
-    resolution: {integrity: sha512-+tOiKsMAjzbWoCtwYAJ9hfXuyc8EdU1meHYWm2STRAufYyDilcWX4LHizUnA4LC3PHmpznKeiGlyZOxdQd+ZKQ==}
+  '@mastra/agent-browser@0.5.3':
+    resolution: {integrity: sha512-9K8D31BD2vfDikyCVI3xQhtDz2Oc4YuZguXba1Z+hVnoTKrYKZ8OBtPbvItSNh0ZR3iQNHuB1OF0Oh8yaZJpPQ==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@mastra/core': '>=1.22.0-0 <2.0.0-0'
       zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/client-js@1.61.1':
-    resolution: {integrity: sha512-iMJwrkGI0j9KQjO7DeUPfpmoU8jzxdnxt2/ZlpD2uOxPvLZ3H++pQLJt4tblELQBw2TKdWlqW+hra+LGdSpoLw==}
+  '@mastra/code-sdk@1.14.0':
+    resolution: {integrity: sha512-BD2ngPsYLnXlXuQ4Gsud9Nvis8k1IwQSl7dbX4VIwX6K9vd1sCijDHlvwStccv2/TCWn2QxmQ4Gs0vv8jvrknQ==}
+    engines: {node: '>=22.19.0'}
+
+  '@mastra/core@1.66.0':
+    resolution: {integrity: sha512-ocK4DgZfZaeZzx9O3t23n8mbghqG3R4zXiZbPQoXMFaNVpVB8GawyFRX6fS3QW479QXzcpH+iN4NriOGcBXg7g==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/code-sdk@1.20.0':
-    resolution: {integrity: sha512-4Ry38jX/+ZPWCtP5QBCF3xO6NrSbAy1QunsNCLetC3EYaj2vHDsE6hQZ4xDvacWC3a10xueVsmHoF1gvUmEg7w==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@mastra/core': '>=1.84.0-0 <2.0.0-0'
-
-  '@mastra/core@1.66.0':
-    resolution: {integrity: sha512-ocK4DgZfZaeZzx9O3t23n8mbghqG3R4zXiZbPQoXMFaNVpVB8GawyFRX6fS3QW479QXzcpH+iN4NriOGcBXg7g==}
+  '@mastra/core@1.78.0':
+    resolution: {integrity: sha512-E3NL+fZMQbulnJnah0hDsBkhjf42UnD9kQ7/HiHfnrmSe2rq8d3UHb9kM8zNbDVIPSQ9qhr2Ie9GS0rhm7si8Q==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -6614,11 +6599,11 @@ packages:
       '@json-render/chat':
         optional: true
 
-  '@mastra/duckdb@1.19.1':
-    resolution: {integrity: sha512-SQJDCnxqGzXW0MvppJwlIV0HK9fjp8Dz1DikhxN9MW9KVQZHZ3z7pPZ8v/xsBzPldgT150mCj6GSn770OZsVsQ==}
+  '@mastra/duckdb@1.14.1':
+    resolution: {integrity: sha512-ToxrUDdB6s1SQHIClHKSIdD6T/Ic+DCMWBeP3rpRv5xW3Z1Y/JkaeOrSZSi+4UCNTYCRmn7cIEhzVIQkM/6r5Q==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
-      '@mastra/core': '>=1.80.0-0 <2.0.0-0'
+      '@mastra/core': '>=1.68.0-0 <2.0.0-0'
 
   '@mastra/duckdb@1.8.0':
     resolution: {integrity: sha512-V5/qQIS+aqTjlOIQDQB6MKpzbMs9AXzmInHWfKbP6R07eu5kjXfDmPfgLGNwP9pTlAluvH1ZPIohpz7xJIvFzg==}
@@ -6630,8 +6615,8 @@ packages:
     resolution: {integrity: sha512-XPuuLrbS4nF3+Os9LyWf43XSgaSY62O67HloQbxaVj60L+uQxBt5qpPKhb/Lnuo7mjjaQIeFPWqf7XjGYQ0lJQ==}
     engines: {node: '>=22.13.0'}
 
-  '@mastra/fastembed@1.3.7':
-    resolution: {integrity: sha512-BoWGsLUnxjxn/uFLnQsP87U/zB/ak/njUbzg78IbfjB9GdH/M2emJ2+ly2kpcVpW442WIUlefblJ0KHiamJ/dw==}
+  '@mastra/fastembed@1.3.3':
+    resolution: {integrity: sha512-XFenAd3SJDoSrBGCBNdJQsijAQNgYw/JHsT6KdxA8k2WQ3V24voWVFkkNR1r0w6IrnPWUDm0/Up5+qODJyRDqQ==}
     engines: {node: '>=22.13.0'}
 
   '@mastra/github-signals@0.4.0':
@@ -6641,8 +6626,8 @@ packages:
       '@mastra/core': '>=1.0.0-0 <2.0.0-0'
       zod: '>=3.0.0 || >=4.0.0'
 
-  '@mastra/github-signals@0.5.3':
-    resolution: {integrity: sha512-Dce86TThF5DlppaF8QoiTZ+hnfKAdGhWuaSxiLAxlsh7lQjFGTMWnyJ6lU/HrN0B+wz2kkGHmfWs5rG6JVVz5A==}
+  '@mastra/github-signals@0.5.1':
+    resolution: {integrity: sha512-UlT60qEo/5WO6d0j161hF6J7G6w/AKxNhNHZ9PKZ/WBenbV6VJlSLxRMZ9R8oe3NvILmu8qu3uxsmz2cxFLnHg==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@mastra/core': '>=1.0.0-0 <2.0.0-0'
@@ -6654,11 +6639,11 @@ packages:
     peerDependencies:
       '@mastra/core': '>=1.63.1-0 <2.0.0-0'
 
-  '@mastra/libsql@1.31.1':
-    resolution: {integrity: sha512-kaHgPf+yZxFeA/tGSE72ZKhmXLkXOX6WzI0BEFyFu1pTOP0+4ny5SotBHFmrOBZ8S/QPpEFd8dBNx0RiCZmuGg==}
+  '@mastra/libsql@1.26.2':
+    resolution: {integrity: sha512-aH70Vx+UWkEvwjZnKFTFxkn8nUSj6ISrrp3P9R7QakEXbx2aewkPTM2a2FAwBDJxJlJAwPHkUVrfdD2yzNYoHQ==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
-      '@mastra/core': '>=1.84.0-0 <2.0.0-0'
+      '@mastra/core': '>=1.76.0-0 <2.0.0-0'
 
   '@mastra/mcp@1.17.3':
     resolution: {integrity: sha512-A4v+G5zKEZB0WLH18NQroPivhIB6mJph542LZywDW+NEECDaju4xS/X1bl2XNkuhpLKjhyPuZEziRI0A6eMF1A==}
@@ -6666,13 +6651,11 @@ packages:
     peerDependencies:
       '@mastra/core': '>=1.64.0-0 <2.0.0-0'
 
-  '@mastra/mcp@2.10.0':
-    resolution: {integrity: sha512-nNzUmXSZ0GAKBmLiWYQLYzn1ByQAzrr6vdvFJwiazzqnXCpNJhnJ6q4QvUoQca53ulISha8OXaeNLAP5fVwfjA==}
+  '@mastra/mcp@2.4.1':
+    resolution: {integrity: sha512-30/N8QtUilF80kGFvW7jkEcCMwWXaYmCy98OO1kzFwPtdRcmgsbaL+AvY9ERp0S4pLGWlxgjDYrFMxyPUroUhA==}
     engines: {node: '>=22.13.0'}
-    hasBin: true
     peerDependencies:
-      '@mastra/core': '>=1.83.0-0 <2.0.0-0'
-      zod: ^4.2.0
+      '@mastra/core': '>=1.76.0-0 <2.0.0-0'
 
   '@mastra/memory@1.29.0':
     resolution: {integrity: sha512-GlI8XPGdWF50Pj982ascwHjSAvc8tkr7eNHwyQlp5b141k0jYA8S0X6zBG53v0o0eRDNHPfQWx5qAkErMnrIEg==}
@@ -6686,11 +6669,11 @@ packages:
     peerDependencies:
       '@mastra/core': '>=1.4.1-0 <2.0.0-0'
 
-  '@mastra/memory@1.41.2':
-    resolution: {integrity: sha512-dkDg2OcUT9vigYjOnEVqHaT4ytaGHoOf7bzP86IE1eeufDW/G3V7BcpY/rVjtJl+8bF1ZPWgsM0l85pTfwcTKw==}
+  '@mastra/memory@1.38.0':
+    resolution: {integrity: sha512-sQYq7CALkOmlfVEZ0hQGOZuy0JfrpHTjBmv8CGuR5k8l08CeUl6EnmbRm3ZJLzIbG3VKeq9+emIQJXlWAt0x9w==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
-      '@mastra/core': '>=1.83.0-0 <2.0.0-0'
+      '@mastra/core': '>=1.4.1-0 <2.0.0-0'
 
   '@mastra/observability@1.17.7':
     resolution: {integrity: sha512-SbcvtnCaNXLdSg1tJ3h2mzq6xIpCfyiVgDgaS3KzBA7NRrWOscdFwOvJ8SgiIVL+6g35dKYxd6SHeclRkHnK1Q==}
@@ -6699,15 +6682,15 @@ packages:
       '@mastra/core': '>=1.16.0-0 <2.0.0-0'
       zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/observability@1.24.2':
-    resolution: {integrity: sha512-pouSsL9eLn7Hp31c4NRhbgqE6jImh8M1c8ppENCwU6LwA4JihkQWjswY+lAMQ+wtDweUywT5lNkvADfV+bEwGA==}
+  '@mastra/observability@1.20.1':
+    resolution: {integrity: sha512-I4q+bHpzYTrzS0n+Ytq2tKpuo+xkiCESZcFIGtuLs4/Mc5oaGbGQSju8o2bAtOalAEwN3V4OOUglkqqj1Q7mYA==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@mastra/core': '>=1.16.0-0 <2.0.0-0'
       zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/parallel@0.1.5':
-    resolution: {integrity: sha512-ZggSMvjB8UDCtbuPOh9uWcg+/3fG3QaJcrSzmMK5V9fIXP6m20zibmdiMFm3hdGbo5V4HKtv2zpitflTf1xqPQ==}
+  '@mastra/parallel@0.1.2':
+    resolution: {integrity: sha512-xgZAX/yTJ6nlvh9BtJnIaMdJ/mfGpBU6JXkHPgwI8JyFwsGh++Q/rclPANmrgJrwJHwVyrRHJQyumTR2QPttFg==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@mastra/core': '>=1.0.0-0 <2.0.0-0'
@@ -6719,14 +6702,20 @@ packages:
     peerDependencies:
       '@mastra/core': '>=1.63.1-0 <2.0.0-0'
 
-  '@mastra/pg@1.37.0':
-    resolution: {integrity: sha512-aGiqhdN25dtTkLsVUlpJJJKbXr9J8otj/NoLdJ9OXJMkq5SGxL/r/59yr2EHSBWv8Rt0xGXL7nWqMvdiKu2QrQ==}
+  '@mastra/pg@1.31.2':
+    resolution: {integrity: sha512-6Uawo8mVKcvnUT1G0xcrdSio+JCbeQ7FqGzvL3oarfNONEe0W6UMV218fof5Vrh/qcOV7BsuA7LcJRTu/kgCnw==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
-      '@mastra/core': '>=1.84.0-0 <2.0.0-0'
+      '@mastra/core': '>=1.76.0-0 <2.0.0-0'
 
   '@mastra/schema-compat@1.3.10':
     resolution: {integrity: sha512-ZrjvutWy3QJoJROA5PeSFdeFwDgyfGN1sOOObFirex9h9c/R4ReqRllCojNHSN0cKsKxkRlH6zBbWVTiybamUw==}
+    engines: {node: '>=22.13.0'}
+    peerDependencies:
+      zod: ^3.25.0 || ^4.0.0
+
+  '@mastra/schema-compat@1.3.15':
+    resolution: {integrity: sha512-ws5ATZqohiuS9daNs6NCFlGU9OKN8M+Bq2qLIFW+AKBiGT/TNTTgmLxwFNbHD0TDgOtZk0BSqIH2BOK5XZLq6w==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -6750,22 +6739,15 @@ packages:
       '@mastra/core': '>=1.22.0-0 <2.0.0-0'
       zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/stagehand@0.4.0':
-    resolution: {integrity: sha512-+Dt9AShyAA0XlY5/h0/CfzIoANccqLP5n7fbllXj12y2Mey+Fog+2mxUE1yCgSQ6lj4wGcUahkCqajIcz3cgyg==}
+  '@mastra/stagehand@0.3.5':
+    resolution: {integrity: sha512-c8oKWMSK/mZzhu/v4onNTlaBid3BMpmfO2+/7MkRUL5BfUuGGPkCaNCXDE/+cM099fMyDwCunvz+T3ok1R4SvA==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
-      '@mastra/core': '>=1.81.0-0 <2.0.0-0'
+      '@mastra/core': '>=1.22.0-0 <2.0.0-0'
       zod: ^3.25.0 || ^4.0.0
 
   '@mastra/tavily@1.1.2':
     resolution: {integrity: sha512-hjMAEJlrkEoOS+ciTaLptfxpPeSCDMTc6NKzeSZa4Yai2xdNwypUOgUvI/ZzrWfqW3qG/Ur7p6p9Ol+WNNxptw==}
-    engines: {node: '>=22.13.0'}
-    peerDependencies:
-      '@mastra/core': '>=1.0.0-0 <2.0.0-0'
-      zod: '>=3.0.0 || >=4.0.0'
-
-  '@mastra/tavily@1.1.3':
-    resolution: {integrity: sha512-8DMXawGm5MUBxGDLAzzjBHmJI+klQd5pDbCG0HFBK1qdPDB72cRgN5MSxTGZJf7BV+Ai5/De9iJ/j+p8bNeonw==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@mastra/core': '>=1.0.0-0 <2.0.0-0'
@@ -6777,46 +6759,11 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  '@mastra/voice-deepgram@0.13.4':
-    resolution: {integrity: sha512-PqSJPzO/Lj34quLb1VQWSoB6zms0LvyyvFacBb5KUNkTFMeMsC4xX1bDtwRDaDikM1bRNJc7nJwG4b6qC9Qh+A==}
-    engines: {node: '>=22.13.0'}
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-
-  '@mastra/voice-mistral@0.1.3':
-    resolution: {integrity: sha512-MEJToI5sC3UsNox4VPAdOZsBNN2vG7IaArDe20IKHPz+vp3am/vBIScMAqiUvYJEkrd5YsWarwkSy5287C38uQ==}
-    engines: {node: '>=22.13.0'}
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-
   '@mastra/voice-openai@0.13.1':
     resolution: {integrity: sha512-jg/aKtWasf1EE6lbjQkA7yVAgBJ61e1DGeXe/z39lPf6j+jsqtgGuwlD0D6JUvBCN7K4RFrAhE5xk7DVQkwy4w==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
-
-  '@mastra/voice-openai@0.13.4':
-    resolution: {integrity: sha512-xlAbtWzTiNZzyTZ7fei2p2gpbqTcTBnfy5m2PVNAlCO5TpR/Gu8ioc4Kl/Pa8PhlOZkiEFVGvDBzGQeMtqu3iQ==}
-    engines: {node: '>=22.13.0'}
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-
-  '@mistralai/mistralai@2.7.0':
-    resolution: {integrity: sha512-zCrx6MtNpcz+EL/Nqvg55QubSgmfwJfBmd3d3wSYfJGfnvlNnWcJYlxEW5xQpS3KR6A5qK9KUyRBwMDIWnyVGA==}
-    peerDependencies:
-      '@opentelemetry/api': ^1.9.0
-      '@opentelemetry/exporter-trace-otlp-http': ^0.220.0
-      '@opentelemetry/resources': ^2.9.0
-      '@opentelemetry/sdk-trace-base': ^2.9.0
-    peerDependenciesMeta:
-      '@opentelemetry/api':
-        optional: true
-      '@opentelemetry/exporter-trace-otlp-http':
-        optional: true
-      '@opentelemetry/resources':
-        optional: true
-      '@opentelemetry/sdk-trace-base':
-        optional: true
 
   '@mixmark-io/domino@2.2.0':
     resolution: {integrity: sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw==}
@@ -6827,6 +6774,10 @@ packages:
 
   '@modelcontextprotocol/core@2.0.0':
     resolution: {integrity: sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==}
+    engines: {node: '>=20'}
+
+  '@modelcontextprotocol/core@2.2.0':
+    resolution: {integrity: sha512-iLhmprRmWI8EcosOA3wVvww22z02NkgqhV4fBH6f/odQBsi7xnJc0HGmi21yWO+/iKw2yzqVE127Zhna5/+JXw==}
     engines: {node: '>=20'}
 
   '@modelcontextprotocol/core@2.3.1':
@@ -6878,12 +6829,6 @@ packages:
     peerDependenciesMeta:
       hono:
         optional: true
-
-  '@modelcontextprotocol/node@2.1.2':
-    resolution: {integrity: sha512-IIcIqBpr6NCQQs5DgJTgvbSOAw+3iaR/uquqg+e0nXCdudfjPg/80x0TseUnQx14AUAtE4fsJCEpJKPyb6WPVA==}
-    engines: {node: '>=20'}
-    peerDependencies:
-      '@modelcontextprotocol/server': '>=2.3.0 <2.4.0'
 
   '@modelcontextprotocol/sdk@1.32.2':
     resolution: {integrity: sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw==}
@@ -6989,10 +6934,6 @@ packages:
   '@opentelemetry/api@1.9.0':
     resolution: {integrity: sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==}
     engines: {node: '>=8.0.0'}
-
-  '@opentelemetry/semantic-conventions@1.45.0':
-    resolution: {integrity: sha512-aOP45mbcOKbQVvFWfQmgoOPT8R2iwbbbgl83k4CujGV9BrJhFr3qG55MFpwFs4YLabpuW3HhzUY9eQxPlDqaZw==}
-    engines: {node: '>=14'}
 
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
@@ -7703,9 +7644,6 @@ packages:
   argparse@2.0.1:
     resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
 
-  argparse@3.0.4:
-    resolution: {integrity: sha512-fwWK3Zq22l4XJJjx5mcBHGikIk+hJqO+32dPm0Jur7+rtG5x1scOjSfdT9ZKeWHPpsya/l0HHK4tDImBkTrtvA==}
-
   aria-query@5.3.0:
     resolution: {integrity: sha512-b0P0sZPKtyu8HkeRAfCq0IfURZK+SuwMjY1UXGBU27wpAiTwQAIlq56IbIO+ytk/JjS1fMR14ee5WBBfKi5J6A==}
 
@@ -7907,9 +7845,6 @@ packages:
 
   caniuse-lite@1.0.30001826:
     resolution: {integrity: sha512-wTB+9tIbLro/BCXwLuNV1meHE4L9dS6dArMDwgYfNBPMYScqClHyGunhkCSDtHhe/69Xl0sHlKgBVZ+fNsYtWA==}
-
-  canonicalize@1.0.8:
-    resolution: {integrity: sha512-0CNTVCLZggSh7bc5VkX5WWPWO+cyZbNd07IHIsSXLia/eAq+r836hgk+8BKoEh7949Mda87VUOitx5OddVj64A==}
 
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
@@ -8240,10 +8175,6 @@ packages:
 
   diff@8.0.4:
     resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
-    engines: {node: '>=0.3.1'}
-
-  diff@9.0.0:
-    resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
     engines: {node: '>=0.3.1'}
 
   dir-glob@3.0.1:
@@ -8940,10 +8871,6 @@ packages:
     resolution: {integrity: sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==}
     hasBin: true
 
-  js-yaml@5.5.0:
-    resolution: {integrity: sha512-paNr4LFIFPjeeSmwNYdrb8FafLLG/Cr2Af3GjbsHJ5CxIjH4r0c2emlmRdAtpPAieP1gRVzk6buBbVP5gBMGAg==}
-    hasBin: true
-
   jsdom@29.1.1:
     resolution: {integrity: sha512-ECi4Fi2f7BdJtUKTflYRTiaMxIB0O6zfR1fX0GXpUrf6flp8QIYn1UT20YQqdSOfk2dfkCwS8LAFoJDEppNK5Q==}
     engines: {node: ^20.19.0 || ^22.13.0 || >=24.0.0}
@@ -8963,11 +8890,6 @@ packages:
 
   json-schema-to-typescript@15.0.4:
     resolution: {integrity: sha512-Su9oK8DR4xCmDsLlyvadkXzX6+GGXJpbhwoLtOGArAG61dvbW4YQmSEno2y66ahpIdmLMg6YUf/QHLgiwvkrHQ==}
-    engines: {node: '>=16.0.0'}
-    hasBin: true
-
-  json-schema-to-typescript@16.0.0:
-    resolution: {integrity: sha512-Ah6kK4q6SjlMzWBH1eNOQkdRh5Qhr5T/RCFwfjQqWZA7UDW+N47A8wfyoiN0L884s4L4bAEI54IjIuN3/u0B/A==}
     engines: {node: '>=16.0.0'}
     hasBin: true
 
@@ -9017,7 +8939,6 @@ packages:
 
   libsql@0.5.29:
     resolution: {integrity: sha512-8lMP8iMgiBzzoNbAPQ59qdVcj6UaE/Vnm+fiwX4doX4Narook0a4GPKWBEv+CR8a1OwbfkgL18uBfBjWdF0Fzg==}
-    cpu: [x64, arm64, wasm32, arm]
     os: [darwin, linux, win32]
 
   lie@3.3.0:
@@ -9436,15 +9357,8 @@ packages:
   onnxruntime-common@1.26.0:
     resolution: {integrity: sha512-qVyMR4lcWgbkc4getFV+GQijsTnbg/siteoqcDwa3sI/LxbrMSNw4ePyvCq/ymdQaRomCA7YuWmhzsswxvymdw==}
 
-  onnxruntime-common@1.30.0:
-    resolution: {integrity: sha512-7fdVWjAID1dVhH/G8qK3APARunV4VkBFoCQAP7qp4Wkab0mrorvmc+sqiT+mKXOzDqdjN5j+/Z9nb4gzNPWcyA==}
-
   onnxruntime-node@1.26.0:
     resolution: {integrity: sha512-OHl6PiOEOqxaLHL0N9eFrbzS7IGmu3BtJNH3RTEnRAheCIkfc3gjcjl4sGcjp9C22ZC9YTquDOxSdT/stBQ6BQ==}
-    os: [win32, darwin, linux]
-
-  onnxruntime-node@1.30.0:
-    resolution: {integrity: sha512-twhs1C2C/BFkz1yc5OY0KIU2GUq6DURO7hD4bx5Q2Qy3nAMJwRXW8xU3NVczE29VA9lolLOYepoD8fjTGOfIqw==}
     os: [win32, darwin, linux]
 
   openai@4.104.0:
@@ -9466,26 +9380,6 @@ packages:
       ws: '>=8.21.0 <9'
       zod: ^3.23.8
     peerDependenciesMeta:
-      ws:
-        optional: true
-      zod:
-        optional: true
-
-  openai@6.49.0:
-    resolution: {integrity: sha512-aYCc0C6L864eR6WSYIwQGyXriw/nIyZx0ObvhzOEVuk0zoBDpynjSbrionWI7q65B5H8jJX0DXR9snEzM6bfPg==}
-    peerDependencies:
-      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
-      '@smithy/hash-node': '>=4.3.0 <5'
-      '@smithy/signature-v4': '>=5.4.0 <6'
-      ws: '>=8.21.0 <9'
-      zod: ^3.25 || ^4.0
-    peerDependenciesMeta:
-      '@aws-sdk/credential-provider-node':
-        optional: true
-      '@smithy/hash-node':
-        optional: true
-      '@smithy/signature-v4':
-        optional: true
       ws:
         optional: true
       zod:
@@ -10761,17 +10655,6 @@ snapshots:
       aws4fetch: 1.0.20
       zod: 4.6.7
 
-  '@ai-sdk/amazon-bedrock@5.0.146(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/anthropic': 4.0.107(zod@4.6.7)
-      '@ai-sdk/openai': 4.0.122(zod@4.6.7)
-      '@ai-sdk/provider': 4.0.39
-      '@ai-sdk/provider-utils': 5.0.83(zod@4.6.7)
-      '@smithy/eventstream-codec': 4.5.2
-      '@smithy/util-utf8': 4.5.2
-      aws4fetch: 1.0.20
-      zod: 4.6.7
-
   '@ai-sdk/anthropic@2.0.115(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 2.0.5
@@ -10782,12 +10665,6 @@ snapshots:
     dependencies:
       '@ai-sdk/provider': 3.0.19
       '@ai-sdk/provider-utils': 4.0.67(zod@4.6.7)
-      zod: 4.6.7
-
-  '@ai-sdk/anthropic@4.0.107(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.39
-      '@ai-sdk/provider-utils': 5.0.83(zod@4.6.7)
       zod: 4.6.7
 
   '@ai-sdk/azure@2.0.151(zod@4.6.7)':
@@ -10834,6 +10711,7 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.83(zod@4.6.7)
       '@vercel/oidc': 3.2.0
       zod: 4.6.7
+    optional: true
 
   '@ai-sdk/google-vertex@3.0.192(zod@4.6.7)':
     dependencies:
@@ -10846,12 +10724,14 @@ snapshots:
       zod: 4.6.7
     transitivePeerDependencies:
       - supports-color
+    optional: true
 
   '@ai-sdk/google@2.0.112(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 2.0.5
       '@ai-sdk/provider-utils': 3.0.46(zod@4.6.7)
       zod: 4.6.7
+    optional: true
 
   '@ai-sdk/groq@2.0.64(zod@4.6.7)':
     dependencies:
@@ -10872,17 +10752,12 @@ snapshots:
       '@ai-sdk/provider': 2.0.5
       '@ai-sdk/provider-utils': 3.0.46(zod@4.6.7)
       zod: 4.6.7
+    optional: true
 
   '@ai-sdk/openai-compatible@2.0.94(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 3.0.19
       '@ai-sdk/provider-utils': 4.0.67(zod@4.6.7)
-      zod: 4.6.7
-
-  '@ai-sdk/openai-compatible@3.0.94(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.39
-      '@ai-sdk/provider-utils': 5.0.83(zod@4.6.7)
       zod: 4.6.7
 
   '@ai-sdk/openai@2.0.143(zod@4.6.7)':
@@ -10896,12 +10771,6 @@ snapshots:
     dependencies:
       '@ai-sdk/provider': 3.0.19
       '@ai-sdk/provider-utils': 4.0.67(zod@4.6.7)
-      zod: 4.6.7
-
-  '@ai-sdk/openai@4.0.122(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.39
-      '@ai-sdk/provider-utils': 5.0.83(zod@4.6.7)
       zod: 4.6.7
 
   '@ai-sdk/perplexity@2.1.8(zod@4.6.7)':
@@ -10950,6 +10819,15 @@ snapshots:
       eventsource-parser: 3.1.1
       zod: 4.6.7
 
+  '@ai-sdk/provider-utils@5.0.54(zod@4.6.7)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.22
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.1
+      undici: 7.30.2
+      zod: 4.6.7
+
   '@ai-sdk/provider-utils@5.0.81(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.38
@@ -10965,6 +10843,7 @@ snapshots:
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       zod: 4.6.7
+    optional: true
 
   '@ai-sdk/provider@2.0.3':
     dependencies:
@@ -10982,6 +10861,10 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
+  '@ai-sdk/provider@4.0.22':
+    dependencies:
+      json-schema: 0.4.0
+
   '@ai-sdk/provider@4.0.38':
     dependencies:
       json-schema: 0.4.0
@@ -10989,6 +10872,7 @@ snapshots:
   '@ai-sdk/provider@4.0.39':
     dependencies:
       json-schema: 0.4.0
+    optional: true
 
   '@ai-sdk/provider@4.0.4':
     dependencies:
@@ -12151,9 +12035,9 @@ snapshots:
       globby: 11.1.0
       read-yaml-file: 1.1.0
 
-  '@mastra/agent-browser@0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)':
+  '@mastra/agent-browser@0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       agent-browser: 0.19.0(bare-buffer@3.7.3)(bufferutil@4.2.0)
       zod: 4.6.7
     transitivePeerDependencies:
@@ -12165,9 +12049,9 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/agent-browser@0.6.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)':
+  '@mastra/agent-browser@0.5.3(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       agent-browser: 0.19.0(bare-buffer@3.7.3)(bufferutil@4.2.0)
       zod: 4.6.7
     transitivePeerDependencies:
@@ -12179,66 +12063,30 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/client-js@1.61.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)':
-    dependencies:
-      '@lukeed/uuid': 2.0.1
-      '@mastra/core': 1.85.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
-      '@mastra/schema-compat': 1.4.0(zod@4.6.7)
-      canonicalize: 1.0.8
-      jose: 6.2.18
-      json-schema: 0.4.0
-      zod: 4.6.7
-    transitivePeerDependencies:
-      - '@bufbuild/protobuf'
-      - '@grpc/grpc-js'
-      - '@json-render/chat'
-      - '@opentelemetry/api'
-      - '@react-email/render'
-      - '@valibot/to-json-schema'
-      - ai
-      - arktype
-      - bufferutil
-      - effect
-      - express
-      - rxjs
-      - supports-color
-      - sury
-      - typebox
-      - utf-8-validate
-      - valibot
-      - workflow
-      - zod-openapi
-      - zod-to-json-schema
-
-  '@mastra/code-sdk@1.20.0(@aws-sdk/credential-provider-node@3.972.97)(@bufbuild/protobuf@2.17.0)(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(@opentelemetry/api@1.10.0)(@smithy/signature-v4@5.7.5)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7))':
+  '@mastra/code-sdk@1.14.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod-to-json-schema@3.25.2(zod@4.6.7))':
     dependencies:
       '@agentclientprotocol/sdk': 0.21.1(zod@4.6.7)
-      '@ai-sdk/amazon-bedrock': 5.0.146(zod@4.6.7)
-      '@ai-sdk/anthropic': 4.0.107(zod@4.6.7)
-      '@ai-sdk/google-vertex': 3.0.192(zod@4.6.7)
-      '@ai-sdk/openai': 4.0.122(zod@4.6.7)
-      '@ai-sdk/openai-compatible': 3.0.94(zod@4.6.7)
+      '@ai-sdk/amazon-bedrock': 3.0.146(zod@4.6.7)
+      '@ai-sdk/anthropic': 3.0.143(zod@4.6.7)
+      '@ai-sdk/openai': 3.0.144(zod@4.6.7)
+      '@ai-sdk/openai-compatible': 2.0.94(zod@4.6.7)
       '@ast-grep/napi': 0.42.3
       '@aws-sdk/credential-providers': 3.1173.0
-      '@mastra/agent-browser': 0.6.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)
-      '@mastra/client-js': 1.61.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
-      '@mastra/duckdb': 1.19.1(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
-      '@mastra/fastembed': 1.3.7
-      '@mastra/github-signals': 0.5.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
-      '@mastra/libsql': 1.31.1(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)
-      '@mastra/mcp': 2.10.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
-      '@mastra/memory': 1.41.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
-      '@mastra/observability': 1.24.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
-      '@mastra/parallel': 0.1.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
-      '@mastra/pg': 1.37.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
-      '@mastra/schema-compat': 1.4.0(zod@4.6.7)
-      '@mastra/stagehand': 0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)
-      '@mastra/tavily': 1.1.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
-      '@mastra/voice-deepgram': 0.13.4(bufferutil@4.2.0)(zod@4.6.7)
-      '@mastra/voice-mistral': 0.1.3(@opentelemetry/api@1.10.0)(bufferutil@4.2.0)(zod@4.6.7)
-      '@mastra/voice-openai': 0.13.4(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7)
-      ai: 7.0.178(zod@4.6.7)
+      '@mastra/agent-browser': 0.5.3(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/duckdb': 1.14.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))
+      '@mastra/fastembed': 1.3.3
+      '@mastra/github-signals': 0.5.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
+      '@mastra/libsql': 1.26.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bufferutil@4.2.0)
+      '@mastra/mcp': 2.4.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@mastra/memory': 1.38.0(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))
+      '@mastra/observability': 1.20.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
+      '@mastra/parallel': 0.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
+      '@mastra/pg': 1.31.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))
+      '@mastra/schema-compat': 1.3.15(zod@4.6.7)
+      '@mastra/stagehand': 0.3.5(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)
+      '@mastra/tavily': 1.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
+      ai: 6.0.333(zod@4.6.7)
       execa: 9.6.1
       libsql: 0.5.29
       posthog-node: 5.74.0(@opentelemetry/api@1.10.0)
@@ -12249,18 +12097,11 @@ snapshots:
       yaml: 2.9.1
       zod: 4.6.7
     transitivePeerDependencies:
-      - '@aws-sdk/credential-provider-node'
       - '@bufbuild/protobuf'
       - '@cfworker/json-schema'
       - '@grpc/grpc-js'
-      - '@json-render/chat'
       - '@opentelemetry/api'
-      - '@opentelemetry/exporter-trace-otlp-http'
-      - '@opentelemetry/resources'
-      - '@opentelemetry/sdk-trace-base'
       - '@react-email/render'
-      - '@smithy/hash-node'
-      - '@smithy/signature-v4'
       - '@valibot/to-json-schema'
       - arktype
       - bare-abort-controller
@@ -12270,6 +12111,7 @@ snapshots:
       - effect
       - encoding
       - express
+      - hono
       - patchright-core
       - pg-native
       - playwright-core
@@ -12284,7 +12126,6 @@ snapshots:
       - utf-8-validate
       - valibot
       - workflow
-      - ws
       - zod-openapi
       - zod-to-json-schema
 
@@ -12382,6 +12223,60 @@ snapshots:
       - utf-8-validate
       - workflow
 
+  '@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)':
+    dependencies:
+      '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.17.0)(express@5.3.0)'
+      '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.17.0)(express@5.3.0)'
+      '@ai-sdk/provider-utils-v6': '@ai-sdk/provider-utils@4.0.40(zod@4.6.7)'
+      '@ai-sdk/provider-utils-v7': '@ai-sdk/provider-utils@5.0.54(zod@4.6.7)'
+      '@ai-sdk/provider-v5': '@ai-sdk/provider@2.0.3'
+      '@ai-sdk/provider-v6': '@ai-sdk/provider@3.0.14'
+      '@ai-sdk/provider-v7': '@ai-sdk/provider@4.0.22'
+      '@isaacs/ttlcache': 2.1.5
+      '@lukeed/uuid': 2.0.1
+      '@mastra/schema-compat': 1.3.15(zod@4.6.7)
+      '@standard-schema/spec': 1.1.0
+      chat: 4.44.0(ai@6.0.333(zod@4.6.7))(zod@4.6.7)
+      croner: 10.0.1
+      dotenv: 17.4.2
+      execa: 9.6.1
+      fastq: 1.20.3
+      gray-matter: 4.0.3
+      hono: 4.13.19
+      hono-openapi: 1.6.0(hono@4.13.19)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      ignore: 7.0.16
+      jpeg-js: 0.4.4
+      json-schema: 0.4.0
+      lru-cache: 11.5.3
+      p-map: 7.1.1
+      p-retry: 7.1.1
+      picomatch: 4.0.7
+      posthog-node: 5.74.0(@opentelemetry/api@1.10.0)
+      re2js: 2.10.0
+      ws: 8.23.0(bufferutil@4.2.0)
+      xxhash-wasm: 1.1.0
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - '@bufbuild/protobuf'
+      - '@grpc/grpc-js'
+      - '@opentelemetry/api'
+      - '@react-email/render'
+      - '@valibot/to-json-schema'
+      - ai
+      - arktype
+      - bufferutil
+      - effect
+      - express
+      - rxjs
+      - supports-color
+      - sury
+      - typebox
+      - utf-8-validate
+      - valibot
+      - workflow
+      - zod-openapi
+      - zod-to-json-schema
+
   '@mastra/core@1.85.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)':
     dependencies:
       '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.17.0)(express@5.3.0)'
@@ -12436,15 +12331,15 @@ snapshots:
       - zod-openapi
       - zod-to-json-schema
 
-  '@mastra/duckdb@1.19.1(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
+  '@mastra/duckdb@1.14.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))':
     dependencies:
       '@duckdb/node-api': 1.5.2-r.2
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
 
-  '@mastra/duckdb@1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
+  '@mastra/duckdb@1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
     dependencies:
       '@duckdb/node-api': 1.5.2-r.2
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
 
   '@mastra/fastembed@1.3.1':
     dependencies:
@@ -12454,21 +12349,29 @@ snapshots:
       progress: 2.0.3
       tar: 7.5.23
 
-  '@mastra/fastembed@1.3.7':
+  '@mastra/fastembed@1.3.3':
     dependencies:
       '@anush008/tokenizers': 0.6.0
       '@huggingface/hub': 2.17.11
-      onnxruntime-node: 1.30.0
+      onnxruntime-node: 1.26.0
 
-  '@mastra/github-signals@0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/github-signals@0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
 
-  '@mastra/github-signals@0.5.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/github-signals@0.5.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       zod: 4.6.7
+
+  '@mastra/libsql@1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)':
+    dependencies:
+      '@libsql/client': 0.18.0(bufferutil@4.2.0)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@mastra/libsql@1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)':
     dependencies:
@@ -12478,17 +12381,17 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@mastra/libsql@1.31.1(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)':
+  '@mastra/libsql@1.26.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bufferutil@4.2.0)':
     dependencies:
       '@libsql/client': 0.18.0(bufferutil@4.2.0)
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@mastra/mcp@1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(express@5.3.0)(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
+  '@mastra/mcp@1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(express@5.3.0)(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       '@modelcontextprotocol/client': 2.4.0
       '@modelcontextprotocol/core': 2.0.0
       '@modelcontextprotocol/ext-apps': 1.7.5(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
@@ -12507,26 +12410,25 @@ snapshots:
       - supports-color
       - zod
 
-  '@mastra/mcp@2.10.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
+  '@mastra/mcp@2.4.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       '@modelcontextprotocol/client': 2.4.0
-      '@modelcontextprotocol/core': 2.4.0
-      '@modelcontextprotocol/ext-apps': 2.0.4(@modelcontextprotocol/client@2.4.0)(@modelcontextprotocol/core@2.4.0)(@modelcontextprotocol/server@2.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
-      '@modelcontextprotocol/node': 2.1.2(@modelcontextprotocol/server@2.3.1)
+      '@modelcontextprotocol/core': 2.2.0
+      '@modelcontextprotocol/ext-apps': 2.0.4(@modelcontextprotocol/client@2.4.0)(@modelcontextprotocol/core@2.2.0)(@modelcontextprotocol/server@2.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@modelcontextprotocol/node': 2.0.0(@modelcontextprotocol/server@2.3.1)(hono@4.13.19)
       '@modelcontextprotocol/server': 2.3.1
       exit-hook: 5.1.0
       fast-deep-equal: 3.1.3
-      json-schema-to-typescript: 16.0.0
-      tsx: 4.23.15
-      zod: 4.6.7
     transitivePeerDependencies:
+      - hono
       - react
       - react-dom
+      - zod
 
-  '@mastra/memory@1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
+  '@mastra/memory@1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       '@mastra/schema-compat': 1.3.9(zod@4.6.7)
       async-mutex: 0.5.0
       diff: 8.0.4
@@ -12554,12 +12456,12 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mastra/memory@1.41.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
+  '@mastra/memory@1.38.0(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
-      '@mastra/schema-compat': 1.4.0(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/schema-compat': 1.3.15(zod@4.6.7)
       async-mutex: 0.5.0
-      diff: 9.0.0
+      diff: 8.0.4
       json-schema: 0.4.0
       lru-cache: 11.5.3
       probe-image-size: 7.5.0
@@ -12568,25 +12470,25 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mastra/observability@1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/observability@1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
 
-  '@mastra/observability@1.24.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/observability@1.20.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       zod: 4.6.7
 
-  '@mastra/parallel@0.1.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/parallel@0.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       parallel-web: 1.3.7
       zod: 4.6.7
 
-  '@mastra/pg@1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
+  '@mastra/pg@1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       async-mutex: 0.5.0
       pg: 8.23.1
       pg-connection-string: 2.14.1
@@ -12594,9 +12496,9 @@ snapshots:
     transitivePeerDependencies:
       - pg-native
 
-  '@mastra/pg@1.37.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
+  '@mastra/pg@1.31.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       async-mutex: 0.5.0
       pg: 8.23.1
       pg-connection-string: 2.14.1
@@ -12605,6 +12507,12 @@ snapshots:
       - pg-native
 
   '@mastra/schema-compat@1.3.10(zod@4.6.7)':
+    dependencies:
+      json-schema-to-zod: 2.8.1
+      zod: 4.6.7
+      zod-from-json-schema: 0.5.6
+
+  '@mastra/schema-compat@1.3.15(zod@4.6.7)':
     dependencies:
       json-schema-to-zod: 2.8.1
       zod: 4.6.7
@@ -12622,10 +12530,10 @@ snapshots:
       zod: 4.6.7
       zod-from-json-schema: 0.5.2
 
-  '@mastra/stagehand@0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)':
+  '@mastra/stagehand@0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)':
     dependencies:
       '@browserbasehq/stagehand': 3.7.4(playwright-core@1.65.1)(zod@4.6.7)
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -12636,10 +12544,10 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/stagehand@0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)':
+  '@mastra/stagehand@0.3.5(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)':
     dependencies:
       '@browserbasehq/stagehand': 3.7.4(playwright-core@1.65.1)(zod@4.6.7)
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -12650,18 +12558,18 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/tavily@1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/tavily@1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       '@tavily/core': 0.7.14
       zod: 4.6.7
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  '@mastra/tavily@1.1.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/tavily@1.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       '@tavily/core': 0.7.14
       zod: 4.6.7
     transitivePeerDependencies:
@@ -12677,55 +12585,12 @@ snapshots:
       - encoding
       - utf-8-validate
 
-  '@mastra/voice-deepgram@0.13.4(bufferutil@4.2.0)(zod@4.6.7)':
-    dependencies:
-      '@deepgram/sdk': 3.13.0(bufferutil@4.2.0)
-      zod: 4.6.7
-    transitivePeerDependencies:
-      - bufferutil
-      - encoding
-      - utf-8-validate
-
-  '@mastra/voice-mistral@0.1.3(@opentelemetry/api@1.10.0)(bufferutil@4.2.0)(zod@4.6.7)':
-    dependencies:
-      '@mistralai/mistralai': 2.7.0(@opentelemetry/api@1.10.0)(bufferutil@4.2.0)
-      zod: 4.6.7
-    transitivePeerDependencies:
-      - '@opentelemetry/api'
-      - '@opentelemetry/exporter-trace-otlp-http'
-      - '@opentelemetry/resources'
-      - '@opentelemetry/sdk-trace-base'
-      - bufferutil
-      - utf-8-validate
-
   '@mastra/voice-openai@0.13.1(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7)':
     dependencies:
       openai: 5.23.2(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7)
       zod: 4.6.7
     transitivePeerDependencies:
       - ws
-
-  '@mastra/voice-openai@0.13.4(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7)':
-    dependencies:
-      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7)
-      zod: 4.6.7
-    transitivePeerDependencies:
-      - '@aws-sdk/credential-provider-node'
-      - '@smithy/hash-node'
-      - '@smithy/signature-v4'
-      - ws
-
-  '@mistralai/mistralai@2.7.0(@opentelemetry/api@1.10.0)(bufferutil@4.2.0)':
-    dependencies:
-      '@opentelemetry/semantic-conventions': 1.45.0
-      ws: 8.23.0(bufferutil@4.2.0)
-      zod: 4.6.7
-      zod-to-json-schema: 3.25.2(zod@4.6.7)
-    optionalDependencies:
-      '@opentelemetry/api': 1.10.0
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
 
   '@mixmark-io/domino@2.2.0':
     optional: true
@@ -12741,6 +12606,10 @@ snapshots:
       zod: 4.6.7
 
   '@modelcontextprotocol/core@2.0.0':
+    dependencies:
+      zod: 4.6.7
+
+  '@modelcontextprotocol/core@2.2.0':
     dependencies:
       zod: 4.6.7
 
@@ -12761,10 +12630,10 @@ snapshots:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
 
-  '@modelcontextprotocol/ext-apps@2.0.4(@modelcontextprotocol/client@2.4.0)(@modelcontextprotocol/core@2.4.0)(@modelcontextprotocol/server@2.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
+  '@modelcontextprotocol/ext-apps@2.0.4(@modelcontextprotocol/client@2.4.0)(@modelcontextprotocol/core@2.2.0)(@modelcontextprotocol/server@2.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
     dependencies:
       '@modelcontextprotocol/client': 2.4.0
-      '@modelcontextprotocol/core': 2.4.0
+      '@modelcontextprotocol/core': 2.2.0
       '@standard-schema/spec': 1.1.0
       zod: 4.6.7
     optionalDependencies:
@@ -12777,12 +12646,6 @@ snapshots:
       '@hono/node-server': 1.19.19(hono@4.13.19)
       '@modelcontextprotocol/server': 2.3.1
     optionalDependencies:
-      hono: 4.13.19
-
-  '@modelcontextprotocol/node@2.1.2(@modelcontextprotocol/server@2.3.1)':
-    dependencies:
-      '@hono/node-server': 2.1.11(hono@4.13.19)
-      '@modelcontextprotocol/server': 2.3.1
       hono: 4.13.19
 
   '@modelcontextprotocol/sdk@1.32.2(zod@4.6.7)':
@@ -12912,8 +12775,6 @@ snapshots:
   '@opentelemetry/api@1.10.0': {}
 
   '@opentelemetry/api@1.9.0': {}
-
-  '@opentelemetry/semantic-conventions@1.45.0': {}
 
   '@pinojs/redact@0.4.0': {}
 
@@ -13516,6 +13377,7 @@ snapshots:
       '@ai-sdk/provider': 4.0.39
       '@ai-sdk/provider-utils': 5.0.83(zod@4.6.7)
       zod: 4.6.7
+    optional: true
 
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:
@@ -13565,8 +13427,6 @@ snapshots:
       sprintf-js: 1.0.3
 
   argparse@2.0.1: {}
-
-  argparse@3.0.4: {}
 
   aria-query@5.3.0:
     dependencies:
@@ -13751,8 +13611,6 @@ snapshots:
 
   caniuse-lite@1.0.30001826: {}
 
-  canonicalize@1.0.8: {}
-
   ccount@2.0.1: {}
 
   chai@5.3.3:
@@ -13773,6 +13631,22 @@ snapshots:
   character-entities@2.0.2: {}
 
   chardet@2.2.0: {}
+
+  chat@4.44.0(ai@6.0.333(zod@4.6.7))(zod@4.6.7):
+    dependencies:
+      '@chat-adapter/catalog': 4.44.0
+      '@workflow/serde': 4.1.0-beta.2
+      mdast-util-to-string: 4.0.0
+      remark-gfm: 4.0.1
+      remark-parse: 11.0.0
+      remark-stringify: 11.0.0
+      remend: 1.5.0
+      unified: 11.0.5
+    optionalDependencies:
+      ai: 6.0.333(zod@4.6.7)
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - supports-color
 
   chat@4.44.0(ai@7.0.178(zod@4.6.7))(zod@4.6.7):
     dependencies:
@@ -14088,8 +13962,6 @@ snapshots:
   devtools-protocol@0.0.1642743: {}
 
   diff@8.0.4: {}
-
-  diff@9.0.0: {}
 
   dir-glob@3.0.1:
     dependencies:
@@ -14902,10 +14774,6 @@ snapshots:
     dependencies:
       argparse: 2.0.1
 
-  js-yaml@5.5.0:
-    dependencies:
-      argparse: 3.0.4
-
   jsdom@29.1.1:
     dependencies:
       '@asamuzakjp/css-color': 5.1.11
@@ -14945,17 +14813,6 @@ snapshots:
       '@types/lodash': 4.17.27
       is-glob: 4.0.3
       js-yaml: 4.3.2
-      lodash: 4.18.1
-      minimist: 1.2.8
-      prettier: 3.10.1
-      tinyglobby: 0.2.17
-
-  json-schema-to-typescript@16.0.0:
-    dependencies:
-      '@apidevtools/json-schema-ref-parser': 11.9.3
-      '@types/json-schema': 7.0.15
-      '@types/lodash': 4.17.27
-      js-yaml: 5.5.0
       lodash: 4.18.1
       minimist: 1.2.8
       prettier: 3.10.1
@@ -15100,7 +14957,7 @@ snapshots:
   marky@1.3.0:
     optional: true
 
-  mastracode@0.39.1(@aws-sdk/credential-provider-node@3.972.97)(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(@smithy/signature-v4@5.7.5)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7)):
+  mastracode@0.39.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7)):
     dependencies:
       '@agentclientprotocol/sdk': 0.21.1(zod@4.6.7)
       '@ai-sdk/amazon-bedrock': 3.0.146(zod@4.6.7)
@@ -15110,20 +14967,20 @@ snapshots:
       '@ast-grep/napi': 0.42.3
       '@aws-sdk/credential-providers': 3.1173.0
       '@earendil-works/pi-tui': 0.80.6
-      '@mastra/agent-browser': 0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)
-      '@mastra/code-sdk': 1.20.0(@aws-sdk/credential-provider-node@3.972.97)(@bufbuild/protobuf@2.17.0)(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(@opentelemetry/api@1.10.0)(@smithy/signature-v4@5.7.5)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7))
+      '@mastra/agent-browser': 0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)
+      '@mastra/code-sdk': 1.14.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod-to-json-schema@3.25.2(zod@4.6.7))
       '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
-      '@mastra/duckdb': 1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
+      '@mastra/duckdb': 1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
       '@mastra/fastembed': 1.3.1
-      '@mastra/github-signals': 0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
-      '@mastra/libsql': 1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)
-      '@mastra/mcp': 1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(express@5.3.0)(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
-      '@mastra/memory': 1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
-      '@mastra/observability': 1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
-      '@mastra/pg': 1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
+      '@mastra/github-signals': 0.4.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
+      '@mastra/libsql': 1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)
+      '@mastra/mcp': 1.17.3(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(express@5.3.0)(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@mastra/memory': 1.29.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
+      '@mastra/observability': 1.17.7(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
+      '@mastra/pg': 1.24.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
       '@mastra/schema-compat': 1.3.9(zod@4.6.7)
-      '@mastra/stagehand': 0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)
-      '@mastra/tavily': 1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@7.0.178(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
+      '@mastra/stagehand': 0.3.4(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)
+      '@mastra/tavily': 1.1.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
       '@mastra/voice-deepgram': 0.13.1(bufferutil@4.2.0)(zod@4.6.7)
       '@mastra/voice-openai': 0.13.1(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7)
       ai: 6.0.333(zod@4.6.7)
@@ -15140,18 +14997,11 @@ snapshots:
       yaml: 2.9.1
       zod: 4.6.7
     transitivePeerDependencies:
-      - '@aws-sdk/credential-provider-node'
       - '@bufbuild/protobuf'
       - '@cfworker/json-schema'
       - '@grpc/grpc-js'
-      - '@json-render/chat'
       - '@opentelemetry/api'
-      - '@opentelemetry/exporter-trace-otlp-http'
-      - '@opentelemetry/resources'
-      - '@opentelemetry/sdk-trace-base'
       - '@react-email/render'
-      - '@smithy/hash-node'
-      - '@smithy/signature-v4'
       - '@valibot/to-json-schema'
       - arktype
       - bare-abort-controller
@@ -15655,19 +15505,11 @@ snapshots:
 
   onnxruntime-common@1.26.0: {}
 
-  onnxruntime-common@1.30.0: {}
-
   onnxruntime-node@1.26.0:
     dependencies:
       adm-zip: 0.6.1
       global-agent: 4.1.7
       onnxruntime-common: 1.26.0
-
-  onnxruntime-node@1.30.0:
-    dependencies:
-      adm-zip: 0.6.1
-      global-agent: 4.1.7
-      onnxruntime-common: 1.30.0
 
   openai@4.104.0(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7):
     dependencies:
@@ -15686,13 +15528,6 @@ snapshots:
 
   openai@5.23.2(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7):
     optionalDependencies:
-      ws: 8.23.0(bufferutil@4.2.0)
-      zod: 4.6.7
-
-  openai@6.49.0(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0(bufferutil@4.2.0))(zod@4.6.7):
-    optionalDependencies:
-      '@aws-sdk/credential-provider-node': 3.972.97
-      '@smithy/signature-v4': 5.7.5
       ws: 8.23.0(bufferutil@4.2.0)
       zod: 4.6.7
 
