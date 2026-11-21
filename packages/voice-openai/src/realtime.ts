@@ -94,6 +94,9 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
       let bargeIn = false
       let interruptEmitted = false
       let assistantText = ""
+      // Both response.function_call_arguments.done and the response.done output
+      // walk report the same call; dispatch each call_id exactly once.
+      const dispatchedCalls = new Set<string>()
       const pending: string[] = []
       const sock = socketFactory(url, { headers: { Authorization: `Bearer ${apiKey}` } })
       // Like the studio adapter: frames go out as soon as the socket is open;
@@ -243,6 +246,8 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
 
       async function dispatchToolCall(call: { call_id: string; name: string; arguments: string }) {
         if (closed || !call.name) return
+        if (call.call_id && dispatchedCalls.has(call.call_id)) return
+        if (call.call_id) dispatchedCalls.add(call.call_id)
         let args: unknown
         try {
           args = JSON.parse(call.arguments || "{}")
@@ -293,12 +298,16 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
         },
         async interrupt() {
           if (closed) return
-          if (responseActive && !interruptEmitted) {
+          const wasActive = responseActive
+          if (wasActive && !interruptEmitted) {
             interruptEmitted = true
             bargeIn = true
             emit.interrupt()
           }
-          send({ type: "response.cancel" })
+          // Only cancel a response that is actually in flight: an idle cancel
+          // makes the server answer with an `error` event.
+          responseActive = false
+          if (wasActive) send({ type: "response.cancel" })
           send({ type: "input_audio_buffer.clear" })
         },
         async pushText(text: string) {

@@ -520,6 +520,33 @@ describe("Realtime, scripted protocol frames", () => {
     await session.close()
   })
 
+  it("dispatches a call reported by both arguments.done and response.done exactly once", async () => {
+    const s = mkSocket()
+    const spy = emitSpy()
+    const session = await makeOpenAIRealtime({ apiKey: KEY, socket: s.factory }).start({ emit: spy.emit, hooks: { onToolCall: async () => "done" } })
+    s.serve({ type: "response.function_call_arguments.done", call_id: "c9", name: "later", arguments: "{}" })
+    s.serve({
+      type: "response.done",
+      response: { status: "completed", output: [{ type: "function_call", call_id: "c9", name: "later", arguments: "{}" }] },
+    })
+    await tick()
+    expect(spy.detail["tool.end"]).toEqual([["later", "done"]])
+    expect(s.sent.filter(m => m.type === "conversation.item.create" && (m.item as { call_id?: string }).call_id === "c9")).toHaveLength(1)
+    expect(s.sent.filter(m => m.type === "response.create")).toHaveLength(1)
+    await session.close()
+  })
+
+  it("interrupt() while no response is in flight only clears the buffer", async () => {
+    const s = mkSocket()
+    const spy = emitSpy()
+    const session = await makeOpenAIRealtime({ apiKey: KEY, socket: s.factory }).start({ emit: spy.emit, hooks: {} })
+    await session.interrupt()
+    expect(spy.ev).not.toContain("interrupt")
+    expect(s.sent.filter(m => m.type === "response.cancel")).toHaveLength(0)
+    expect(s.sent.filter(m => m.type === "input_audio_buffer.clear")).toHaveLength(1)
+    await session.close()
+  })
+
   it("an error event is an emit error that carries the server message", async () => {
     const s = mkSocket()
     const spy = emitSpy()
