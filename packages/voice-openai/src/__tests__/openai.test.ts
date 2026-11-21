@@ -236,14 +236,15 @@ describe("Realtime on the recorded full turn", () => {
     const num = (v: unknown) => (typeof v === "number" ? v : 0)
     const inDet = (doneUsage.input_token_details ?? {}) as Record<string, unknown>
     const outDet = (doneUsage.output_token_details ?? {}) as Record<string, unknown>
-    const cached = (inDet.cached_tokens ?? {}) as Record<string, unknown>
+    // GA shape: the breakdown lives under cached_tokens_details.
+    const cachedDetails = (inDet.cached_tokens_details ?? {}) as Record<string, unknown>
     expect(entry.tokens).toEqual({
       audioIn: num(inDet.audio_tokens),
       audioOut: num(outDet.audio_tokens),
-      textIn: Math.max(0, num(doneUsage.input_tokens) - num(inDet.audio_tokens) - num(cached.audio_tokens)),
+      textIn: Math.max(0, num(doneUsage.input_tokens) - num(inDet.audio_tokens) - num(cachedDetails.audio_tokens)),
       textOut: Math.max(0, num(doneUsage.output_tokens) - num(outDet.audio_tokens)),
-      cachedAudioIn: num(cached.audio_tokens),
-      cachedTextIn: num(cached.text_tokens),
+      cachedAudioIn: num(cachedDetails.audio_tokens),
+      cachedTextIn: num(cachedDetails.text_tokens),
     })
     expect(entry.tokens!.audioOut).toBeGreaterThan(0)
     await session.close()
@@ -495,6 +496,75 @@ describe("Realtime, scripted protocol frames", () => {
     expect(s.sent).toContainEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c2", output: JSON.stringify({ error: "nope" }) } })
     expect(s.sent.filter(m => m.type === "response.create").length).toBeGreaterThanOrEqual(2)
     expect(spy.ev).not.toContain("error")
+    // A tool-call-only response did not speak: it must not complete the turn
+    // nor finalize an empty assistant transcript.
+    expect(spy.ev).not.toContain("complete")
+    expect(spy.detail.assistant).toBeUndefined()
+    await session.close()
+  })
+
+  it("the tool-call response does not emit responseComplete; the spoken response after the tool result emits exactly one", async () => {
+    const s = mkSocket()
+    const spy = emitSpy()
+    const session = await makeOpenAIRealtime({ apiKey: KEY, socket: s.factory }).start({
+      emit: spy.emit,
+      hooks: { onToolCall: async () => "done" },
+    })
+    s.serve({ type: "response.created" })
+    s.serve({
+      type: "response.done",
+      response: { status: "completed", output: [{ type: "function_call", call_id: "c1", name: "lookup", arguments: "{}" }] },
+    })
+    await tick()
+    // The old code emitted complete + an empty final transcript here,
+    // before the tool result even came back.
+    expect(spy.ev.filter(e => e === "complete")).toHaveLength(0)
+    expect(spy.detail.assistant).toBeUndefined()
+    expect(s.sent.filter(m => m.type === "response.create").length).toBeGreaterThanOrEqual(1)
+    // ... then the real spoken response arrives after the tool result.
+    s.serve({ type: "response.created" })
+    s.serve({ type: "response.audio_transcript.delta", delta: "Voila le resultat." })
+    s.serve({ type: "response.done", response: { status: "completed", output: [{ type: "message" }] } })
+    await tick()
+    expect(spy.ev.filter(e => e === "complete")).toHaveLength(1)
+    const assistant = spy.detail.assistant as Array<[string, boolean]>
+    expect(assistant).toEqual([["Voila le resultat.", false], ["Voila le resultat.", true]])
+    await session.close()
+  })
+
+  it("maps GA usage: the cached breakdown comes from input_token_details.cached_tokens_details", async () => {
+    const s = mkSocket()
+    const spy = emitSpy()
+    const session = await makeOpenAIRealtime({ apiKey: KEY, socket: s.factory }).start({ emit: spy.emit, hooks: {} })
+    s.serve({
+      type: "response.done",
+      response: {
+        status: "completed",
+        output: [{ type: "message" }],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          input_token_details: {
+            audio_tokens: 60,
+            text_tokens: 40,
+            cached_tokens: 12,
+            cached_tokens_details: { audio_tokens: 8, text_tokens: 4 },
+          },
+          output_token_details: { audio_tokens: 30, text_tokens: 20 },
+        },
+      },
+    })
+    await tick()
+    const usage = session.getUsage!()!
+    const entry = usage.entries.find(e => e.stage === "realtime")!
+    expect(entry.tokens).toEqual({
+      audioIn: 60,
+      audioOut: 30,
+      textIn: 32, // 100 input - 60 audio - 8 cached audio
+      textOut: 20,
+      cachedAudioIn: 8,
+      cachedTextIn: 4,
+    })
     await session.close()
   })
 

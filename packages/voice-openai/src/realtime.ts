@@ -63,7 +63,10 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
       say: false,
       refreshTools: true,
       languages: [],
-      inputSampleRates: [16_000, rate],
+      // The session is pinned to `rate` frames (session.update below) and
+      // pushAudio forwards bytes without resampling: only the session rate
+      // is accepted as input.
+      inputSampleRates: [rate],
       outputSampleRate: rate,
     },
 
@@ -94,6 +97,9 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
       let bargeIn = false
       let interruptEmitted = false
       let assistantText = ""
+      // Whether the response in flight actually spoke (audio or transcript):
+      // a tool-call-only response did not.
+      let responseSpoke = false
       // Both response.function_call_arguments.done and the response.done output
       // walk report the same call; dispatch each call_id exactly once.
       const dispatchedCalls = new Set<string>()
@@ -153,6 +159,7 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
             bargeIn = false
             interruptEmitted = false
             assistantText = ""
+            responseSpoke = false
             break
           }
           case "response.audio.delta":
@@ -160,6 +167,7 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
             if (bargeIn) break
             const delta = str(ev.delta)
             if (delta) {
+              responseSpoke = true
               const bytes = Buffer.from(delta, "base64")
               const even = bytes.byteLength - (bytes.byteLength % 2)
               if (even > 0) {
@@ -175,6 +183,7 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
             if (bargeIn) break
             const delta = str(ev.delta)
             if (delta) {
+              responseSpoke = true
               assistantText += delta
               emit.assistantTranscript(delta, false)
             }
@@ -208,18 +217,23 @@ export function makeOpenAIRealtime(cfg: OpenAIRealtimeConfig = {}): RealtimeProv
               }
             }
             responseActive = false
+            const hadFunctionCall = outputs.some(out => (out as { type?: string }).type === "function_call")
             if (response.status === "cancelled") {
               // Barge-in or manual response.cancel: the turn was cut.
               if (!interruptEmitted) {
                 interruptEmitted = true
                 emit.interrupt()
               }
-            } else {
+            } else if (responseSpoke || !hadFunctionCall) {
               emit.assistantTranscript(assistantText, true)
               void hooks.onTranscript?.({ role: "assistant", text: assistantText, finalizedAt: Date.now() })?.catch(() => undefined)
               emit.responseComplete()
             }
+            // else: a tool-call-only response did not complete the assistant
+            // turn: responseComplete fires exactly once per uninterrupted
+            // turn, from the response that speaks after the tool result.
             assistantText = ""
+            responseSpoke = false
             bargeIn = false
             break
           }
@@ -351,17 +365,21 @@ function usageToBuckets(usage: Record<string, unknown>): Partial<VoiceTokenBucke
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined)
   const inputDetails = (usage.input_token_details ?? {}) as Record<string, unknown>
   const outputDetails = (usage.output_token_details ?? {}) as Record<string, unknown>
-  const cached = (inputDetails.cached_tokens ?? {}) as Record<string, unknown>
+  // GA shape: `input_token_details.cached_tokens` is the NUMBER of cached
+  // tokens; the audio/text breakdown lives under `cached_tokens_details`.
+  const cachedDetails = (inputDetails.cached_tokens_details ?? {}) as Record<string, unknown>
   const audioIn = num(inputDetails.audio_tokens) ?? 0
   const audioOut = num(outputDetails.audio_tokens) ?? 0
   const inputTokens = num(usage.input_tokens) ?? 0
   const outputTokens = num(usage.output_tokens) ?? 0
+  const cachedAudioIn = num(cachedDetails.audio_tokens) ?? 0
+  const cachedTextIn = num(cachedDetails.text_tokens) ?? 0
   return {
     audioIn,
     audioOut,
-    textIn: Math.max(0, inputTokens - audioIn - (num(cached.audio_tokens) ?? 0)),
+    textIn: Math.max(0, inputTokens - audioIn - cachedAudioIn),
     textOut: Math.max(0, outputTokens - audioOut),
-    cachedAudioIn: num(cached.audio_tokens) ?? 0,
-    cachedTextIn: num(cached.text_tokens) ?? 0,
+    cachedAudioIn,
+    cachedTextIn,
   }
 }
