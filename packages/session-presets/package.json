@@ -60,7 +60,7 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "^25.9.9",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
