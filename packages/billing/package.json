@@ -1,0 +1,74 @@
+{
+  "name": "@agentproto/billing",
+  "version": "0.0.0",
+  "description": "@agentproto/billing: AIP-BILLING reference implementation. The BILLING.md parser and defineBillingManifest, the payment path on the AIP-49 journal, the SettlementProvider contract, the provider registry and the BILL-* conformance cases. No payment provider in this package.",
+  "keywords": [
+    "agentproto",
+    "aip-74",
+    "billing",
+    "defineBillingManifest",
+    "settlement"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-74",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/billing"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./manifest": {
+      "types": "./dist/manifest/index.d.ts",
+      "import": "./dist/manifest/index.mjs",
+      "default": "./dist/manifest/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.mjs",
+      "default": "./dist/testing.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/doctype": "workspace:*",
+    "@agentproto/product": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*",
+    "@agentproto/wallet": "workspace:*",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.9.9",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7",
+    "ajv": "^8.20.0"
+  },
+  "private": true
+}
