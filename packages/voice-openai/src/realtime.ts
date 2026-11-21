@@ -377,7 +377,10 @@ function usageToBuckets(usage: Record<string, unknown>): Partial<VoiceTokenBucke
   return {
     audioIn,
     audioOut,
-    textIn: Math.max(0, inputTokens - audioIn - cachedAudioIn),
+    // Cached audio tokens are already inside `audio_tokens`, so the text
+    // bucket is simply what is not audio; the cached split is reported
+    // separately (cachedAudioIn/cachedTextIn).
+    textIn: Math.max(0, inputTokens - audioIn),
     textOut: Math.max(0, outputTokens - audioOut),
     cachedAudioIn,
     cachedTextIn,

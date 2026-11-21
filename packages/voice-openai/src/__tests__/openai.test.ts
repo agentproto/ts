@@ -241,7 +241,7 @@ describe("Realtime on the recorded full turn", () => {
     expect(entry.tokens).toEqual({
       audioIn: num(inDet.audio_tokens),
       audioOut: num(outDet.audio_tokens),
-      textIn: Math.max(0, num(doneUsage.input_tokens) - num(inDet.audio_tokens) - num(cachedDetails.audio_tokens)),
+      textIn: Math.max(0, num(doneUsage.input_tokens) - num(inDet.audio_tokens)),
       textOut: Math.max(0, num(doneUsage.output_tokens) - num(outDet.audio_tokens)),
       cachedAudioIn: num(cachedDetails.audio_tokens),
       cachedTextIn: num(cachedDetails.text_tokens),
@@ -560,7 +560,7 @@ describe("Realtime, scripted protocol frames", () => {
     expect(entry.tokens).toEqual({
       audioIn: 60,
       audioOut: 30,
-      textIn: 32, // 100 input - 60 audio - 8 cached audio
+      textIn: 40, // 100 input - 60 audio; cached audio is already inside audioIn
       textOut: 20,
       cachedAudioIn: 8,
       cachedTextIn: 4,
