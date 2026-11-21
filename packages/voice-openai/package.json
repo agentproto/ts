@@ -1,7 +1,9 @@
 {
   "name": "@agentproto/voice-openai",
   "version": "0.0.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "@agentproto/voice-openai: OpenAI voice provider for @agentproto/voice. Whisper file transcription, speech synthesis (TTS) and the Realtime API (speech-to-speech with server VAD). Talks to OpenAI directly; no agent framework.",
   "keywords": [
     "agentproto",
