@@ -8,14 +8,12 @@
  * static `TUNNEL_CATALOG`, and the resolver that maps a catalog slug to a
  * concrete {@link TunnelProviderHandle}.
  *
- * Kit primitives used:
- *   - `makeCredsStore`      → per-slug 0600 creds under `~/.agentproto/tunnel-creds/`
- *   - `makeSetupLedger`     → `~/.agentproto/setup/<slug>.json`
- *   - `makeAdapterResolver` → wraps the throwing `load` into null-on-miss
- *   - `makeAdapterLister`   → catalog → status-classified `AdapterEntry[]`
- *   - `makeListTool`        → registers `list_tunnel_adapters`
- *   - `makeSetupTool`       → registers `setup_tunnel_provider` (multi-field form:
- *                             hostname + tunnelId + credentialsFile?, all sensitive)
+ * Built on `makeProviderFamily` (`@agentproto/provider-kit`), which owns the
+ * creds store, the setup ledger, the catalog listing, the resolver, the
+ * setup schema and the `list_tunnel_adapters` / `setup_tunnel_provider`
+ * tools. `legacySetup` keeps the setup semantics this module had before it
+ * moved onto the factory (optional-unless-`required:true`, replace-not-merge,
+ * store errors propagate).
  *
  * Security: `toTunnelInfo` exposes only `capabilities` — never a cred value
  * (Appendix B). The setup tool's fields are marked SENSITIVE and the result
@@ -26,14 +24,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import {
   makeCredsStore,
   makeSetupLedger,
-  makeAdapterResolver,
-  makeAdapterLister,
-  makeListTool,
-  makeSetupTool,
+  makeMemorySetupLedger,
+  makeProviderFamily,
   type AdapterCatalog,
   type AdapterLister,
   type CredsStore,
-  type SetupField,
+  type ProviderFamily,
   type SetupLedger,
 } from "@agentproto/provider-kit"
 
@@ -154,73 +150,58 @@ export function makeTunnelCredsStore(home?: string): CredsStore<TunnelCreds> {
   })
 }
 
-/**
- * Resolve a catalog slug to a concrete handle via the provider registry —
- * built-ins in-process, third-party packages dynamic-imported. Reads stored
- * creds first so `named`/`ngrok` (and any third-party provider) are built
- * configured when possible; unconfigured slugs resolve to a descriptor-only
- * handle (listing never calls `start()`/`check()` — per OQ-5). Throws on an
- * unknown slug so the kit's resolver wraps it to `null` ("supported but not
- * installed").
- */
-export function makeTunnelResolver(credsStore: CredsStore<TunnelCreds>) {
-  return makeAdapterResolver<TunnelProviderHandle>({
-    load: async (slug: string): Promise<TunnelProviderHandle> => {
-      const creds = await credsStore.read(slug)
-      const handle = await resolveTunnelProvider(slug, { creds })
-      if (!handle) throw new Error(`unknown tunnel adapter slug: ${slug}`)
-      return handle
-    },
+/** A creds store that reads as empty and writes through. Setup resolves
+ *  providers with `creds = null` (it never read the stored creds to build its
+ *  schema), so a corrupt creds file cannot hide a provider from setup. */
+function withoutStoredCreds(store: CredsStore<TunnelCreds>): CredsStore<TunnelCreds> {
+  return { ...store, read: async () => null }
+}
+
+/** Build the tunnel family on the kit's factory. `legacySetup` keeps the
+ *  setup semantics this module had before it moved onto the factory. */
+function makeTunnelFamily(opts: {
+  credsStore: CredsStore<TunnelCreds>
+  ledger: SetupLedger
+}): ProviderFamily<TunnelProviderHandle, TunnelAdapterInfo> {
+  return makeProviderFamily<TunnelProviderHandle, TunnelAdapterInfo>({
+    family: TUNNEL_FAMILY,
+    catalog: TUNNEL_CATALOG,
+    toInfo: toTunnelInfo,
+    credsStore: opts.credsStore,
+    ledger: opts.ledger,
+    legacySetup: true,
+    setupHint: slug => `${slug} configured \u2014 status is now ready`,
+    // Third-party providers discovered on disk resolve through the registry
+    // too, so `load` is used for every slug, catalog or not.
+    load: async (slug, ctx) => resolveTunnelProvider(slug, { creds: ctx.creds }),
+    // Third-party providers discovered on disk (both naming conventions).
+    discoverExtras: () =>
+      discoverTunnelHandles(new Set(TUNNEL_CATALOG.map(c => c.slug))),
   })
 }
 
-/** Build the family lister: catalog → status-classified entries, plus any
+/**
+ * Resolve a catalog slug to a concrete handle via the provider registry:
+ * built-ins in-process, third-party packages dynamic-imported. Reads stored
+ * creds first so `named`/`ngrok` (and any third-party provider) are built
+ * configured when possible; unconfigured slugs resolve to a descriptor-only
+ * handle (listing never calls `start()`/`check()`, per OQ-5). An unknown
+ * slug resolves to `null` ("supported but not installed").
+ */
+export function makeTunnelResolver(credsStore: CredsStore<TunnelCreds>) {
+  return makeTunnelFamily({
+    credsStore,
+    ledger: makeMemorySetupLedger(), // resolver only: the ledger is never read
+  }).resolve
+}
+
+/** Build the family lister: catalog to status-classified entries, plus any
  *  third-party providers discovered on disk (both naming conventions). */
 export function makeTunnelLister(opts: {
   credsStore: CredsStore<TunnelCreds>
   ledger: SetupLedger
 }): AdapterLister<TunnelAdapterInfo> {
-  return makeAdapterLister<TunnelProviderHandle, TunnelAdapterInfo>({
-    catalog: TUNNEL_CATALOG,
-    resolver: makeTunnelResolver(opts.credsStore),
-    ledger: opts.ledger,
-    credsStore: opts.credsStore,
-    toInfo: toTunnelInfo,
-    discoverExtras: () =>
-      discoverTunnelHandles(new Set(TUNNEL_CATALOG.map((c) => c.slug))),
-  })
-}
-
-/**
- * Resolve every provider that declares creds (built-in + third-party) and
- * union their `setupFields` for the `setup_tunnel_provider` tool. Because one
- * tool spans many providers with disjoint fields, the unioned shape is relaxed
- * to all-optional at the zod layer (`required: false`); the genuine per-provider
- * required-ness is enforced in `onSetup` against the chosen provider's handle.
- */
-async function collectSetupSchema(): Promise<{
-  validSlugs: string[]
-  fields: SetupField[]
-}> {
-  const builtinHandles = Object.values(BUILTIN_TUNNEL_PROVIDERS).map((f) =>
-    f(null),
-  )
-  const extraHandles = await discoverTunnelHandles(new Set(BUILTIN_TUNNEL_SLUGS))
-  const setupHandles = [...builtinHandles, ...extraHandles].filter(
-    (h) => h.setupFields && h.setupFields.length > 0,
-  )
-
-  const validSlugs = setupHandles.map((h) => h.slug)
-  const fieldByName = new Map<string, SetupField>()
-  for (const h of setupHandles) {
-    for (const f of h.setupFields ?? []) {
-      // First declaration wins; relax to optional for the cross-provider tool.
-      if (!fieldByName.has(f.name)) {
-        fieldByName.set(f.name, { ...f, required: false })
-      }
-    }
-  }
-  return { validSlugs, fields: [...fieldByName.values()] }
+  return makeTunnelFamily(opts).list
 }
 
 export interface RegisterTunnelAdapterToolsOptions {
@@ -243,37 +224,37 @@ export async function registerTunnelAdapterTools(
   const credsStore = makeTunnelCredsStore(opts.home)
   const ledger = makeSetupLedger(opts.home ? { home: opts.home } : {})
 
-  makeListTool<TunnelAdapterInfo>({
-    server,
-    toolName: "list_tunnel_adapters",
-    description:
-      "List known tunnel providers with their status (supported/available/" +
-      "ready), version, and declared capabilities (stableUrl, autostart, " +
-      "customDomain, requiresAuth, hasApi). Credentials are never returned. " +
-      "Use `setup_tunnel_provider` to configure a provider that needs creds.",
-    lister: makeTunnelLister({ credsStore, ledger }),
+  const family = makeTunnelFamily({ credsStore, ledger })
+
+  await family.registerTools(server, {
+    list: {
+      name: "list_tunnel_adapters",
+      description:
+        "List known tunnel providers with their status (supported/available/" +
+        "ready), version, and declared capabilities (stableUrl, autostart, " +
+        "customDomain, requiresAuth, hasApi). Credentials are never returned. " +
+        "Use `setup_tunnel_provider` to configure a provider that needs creds.",
+    },
   })
 
-  const { validSlugs, fields } = await collectSetupSchema()
-
-  makeSetupTool({
-    server,
-    toolName: "setup_tunnel_provider",
-    description:
-      "Configure a tunnel provider that requires credentials (e.g. " +
-      "cloudflare-named, cloudflare-managed or ngrok). Fields are stored 0600 " +
-      "and never echoed back in tool results. Only the fields a given provider " +
-      "declares are stored. cloudflare-managed takes `zones` (JSON array of " +
-      "{zone, accountId, tokenRef, zoneId?, maxLabels?}; tokenRef = env:<VAR> | " +
-      "file:<path> | keychain:<path> | stored:<key>) and optionally " +
-      "`zoneTokens` (JSON {key: token}, for stored:<key> refs). " +
-      "cloudflare-provisioned takes `provisionerUrl` and either " +
-      "`apiKey` (service-to-service) or `oidcIssuer` + `oidcClientId` " +
-      "(+ optional `oidcScopes`, then `tunnel_login`).",
-    validSlugs,
-    fields,
-    onSetup: (slug: string, fields: Record<string, string>) =>
-      setupTunnelProvider(slug, fields, { credsStore, ledger }),
+  // The setup tool's schema is built from providers resolved with creds=null
+  // (as before), so a corrupt stored-creds file cannot hide one from setup.
+  const setupFamily = makeTunnelFamily({ credsStore: withoutStoredCreds(credsStore), ledger })
+  await setupFamily.registerTools(server, {
+    setup: {
+      name: "setup_tunnel_provider",
+      description:
+        "Configure a tunnel provider that requires credentials (e.g. " +
+        "cloudflare-named, cloudflare-managed or ngrok). Fields are stored 0600 " +
+        "and never echoed back in tool results. Only the fields a given provider " +
+        "declares are stored. cloudflare-managed takes `zones` (JSON array of " +
+        "{zone, accountId, tokenRef, zoneId?, maxLabels?}; tokenRef = env:<VAR> | " +
+        "file:<path> | keychain:<path> | stored:<key>) and optionally " +
+        "`zoneTokens` (JSON {key: token}, for stored:<key> refs). " +
+        "cloudflare-provisioned takes `provisionerUrl` and either " +
+        "`apiKey` (service-to-service) or `oidcIssuer` + `oidcClientId` " +
+        "(+ optional `oidcScopes`, then `tunnel_login`).",
+    },
   })
 
   // ── tunnel_login ─────────────────────────────────────────────────
@@ -347,48 +328,12 @@ export async function setupTunnelProvider(
 ): Promise<{ ok: boolean; hint?: string }> {
   const credsStore = opts.credsStore ?? makeTunnelCredsStore(opts.home)
   const ledger = opts.ledger ?? makeSetupLedger(opts.home ? { home: opts.home } : {})
-  // Resolve the chosen provider so its OWN setupFields drive validation —
-  // works for built-ins and third-party providers alike.
-  const handle = await resolveTunnelProvider(slug)
-  const declared = handle?.setupFields
-  if (!handle || !declared || declared.length === 0) {
-    return { ok: false, hint: `provider '${slug}' is not configurable` }
-  }
-
-  const missing = declared
-    .filter((f) => f.required === true)
-    .map((f) => f.name)
-    .filter((name) => {
-      const v = fields[name]
-      return v === undefined || v.length === 0
-    })
-  if (missing.length > 0) {
-    return { ok: false, hint: `missing required field(s): ${missing.join(", ")}` }
-  }
-
-  if (handle.validateSetup) {
-    try {
-      handle.validateSetup(fields)
-    } catch (err) {
-      return { ok: false, hint: err instanceof Error ? err.message : String(err) }
-    }
-  }
-
-  // Persist only the provider's declared, non-empty fields.
-  const creds: TunnelCreds = {}
-  for (const f of declared) {
-    const v = fields[f.name]
-    if (v !== undefined && v.length > 0) creds[f.name] = v
-  }
-  await credsStore.write(slug, creds)
-
-  const now = new Date().toISOString()
-  await ledger.write(slug, {
-    slug,
-    completedAt: now,
-    steps: [{ id: "creds", completedAt: now }],
-  })
-  return { ok: true, hint: `${slug} configured — status is now ready` }
+  // The family resolves the chosen provider so its OWN setupFields (and
+  // `validateSetup`) drive validation, built-ins and third-party alike.
+  // Setup resolves it with `creds = null`, as it always did: the family
+  // reads stored creds only to resolve, so hide them here. Writes still go
+  // to the real store.
+  return makeTunnelFamily({ credsStore: withoutStoredCreds(credsStore), ledger }).setup(slug, fields)
 }
 
 /**
