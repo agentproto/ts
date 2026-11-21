@@ -96,8 +96,12 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
   // re-hardcode. Default = flash (low latency, the call default).
   "google/gemini-live": {
     id: "google/gemini-live",
-    name: "Gemini Live 2.5 Flash",
-    providerId: "gemini-2.5-flash-preview-tts",
+    name: "Gemini Live 3.1 Flash",
+    // A bidi Live model, not a TTS-only one: the Live API refuses the
+    // `*-preview-tts` variants (they only take HTTP text input). This is the
+    // default the studio engine itself runs (agent-framework
+    // voice/strategies/engines.ts:189).
+    providerId: "gemini-3.1-flash-live-preview",
     provider: "google",
     capabilities: {
       s2s: true,
@@ -845,7 +849,7 @@ export const GEMINI_LIVE_MODEL_IDS: string[] = Object.values(
 /** Default Gemini Live model — the low-latency flash tier (`google/gemini-live`). */
 export const DEFAULT_GEMINI_LIVE_MODEL: string =
   AUDIO_MODEL_CATALOG["google/gemini-live"]?.providerId ??
-  "gemini-2.5-flash-preview-tts"
+  "gemini-3.1-flash-live-preview"
 
 /** True when `id` is one of the accepted Gemini Live provider model strings. */
 export function isAcceptedGeminiLiveModel(id: string): boolean {
