@@ -1,0 +1,380 @@
+{
+  "kind": "ws",
+  "provider": "assemblyai",
+  "url": "wss://tts.us.assemblyai.com/v1/ws?sample_rate=24000&encoding=pcm_s16le&model_id=assemblyai-tts-1&language=french",
+  "recordedAt": "2026-11-21",
+  "frames": [
+    {
+      "dir": "in",
+      "data": {
+        "type": "Begin",
+        "id": "<redacted>",
+        "expires_at": 1795231245,
+        "configuration": {
+          "language": "french",
+          "sample_rate": 24000,
+          "encoding": "pcm_s16le",
+          "inactivity_timeout": 120,
+          "word_boundaries": true,
+          "voice_id": "aai-donatien",
+          "extend_biometric_consent": false,
+          "word_boundaries_requested": true,
+          "model": "assemblyai-tts-1",
+          "route": {
+            "languages": [
+              "english",
+              "spanish",
+              "german",
+              "french",
+              "italian",
+              "portuguese"
+            ],
+            "cross_lingual": true
+          },
+          "voice_expires_at": null,
+          "resolved_voice": {
+            "source": "library",
+            "voice_id": "9fe741e9-befc-5843-93d6-3e1eaa8a0740",
+            "owner_account_id": null,
+            "visibility": "public",
+            "resolved_via": null,
+            "language": "english",
+            "extend_due_at": null
+          },
+          "session_ttl_sec": 3600,
+          "limits": {
+            "max_generate_text_length": 2000,
+            "max_control_frames_per_sec": 20,
+            "max_egress_audio_buffer_ms": 300000,
+            "max_egress_audio_buffer_bytes": 16777216,
+            "text_throttle_enabled": true,
+            "text_throttle_max_chars_per_sec": 100,
+            "text_throttle_initial_grace_chars": 1500,
+            "text_max_buffer_chars": 8000,
+            "session_ttl_grace_sec": 60,
+            "max_message_bytes": 1048576,
+            "max_queued_messages": 10000,
+            "write_stall_timeout_sec": 30,
+            "inactivity_timeout_min_sec": 5,
+            "inactivity_timeout_max_sec": 120
+          },
+          "features": {
+            "model_id": true,
+            "extend_biometric_consent": true,
+            "word_boundaries": true
+          },
+          "unknown_params": []
+        }
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "type": "Generate",
+        "text": "Bonjour, "
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "type": "Generate",
+        "text": "ceci est un test."
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "type": "Flush"
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "type": "Terminate"
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "AAAAAP///////////////////////////v8AAAIAAgACAAAA//////3//f/+/wEAAQAAAAIAAQAAAP7//v////7//v/9//z/",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "jf+e/7L/wf/V/+j/+/8QACAANABFAFgAaAB4AIsAmgCqAL8AzQDbAO0A+QAFAQ0BFwEdASMBKQErATUBNwE3ATsBMwExAS8B",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "wevB68HrYesh60HrQezB7WHv8fAx8lHzwfRR9tH3Afnx+cH6kftN/Pn8cf2Z/VH9tfwR/Ln7+fuJ/PH8+fzJ/K38Cf0h/gsA",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "DP9V/sH9Qf2l/A38ufux+7n7ufux+4H7QfsR+wH76fqp+on6qfrh+uH6mfoB+mH5Cfn5+Pn44fjJ+Pn4Yfm5+dH5oflJ+dn4",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "WwGH/9v/aQGHAQcAff8vARsDAwNtAX4ADwELAmcCXwJDAscB8QCcADcB4wGNAZwAcwCBAbsCqwItAcz/NwBHArcDZwI+/2X9",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "AfxR+1n6ufnh+ZH6Oftp+yn74foB+4H74fup+wn7ofqx+gH7Gfu5+kH6GfpZ+tH6EfsB+9H6yfoB+2H7iftR+8H6CfpJ+an4",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "nwYvBe8CZABF/uH80fuB+rH4sfYB9SH0EfRB9AH0gfMh81HzMfQx9dH1wfVh9SH1cfUB9kH2wfWR9FHzsfLB8tHyMfLx8OHv",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "cffh93H4kflJ+039Rf8pATMDlwU/CM8K7wyfDh8Q3xGfEz8VXxafFl8W/xVfFZ8U3xOfEt8Q7w4/Dc8Lbwq/CNcGDwWnA8MC",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "hP+P/6P/rf+s/6j/qP+x/8b/1P/h//j/EQAoAC4AOQBYAHsAkACeAK4AyQDpAO0A0QCkAHkAZABcAFMAPgAfAAEA8f/r/+j/",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "5P/a/9n/3f/j/+3/+P/6//7/AQACAAEABgAMAA8AFwAcABoADgAGAAcABwAJAAwADAANAA0ADAAJAAoACwAHAAMAAwAAAP//",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "+P/x//3/AQD+/wAAAAAEAA0AEgAJAPr/8f/v/+3/8v/6/wAAAgAAAAAADwAjADIAOAA0ADgANwAtAB8ACwD2/+T/3P/e/9//",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "7v/r/+3/8f/z//X/+P/5//r/+//+////AQAEAAUABgADAAUABAD///7/AAAAAPz/+//7//j/9v/3//j/+v/4//r///8DAAgA",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "FwFnAHf/X/+N/1H/Rv/r/3EALgC3/4n/oP8SALUAvAAMALr/LQA/AIH/OP/s/2IA/v+U/9j/dgDQAGwAjf9q/18A5gD0//X+",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "NwHzAP8AmgDR/z7/Bv/1/u/+l/61/fH89fxZ/XH9Ef1h/Kn7Ofvx+qH6mfoh+5H7iftx+3n7SfsJ+3n7VfyR/EH8ffwZ/a38",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "jQBH/3X+Xv9DAAMAiwCJAUAADf5v/uIA1wEyAIv+wf7u/+gA4ADN/9n+Uv/7AJ8BDQCN/nr/KQHQABf///63AHEBIgCf/rH+",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "Ifnp+in8efxd/FX8Jfz5+/381P9TA48FlwXzA1MCawJXBK8GHwiPCN8IXwnfCd8JnwmPCY8JXwkPCf8Ibwn/CU8KLwqfCZ8I",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "lwIHA78CDwKfAb8BNwKLAocCXwJTAncCuwLLApMCQwIrAlMCbwI3AtMBjQGDAbUB/wE3AisC6QG/AdUB/wH5AcEBbQEZAQcB",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "3wXPBTcFdwPTAH3+kf3F/bH91fzx+7n70fuB+2n6KfnJ+Gn5Mfph+in6Gfp5+mH71fyH/vT/0wBzAVcCcwMvBE8EXwTvBMcF",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "vwnXB0cHtwfHB58GnwS/AoEBwgAnAI3/+f6H/l3+f/4C/+L/6gDJAUMCVwIbAuUB/wFfAlsCjwFoAND/DwCgAMgAZADv//b/",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "5P/h/+P/6P/s/+j/5P/i/+f/8f/6/wQACwAMAAgACQALABMAFgASAA8AFQAcABkADgABAPb/9P/9/wgAEAANAAkACAAJAAwA",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "qfwp+1H44fRR8uHxAfOx81Hyge+B7aHtYe/B8TH16fo3Ai8I3wkfB18Cv/69/ssDXwy/E78V/xNfE/8WnxtfHJ8YnxSfE18U",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "vP8tAFsAyv/S/30AXQCI/3H/DwARAIv/o/9iALcAMgCU/5z/oP/V/jX+Lf/LAAEBGQABAKQAOwA7/6H/+QBZAeYADQGZAXUB",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "LwDV/pv+FAC0AH//fP8XAbkAsf7L/ugAUQF9/6X+0f+HADEALgAeADv/Nf8xARcCof+d/b7/cwIdAR3+i/5HAZkBj//N/sn/",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "CwD7/+7/9v/9/+r/2//5/x4AHAD6/97//P8zABwA0v/T/xYAKQD6/+H/9f8AAPr/AgANAAAA7//1/wUA+v/x/wEADgAAAPf/",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "qv/k/x4A8v+t/8D/4/+4/6L/8f8cAMj/sv9AAGkAuP9c//z/VgC4/2//JwB0AKv/W/8kAG4Aq/9y/z8AgADO/5j/TgCsABkA",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "BgD8//L/8P/2/+r/5v8CAB4AIgAIAPr/CwAqACEA7v/o/xIAIgAMAPj/+f8BAAYABgAIAAMA/f/9//7/+//8/wAA/v/8/wAA",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "/P/6//r/+//7//z/+f/3//j/+//8//n/+//8//r/+v/5//7//v/5//r/+//8//z/+//5//n/+//6//v//v/9//r//P/+//7/",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Audio",
+        "audio": "/P/6//n/+v/7//n/+f/5//r//P/8//3/+//6//v/+v/7//v/+//6//r/+//6//v/+//8//z/+v/7//z/+v/6//r//P/8//v/",
+        "flush_id": 0
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "FlushDone",
+        "flush_id": 0,
+        "audio_duration_ms": 2240
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "WordBoundaries",
+        "flush_id": 0,
+        "audio_start_ms": 0,
+        "words": [
+          {
+            "word": "Bonjour,",
+            "start": 99,
+            "end": 398,
+            "confidence": 0.6651940941810608
+          },
+          {
+            "word": "ceci",
+            "start": 1012,
+            "end": 1211,
+            "confidence": 0.4616985321044922
+          },
+          {
+            "word": "est",
+            "start": 1277,
+            "end": 1294,
+            "confidence": 0.3170293867588043
+          },
+          {
+            "word": "un",
+            "start": 1344,
+            "end": 1360,
+            "confidence": 0.0000035079519875580445
+          },
+          {
+            "word": "test.",
+            "start": 1592,
+            "end": 1941,
+            "confidence": 0.602749764919281
+          }
+        ]
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Termination",
+        "session_duration_seconds": 0,
+        "total_input_char_length": 26,
+        "audio_duration_seconds": 2.24,
+        "voice_expires_at": null
+      }
+    }
+  ],
+  "audioTruncatedTo": 96
+}
