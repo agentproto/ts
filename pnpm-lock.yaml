@@ -830,7 +830,7 @@ importers:
         version: 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       mastracode:
         specifier: 0.39.1
-        version: 0.39.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7))
+        version: 0.39.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -4901,7 +4901,7 @@ importers:
         version: link:../voice
       ws:
         specifier: '>=8.21.0 <9'
-        version: 8.22.0(bufferutil@4.1.0)
+        version: 8.23.0(bufferutil@4.2.0)
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -4914,13 +4914,13 @@ importers:
         version: 8.18.2
       tsup:
         specifier: ^8.5.1
-        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.33)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       vitest:
         specifier: '>=3.2.6 <4'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.2.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/voice-openai:
     dependencies:
@@ -4929,7 +4929,7 @@ importers:
         version: link:../voice
       ws:
         specifier: '>=8.21.0 <9'
-        version: 8.22.0(bufferutil@4.1.0)
+        version: 8.23.0(bufferutil@4.2.0)
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -4942,13 +4942,13 @@ importers:
         version: 8.18.2
       tsup:
         specifier: ^8.5.1
-        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.33)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       vitest:
         specifier: '>=3.2.6 <4'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.2.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/vscode:
     dependencies:
@@ -7252,9 +7252,6 @@ packages:
   '@smithy/core@3.41.0':
     resolution: {integrity: sha512-fuZ34H1uizS3WgcX9VXG7Uy8od5A5/kCc+CR3NkHLNm2H/BE9AUHG02VIdu8ZB7FYhLqsr/RZbqAoXuOCg/Oxg==}
     engines: {node: '>=18.0.0'}
-    deprecated: |-
-      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
-        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.2':
     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
@@ -12171,9 +12168,9 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/agent-browser@0.5.3(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)':
+  '@mastra/agent-browser@0.5.3(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       agent-browser: 0.19.0(bare-buffer@3.7.3)(bufferutil@4.2.0)
       zod: 4.6.7
     transitivePeerDependencies:
@@ -12185,7 +12182,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/code-sdk@1.14.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod-to-json-schema@3.25.2(zod@4.6.7))':
+  '@mastra/code-sdk@1.14.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@agentclientprotocol/sdk': 0.21.1(zod@4.6.7)
       '@ai-sdk/amazon-bedrock': 3.0.146(zod@4.6.7)
@@ -12194,20 +12191,20 @@ snapshots:
       '@ai-sdk/openai-compatible': 2.0.94(zod@4.6.7)
       '@ast-grep/napi': 0.42.3
       '@aws-sdk/credential-providers': 3.1173.0
-      '@mastra/agent-browser': 0.5.3(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
-      '@mastra/duckdb': 1.14.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))
+      '@mastra/agent-browser': 0.5.3(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
+      '@mastra/duckdb': 1.14.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
       '@mastra/fastembed': 1.3.3
-      '@mastra/github-signals': 0.5.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
-      '@mastra/libsql': 1.26.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bufferutil@4.2.0)
-      '@mastra/mcp': 2.4.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
-      '@mastra/memory': 1.38.0(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))
-      '@mastra/observability': 1.20.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
-      '@mastra/parallel': 0.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
-      '@mastra/pg': 1.31.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))
+      '@mastra/github-signals': 0.5.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
+      '@mastra/libsql': 1.26.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)
+      '@mastra/mcp': 2.4.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@mastra/memory': 1.38.0(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
+      '@mastra/observability': 1.20.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
+      '@mastra/parallel': 0.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
+      '@mastra/pg': 1.31.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
       '@mastra/schema-compat': 1.3.15(zod@4.6.7)
-      '@mastra/stagehand': 0.3.5(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)
-      '@mastra/tavily': 1.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)
+      '@mastra/stagehand': 0.3.5(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)
+      '@mastra/tavily': 1.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)
       ai: 6.0.333(zod@4.6.7)
       execa: 9.6.1
       libsql: 0.5.29
@@ -12345,7 +12342,7 @@ snapshots:
       - utf-8-validate
       - workflow
 
-  '@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)':
     dependencies:
       '@a2a-js/sdk-v0_3': '@a2a-js/sdk@0.3.14(@bufbuild/protobuf@2.17.0)(express@5.3.0)'
       '@a2a-js/sdk-v1': '@a2a-js/sdk@1.0.1(@bufbuild/protobuf@2.17.0)(express@5.3.0)'
@@ -12453,10 +12450,10 @@ snapshots:
       - zod-openapi
       - zod-to-json-schema
 
-  '@mastra/duckdb@1.14.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))':
+  '@mastra/duckdb@1.14.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
     dependencies:
       '@duckdb/node-api': 1.5.2-r.2
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
 
   '@mastra/duckdb@1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
     dependencies:
@@ -12482,9 +12479,9 @@ snapshots:
       '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
 
-  '@mastra/github-signals@0.5.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/github-signals@0.5.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
 
   '@mastra/libsql@1.22.5(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)':
@@ -12503,10 +12500,10 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@mastra/libsql@1.26.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(bufferutil@4.2.0)':
+  '@mastra/libsql@1.26.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bufferutil@4.2.0)':
     dependencies:
       '@libsql/client': 0.18.0(bufferutil@4.2.0)
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -12532,9 +12529,9 @@ snapshots:
       - supports-color
       - zod
 
-  '@mastra/mcp@2.4.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
+  '@mastra/mcp@2.4.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(hono@4.13.19)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       '@modelcontextprotocol/client': 2.4.0
       '@modelcontextprotocol/core': 2.2.0
       '@modelcontextprotocol/ext-apps': 2.0.4(@modelcontextprotocol/client@2.4.0)(@modelcontextprotocol/core@2.2.0)(@modelcontextprotocol/server@2.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
@@ -12578,9 +12575,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mastra/memory@1.38.0(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))':
+  '@mastra/memory@1.38.0(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       '@mastra/schema-compat': 1.3.15(zod@4.6.7)
       async-mutex: 0.5.0
       diff: 8.0.4
@@ -12597,14 +12594,14 @@ snapshots:
       '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
 
-  '@mastra/observability@1.20.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/observability@1.20.1(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
 
-  '@mastra/parallel@0.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/parallel@0.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       parallel-web: 1.3.7
       zod: 4.6.7
 
@@ -12618,9 +12615,9 @@ snapshots:
     transitivePeerDependencies:
       - pg-native
 
-  '@mastra/pg@1.31.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))':
+  '@mastra/pg@1.31.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       async-mutex: 0.5.0
       pg: 8.23.1
       pg-connection-string: 2.14.1
@@ -12666,10 +12663,10 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/stagehand@0.3.5(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)':
+  '@mastra/stagehand@0.3.5(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(playwright-core@1.65.1)(zod@4.6.7)':
     dependencies:
       '@browserbasehq/stagehand': 3.7.4(playwright-core@1.65.1)(zod@4.6.7)
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -12689,9 +12686,9 @@ snapshots:
       - debug
       - supports-color
 
-  '@mastra/tavily@1.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(zod@4.6.7)':
+  '@mastra/tavily@1.1.2(@mastra/core@1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      '@mastra/core': 1.78.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       '@tavily/core': 0.7.14
       zod: 4.6.7
     transitivePeerDependencies:
@@ -15079,7 +15076,7 @@ snapshots:
   marky@1.3.0:
     optional: true
 
-  mastracode@0.39.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0))(zod-to-json-schema@3.25.2(zod@4.6.7)):
+  mastracode@0.39.1(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(ws@8.23.0(bufferutil@4.2.0)):
     dependencies:
       '@agentclientprotocol/sdk': 0.21.1(zod@4.6.7)
       '@ai-sdk/amazon-bedrock': 3.0.146(zod@4.6.7)
@@ -15090,7 +15087,7 @@ snapshots:
       '@aws-sdk/credential-providers': 3.1173.0
       '@earendil-works/pi-tui': 0.80.6
       '@mastra/agent-browser': 0.5.2(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))(bare-buffer@3.7.3)(bufferutil@4.2.0)(zod@4.6.7)
-      '@mastra/code-sdk': 1.14.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod-to-json-schema@3.25.2(zod@4.6.7))
+      '@mastra/code-sdk': 1.14.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(bare-buffer@3.7.3)(bufferutil@4.2.0)(express@5.3.0)(hono@4.13.19)(playwright-core@1.65.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@mastra/core': 1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7)
       '@mastra/duckdb': 1.8.0(@mastra/core@1.66.0(@bufbuild/protobuf@2.17.0)(@opentelemetry/api@1.10.0)(ai@6.0.333(zod@4.6.7))(bufferutil@4.2.0)(express@5.3.0)(zod@4.6.7))
       '@mastra/fastembed': 1.3.1
