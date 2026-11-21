@@ -33,11 +33,13 @@ function setup(opts: {
   bargeIn?: Record<string, unknown>
   turnTimeoutMs?: number
   maxMs?: number
+  onTurnEnd?: (info: { completed: boolean; interrupted: boolean }) => void
 }) {
   const out = makeOutbound()
   const transcribe = vi.fn(async () => "bonjour")
   const transcripts: Array<{ text: string; role: string }> = []
   const onTurn = vi.fn(opts.onTurn)
+  const onTurnEnd = vi.fn(opts.onTurnEnd ?? (() => undefined))
   const pipeline = createCallPipeline({
     transport: out.transport,
     playback: out.playback,
@@ -45,6 +47,7 @@ function setup(opts: {
     sampleRate: SR,
     transcribe,
     onTurn: onTurn as never,
+    onTurnEnd: onTurnEnd as never,
     onTranscript: (text: string, role: string) =>
       transcripts.push({ text, role }),
     bargeIn: { enabled: true, minSpeechMs: 300, guardMs: 500, ...opts.bargeIn },
@@ -53,7 +56,7 @@ function setup(opts: {
       : {}),
     logPrefix: "[test]",
   } as never)
-  return { out, pipeline, transcribe, onTurn, transcripts }
+  return { out, pipeline, transcribe, onTurn, onTurnEnd, transcripts }
 }
 
 /** A sine whose RMS is about `amplitude / sqrt(2)`. */
@@ -454,6 +457,38 @@ describe("review follow-ups", () => {
       expect(ctx.transcripts.filter(t => t.role === "assistant")).toHaveLength(
         0
       )
+    })
+
+    it("does not fire onTurnEnd when the call closes after a voluntary abort", async () => {
+      const ctx = setup({
+        onTurn: input =>
+          streamTurnWithSentences(
+            {
+              brain: async ({ onDelta }) => {
+                onDelta("Bonjour, comment allez-vous aujourd'hui ? ")
+              },
+              tts: async ({ onChunk, signal }) => {
+                await onChunk(ttsChunk(4000))
+                await hangUntilAborted(signal)
+              },
+              logPrefix: "[test]",
+            },
+            {
+              text: input.text,
+              onChunk: input.onChunk,
+              ...(input.signal ? { signal: input.signal } : {}),
+            }
+          ),
+      })
+      await feed(ctx.pipeline, "loud", 400)
+      await feed(ctx.pipeline, "quiet", 800)
+      expect(ctx.out.queued()).toBeGreaterThan(3000)
+      // Abort the turn deliberately, then close the call in the same tick: the
+      // turn was already abandoned, so the close must not report a turn end.
+      ctx.pipeline.interrupt()
+      ctx.pipeline.close()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(ctx.onTurnEnd).not.toHaveBeenCalled()
     })
   })
 })

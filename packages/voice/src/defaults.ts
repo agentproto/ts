@@ -130,11 +130,15 @@ export const VOICE_DEFAULTS = {
       realtimeInputTranscription: d("whisper-1", "openai-realtime-ga.adapter.ts:228"),
       realtimeSampleRate: d(24_000, "openai-realtime-ga.adapter.ts:227,239"),
       sttFileModel: d("whisper-1", "calls/transcribe.ts:43"),
+      ttsModel: d("gpt-4o-mini-tts", "af/voice/preview.ts:90 (OPENAI_TTS_MODEL default)"),
+      ttsVoice: d("alloy", "af/strategies/engines.ts:100-295; same default voice family as realtimeVoice"),
+      /** The speech API's `pcm` response format is PCM16 mono 24 kHz. */
+      ttsSampleRate: d(24_000, "api.openai.com audio/speech response_format=pcm, read 2026-11-21"),
     },
     gemini: {
       liveModel: d(
         "gemini-3.1-flash-live-preview",
-        "af/strategies/engines.ts:189. The studio model catalog says gemini-2.5-flash-preview-tts (model-catalog/src/audio/catalog.ts:130): inconsistency to settle in step 4b",
+        "af/strategies/engines.ts:189. The model catalog's google/gemini-live entry settled on the same id in step 4b (model-catalog/src/audio/catalog.ts): its old value was a TTS-only model the Live API cannot run",
       ),
       voice: d("Aoede", "af/strategies/engines.ts:190,268"),
       sampleRate: d(24_000, "integration/mastra gemini-live.adapter.ts:56"),

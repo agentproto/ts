@@ -1,7 +1,9 @@
 {
   "name": "@agentproto/voice",
   "version": "0.0.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "@agentproto/voice: AIP-VOICE VOICE reference implementation. Three provider contracts (SttProvider, TtsProvider, RealtimeProvider), defineVoiceProvider, a provider registry, and one VoiceSession with two engines, realtime and cascade. No provider and no agent framework in this package.",
   "keywords": [
     "agentproto",

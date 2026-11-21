@@ -315,3 +315,67 @@ describe("makeMemorySetupLedger", () => {
     expect(await ledger.exists("a")).toBe(true)
   })
 })
+
+describe("makeProviderFamily legacySetup and non-catalog slugs", () => {
+  const fields = [
+    { name: "token", description: "required omitted" },
+    { name: "url", description: "url", required: false },
+  ] as const
+  const make = (legacySetup: boolean) =>
+    makeProviderFamily<FakeHandle, FakeInfo>({
+      family: "fake",
+      catalog: CATALOG.slice(1, 2),
+      toInfo: h => ({ kind: h.kind }),
+      load: async slug =>
+        slug === "paid" || slug === "composite"
+          ? handle(slug, { requiresSetup: true, setupFields: fields })
+          : null,
+      credsStore: makeMemoryCredsStore<Record<string, string>>(),
+      ledger: makeMemorySetupLedger(),
+      legacySetup,
+    })
+
+  it("load is called for a slug outside the catalog", async () => {
+    const family = make(false)
+    expect((await family.resolve("composite"))?.slug).toBe("composite")
+    expect(await family.resolve("nope")).toBeNull()
+  })
+
+  it("legacySetup: omitted required is optional, re-setup replaces", async () => {
+    const family = make(true)
+    expect((await family.setup("paid", { token: "", url: "" })).ok).toBe(true)
+    await family.setup("paid", { token: "a", url: "u" })
+    await family.setup("paid", { token: "b", url: "" })
+    expect(await family.credsStore.read("paid")).toEqual({ token: "b" })
+  })
+
+  it("legacySetup: a store failure propagates; default returns ok:false", async () => {
+    const boom = {
+      read: async () => null,
+      exists: async () => false,
+      write: async () => {
+        throw new Error("disk full")
+      },
+    }
+    const build = (legacySetup: boolean) =>
+      makeProviderFamily<FakeHandle, FakeInfo>({
+        family: "fake",
+        catalog: CATALOG.slice(1, 2),
+        toInfo: h => ({ kind: h.kind }),
+        load: async () => handle("paid", { setupFields: [{ name: "token", description: "t", required: true }] }),
+        credsStore: boom,
+        ledger: makeMemorySetupLedger(),
+        legacySetup,
+      })
+    await expect(build(true).setup("paid", { token: "x" })).rejects.toThrow("disk full")
+    expect(await build(false).setup("paid", { token: "x" })).toEqual({ ok: false, hint: "disk full" })
+  })
+
+  it("registerTools can skip the list tool", async () => {
+    const { server, tools } = fakeServer()
+    await make(false).registerTools(server, {
+      setup: { name: "setup_fake_provider", description: "s" },
+    })
+    expect(tools.map(t => t.name)).toEqual(["setup_fake_provider"])
+  })
+})

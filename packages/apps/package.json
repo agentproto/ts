@@ -194,8 +194,8 @@
   },
   "dependencies": {
     "@agentproto/agent": "workspace:*",
-    "@agentproto/app-client": "workspace:*",
     "@agentproto/app": "workspace:*",
+    "@agentproto/app-client": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "zod": "^4.6.7"
   },
@@ -210,7 +210,7 @@
     "jsdom": "^29.1.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vite": "^7.3.7",
+    "vite": "^7.3.8",
     "vite-plugin-singlefile": "^2.3.4",
     "vitest": "^3.2.7"
   }
