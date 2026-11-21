@@ -1,7 +1,9 @@
 {
   "name": "@agentproto/voice-assemblyai",
   "version": "0.0.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "@agentproto/voice-assemblyai: AssemblyAI voice provider for @agentproto/voice. Streaming speech-to-text (Universal Streaming v3 WebSocket) and TTS-1 (WebSocket and HTTP). Talks to AssemblyAI directly; no agent framework.",
   "keywords": [
     "agentproto",
