@@ -1,5 +1,29 @@
 # @agentproto/provider-kit
 
+## 0.7.0
+
+### Minor Changes
+
+- 765660d: Move the sandbox and tunnel families onto `makeProviderFamily()`, with no behavior change: same tool names, descriptions, results and hints. provider-kit gains an explicit `legacySetup` option that reproduces their setup semantics (a field without `required` is optional, re-setup replaces the stored creds, store and ledger errors propagate), `load` now also receives slugs outside the catalog (a composite slug such as `auto`), and `registerTools` accepts a missing `list`.
+- 1741e68: Add `makeProviderFamily()`, the glue sandbox and tunnels each copied: static catalog, `supported | available | ready` listing, slug to provider resolution (built-ins or a dynamic import of the provider package), cross-provider setup schema and `setup`, and the MCP `list_*` / `setup_*` tools. Also add `makeEnvCredsStore` (read-only, environment variables), `makeMemoryCredsStore` and `makeMemorySetupLedger`, so a family runs with no daemon and no `~/.agentproto`. Purely additive; existing exports are unchanged.
+
+### Patch Changes
+
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
 ## 0.6.0
 
 ### Minor Changes

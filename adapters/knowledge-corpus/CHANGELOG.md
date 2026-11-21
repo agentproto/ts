@@ -1,5 +1,14 @@
 # @agentproto/adapter-knowledge-corpus
 
+## 0.4.9
+
+### Patch Changes
+
+- Updated dependencies [765660d]
+- Updated dependencies [1741e68]
+- Updated dependencies [89258dd]
+  - @agentproto/provider-kit@0.7.0
+
 ## 0.4.8
 
 ### Patch Changes
