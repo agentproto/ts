@@ -143,6 +143,35 @@ export const VOICE_DEFAULTS = {
       voice: d("Aoede", "af/strategies/engines.ts:190,268"),
       sampleRate: d(24_000, "integration/mastra gemini-live.adapter.ts:56"),
     },
+    assemblyai: {
+      /** Omit `speech_model`: the server default of the day (streaming docs, 2026-11-21). Pin it to override. */
+      sttSpeechModel: d<string | undefined>(
+        undefined,
+        "assemblyai.com/docs/streaming/api-spec/streaming-websocket, read 2026-11-21: omit speech_model for the server default",
+      ),
+      /** `encoding` sent with the binary audio frames; PCM16 is the kit's boundary format. */
+      sttEncoding: d("pcm_s16le", "assemblyai.com/docs/streaming, read 2026-11-21"),
+      /** TTS-1 model id, as the server reports it in Begin.configuration.model. */
+      ttsModel: d("assemblyai-tts-1", "assemblyai.com/docs/tts, read 2026-11-21"),
+      /** Left out: the default voice of the language (TTS docs, 2026-11-21). */
+      ttsVoiceId: d<string | undefined>(undefined, "assemblyai.com/docs/tts/connect-parameters, read 2026-11-21"),
+      /** Omitted: the vendor default. A product's language is a product setting (`VOICE_LANGUAGE`), not a kit default. */
+      ttsLanguage: d<string | undefined>(
+        undefined,
+        "PR #2804 review: no deployment language in kit defaults; assemblyai.com/docs/tts, read 2026-11-21",
+      ),
+      /** Native rate of TTS-1; matches the cascade outbound rate (cascade.audio.outboundSampleRate). */
+      ttsSampleRate: d(24_000, "assemblyai.com/docs/tts, read 2026-11-21; defaults.ts cascade.audio.outboundSampleRate"),
+      ttsEncoding: d("pcm_s16le", "assemblyai.com/docs/tts, read 2026-11-21"),
+      /**
+       * File transcription is the v2 REST API (upload, then transcript).
+       * Omitted: the vendor default. A product's language is a product setting (`VOICE_LANGUAGE`), not a kit default.
+       */
+      sttFileLanguageCode: d<string | undefined>(
+        undefined,
+        "PR #2804 review: no deployment language in kit defaults; assemblyai.com/docs/speech-to-text, read 2026-11-21",
+      ),
+    },
   },
 } as const
 

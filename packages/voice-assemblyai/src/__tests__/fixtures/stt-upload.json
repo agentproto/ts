@@ -1,0 +1,17 @@
+{
+  "kind": "http",
+  "provider": "assemblyai",
+  "recordedAt": "2026-11-21",
+  "request": {
+    "method": "POST",
+    "url": "https://api.assemblyai.com/v2/upload",
+    "body": "<binary:142124 bytes>"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "upload_url": "<upload-url>"
+    },
+    "contentType": "application/json"
+  }
+}

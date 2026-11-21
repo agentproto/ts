@@ -1,0 +1,163 @@
+{
+  "kind": "http",
+  "provider": "assemblyai",
+  "recordedAt": "2026-11-21",
+  "request": {
+    "method": "GET",
+    "url": "https://api.assemblyai.com/v2/transcript/<redacted>"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "<redacted>",
+      "language_model": "assemblyai_default",
+      "acoustic_model": "assemblyai_default",
+      "language_code": "fr",
+      "speech_understanding": null,
+      "translated_texts": null,
+      "status": "completed",
+      "audio_url": "<upload-url>",
+      "text": "Bonjour, ceci est un test de la voix.",
+      "words": [
+        {
+          "text": "Bonjour,",
+          "start": 31,
+          "end": 531,
+          "confidence": 0.757,
+          "speaker": null
+        },
+        {
+          "text": "ceci",
+          "start": 1031,
+          "end": 1311,
+          "confidence": 0.8967285,
+          "speaker": null
+        },
+        {
+          "text": "est",
+          "start": 1311,
+          "end": 1491,
+          "confidence": 0.8120117,
+          "speaker": null
+        },
+        {
+          "text": "un",
+          "start": 1491,
+          "end": 1651,
+          "confidence": 0.90527344,
+          "speaker": null
+        },
+        {
+          "text": "test",
+          "start": 1651,
+          "end": 1931,
+          "confidence": 0.026294708,
+          "speaker": null
+        },
+        {
+          "text": "de",
+          "start": 1931,
+          "end": 2111,
+          "confidence": 0.9042969,
+          "speaker": null
+        },
+        {
+          "text": "la",
+          "start": 2111,
+          "end": 2271,
+          "confidence": 0.90722656,
+          "speaker": null
+        },
+        {
+          "text": "voix.",
+          "start": 2271,
+          "end": 2431,
+          "confidence": 0.872,
+          "speaker": null
+        }
+      ],
+      "utterances": null,
+      "confidence": 0.760104,
+      "audio_duration": 3,
+      "punctuate": true,
+      "format_text": true,
+      "webhook_url": null,
+      "webhook_status_code": null,
+      "webhook_auth": false,
+      "webhook_auth_header_name": null,
+      "speed_boost": false,
+      "auto_highlights_result": null,
+      "auto_highlights": false,
+      "audio_start_from": null,
+      "audio_end_at": null,
+      "word_boost": [],
+      "boost_param": null,
+      "prompt": null,
+      "keyterms_prompt": [],
+      "filter_profanity": false,
+      "redact_pii": false,
+      "redact_pii_audio": false,
+      "redact_pii_audio_quality": null,
+      "redact_pii_audio_options": null,
+      "redact_pii_policies": null,
+      "redact_pii_sub": null,
+      "redact_static_entities": null,
+      "speaker_labels": false,
+      "speaker_options": null,
+      "content_safety": false,
+      "iab_categories": false,
+      "content_safety_labels": {
+        "status": "unavailable",
+        "results": [],
+        "summary": {}
+      },
+      "iab_categories_result": {
+        "status": "unavailable",
+        "results": [],
+        "summary": {}
+      },
+      "language_detection": false,
+      "language_detection_options": null,
+      "language_detection_results": null,
+      "language_confidence_threshold": null,
+      "language_confidence": null,
+      "custom_spelling": null,
+      "throttled": false,
+      "auto_chapters": false,
+      "summarization": false,
+      "summary_type": null,
+      "summary_model": null,
+      "custom_topics": false,
+      "topics": [],
+      "speech_threshold": null,
+      "speech_model": null,
+      "speech_models": [
+        "universal-2"
+      ],
+      "speech_model_used": "universal-2",
+      "metadata": {
+        "warnings": [
+          {
+            "message": "For highest accuracy and broadest language coverage: set \"speech_models\" to [\"assemblyai-stt-3-7\", \"universal-2\"]."
+          }
+        ]
+      },
+      "temperature": null,
+      "remove_audio_tags": "all",
+      "chapters": null,
+      "disfluencies": false,
+      "entity_detection": false,
+      "sentiment_analysis": false,
+      "sentiment_analysis_results": null,
+      "entities": null,
+      "speakers_expected": null,
+      "summary": null,
+      "custom_topics_results": null,
+      "is_deleted": null,
+      "multichannel": null,
+      "project_id": 1433249,
+      "token_id": 1445304
+    },
+    "contentType": "application/json; charset=UTF-8"
+  }
+}
