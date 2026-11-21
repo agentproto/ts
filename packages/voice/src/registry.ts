@@ -124,6 +124,9 @@ export function makeVoiceRegistry(opts: VoiceRegistryOptions = {}): VoiceRegistr
     load: async (slug, ctx) => {
       const inProcess = local.get(slug)
       if (inProcess) return toVoiceHandle(inProcess)
+      // `ctx.entry` is optional since #2814: a slug outside the catalog reaches
+      // `load` with no entry, and no package name to import — it does not resolve.
+      if (!ctx.entry) return null
       const mod = await ctx.importPackage(ctx.entry.packageName)
       const candidate = mod.default ?? mod.provider ?? Object.values(mod).find(isVoiceProvider)
       return isVoiceProvider(candidate) ? toVoiceHandle(candidate) : null

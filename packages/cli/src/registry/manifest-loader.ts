@@ -21,6 +21,7 @@ import { readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { createRequire } from "node:module"
 import { pathToFileURL } from "node:url"
+import { collectAgentprotoNamespaceRoots } from "@agentproto/provider-kit"
 import {
   AdapterManifestSchema,
   type AdapterManifest,
@@ -89,13 +90,55 @@ export async function loadAdapterFromManifest(
 }
 
 /**
+ * Basic package.json metadata for an installed adapter package on disk,
+ * regardless of whether it declares an `agentproto/adapter/v1` manifest.
+ */
+export interface AdapterPackageInfo {
+  readonly packageRoot: string
+  readonly packageJsonPath: string
+  readonly name?: string
+  readonly version?: string
+  readonly description?: string
+}
+
+/**
+ * Read basic `package.json` metadata for an installed adapter package.
+ * Returns `null` only when the package cannot be resolved on disk at all —
+ * letting callers like `agentproto adapters show` and `adapters list`
+ * distinguish an installed legacy adapter (no manifest) from an uninstalled
+ * package.
+ */
+export async function readAdapterPackageInfo(
+  adapterId: string
+): Promise<AdapterPackageInfo | null> {
+  const packageJsonPath = await locateAdapterPackageJson(adapterId)
+  if (!packageJsonPath) return null
+  const raw = await readJsonIfExists(packageJsonPath)
+  if (!raw || typeof raw !== "object") return null
+  const pkg = raw as {
+    name?: unknown
+    version?: unknown
+    description?: unknown
+  }
+  return {
+    packageRoot: dirname(packageJsonPath),
+    packageJsonPath,
+    ...(typeof pkg.name === "string" ? { name: pkg.name } : {}),
+    ...(typeof pkg.version === "string" ? { version: pkg.version } : {}),
+    ...(typeof pkg.description === "string"
+      ? { description: pkg.description }
+      : {}),
+  }
+}
+
+/**
  * Read + validate an adapter's manifest without registering anything.
  * Used by `agentproto adapters show` to introspect installed adapters.
  */
 export async function readAdapterManifest(
   adapterId: string
 ): Promise<{ manifest: AdapterManifest; packageRoot: string } | null> {
-  const packageJsonPath = resolveAdapterPackageJson(adapterId)
+  const packageJsonPath = await locateAdapterPackageJson(adapterId)
   if (!packageJsonPath) return null
 
   const packageRoot = dirname(packageJsonPath)
@@ -146,7 +189,7 @@ async function importFactory<TFactory>(
   return exported as TFactory
 }
 
-function resolveAdapterPackageJson(adapterId: string): string | null {
+export function resolveAdapterPackageJson(adapterId: string): string | null {
   // Try the cli's own resolution first (global install + monorepo
   // workspace deps), then the user's cwd (locally-installed adapters).
   // `require.resolve` needs `createRequire` since we're an ESM bundle.
@@ -159,6 +202,23 @@ function resolveAdapterPackageJson(adapterId: string): string | null {
       return createRequire(root).resolve(`${adapterId}/package.json`)
     } catch {
       // try next root
+    }
+  }
+  return null
+}
+
+async function locateAdapterPackageJson(
+  adapterId: string
+): Promise<string | null> {
+  const direct = resolveAdapterPackageJson(adapterId)
+  if (direct) return direct
+  if (adapterId.startsWith("@agentproto/")) {
+    const dirName = adapterId.slice("@agentproto/".length)
+    const roots = await collectAgentprotoNamespaceRoots()
+    for (const root of roots) {
+      const candidate = join(root, dirName, "package.json")
+      const raw = await readJsonIfExists(candidate)
+      if (raw !== undefined) return candidate
     }
   }
   return null
