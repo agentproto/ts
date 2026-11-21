@@ -37,10 +37,34 @@ export interface RecordedHttpExchange {
 
 export type RecordedExchange = RecordedWsExchange | RecordedHttpExchange
 
-/** JSON keys whose string value is audio: compared by presence, truncated on record. */
-export const AUDIO_KEYS = ["audio", "audio_base_64", "audio_base64", "user_audio_chunk", "data"] as const
+/**
+ * JSON keys whose string value is audio: compared by presence, truncated on
+ * record. `"data"` is deliberately absent: it is too generic a key and would
+ * mask real payload differences. A provider whose protocol sends audio under
+ * a generic key passes it through `extraAudioKeys` instead.
+ */
+export const AUDIO_KEYS = ["audio", "audio_base_64", "audio_base64", "user_audio_chunk"] as const
 
-const isAudioKey = (k: string) => (AUDIO_KEYS as readonly string[]).includes(k)
+const isAudioKey = (k: string, extra: readonly string[] = []) =>
+  (AUDIO_KEYS as readonly string[]).includes(k) || extra.includes(k)
+
+/** Query parameters that carry a credential: redacted in fixtures, stripped when matching. */
+const CREDENTIAL_PARAMS = ["token", "xi-api-key", "api_key", "key", "agent_id"] as const
+const credentialParamRe = new RegExp(`([?&])(${CREDENTIAL_PARAMS.join("|")})=[^&]*`, "g")
+
+/** Replace the value of every credential parameter with `<redacted>`. */
+export function redactUrlCredentials(url: string): string {
+  return url.replace(credentialParamRe, "$1$2=<redacted>")
+}
+
+/** Remove the credential parameters entirely (the matching side of a replay). */
+function stripUrlCredentials(url: string): string {
+  return url
+    .replace(credentialParamRe, "$1")
+    .replace(/\?&+/g, "?")
+    .replace(/&{2,}/g, "&")
+    .replace(/[?&]$/, "")
+}
 
 /** Keys whose value identifies an account, a session or a conversation. */
 const IDENTIFYING_KEYS = ["session_id", "conversation_id", "agent_id", "request_id", "user_id", "id"]
@@ -59,10 +83,14 @@ function mapDeep(value: unknown, fn: (k: string, v: unknown) => unknown | undefi
 }
 
 /** Truncate audio and replace identifying values. Does not mutate the input. */
-export function redactExchange<T extends RecordedExchange>(ex: T, opts: { truncateAudioTo?: number } = {}): T {
+export function redactExchange<T extends RecordedExchange>(
+  ex: T,
+  opts: { truncateAudioTo?: number; extraAudioKeys?: readonly string[] } = {},
+): T {
   const cut = opts.truncateAudioTo ?? 96
+  const extra = opts.extraAudioKeys ?? []
   const redact = (k: string, v: unknown): unknown | undefined => {
-    if (typeof v === "string" && isAudioKey(k) && v.length > cut) return v.slice(0, cut)
+    if (typeof v === "string" && isAudioKey(k, extra) && v.length > cut) return v.slice(0, cut)
     if (typeof v === "string" && IDENTIFYING_KEYS.includes(k)) return "<redacted>"
     return undefined
   }
@@ -70,9 +98,13 @@ export function redactExchange<T extends RecordedExchange>(ex: T, opts: { trunca
   if (copy.kind === "ws") {
     copy.frames = copy.frames.map(f => ({ ...f, data: mapDeep(f.data, redact) }))
     copy.audioTruncatedTo = cut
-    copy.url = copy.url.replace(/([?&])(token|xi-api-key|api_key|key|agent_id)=[^&]*/g, "$1$2=<redacted>")
+    copy.url = redactUrlCredentials(copy.url)
   } else {
-    copy.request = { ...copy.request, ...(copy.request.body !== undefined ? { body: mapDeep(copy.request.body, redact) } : {}) }
+    copy.request = {
+      ...copy.request,
+      url: redactUrlCredentials(copy.request.url),
+      ...(copy.request.body !== undefined ? { body: mapDeep(copy.request.body, redact) } : {}),
+    }
     copy.response = {
       ...copy.response,
       ...(copy.response.body !== undefined ? { body: mapDeep(copy.response.body, redact) } : {}),
@@ -90,6 +122,8 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   ["google api key", /\bAIza[0-9A-Za-z_-]{30,}/],
   ["long hex secret", /\b[a-f0-9]{32,}\b/i],
   ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  // A credential in a url query; `<redacted>` (redaction output) does not match.
+  ["credential in url query", /[?&](?:token|xi-api-key|api_key|key|agent_id)=[^&<\s]{6,}/i],
 ]
 
 /**
@@ -109,11 +143,19 @@ export function scanForSecrets(text: string, knownSecrets: readonly string[] = [
 
 // ── Replay ──────────────────────────────────────────────────────────
 
-const maskAudio = (v: unknown): unknown =>
-  mapDeep(v, (k, val) => (typeof val === "string" && isAudioKey(k) ? "<audio>" : undefined))
+const maskAudio = (v: unknown, extra: readonly string[]): unknown =>
+  mapDeep(v, (k, val) => (typeof val === "string" && isAudioKey(k, extra) ? "<audio>" : undefined))
 
-const sameJson = (a: unknown, b: unknown): boolean =>
-  JSON.stringify(maskAudio(a)) === JSON.stringify(maskAudio(b))
+const sameJson = (a: unknown, b: unknown, extra: readonly string[]): boolean =>
+  JSON.stringify(maskAudio(a, extra)) === JSON.stringify(maskAudio(b, extra))
+
+/** Keyed callback map, one array per `VoiceSocket` event. */
+interface SocketCallbacks {
+  open: Array<() => void>
+  message: Array<(data: string) => void>
+  error: Array<(err: Error) => void>
+  close: Array<(code?: number) => void>
+}
 
 export interface ReplaySocketResult {
   factory: VoiceSocketFactory
@@ -143,16 +185,19 @@ export function makeReplaySocket(
      * every remaining recorded `in` frame is delivered in order.
      */
     releaseWhen?: (sent: Record<string, unknown>) => boolean
+    /** Extra JSON keys whose string value is audio for this provider's protocol. */
+    extraAudioKeys?: readonly string[]
   } = {},
 ): ReplaySocketResult {
   const mismatches: string[] = []
   const urls: string[] = []
   let cursor = 0
+  const extra = opts.extraAudioKeys ?? []
   const lenient = opts.releaseWhen !== undefined
   const strict = lenient ? false : (opts.strictOut ?? true)
   const factory: VoiceSocketFactory = (url): VoiceSocket => {
     urls.push(url)
-    const cbs: { open: Array<() => void>; message: Array<(d: string) => void>; error: Array<(e: Error) => void>; close: Array<(c?: number) => void> } = { open: [], message: [], error: [], close: [] }
+    const cbs: SocketCallbacks = { open: [], message: [], error: [], close: [] }
     let closed = false
     const pump = () => {
       while (!lenient && !closed && cursor < exchange.frames.length && exchange.frames[cursor]!.dir === "in") {
@@ -189,8 +234,8 @@ export function makeReplaySocket(
         cursor++
         let parsed: unknown = text
         try { parsed = JSON.parse(text) } catch { /* raw */ }
-        if (strict && !sameJson(parsed, next.data)) {
-          mismatches.push(`out frame differs: sent ${JSON.stringify(maskAudio(parsed)).slice(0, 160)} recorded ${JSON.stringify(maskAudio(next.data)).slice(0, 160)}`)
+        if (strict && !sameJson(parsed, next.data, extra)) {
+          mismatches.push(`out frame differs: sent ${JSON.stringify(maskAudio(parsed, extra)).slice(0, 160)} recorded ${JSON.stringify(maskAudio(next.data, extra)).slice(0, 160)}`)
         }
         queueMicrotask(pump)
       },
@@ -199,8 +244,8 @@ export function makeReplaySocket(
         closed = true
         queueMicrotask(() => cbs.close.forEach(cb => cb(code ?? 1000)))
       },
-      on(event: string, cb: never) {
-        ;(cbs as Record<string, unknown[]>)[event]!.push(cb)
+      on<K extends keyof SocketCallbacks>(event: K, cb: SocketCallbacks[K][number]) {
+        ;(cbs[event] as Array<SocketCallbacks[K][number]>).push(cb)
       },
     }
     queueMicrotask(() => {
@@ -226,7 +271,12 @@ export function makeReplayFetch(exchanges: readonly RecordedHttpExchange[]): {
       try { body = JSON.parse(body) } catch { /* raw */ }
     }
     requests.push({ method, url, body })
-    const hit = exchanges.find(e => e.request.method.toUpperCase() === method && e.request.url === url.replace(/[?&](xi-api-key|key)=[^&]*/g, ""))
+    // Both sides are stripped of credential parameters, so a redacted fixture
+    // (`?key=<redacted>`) matches the live request (`?key=<real value>`).
+    const bare = stripUrlCredentials(url)
+    const hit = exchanges.find(
+      e => e.request.method.toUpperCase() === method && stripUrlCredentials(e.request.url) === bare,
+    )
     if (!hit) return new Response(JSON.stringify({ detail: "no recorded exchange" }), { status: 599 })
     const r = hit.response
     const payload = r.bodyBase64 !== undefined ? Buffer.from(r.bodyBase64, "base64") : JSON.stringify(r.body)
