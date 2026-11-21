@@ -2,7 +2,10 @@
  * `agentproto models [adapter]` — what models can I actually run, right now?
  *
  * Joins three sources:
- *   1. the installed adapters' advertised model lists (manifest `models`),
+ *   1. the installed adapters' advertised model lists (manifest `models`) —
+ *      via the MERGED listing (native npm catalog + generic ACP entries, see
+ *      `listAdaptersWithAcp`), so a generic-ACP harness like `mistral-vibe`
+ *      lists its curated models too,
  *   2. the provider-key store + this process's env — so each model is marked
  *      runnable (✓) only when its provider has a key, and
  *   3. `@agentproto/model-catalog` for $/Mtok enrichment when the id matches.
@@ -13,10 +16,10 @@
  */
 
 import { parseArgs } from "node:util"
-import { listAdaptersWithCatalog } from "../registry/resolve.js"
-import { CATALOG } from "../registry/catalog.js"
 import { loadProviders, providerEnvVar } from "@agentproto/runtime/providers-store"
 import { LLM_PRICING_CATALOG, effectivePricing, resolveContextWindow, formatTokens } from "@agentproto/model-catalog/llm"
+import { listAdaptersWithAcp } from "../registry/resolve.js"
+import { CATALOG } from "../registry/catalog.js"
 
 const USAGE = `agentproto models — list runnable models per adapter
 
@@ -25,6 +28,7 @@ Usage:
 
   agentproto models                 # every installed agent adapter
   agentproto models mastra-agent    # one adapter, detailed
+  agentproto models mistral-vibe    # generic-ACP harnesses work too
   agentproto models --json
 
 Each model is marked ✓ (provider key available) or ✗ (no key — set one with
@@ -101,14 +105,32 @@ async function loadKeyChecker(): Promise<(provider: string) => boolean> {
  *  runnable with the provider keys available here — the one-line version of
  *  `agentproto models` (used by `agentproto setup`). */
 export async function modelsSummary(): Promise<{ slug: string; runnable: number; total: number }[]> {
-  const [all, hasKey] = await Promise.all([listAdaptersWithCatalog(CATALOG), loadKeyChecker()])
+  const [all, hasKey] = await Promise.all([listAdaptersWithAcp(CATALOG), loadKeyChecker()])
   return all
     .filter(a => a.models.length > 0 && a.status !== "supported")
     .map(a => ({
       slug: a.slug,
       total: a.models.length,
-      runnable: a.models.filter(id => hasKey(providerOf(id, pricingOf(id)))).length,
+      runnable: a.models.filter(id => hasKey(providerOfOnAdapter(a, id, pricingOf(id)))).length,
     }))
+}
+
+/** The provider that gates a model id's key ON ONE ADAPTER: the adapter's own
+ *  per-model provider declaration wins (the authoritative statement of who
+ *  bills THIS adapter for THIS model — a generic-ACP harness stamps its
+ *  spec-level provider onto each model, so mistral-vibe's hosted z-ai ids
+ *  bill through `mistral`), then the pricing catalog / id-family inference.
+ *  Without this, `mistral models` rows for a hosted-but-renamed id showed
+ *  provider `unknown` ✗ even with MISTRAL_API_KEY present. */
+function providerOfOnAdapter(
+  adapter: { modelDetails?: Array<{ id: string; provider?: string }> },
+  modelId: string,
+  pricing: PricingEntry | undefined,
+): string {
+  for (const m of adapter.modelDetails ?? []) {
+    if (m.id === modelId && typeof m.provider === "string") return m.provider
+  }
+  return providerOf(modelId, pricing)
 }
 
 export async function runModels(args: readonly string[]): Promise<number> {
@@ -124,14 +146,22 @@ export async function runModels(args: readonly string[]): Promise<number> {
   }
 
   const wanted = positionals[0]
-  const all = await listAdaptersWithCatalog(CATALOG)
+  // The MERGED listing (npm/native catalog + generic ACP — the same listing
+  // `adapter_list` and the runtime's catalog join serve): a generic-ACP
+  // harness with curated models (kimi-cli, mistral-vibe) is declared in the
+  // ACP catalog, not the npm one, so the native-only listing showed NOTHING
+  // for it (`agentproto models mistral-vibe` used to return empty — issue
+  // 2026-11-21). Generic entries whose bin is absent stay visible with their
+  // `supported` status, exactly as native catalog rows do.
+  const all = await listAdaptersWithAcp(CATALOG)
   const adapters = all.filter(
     a => a.models.length > 0 && (!wanted || a.slug === wanted),
   )
   if (wanted && adapters.length === 0) {
     process.stderr.write(
       `agentproto models: no installed adapter '${wanted}' with a model list.\n` +
-        `  try: agentproto models   (lists all)\n`,
+        `  try: agentproto models   (lists all)\n` +
+        `       agentproto adapters  (lists every adapter, model-less ones included)\n`,
     )
     return 2
   }
@@ -156,7 +186,7 @@ export async function runModels(args: readonly string[]): Promise<number> {
             status: a.status,
             models: a.models.map(id => {
               const pricing = pricingOf(id)
-              const provider = providerOf(id, pricing)
+              const provider = providerOfOnAdapter(a, id, pricing)
               const ctx = resolveContextWindow(id)
               return {
                 id,
@@ -183,7 +213,7 @@ export async function runModels(args: readonly string[]): Promise<number> {
     process.stdout.write(`\n${a.slug}  (${a.status})\n`)
     for (const id of a.models) {
       const pricing = pricingOf(id)
-      const provider = providerOf(id, pricing)
+      const provider = providerOfOnAdapter(a, id, pricing)
       const ownsAuth = ADAPTER_OWNS_AUTH.has(a.slug)
       const ok = ownsAuth ? a.status === "ready" : hasKey(provider)
       if (!ok && !ownsAuth) missing.add(provider)

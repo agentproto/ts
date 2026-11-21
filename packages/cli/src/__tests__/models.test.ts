@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 vi.mock("../registry/resolve.js", () => ({
-  listAdaptersWithCatalog: vi.fn(),
+  listAdaptersWithAcp: vi.fn(),
 }))
 vi.mock("../registry/catalog.js", () => ({ CATALOG: {} }))
 vi.mock("@agentproto/runtime/providers-store", () => ({
@@ -20,10 +20,10 @@ vi.mock("@agentproto/runtime/providers-store", () => ({
   providerEnvVar: (provider: string) => `${provider.toUpperCase()}_API_KEY`,
 }))
 
-import { listAdaptersWithCatalog } from "../registry/resolve.js"
+import { listAdaptersWithAcp } from "../registry/resolve.js"
 import { runModels } from "../commands/models.js"
 
-const mocked = vi.mocked(listAdaptersWithCatalog)
+const mocked = vi.mocked(listAdaptersWithAcp)
 
 /** Capture process.stdout while running the command. */
 async function capture(args: readonly string[]): Promise<{ out: string; code: number }> {
@@ -116,5 +116,57 @@ describe("runModels — copilot-cli (adapter-owned auth, Copilot price list)", (
     mocked.mockResolvedValue([{ ...COPILOT, status: "available" } as never])
     const { out } = await capture([])
     expect(out.split("\n").find(l => l.includes("mai-code-2-flash"))).toMatch(/^ {2}✗ /)
+  })
+})
+
+describe("runModels — generic-ACP harnesses (the merged listing)", () => {
+  // `agentproto models mistral-vibe` used to return EMPTY: mistral-vibe is
+  // declared in the ACP generic catalog (acp-generic.ts), not the npm
+  // catalog, and the command only read the native listing (issue
+  // 2026-11-21). Now it reads the same merged listing `adapter_list` and
+  // the runtime catalog join serve.
+  const MISTRAL_VIBE = {
+    slug: "mistral-vibe",
+    status: "ready",
+    models: ["mistral-large-4-0", "zai-glm-5-3"],
+    provider: "mistral",
+    source: "acp-catalog",
+  }
+
+  beforeEach(() => {
+    process.env.MISTRAL_API_KEY = "test-key"
+  })
+
+  afterEach(() => {
+    delete process.env.MISTRAL_API_KEY
+  })
+
+  it("lists a generic-ACP adapter's models and marks them runnable with the provider key", async () => {
+    mocked.mockResolvedValue([MISTRAL_VIBE as never])
+    const { out, code } = await capture(["mistral-vibe"])
+    expect(code).toBe(0)
+    const row = out.split("\n").find(l => l.includes("mistral-large-4-0"))
+    expect(row).toMatch(/^ {2}✓ mistral-large-4-0/)
+    expect(out.split("\n").find(l => l.includes("zai-glm-5-3"))).toBeDefined()
+  })
+
+  it("--json includes the generic-ACP adapter with per-model provider rows", async () => {
+    mocked.mockResolvedValue([MISTRAL_VIBE as never])
+    const { out } = await capture(["mistral-vibe", "--json"])
+    const parsed = JSON.parse(out) as {
+      adapters: Array<{ adapter: string; models: Array<{ id: string; provider: string; runnable: boolean }> }>
+    }
+    expect(parsed.adapters[0]!.adapter).toBe("mistral-vibe")
+    const large = parsed.adapters[0]!.models.find(m => m.id === "mistral-large-4-0")!
+    expect(large.provider).toBe("mistral")
+    expect(large.runnable).toBe(true)
+  })
+
+  it("without the MISTRAL key the row is ✗ and the footer names the fix", async () => {
+    delete process.env.MISTRAL_API_KEY
+    mocked.mockResolvedValue([MISTRAL_VIBE as never])
+    const { out } = await capture(["mistral-vibe"])
+    expect(out.split("\n").find(l => l.includes("mistral-large-4-0"))).toMatch(/^ {2}✗ /)
+    expect(out).toContain("agentproto auth provider set mistral <api-key>")
   })
 })

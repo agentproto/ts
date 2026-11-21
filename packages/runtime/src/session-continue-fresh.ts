@@ -29,10 +29,13 @@ import type { CheckpointSources, HandoffAsker } from "./checkpoint-extract.js"
 import { computeContextPct } from "./context-continuity.js"
 import {
   spawnAgentSession,
+  adapterNotResolvedRefusal,
+  validateAccessProfileEligibility,
   type SpawnAgentSessionDeps,
   type SpawnAgentSessionInput,
   type SpawnAgentSessionResult,
 } from "./session-spawn.js"
+import type { AgentAdapterResolver, AgentAdapterLister } from "./http-server.js"
 import {
   APP_AGENT_META_KEY,
   CALLER_SESSION_ID_HEADER,
@@ -115,6 +118,25 @@ export interface ContinueAgentSessionFreshOptions {
 function formatAccessForSpawn(desc: SessionDescriptor): { profileRef?: string } | undefined {
   if (!desc.accessProfile?.profileRef) return undefined
   return { profileRef: desc.accessProfile.profileRef }
+}
+
+/**
+ * The access the fresh session would spawn with: the caller's explicit
+ * override when given, else carried from `prev` — keeping a session's
+ * account-slot request while the slot still lists the profile it bills
+ * (`carriedAccessSlot`), else its recorded `accessProfile`. Extracted from
+ * `continueAgentSessionFreshOnce` so the dry-run eligibility gate
+ * (`validateHandoffSpawnEligibility`, the `POST /sessions/:id/handoff`
+ * `dryRun` branch) computes the EXACT wallet the real handoff would spawn
+ * with — a dry run that validates a different wallet than the real one
+ * lies.
+ */
+export async function carriedContinueAccess(
+  prev: SessionDescriptor,
+  override?: { profileRef: string },
+): Promise<{ profileRef?: string } | undefined> {
+  const keptSlot = override ? undefined : await carriedAccessSlot(prev)
+  return override ?? (keptSlot ? { profileRef: slotRef(keptSlot) } : formatAccessForSpawn(prev))
 }
 
 /**
@@ -440,8 +462,7 @@ async function continueAgentSessionFreshOnce(
   // A session that asked for an account slot keeps asking for it while the
   // slot still points at the profile it bills (so the successor records the
   // same `accessSlot`); otherwise the real profile is carried, unchanged.
-  const keptSlot = opts.access ? undefined : await carriedAccessSlot(prev)
-  const access = opts.access ?? (keptSlot ? { profileRef: slotRef(keptSlot) } : formatAccessForSpawn(prev))
+  const access = await carriedContinueAccess(prev, opts.access)
   // `prev.route` was resolved for the OLD adapter's gateway. Carrying it
   // forward unconditionally into a DIFFERENT adapter is doubly wrong: it may
   // not even be reachable from there, and an explicit `route.gateway` also
@@ -613,4 +634,63 @@ async function continueAgentSessionFreshOnce(
     checkpoint,
     continuedFrom: prev.id,
   }
+}
+
+/**
+ * The dry-run handoff's eligibility gate (`POST /sessions/:id/handoff` with
+ * `dryRun: true`): every spawn refusal that can be computed WITHOUT writing
+ * anything — checkpoint not built, nothing persisted, nothing spawned.
+ *
+ * Validates the axes `continueAgentSessionFreshOnce` would spawn the
+ * successor with: the target harness resolves (`adapter_not_found`), and the
+ * access the successor is given or inherits — an explicit `--profile`
+ * override or the source's carried wallet — passes the profile ↔ adapter ↔
+ * route ↔ model eligibility ladder (`validateAccessProfileEligibility`),
+ * the SAME ladder the real spawn runs, refusing with the same code and
+ * message. A dry run that previews OK and then fails on the real handoff
+ * (issue 2026-11-21: the source's profile inherited into an incompatible
+ * target route and refused with `access_profile_ineligible` only then)
+ * wastes the round-trip; this makes the dry run fail EARLY with the real
+ * refusal.
+ *
+ * `undefined` = no refusal found. Credential-level gates (keychain reads,
+ * OAuth refresh, model policy) still belong to the real run alone — a dry
+ * run never touches credential storage.
+ */
+export async function validateHandoffSpawnEligibility(
+  deps: {
+    resolveAgentAdapter: AgentAdapterResolver
+    /** Optional installed-adapter lister — only used to make an
+     *  `adapter_not_found` message actionable (same hint as the spawn). */
+    listAgentAdapters?: AgentAdapterLister
+  },
+  prev: SessionDescriptor,
+  opts: { harness: string; model?: string; access?: { profileRef: string } },
+): Promise<
+  { ok: false; code: string; message: string; details?: Record<string, unknown> } | undefined
+> {
+  // The real run resolves the target harness's adapter before its eligibility
+  // ladder; an unresolvable target fails identically here.
+  const resolved = await deps.resolveAgentAdapter(opts.harness)
+  if (!resolved) return adapterNotResolvedRefusal(opts.harness, deps.listAgentAdapters)
+
+  // No named wallet (explicit or carried): the successor spawns on ambient /
+  // default auth — nothing for THIS gate to validate, same as the real run.
+  const access = await carriedContinueAccess(prev, opts.access)
+  if (!access?.profileRef) return undefined
+
+  const model = opts.model ?? prev.model
+  const verdict = await validateAccessProfileEligibility({
+    adapter: opts.harness,
+    profileRef: access.profileRef,
+    authDescriptor: resolved.authDescriptor,
+    // A cross-harness handoff re-derives the route for the NEW adapter (the
+    // source's carried `route` is dropped in `continueAgentSessionFreshOnce`
+    // whenever `harness` is overridden), so validate with no pinned route —
+    // exactly the spawn input the real run builds.
+    ...(model !== undefined ? { model } : {}),
+    ...(resolved.defaultModel !== undefined ? { defaultModel: resolved.defaultModel } : {}),
+  })
+  if (!verdict.ok) return verdict
+  return undefined
 }

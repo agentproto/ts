@@ -63,6 +63,7 @@ import {
   type SubaccountProvider,
   type AuthProviderHandle,
   type AuthProfile,
+  type AuthMethod,
   type CredentialStore,
   type ProfileProvisionDeps,
 } from "@agentproto/auth"
@@ -1850,7 +1851,18 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
   const file = await loadCredentials()
   const entries = Object.entries(file.hosts)
   // Profiles that carry a login (a `source`): their parent account's expiry.
-  const loginProfiles = (await listAuthProfiles()).filter(p => p.source !== undefined)
+  const allProfiles = await listAuthProfiles()
+  const loginProfiles = allProfiles.filter(p => p.source !== undefined)
+  // Credential-backed profiles (api-key, no self-refreshing login) were
+  // previously INVISIBLE here — `mistral-vibe-pro`/`mistral-api` live in
+  // auth-profiles.json and were only discoverable through
+  // `agentproto auth profile list` (issue 2026-11-21). They have no expiry
+  // and no parent account, so they get their own rows — discovery only,
+  // never a token (and not even a credentialRef: `auth profile list` shows
+  // that when needed).
+  const credentialProfiles = allProfiles.filter(
+    p => p.source === undefined && p.method === "api-key",
+  )
   const statuses = await profileStatuses(loginProfiles)
   const profileRows = loginProfiles.map(p => {
     const st = statuses.get(p.id)!
@@ -1865,9 +1877,32 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
       ...(st.note !== undefined ? { note: st.note } : {}),
     }
   })
-  if (entries.length === 0 && profileRows.length === 0) {
+  const credentialRows: Array<{
+    id: string
+    endpoint: string
+    method: AuthMethod
+    label?: string
+    routes?: string[]
+    models?: string
+    origin?: string
+    disabled?: boolean
+  }> = credentialProfiles.map(p => ({
+    id: p.id,
+    endpoint: p.endpoint,
+    method: p.method,
+    ...(p.label !== undefined ? { label: p.label } : {}),
+    ...(p.routes?.length ? { routes: p.routes } : {}),
+    ...(p.models
+      ? p.models.mode === "all"
+        ? { models: "all" as string }
+        : { models: `allow[${p.models.ids.join(", ")}]` as string }
+      : {}),
+    ...(p.origin !== undefined ? { origin: p.origin } : {}),
+    ...(p.disabled ? { disabled: true } : {}),
+  }))
+  if (entries.length === 0 && profileRows.length === 0 && credentialRows.length === 0) {
     if (values.json) {
-      process.stdout.write(`{"hosts": [], "profiles": []}\n`)
+      process.stdout.write(`{"hosts": [], "profiles": [], "credentialProfiles": []}\n`)
     } else {
       process.stdout.write(
         `agentproto auth: no credentials. Try: agentproto auth login --host wss://guilde.work\n`
@@ -1893,6 +1928,7 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
             deviceLabel: c.deviceLabel ?? null,
           })),
           profiles: profileRows,
+          credentialProfiles: credentialRows,
         },
         null,
         2
@@ -1915,6 +1951,20 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
     for (const r of profileRows) {
       process.stdout.write(
         `  ${r.state === "expired" ? "✗" : "✓"}  ${r.id}  ${r.endpoint}  ${authSummary(r.id, statuses.get(r.id)!)}\n`,
+      )
+    }
+  }
+  if (credentialRows.length > 0) {
+    process.stdout.write(
+      `Credential-backed auth profiles (no login — pass --profile <id> to sessions start/handoff):\n`,
+    )
+    for (const r of credentialRows) {
+      process.stdout.write(
+        `  ${r.disabled ? "✗ disabled" : "✓"}  ${r.id}  ${r.endpoint}  ${r.method}` +
+          (r.label !== undefined ? `  "${r.label}"` : "") +
+          (typeof r.models === "string" ? `  models: ${r.models}` : "") +
+          (r.origin !== undefined ? `  (imported from ${r.origin})` : "") +
+          `\n`,
       )
     }
   }
