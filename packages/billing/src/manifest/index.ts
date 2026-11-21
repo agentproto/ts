@@ -1,5 +1,5 @@
 /**
- * AIP-BILLING BILLING.md parser and manifest-to-handle constructor.
+ * BILLING.md parser and manifest-to-handle constructor (AIP-BILLING).
  *
  * `parseBillingManifest` reads the file and checks its SHAPE with the zod
  * schema derived from `BILLING.schema.json`. `billingFromManifest` then runs

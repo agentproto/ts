@@ -1,5 +1,5 @@
 /**
- * @agentproto/billing: AIP-BILLING BILLING reference implementation.
+ * @agentproto/billing: AIP-BILLING reference implementation.
  *
  * Spec: https://agentproto.sh/docs/aip-74 (a draft; the schema is not frozen).
  *
