@@ -515,3 +515,81 @@ describe("agentproto sessions start — --access-profile / --worktree flags", ()
     expect(err).toContain("no auth profile")
   })
 })
+
+describe("agentproto sessions start — --profile (short alias of --access-profile)", () => {
+  let stderrChunks: string[]
+  let stdoutChunks: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stderrSpy: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stdoutSpy: any
+
+  beforeEach(() => {
+    stderrChunks = []
+    stdoutChunks = []
+    stderrSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stderr as any, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(String(chunk))
+        return true
+      })
+    stdoutSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stdout as any, "write")
+      .mockImplementation((chunk: unknown) => {
+        stdoutChunks.push(String(chunk))
+        return true
+      })
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18790", token: "tok" },
+      stale: [],
+    })
+    httpPostJson.mockResolvedValue({
+      id: "sess_001",
+      kind: "agent",
+      status: "running",
+      command: "claude-code",
+      workspaceSlug: "default",
+      startedAt: new Date().toISOString(),
+    })
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+    stdoutSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it("--profile maps to access.profileRef, exactly like --access-profile", async () => {
+    const code = await runSessions(["start", "claude-code", "--profile", "mistral-vibe-pro"])
+    expect(code).toBe(0)
+    expect(httpPostJson).toHaveBeenCalledTimes(1)
+    const [url, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(url).toBe("http://127.0.0.1:18790/sessions/agent")
+    expect(body.access).toEqual({ profileRef: "mistral-vibe-pro" })
+
+    httpPostJson.mockClear()
+    const code2 = await runSessions(["start", "claude-code", "--access-profile", "mistral-vibe-pro"])
+    expect(code2).toBe(0)
+    const [, body2] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body2.access).toEqual({ profileRef: "mistral-vibe-pro" })
+  })
+
+  it("both spellings with the SAME value are accepted, a conflict between them is exit 2", async () => {
+    expect(await runSessions(["start", "claude-code", "--profile", "p1", "--access-profile", "p1"])).toBe(0)
+    expect(httpPostJson).toHaveBeenCalledTimes(1)
+
+    httpPostJson.mockClear()
+    expect(await runSessions(["start", "claude-code", "--profile", "p1", "--access-profile", "p2"])).toBe(2)
+    expect(httpPostJson).not.toHaveBeenCalled()
+    expect(stderrChunks.join("")).toContain("same flag")
+  })
+
+  it("USAGE documents the short alias next to --access-profile", async () => {
+    await runSessions(["--help"])
+    const out = stdoutChunks.join("")
+    expect(out).toContain("--access-profile|--profile <ref>")
+    expect(out).toContain("--profile <ref> is the short alias")
+  })
+})

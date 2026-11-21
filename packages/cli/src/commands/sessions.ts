@@ -155,7 +155,7 @@ Usage:
                                       [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
-                                      [--access-profile <ref>]
+                                      [--access-profile|--profile <ref>]
                                       [--max-cost-usd <n>] [--cost-budget <spec>]
                                       [--turn-retry <spec>]
                                       [--worktree | --no-worktree]
@@ -289,9 +289,14 @@ Usage:
                                another harness (e.g. claude-code → codex) whose
                                first prompt is that checkpoint. The source
                                session is left running and linked via
-                               continuedTo. --dry-run prints the checkpoint
-                               that WOULD be handed over: nothing is written,
-                               nothing is spawned.)
+                               continuedTo. --dry-run first validates the
+                               eligibility chain — target harness resolves,
+                               the inherited or overridden profile is
+                               eligible for its adapter+route and allows the
+                               model — and fails with the SAME error the real
+                               handoff would give; only then prints the
+                               checkpoint that WOULD be handed over: nothing
+                               is written, nothing is spawned.)
   agentproto sessions migrate <id-or-name> [--sandbox <provider>] [--model <id>]
                               [--profile <ref>] [--json]
                               (resume a SANDBOX session on a NEW box from its
@@ -386,6 +391,7 @@ sessions start flags:
                                   (CLI twin of the MCP agent_start access.profileRef
                                   — pin endpoint + credential, never silently the
                                   default). Overrides the daemon's default profile.
+                                  --profile <ref> is the short alias of this flag.
   --inference-endpoint <id>     bind this spawn to a local/LAN inference endpoint
                                   (see "agentproto llm endpoints list"), or "<id>@<device>"
                                   for a paired device's own shared endpoint. Omitting
@@ -886,6 +892,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       "mcp-servers-json": { type: "string" },
       "hold-permissions": { type: "boolean" },
       "access-profile": { type: "string" },
+      profile: { type: "string" },
       "max-cost-usd": { type: "string" },
       "cost-budget": { type: "string" },
       "turn-retry": { type: "string" },
@@ -922,6 +929,19 @@ async function runStart(args: readonly string[]): Promise<number> {
       `agentproto sessions start: unexpected extra positionals: ${positionals
         .slice(1)
         .join(" ")}\n`
+    )
+    return 2
+  }
+  // `--profile` is the short alias of `--access-profile` (the flag handoff
+  // uses, so one spelling works on every session verb — issue 2026-11-21).
+  // Same value twice is fine; conflicting values are a usage error.
+  if (
+    values.profile !== undefined &&
+    values["access-profile"] !== undefined &&
+    values.profile !== values["access-profile"]
+  ) {
+    process.stderr.write(
+      "agentproto sessions start: --profile and --access-profile are the same flag; pass only one value.\n",
     )
     return 2
   }
@@ -1201,8 +1221,10 @@ async function runStart(args: readonly string[]): Promise<number> {
   // MODE but never names a profile; this pins the exact auth profile (billed
   // endpoint + method/credential) the daemon resolves via
   // `resolveAccessProfileAuth`. Mutation-free: the secret itself is resolved
-  // daemon-side, never carried over HTTP/on the command line.
-  if (values["access-profile"]) body.access = { profileRef: values["access-profile"] }
+  // daemon-side, never carried over HTTP/on the command line. `--profile`
+  // is the short alias of `--access-profile` (validated up front).
+  const accessProfileRef = values.profile ?? values["access-profile"]
+  if (accessProfileRef) body.access = { profileRef: accessProfileRef }
   // Bind this spawn to a local/LAN inference endpoint — the CLI twin of the
   // MCP `agent_start` tool's `inference` field.
   if (hasInference) {
@@ -1348,10 +1370,10 @@ export function describeSpawnFailure(msg: string): string {
     const why = body.message ?? "the named access profile was rejected."
     return (
       `${body.error}: ${why}\n` +
-      "  --access-profile rejected this spawn. ProfileRef and its billed endpoint are shown above; " +
-      "re-run with an eligible profileRef (see `agentproto preset list` and `agentproto usage " +
-      "rollup --json` for your configured profileRefs), or drop --access-profile to let the daemon " +
-      "pick its default profile."
+      "  --profile (alias --access-profile) rejected this spawn. ProfileRef and its billed endpoint are shown above; " +
+      "re-run with an eligible profileRef (the message above names the stored profiles that would work; " +
+      "agentproto auth status and agentproto auth profile list show them too), or drop the flag " +
+      "to let the daemon pick its default profile."
     )
   }
   return msg
@@ -2420,11 +2442,18 @@ Options:
   --to <harness>    target harness slug, e.g. codex, opencode, claude-code (required)
   --model <id>      model for the new session (default: carried from the source)
   --profile <ref>   auth profile (billing wallet) for the new session
+                    (alias: --access-profile, the flag sessions start uses)
   --note "<text>"   operator notes appended to the checkpoint
   --dry-run         print the checkpoint that would be handed over; nothing is
-                    written, nothing is spawned. The content is an approximate
-                    extraction from the transcript: the source session is only
-                    asked to summarise itself on the real handoff
+                    written, nothing is spawned. FIRST validates the same
+                    eligibility chain the real handoff enforces — the target
+                    harness resolves, and the access profile the new session
+                    would use (given via --profile, or inherited from the
+                    source) is eligible for the target adapter+route and
+                    allows the model — and fails with the same error the real
+                    run would give. The content is an approximate extraction
+                    from the transcript: the source session is only asked to
+                    summarise itself on the real handoff
   --json            print the full daemon response
 `
 
@@ -2457,7 +2486,12 @@ function reportHandoffError(verb: string, id: string, err: unknown): number {
     process.stderr.write(`agentproto sessions ${verb}: no session "${id}".\n`)
     return 2
   }
-  process.stderr.write(`agentproto sessions ${verb}: ${msg}\n`)
+  // The daemon's structured spawn refusals (HTTP 400 access_profile_* on
+  // handoff/checkpoint — the dry-run eligibility gate fails with these
+  // BEFORE any preview) are reframed with the same actionable hint
+  // `sessions start` prints: code first, the daemon's own message (which
+  // names the eligible stored profiles), then the flag guidance.
+  process.stderr.write(`agentproto sessions ${verb}: ${describeSpawnFailure(msg)}\n`)
   return 1
 }
 
@@ -2493,6 +2527,7 @@ function parseHandoffArgs(args: readonly string[]) {
       to: { type: "string" },
       model: { type: "string" },
       profile: { type: "string" },
+      "access-profile": { type: "string" },
       note: { type: "string" },
       "dry-run": { type: "boolean" },
       json: { type: "boolean" },
@@ -2572,16 +2607,32 @@ async function runHandoff(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  // `--access-profile` is the long alias of `--profile` — the same flag
+  // `sessions start` uses, so one spelling works on every session verb.
+  // Same value twice is fine; conflicting values are a usage error.
+  if (
+    values.profile !== undefined &&
+    values["access-profile"] !== undefined &&
+    values.profile !== values["access-profile"]
+  ) {
+    process.stderr.write(
+      "agentproto sessions handoff: --profile and --access-profile are the same flag; pass only one value.\n",
+    )
+    return 2
+  }
+  const profileRef = values.profile ?? values["access-profile"]
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions handoff")
     return 2
   }
   const endpoint = report.found
+  // `--access-profile` is the long alias of `--profile` (validated up front)
+  // `sessions start` uses, so one spelling works on every session verb.
   const body = {
     to: values.to,
     ...(values.model ? { model: values.model } : {}),
-    ...(values.profile ? { access: { profileRef: values.profile } } : {}),
+    ...(profileRef ? { access: { profileRef } } : {}),
     ...(values.note !== undefined ? { notes: values.note } : {}),
     ...(values["dry-run"] ? { dryRun: true } : {}),
   }

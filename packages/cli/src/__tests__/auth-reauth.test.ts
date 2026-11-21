@@ -294,4 +294,58 @@ describe("expiry in auth profile list and auth status", () => {
     expect(c.text()).toContain("Profiles with a login:")
     expect(c.text()).toMatch(/✗  ws-a  opencode-go  expired/)
   })
+
+  it("status --json: credential-backed (api-key, no login) profiles are now listed under credentialProfiles", async () => {
+    registerReauthAdapter(fakeAdapter())
+    const c = capture()
+    expect(await runAuth(["status", "--json"])).toBe(0)
+    const body = JSON.parse(c.text())
+    // login-backed rows keep their `profiles` shape, unchanged
+    expect(body.profiles.map((p: { id: string }) => p.id).sort()).toEqual(["ws-a", "ws-b"])
+    // the stored-key profile is visible (issue 2026-11-21: mistral-style
+    // api-key profiles were invisible in auth status)
+    expect(body.credentialProfiles).toEqual([
+      expect.objectContaining({ id: "plain-key", endpoint: "anthropic", method: "api-key" }),
+    ])
+    // discovery only — never a token or a keychain credential ref echo
+    expect(JSON.stringify(body.credentialProfiles)).not.toMatch(/credentialRef|token/i)
+  })
+
+  it("status table: names the credential-backed profiles and the flag that uses them", async () => {
+    registerReauthAdapter(fakeAdapter())
+    const c = capture()
+    expect(await runAuth(["status"])).toBe(0)
+    const text = c.text()
+    expect(text).toContain("Profiles with a login:")
+    expect(text).toContain("Credential-backed auth profiles")
+    expect(text).toMatch(/✓  plain-key  anthropic  api-key/)
+    expect(text).toContain("--profile <id>")
+  })
+
+  it("status with ONLY a credential-backed profile lists it instead of claiming 'no credentials'", async () => {
+    // The report's exact scenario: `mistral-vibe-pro` in auth-profiles.json,
+    // no hosts and no login-backed profile — `auth status` printed
+    // "no credentials" while a usable wallet existed.
+    const home2 = await mkdtemp(join(tmpdir(), "agp-auth-status-only-"))
+    const prev = process.env.HOME
+    process.env.HOME = home2
+    try {
+      await addAuthProfile({
+        id: "mistral-vibe-pro",
+        endpoint: "mistral",
+        method: "api-key",
+        credentialRef: "agentproto.auth.mistral.mistral-vibe-pro",
+        models: { mode: "allow", ids: ["mistral-large-4-0", "zai-glm-5-3"] },
+      })
+      const c = capture()
+      expect(await runAuth(["status"])).toBe(0)
+      const text = c.text()
+      expect(text).toContain("mistral-vibe-pro")
+      expect(text).toContain("models: allow[mistral-large-4-0, zai-glm-5-3]")
+      expect(text).not.toContain("no credentials")
+    } finally {
+      process.env.HOME = prev
+      await rm(home2, { recursive: true, force: true })
+    }
+  })
 })

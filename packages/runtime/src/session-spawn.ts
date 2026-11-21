@@ -162,6 +162,7 @@ import {
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
+  listAuthProfiles,
   KeychainStore,
   type AuthMethod,
   type AdapterAuthManifest,
@@ -811,23 +812,12 @@ function slotRefusalOf(
   }
 }
 
-/**
- * Resolve a named `access.profileRef` into a `ResolvedAuthSpec` — profile
- * lookup, route/model eligibility check, credential fetch (source-backed
- * subscription resolved FRESH via Mode 3, or a static keychain read), then
- * `resolveAuthSpec`. Extracted from `spawnAgentSession`'s inline branch so a
- * SECOND spawn path — the completion-policy supervisor's judge gate
- * (`supervisor.ts`'s `runJudge`, WP-D) — can pin an explicit billing profile
- * for a judge agent without duplicating this ~130-line resolution chain.
- * Deliberately narrow: a single named profile, no eligibility-ranked list, no
- * automatic fail-over across profiles — that's a wallet LADDER, a bigger
- * feature this function does not attempt (see `runJudge`'s doc).
- *
- * Messages are UNPREFIXED (no `"agent_start: "` etc.) so each caller can
- * frame the error in its own vocabulary; `spawnAgentSession` re-adds its
- * historical prefix at the call site, preserving its exact error strings.
- */
-export async function resolveAccessProfileAuth(input: {
+/** The (adapter × access × route × model) eligibility question, shared by the
+ *  credential-bearing resolution ({@link resolveAccessProfileAuth}) and its
+ *  credential-free twin ({@link validateAccessProfileEligibility} — the
+ *  dry-run gate `POST /sessions/:id/handoff` runs so `--dry-run` fails with
+ *  the SAME refusal the real handoff would give). */
+export interface AccessProfileEligibilityInput {
   adapter: string
   /** Single named profile (back-compat). Superseded by {@link profileRefs}. */
   profileRef?: string
@@ -843,12 +833,117 @@ export async function resolveAccessProfileAuth(input: {
    *  `defaultModel` when omitted. */
   model?: string
   /** Adapter's own default model (`resolved.defaultModel`) — used ONLY for
-   *  the eligibility check above, deliberately NOT as a fallback for the
+   *  the eligibility check, deliberately NOT as a fallback for the
    *  `resolveAuthSpec({model})` call below (that call passes raw `model` as
    *  a caller-explicit signal; a resolver-supplied default there would
    *  misrepresent the request as having named a model it didn't). */
   defaultModel?: string
-}): Promise<AccessProfileAuthResult | AccessProfileAuthError> {
+}
+
+/** An eligible candidate as the ladder picked it: the profile, the (adapter ×
+ *  route) projection it was judged against, and — when the ladder re-derived
+ *  the route from the profile (`resolveProfileAwareRoute`) — the gateway
+ *  route it resolved to. */
+export interface AccessProfileEligibilityOk {
+  ok: true
+  profile: AuthProfile
+  projected: NonNullable<ReturnType<typeof spawnEligibilityManifest>>
+  resolvedRouteGateway?: string
+}
+
+/**
+ * Resolve the eligibility ladder ONLY — profile lookup, (adapter ×
+ * route × model) projection, the profile-aware route fallback and the
+ * per-profile model allowlist — WITHOUT any credential fetch or auth-spec
+ * resolution. A refusal from here carries the exact code and message a real
+ * spawn fails with (`access_profile_not_found`, `access_profile_ineligible`,
+ * `account_slot_*`), so a DRY-RUN caller (handoff `--dry-run`) can fail
+ * early with the same error the real run would give, before anything is
+ * written. A success names the wallet the real run would bill (never a
+ * credential).
+ */
+export async function validateAccessProfileEligibility(
+  input: AccessProfileEligibilityInput,
+): Promise<
+  | { ok: true; profileId: string; routeId: string; resolvedRouteGateway?: string }
+  | AccessProfileAuthError
+> {
+  const picked = await pickEligibleAccessProfile(input)
+  if (!picked.ok) return picked
+  return {
+    ok: true,
+    profileId: picked.profile.id,
+    routeId: picked.projected.routeId,
+    ...(picked.resolvedRouteGateway !== undefined
+      ? { resolvedRouteGateway: picked.resolvedRouteGateway }
+      : {}),
+  }
+}
+
+/** The `adapter_not_found` refusal for a slug `resolveAgentAdapter` could not
+ *  resolve. Shared by the spawn path and the dry-run handoff gate (via
+ *  {@link validateHandoffSpawnEligibility}) so both fail with the IDENTICAL
+ *  code and message.
+ *
+ *  `resolveAgentAdapter` collapses every failure reason to `null` by
+ *  contract (it's injected across a dozen call sites that all assume it
+ *  never throws — see its doc comment), so this message can't name the
+ *  exact cause the way `resolveAdapter`'s own thrown error can. It CAN
+ *  stop asserting "not found" as settled fact: an adapter that resolved
+ *  moments ago and now doesn't is most likely mid-rebuild, not
+ *  uninstalled — a resolver with a warm last-known-good cache (the CLI's
+ *  `resolveAdapter`) already returns successfully through that window,
+ *  so reaching this branch at all means either the adapter has never
+ *  resolved in this process, or it went unresolvable long enough to
+ *  exhaust that grace period. Unless the slug is an auth-profile id — then
+ *  neither "mid-rebuild" nor "install it" applies, and the shared hint
+ *  (same text as cron's create-time check) says what was meant. */
+export async function adapterNotResolvedRefusal(
+  adapter: string,
+  listAgentAdapters?: AgentAdapterLister,
+): Promise<{ ok: false; code: "adapter_not_found"; message: string }> {
+  const profileHint = await authProfileAsAdapterHint(adapter, getAuthProfile)
+  const gatewayHint = profileHint ? undefined : gatewayAsAdapterHint(adapter)
+  // Generic case (not an auth-profile id, not a route/gateway-like slug):
+  // name the INSTALLED adapters so an unknown slug is actionable — "install
+  // it" alone doesn't say what `it` could have been a typo of. Same shape
+  // as the cron create-time check (`assertCronAdapterResolvable`).
+  let installedHint: string | undefined
+  if (!profileHint && !gatewayHint) {
+    const installed = await listAgentAdapters?.().catch(() => undefined)
+    installedHint =
+      installed && installed.length > 0
+        ? `Installed adapters: ${installed.map(a => a.slug).sort().join(", ")}.`
+        : undefined
+  }
+  const genericHint =
+    `If it was working a moment ago, something may be mid-rebuild — wait and retry. ` +
+    (installedHint ?? `If it has never been installed, run \`agentproto install ${adapter}\` first.`)
+  return {
+    ok: false,
+    code: "adapter_not_found",
+    message: profileHint
+      ? `agent_start: adapter "${adapter}" could not be resolved. ${profileHint}`
+      : gatewayHint
+        ? `agent_start: adapter "${adapter}" could not be resolved. ${gatewayHint}`
+        : `agent_start: adapter "${adapter}" could not be resolved. ${genericHint}`,
+  }
+}
+
+/**
+ * The eligibility ladder itself — shared by {@link
+ * resolveAccessProfileAuth} (credential resolution continues downstream) and
+ * {@link validateAccessProfileEligibility} (dry-run — stops here). Same
+ * contract as the spawn's access-profile branch: a named-but-missing profile
+ * is a hard error, candidates are walked in order, and the FIRST profile
+ * eligible for the model's route wins. A refusal SUGGESTS the fix — which
+ * stored profiles WOULD be eligible for the target adapter+route (and would
+ * allow the requested model), so the operator never has to guess the
+ * `--profile` value.
+ */
+async function pickEligibleAccessProfile(
+  input: AccessProfileEligibilityInput,
+): Promise<AccessProfileEligibilityOk | AccessProfileAuthError> {
   const { adapter, authDescriptor, route, model, defaultModel } = input
   // Ordered candidate list: `profileRefs` (preferred) else the single
   // `profileRef`.
@@ -963,6 +1058,27 @@ export async function resolveAccessProfileAuth(input: {
     }
   }
   if (!selected) {
+    // SUGGEST THE FIX — never a bare "not eligible": which OTHER stored
+    // profiles would bill this adapter on the projected route AND allow the
+    // requested model — i.e. the `--profile` value(s) the caller could pass.
+    const hintRouteId = firstProjected?.routeId
+    const eligibleAlternatives: string[] = []
+    if (firstProjected && hintRouteId !== undefined) {
+      for (const stored of await listAuthProfiles()) {
+        if (stored.disabled) continue
+        if (resolvedCandidates.some(c => c.profile.id === stored.id)) continue
+        if (
+          eligibleProfilesForRoute([stored], firstProjected.manifest, hintRouteId, requestedModel)
+            .length === 0
+        ) {
+          continue
+        }
+        if (requestedModel && !profileAllowsModelId(stored, requestedModel, { route: hintRouteId })) {
+          continue
+        }
+        eligibleAlternatives.push(stored.id)
+      }
+    }
     if (modelRefusal && requestedModel) {
       return {
         ok: false,
@@ -971,6 +1087,9 @@ export async function resolveAccessProfileAuth(input: {
           profileModelAllowlistMessage(modelRefusal.profileId, requestedModel, modelRefusal.ids) +
           (candidates.length > 1
             ? ` None of the ${candidates.length} candidate profiles [${candidates.join(", ")}] allow it.`
+            : "") +
+          (eligibleAlternatives.length > 0
+            ? ` Profile(s) that WOULD bill "${requestedModel}" on this route: ${eligibleAlternatives.join(", ")}.`
             : ""),
         details: { adapter, profile: modelRefusal.profileId, model: requestedModel },
       }
@@ -985,11 +1104,54 @@ export async function resolveAccessProfileAuth(input: {
       code: "access_profile_ineligible",
       message:
         `profile "${firstRef}" (${firstProfile?.endpoint ?? "?"}/${firstProfile?.method ?? "?"}) is not eligible ` +
-        `for adapter "${adapter}" on route "${firstProjected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).${suffix}`,
+        `for adapter "${adapter}" on route "${firstProjected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).` +
+        (eligibleAlternatives.length > 0
+          ? ` Eligible stored profile(s) for this route: ${eligibleAlternatives.join(", ")}.`
+          : ` No stored profile is eligible for adapter "${adapter}" on route "${firstProjected?.routeId ?? "unknown"}" — create one: agentproto auth profile create <id> ${endpoint} --method api-key.`) +
+        suffix,
     }
   }
-  const { profile, projected } = selected
-  const resolvedRouteGateway = selected.resolvedRouteGateway
+  return {
+    ok: true,
+    profile: selected.profile,
+    projected: selected.projected,
+    ...(selected.resolvedRouteGateway !== undefined
+      ? { resolvedRouteGateway: selected.resolvedRouteGateway }
+      : {}),
+  }
+}
+
+/**
+ * Resolve a named `access.profileRef` into a `ResolvedAuthSpec` — profile
+ * lookup, route/model eligibility check, credential fetch (source-backed
+ * subscription resolved FRESH via Mode 3, or a static keychain read), then
+ * `resolveAuthSpec`. Extracted from `spawnAgentSession`'s inline branch so a
+ * SECOND spawn path — the completion-policy supervisor's judge gate
+ * (`supervisor.ts`'s `runJudge`, WP-D) — can pin an explicit billing profile
+ * for a judge agent without duplicating this ~130-line resolution chain.
+ * Deliberately narrow: a single named profile, no eligibility-ranked list, no
+ * automatic fail-over across profiles — that's a wallet LADDER, a bigger
+ * feature this function does not attempt (see `runJudge`'s doc).
+ *
+ * Messages are UNPREFIXED (no `"agent_start: "` etc.) so each caller can
+ * frame the error in its own vocabulary; `spawnAgentSession` re-adds its
+ * historical prefix at the call site, preserving its exact error strings.
+ *
+ * Eligibility runs through the same ladder the credential-free dry-run twin
+ * ({@link validateAccessProfileEligibility}) exposes, so a refusal here is
+ * byte-identical to the one a dry run reports up front.
+ */
+export async function resolveAccessProfileAuth(
+  input: AccessProfileEligibilityInput,
+): Promise<AccessProfileAuthResult | AccessProfileAuthError> {
+  const { adapter, route, model } = input
+  const picked = await pickEligibleAccessProfile(input)
+  if (!picked.ok) return picked
+  // The ladder refuses an absent descriptor up front (`access_profile_ineligible`
+  // "presents no billing-auth"), so an OK pick implies a live one.
+  const authDescriptor = input.authDescriptor!
+  const { profile, projected } = picked
+  const resolvedRouteGateway = picked.resolvedRouteGateway
   const authMode = profileMethodToAuthMode(profile.method)
   // Subscription-credential resolution: a source-backed profile
   // (`profile.source`) resolves the credential FRESH via Mode 3 on every
@@ -4871,46 +5033,7 @@ async function spawnAgentSessionOnce(
     spawnWarnings.push(...resolvedSkills.warnings)
   }
   if (input.sandbox === undefined && !resolved) {
-    // `resolveAgentAdapter` collapses every failure reason to `null` by
-    // contract (it's injected across a dozen call sites that all assume it
-    // never throws — see its doc comment), so this message can't name the
-    // exact cause the way `resolveAdapter`'s own thrown error can. It CAN
-    // stop asserting "not found" as settled fact: an adapter that resolved
-    // moments ago and now doesn't is most likely mid-rebuild, not
-    // uninstalled — a resolver with a warm last-known-good cache (the CLI's
-    // `resolveAdapter`) already returns successfully through that window,
-    // so reaching this branch at all means either the adapter has never
-    // resolved in this process, or it went unresolvable long enough to
-    // exhaust that grace period. Unless the slug is an auth-profile id — then
-    // neither "mid-rebuild" nor "install it" applies, and the shared hint
-    // (same text as cron's create-time check) says what was meant.
-    const profileHint = await authProfileAsAdapterHint(input.adapter, getAuthProfile)
-    const gatewayHint = profileHint ? undefined : gatewayAsAdapterHint(input.adapter)
-    // Generic case (not an auth-profile id, not a route/gateway-like slug):
-    // name the INSTALLED adapters so an unknown slug is actionable — "install
-    // it" alone doesn't say what `it` could have been a typo of. Same shape
-    // as the cron create-time check (`assertCronAdapterResolvable`).
-    let installedHint: string | undefined
-    if (!profileHint && !gatewayHint) {
-      const installed = await listAgentAdapters?.().catch(() => undefined)
-      installedHint =
-        installed && installed.length > 0
-          ? `Installed adapters: ${installed.map(a => a.slug).sort().join(", ")}.`
-          : undefined
-    }
-    const genericHint =
-      `If it was working a moment ago, something may be mid-rebuild — wait and retry. ` +
-      (installedHint ??
-        `If it has never been installed, run \`agentproto install ${input.adapter}\` first.`)
-    return {
-      ok: false,
-      code: "adapter_not_found",
-      message: profileHint
-        ? `agent_start: adapter "${input.adapter}" could not be resolved. ${profileHint}`
-        : gatewayHint
-          ? `agent_start: adapter "${input.adapter}" could not be resolved. ${gatewayHint}`
-          : `agent_start: adapter "${input.adapter}" could not be resolved. ${genericHint}`,
-    }
+    return adapterNotResolvedRefusal(input.adapter, listAgentAdapters)
   }
   if (input.modelPolicy) {
     // Validate the list ids and refuse an unprovable `allow` even when no model

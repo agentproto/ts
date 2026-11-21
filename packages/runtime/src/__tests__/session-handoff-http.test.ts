@@ -256,4 +256,61 @@ describe("POST /sessions/:id/checkpoint + /handoff", () => {
       registry.shutdown()
     }
   })
+
+  it("handoff dryRun: fails EARLY with the same refusal the real run would give — an unresolvable target is 404 before any checkpoint is built", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    let allowResolve = true
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () =>
+      allowResolve ? { startSession, commandPreview: "m" } : null
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    const base = `http://127.0.0.1:${port}`
+    const post = (path: string, body: unknown) =>
+      fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    try {
+      const src = (await (await post("/sessions/agent", { adapter: "claude-code", cwd: tmp })).json()) as SessionDescriptor
+      allowResolve = false
+      const res = await post(`/sessions/${src.id}/handoff`, { to: "nope", dryRun: true })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toMatchObject({ error: "adapter_not_found" })
+      // Only the source spawn happened — no checkpoint, no successor.
+      expect(startSession).toHaveBeenCalledTimes(1)
+      expect(existsSync(join(tmp, src.id, "checkpoints"))).toBe(false)
+      expect(registry.get(src.id)?.continuedTo).toBeUndefined()
+    } finally {
+      await http.stop()
+      registry.shutdown()
+    }
+  })
+
+  it("handoff dryRun: a named-but-missing profile is refused with access_profile_not_found before the preview", async () => {
+    const h = await boot()
+    try {
+      const res = await h.post(`/sessions/${h.source.id}/handoff`, {
+        to: "codex",
+        dryRun: true,
+        access: { profileRef: "agentproto-test-no-such-profile-dryrun" },
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({
+        error: "access_profile_not_found",
+        // Same message the REAL run's spawn fails with.
+        message: expect.stringContaining("no auth profile \"agentproto-test-no-such-profile-dryrun\" found."),
+      })
+      expect(h.startSession).toHaveBeenCalledTimes(1)
+    } finally {
+      await h.stop()
+    }
+  })
 })

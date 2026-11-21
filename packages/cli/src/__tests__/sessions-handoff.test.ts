@@ -159,4 +159,52 @@ describe("agentproto sessions checkpoint / handoff", () => {
     expect(await runSessions(["handoff", "nope", "--to", "codex"])).toBe(2)
     expect(err.join("")).toContain('no session "nope"')
   })
+
+  it("handoff --access-profile is the long alias of --profile — both map to access.profileRef", async () => {
+    httpPostJson.mockResolvedValueOnce({
+      continuedFrom: "sess_a",
+      continuedTo: "sess_b",
+      path: "/ckpt.json",
+    })
+    expect(await runSessions(["handoff", "sess_a", "--to", "mistral-vibe", "--access-profile", "mistral-vibe-pro"])).toBe(0)
+    expect(httpPostJson).toHaveBeenCalledWith(
+      "http://127.0.0.1:18790/sessions/sess_a/handoff",
+      { to: "mistral-vibe", access: { profileRef: "mistral-vibe-pro" } },
+      "tok",
+    )
+
+    httpPostJson.mockClear()
+    httpPostJson.mockResolvedValueOnce({
+      continuedFrom: "sess_a",
+      continuedTo: "sess_b",
+      path: "/ckpt.json",
+    })
+    expect(await runSessions(["handoff", "sess_a", "--to", "mistral-vibe", "--profile", "mistral-vibe-pro"])).toBe(0)
+    expect(httpPostJson.mock.calls[0]![1]).toEqual({ to: "mistral-vibe", access: { profileRef: "mistral-vibe-pro" } })
+  })
+
+  it("handoff --profile and --access-profile with conflicting values exits 2 without calling the daemon", async () => {
+    expect(
+      await runSessions(["handoff", "sess_a", "--to", "codex", "--profile", "p1", "--access-profile", "p2"]),
+    ).toBe(2)
+    expect(err.join("")).toContain("same flag")
+    expect(httpPostJson).not.toHaveBeenCalled()
+  })
+
+  it("handoff --dry-run surfaces the daemon's eligibility refusal (fails early like the real run)", async () => {
+    httpPostJson.mockRejectedValueOnce(
+      new Error(
+        'HTTP 400: {"error":"access_profile_ineligible","message":"profile \\"claude-subs-agentik\\" ' +
+          '(anthropic/oauth-bearer) is not eligible for adapter \\"mistral-vibe\\" on route \\"mistral\\" ' +
+          '(billed endpoint: mistral). Eligible stored profile(s) for this route: mistral-vibe-pro."}',
+      ),
+    )
+    expect(await runSessions(["handoff", "sess_a", "--to", "mistral-vibe", "--model", "mistral-large-4-0", "--dry-run"])).toBe(1)
+    const text = err.join("")
+    expect(text).toContain("access_profile_ineligible")
+    // The daemon's own message (with the eligible-profiles suggestion) plus
+    // the framed flag hint, not a raw JSON blob.
+    expect(text).toContain("Eligible stored profile(s) for this route: mistral-vibe-pro")
+    expect(text).toContain("--profile (alias --access-profile)")
+  })
 })
