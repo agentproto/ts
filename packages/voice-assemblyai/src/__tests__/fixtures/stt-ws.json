@@ -1,0 +1,198 @@
+{
+  "kind": "ws",
+  "provider": "assemblyai",
+  "url": "wss://streaming.assemblyai.com/v3/ws?sample_rate=24000&encoding=pcm_s16le&language_codes=fr",
+  "recordedAt": "2026-11-21",
+  "frames": [
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:9600 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": "<binary:7680 bytes>"
+    },
+    {
+      "dir": "out",
+      "data": {
+        "type": "ForceEndpoint"
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "Begin",
+        "id": "<redacted>",
+        "expires_at": 1795238445,
+        "configuration": {
+          "model": "assemblyai-stt-3-7-realtime-agent",
+          "mode": "balanced",
+          "api_version": "2025-05-12",
+          "speaker_labels": false,
+          "redact_pii": false,
+          "filter_profanity": false,
+          "domain": null,
+          "voice_focus": null
+        }
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "type": "SpeechStarted",
+        "timestamp": 0,
+        "confidence": 0.66971
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "turn_order": 0,
+        "turn_is_formatted": true,
+        "end_of_turn": false,
+        "transcript": "Bon",
+        "end_of_turn_confidence": 0,
+        "words": [
+          {
+            "start": 0,
+            "end": 256,
+            "text": "Bon",
+            "confidence": 0.66971,
+            "word_is_final": false
+          }
+        ],
+        "utterance": "",
+        "type": "Turn"
+      }
+    },
+    {
+      "dir": "in",
+      "data": {
+        "turn_order": 0,
+        "turn_is_formatted": true,
+        "end_of_turn": true,
+        "transcript": "Bonjour, ceci est un test de la voix.",
+        "end_of_turn_confidence": 1,
+        "words": [
+          {
+            "start": 0,
+            "end": 684,
+            "text": "Bonjour,",
+            "confidence": 0.941865,
+            "word_is_final": true
+          },
+          {
+            "start": 701,
+            "end": 1043,
+            "text": "ceci",
+            "confidence": 0.999984,
+            "word_is_final": true
+          },
+          {
+            "start": 1060,
+            "end": 1316,
+            "text": "est",
+            "confidence": 0.999993,
+            "word_is_final": true
+          },
+          {
+            "start": 1333,
+            "end": 1504,
+            "text": "un",
+            "confidence": 0.999998,
+            "word_is_final": true
+          },
+          {
+            "start": 1521,
+            "end": 1863,
+            "text": "test",
+            "confidence": 0.999997,
+            "word_is_final": true
+          },
+          {
+            "start": 1880,
+            "end": 2051,
+            "text": "de",
+            "confidence": 0.999994,
+            "word_is_final": true
+          },
+          {
+            "start": 2068,
+            "end": 2239,
+            "text": "la",
+            "confidence": 0.999972,
+            "word_is_final": true
+          },
+          {
+            "start": 2256,
+            "end": 2684,
+            "text": "voix.",
+            "confidence": 0.998172,
+            "word_is_final": true
+          }
+        ],
+        "utterance": "Bonjour, ceci est un test de la voix.",
+        "type": "Turn"
+      }
+    },
+    {
+      "dir": "out",
+      "data": {
+        "type": "Terminate"
+      }
+    }
+  ],
+  "audioTruncatedTo": 96
+}

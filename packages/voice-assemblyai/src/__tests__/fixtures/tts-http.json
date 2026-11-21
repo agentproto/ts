@@ -1,0 +1,22 @@
+{
+  "kind": "http",
+  "provider": "assemblyai",
+  "recordedAt": "2026-11-21",
+  "request": {
+    "method": "POST",
+    "url": "https://tts.us.assemblyai.com/v1/speech",
+    "body": {
+      "text": "Bonjour, ceci est un test de la voix.",
+      "model_id": "assemblyai-tts-1",
+      "sample_rate": 24000,
+      "encoding": "pcm_s16le",
+      "container": "raw",
+      "language": "french"
+    }
+  },
+  "response": {
+    "status": 200,
+    "bodyBase64": "AAAAAAAA////////AAD/////AAD///////8AAAEAAQACAAEAAAAAAP////8AAAAAAQAAAAAAAAD//wAAAAD//////v//////",
+    "contentType": "audio/pcm;rate=24000;channels=1"
+  }
+}
