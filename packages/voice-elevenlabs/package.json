@@ -1,7 +1,9 @@
 {
   "name": "@agentproto/voice-elevenlabs",
   "version": "0.0.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "@agentproto/voice-elevenlabs: ElevenLabs voice provider for @agentproto/voice. TTS (HTTP and WebSocket stream-input), Scribe speech-to-text (realtime stream and file), and the hosted speech-to-speech agent. Talks to ElevenLabs directly; no agent framework.",
   "keywords": ["agentproto", "voice", "elevenlabs", "tts", "stt", "scribe", "realtime"],
   "repository": {
