@@ -30,7 +30,11 @@ const LANGUAGE_NAMES: Record<string, string> = {
 export function languageName(lang: string | undefined): string | undefined {
   if (!lang) return undefined
   const lower = lang.toLowerCase()
-  return LANGUAGE_NAMES[lower] ?? (TTS_LANGUAGES.includes(lower as (typeof TTS_LANGUAGES)[number]) ? lower : lang)
+  const mapped = LANGUAGE_NAMES[lower] ?? (Object.values(LANGUAGE_NAMES).includes(lower) ? lower : undefined)
+  if (!mapped) {
+    throw new Error(`assemblyai tts: language ${lang} not supported (one of ${TTS_LANGUAGES.join(",")} or their full names)`)
+  }
+  return mapped
 }
 
 export interface AssemblyAITtsConfig extends AssemblyAITransport {
@@ -65,7 +69,8 @@ export function makeAssemblyAITts(cfg: AssemblyAITtsConfig = {}): TtsProvider {
     async openStream(opts: TtsStreamOptions): Promise<TtsStream> {
       const apiKey = resolveApiKey(cfg)
       const socketFactory = cfg.socket ?? nodeSocketFactory
-      const params = new URLSearchParams({ sample_rate: String(opts.sampleRate ?? rate), encoding })
+      const effectiveRate = opts.sampleRate ?? rate
+      const params = new URLSearchParams({ sample_rate: String(effectiveRate), encoding })
       const v = voice(opts.voiceId)
       if (v) params.set("voice_id", v)
       const m = model()
@@ -115,7 +120,7 @@ export function makeAssemblyAITts(cfg: AssemblyAITtsConfig = {}): TtsProvider {
           const even = bytes.byteLength - (bytes.byteLength % 2)
           if (even > 0) {
             cbs.audio.forEach(cb =>
-              cb({ pcm16: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + even) as ArrayBuffer, sampleRate: rate, sequenceNumber: seq++ }),
+              cb({ pcm16: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + even) as ArrayBuffer, sampleRate: effectiveRate, sequenceNumber: seq++ }),
             )
           }
         } else if (type === "Termination") {

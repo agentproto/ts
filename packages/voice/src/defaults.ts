@@ -151,13 +151,22 @@ export const VOICE_DEFAULTS = {
       ttsModel: d("assemblyai-tts-1", "assemblyai.com/docs/tts, read 2026-11-21"),
       /** Left out: the default voice of the language (TTS docs, 2026-11-21). */
       ttsVoiceId: d<string | undefined>(undefined, "assemblyai.com/docs/tts/connect-parameters, read 2026-11-21"),
-      /** TTS-1 speaks six languages; the products run French (VOICE_LANGUAGE=fr in envs/simone-voice). The API takes the full name. */
-      ttsLanguage: d("french", "VOICE_LANGUAGE=fr (envs/simone-voice); TTS-1 language enum uses full names, read 2026-11-21"),
+      /** Omitted: the vendor default. A product's language is a product setting (`VOICE_LANGUAGE`), not a kit default. */
+      ttsLanguage: d<string | undefined>(
+        undefined,
+        "PR #2804 review: no deployment language in kit defaults; assemblyai.com/docs/tts, read 2026-11-21",
+      ),
       /** Native rate of TTS-1; matches the cascade outbound rate (cascade.audio.outboundSampleRate). */
       ttsSampleRate: d(24_000, "assemblyai.com/docs/tts, read 2026-11-21; defaults.ts cascade.audio.outboundSampleRate"),
       ttsEncoding: d("pcm_s16le", "assemblyai.com/docs/tts, read 2026-11-21"),
-      /** File transcription is the v2 REST API (upload, then transcript). */
-      sttFileLanguageCode: d("fr", "VOICE_LANGUAGE=fr (envs/simone-voice)"),
+      /**
+       * File transcription is the v2 REST API (upload, then transcript).
+       * Omitted: the vendor default. A product's language is a product setting (`VOICE_LANGUAGE`), not a kit default.
+       */
+      sttFileLanguageCode: d<string | undefined>(
+        undefined,
+        "PR #2804 review: no deployment language in kit defaults; assemblyai.com/docs/speech-to-text, read 2026-11-21",
+      ),
     },
   },
 } as const

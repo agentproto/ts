@@ -68,7 +68,8 @@ export function makeAssemblyAIStt(cfg: AssemblyAISttConfig = {}): SttProvider {
       serverEndpointing: true,
       manualCommit: true,
       languages: [],
-      // v3 accepts any integer 8000-96000 for pcm_s16le (docs 2026-11-21).
+      // Advisory, non-exhaustive: v3 accepts any integer 8000-96000 for pcm_s16le
+      // (docs 2026-11-21); these are the common rates we recommend.
       sampleRates: [8000, 16000, 24000, 48000],
     },
 

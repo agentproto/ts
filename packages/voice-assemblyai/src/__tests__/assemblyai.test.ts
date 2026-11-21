@@ -102,7 +102,29 @@ describe("TTS over the recorded WebSocket", () => {
     expect(replay.urls[0]).toContain(`sample_rate=${D.ttsSampleRate.value}`)
     expect(replay.urls[0]).toContain(`encoding=${D.ttsEncoding.value}`)
     expect(replay.urls[0]).toContain(`model_id=${D.ttsModel.value}`)
-    expect(replay.urls[0]).toContain(`language=${D.ttsLanguage.value}`)
+    // No deployment language: omitted from the query string, the vendor default applies.
+    expect(replay.urls[0]).not.toContain("language=")
+  })
+
+  it("honours a per-stream sampleRate override in both the URL and the emitted frames", async () => {
+    const replay = makeReplaySocket(ex)
+    const tts = makeAssemblyAITts({ apiKey: KEY, socket: replay.factory })
+    const stream = await tts.openStream({ sampleRate: 16000 })
+    const frames: AudioFrame[] = []
+    await new Promise<void>(resolve => {
+      stream.on("audio", f => frames.push(f))
+      stream.on("done", () => resolve())
+      stream.on("error", e => { throw e })
+      stream.sendText("Bonjour, ")
+      stream.sendText("ceci est un test.")
+      stream.flush()
+      stream.end()
+    })
+    await stream.close()
+    expect(replay.mismatches).toEqual([])
+    expect(frames.length).toBeGreaterThan(0)
+    expect(frames.every(f => f.sampleRate === 16000)).toBe(true)
+    expect(replay.urls[0]).toContain("sample_rate=16000")
   })
 
   it("puts the key in the Authorization header, never in the URL or in a frame", async () => {
@@ -210,7 +232,7 @@ describe("TTS over the recorded WebSocket", () => {
 
 describe("TTS over recorded HTTP", () => {
   const ex = load<RecordedHttpExchange>("tts-http")
-  it("synthesizes raw PCM and sends model, language, rate and encoding from the defaults", async () => {
+  it("synthesizes raw PCM and sends model, rate and encoding from the defaults (no language)", async () => {
     const { fetch: f, requests } = makeReplayFetch([ex])
     const tts = makeAssemblyAITts({ apiKey: KEY, fetch: f })
     const r = await tts.synthesize({ text: "Bonjour, ceci est un test de la voix." })
@@ -221,11 +243,11 @@ describe("TTS over recorded HTTP", () => {
     expect(requests[0]!.url).toBe(ex.request.url)
     expect(requests[0]!.body).toMatchObject({
       model_id: D.ttsModel.value,
-      language: D.ttsLanguage.value,
       sample_rate: D.ttsSampleRate.value,
       encoding: D.ttsEncoding.value,
       container: "raw",
     })
+    expect(requests[0]!.body).not.toHaveProperty("language")
   })
   it("turns an HTTP error into an error that names the status and not the key", async () => {
     const tts = makeAssemblyAITts({ apiKey: KEY, fetch: (async () => new Response("unauthorized", { status: 401 })) as typeof fetch })
@@ -314,7 +336,7 @@ describe("STT over recorded HTTP (upload, create, poll)", () => {
   const poll = load<RecordedHttpExchange>("stt-poll")
   const finalText = (poll.response.body as { text: string }).text
 
-  it("uploads, creates with the language default, polls until completed", async () => {
+  it("uploads, creates with the requested language, polls until completed", async () => {
     const { fetch: f, requests } = makeReplayFetch([upload, create, poll])
     const stt = makeAssemblyAIStt({ apiKey: KEY, fetch: f, pollMs: 1 })
     const r = await stt.transcribe({ bytes: new Uint8Array(48000), mimeType: "audio/wav" }, { language: "fr" })
@@ -326,7 +348,7 @@ describe("STT over recorded HTTP (upload, create, poll)", () => {
       `POST ${create.request.url}`,
       `GET ${poll.request.url}`,
     ])
-    expect(create.request.body).toMatchObject({ audio_url: "<upload-url>", language_code: D.sttFileLanguageCode.value })
+    expect(create.request.body).toMatchObject({ audio_url: "<upload-url>", language_code: "fr" })
   })
 
   it("transcribes raw PCM as a WAV upload and requires sampleRate for audio/pcm", async () => {
