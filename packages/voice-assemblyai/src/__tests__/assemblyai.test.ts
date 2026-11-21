@@ -66,11 +66,18 @@ describe("provider declaration", () => {
       if (saved !== undefined) process.env.ASSEMBLYAI_API_KEY = saved
     }
   })
-  it("maps BCP-47 language codes to the API full names", () => {
+  it("maps BCP-47 language codes (incl. regional tags) to the API full names and fails fast on the rest", () => {
     expect(languageName("fr")).toBe("french")
     expect(languageName("en")).toBe("english")
+    expect(languageName("fr-FR")).toBe("french")
+    expect(languageName("pt-BR")).toBe("portuguese")
     expect(languageName(undefined)).toBeUndefined()
     expect(languageName("french")).toBe("french")
+    expect(languageName("FRENCH")).toBe("french")
+    // Anything the API cannot take is a caller bug: refused, never passed
+    // through to the vendor (this covers the fail-fast throw).
+    expect(() => languageName("klingon")).toThrow(/not supported/)
+    expect(() => languageName("xx-YY")).toThrow(/not supported/)
   })
 })
 
@@ -125,6 +132,12 @@ describe("TTS over the recorded WebSocket", () => {
     expect(frames.length).toBeGreaterThan(0)
     expect(frames.every(f => f.sampleRate === 16000)).toBe(true)
     expect(replay.urls[0]).toContain("sample_rate=16000")
+  })
+
+  it("refuses a per-stream sampleRate outside the vendor set, like the constructor does", async () => {
+    const replay = makeReplaySocket(ex)
+    const tts = makeAssemblyAITts({ apiKey: KEY, socket: replay.factory })
+    await expect(tts.openStream({ sampleRate: 12345 })).rejects.toThrow(/sample rate 12345/)
   })
 
   it("puts the key in the Authorization header, never in the URL or in a frame", async () => {

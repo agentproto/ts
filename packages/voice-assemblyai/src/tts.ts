@@ -30,7 +30,9 @@ const LANGUAGE_NAMES: Record<string, string> = {
 export function languageName(lang: string | undefined): string | undefined {
   if (!lang) return undefined
   const lower = lang.toLowerCase()
-  const mapped = LANGUAGE_NAMES[lower] ?? (Object.values(LANGUAGE_NAMES).includes(lower) ? lower : undefined)
+  // A BCP-47 tag maps by its primary subtag (fr-FR -> fr -> french) and a
+  // full name is accepted case-insensitively; anything else is a caller bug.
+  const mapped = LANGUAGE_NAMES[lower.split("-")[0]!] ?? (Object.values(LANGUAGE_NAMES).includes(lower) ? lower : undefined)
   if (!mapped) {
     throw new Error(`assemblyai tts: language ${lang} not supported (one of ${TTS_LANGUAGES.join(",")} or their full names)`)
   }
@@ -70,6 +72,11 @@ export function makeAssemblyAITts(cfg: AssemblyAITtsConfig = {}): TtsProvider {
       const apiKey = resolveApiKey(cfg)
       const socketFactory = cfg.socket ?? nodeSocketFactory
       const effectiveRate = opts.sampleRate ?? rate
+      // An out-of-set override is refused here like the constructor refuses
+      // one: the vendor set is the contract (docs 2026-11-21).
+      if (!(TTS_SAMPLE_RATES as readonly number[]).includes(effectiveRate)) {
+        throw new Error(`assemblyai tts: sample rate ${effectiveRate} not in ${TTS_SAMPLE_RATES.join(",")}`)
+      }
       const params = new URLSearchParams({ sample_rate: String(effectiveRate), encoding })
       const v = voice(opts.voiceId)
       if (v) params.set("voice_id", v)
