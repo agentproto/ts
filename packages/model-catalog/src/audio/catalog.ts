@@ -119,7 +119,8 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
   "google/gemini-live-pro": {
     id: "google/gemini-live-pro",
     name: "Gemini Live 2.5 Pro",
-    providerId: "gemini-2.5-pro-preview-tts",
+    // A bidi Live model, not a TTS-only one (same rule as google/gemini-live).
+    providerId: "gemini-2.5-pro-live-preview",
     provider: "google",
     capabilities: {
       s2s: true,
@@ -137,7 +138,9 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
   "google/gemini-live-3.1-flash": {
     id: "google/gemini-live-3.1-flash",
     name: "Gemini Live 3.1 Flash",
-    providerId: "gemini-3.1-flash-tts-preview",
+    // The version-explicit sibling of google/gemini-live: the SAME bidi
+    // Live model (not a TTS-only id, same rule as the entries around it).
+    providerId: "gemini-3.1-flash-live-preview",
     provider: "google",
     capabilities: {
       s2s: true,

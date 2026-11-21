@@ -26,8 +26,12 @@ framework is imported.
 
 The API key is read from `GEMINI_API_KEY` (else `GOOGLE_API_KEY`, the
 `@google/genai` convention) and travels only in the WebSocket URL query; it
-never appears in a frame, and recorded fixtures redact it. Per-vendor defaults
-live in `VOICE_DEFAULTS.providers.gemini` (`@agentproto/voice`). Tests replay
-an exchange recorded once against the real API (`scripts/record.mjs`) from
-`src/__tests__/fixtures/`; a test scans every fixture for keys, authorization
-headers and account identifiers.
+never appears in a frame. Per-vendor defaults live in
+`VOICE_DEFAULTS.providers.gemini` (`@agentproto/voice`).
+
+Tests run on **scripted protocol frames**, written from the wire the studio
+runs in production (no recorded fixtures: the only Google API key on this
+machine answers 403 PERMISSION_DENIED, a billing-account issue only an
+operator can lift). `scripts/record.mjs` turns the scripted frames into real
+recordings once the account accepts requests again; see the comment at the
+top of `src/__tests__/gemini.test.ts`.

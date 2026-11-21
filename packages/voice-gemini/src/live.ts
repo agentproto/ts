@@ -60,7 +60,7 @@ export interface GeminiLiveConfig {
 export function resolveGeminiKey(cfg: { apiKey?: string | (() => string | undefined) }): string {
   const given = typeof cfg.apiKey === "function" ? cfg.apiKey() : cfg.apiKey
   const k = given ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY
-  if (!k) throw new Error("gemini: no API key (set GEMINI_API_KEY)")
+  if (!k) throw new Error("gemini: no API key (set GEMINI_API_KEY or GOOGLE_API_KEY)")
   return k
 }
 
@@ -91,7 +91,9 @@ export function makeGeminiLive(cfg: GeminiLiveConfig = {}): RealtimeProvider {
       say: false,
       refreshTools: true,
       languages: [],
-      inputSampleRates: [16_000, rate],
+      // Gemini Live input is 16 kHz PCM: `audio/pcm;rate=<n>` frames are
+      // forwarded as sent, so no other rate is declared as accepted input.
+      inputSampleRates: [16_000],
       outputSampleRate: rate,
     },
 
@@ -203,13 +205,20 @@ export function makeGeminiLive(cfg: GeminiLiveConfig = {}): RealtimeProvider {
         void hooks.onTranscript?.({ role: "user", text: userText, finalizedAt: Date.now() })?.catch(() => undefined)
         userText = ""
       }
+      /**
+       * Finalize the assistant transcript exactly once: emits the buffered
+       * text as final and clears it, so a following turnComplete (whose
+       * finishAssistantTurn reuses this helper) cannot emit it twice.
+       */
+      const finalizeAssistantTranscript = () => {
+        if (!assistantText) return
+        emit.assistantTranscript(assistantText, true)
+        void hooks.onTranscript?.({ role: "assistant", text: assistantText, finalizedAt: Date.now() })?.catch(() => undefined)
+        assistantText = ""
+      }
       const finishAssistantTurn = () => {
         flushUserTurn()
-        if (assistantText) {
-          emit.assistantTranscript(assistantText, true)
-          void hooks.onTranscript?.({ role: "assistant", text: assistantText, finalizedAt: Date.now() })?.catch(() => undefined)
-          assistantText = ""
-        }
+        finalizeAssistantTranscript()
         emit.responseComplete()
         turnOpen = false
         interrupted = false
@@ -315,7 +324,10 @@ export function makeGeminiLive(cfg: GeminiLiveConfig = {}): RealtimeProvider {
             emit.assistantTranscript(ot.text, false)
           }
         }
-        if (ot?.finished && !interrupted) emit.assistantTranscript(assistantText, true)
+        // The final transcript goes through the same helper as turnComplete:
+        // exactly one final, and the buffer it clears means the following
+        // turnComplete cannot re-emit it.
+        if (ot?.finished && !interrupted) finalizeAssistantTranscript()
         if (sc.turnComplete) {
           if (!interrupted) finishAssistantTurn()
           else {
@@ -367,6 +379,9 @@ export function makeGeminiLive(cfg: GeminiLiveConfig = {}): RealtimeProvider {
           // is open, never twice.
           tools = await readTools(hooks)
           systemPrompt = await readPrompt(hooks)
+          // close() can land while the reads above were in flight: do not
+          // resurrect the session with a fresh socket after it closed.
+          if (closed) return
           current.close(1000)
           pending.length = 0 // the conversation restarts with the new setup
           current = attach()

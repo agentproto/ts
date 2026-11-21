@@ -66,6 +66,9 @@ describe("provider declaration", () => {
     expect(p.env.apiKey).toBe("GEMINI_API_KEY")
     expect(Object.keys(p.capabilities).sort()).toEqual(["realtime"])
     expect(p.capabilities.realtime).toMatchObject({ id: "gemini-live", serverVad: false, interruption: true, functionCalling: true, say: false, refreshTools: true })
+    // Gemini Live input is 16 kHz PCM and frames are forwarded as sent: no
+    // other rate is declared as accepted input.
+    expect(p.capabilities.realtime?.inputSampleRates).toEqual([16_000])
     expect(geminiDefault.slug).toBe("gemini")
   })
   it("reads GEMINI_API_KEY first, then GOOGLE_API_KEY, refusing with a named variable", () => {
@@ -78,7 +81,7 @@ describe("provider declaration", () => {
       delete process.env.GEMINI_API_KEY
       expect(resolveGeminiKey({})).toBe("google-key")
       delete process.env.GOOGLE_API_KEY
-      expect(() => resolveGeminiKey({})).toThrow(/GEMINI_API_KEY/)
+      expect(() => resolveGeminiKey({})).toThrow(/GEMINI_API_KEY or GOOGLE_API_KEY/)
       // An explicit function wins over the environment.
       expect(resolveGeminiKey({ apiKey: () => "fn-key" })).toBe("fn-key")
     } finally {
@@ -94,7 +97,7 @@ describe("provider declaration", () => {
     delete process.env.GEMINI_API_KEY
     delete process.env.GOOGLE_API_KEY
     try {
-      await expect(makeGeminiLive().start({ emit: noopEmit(), hooks: {} })).rejects.toThrow(/GEMINI_API_KEY/)
+      await expect(makeGeminiLive().start({ emit: noopEmit(), hooks: {} })).rejects.toThrow(/GEMINI_API_KEY or GOOGLE_API_KEY/)
     } finally {
       if (savedGem !== undefined) process.env.GEMINI_API_KEY = savedGem
       if (savedGoogle !== undefined) process.env.GOOGLE_API_KEY = savedGoogle
@@ -340,6 +343,29 @@ describe("Gemini Live, scripted protocol frames", () => {
     await session.close()
   })
 
+  it("a finished output transcription finalizes once: turnComplete does not re-emit it", async () => {
+    const s = sockets()
+    const spy = emitSpy()
+    const transcripts: Array<{ role: string; text: string }> = []
+    const session = await makeGeminiLive({ apiKey: KEY, socket: s.factory }).start({
+      emit: spy.emit,
+      hooks: { onTranscript: async t => { transcripts.push({ role: t.role, text: t.text }) } },
+    })
+    await tick()
+    s.sockets[0]!.serve({ serverContent: { outputTranscription: { text: "Bon" } } })
+    s.sockets[0]!.serve({ serverContent: { outputTranscription: { text: "jour.", finished: true } } })
+    s.sockets[0]!.serve({ serverContent: { turnComplete: true } })
+    await tick()
+    // One delta per text, exactly one final, one onTranscript, one complete:
+    // the old code re-emitted the buffered text as a second final at
+    // turnComplete (the buffer was not cleared at finished).
+    const assistant = spy.detail.assistant as Array<[string, boolean]>
+    expect(assistant).toEqual([["Bon", false], ["jour.", false], ["Bonjour.", true]])
+    expect(transcripts).toEqual([{ role: "assistant", text: "Bonjour." }])
+    expect(spy.ev.filter(e => e === "complete")).toEqual(["complete"])
+    await session.close()
+  })
+
   it("refreshTools() reconnects with a fresh setup carrying the new tools (the wire freezes them at setup)", async () => {
     const s = sockets()
     let n = 0
@@ -362,6 +388,34 @@ describe("Gemini Live, scripted protocol frames", () => {
     expect((fresh[0] as { setup: { systemInstruction: { parts: Array<{ text: string }> } } }).setup.systemInstruction).toEqual({ parts: [{ text: "prompt" }] })
     const tools = (fresh[0] as { setup: { tools?: Array<{ functionDeclarations: Array<{ name: string }> }> } }).setup.tools
     expect(tools?.[0]!.functionDeclarations[0]!.name).toBe("tool2")
+  })
+
+  it("a close() landing while refreshTools() reads does not resurrect the session with a fresh socket", async () => {
+    const s = sockets()
+    let releaseTools!: () => void
+    const gate = new Promise<void>(r => { releaseTools = r })
+    let calls = 0
+    const session = await makeGeminiLive({ apiKey: KEY, socket: s.factory }).start({
+      emit: emitSpy().emit,
+      hooks: {
+        // The startup read resolves; only the refreshTools read is held.
+        getTools: async () => { calls++; if (calls === 1) return []; await gate; return [] },
+        getSystemPrompt: async () => "prompt",
+      },
+    })
+    await tick()
+    expect(s.sockets).toHaveLength(1)
+    expect(calls).toBe(1)
+    const refreshing = session.refreshTools!()
+    await tick()
+    await session.close()
+    expect(s.sockets[0]!.isClosed()).toBe(true)
+    releaseTools()
+    await refreshing
+    await tick()
+    // The reconnect is skipped: the session was closed while the tool read
+    // was in flight (the old code attached a fresh socket after close).
+    expect(s.sockets).toHaveLength(1)
   })
 
   it("refreshTools() never sends before the new socket is open (the reconnect a real transport would reject)", async () => {
