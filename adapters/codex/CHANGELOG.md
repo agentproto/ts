@@ -1,5 +1,18 @@
 # @agentproto/adapter-codex
 
+## 2.1.5
+
+### Patch Changes
+
+- d1b33fa: A session can now change its own model or harness and run its own harness commands.
+
+  - New MCP tool `session_handoff` (callable on the caller itself): hands the work to another model and/or harness. The successor takes the label, parent, children, follows and the declared succession (`succeeds`); the source is closed only after the successor is confirmed running. `context` picks what travels: `handoff-summary` (default; status plus the previous session id and a `transcript_read` pointer), `harness-compact` (native `/compact`, then the model switch) or `none` (model switch in place, no new session). Model policy and auth-profile allow-lists are enforced with an explicit `model_refused`.
+  - New MCP tool `session_command_self`: queues a harness slash-command (`/compact`, `/clear`, `/model x`, ...) on the caller's own prompt queue, run when its current turn ends. Gated by an allow-list in the adapter manifest (`capabilities.selfCommands`, config `acpAgents.*.self_commands`; only the confirmed `compact`/`compress`/`model` are declared) and by the commands the harness advertises; `compactRequiresOperator` still applies.
+
+- 069a055: Slim `session_handoff`: no `full-resume` mode, the new-session case reuses `session_continue_fresh`'s path, and every continuation prompt now points at `transcript_read` for the previous session. `harness-compact` is source-less for an operator call (honours `compactRequiresOperator`) and refuses when the harness doesn't advertise the compact command; a self-handoff reports `sourceClosePending`. Adapter manifests declare only the confirmed `selfCommands` (`compact`; hermes `compress`, `model`).
+- Updated dependencies [d1b33fa]
+  - @agentproto/harness@4.1.0
+
 ## 2.1.4
 
 ### Patch Changes

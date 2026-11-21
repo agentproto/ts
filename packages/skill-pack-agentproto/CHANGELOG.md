@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.10.5
+
+### Patch Changes
+
+- d30d2b4: Agent merge rule: no merge on an agent's own initiative and no auto-merge, except an explicit operator request naming the PR (PR re-checked green/approved/CLEAN with every review observation addressed, squash only, no other PR touched).
+
 ## 0.10.4
 
 ### Patch Changes

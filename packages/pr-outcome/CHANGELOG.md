@@ -1,5 +1,44 @@
 # @agentproto/pr-outcome
 
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [0ca42d7]
+- Updated dependencies [f4b7be3]
+- Updated dependencies [4c7253f]
+- Updated dependencies [5015995]
+- Updated dependencies [5015995]
+- Updated dependencies [bd7b215]
+- Updated dependencies [2530309]
+- Updated dependencies [bf809ab]
+- Updated dependencies [1a3836b]
+- Updated dependencies [fd346e8]
+- Updated dependencies [dbc1964]
+- Updated dependencies [bd7b215]
+- Updated dependencies [ee63a96]
+- Updated dependencies [0e15a50]
+- Updated dependencies [4223bf1]
+- Updated dependencies [28b4c6b]
+- Updated dependencies [d1da214]
+- Updated dependencies [8075ad4]
+- Updated dependencies [d7ea5cc]
+- Updated dependencies [e446a6a]
+- Updated dependencies [4b56ce9]
+- Updated dependencies [73f1b23]
+- Updated dependencies [765660d]
+- Updated dependencies [1d0cbd5]
+- Updated dependencies [c70c12b]
+- Updated dependencies [d1b33fa]
+- Updated dependencies [069a055]
+- Updated dependencies [221360d]
+- Updated dependencies [0727856]
+- Updated dependencies [7c0f9fd]
+- Updated dependencies [e01f33d]
+- Updated dependencies [fb34c1f]
+- Updated dependencies [89258dd]
+  - @agentproto/runtime@6.5.0
+
 ## 0.1.10
 
 ### Patch Changes

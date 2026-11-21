@@ -1,5 +1,17 @@
 # @agentproto/adapter-gemini
 
+## 0.3.5
+
+### Patch Changes
+
+- d5c1494: Antigravity adapter: switch from the print/headless arm to the first-party ACP server (`agy acp`, agy >= 1.5.13). Drops the argv `model`/`effort`/`print_timeout` options, which `agy acp` does not accept. Gemini CLI is replaced by Antigravity: the gemini adapter and its catalog entry are marked deprecated, and first-run prefers antigravity.
+- Updated dependencies [765660d]
+- Updated dependencies [1741e68]
+- Updated dependencies [d1b33fa]
+- Updated dependencies [89258dd]
+  - @agentproto/provider-kit@0.7.0
+  - @agentproto/harness@4.1.0
+
 ## 0.3.4
 
 ### Patch Changes

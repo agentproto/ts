@@ -1,5 +1,28 @@
 # @agentproto/acp
 
+## 0.16.0
+
+### Minor Changes
+
+- 2727165: Bring the `copilot-cli` harness up to date with Copilot CLI 1.0.113. The ACP client now resolves the reasoning-effort config id from the session's advertised `configOptions` (`effort`, then `reasoning_effort`, then the `thought_level` category) instead of hard-coding `effort`, which Copilot rejects — so the requested effort is no longer silently dropped on Copilot, both at session start and for a mid-session `agent_set_effort` (Claude, Codex and OpenCode keep `effort`). The Copilot harness now declares its real model menu (`mai-code-2`, `claude-sonnet-5.5`, …) instead of an empty `modelCount`, declares `multimodal: true` (image prompt proved live), and documents the agent / plan / autopilot modes, the `reasoning_effort` id and that two concurrent prompts cancel each other (`steering: false` is correct). Docs and metadata are marked verified on 1.0.113.
+
+### Patch Changes
+
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
 ## 0.15.0
 
 ### Minor Changes

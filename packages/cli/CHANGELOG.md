@@ -1,5 +1,89 @@
 # @agentproto/cli
 
+## 1.37.0
+
+### Minor Changes
+
+- e446a6a: `agentproto mcp login` gains `--timeout <duration>` (e.g. `30m`, `1800s`; 10s–2h, default 5m) and `--manual`/`--paste`, which also accepts the pasted callback URL on stdin alongside the loopback listener. `loginMcpOAuth` takes a `manualCallback` option and exports `parseAuthorizationCallback`; the pasted state is verified and code/state are never logged.
+- d1b33fa: A session can now change its own model or harness and run its own harness commands.
+
+  - New MCP tool `session_handoff` (callable on the caller itself): hands the work to another model and/or harness. The successor takes the label, parent, children, follows and the declared succession (`succeeds`); the source is closed only after the successor is confirmed running. `context` picks what travels: `handoff-summary` (default; status plus the previous session id and a `transcript_read` pointer), `harness-compact` (native `/compact`, then the model switch) or `none` (model switch in place, no new session). Model policy and auth-profile allow-lists are enforced with an explicit `model_refused`.
+  - New MCP tool `session_command_self`: queues a harness slash-command (`/compact`, `/clear`, `/model x`, ...) on the caller's own prompt queue, run when its current turn ends. Gated by an allow-list in the adapter manifest (`capabilities.selfCommands`, config `acpAgents.*.self_commands`; only the confirmed `compact`/`compress`/`model` are declared) and by the commands the harness advertises; `compactRequiresOperator` still applies.
+
+- 7c0f9fd: A provider TUI launched as a PTY (`agentproto sessions terminal -- claude|codex|opencode|hermes|…`) can now RECEIVE `message_send`, not only emit it: the message is parked in the terminal's inbox and typed into the PTY (bracketed paste + Enter) once the TUI is idle (no activity-grade paint for `quietMs`; invisible chunks and isolated status-bar clock ticks are ignored). Plain shells still refuse. `codex` and `copilot` bare bins are now classified as provider TUIs. `sessions terminal --access <profile>` (and a preset's `accessProfile`, `terminal_start.accessProfile`, `POST /sessions/terminal {accessProfile}`) pins a named auth profile onto the PTY (credential env set, conflicting vars scrubbed, `accessProfile` echo recorded), failing closed when it cannot be resolved.
+- fb34c1f: Native-TUI terminal sessions (`claude`, `codex`, `opencode`, `hermes` run in a PTY) now carry model, tokens and cost like agent-cli sessions. Once the PTY is linked to its provider conversation, the daemon polls that harness's own usage journal (Claude Code transcript JSONL, Codex rollout `token_count`, `opencode.db`, hermes `state.db`) and prices the tokens against the model catalog. New `billing` (`subscription` | `api-key` | `free` | `unknown`) and `paidCostUsd` fields keep `costUsd` as the value at API price and report what the account actually pays (0 on a subscription or free model). The Claude Code and OpenCode usage readers also return the session's model.
+
+### Patch Changes
+
+- 6aa9a10: Make `agentproto adapters list`, `show`, and `outdated` consistent for installed adapters without an `agentproto/adapter/v1` runtime manifest (such as AIP-45 agent-CLI adapters like `@agentproto/adapter-antigravity` and legacy side-effect packages):
+
+  - `adapters show <pkg|slug>` accepts both bare slugs (`antigravity`) and full package names (`@agentproto/adapter-antigravity`), falling back from runtime manifests to `resolveAdapter(slug)` (AIP-45 handle summary) and installed `package.json` inspection instead of failing with `not installed (or doesn't declare an agentproto manifest)`.
+  - `adapters list` surfaces AIP-45 agent-CLI metadata (slug, protocol, package version) and installed-but-unconfigured adapters alongside configured entries instead of labeling agent-CLI packages as `(no manifest — legacy side-effect adapter)`.
+  - `adapters outdated` reads the resolved adapter's `package.json#version` (`AdapterInfo.packageVersion`) before falling back to `npm ls -g`, eliminating `(not global — version unknown)` for local/workspace/non-global installs, and pins `npm ls -g` to the CLI's global prefix when applicable.
+
+- d5c1494: Antigravity adapter: switch from the print/headless arm to the first-party ACP server (`agy acp`, agy >= 1.5.13). Drops the argv `model`/`effort`/`print_timeout` options, which `agy acp` does not accept. Gemini CLI is replaced by Antigravity: the gemini adapter and its catalog entry are marked deprecated, and first-run prefers antigravity.
+- 4c7253f: Stop context-continuation loops. (1) A fresh continuation now receives the STATE first (`## status: DONE` when the source finished its turn with no open task, else `IN PROGRESS` with the next step) and the original prompt only as a labelled reference (`## goal (reference only ...)`), so it never re-runs a task that was already carried out (and its side effects). (2) A chain of consecutive "rapid" continuations (each session lived under 15 min, cap 3) is refused with `ContinueFreshSpawnError` code `continuation_cap`; the automatic path hard-stops the last link and sends the parent a `[continuation-loop]` blocker message instead of spawning another successor. A long-lived session (a brain running for hours) is unaffected. (3) `mistral-vibe` declares `deferredToolDiscovery` (new `acpAgents.*.deferred_tool_discovery` config field), proved live: the daemon self-mount is now deferred for Vibe, which stays at ~16% context instead of starting at 85-88% with every tool schema loaded. This reproduces and fixes the 2026-11-18 loop where a Vibe sub-session was continued 11 times in a row.
+- 98a217c: Price the models the `copilot-cli` harness runs from GitHub Copilot's own price list, synced automatically like the other vendors. New `scripts/catalog-sync/sync-copilot.mjs` (picked up by the weekly `run-all.mjs`) reads `data/tables/copilot/models-and-pricing.yml` and the promo footnotes of `models-and-pricing.md` in github/docs and writes `copilot-pricing.generated.ts`: `mai-code-2`, `mai-code-2-flash`, `mai-code-1.1-flash` and the dotted ids (`claude-sonnet-5.5`, `claude-haiku-5.5`, ...) that no native vendor sync spells that way. Native generators still win on any id they also price. Rows carry `priceSource: "github-copilot"`, cache-read/write ratios and prompt-length tiers. New optional `LLMPricing.promo` (`until` + `then`) and `effectivePricing()`: a dated promo (MAI Code 2: $0.50/$2.50 until 2027-05-17, $1/$5 from that day) resolves to its standard price on its own, in `resolvePricing*` and `agentproto models`. If the source is unreachable or its layout changes, the sync keeps the committed file and exits 2 with the reason.
+
+  `agentproto models`: a model with no price now prints `price n/a: <reason>` (and `priceNote` in `--json`) instead of a blank; `copilot-cli` models are `runnable` when the adapter is ready (its own login), not "unavailable" for lack of a provider key.
+
+- 28b4c6b: Sessions handoff/profiles fixes (issue: pygmalion brain → Mistral Large 4.0 handoff, 2026-11-21):
+
+  - `sessions handoff --dry-run` now validates the eligibility chain the real handoff enforces — the target harness resolves, and the access profile the successor would use (--profile override or the source's inherited wallet) is eligible for the target adapter+route and allows the model — and fails EARLY with the same error code and message the real run gives, before building the checkpoint preview.
+  - `access_profile_ineligible` refusals now SUGGEST the fix: which stored profiles would be eligible for the target adapter+route (and would allow the requested model), so the caller no longer has to guess the --profile value.
+  - `agentproto auth status` lists credential-backed profiles (api-key, no login — e.g. mistral-vibe-pro, mistral-api): a `credentialProfiles` array in --json and a table section naming the flag that uses them. Login-backed `profiles` rows are unchanged.
+  - `agentproto models <adapter>` reads the merged native + generic-ACP listing, so a curated generic-ACP harness (mistral-vibe, kimi-cli, …) lists its models instead of coming back empty; per-model provider declarations decide runnability (mistral-vibe's hosted z-ai ids bill through mistral).
+  - `sessions start` accepts `--profile` (short alias of `--access-profile`); `sessions handoff` accepts `--access-profile` (long alias of `--profile`); conflicting values are exit 2 before any daemon call. Handoff/checkpoint errors frame the daemon's structured access_profile_* refusals with the same actionable hint `sessions start` prints.
+
+- 0cf4ee3: mistral-vibe: default to Mistral Large 4 (`mistral-large-4-0`) and list the ids Vibe 3.1.3 really offers (Medium 3.5, GLM 5.3, GLM 5.3 Flash); Devstral and `local` are dropped. Catalog: Large 4 pricing synced, `mistral-large-latest` / `mistral-medium-latest` derive from the current models, Devstral rows marked legacy.
+- e527c05: Align the `mistral-vibe` generic ACP harness's model list with what Vibe 2.24.1 accepts: `mistral-medium-3.5` (default), `devstral-small` and `local`. The previous 12 declared ids (e.g. `devstral-latest`) were rejected with "Unsupported config option model" and the session silently fell back to the default.
+- 069a055: Slim `session_handoff`: no `full-resume` mode, the new-session case reuses `session_continue_fresh`'s path, and every continuation prompt now points at `transcript_read` for the previous session. `harness-compact` is source-less for an operator call (honours `compactRequiresOperator`) and refuses when the harness doesn't advertise the compact command; a self-handoff reports `sourceClosePending`. Adapter manifests declare only the confirmed `selfCommands` (`compact`; hermes `compress`, `model`).
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
+- Updated dependencies [ed6759b]
+- Updated dependencies [9c1faeb]
+- Updated dependencies [2727165]
+- Updated dependencies [98a217c]
+- Updated dependencies [fdb4d55]
+- Updated dependencies [0cf4ee3]
+- Updated dependencies [4b56ce9]
+- Updated dependencies [765660d]
+- Updated dependencies [1741e68]
+- Updated dependencies [d1b33fa]
+- Updated dependencies [89258dd]
+  - @agentproto/model-catalog@0.16.0
+  - @agentproto/acp@0.16.0
+  - @agentproto/usage-presets@0.1.1
+  - @agentproto/provider-kit@0.7.0
+  - @agentproto/harness@4.1.0
+  - @agentproto/adapter-browser@0.9.3
+  - @agentproto/app-client@0.5.1
+  - @agentproto/apps@0.27.3
+  - @agentproto/pairing-host@0.4.2
+  - @agentproto/rendezvous@0.2.5
+  - @agentproto/sandbox-computer@0.8.1
+  - @agentproto/sandbox-e2b@0.11.4
+  - @agentproto/sandbox-instabox@0.2.9
+  - @agentproto/sentinel@0.7.1
+  - @agentproto/worktree@0.22.1
+  - create-agentproto-app@0.3.11
+  - @agentproto/inference-endpoint@1.0.5
+  - @agentproto/runtime-profile-standard@0.1.4
+  - @agentproto/sandbox-box@0.2.42
+
 ## 1.36.0
 
 ### Minor Changes

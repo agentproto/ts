@@ -1,5 +1,12 @@
 # @agentproto/eval
 
+## 1.0.3
+
+### Patch Changes
+
+- Updated dependencies [89258dd]
+  - @agentproto/telemetry@0.2.5
+
 ## 1.0.2
 
 ### Patch Changes

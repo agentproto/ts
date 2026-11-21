@@ -1,5 +1,60 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.8.2
+
+### Patch Changes
+
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
+- Updated dependencies [0ca42d7]
+- Updated dependencies [f4b7be3]
+- Updated dependencies [4c7253f]
+- Updated dependencies [5015995]
+- Updated dependencies [5015995]
+- Updated dependencies [bd7b215]
+- Updated dependencies [2530309]
+- Updated dependencies [bf809ab]
+- Updated dependencies [1a3836b]
+- Updated dependencies [fd346e8]
+- Updated dependencies [dbc1964]
+- Updated dependencies [bd7b215]
+- Updated dependencies [ee63a96]
+- Updated dependencies [0e15a50]
+- Updated dependencies [4223bf1]
+- Updated dependencies [28b4c6b]
+- Updated dependencies [d1da214]
+- Updated dependencies [8075ad4]
+- Updated dependencies [d7ea5cc]
+- Updated dependencies [e446a6a]
+- Updated dependencies [4b56ce9]
+- Updated dependencies [73f1b23]
+- Updated dependencies [765660d]
+- Updated dependencies [1d0cbd5]
+- Updated dependencies [c70c12b]
+- Updated dependencies [d1b33fa]
+- Updated dependencies [069a055]
+- Updated dependencies [221360d]
+- Updated dependencies [0727856]
+- Updated dependencies [7c0f9fd]
+- Updated dependencies [e01f33d]
+- Updated dependencies [fb34c1f]
+- Updated dependencies [89258dd]
+  - @agentproto/runtime@6.5.0
+  - @agentproto/harness@4.1.0
+
 ## 0.8.1
 
 ### Patch Changes

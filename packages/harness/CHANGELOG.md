@@ -1,5 +1,20 @@
 # @agentproto/harness
 
+## 4.1.0
+
+### Minor Changes
+
+- d1b33fa: A session can now change its own model or harness and run its own harness commands.
+
+  - New MCP tool `session_handoff` (callable on the caller itself): hands the work to another model and/or harness. The successor takes the label, parent, children, follows and the declared succession (`succeeds`); the source is closed only after the successor is confirmed running. `context` picks what travels: `handoff-summary` (default; status plus the previous session id and a `transcript_read` pointer), `harness-compact` (native `/compact`, then the model switch) or `none` (model switch in place, no new session). Model policy and auth-profile allow-lists are enforced with an explicit `model_refused`.
+  - New MCP tool `session_command_self`: queues a harness slash-command (`/compact`, `/clear`, `/model x`, ...) on the caller's own prompt queue, run when its current turn ends. Gated by an allow-list in the adapter manifest (`capabilities.selfCommands`, config `acpAgents.*.self_commands`; only the confirmed `compact`/`compress`/`model` are declared) and by the commands the harness advertises; `compactRequiresOperator` still applies.
+
+### Patch Changes
+
+- Updated dependencies [2727165]
+- Updated dependencies [89258dd]
+  - @agentproto/acp@0.16.0
+
 ## 4.0.0
 
 ### Major Changes
