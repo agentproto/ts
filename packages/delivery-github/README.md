@@ -8,8 +8,10 @@ and `@agentproto/delivery`.
   (originally PR #2444).
 - `FAILURE_VERDICTS` and `verdictOf`: the verdict vocabulary GitHub providers
   emit as `data.conclusion` or `data.state`.
-- `GITHUB_CLASSIFIERS`: the table plus the generic failure classifier, ready
-  for a delivery classifier registry.
+- `GITHUB_CLASSIFIERS`: the superseded-head classifier (`isSupersededEvent`:
+  a CI event with `data.stale === true` from `@agentproto/sentinel`'s head
+  tracker, ranked fyi ahead of the failure rule), the generic failure
+  classifier and the table, ready for a delivery classifier registry.
 - `GITHUB_COALESCE_RULES`, `githubCoalesceKeyFor`, `githubRepeatKeyFor`: queue
   keys per subject/head, and the triage repeat key (absent for failures so a
   repeat failure always wakes).
