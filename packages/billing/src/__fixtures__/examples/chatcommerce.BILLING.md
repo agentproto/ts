@@ -1,5 +1,5 @@
 ---
-# DRAFT example, AIP-74 v0.4 (billing/v1). Describes ChatCommerce as deployed from main on 2026-11-20, except the
+# DRAFT example, AIP-BILLING v0.4 (billing/v1). Describes ChatCommerce as deployed from main on 2026-11-20, except the
 # credit anchor and the EUR rate below. Where deployed code differs, the comment cites the file and says so.
 # Minor units: euro cents, hundredths of a credit (decimals 2).
 # Paths are in the Agentik studio repository (private); they are provenance, not links.
@@ -23,7 +23,7 @@ assets:
       - { id: "CHATCOMMERCE_CREDITS:purchased",    asset: CHATCOMMERCE_CREDITS, restriction: [] }
       - { id: "CHATCOMMERCE_CREDITS:subscription", asset: CHATCOMMERCE_CREDITS, restriction: [] }   # the monthly envelope
       - { id: "CHATCOMMERCE_CREDITS:welcome",      asset: CHATCOMMERCE_CREDITS, restriction: [welcome] }
-      # NEW, not declared today: a separate bonus lot is AIP-74 rule 12. MIGRATION PENDING.
+      # NEW, not declared today: a separate bonus lot is AIP-BILLING rule 12. MIGRATION PENDING.
       - { id: "CHATCOMMERCE_CREDITS:bonus",        asset: CHATCOMMERCE_CREDITS, restriction: [unearned] }
 primaryAsset: CHATCOMMERCE_CREDITS
 

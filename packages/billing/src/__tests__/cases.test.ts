@@ -1,9 +1,10 @@
 /**
  * The eleven real cases of PLAN-BILLING-FINAL section 5, one test each, run on
- * the four product files of the AIP-74 draft (fixtures) and on the in-memory
+ * the four product files of the AIP-BILLING draft (fixtures) and on the in-memory
  * stores. The table case -> test is in the pull request description.
  */
-import { fold, selectLotsForSpend } from "@agentproto/wallet"
+import { fold, selectLotsForSpend, type WalletEvent } from "@agentproto/wallet"
+import type { StoragePort } from "@agentproto/wallet/ports"
 import { describe, expect, it } from "vitest"
 import {
   addMonthsUtc,
@@ -22,7 +23,9 @@ import {
   traceOf,
   type AccountDirectory,
   type BillingDeps,
+  type CauseEvent,
   type PaymentFact,
+  type TransferRequest,
 } from "./cases-kit.js"
 import { FakeSettlementProvider, InMemoryBillingState, InMemoryStorage, ManualClock } from "../testing/index.js"
 
@@ -39,11 +42,11 @@ interface World {
   pay: (offerId: string, amountMinor: number, currency: string, owner: Record<string, string>, extra?: Partial<PaymentFact>) => PaymentFact
 }
 
-function world(name: string, rail: string): World {
+function world(name: string, rail: string, edit?: (source: string) => string): World {
   const clock = new ManualClock(T0)
   const storage = new InMemoryStorage(clock)
   const state = new InMemoryBillingState()
-  const m = loadBillingManifestForTest(name)
+  const m = loadBillingManifestForTest(name, edit)
   const provider = new FakeSettlementProvider(`whsec-${globalThis.crypto.randomUUID()}`, rail)
   let n = 0
   return {
@@ -145,6 +148,29 @@ describe("case 4: Guilde, an organization funds its guilds; packs in EUR and USD
     expect(await resolvePayer(w.m, dir, "me", strat)).toMatchObject({ ok: true, payerId: "me" })
     expect(await resolvePayer(w.m, dir, "me")).toMatchObject({ ok: false })
   })
+  it("a crash between the two commits loses nothing: the retry mints the child leg from the recorded out leg", async () => {
+    const w = world("guilde", "stripe")
+    await applyPayment(w.deps, w.pay("starter_eur", 1000, "EUR", { organizationId: "org", guildId: "g", userId: "u" }))
+    const req: TransferRequest = { kind: "allocate", ref: "alloc-crash", parentId: "org:g:u", childId: "guild-crash", amount: 50_000 }
+    // A storage that dies after the source leg was committed, before the destination leg.
+    const crash: StoragePort = Object.create(w.storage) as StoragePort
+    crash.commit = async (accountId: string, events: readonly WalletEvent[]): Promise<void> => {
+      if (accountId === req.childId) throw new Error("crash between the two commits")
+      return w.storage.commit(accountId, events)
+    }
+    await expect(applyTransfer({ ...w.deps, storage: crash }, req)).rejects.toThrow(/crash/)
+    expect(await balance(w, "org:g:u")).toBe(118_000 + 11_800 - 50_000) // the source leg is committed
+    expect(await balance(w, "guild-crash")).toBe(0) // the destination leg is not
+    const retry = await applyTransfer(w.deps, req)
+    expect(retry.status).toBe("replayed")
+    expect(await balance(w, "guild-crash")).toBe(50_000) // repaired from the recorded out leg
+    const ins = (await w.storage.loadEvents("guild-crash")) as CauseEvent[]
+    expect(ins.filter(e => e.id.startsWith("alloc-crash:in:"))).toHaveLength(1)
+    expect(ins.find(e => e.id.startsWith("alloc-crash:in:"))).toMatchObject({ kind: "mint", amount: 50_000, cause: "alloc-crash" })
+    const n = ins.length
+    expect((await applyTransfer(w.deps, req)).status).toBe("replayed")
+    expect((await w.storage.loadEvents("guild-crash")).length).toBe(n) // still idempotent
+  })
 })
 
 describe("case 5: ChatCommerce, plans excluding tax and a free amount with a volume bonus", () => {
@@ -223,6 +249,45 @@ describe("case 8: Agentik SEO, its own anchor, decimals 0, two partitions", () =
     await applyPayment(w.deps, b)
     expect(await balance(w, "b")).toBe(15_000)
     expect((await traceOf(w.storage, "b", b.movement)).map(e => e.kind)).toEqual(["mint", "burn", "mint"])
+  })
+})
+
+describe("one-time include rollover (rule 16, schema default none)", () => {
+  const TTL = 30 * DAY
+  const topupTtl = (src: string) =>
+    src.replace(
+      '- { id: "SEO_CREDITS:topup",   asset: SEO_CREDITS, restriction: [] }',
+      `- { id: "SEO_CREDITS:topup",   asset: SEO_CREDITS, restriction: [], defaultTtlMs: ${TTL} }`,
+    )
+  const bundleInclude = (rollover?: string) => (src: string) =>
+    topupTtl(src).replace(
+      '- { feature: credits, amountMinor: 15000, partition: "SEO_CREDITS:topup" }',
+      `- { feature: credits, amountMinor: 15000, partition: "SEO_CREDITS:topup"${rollover ? `, rollover: ${rollover}` : ""} }`,
+    )
+  const includeEvent = async (w: World, movement: string) =>
+    ((await traceOf(w.storage, "b", movement)) as CauseEvent[]).find(e => e.id.includes(":incl:"))!
+
+  it("rollover omitted (default none) expires the include with the partition TTL", async () => {
+    const w = world("agentik-seo", "autumn", bundleInclude())
+    const b = w.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    await applyPayment(w.deps, b)
+    expect((await includeEvent(w, b.movement)).expiresAt).toBe(T0 + TTL)
+  })
+  it("rollover none expires it with the partition TTL, unbounded never expires", async () => {
+    const wNone = world("agentik-seo", "autumn", bundleInclude("none"))
+    const fNone = wNone.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    await applyPayment(wNone.deps, fNone)
+    expect((await includeEvent(wNone, fNone.movement)).expiresAt).toBe(T0 + TTL)
+    const wUnb = world("agentik-seo", "autumn", bundleInclude("unbounded"))
+    const fUnb = wUnb.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    await applyPayment(wUnb.deps, fUnb)
+    expect((await includeEvent(wUnb, fUnb.movement)).expiresAt).toBeUndefined()
+  })
+  it("with no partition TTL, none and unbounded both keep the include (Agentik SEO topup never expires)", async () => {
+    const w = world("agentik-seo", "autumn")
+    const b = w.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    await applyPayment(w.deps, b)
+    expect((await includeEvent(w, b.movement)).expiresAt).toBeUndefined()
   })
 })
 

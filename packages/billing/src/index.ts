@@ -1,5 +1,5 @@
 /**
- * @agentproto/billing: AIP-74 BILLING reference implementation.
+ * @agentproto/billing: AIP-BILLING BILLING reference implementation.
  *
  * Spec: https://agentproto.sh/docs/aip-74 (a draft; the schema is not frozen).
  *
@@ -24,6 +24,7 @@ export { defaultRailEnv } from "./settlement.js"
 export { applyPayment, planPayment, checkPayment, accountIdFor, bonusPercent, traceOf, listOwed } from "./payment.js"
 export type { PaymentOutcome, CheckResult, OwedEntry } from "./payment.js"
 export { applyRefund, applyDispute, planReclaim } from "./reclaim.js"
+export type { Minted } from "./reclaim.js"
 export { includeDrops, dueDrops, runDueIncludes, failRenewal, sweepGrace, closePeriod, activeFeatures } from "./periods.js"
 export { applyGrant, grantKey, periodKey, eligible as grantEligible } from "./grants.js"
 export type { GrantContext, AmountStrategy } from "./grants.js"
