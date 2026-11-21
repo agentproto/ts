@@ -352,12 +352,48 @@ describe("Gemini Live, scripted protocol frames", () => {
     })
     await tick()
     expect(s.sockets).toHaveLength(1)
+    expect(s.sockets[0]!.sent.filter(m => (m as { setup?: unknown }).setup)).toHaveLength(1) // its setup, from open
     await session.refreshTools!()
     expect(s.sockets).toHaveLength(2)
     expect(s.sockets[0]!.isClosed()).toBe(true)
-    expect((s.sockets[1]!.sent[0] as { setup: { model: string; systemInstruction: { parts: Array<{ text: string }> } } }).setup.systemInstruction).toEqual({ parts: [{ text: "prompt" }] })
-    const tools = (s.sockets[1]!.sent[0] as { setup: { tools?: Array<{ functionDeclarations: Array<{ name: string }> }> } }).setup.tools
+    // The new socket sent its fresh setup only once its "open" event fired.
+    const fresh = s.sockets[1]!.sent.filter(m => (m as { setup?: unknown }).setup)
+    expect(fresh).toHaveLength(1)
+    expect((fresh[0] as { setup: { systemInstruction: { parts: Array<{ text: string }> } } }).setup.systemInstruction).toEqual({ parts: [{ text: "prompt" }] })
+    const tools = (fresh[0] as { setup: { tools?: Array<{ functionDeclarations: Array<{ name: string }> }> } }).setup.tools
     expect(tools?.[0]!.functionDeclarations[0]!.name).toBe("tool2")
+  })
+
+  it("refreshTools() never sends before the new socket is open (the reconnect a real transport would reject)", async () => {
+    // A transport that only accepts send() once open, like `ws`.
+    const opened: Array<{ sent: number; openNow: () => void; isClosed: () => boolean }> = []
+    const factory = (url: string) => {
+      expect(url).toContain("BidiGenerateContent")
+      let sent = 0
+      const listeners: { open: Array<() => void>; close: Array<(c?: number) => void> } = { open: [], close: [] }
+      let closed = false
+      opened.push({ get sent() { return sent }, openNow: () => listeners.open.forEach(cb => cb()), isClosed: () => closed })
+      return {
+        send: () => { if (!closed) sent++ },
+        close: (c?: number) => { closed = true; listeners.close.forEach(cb => cb(c ?? 1000)) },
+        on: (e: string, cb: never) => { if (e === "open" || e === "close") (listeners as Record<string, unknown[]>)[e]!.push(cb) },
+      }
+    }
+    const session = await makeGeminiLive({ apiKey: KEY, socket: factory as never }).start({
+      emit: emitSpy().emit,
+      hooks: { getTools: async () => [] },
+    })
+    // The first socket never opened: nothing was buffered out to the wire yet.
+    expect(opened[0]!.sent).toBe(0)
+    opened[0]!.openNow()
+    expect(opened[0]!.sent).toBe(1) // the setup
+    await session.refreshTools!()
+    // Before the second socket opens: strictly nothing sent on it.
+    expect(opened[1]!.sent).toBe(0)
+    expect(opened[0]!.isClosed()).toBe(true)
+    opened[1]!.openNow()
+    expect(opened[1]!.sent).toBe(1) // its setup, once
+    await session.close()
   })
 
   it("close() is idempotent, sends nothing after", async () => {

@@ -148,6 +148,7 @@ export function makeGeminiLive(cfg: GeminiLiveConfig = {}): RealtimeProvider {
       const attach = (): OpenableSock => {
         const sock = socketFactory(url)
         let open = false
+        let opened = false
         const wrapper: OpenableSock = {
           sock,
           isOpen: () => open,
@@ -156,6 +157,11 @@ export function makeGeminiLive(cfg: GeminiLiveConfig = {}): RealtimeProvider {
             sock.close(code)
           },
           handleOpen: () => {
+            // Idempotent: the "open" event is the only sender, so a reconnect
+            // (refreshTools) never sends its setup before the socket is open,
+            // and never sends it twice.
+            if (opened) return
+            opened = true
             open = true
             sock.send(JSON.stringify(setupFrame())) // the setup frame leads
             for (const s of pending.splice(0)) sock.send(s)
@@ -356,14 +362,14 @@ export function makeGeminiLive(cfg: GeminiLiveConfig = {}): RealtimeProvider {
         async refreshTools() {
           if (closed) return
           // The Live wire freezes tools at setup: reconnect with a fresh one,
-          // like the adapter (`refreshTools` there closes and reopens).
+          // like the adapter (`refreshTools` there closes and reopens). The new
+          // socket sends its own setup from its "open" event: never before it
+          // is open, never twice.
           tools = await readTools(hooks)
           systemPrompt = await readPrompt(hooks)
-          const keep = current.isOpen()
           current.close(1000)
           pending.length = 0 // the conversation restarts with the new setup
           current = attach()
-          if (keep) current.handleOpen()
         },
         getUsage: () => meter.snapshot(),
         async close() {
