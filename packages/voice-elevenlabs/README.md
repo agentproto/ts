@@ -3,8 +3,7 @@
 ElevenLabs provider for `@agentproto/voice` (AIP-VOICE, draft
 agentproto/agentproto#169). It is the default provider of the kit.
 
-**Private for now** (`"private": true`): publishable at the publication step of
-the kits work.
+**Public.** Published to npm as `@agentproto/voice-elevenlabs`.
 
 | Stage | What it uses |
 |---|---|
