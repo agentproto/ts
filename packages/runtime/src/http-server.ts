@@ -338,7 +338,7 @@ import {
 } from "./context-checkpoint.js"
 import { buildOccurrenceKey } from "./action-hooks/occurrence-key.js"
 import { computeContextPct, layerContextSettings, withContextPolicy } from "./context-continuity.js"
-import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { ContinueFreshSpawnError, continueAgentSessionFresh, validateHandoffSpawnEligibility } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { resolveTerminalAccess } from "./terminal-access.js"
 import { spawnAgentSession, resolveAccessProfileAuth, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
@@ -9593,6 +9593,34 @@ code { color: #9ad; }
     const to = b.to
     const notes = b.notes as string | undefined
     if (b.dryRun === true) {
+      // Dry runs must fail EARLY with the SAME refusal the real handoff would
+      // give (issue 2026-11-21): validate the target harness resolves and the
+      // access the successor would spawn with — explicit `access.profileRef`
+      // or the source's carried wallet — against the profile ↔ adapter ↔
+      // route ↔ model eligibility ladder BEFORE building the checkpoint
+      // preview. Read-only, like the rest of the branch.
+      if (resolveAgentAdapter) {
+        const refusal = await validateHandoffSpawnEligibility(
+          {
+            resolveAgentAdapter,
+            ...(listAgentAdapters ? { listAgentAdapters } : {}),
+          },
+          prev,
+          {
+            harness: to,
+            ...(typeof b.model === "string" ? { model: b.model } : {}),
+            ...(access ? { access: { profileRef: access.profileRef as string } } : {}),
+          },
+        )
+        if (refusal) {
+          json(spawnFailureStatus(refusal.code), {
+            error: refusal.code,
+            message: refusal.message,
+            ...(refusal.details ? refusal.details : {}),
+          })
+          return true
+        }
+      }
       try {
         const { source, policy } = withContextPolicy(prev)
         const pct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct

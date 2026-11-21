@@ -16,6 +16,7 @@ describe("adapterLogoFor", () => {
     expect(adapterLogoFor("mastracode-inprocess")).toEqual({ kind: "icon", file: "mastra.svg" })
     expect(adapterLogoFor("mastra-agent")).toEqual({ kind: "icon", file: "mastra.svg" })
     expect(adapterLogoFor("openclaw")).toEqual({ kind: "icon", file: "openclaw.png" })
+    expect(adapterLogoFor("antigravity")).toEqual({ kind: "icon", file: "antigravity.png" })
     expect(adapterLogoFor("browser")).toEqual({ kind: "icon", file: "browser.svg" })
   })
 

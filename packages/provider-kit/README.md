@@ -18,6 +18,8 @@ importing zero concrete providers — everything flows through injected
 | `makeSetupLedger` | `./ledger` | `~/.agentproto/setup/<slug>.json` existence/read/write |
 | `makeAdapterResolver`, `makeAdapterLister` | `./list-resolve` | Slug→handle + catalog→entry list |
 | `makeListTool`, `makeSetupTool` | `./mcp-tools` | MCP tool factories (`value` param is sensitive) |
+| `makeProviderFamily` | `./family` | Family factory: catalog, status, slug→provider (built-in or dynamic import), list/setup, MCP `list_*`/`setup_*` tools |
+| `makeEnvCredsStore`, `makeMemoryCredsStore`, `makeMemorySetupLedger` | `./memory-stores` | Read-only env creds store, in-memory creds store and ledger: no `~/.agentproto`, no daemon |
 | `makeAdapterWizard` | `./wizard` | CLI radio-picker + step runner; skips ledger-completed steps |
 
 See `docs/provider-kit.md` for the full design (the kit's concepts are unchanged; only the package name was renamed from `@agentproto/adapter-kit`).

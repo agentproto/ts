@@ -1,0 +1,75 @@
+/**
+ * Usage meter: the cumulative, monotonic record a session reports (AIP-VOICE,
+ * Usage record). Numbers only; no price, no content.
+ */
+import type { VoiceEngineId, VoiceTokenBuckets, VoiceUsage, VoiceUsageEntry } from "./types.js"
+
+export interface UsageMeter {
+  addSttSeconds(provider: string, seconds: number, model?: string): void
+  addTtsCharacters(provider: string, characters: number, model?: string): void
+  addRealtime(
+    provider: string,
+    delta: { audioSeconds?: number; tokens?: Partial<VoiceTokenBuckets>; reportedCostUsd?: number },
+    model?: string,
+  ): void
+  /** A snapshot; entries are copied. */
+  snapshot(): VoiceUsage
+  /** Freeze: later adds are ignored (call on close). */
+  seal(): void
+}
+
+export function makeUsageMeter(engine: VoiceEngineId, now: () => number = Date.now): UsageMeter {
+  const startedAt = now()
+  let sealedWall: number | undefined
+  const entries = new Map<string, VoiceUsageEntry>()
+
+  const entry = (stage: VoiceUsageEntry["stage"], provider: string, model?: string) => {
+    const key = `${stage}\u0000${provider}\u0000${model ?? ""}`
+    let e = entries.get(key)
+    if (!e) {
+      e = { stage, provider, ...(model ? { model } : {}) }
+      entries.set(key, e)
+    }
+    return e
+  }
+  const ok = (n: number | undefined): n is number =>
+    typeof n === "number" && Number.isFinite(n) && n > 0
+
+  return {
+    addSttSeconds(provider, seconds, model) {
+      if (sealedWall !== undefined || !ok(seconds)) return
+      const e = entry("stt", provider, model)
+      e.audioSeconds = (e.audioSeconds ?? 0) + seconds
+    },
+    addTtsCharacters(provider, characters, model) {
+      if (sealedWall !== undefined || !ok(characters)) return
+      const e = entry("tts", provider, model)
+      e.characters = (e.characters ?? 0) + Math.round(characters)
+    },
+    addRealtime(provider, delta, model) {
+      if (sealedWall !== undefined) return
+      const e = entry("realtime", provider, model)
+      if (ok(delta.audioSeconds)) e.audioSeconds = (e.audioSeconds ?? 0) + delta.audioSeconds
+      if (delta.tokens) {
+        const t = (e.tokens ??= {
+          audioIn: 0, audioOut: 0, textIn: 0, textOut: 0, cachedAudioIn: 0, cachedTextIn: 0,
+        })
+        for (const k of Object.keys(t) as Array<keyof VoiceTokenBuckets>) {
+          const v = delta.tokens[k]
+          if (ok(v)) t[k] += v
+        }
+      }
+      if (ok(delta.reportedCostUsd)) e.reportedCostUsd = (e.reportedCostUsd ?? 0) + delta.reportedCostUsd
+    },
+    snapshot() {
+      return {
+        engine,
+        wallSeconds: ((sealedWall ?? now()) - startedAt) / 1000,
+        entries: [...entries.values()].map(e => structuredClone(e)),
+      }
+    },
+    seal() {
+      sealedWall ??= now()
+    },
+  }
+}

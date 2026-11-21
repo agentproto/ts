@@ -76,3 +76,21 @@ export type {
   WizardRunOpts,
   WizardStepResult,
 } from "./wizard.js"
+
+// family factory + env / in-memory stores
+export { makeProviderFamily } from "./family.js"
+export type {
+  FamilyCreds,
+  FamilyHandle,
+  FamilyLoadContext,
+  FamilyToolSpec,
+  MakeProviderFamilyOpts,
+  ProviderFamily,
+  RegisterFamilyToolsOpts,
+} from "./family.js"
+export {
+  makeEnvCredsStore,
+  makeMemoryCredsStore,
+  makeMemorySetupLedger,
+} from "./memory-stores.js"
+export type { MakeEnvCredsStoreOpts } from "./memory-stores.js"

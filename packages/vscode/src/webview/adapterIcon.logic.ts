@@ -26,6 +26,7 @@ const ICON_FILES: Readonly<Record<string, string>> = {
   "mastracode-inprocess": "mastra.svg",
   "mastra-agent": "mastra.svg",
   openclaw: "openclaw.png",
+  antigravity: "antigravity.png",
   browser: "browser.svg",
   deepseek: "deepseek.svg",
   gemini: "gemini.svg",
