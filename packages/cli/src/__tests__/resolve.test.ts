@@ -781,3 +781,21 @@ describe("listInstalledAdapters — harness- prefix alias", () => {
     }
   })
 })
+
+describe("resolveAdapter / listInstalledAdapters — packageVersion projection", () => {
+  it("populates packageVersion from package.json for installed adapters without runtime manifests", { timeout: 15_000 }, async () => {
+    const req = createRequire(import.meta.url)
+    const pkgJson = JSON.parse(
+      await fs.readFile(req.resolve("@agentproto/adapter-antigravity/package.json"), "utf8")
+    ) as { version: string }
+
+    const resolved = await resolveAdapter("antigravity")
+    expect(resolved.packageName).toBe("@agentproto/adapter-antigravity")
+    expect(resolved.packageVersion).toBe(pkgJson.version)
+
+    const adapters = await listInstalledAdapters()
+    const agy = adapters.find((a) => a.slug === "antigravity")
+    expect(agy).toBeDefined()
+    expect(agy?.packageVersion).toBe(pkgJson.version)
+  })
+})

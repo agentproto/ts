@@ -50,7 +50,7 @@
   "dependencies": {
     "@agentproto/driver-browser": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "ws": "^8.22.0",
+    "ws": "^8.23.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

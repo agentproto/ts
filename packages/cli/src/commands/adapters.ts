@@ -26,7 +26,10 @@ import {
   hermesSystemPromptPluginStatus,
   installHermesSystemPromptPlugin,
 } from "@agentproto/adapter-hermes"
-import { readAdapterManifest } from "../registry/manifest-loader.js"
+import {
+  readAdapterManifest,
+  readAdapterPackageInfo,
+} from "../registry/manifest-loader.js"
 import type {
   AdapterEntry,
   AdapterManifest,
@@ -39,11 +42,35 @@ import {
 } from "../util/agentproto-config.js"
 import { withNpmGlobalPrefix } from "../util/npm-prefix.js"
 
+const FIRST_PARTY_ADAPTER_PKG_RE =
+  /^@agentproto\/(?:adapter|harness)-([a-z][a-z0-9-]*)$/
+const BARE_SLUG_RE = /^[a-z][a-z0-9-]*$/
+
+/**
+ * Derive an AIP-45 adapter slug from either a bare slug (`antigravity`) or a
+ * first-party package name (`@agentproto/adapter-antigravity`,
+ * `@agentproto/harness-antigravity`). Returns `null` for third-party packages
+ * or non-slug specifiers.
+ */
+export function extractAdapterSlug(target: string): string | null {
+  const pkgMatch = FIRST_PARTY_ADAPTER_PKG_RE.exec(target)
+  if (pkgMatch) return pkgMatch[1]!
+  if (BARE_SLUG_RE.test(target)) return target
+  return null
+}
+
+function isConfiguredAdapter(
+  configured: readonly string[],
+  candidates: ReadonlyArray<string | undefined>
+): boolean {
+  return candidates.some((c) => typeof c === "string" && configured.includes(c))
+}
+
 const USAGE = `agentproto adapters — manage runtime adapters
 
 Usage:
-  agentproto adapters list                  Show enabled adapters + what they provide [--json]
-  agentproto adapters show <pkg>            Print an adapter's manifest [--json]
+  agentproto adapters list                  Show enabled + installed adapters [--json]
+  agentproto adapters show <pkg|slug>       Print an adapter's manifest or handle [--json]
   agentproto adapters outdated              Installed adapter version vs latest
                                             published on npm [--json] (read-only)
   agentproto adapters install <pkg>         npm i -g + add to config
@@ -105,6 +132,19 @@ export async function runAdapters(args: readonly string[]): Promise<number> {
 
 // ── list ──────────────────────────────────────────────────────────────
 
+interface AdapterListEntry {
+  id: string
+  manifest: AdapterManifest | null
+  kind?: "manifest" | "agent-cli" | "legacy" | "missing"
+  slug?: string
+  version?: string
+  protocol?: string
+  source?: string
+  enabled: boolean
+  installed: boolean
+  error?: string
+}
+
 async function runList(args: readonly string[]): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
@@ -112,32 +152,148 @@ async function runList(args: readonly string[]): Promise<number> {
     strict: true,
   })
   const cfg = await loadAgentprotoConfig()
-  const adapters = cfg.adapters ?? []
-  if (adapters.length === 0) {
-    if (values.json) process.stdout.write("[]\n")
-    else
-      process.stdout.write(
-        "agentproto adapters: no adapters enabled. Try `agentproto adapters install <pkg>`.\n"
-      )
-    return 0
+  const configured = cfg.adapters ?? []
+
+  const { listInstalledAdapters, resolveAdapter } = await import(
+    "../registry/resolve.js"
+  )
+  let discovered: Awaited<ReturnType<typeof listInstalledAdapters>> = []
+  try {
+    discovered = await listInstalledAdapters()
+  } catch {
+    // Non-fatal: still report configured adapters if discovery fails.
   }
 
-  const entries: Array<{
-    id: string
-    manifest: AdapterManifest | null
-    error?: string
-  }> = []
-  for (const id of adapters) {
+  const discoveredByPkg = new Map(discovered.map((d) => [d.packageName, d]))
+  const discoveredBySlug = new Map(discovered.map((d) => [d.slug, d]))
+  const coveredSlugs = new Set<string>()
+  const coveredPkgs = new Set<string>()
+
+  const entries: AdapterListEntry[] = []
+
+  for (const id of configured) {
+    coveredPkgs.add(id)
+    const slug = extractAdapterSlug(id)
     try {
       const result = await readAdapterManifest(id)
-      entries.push({ id, manifest: result?.manifest ?? null })
+      if (result) {
+        if (slug) coveredSlugs.add(slug)
+        entries.push({
+          id,
+          manifest: result.manifest,
+          kind: "manifest",
+          enabled: true,
+          installed: true,
+        })
+        continue
+      }
     } catch (err) {
+      if (slug) coveredSlugs.add(slug)
       entries.push({
         id,
         manifest: null,
+        enabled: true,
+        installed: true,
         error: err instanceof Error ? err.message : String(err),
       })
+      continue
     }
+
+    // No agentproto/adapter/v1 runtime manifest — check whether this is an
+    // AIP-45 agent-CLI adapter (installed package or generic ACP entry)
+    // before falling back to legacy side-effect package inspection.
+    const found =
+      discoveredByPkg.get(id) ?? (slug ? discoveredBySlug.get(slug) : undefined)
+    if (found) {
+      coveredSlugs.add(found.slug)
+      coveredPkgs.add(found.packageName)
+      entries.push({
+        id,
+        manifest: null,
+        kind: "agent-cli",
+        slug: found.slug,
+        version: found.packageVersion ?? found.version,
+        protocol: found.protocol,
+        enabled: true,
+        installed: true,
+      })
+      continue
+    }
+
+    if (slug) {
+      try {
+        const resolved = await resolveAdapter(slug)
+        const handle = resolved.handle as Record<string, unknown>
+        const version =
+          resolved.packageVersion ??
+          (typeof handle.version === "string" ? handle.version : undefined)
+        const protocol =
+          typeof handle.protocol === "string" ? handle.protocol : "unknown"
+        coveredSlugs.add(resolved.slug)
+        if (resolved.packageName) coveredPkgs.add(resolved.packageName)
+        entries.push({
+          id,
+          manifest: null,
+          kind: "agent-cli",
+          slug: resolved.slug,
+          ...(version ? { version } : {}),
+          protocol,
+          source: resolved.source,
+          enabled: true,
+          installed: true,
+        })
+        continue
+      } catch {
+        // Not resolvable as an agent-CLI adapter — fall through to package check.
+      }
+    }
+
+    const pkgInfo = await readAdapterPackageInfo(id)
+    if (pkgInfo) {
+      entries.push({
+        id,
+        manifest: null,
+        kind: "legacy",
+        ...(pkgInfo.version ? { version: pkgInfo.version } : {}),
+        enabled: true,
+        installed: true,
+      })
+    } else {
+      entries.push({
+        id,
+        manifest: null,
+        kind: "missing",
+        enabled: true,
+        installed: false,
+      })
+    }
+  }
+
+  for (const info of discovered) {
+    if (coveredSlugs.has(info.slug) || coveredPkgs.has(info.packageName)) {
+      continue
+    }
+    coveredSlugs.add(info.slug)
+    coveredPkgs.add(info.packageName)
+    entries.push({
+      id: info.packageName,
+      manifest: null,
+      kind: "agent-cli",
+      slug: info.slug,
+      version: info.packageVersion ?? info.version,
+      protocol: info.protocol,
+      enabled: false,
+      installed: true,
+    })
+  }
+
+  if (entries.length === 0) {
+    if (values.json) process.stdout.write("[]\n")
+    else
+      process.stdout.write(
+        "agentproto adapters: no adapters installed or enabled. Try `agentproto adapters install <pkg>`.\n"
+      )
+    return 0
   }
 
   if (values.json) {
@@ -151,14 +307,37 @@ async function runList(args: readonly string[]): Promise<number> {
       process.stdout.write(`    error: ${e.error}\n`)
       continue
     }
-    if (!e.manifest) {
-      process.stdout.write(`    (no manifest — legacy side-effect adapter)\n`)
+    if (e.manifest) {
+      printAdapterSummary("substrates", e.manifest.substrates)
+      printAdapterSummary("dispatchers", e.manifest.dispatchers)
+      printAdapterSummary("executors", e.manifest.executors)
+      printAdapterSummary("state stores", e.manifest.stateStores)
       continue
     }
-    printAdapterSummary("substrates", e.manifest.substrates)
-    printAdapterSummary("dispatchers", e.manifest.dispatchers)
-    printAdapterSummary("executors", e.manifest.executors)
-    printAdapterSummary("state stores", e.manifest.stateStores)
+    if (e.kind === "agent-cli") {
+      const meta = [
+        e.protocol,
+        e.version ? `v${e.version}` : undefined,
+        e.source,
+      ]
+        .filter(Boolean)
+        .join(", ")
+      const scopeNote = e.enabled ? "" : " [installed, not in config]"
+      process.stdout.write(
+        `    agent-cli: ${e.slug}${meta ? ` (${meta})` : ""}${scopeNote}\n`
+      )
+      continue
+    }
+    if (e.kind === "missing") {
+      process.stdout.write(
+        `    (enabled in config, but not installed / unresolvable)\n`
+      )
+      continue
+    }
+    const ver = e.version ? `, v${e.version}` : ""
+    process.stdout.write(
+      `    (no manifest — legacy side-effect adapter${ver})\n`
+    )
   }
   return 0
 }
@@ -176,9 +355,10 @@ function printAdapterSummary(
 
 /**
  * Read-only freshness report for the installed agent-CLI adapter packages:
- * installed version (from the local global-npm tree) vs latest published
- * (`npm view` — the registry query the presence fix relocated out of the
- * manifests; here it is answering the question it was always right for).
+ * installed version (from the resolved local package.json, falling back to
+ * the global-npm tree) vs latest published (`npm view` — the registry query
+ * the presence fix relocated out of the manifests; here it is answering the
+ * question it was always right for).
  *
  * Bounded, read-only, writes nothing: no installs, no config, no
  * `~/.agentproto`. Each probe degrades to `null` on failure → the row
@@ -209,7 +389,9 @@ async function runOutdated(args: readonly string[]): Promise<number> {
   const rows = await Promise.all(
     installed.map(async (info) => {
       const [have, latest] = await Promise.all([
-        npmInstalledVersion(info.packageName),
+        info.packageVersion !== undefined
+          ? Promise.resolve(info.packageVersion)
+          : npmInstalledVersion(info.packageName),
         npmLatestVersion(info.packageName),
       ])
       return {
@@ -250,6 +432,23 @@ async function runOutdated(args: readonly string[]): Promise<number> {
 
 // ── show ──────────────────────────────────────────────────────────────
 
+function extractModelIds(modelsField: unknown): string[] {
+  const allowed = (modelsField as { allowed?: unknown } | undefined)?.allowed
+  if (!Array.isArray(allowed)) return []
+  const ids: string[] = []
+  for (const entry of allowed) {
+    if (typeof entry === "string") ids.push(entry)
+    else if (
+      entry &&
+      typeof entry === "object" &&
+      typeof (entry as { id?: unknown }).id === "string"
+    ) {
+      ids.push((entry as { id: string }).id)
+    }
+  }
+  return ids
+}
+
 async function runShow(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -265,6 +464,13 @@ async function runShow(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  let configured: string[] = []
+  try {
+    configured = (await loadAgentprotoConfig()).adapters ?? []
+  } catch {
+    // Non-fatal: still introspect the package even if config.json is unreadable.
+  }
+
   let result: Awaited<ReturnType<typeof readAdapterManifest>>
   try {
     result = await readAdapterManifest(pkg)
@@ -274,26 +480,186 @@ async function runShow(args: readonly string[]): Promise<number> {
     )
     return 1
   }
-  if (!result) {
-    process.stderr.write(
-      `agentproto adapters show: '${pkg}' is not installed (or doesn't declare an agentproto manifest).\n`
-    )
-    return 1
-  }
+  if (result) {
+    if (values.json) {
+      process.stdout.write(`${JSON.stringify(result.manifest, null, 2)}\n`)
+      return 0
+    }
 
-  if (values.json) {
-    process.stdout.write(`${JSON.stringify(result.manifest, null, 2)}\n`)
+    const m = result.manifest
+    process.stdout.write(`${pkg}\n`)
+    process.stdout.write(`  schema: ${m.schema}\n`)
+    printAdapterDetail("substrates", m.substrates)
+    printAdapterDetail("dispatchers", m.dispatchers)
+    printAdapterDetail("executors", m.executors)
+    printAdapterDetail("state stores", m.stateStores)
     return 0
   }
 
-  const m = result.manifest
-  process.stdout.write(`${pkg}\n`)
-  process.stdout.write(`  schema: ${m.schema}\n`)
-  printAdapterDetail("substrates", m.substrates)
-  printAdapterDetail("dispatchers", m.dispatchers)
-  printAdapterDetail("executors", m.executors)
-  printAdapterDetail("state stores", m.stateStores)
-  return 0
+  // No agentproto/adapter/v1 runtime manifest. Try resolving as an AIP-45
+  // agent-CLI adapter (supports both bare slugs like `antigravity` and
+  // package names like `@agentproto/adapter-antigravity`).
+  const slug = extractAdapterSlug(pkg)
+  if (slug) {
+    const { resolveAdapter } = await import("../registry/resolve.js")
+    try {
+      const resolved = await resolveAdapter(slug)
+      const handle = resolved.handle as Record<string, unknown>
+      const handleVersion =
+        typeof handle.version === "string" ? handle.version : null
+      const version = resolved.packageVersion ?? handleVersion
+      const name = typeof handle.name === "string" ? handle.name : resolved.slug
+      const description =
+        typeof handle.description === "string" ? handle.description : ""
+      const protocol =
+        typeof handle.protocol === "string" ? handle.protocol : "unknown"
+      const bin = typeof handle.bin === "string" ? handle.bin : null
+      const binArgs = Array.isArray(handle.bin_args)
+        ? (handle.bin_args as unknown[]).filter(
+            (a): a is string => typeof a === "string"
+          )
+        : []
+      const capabilities =
+        handle.capabilities && typeof handle.capabilities === "object"
+          ? (handle.capabilities as Record<string, unknown>)
+          : {}
+      const models = extractModelIds(handle.models)
+      const modes = Array.isArray(resolved.handle.modes)
+        ? resolved.handle.modes.map((m) => ({
+            id: m.id,
+            status: m.status ?? "active",
+            ...(m.description ? { description: m.description } : {}),
+          }))
+        : []
+      const enabled = isConfiguredAdapter(configured, [
+        pkg,
+        resolved.packageName,
+        `@agentproto/adapter-${resolved.slug}`,
+        `@agentproto/harness-${resolved.slug}`,
+        resolved.slug,
+      ])
+
+      if (values.json) {
+        const payload = {
+          slug: resolved.slug,
+          package: resolved.packageName ?? null,
+          kind: "agent-cli" as const,
+          manifest: null,
+          source: resolved.source,
+          version,
+          ...(resolved.packageVersion &&
+          handleVersion &&
+          resolved.packageVersion !== handleVersion
+            ? { handleVersion }
+            : {}),
+          name,
+          description,
+          protocol,
+          bin,
+          binArgs,
+          capabilities,
+          models,
+          modes,
+          enabled,
+        }
+        process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
+        return 0
+      }
+
+      const header = resolved.packageName
+        ? `${resolved.slug} (${resolved.packageName})`
+        : resolved.slug
+      process.stdout.write(`${header}\n`)
+      process.stdout.write(`  kind: agent-cli (no runtime manifest)\n`)
+      process.stdout.write(`  source: ${resolved.source}\n`)
+      if (version) {
+        const handleSuffix =
+          resolved.packageVersion &&
+          handleVersion &&
+          resolved.packageVersion !== handleVersion
+            ? ` (handle: ${handleVersion})`
+            : ""
+        process.stdout.write(`  version: ${version}${handleSuffix}\n`)
+      }
+      process.stdout.write(`  protocol: ${protocol}\n`)
+      if (bin) {
+        process.stdout.write(
+          `  bin: ${[bin, ...binArgs].join(" ")}\n`
+        )
+      }
+      process.stdout.write(`  enabled: ${enabled ? "yes" : "no"}\n`)
+      if (description) {
+        process.stdout.write(`  description: ${description}\n`)
+      }
+      const capFlags = Object.entries(capabilities)
+        .filter(([, v]) => v === true)
+        .map(([k]) => k)
+      if (capFlags.length > 0) {
+        process.stdout.write(`  capabilities: ${capFlags.join(", ")}\n`)
+      }
+      if (models.length > 0) {
+        process.stdout.write(`  models: ${models.join(", ")}\n`)
+      }
+      if (modes.length > 0) {
+        process.stdout.write(
+          `  modes: ${modes.map((m) => (m.status === "active" ? m.id : `${m.id} (${m.status})`)).join(", ")}\n`
+        )
+      }
+      return 0
+    } catch {
+      // Not resolvable as an AIP-45 agent-CLI adapter — fall through to
+      // legacy installed-package inspection.
+    }
+  }
+
+  // Installed package without an agentproto/adapter/v1 manifest (legacy
+  // side-effect adapter).
+  const pkgInfo = await readAdapterPackageInfo(pkg)
+  if (pkgInfo) {
+    const enabled = isConfiguredAdapter(configured, [pkg, pkgInfo.name])
+    if (values.json) {
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            package: pkgInfo.name ?? pkg,
+            kind: "legacy" as const,
+            manifest: null,
+            version: pkgInfo.version ?? null,
+            description: pkgInfo.description ?? "",
+            packageRoot: pkgInfo.packageRoot,
+            enabled,
+          },
+          null,
+          2
+        )}\n`
+      )
+      return 0
+    }
+    process.stdout.write(`${pkgInfo.name ?? pkg}\n`)
+    process.stdout.write(
+      `  kind: legacy side-effect adapter (no agentproto manifest)\n`
+    )
+    if (pkgInfo.version) {
+      process.stdout.write(`  version: ${pkgInfo.version}\n`)
+    }
+    process.stdout.write(`  enabled: ${enabled ? "yes" : "no"}\n`)
+    if (pkgInfo.description) {
+      process.stdout.write(`  description: ${pkgInfo.description}\n`)
+    }
+    process.stdout.write(`  path: ${pkgInfo.packageRoot}\n`)
+    return 0
+  }
+
+  if (configured.includes(pkg)) {
+    process.stderr.write(
+      `agentproto adapters show: '${pkg}' is enabled in config, but is not installed (cannot be resolved).\n`
+    )
+  } else {
+    process.stderr.write(
+      `agentproto adapters show: '${pkg}' is not installed.\n`
+    )
+  }
+  return 1
 }
 
 function printAdapterDetail(

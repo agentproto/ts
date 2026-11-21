@@ -4,8 +4,8 @@ Reference implementation of AIP-VOICE ([agentproto/agentproto#169](https://githu
 `voice/v1`, Draft): three provider contracts, one voice session with two
 engines, and the variables that choose them.
 
-**Private for now.** This package is not published (`"private": true`). It
-becomes publishable at the publication step of the kits work, not before.
+**Public.** This package is published to npm as `@agentproto/voice`, the base
+that provider packages such as `@agentproto/voice-openai` depend on.
 
 ## What is here
 

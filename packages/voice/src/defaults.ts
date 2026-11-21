@@ -130,6 +130,10 @@ export const VOICE_DEFAULTS = {
       realtimeInputTranscription: d("whisper-1", "openai-realtime-ga.adapter.ts:228"),
       realtimeSampleRate: d(24_000, "openai-realtime-ga.adapter.ts:227,239"),
       sttFileModel: d("whisper-1", "calls/transcribe.ts:43"),
+      ttsModel: d("gpt-4o-mini-tts", "af/voice/preview.ts:90 (OPENAI_TTS_MODEL default)"),
+      ttsVoice: d("alloy", "af/strategies/engines.ts:100-295; same default voice family as realtimeVoice"),
+      /** The speech API's `pcm` response format is PCM16 mono 24 kHz. */
+      ttsSampleRate: d(24_000, "api.openai.com audio/speech response_format=pcm, read 2026-11-21"),
     },
     gemini: {
       liveModel: d(

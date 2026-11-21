@@ -63,6 +63,11 @@ export interface ResolvedAdapter {
   readonly handle: AgentCliHandle
   readonly source: "npm" | "file" | "bundled" | "acp-config" | "acp-catalog"
   readonly packageName?: string
+  /** Installed npm `package.json#version` on disk when resolved from an npm or
+   *  workspace-local package (e.g. `"0.3.15"`), distinct from `handle.version`
+   *  (the AIP-45 handle version). Absent for generic ACP specs (`acp-config` /
+   *  `acp-catalog`), which have no npm package. */
+  readonly packageVersion?: string
   /** True when this resolution was served from the last-known-good cache
    *  because the current import attempt failed (see `importFresh`'s doc
    *  comment for why that happens mid-rebuild). Never present on an
@@ -100,8 +105,14 @@ export interface AdapterInfo {
   slug: string
   /** Display name from the manifest. */
   name: string
-  /** Adapter package version (matches npm package.json `version`). */
+  /** Adapter handle version from the AIP-45 manifest. */
   version: string
+  /** Installed npm `package.json#version` on disk (e.g. `"0.3.15"`), when the
+   *  adapter resolved from an npm or workspace-local package. Distinct from
+   *  `version` (the AIP-45 handle's declared version). Used by freshness checks
+   *  (`agentproto adapters outdated`) so local / workspace / non-global
+   *  installs report their real version instead of "version unknown". */
+  packageVersion?: string
   /** One-line user-facing description. */
   description: string
   /** Wire protocol — informs prompt/multi-turn semantics. */
@@ -709,6 +720,44 @@ export function _setLastKnownGoodTtlMsForTests(ms: number): () => void {
   }
 }
 
+async function readPackageVersionFromJsonPath(
+  packageJsonPath: string
+): Promise<string | undefined> {
+  try {
+    const raw = await fs.readFile(packageJsonPath, "utf8")
+    const parsed = JSON.parse(raw) as { version?: unknown }
+    return typeof parsed.version === "string" && parsed.version.trim() !== ""
+      ? parsed.version.trim()
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readInstalledPackageVersion(
+  packageSpecifier: string
+): Promise<string | undefined> {
+  try {
+    const pkgJsonPath = resolveFromHere.resolve(`${packageSpecifier}/package.json`)
+    const version = await readPackageVersionFromJsonPath(pkgJsonPath)
+    if (version) return version
+  } catch {
+    // Package may not export `./package.json` or may be hitting Node's
+    // negative package.json cache — fall back to scanning namespace roots.
+  }
+  if (packageSpecifier.startsWith("@agentproto/")) {
+    const dirName = packageSpecifier.slice("@agentproto/".length)
+    const roots = await collectAgentprotoNamespaceRoots()
+    for (const root of roots) {
+      const version = await readPackageVersionFromJsonPath(
+        join(root, dirName, "package.json")
+      )
+      if (version) return version
+    }
+  }
+  return undefined
+}
+
 export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
     throw new Error(
@@ -762,11 +811,15 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
           const localCapabilitiesStrategy = localMod[`${camel}Capabilities`] as
             | CapabilityStrategy
             | undefined
+          const localPackageVersion = await readPackageVersionFromJsonPath(
+            join(dirname(dirname(workspaceLocalPath)), "package.json")
+          )
           const resolved: ResolvedAdapter = {
             slug,
             handle: withResolvedProprietaryAdapter(localCandidate, workspaceLocalPath),
             source: "file",
             packageName,
+            ...(localPackageVersion ? { packageVersion: localPackageVersion } : {}),
             ...(typeof localCapabilitiesStrategy === "function"
               ? { capabilitiesStrategy: localCapabilitiesStrategy }
               : {}),
@@ -799,11 +852,13 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
           const parentCapabilitiesStrategy = parentMod[`${camel}Capabilities`] as
             | CapabilityStrategy
             | undefined
+          const parentPackageVersion = await readInstalledPackageVersion(parentPkg)
           const resolved: ResolvedAdapter = {
             slug,
             handle: withResolvedProprietaryAdapter(parentCandidate, parentPkg),
             source: "npm",
             packageName: parentPkg,
+            ...(parentPackageVersion ? { packageVersion: parentPackageVersion } : {}),
             ...(typeof parentCapabilitiesStrategy === "function"
               ? { capabilitiesStrategy: parentCapabilitiesStrategy }
               : {}),
@@ -878,11 +933,13 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   }
 
   const capabilitiesStrategy = mod[`${camel}Capabilities`] as CapabilityStrategy | undefined
+  const packageVersion = await readInstalledPackageVersion(packageName)
   const resolved: ResolvedAdapter = {
     slug,
     handle: withResolvedProprietaryAdapter(candidate, packageName),
     source: "npm",
     packageName,
+    ...(packageVersion ? { packageVersion } : {}),
     ...(typeof capabilitiesStrategy === "function" ? { capabilitiesStrategy } : {}),
   }
   lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
@@ -918,6 +975,7 @@ function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
     slug,
     name: typeof handle.name === "string" ? handle.name : slug,
     version: typeof handle.version === "string" ? handle.version : "?",
+    ...(resolved.packageVersion ? { packageVersion: resolved.packageVersion } : {}),
     description: typeof handle.description === "string" ? handle.description : "",
     protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
     streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,

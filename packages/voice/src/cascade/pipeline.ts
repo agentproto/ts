@@ -621,7 +621,7 @@ export function createCallPipeline(deps: CallPipelineDeps): CallPipeline {
         `${log} caller audio utt=${id} peak_rms=${Math.round(turnPeakRms)} soft_frames=${turnSoftFrames} barge_frames=${turnBargeFrames} barge_rms=${bargeInRms} barge_in=${voluntary ? 1 : 0}`
       )
       clearTimeout(watchdog)
-      if (!closed && !signal.aborted || voluntary) {
+      if (!closed && (!signal.aborted || voluntary)) {
         try {
           deps.onTurnEnd?.({ completed, interrupted: voluntary })
         } catch {
