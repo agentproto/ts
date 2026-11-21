@@ -10,6 +10,8 @@ const entry = {
   "mcp-tools": "src/mcp-tools.ts",
   wizard: "src/wizard.ts",
   discover: "src/discover.ts",
+  family: "src/family.ts",
+  "memory-stores": "src/memory-stores.ts",
 }
 
 export default createTsupConfig({
