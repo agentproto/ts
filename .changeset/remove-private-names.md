@@ -42,4 +42,4 @@
 "@agentproto/worktree": patch
 ---
 
-Remove private product and repository names from comments, docs, examples and tests. The `guilde` auth builtin is now `acme` with an `example.com` API base, and the session-steward origin policy matches `orchestrator` roots instead of the previous product label.
+Remove private product and repository names from comments, docs, examples and tests. The vendor auth builtin is now `acme` with an `example.com` API base, and the session-steward origin policy matches `orchestrator` roots instead of the previous product label.
