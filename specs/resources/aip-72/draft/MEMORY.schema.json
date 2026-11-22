@@ -85,7 +85,7 @@
         "minLength": 1
       },
       "default": [],
-      "description": "Free-form labels. Scope anchors are carried here in their formatted form (e.g. 'global', 'project:acme', 'agent:assistant', 'pr:acme/app#42'). Two anchors tie an item to an AIP-34 tree and an AIP-9 operator: 'node:<id>' (the AIP-34 node id, e.g. 'node:@acme/agentik') scopes visibility, and 'operator:<id>' (e.g. 'operator:pm-demo') marks ownership and never widens visibility. An item carries at most one of each; the node projection and write rules are in AIP-72 section 10."
+      "description": "Free-form labels. Scope anchors are carried here in their formatted form (e.g. 'global', 'project:acme', 'agent:assistant', 'pr:acme/app#42'). Two anchors tie an item to an AIP-34 tree and an AIP-9 operator: 'node:<id>' (the AIP-34 node id, e.g. 'node:@acme/agentik') scopes visibility, and 'operator:<id>' (e.g. 'operator:pm-simone') marks ownership and never widens visibility. An item carries at most one of each; the node projection and write rules are in AIP-72 section 10."
     },
     "polarity": {
       "enum": [

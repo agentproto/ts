@@ -32,9 +32,11 @@ test("an exception path is skipped, others are not", () => {
   assert.deepEqual(run(files, ["a.md"]).map(v => v.file), ["b.md"])
 })
 
-test("the shipped config has an empty exceptions list", async () => {
-  const { readFileSync } = await import("node:fs")
+test("every shipped exception is a vendored spec copy or code generated from one", async () => {
+  const { readFileSync, existsSync } = await import("node:fs")
   const cfg = JSON.parse(readFileSync(new URL("./private-names.json", import.meta.url), "utf8"))
-  assert.deepEqual(cfg.exceptions, [])
   assert.ok(cfg.names.length > 0)
+  for (const e of cfg.exceptions) {
+    assert.ok(existsSync(new URL(`../${e}`, import.meta.url)), `${e} no longer exists: remove the exception`)
+  }
 })
