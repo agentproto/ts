@@ -45,7 +45,8 @@ export const VOICE_DEFAULTS = {
   },
 
   /**
-   * Session-level defaults shared by the engines. Mic-idle comes from the
+   * Session-level defaults. Only the cascade consumes `idleMicMs` today (the
+   * realtime/S2S engines ignore it). Mic-idle comes from the
    * studio voice server: a session whose mic went quiet costs money per
    * second on some vendor sockets, so the kit closes it and tells the host.
    */

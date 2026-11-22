@@ -57,6 +57,11 @@ PCM16 even-chunk guarantee (`Pcm16ChunkAligner`, applied on every emitted
 audio frame), and the data-only WebRTC/Opus transport values and per-vendor
 billing model ids for future consumers.
 
+Echo guard caveat: the STT dedup also drops a short genuine reply whose tokens
+mostly appear in the assistant's last utterance within 10 s (answering "yes"
+right after the assistant said "...say yes..."). Tune the thresholds or set
+`sttDedup: false` if your prompts invite that kind of reply.
+
 ## Usage
 
 ```ts

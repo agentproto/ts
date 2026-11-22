@@ -278,7 +278,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
   if (!stt.capabilities.streaming && !stt.capabilities.file) {
     throw new Error(`stt provider "${stt.slug}" has neither streaming nor file transcription`)
   }
-  if (opts.ttsMode === "continuous" && !tts.capabilities.chunkedInput) {
+  if (ttsContinuous && !tts.capabilities.chunkedInput) {
     throw new Error(`tts provider "${tts.slug}" cannot take chunked input; use ttsMode "sentence"`)
   }
 
@@ -342,8 +342,6 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     closed = true
     meter.seal()
   }
-  armMicIdle()
-
   const deps: CallPipelineDeps = {
     transport: {
       isOpen: () => !closed,
@@ -408,6 +406,8 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     ...(opts.logPrefix ? { logPrefix: opts.logPrefix } : {}),
   }
   const pipeline = createCallPipeline(deps)
+  // Armed only once `pipeline` exists: the timer callback closes through it.
+  armMicIdle()
 
   const languages = [...new Set([...stt.capabilities.languages, ...tts.capabilities.languages])]
 

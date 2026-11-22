@@ -371,12 +371,12 @@ describe("startCascade", () => {
       await session.close()
     })
 
-    it("continuous mode is refused for a provider that cannot take chunked input", async () => {
+    it.each(["continuous", "ws-continuous"] as const)("%s mode is refused for a provider that cannot take chunked input", async mode => {
       const { emit } = recorder([])
       const tts = makeFakeTts()
       ;(tts.capabilities as { chunkedInput: boolean }).chunkedInput = false
       await expect(
-        startCascade({ emit, hooks: {}, stt: makeFakeStt(), tts, ttsMode: "continuous", brain: () => words("x") }),
+        startCascade({ emit, hooks: {}, stt: makeFakeStt(), tts, ttsMode: mode, brain: () => words("x") }),
       ).rejects.toThrow(/chunked input/)
     })
   })
