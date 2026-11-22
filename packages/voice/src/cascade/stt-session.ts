@@ -57,17 +57,92 @@ export async function openSttSession(
   provider: SttProvider,
   opts: StreamingSttSessionOptions,
 ): Promise<SttSession> {
-  const stream = await provider.openStream({
-    sampleRate: opts.sampleRate,
-    ...(opts.language ? { language: opts.language } : {}),
-    ...(opts.signal ? { signal: opts.signal } : {}),
-  })
-  return wrapSttStream(stream, opts)
+  const open = () =>
+    provider.openStream({
+      sampleRate: opts.sampleRate,
+      ...(opts.language ? { language: opts.language } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
+  // The first open throws to the caller (it decides on file fallback); later
+  // reopens are best effort and never throw.
+  return reconnectingSttSession(open, opts)
+}
+
+/** Consecutive failed reopens after which the session stays down (file fallback). */
+const MAX_REOPEN_FAILURES = 3
+/** Pause between two reopen attempts after a failure, multiplied by the failure count. */
+const REOPEN_BACKOFF_MS = 1000
+
+/**
+ * An `SttSession` that reopens its provider stream when the current one drops
+ * (idle timeout, socket recycle, error), so the next turn is still transcribed
+ * in real time instead of falling back to file transcription. While a reopen
+ * is in flight, or once it has failed `MAX_REOPEN_FAILURES` times in a row,
+ * `isReady()` is false and the pipeline uses file transcription as before.
+ */
+export async function reconnectingSttSession(
+  open: () => Promise<SttStream>,
+  opts: Pick<StreamingSttSessionOptions, "sampleRate" | "finalTimeoutMs" | "signal">,
+): Promise<SttSession> {
+  let closedByCaller = false
+  let reopening = false
+  let failures = 0
+  let retryAt = 0
+  let current: SttSession
+
+  const wrap = (stream: SttStream): SttSession => {
+    const session: SttSession = wrapSttStream(stream, opts, () => {
+      // Only the live session's drop triggers a reopen (not a stale one).
+      if (session === current) reopen()
+    })
+    return session
+  }
+
+  const reopen = () => {
+    if (closedByCaller || reopening || opts.signal?.aborted) return
+    if (failures >= MAX_REOPEN_FAILURES || Date.now() < retryAt) return
+    reopening = true
+    void open().then(
+      stream => {
+        reopening = false
+        if (closedByCaller) {
+          void stream.close().catch(() => undefined)
+          return
+        }
+        failures = 0
+        current = wrap(stream)
+      },
+      () => {
+        reopening = false
+        failures++
+        retryAt = Date.now() + REOPEN_BACKOFF_MS * failures
+      },
+    )
+  }
+
+  current = wrap(await open())
+
+  return {
+    isReady: () => {
+      if (current.isReady()) return true
+      reopen() // retry after a backed-off failure
+      return false
+    },
+    pushAudio: pcm => current.pushAudio(pcm),
+    commit: timeoutMs => current.commit(timeoutMs),
+    discard: () => current.discard(),
+    close() {
+      closedByCaller = true
+      current.close()
+    },
+  }
 }
 
 export function wrapSttStream(
   stream: SttStream,
   opts: Pick<StreamingSttSessionOptions, "sampleRate" | "finalTimeoutMs">,
+  /** Called once when the stream drops (closed or error) without `close()`. */
+  onDown?: () => void,
 ): SttSession {
   let ready = true
   let seq = 0
@@ -94,16 +169,15 @@ export function wrapSttStream(
     }
     settle(t.text)
   })
-  stream.on("error", () => {
+  const down = () => {
+    const wasReady = ready
     ready = false
     ignoreUntil = []
     settle(null)
-  })
-  stream.on("closed", () => {
-    ready = false
-    ignoreUntil = []
-    settle(null)
-  })
+    if (wasReady) onDown?.()
+  }
+  stream.on("error", down)
+  stream.on("closed", down)
 
   return {
     isReady: () => ready,
