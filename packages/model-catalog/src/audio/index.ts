@@ -30,3 +30,13 @@ export type {
   AudioBillingUnit,
   AudioProvider,
 } from "./catalog.js"
+// Live/realtime auto-synced roster (audio:openai-live generator) + the
+// curation bridge between it and the curated catalog above.
+export {
+  OPENAI_LIVE_MODELS,
+  OPENAI_LIVE_MODEL_IDS,
+  CURATED_OPENAI_AUDIO_PROVIDER_IDS,
+  isCuratedOpenAIAudioModel,
+  openaiLiveIdsNeedingCuration,
+} from "./live.js"
+export type { AudioLiveModelEntry } from "./live.js"

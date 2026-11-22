@@ -26,6 +26,11 @@ export {
 export { llmHuggingfaceGenerator } from "./generators/llm-huggingface.js"
 export { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
 export { voiceMinimax } from "./generators/voice-minimax.js"
+export {
+  audioOpenAILive,
+  AUDIO_OPENAI_LIVE_SOURCE,
+  isLiveAudioId,
+} from "./generators/audio-openai-live.js"
 export { imageReplicate } from "./generators/image-replicate.js"
 export {
   mediaOpenRouterImage,
