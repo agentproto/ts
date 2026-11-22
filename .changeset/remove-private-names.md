@@ -8,7 +8,6 @@
 "@agentproto/agencies-engine": patch
 "@agentproto/app": patch
 "@agentproto/apps": patch
-"@agentproto/assembly": patch
 "@agentproto/auth": patch
 "@agentproto/billing": patch
 "@agentproto/bridge": patch
@@ -22,7 +21,6 @@
 "@agentproto/harness": patch
 "@agentproto/knowledge-cascade": patch
 "@agentproto/knowledge-engine": patch
-"@agentproto/memory": patch
 "@agentproto/model-catalog": patch
 "@agentproto/office": patch
 "@agentproto/role-catalog": patch
