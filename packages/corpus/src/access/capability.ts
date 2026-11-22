@@ -2,7 +2,7 @@
  * Capability — uniform tool-boundary enforcement.
  *
  * Every corpus tool declares a required `Capability`. The host
- * (Guilde corpus.bundle / corpus-cli) calls `evaluateCapability` at
+ * (Acme corpus.bundle / corpus-cli) calls `evaluateCapability` at
  * dispatch time. Capabilities are configured per-workspace under
  * `KNOWLEDGE.md.metadata.corpus.accessModes`.
  *

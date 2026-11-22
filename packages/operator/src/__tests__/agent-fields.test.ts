@@ -69,7 +69,7 @@ describe("an operator carries the AGENT fields by reference (C2)", () => {
       id: "lex",
       name: "Lex",
       persona_summary: "Researcher.",
-      tools: ["tool:katchy/search", { ref: "x" }, { kind: "mcp", server: "k" }],
+      tools: ["tool:nova/search", { ref: "x" }, { kind: "mcp", server: "k" }],
       skills: ["skill:seo", { id: "seo", version: "1.0.0" }],
     })
     expect(parsed.success).toBe(true)

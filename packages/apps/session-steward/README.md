@@ -64,10 +64,14 @@ the `userOrigins` / `closableOrigins` inputs:
 - **Close allowed:** every origin a harness or scheduler stamps — `cron` /
   `cron:*`, `routine:*`, `gate`, `workflow` (step sessions), `review`
   (reviewer lanes), `webhook`, `model-bench*` (the bench harness and its
-  smoketest), `pygmalion` / `pygmalion:*`, `app-service:*` — and executors (a
-  session with a `parentSessionId`). Pygmalion and app service owners stamp
+  smoketest), `orchestrator` / `orchestrator:*`, `app-service:*` — and executors (a
+  session with a `parentSessionId`). Orchestrator and app service owners stamp
   those origins at spawn; display labels are never used as authorization
   evidence.
+
+A host that owns its own root label adds it with the `extraClosableOrigins`
+input (for example `["my-supervisor", "my-supervisor:*"]`); it is appended to
+the closable list in force, so the defaults need not be restated.
 
 An origin-less root remains flag-only. That is a legacy/fail-safe state, not
 proof that a human created it: machine launchers must stamp `origin` when they

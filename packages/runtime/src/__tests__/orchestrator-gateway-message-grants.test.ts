@@ -46,8 +46,8 @@ async function callSend(input: { grants: Grant[] | undefined }): Promise<{ isErr
   const eventRing = createEventRing()
   eventRing.wire(sessionEvents)
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
-  const sender = spawnNode(registry, "app-agentik-pygmalion", "brain")
-  const recipient = spawnNode(registry, "agentik-studio", "pm")
+  const sender = spawnNode(registry, "app-orchestrator", "brain")
+  const recipient = spawnNode(registry, "demo-app", "pm")
   const factory = createOrchestratorMcpServerFactory({
     workspace: process.cwd(),
     registry,

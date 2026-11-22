@@ -25,8 +25,8 @@ feed input; `cwd` sets the working directory.
   "tool": "command_execute",
   "args": {
     "command": "pnpm",
-    "args": ["--filter=@simone/core", "check-types"],
-    "cwd": "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio",
+    "args": ["--filter=@demo/core", "check-types"],
+    "cwd": "/path/to/project",
     "timeoutMs": 120000
   }
 }

@@ -27,7 +27,7 @@ import {
 
 const client = createAgentCliClient(mastraController, {
   host: createAgentControllerHost({
-    resolvers: { "@guilde/harness/storage/postgres": ref => makeStore(ref.input) },
+    resolvers: { "@acme/harness/storage/postgres": ref => makeStore(ref.input) },
   }),
 })
 await client.connect({

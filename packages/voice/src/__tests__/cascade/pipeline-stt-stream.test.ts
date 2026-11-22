@@ -1,8 +1,5 @@
 // @ts-nocheck
-// Ported from agentik-studio projects/simone/apps/voice/test/calls/pipeline-stt-stream.test.ts
-// The expect blocks are unchanged from the studio original; only imports (and,
-// where noted in the PR, injected provider labels) differ. Type checking is off
-// for this file because the studio does not type-check its test files.
+// Type checking is off for this file: it is kept close to a verbatim test suite.
 /**
  * Pipeline + streaming STT integration. A fake SttSession proves the audio is
  * pushed as the caller speaks, the final is used without a WAV upload, whisper

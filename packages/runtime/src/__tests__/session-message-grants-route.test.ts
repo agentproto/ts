@@ -69,13 +69,13 @@ async function route(grants: Grant[]) {
   const tmp = mkdtempSync(join(tmpdir(), "messages-grants-route-"))
   const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
   const sender = registry.spawnAgent({
-    workspaceSlug: "app-agentik-pygmalion",
+    workspaceSlug: "app-orchestrator",
     cwd: "/tmp",
     agentSession: idle("s"),
     adapterSlug: "fake",
   })
   const recipient = registry.spawnAgent({
-    workspaceSlug: "agentik-studio",
+    workspaceSlug: "demo-app",
     cwd: "/tmp",
     agentSession: idle("r"),
     adapterSlug: "fake",

@@ -10,19 +10,19 @@
  * side-effect imports any more — they just export their factory
  * functions and let the manifest do the wiring.
  *
- * Example (in @guilde/agentproto-bridge's package.json):
+ * Example (in @acme/agentproto-bridge's package.json):
  *
  *   {
- *     "name": "@guilde/agentproto-bridge",
+ *     "name": "@acme/agentproto-bridge",
  *     "agentproto": {
  *       "schema": "agentproto/adapter/v1",
  *       "substrates": [
  *         {
- *           "kind": "guilde-mcp",
+ *           "kind": "acme-mcp",
  *           "entry": "./dist/index.mjs",
- *           "export": "guildeMcpSubstrateFactory",
+ *           "export": "acmeMcpSubstrateFactory",
  *           "capabilities": ["mentions", "reactions", "identity"],
- *           "description": "Reads/writes turns through Guilde's MCP server."
+ *           "description": "Reads/writes turns through Acme's MCP server."
  *         }
  *       ],
  *       "executors": [

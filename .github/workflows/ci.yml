@@ -272,6 +272,14 @@ jobs:
           node --test scripts/check-spec-drift.test.mjs
           node scripts/check-spec-drift.mjs
 
+      # This repository is public: no private product or repository name may
+      # appear in a tracked file or path. The list lives in
+      # scripts/private-names.json (exceptions empty by default).
+      - name: Check private names
+        run: |
+          node --test scripts/check-private-names.test.mjs
+          node scripts/check-private-names.mjs
+
       # Guard the vendored copy of the AIP JSON Schemas (specs/resources/)
       # against drift from canonical. agentproto/agentproto is public, so CI
       # checks it out (shallow, main) into a directory inside the workspace

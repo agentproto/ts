@@ -33,19 +33,19 @@ describe("imported-mcps.json file mode", () => {
 
 describe("preserves P1 fields on other entries", () => {
   const other = {
-    id: "claude-code:global:guilde",
-    alias: "guilde",
+    id: "claude-code:global:acme",
+    alias: "acme",
     addedAt: "2026-01-01T00:00:00.000Z",
-    origin: { kind: "claude-code", scope: "global", name: "guilde" },
+    origin: { kind: "claude-code", scope: "global", name: "acme" },
     resolve: "live",
     secretRefs: {
-      headers: { Authorization: "agentproto/mcp-import/claude-code:global:guilde#header:Authorization" },
+      headers: { Authorization: "agentproto/mcp-import/claude-code:global:acme#header:Authorization" },
     },
     snapshot: {
-      id: "claude-code:global:guilde",
+      id: "claude-code:global:acme",
       source: "claude-code",
       scope: "global",
-      name: "guilde",
+      name: "acme",
       type: "http",
       url: "https://example.test/mcp",
       headers: { Authorization: "<secretRef>" },

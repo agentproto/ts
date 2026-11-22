@@ -41,8 +41,8 @@ Usage:
 
 Examples:
   agentproto config set daemon.port 18791
-  agentproto config set daemon.allowedOrigins https://guilde.work,https://app.example.com
-  agentproto config set tunnel.host wss://guilde.work/api/v1/agentproto/tunnel
+  agentproto config set daemon.allowedOrigins https://example.com,https://app.example.com
+  agentproto config set tunnel.host wss://example.com/api/v1/agentproto/tunnel
   agentproto config get daemon.port
 `
 
@@ -116,7 +116,7 @@ async function runSet(args: readonly string[]): Promise<number> {
     process.stderr.write(
       "agentproto config set: missing key and/or value.\n" +
         '  Try: agentproto config set daemon.port 18791\n' +
-        '       agentproto config set daemon.allowedOrigins https://guilde.work,https://x.com\n',
+        '       agentproto config set daemon.allowedOrigins https://example.com,https://x.com\n',
     )
     return 2
   }

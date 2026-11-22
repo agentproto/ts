@@ -144,9 +144,9 @@ describe("evaluateGrants: scope matching (AIP-38 rules 1, 2, 5)", () => {
   })
 
   it("rule 1: an exact scope matches only the same string, case-sensitively", () => {
-    const g = grant({ scope: "pygmalion/cron_create" })
-    expect(evaluateGrants([g], req({ scope: "pygmalion/cron_create" })).decision).toBe("allow")
-    expect(evaluateGrants([g], req({ scope: "pygmalion/Cron_create" })).decision).toBe("deny")
+    const g = grant({ scope: "orchestrator/cron_create" })
+    expect(evaluateGrants([g], req({ scope: "orchestrator/cron_create" })).decision).toBe("allow")
+    expect(evaluateGrants([g], req({ scope: "orchestrator/Cron_create" })).decision).toBe("deny")
     expect(evaluateGrants([g], req()).decision).toBe("deny")
   })
 

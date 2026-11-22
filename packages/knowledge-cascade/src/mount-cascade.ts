@@ -4,7 +4,7 @@
  *
  * This is the same mount order `buildOverlayFromStack` derives from a
  * resolved `StackResolution` (`@agentproto/corpus`'s `stack/mount.ts`), and
- * the shape Guilde's `overlayOperatorPacks` hand-assembles for its
+ * the shape Acme's `overlayOperatorPacks` hand-assembles for its
  * persona→pack binding — generalized here so any host (standalone app
  * included) can reach it without going through the `LayerProvider`/
  * `StackResolver` machinery:

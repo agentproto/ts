@@ -209,7 +209,7 @@ export function sameWorkspace(
 /**
  * Do two sessions belong to the same PEER GROUP? `peerGroups` is the
  * operator's list of workspace families (`defaults.messaging.peerGroups`,
- * e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`): two sessions are
+ * e.g. `[["demo-app", "app-orchestrator"]]`): two sessions are
  * peers when both workspace slugs appear in the SAME group.
  *
  * The rules: a missing/blank slug on either side is never a peer (an unset

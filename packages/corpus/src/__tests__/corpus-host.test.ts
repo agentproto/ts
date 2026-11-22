@@ -2,7 +2,7 @@
  * Standalone KB install proof test.
  *
  * Demonstrates the full "install KB → agent accesses it" path without
- * Guilde, without a database, and without a running Mastra server:
+ * Acme, without a database, and without a running Mastra server:
  *
  *   1. Build a MemFsCorpusHost (Component A).
  *   2. Mount a small pack: one PLAYBOOK.md + one knowledge entry.

@@ -1,6 +1,3 @@
-/*
- * Ported from agentik-studio packages/agent-framework/src/voice/sentence-pipeliner.ts (PR #1114).
- */
 /**
  * Sentence Pipeliner - streams LLM tokens into TTS calls at sentence
  * boundaries so we don't have to wait for the full reply before audio

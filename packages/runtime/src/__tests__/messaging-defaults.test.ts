@@ -25,7 +25,7 @@ describe("resolveMessagingDefaults", () => {
         messaging: {
           allowSiblings: true,
           allowSameWorkspace: false,
-          peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
+          peerGroups: [["demo-app", "app-orchestrator"]],
           grants: [{ principal: "session-label://brain", actions: [{ action: "session:message" }] }],
           agentInterrupt: "allow",
           pendingPromptStaleMinutes: 12,
@@ -38,7 +38,7 @@ describe("resolveMessagingDefaults", () => {
       agentPromptInterrupt: true,
       allowSiblings: true,
       allowSameWorkspace: false,
-      peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
+      peerGroups: [["demo-app", "app-orchestrator"]],
       grants: [{ principal: "session-label://brain", actions: [{ action: "session:message" }] }],
       peerBinding: "slug",
       agentInterrupt: "allow",

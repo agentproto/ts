@@ -61,7 +61,7 @@ describe("GET /permissions/grants", () => {
       adapterSlug: "fake",
     })
     registry.setOperatorLabel(s1.id, "brain")
-    registry.setPromptPolicy(s1.id, ["label:pygmalion-brain-persistent"])
+    registry.setPromptPolicy(s1.id, ["label:orchestrator-brain-persistent"])
 
     const resolveAgentAdapter: AgentAdapterResolver = async () => ({
       startSession: vi.fn(),
@@ -137,7 +137,7 @@ describe("GET /permissions/grants", () => {
       expect(body.grants[1]).toMatchObject({
         sessionId: s1.id,
         grant: {
-          principal: "session-label://pygmalion-brain-persistent",
+          principal: "session-label://orchestrator-brain-persistent",
           actions: [
             { action: "session:prompt", scope: "label:brain" },
             { action: "session:control", scope: "label:brain" },
@@ -256,9 +256,9 @@ describe("GET /permissions/grants", () => {
     const registry = createSessionsRegistry({ persist: false })
     const grants: Grant[] = [
       {
-        principal: "session-label://pygmalion-brain-persistent",
+        principal: "session-label://orchestrator-brain-persistent",
         effect: "allow" as const,
-        actions: [{ action: "session:message", scope: "workspace:agentik-studio" }],
+        actions: [{ action: "session:message", scope: "workspace:demo-app" }],
       },
     ]
     const resolveAgentAdapter: AgentAdapterResolver = async () => ({

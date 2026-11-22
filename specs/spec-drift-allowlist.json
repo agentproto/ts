@@ -50,6 +50,36 @@
       "file": "aip-46/draft/SessionConfig.schema.json",
       "field": "$defs.SessionConfig.properties.access.properties.profileRef",
       "reason": "account slots: access.profileRef also accepts `slot:<name>`, resolved through the host `accountSlots` map at use time (spawn, restart, turn-retry fallback), the session recording `accessSlot` beside the billed profile; pending upstream spec PR"
+    },
+    {
+      "file": "aip-24/draft/ASSEMBLY.schema.json",
+      "field": "properties.mode.description",
+      "reason": "a private product name is replaced by a neutral one in this text; pending upstream spec PR"
+    },
+    {
+      "file": "aip-24/draft/ASSEMBLY.schema.json",
+      "field": "properties.matchMode.description",
+      "reason": "a private product name is replaced by a neutral one in this text; pending upstream spec PR"
+    },
+    {
+      "file": "aip-49/draft/ASSET.schema.json",
+      "field": "properties.ref.description",
+      "reason": "a private product name is replaced by a neutral one in this text; pending upstream spec PR"
+    },
+    {
+      "file": "aip-49/draft/ASSET.schema.json",
+      "field": "properties.name.description",
+      "reason": "a private product name is replaced by a neutral one in this text; pending upstream spec PR"
+    },
+    {
+      "file": "aip-54/draft/WS-REF.schema.json",
+      "field": "examples.2",
+      "reason": "a private product name is replaced by a neutral one in this text; pending upstream spec PR"
+    },
+    {
+      "file": "aip-72/draft/MEMORY.schema.json",
+      "field": "properties.tags.description",
+      "reason": "a private product name is replaced by a neutral one in this text; pending upstream spec PR"
     }
   ]
 }

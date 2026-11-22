@@ -82,8 +82,8 @@ async function twoSessions(opts?: { allowPromptFrom?: string[] }) {
 
 describe("matchesSessionGrant", () => {
   const labels: Record<string, string | undefined> = {
-    sess_brain: "pygmalion-brain-persistent",
-    sess_agent: "pygmalion-agent-alpha",
+    sess_brain: "orchestrator-brain-persistent",
+    sess_agent: "orchestrator-agent-alpha",
     sess_unlabeled: undefined,
   }
   const operatorLabelOf = (id: string) => labels[id]
@@ -95,18 +95,18 @@ describe("matchesSessionGrant", () => {
 
   it("matches an exact `label:` entry", () => {
     expect(
-      matchesSessionGrant(["label:pygmalion-brain-persistent"], "sess_brain", operatorLabelOf),
+      matchesSessionGrant(["label:orchestrator-brain-persistent"], "sess_brain", operatorLabelOf),
     ).toBe(true)
     expect(
-      matchesSessionGrant(["label:pygmalion-brain-other"], "sess_brain", operatorLabelOf),
+      matchesSessionGrant(["label:orchestrator-brain-other"], "sess_brain", operatorLabelOf),
     ).toBe(false)
   })
 
   it("matches a `label:<prefix>*` entry", () => {
-    expect(matchesSessionGrant(["label:pygmalion-agent-*"], "sess_agent", operatorLabelOf)).toBe(
+    expect(matchesSessionGrant(["label:orchestrator-agent-*"], "sess_agent", operatorLabelOf)).toBe(
       true,
     )
-    expect(matchesSessionGrant(["label:pygmalion-brain-*"], "sess_agent", operatorLabelOf)).toBe(
+    expect(matchesSessionGrant(["label:orchestrator-brain-*"], "sess_agent", operatorLabelOf)).toBe(
       false,
     )
   })
@@ -119,8 +119,8 @@ describe("matchesSessionGrant", () => {
 
   it("never matches the mutable `label`, only the operatorLabel", () => {
     // A caller that renamed itself carries no operatorLabel: no match.
-    expect(matchesSessionGrant(["label:pygmalion-brain-persistent"], "sess_renamed", () => undefined)).toBe(false)
-    expect(matchesSessionGrant(["label:pygmalion-brain-*"], "sess_unlabeled", operatorLabelOf)).toBe(false)
+    expect(matchesSessionGrant(["label:orchestrator-brain-persistent"], "sess_renamed", () => undefined)).toBe(false)
+    expect(matchesSessionGrant(["label:orchestrator-brain-*"], "sess_unlabeled", operatorLabelOf)).toBe(false)
   })
 })
 
@@ -197,9 +197,9 @@ describe("checkSessionOwnerGate (pure)", () => {
 
   describe("label-based `allowPromptFrom` grants", () => {
     const labels = {
-      "sess_brain": "pygmalion-brain-persistent",
-      "sess_agent_1": "pygmalion-agent-alpha",
-      "sess_agent_2": "pygmalion-agent-beta",
+      "sess_brain": "orchestrator-brain-persistent",
+      "sess_agent_1": "orchestrator-agent-alpha",
+      "sess_agent_2": "orchestrator-agent-beta",
       "sess_unlabeled": undefined,
     } as Record<string, string | undefined>
     const operatorLabelOf = (id: string) => labels[id]
@@ -208,7 +208,7 @@ describe("checkSessionOwnerGate (pure)", () => {
       const target = {
         id: "sess_child",
         parentSessionId: undefined,
-        allowPromptFrom: ["label:pygmalion-brain-persistent"],
+        allowPromptFrom: ["label:orchestrator-brain-persistent"],
       }
       const gate = checkSessionOwnerGate({
         callerSessionId: "sess_brain",
@@ -223,7 +223,7 @@ describe("checkSessionOwnerGate (pure)", () => {
       const target = {
         id: "sess_child",
         parentSessionId: undefined,
-        allowPromptFrom: ["label:pygmalion-agent-*"],
+        allowPromptFrom: ["label:orchestrator-agent-*"],
       }
       expect(
         checkSessionOwnerGate({ callerSessionId: "sess_agent_1", target, tool: "agent_prompt", operatorLabelOf }),
@@ -234,14 +234,14 @@ describe("checkSessionOwnerGate (pure)", () => {
     })
 
     it("a non-matching label is refused", () => {
-      const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-agent-*"] }
+      const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:orchestrator-agent-*"] }
       expect(
         checkSessionOwnerGate({ callerSessionId: "sess_brain", target, tool: "agent_prompt", operatorLabelOf }).ok,
       ).toBe(false)
       expect(
         checkSessionOwnerGate({
           callerSessionId: "sess_other",
-          target: { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-brain-persistent"] },
+          target: { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:orchestrator-brain-persistent"] },
           tool: "agent_prompt",
           operatorLabelOf,
         }).ok,
@@ -249,7 +249,7 @@ describe("checkSessionOwnerGate (pure)", () => {
     })
 
     it("a caller session whose label is missing never matches a `label:` entry", () => {
-      const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-agent-*"] }
+      const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:orchestrator-agent-*"] }
       expect(
         checkSessionOwnerGate({ callerSessionId: "sess_unlabeled", target, tool: "agent_prompt", operatorLabelOf }).ok,
       ).toBe(false)
@@ -285,10 +285,10 @@ describe("checkSessionOwnerGate (pure)", () => {
       const target = {
         id: "sess_child",
         parentSessionId: undefined,
-        allowPromptFrom: ["label:pygmalion-brain-persistent"],
+        allowPromptFrom: ["label:orchestrator-brain-persistent"],
       }
       // The brain restarted: a brand-new session id, same registered label.
-      const restarted = { ...labels, "sess_brain_new": "pygmalion-brain-persistent" } as Record<string, string | undefined>
+      const restarted = { ...labels, "sess_brain_new": "orchestrator-brain-persistent" } as Record<string, string | undefined>
       expect(
         checkSessionOwnerGate({
           callerSessionId: "sess_brain_new",
@@ -301,7 +301,7 @@ describe("checkSessionOwnerGate (pure)", () => {
   })
 
   describe("`label:` grants key on the immutable operatorLabel, never the mutable label", () => {
-    const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:pygmalion-brain-persistent"] }
+    const target = { id: "sess_child", parentSessionId: undefined, allowPromptFrom: ["label:orchestrator-brain-persistent"] }
 
     it("a caller that only RENAMED itself to the granted label (no operatorLabel) is refused", () => {
       // session_rename sets `label`, never `operatorLabel`.
@@ -321,13 +321,13 @@ describe("checkSessionOwnerGate (pure)", () => {
         target,
         tool: "agent_prompt",
         parentOf: id => parents[id],
-        operatorLabelOf: () => "pygmalion-brain-persistent",
+        operatorLabelOf: () => "orchestrator-brain-persistent",
       })
       expect(res.ok).toBe(false)
     })
 
     it("an operator-spawned root with the label is allowed (exact and prefix)", () => {
-      const op = (id: string) => (id === "sess_brain" ? "pygmalion-brain-persistent" : undefined)
+      const op = (id: string) => (id === "sess_brain" ? "orchestrator-brain-persistent" : undefined)
       const parentOf = () => undefined
       expect(
         checkSessionOwnerGate({ callerSessionId: "sess_brain", target, tool: "agent_prompt", parentOf, operatorLabelOf: op }),
@@ -335,7 +335,7 @@ describe("checkSessionOwnerGate (pure)", () => {
       expect(
         checkSessionOwnerGate({
           callerSessionId: "sess_brain",
-          target: { ...target, allowPromptFrom: ["label:pygmalion-brain-*"] },
+          target: { ...target, allowPromptFrom: ["label:orchestrator-brain-*"] },
           tool: "agent_prompt",
           parentOf,
           operatorLabelOf: op,
@@ -350,7 +350,7 @@ describe("checkSessionOwnerGate (pure)", () => {
             callerSessionId: "sess_brain",
             target: { ...target, allowPromptFrom: [entry] },
             tool: "agent_prompt",
-            operatorLabelOf: () => "pygmalion-brain-persistent",
+            operatorLabelOf: () => "orchestrator-brain-persistent",
           }).ok,
         ).toBe(false)
       }
@@ -482,20 +482,20 @@ describe("session-owner gate over MCP", () => {
     const operator = await connectAs(registry)
     const ok = await callTool(operator, "agent_set_operator_label", {
       sessionId: child.id,
-      operatorLabel: "pygmalion-brain-persistent",
+      operatorLabel: "orchestrator-brain-persistent",
     })
     expect(ok.isError).toBeUndefined()
-    expect(JSON.parse(ok.content?.[0]?.text ?? "{}").operatorLabel).toBe("pygmalion-brain-persistent")
-    expect(registry.get(child.id)?.operatorLabel).toBe("pygmalion-brain-persistent")
+    expect(JSON.parse(ok.content?.[0]?.text ?? "{}").operatorLabel).toBe("orchestrator-brain-persistent")
+    expect(registry.get(child.id)?.operatorLabel).toBe("orchestrator-brain-persistent")
 
     // Surrounding whitespace is trimmed (a padded label would never match an
     // exact `label:<x>` grant).
     const padded = await callTool(operator, "agent_set_operator_label", {
       sessionId: child.id,
-      operatorLabel: "  pygmalion-brain-persistent  ",
+      operatorLabel: "  orchestrator-brain-persistent  ",
     })
     expect(padded.isError).toBeUndefined()
-    expect(registry.get(child.id)?.operatorLabel).toBe("pygmalion-brain-persistent")
+    expect(registry.get(child.id)?.operatorLabel).toBe("orchestrator-brain-persistent")
 
     // A whitespace-only label clears it, same as an empty string.
     const whitespace = await callTool(operator, "agent_set_operator_label", {

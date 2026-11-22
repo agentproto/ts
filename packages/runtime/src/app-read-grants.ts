@@ -5,7 +5,7 @@
  * operator can widen that, per app id, with `apps.readGrants` in
  * `~/.agentproto/config.json`:
  *
- *   { "apps": { "readGrants": { "editorial-desk": ["/abs/projects/simone"] } } }
+ *   { "apps": { "readGrants": { "editorial-desk": ["/abs/projects/demo"] } } }
  *
  * The grant lives ONLY there. Nothing an app ships (APP.md frontmatter, the
  * installed record in apps.json, a tool call) is ever consulted, so an app

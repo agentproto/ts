@@ -21,9 +21,9 @@ body
 
 describe("OFFICE.md extends accepts an office path", () => {
   it("parses a view that extends ../OFFICE.md", () => {
-    const m = parseOfficeManifest(head("acme-simone", "extends: ../OFFICE.md"))
+    const m = parseOfficeManifest(head("acme-demo", "extends: ../OFFICE.md"))
     expect(m.frontmatter.extends).toBe("../OFFICE.md")
-    expect(officeFromManifest(m).name).toBe("acme-simone")
+    expect(officeFromManifest(m).name).toBe("acme-demo")
   })
 
   it("parses ./OFFICE.md and a nested path to a parent view", () => {

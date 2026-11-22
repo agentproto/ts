@@ -4,8 +4,8 @@ import type { AssetDeclaration, ConvertEdge } from "../asset.js"
 import { canonical } from "../restriction-lattice.js"
 
 const POINTS: AssetDeclaration = {
-  ref: "GUILDE_POINTS",
-  name: "Guilde Points",
+  ref: "ACME_POINTS",
+  name: "Acme Points",
   symbol: "GPT",
   decimals: 0,
   standard: "internal",
@@ -14,14 +14,14 @@ const POINTS: AssetDeclaration = {
     spendableOn: [],
     transfer: "none",
     convertEdges: [
-      { to: "GUILDE_CREDITS", rate: { kind: "fixed", ratio: 1 }, addsRestriction: ["from-points"] },
+      { to: "ACME_CREDITS", rate: { kind: "fixed", ratio: 1 }, addsRestriction: ["from-points"] },
     ],
   },
 }
 
 const CREDIT: AssetDeclaration = {
-  ref: "GUILDE_CREDITS",
-  name: "Guilde Credits",
+  ref: "ACME_CREDITS",
+  name: "Acme Credits",
   symbol: "GCR",
   decimals: 2,
   standard: "internal",

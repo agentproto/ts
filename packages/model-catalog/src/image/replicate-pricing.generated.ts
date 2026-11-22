@@ -5,7 +5,6 @@
 import type { MediaPricing } from "../pricing/media.js"
 
 export const REPLICATE_IMAGE_PRICING: Record<string, MediaPricing> = {
-  "replicate:agentik/custom-simone_infographic_1": { unit: "per_second", priceUsd: 0.001525, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:black-forest-labs/flux-1.1-pro": { unit: "per_image", priceUsd: 0.04, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:black-forest-labs/flux-1.1-pro-ultra": { unit: "per_image", priceUsd: 0.06, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:black-forest-labs/flux-kontext-max": { unit: "per_image", priceUsd: 0.08, source: "replicate", fetchedAt: "2026-11-02" },

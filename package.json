@@ -22,6 +22,7 @@
     "clean": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" clean",
     "scaffold-aip": "node scripts/scaffold-aip.mjs",
     "check:spec-drift": "node scripts/check-spec-drift.mjs",
+    "check:private-names": "node scripts/check-private-names.mjs",
     "status": "node scripts/gen-status.mjs",
     "docs:spec-packages": "node scripts/gen-spec-packages-doc.mjs",
     "catalog:sync-native": "node scripts/catalog-sync/run-all.mjs",

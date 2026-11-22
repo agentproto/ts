@@ -177,7 +177,7 @@ export type StorageHandle = Readonly<StorageDefinition>
 //
 // `factory` is fully host-typed — agentproto stays agnostic to what
 // "a filesystem" means at runtime (Mastra `MastraFilesystem`,
-// `@guilde/...` adapters, MCP-tool surfaces). The TFactory generic is
+// `@acme/...` adapters, MCP-tool surfaces). The TFactory generic is
 // the host's choice.
 //
 // `capabilities` is opaque — agentproto neither validates nor reads

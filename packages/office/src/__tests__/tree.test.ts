@@ -66,10 +66,10 @@ parent: ${parent}
 
 const NODES = [
   { ref: "@acme/acme", dir: "" },
-  { ref: "@acme/simone", dir: "simone" },
-  { ref: "@acme/katchy", dir: "katchy" },
+  { ref: "@acme/demo", dir: "demo" },
+  { ref: "@acme/nova", dir: "nova" },
   { ref: "@acme/plain", dir: "plain" },
-  { ref: "@acme/simone-lab", dir: "simone/lab" },
+  { ref: "@acme/demo-lab", dir: "demo/lab" },
 ]
 
 const analyze = (opts?: Parameters<typeof analyzeOfficeTree>[1]) =>
@@ -83,14 +83,14 @@ const warns = (t: ReturnType<typeof analyze>) =>
 
 const baseTree = () => {
   write("OFFICE.md", rootOffice())
-  write("simone/OFFICE.md", office("acme-simone", "extends: ../OFFICE.md"))
-  write("katchy/OFFICE.md", office("acme-katchy", "extends: ../OFFICE.md"))
+  write("demo/OFFICE.md", office("acme-demo", "extends: ../OFFICE.md"))
+  write("nova/OFFICE.md", office("acme-nova", "extends: ../OFFICE.md"))
   write("items/role/coo.md", seat("coo", "holder: operator:coo"))
   write(
-    "items/role/pm-simone.md",
+    "items/role/pm-demo.md",
     seat(
-      "pm-simone",
-      "parent: workspace:@acme/simone\nreportsTo: coo\nholder: operator:pm-simone",
+      "pm-demo",
+      "parent: workspace:@acme/demo\nreportsTo: coo\nholder: operator:pm-demo",
     ),
   )
 }
@@ -121,27 +121,27 @@ describe("an office spans a company tree", () => {
 
   it("refuses a second workspace-root OFFICE.md in the tree", () => {
     baseTree()
-    write("katchy/OFFICE.md", office("acme-katchy-root"))
+    write("nova/OFFICE.md", office("acme-nova-root"))
     const t = analyze()
     expect(t.ok).toBe(false)
     expect(hard(t)).toContainEqual(
       expect.objectContaining({
         code: "office_tree_second_root",
-        node: "@acme/katchy",
+        node: "@acme/nova",
       }),
     )
   })
 
   it("refuses a view whose extends leaves the tree", () => {
     baseTree()
-    write("katchy/OFFICE.md", office("acme-katchy", "extends: ../../OFFICE.md"))
+    write("nova/OFFICE.md", office("acme-nova", "extends: ../../OFFICE.md"))
     const t = analyze()
     expect(codes(hard(t))).toContain("office_extends_outside_tree")
   })
 
   describe("seat parent", () => {
     it.each([
-      ["a node of another tree", "workspace:@other/simone"],
+      ["a node of another tree", "workspace:@other/demo"],
       ["a node of the tree that carries no view", "workspace:@acme/plain"],
       ["the root node, which holds the root office, not a view", "workspace:@acme/acme"],
       ["an item that is not in this office", "ghost-team"],
@@ -183,7 +183,7 @@ describe("an office spans a company tree", () => {
 
     it("enforces allowedParentKinds, with `view` as a parent kind", () => {
       baseTree()
-      write("items/team/t1.md", team("t1", "workspace:@acme/simone"))
+      write("items/team/t1.md", team("t1", "workspace:@acme/demo"))
       write("items/role/pm-t.md", seat("pm-t", "parent: t1"))
       // `team: [view]` allows a view parent, `role: [team, view]` allows team
       expect(hard(analyze())).toEqual([])
@@ -197,7 +197,7 @@ describe("an office spans a company tree", () => {
 
     it("counts a view parent as one level in maxDepth", () => {
       baseTree()
-      write("items/team/t1.md", team("t1", "workspace:@acme/simone"))
+      write("items/team/t1.md", team("t1", "workspace:@acme/demo"))
       write("items/role/deep.md", seat("deep", "parent: t1"))
       expect(hard(analyze())).toEqual([])
       // maxDepth 3: view(1) > team(2) > role(3). One more level overflows.
@@ -221,15 +221,15 @@ describe("an office spans a company tree", () => {
           .replace("role: [team, view]", "role: [team, view, role]")
           .replace("maxDepth: 3", "maxDepth: 4"),
       )
-      write("items/team/t1.md", team("t1", "workspace:@acme/katchy"))
+      write("items/team/t1.md", team("t1", "workspace:@acme/nova"))
       write("items/role/in-team.md", seat("in-team", "parent: t1"))
       write("items/role/top.md", seat("top", "parent: in-team"))
       const t = analyze()
       expect(hard(t)).toEqual([])
       expect(t.nodeOfSeat("coo")).toBe("@acme/acme")
-      expect(t.nodeOfSeat("pm-simone")).toBe("@acme/simone")
-      expect(t.nodeOfSeat("in-team")).toBe("@acme/katchy")
-      expect(t.nodeOfSeat("top")).toBe("@acme/katchy")
+      expect(t.nodeOfSeat("pm-demo")).toBe("@acme/demo")
+      expect(t.nodeOfSeat("in-team")).toBe("@acme/nova")
+      expect(t.nodeOfSeat("top")).toBe("@acme/nova")
     })
   })
 
@@ -237,16 +237,16 @@ describe("an office spans a company tree", () => {
     it("warns on a holder the host cannot resolve, and keeps the seat", () => {
       baseTree()
       const t = analyze({
-        resolveHolder: (h) => !(h.kind === "operator" && h.id === "pm-simone"),
+        resolveHolder: (h) => !(h.kind === "operator" && h.id === "pm-demo"),
       })
       expect(hard(t)).toEqual([])
       expect(warns(t)).toContainEqual(
         expect.objectContaining({
           code: "office_holder_unresolvable",
-          item: "pm-simone",
+          item: "pm-demo",
         }),
       )
-      const s = t.seats.find((x) => x.id === "pm-simone")
+      const s = t.seats.find((x) => x.id === "pm-demo")
       expect(s?.activates).toBe(false)
       expect(t.ok).toBe(true)
     })
@@ -291,7 +291,7 @@ describe("an office spans a company tree", () => {
 
     it("refuses more than one manager when cardinality is single", () => {
       baseTree()
-      write("items/role/matrixed.md", seat("matrixed", "reportsTo: [coo, pm-simone]"))
+      write("items/role/matrixed.md", seat("matrixed", "reportsTo: [coo, pm-demo]"))
       const t = analyze()
       expect(hard(t)).toContainEqual(
         expect.objectContaining({
@@ -310,7 +310,7 @@ describe("an office spans a company tree", () => {
           "    enabled: true\n    cardinality: multiple\n    rules: { mustResolveTo: role }",
         ),
       )
-      write("items/role/matrixed.md", seat("matrixed", "reportsTo: [coo, pm-simone]"))
+      write("items/role/matrixed.md", seat("matrixed", "reportsTo: [coo, pm-demo]"))
       expect(hard(analyze())).toEqual([])
     })
 
@@ -354,12 +354,12 @@ describe("an office spans a company tree", () => {
     it("is the nearest view that sets one, else the root office's", () => {
       baseTree()
       write(
-        "katchy/OFFICE.md",
-        office("acme-katchy", "extends: ../OFFICE.md\nexecutor: operator:katchy-lead"),
+        "nova/OFFICE.md",
+        office("acme-nova", "extends: ../OFFICE.md\nexecutor: operator:nova-lead"),
       )
       write(
-        "simone/lab/OFFICE.md",
-        office("acme-simone-lab", "extends: ../OFFICE.md"),
+        "demo/lab/OFFICE.md",
+        office("acme-demo-lab", "extends: ../OFFICE.md"),
       )
       const t = analyze()
       expect(hard(t)).toEqual([])
@@ -368,13 +368,13 @@ describe("an office spans a company tree", () => {
         from: "@acme/acme",
       })
       // a view that sets none falls through its extends chain to the root
-      expect(t.executorOf("@acme/simone")?.executor).toBe("operator:coo")
-      expect(t.executorOf("@acme/katchy")).toEqual({
-        executor: "operator:katchy-lead",
-        from: "@acme/katchy",
+      expect(t.executorOf("@acme/demo")?.executor).toBe("operator:coo")
+      expect(t.executorOf("@acme/nova")).toEqual({
+        executor: "operator:nova-lead",
+        from: "@acme/nova",
       })
       // a view of a view that sets none: the chain reaches the root
-      expect(t.executorOf("@acme/simone-lab")?.executor).toBe("operator:coo")
+      expect(t.executorOf("@acme/demo-lab")?.executor).toBe("operator:coo")
       // a node with no OFFICE.md takes its nearest ancestor's lens
       expect(t.executorOf("@acme/plain")?.executor).toBe("operator:coo")
     })
@@ -382,17 +382,17 @@ describe("an office spans a company tree", () => {
     it("takes the nearest view in a chain that sets one", () => {
       baseTree()
       write(
-        "simone/OFFICE.md",
-        office("acme-simone", "extends: ../OFFICE.md\nexecutor: operator:simone-lead"),
+        "demo/OFFICE.md",
+        office("acme-demo", "extends: ../OFFICE.md\nexecutor: operator:demo-lead"),
       )
       write(
-        "simone/lab/OFFICE.md",
-        office("acme-simone-lab", "extends: ../OFFICE.md"),
+        "demo/lab/OFFICE.md",
+        office("acme-demo-lab", "extends: ../OFFICE.md"),
       )
       const t = analyze()
-      expect(t.executorOf("@acme/simone-lab")).toEqual({
-        executor: "operator:simone-lead",
-        from: "@acme/simone",
+      expect(t.executorOf("@acme/demo-lab")).toEqual({
+        executor: "operator:demo-lead",
+        from: "@acme/demo",
       })
     })
   })

@@ -161,22 +161,22 @@ The user-facing flow goes through `agentproto plugins`:
 
 ```bash
 # Install a plugin (npm i + add to ~/.agentproto/config.json)
-agentproto plugins install @guilde/agentproto-bridge
+agentproto plugins install @acme/agentproto-bridge
 
 # What's enabled?
 agentproto plugins list
 
 # What does a plugin provide?
-agentproto plugins show @guilde/agentproto-bridge
+agentproto plugins show @acme/agentproto-bridge
 
 # Disable without uninstalling
-agentproto plugins disable @guilde/agentproto-bridge
+agentproto plugins disable @acme/agentproto-bridge
 
 # Re-enable
-agentproto plugins enable @guilde/agentproto-bridge
+agentproto plugins enable @acme/agentproto-bridge
 
 # Fully remove
-agentproto plugins uninstall @guilde/agentproto-bridge
+agentproto plugins uninstall @acme/agentproto-bridge
 ```
 
 Plugins are loaded by `agentproto run-swarm` in the order they appear
@@ -194,7 +194,7 @@ Per the
 - **`@agentproto/adapter-<name>`** — reserved for adapters blessed by
   agentproto-org for generic protocols (Slack, Discord, MCP-as-substrate).
 - **`@<vendor>/agentproto-<name>`** — vendor-owned integrations (e.g.
-  `@guilde/agentproto-bridge`, `@notion/agentproto-pages`).
+  `@acme/agentproto-bridge`, `@notion/agentproto-pages`).
 - **`<name>-agentproto-plugin`** — unscoped community contributions.
 
 The CLI doesn't care about scope — anything `npm install`-able with a

@@ -1,6 +1,6 @@
 /**
- * Unit tests of the Simone [G] settings ported into the kit defaults
- * (inventory: REGLAGES-VOIX-SIMONE-20-11.md, voice kit): turn-level TTS
+ * Unit tests of the voice settings in the kit defaults:
+ * turn-level TTS
  * mode and per-sentence transport, session mic-idle close, the three-guard
  * STT dedup, PCM16 even-chunk alignment, and the data-only transport and
  * billing values. Fail timers are fake, like the other cascade tests.
@@ -64,7 +64,7 @@ async function* words(...parts: string[]) {
   for (const p of parts) yield p
 }
 
-describe("Simone [G] port: kit defaults carry the studio values", () => {
+describe("kit defaults carry the tuned values", () => {
   const s = VOICE_DEFAULTS.tts
 
   it("tts.mode defaults to http-sentence and tts.transport to the stream (VOICE_TTS_MODE / VOICE_TTS_TRANSPORT)", () => {

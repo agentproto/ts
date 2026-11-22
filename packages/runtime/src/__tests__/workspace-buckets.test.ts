@@ -32,11 +32,11 @@ import {
   writeBucketSnapshotSync,
 } from "../workspace-buckets.js"
 
-const REGISTERED = new Set(["agentik-studio", "client-app"])
+const REGISTERED = new Set(["demo-app", "client-app"])
 
 describe("resolveBucketSlug", () => {
   it("sends a registered slug to its own bucket", () => {
-    expect(resolveBucketSlug("agentik-studio", REGISTERED)).toBe("agentik-studio")
+    expect(resolveBucketSlug("demo-app", REGISTERED)).toBe("demo-app")
     expect(resolveBucketSlug("client-app", REGISTERED)).toBe(
       "client-app",
     )
@@ -97,15 +97,15 @@ describe("resolveBucketSlug", () => {
   })
 
   it("treats slugs as exact, not fuzzy", () => {
-    expect(resolveBucketSlug("AGENTIK-STUDIO", REGISTERED)).toBe(DEFAULT_BUCKET)
-    expect(resolveBucketSlug("agentik-studio ", REGISTERED)).toBe(DEFAULT_BUCKET)
+    expect(resolveBucketSlug("DEMO-APP", REGISTERED)).toBe(DEFAULT_BUCKET)
+    expect(resolveBucketSlug("demo-app ", REGISTERED)).toBe(DEFAULT_BUCKET)
     expect(resolveBucketSlug("agentik", REGISTERED)).toBe(DEFAULT_BUCKET)
   })
 })
 
 describe("isSafeBucketSlug", () => {
   it("accepts what sanitizeSlug produces", () => {
-    for (const ok of ["a", "agentik-studio", "with_underscore", "0-leading-digit"]) {
+    for (const ok of ["a", "demo-app", "with_underscore", "0-leading-digit"]) {
       expect(isSafeBucketSlug(ok)).toBe(true)
     }
   })
@@ -259,8 +259,8 @@ describe("migrateLegacySessionsFile", () => {
     // workspace, and a tail of rows whose slug nobody registered
     // (a test-harness slug, an empty string, an absent field).
     writeLegacy([
-      row("a1", "agentik-studio"),
-      row("a2", "agentik-studio"),
+      row("a1", "demo-app"),
+      row("a2", "demo-app"),
       row("c1", "client-app"),
       row("v1", "vitest-e2e"), // registered by nobody
       row("e1", ""), // empty slug — occurs in practice
@@ -277,12 +277,12 @@ describe("migrateLegacySessionsFile", () => {
     expect(marker).not.toBeNull()
     expect(marker?.rows).toBe(7)
     expect(marker?.byBucket).toEqual({
-      "agentik-studio": 2,
+      "demo-app": 2,
       "client-app": 1,
       default: 4,
     })
 
-    expect(readBucket("agentik-studio").sessions.map(s => s.id).sort()).toEqual(["a1", "a2"])
+    expect(readBucket("demo-app").sessions.map(s => s.id).sort()).toEqual(["a1", "a2"])
     expect(readBucket("client-app").sessions.map(s => s.id)).toEqual(["c1"])
     expect(readBucket("default").sessions.map(s => s.id).sort()).toEqual(["d1", "e1", "u1", "v1"])
   })
@@ -300,7 +300,7 @@ describe("migrateLegacySessionsFile", () => {
     // The hard constraint. A developer's real file is their genuine
     // history and their only rollback; a migration that mutates it is
     // unacceptable regardless of how correct the split is.
-    writeLegacy([row("a1", "agentik-studio"), row("u1")])
+    writeLegacy([row("a1", "demo-app"), row("u1")])
     const before = readFileSync(legacy)
 
     migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })
@@ -313,19 +313,19 @@ describe("migrateLegacySessionsFile", () => {
     // Stronger than "didn't happen to write": proves it CANNOT write,
     // i.e. the migration would fail loudly rather than silently mutating
     // a file it was only supposed to read.
-    writeLegacy([row("a1", "agentik-studio"), row("c1", "client-app")])
+    writeLegacy([row("a1", "demo-app"), row("c1", "client-app")])
     chmodSync(legacy, 0o444)
     try {
       const marker = migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })
       expect(marker?.rows).toBe(2)
-      expect(readBucket("agentik-studio").sessions.map(s => s.id)).toEqual(["a1"])
+      expect(readBucket("demo-app").sessions.map(s => s.id)).toEqual(["a1"])
     } finally {
       chmodSync(legacy, 0o644)
     }
   })
 
   it("writes an auditable marker", () => {
-    writeLegacy([row("a1", "agentik-studio"), row("u1")])
+    writeLegacy([row("a1", "demo-app"), row("u1")])
     migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })
 
     const marker = JSON.parse(readFileSync(migrationMarkerPath(root), "utf8")) as {
@@ -338,38 +338,38 @@ describe("migrateLegacySessionsFile", () => {
     expect(marker.version).toBe(1)
     expect(marker.from).toBe(legacy)
     expect(marker.rows).toBe(2)
-    expect(marker.byBucket).toEqual({ "agentik-studio": 1, default: 1 })
+    expect(marker.byBucket).toEqual({ "demo-app": 1, default: 1 })
     expect(() => new Date(marker.migratedAt).toISOString()).not.toThrow()
   })
 
   it("is idempotent — a second boot re-imports nothing", () => {
-    writeLegacy([row("a1", "agentik-studio")])
+    writeLegacy([row("a1", "demo-app")])
     expect(migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })).not.toBeNull()
 
     // The user deletes a row from their bucket. The legacy file still
     // has it — absence of the legacy file can't be the idempotency
     // signal, or this row comes back from the dead every boot.
     writeFileSync(
-      bucketSessionsFile(root, "agentik-studio"),
+      bucketSessionsFile(root, "demo-app"),
       JSON.stringify({ savedAt: "2026-07-02T00:00:00.000Z", sessions: [] }),
     )
 
     expect(migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })).toBeNull()
-    expect(readBucket("agentik-studio").sessions).toEqual([])
+    expect(readBucket("demo-app").sessions).toEqual([])
   })
 
   it("does not clobber rows already in a bucket", () => {
-    mkdirSync(join(root, "agentik-studio"), { recursive: true })
+    mkdirSync(join(root, "demo-app"), { recursive: true })
     writeFileSync(
-      bucketSessionsFile(root, "agentik-studio"),
-      JSON.stringify({ savedAt: "2026-07-02T00:00:00.000Z", sessions: [row("live-1", "agentik-studio")] }),
+      bucketSessionsFile(root, "demo-app"),
+      JSON.stringify({ savedAt: "2026-07-02T00:00:00.000Z", sessions: [row("live-1", "demo-app")] }),
     )
-    writeLegacy([row("a1", "agentik-studio"), row("live-1", "agentik-studio")])
+    writeLegacy([row("a1", "demo-app"), row("live-1", "demo-app")])
 
     migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })
 
     // `live-1` present once (bucket copy wins), `a1` merged in.
-    expect(readBucket("agentik-studio").sessions.map(s => s.id).sort()).toEqual(["a1", "live-1"])
+    expect(readBucket("demo-app").sessions.map(s => s.id).sort()).toEqual(["a1", "live-1"])
   })
 
   it("no legacy file is a no-op, not an error", () => {
@@ -389,7 +389,7 @@ describe("migrateLegacySessionsFile", () => {
   })
 
   it("ignores rows without a usable id", () => {
-    writeLegacy([row("a1", "agentik-studio"), { workspaceSlug: "agentik-studio" }, null, 42])
+    writeLegacy([row("a1", "demo-app"), { workspaceSlug: "demo-app" }, null, 42])
     const marker = migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })
     expect(marker?.rows).toBe(1)
   })

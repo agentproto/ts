@@ -3,7 +3,7 @@
  *
  * One positive per step kind (incl. a vendor `x-*` step), one negative per
  * conformance rule-10 clause, the emit → load round trip, and the spec's
- * Pygmalion reference example (EXAMPLES.md §5) as a positive fixture.
+ * Orchestrator reference example (EXAMPLES.md §5) as a positive fixture.
  * app NEVER executes a step: every test asserts carry/validate only.
  */
 
@@ -80,9 +80,9 @@ describe("defineApp — setup[] step kinds (AIP-53)", () => {
         options: [
           { value: "none", label: "None", description: "Everything runs on this machine." },
           { value: "e2b", label: "E2B", description: "Use your own E2B account." },
-          { value: "pygmalion-cloud", label: "PygmalionCloud", description: "Managed cloud computer." },
+          { value: "orchestrator-cloud", label: "OrchestratorCloud", description: "Managed cloud computer." },
         ],
-        default: "pygmalion-cloud",
+        default: "orchestrator-cloud",
         persist: { answer: "cloud.provider" },
       },
     ]
@@ -369,16 +369,16 @@ describe("setup[] — emit → load round trip", () => {
   })
 })
 
-describe("setup[] — Pygmalion reference example (AIP-53 EXAMPLES.md §5)", () => {
+describe("setup[] — Orchestrator reference example (AIP-53 EXAMPLES.md §5)", () => {
   // The spec's reference app: a model login, an optional Telegram bot token
   // + QR pairing, and a cloud-computer choice that branches the two later
   // secrets. Verbatim from specs/resources/aip-53/draft/EXAMPLES.md §5.
-  const pygmalionSetup: AppSetupStep[] = [
+  const orchestratorSetup: AppSetupStep[] = [
     {
       id: "auth-profile",
       kind: "auth-profile",
       title: "A model subscription",
-      description: "Pygmalion bills its own work against one login profile.",
+      description: "Orchestrator bills its own work against one login profile.",
       min: 1,
     },
     {
@@ -387,7 +387,7 @@ describe("setup[] — Pygmalion reference example (AIP-53 EXAMPLES.md §5)", () 
       type: "secret",
       optional: true,
       prompt: "Telegram bot token (create one with @BotFather)",
-      persist: { secret_slug: "pygmalion/telegram-bot-token" },
+      persist: { secret_slug: "orchestrator/telegram-bot-token" },
     },
     {
       id: "telegram-pairing",
@@ -405,9 +405,9 @@ describe("setup[] — Pygmalion reference example (AIP-53 EXAMPLES.md §5)", () 
       options: [
         { value: "none", label: "None", description: "Everything runs on this machine." },
         { value: "e2b", label: "E2B", description: "Use your own E2B account." },
-        { value: "pygmalion-cloud", label: "PygmalionCloud", description: "Managed cloud computer." },
+        { value: "orchestrator-cloud", label: "OrchestratorCloud", description: "Managed cloud computer." },
       ],
-      default: "pygmalion-cloud",
+      default: "orchestrator-cloud",
       persist: { answer: "cloud.provider" },
     },
     {
@@ -416,13 +416,13 @@ describe("setup[] — Pygmalion reference example (AIP-53 EXAMPLES.md §5)", () 
       type: "secret",
       prompt: "E2B API key",
       when: { step: "cloud-computer", equals: "e2b" },
-      persist: { secret_slug: "pygmalion/e2b-api-key" },
+      persist: { secret_slug: "orchestrator/e2b-api-key" },
     },
     {
-      id: "pygmalion-cloud-login",
+      id: "orchestrator-cloud-login",
       kind: "oauth",
-      secret_slug: "pygmalion/cloud-token",
-      when: { step: "cloud-computer", equals: "pygmalion-cloud" },
+      secret_slug: "orchestrator/cloud-token",
+      when: { step: "cloud-computer", equals: "orchestrator-cloud" },
     },
     {
       id: "bot-ready",
@@ -434,24 +434,24 @@ describe("setup[] — Pygmalion reference example (AIP-53 EXAMPLES.md §5)", () 
   ]
 
   it("constructs, carries every step, and round-trips through emit → load", async () => {
-    const d = await mkdtemp(join(tmpdir(), "app-pygmalion-"))
+    const d = await mkdtemp(join(tmpdir(), "app-orchestrator-"))
     try {
       const app = defineApp({
-        id: "@pygmalion/app",
-        name: "Pygmalion",
+        id: "@orchestrator/app",
+        name: "Orchestrator",
         version: "0.4.0",
         agents: [],
-        ui: { html: "<html><body>Pygmalion</body></html>", title: "Pygmalion", tools: [] },
-        setup: pygmalionSetup,
+        ui: { html: "<html><body>Orchestrator</body></html>", title: "Orchestrator", tools: [] },
+        setup: orchestratorSetup,
       })
-      expect(app.setup).toEqual(pygmalionSetup)
+      expect(app.setup).toEqual(orchestratorSetup)
 
       const { appPath } = await app.emit(d)
       const parsed = matter(await readFile(appPath, "utf8"))
-      expect(parsed.data.setup).toEqual(pygmalionSetup)
+      expect(parsed.data.setup).toEqual(orchestratorSetup)
 
       const loaded = await loadAppHandle(d)
-      expect(loaded.setup).toEqual(pygmalionSetup)
+      expect(loaded.setup).toEqual(orchestratorSetup)
     } finally {
       await rm(d, { recursive: true, force: true })
     }

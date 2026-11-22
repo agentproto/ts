@@ -70,7 +70,7 @@ const ROW_A = {
   name: "openagentik-migration-lead",
   idMono: undefined,
   message: "Fanned out 3 executors.",
-  tag: "Agentik Studio",
+  tag: "Demo App",
   tagTitle: "/Code/studio · runs in-place",
   logo: { kind: "lettermark", text: "C" },
   model: "opus",
@@ -81,7 +81,7 @@ const ROW_A = {
   runs: undefined,
   approved: false,
   action: "stop",
-  workspace: { slug: "studio", label: "Agentik Studio", colorIndex: 0, css: "#c45c26" },
+  workspace: { slug: "studio", label: "Demo App", colorIndex: 0, css: "#c45c26" },
   archived: false,
 }
 
@@ -176,7 +176,7 @@ function modelMessage(
     project: overrides.project ?? null,
     rail: overrides.rail ?? [
       { slug: null, label: "All", css: undefined, colorIndex: undefined, count: 2, awaiting: false },
-      { slug: "studio", label: "Agentik Studio", css: "#c45c26", colorIndex: 0, count: 2, awaiting: true },
+      { slug: "studio", label: "Demo App", css: "#c45c26", colorIndex: 0, count: 2, awaiting: true },
     ],
     laneCounts: overrides.laneCounts ?? { agents: 2, auto: 0 },
     groups: overrides.groups ?? [group("running", "Running", [ROW_A])],
@@ -326,7 +326,7 @@ describe("sessions webview — render", () => {
     send(panel, modelMessage({ groups: [group("running", "Running", [ROW_A, ROW_DONE])] }))
     const list = el(panel, "list")
     const loc = list.querySelector('[data-id="s1"] .meta-loc .loc')!
-    expect(loc.textContent).toBe("Agentik Studio")
+    expect(loc.textContent).toBe("Demo App")
     expect(loc.getAttribute("title")).toBe("/Code/studio · runs in-place")
     // ROW_DONE has an empty tag (in-place, unknown workspace) — no line at all.
     expect(list.querySelector('[data-id="s2"] .meta-loc')).toBeNull()
@@ -894,7 +894,7 @@ describe("sessions webview — workspace color picker", () => {
     send(panel, modelMessage())
     const trigger = htmlEl(el(panel, "rail").querySelector('[data-color-trigger][data-slug="studio"]'))
     expect(trigger.tagName).toBe("BUTTON")
-    expect(trigger.getAttribute("aria-label")).toContain("Agentik Studio")
+    expect(trigger.getAttribute("aria-label")).toContain("Demo App")
     expect(trigger.querySelector(".psq")?.getAttribute("style")).toContain("#c45c26")
     // The "All" chip has no css — no swatch trigger for it.
     expect(el(panel, "rail").querySelector('[data-color-trigger][data-slug=""]')).toBeNull()
@@ -974,7 +974,7 @@ describe("sessions webview — workspace color picker", () => {
         paletteNames: ["Custom One", "Custom Two"],
         rail: [
           { slug: null, label: "All", css: undefined, colorIndex: undefined, count: 1, awaiting: false },
-          { slug: "studio", label: "Agentik Studio", css: "#111111", colorIndex: 0, count: 1, awaiting: false },
+          { slug: "studio", label: "Demo App", css: "#111111", colorIndex: 0, count: 1, awaiting: false },
         ],
       }),
     )

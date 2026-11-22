@@ -2,7 +2,7 @@
  * `agentproto auth <login | status | logout>`
  *
  * Implements the **host-binding** flow — the JWT that authenticates
- * `agentproto serve --connect <host>` to its tunnel host (Guilde,
+ * `agentproto serve --connect <host>` to its tunnel host (Acme,
  * a self-hosted gateway, …). Different from per-adapter setup tokens,
  * which are per-CLI and live in adapter `setup[]` blocks.
  *
@@ -203,9 +203,9 @@ The default host is the one most recently logged into; on first use,
 
 Examples:
 
-  agentproto auth login --host wss://guilde.work
+  agentproto auth login --host wss://example.com
   agentproto auth status
-  agentproto auth logout --host wss://guilde.work
+  agentproto auth logout --host wss://example.com
 
   agentproto auth provider set anthropic sk-ant-…
   agentproto auth provider set openrouter sk-or-… --base-url https://…
@@ -1788,7 +1788,7 @@ async function runAuthLogin(args: readonly string[]): Promise<number> {
   const host = values.host ?? (await pickDefaultHost())
   if (!host) {
     process.stderr.write(
-      "agentproto auth login: pass --host <url> on first login (e.g. --host wss://guilde.work).\n"
+      "agentproto auth login: pass --host <url> on first login (e.g. --host wss://example.com).\n"
     )
     return 2
   }
@@ -1905,7 +1905,7 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
       process.stdout.write(`{"hosts": [], "profiles": [], "credentialProfiles": []}\n`)
     } else {
       process.stdout.write(
-        `agentproto auth: no credentials. Try: agentproto auth login --host wss://guilde.work\n`
+        `agentproto auth: no credentials. Try: agentproto auth login --host wss://example.com\n`
       )
     }
     return 0

@@ -89,7 +89,7 @@ export interface ContextContinuityPolicy
    *  is admitted only from the operator (a source-less prompt: HTTP, CLI,
    *  UI). One attributed to a session (`agent:<id>` — `agent_prompt`,
    *  `session_compact`, including the session itself) is refused. For a
-   *  session whose compaction needs a human's agreement (the Pygmalion
+   *  session whose compaction needs a human's agreement (the Orchestrator
    *  brain), so it can't be bypassed by a prompt-level self-compact. Unset
    *  = false. */
   compactRequiresOperator?: boolean

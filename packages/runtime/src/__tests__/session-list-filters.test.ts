@@ -45,8 +45,8 @@ function row(over: Partial<Row> & { id: string }): Row {
 }
 
 const rows: Row[] = [
-  row({ id: "sess_main", label: "pygmalion brain", title: "Fix the checkout bug", lastActivityAt: ago(H), startedAt: ago(2 * D) }),
-  row({ id: "sess_rev1", label: "review:agentik-studio:claims", origin: "review", parentSessionId: "sess_main", status: "killed", lastActivityAt: ago(2 * H), startedAt: ago(3 * H) }),
+  row({ id: "sess_main", label: "orchestrator brain", title: "Fix the checkout bug", lastActivityAt: ago(H), startedAt: ago(2 * D) }),
+  row({ id: "sess_rev1", label: "review:demo-app:claims", origin: "review", parentSessionId: "sess_main", status: "killed", lastActivityAt: ago(2 * H), startedAt: ago(3 * H) }),
   row({ id: "sess_wf1", label: "wf:revise/reader-probe", origin: "workflow", status: "killed", lastActivityAt: ago(5 * D), startedAt: ago(5 * D) }),
   row({ id: "sess_cmd1", kind: "terminal", status: "exited", name: "scanner-tests8", cwd: "/work/scanner", lastActivityAt: ago(D), startedAt: ago(D) }),
   row({ id: "sess_cmd2", kind: "terminal", status: "killed", name: "mcp-smoke", startedAt: ago(8 * D), lastActivityAt: ago(8 * D) }),
@@ -234,11 +234,11 @@ describe("parseSessionListFilterParams / pickSessionListFilters", () => {
 
 describe("label (exact) and cwd (prefix) filters", () => {
   it("label keeps only exact, case-insensitive matches", () => {
-    expect(apply({ label: "pygmalion brain" })).toEqual(["sess_main"])
-    expect(apply({ label: "PYGMALION BRAIN" })).toEqual(["sess_main"])
+    expect(apply({ label: "orchestrator brain" })).toEqual(["sess_main"])
+    expect(apply({ label: "ORCHESTRATOR BRAIN" })).toEqual(["sess_main"])
     // A prefix of a label is not a match — that is `excludeLabelPrefix`'s job.
-    expect(apply({ label: "pygmalion" })).toEqual([])
-    expect(apply({ label: "review:agentik-studio:claims" })).toEqual(["sess_rev1"])
+    expect(apply({ label: "orchestrator" })).toEqual([])
+    expect(apply({ label: "review:demo-app:claims" })).toEqual(["sess_rev1"])
   })
 
   it("cwd keeps the directory itself and everything under it, not a sibling prefix", () => {
@@ -254,7 +254,7 @@ describe("label (exact) and cwd (prefix) filters", () => {
   })
 
   it("label and cwd AND with every other filter", () => {
-    expect(apply({ label: "review:agentik-studio:claims", cwd: "/work/app" })).toEqual(["sess_rev1"])
+    expect(apply({ label: "review:demo-app:claims", cwd: "/work/app" })).toEqual(["sess_rev1"])
     expect(
       applySessionListFilters(
         [

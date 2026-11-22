@@ -3,6 +3,11 @@
 // `compute` is a real function, which is why this step can only be
 // entry-based — there is no string expression language for it in the
 // declarative manifest.
+import { fileURLToPath } from "node:url"
+
+// The agentproto/ts checkout this routine ships in (4 levels above this file).
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url)).replace(/\/$/, "")
+
 export default {
   name: "Worktree GC + notify",
   id: "worktree-gc-notify",
@@ -25,8 +30,7 @@ export default {
         // Block for the real outcomes — worktree_gc otherwise returns a bare
         // jobId after 25 s on a big repo, and `format` would report nothing.
         wait: true,
-        repoRoot:
-          "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
+        repoRoot: REPO_ROOT,
       },
     },
     {
@@ -68,7 +72,7 @@ export default {
           "-c",
           [
             "set -a",
-            ". /Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/envs/agentpush/.env.local 2>/dev/null || true",
+            '[ -n "${AGENTPUSH_ENV_FILE:-}" ] && . "$AGENTPUSH_ENV_FILE" 2>/dev/null || true',
             "set +a",
             'curl -s --max-time 30 -X POST -H "Authorization: Bearer ${AGENTPUSH_API_KEY:-}" -H "Content-Type: application/json" https://api.agentpush.io/tools/send_message --data-binary @-',
           ].join("\n"),

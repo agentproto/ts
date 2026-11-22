@@ -206,7 +206,7 @@ box.relay                relay grant use (box → host)
       "siblings": "deny",                   // AIP-46 default
       "peers": "deny",                      // same verified workspace, no tree edge; default deny per AIP-46
       "agentInterrupt": "deny",
-      "links": [["agentik-studio", "app-agentik-pygmalion"]]  // operator-declared cross-workspace doors (v1 of AIP-34 doors)
+      "links": [["demo-app", "app-orchestrator"]]  // operator-declared cross-workspace doors (v1 of AIP-34 doors)
     }
   }
 }
@@ -220,7 +220,7 @@ box.relay                relay grant use (box → host)
   "policy": {
     "messaging": {
       "peers": "allow",                      // sessions verified in THIS workspace may message each other
-      "exports": [{ "to": "app-agentik-pygmalion", "actions": ["session.message"] }]   // AIP-34 door, provider side
+      "exports": [{ "to": "app-orchestrator", "actions": ["session.message"] }]   // AIP-34 door, provider side
     },
     "commands": { "file": ".agentproto/allowed-commands.json" },   // existing file, now resolved per SESSION workspace
     "deny": ["remote.publish"],
@@ -380,6 +380,6 @@ Each step is independently mergeable from `main` (no stacking), and each keeps b
 
 ### Open
 
-1. **Who defines peers, and is a global `links` list acceptable as v1?** The plan makes same-workspace peers workspace-owned (`agentproto.json` `policy.messaging.peers`, default deny) and cross-workspace doors operator-owned (`policy.messaging.links`) until AIP-34 `exports`/`includes` doors land. The alternative is operator-only for both. Pygmalion's cross-workspace consultations are the first consumer; if they are urgent, step 3 can ship with a *global, operator-only, default-off* `peers` flag that matches only **verified** bindings, and the workspace-owned form follows with step 11.
+1. **Who defines peers, and is a global `links` list acceptable as v1?** The plan makes same-workspace peers workspace-owned (`agentproto.json` `policy.messaging.peers`, default deny) and cross-workspace doors operator-owned (`policy.messaging.links`) until AIP-34 `exports`/`includes` doors land. The alternative is operator-only for both. Orchestrator's cross-workspace consultations are the first consumer; if they are urgent, step 3 can ship with a *global, operator-only, default-off* `peers` flag that matches only **verified** bindings, and the workspace-owned form follows with step 11.
 2. **Role lattice vs AIP-42 `delegates_to`.** AIP-46 standardises `delegates_to` (an allowlist) and calls the `level` lattice non-standard. Do we keep roles as the capability carrier (cheaper, already shipped) and add `delegates_to` later, or go straight to AIP-42 `policy` plus `delegates_to`?
 3. **Cron capabilities after the creator retires.** Should a cron job keep running as its creator's principal after that session retires (frozen capabilities), or be downgraded to operator-only creation, so that sessions can no longer schedule work at all?

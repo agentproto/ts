@@ -7159,14 +7159,14 @@ describe("spawnAgentSession — AGENTS.md injection (WP-R2)", () => {
 })
 
 describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
-  const RULES_MD_BLOCK = "--- Workspace RULES.md (/buckets/agentik-studio/RULES.md) ---\nCONTENT\n--- end Workspace RULES.md ---"
+  const RULES_MD_BLOCK = "--- Workspace RULES.md (/buckets/demo-app/RULES.md) ---\nCONTENT\n--- end Workspace RULES.md ---"
 
   it("injects the RULES.md block BEFORE the role disposition and the caller's prompt, and stamps the path on the descriptor", async () => {
     const startSession = vi.fn(async () => fakeAgentSession())
     const { registry, deps } = baseDeps({
       resolveAgentAdapter: makeResolver(startSession),
       resolveWorkspaceRules: async () => ({
-        path: "/buckets/agentik-studio/RULES.md",
+        path: "/buckets/demo-app/RULES.md",
         content: "CONTENT",
         block: RULES_MD_BLOCK,
       }),
@@ -7176,7 +7176,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     const result = await spawnAgentSession(deps, {
       adapter: "mock",
       cwd: "/tmp",
-      workspaceSlug: "agentik-studio",
+      workspaceSlug: "demo-app",
       role: "executor",
       prompt: "do the thing",
       wait: true,
@@ -7193,7 +7193,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     expect(taskIdx).toBeGreaterThan(dispositionIdx)
 
     // Stamped on the descriptor too — present-or-absent, no mode field.
-    expect(result.descriptor.rulesMd).toBe("/buckets/agentik-studio/RULES.md")
+    expect(result.descriptor.rulesMd).toBe("/buckets/demo-app/RULES.md")
   })
 
   it("no RULES.md → nothing extra injected, spawn unaffected, no rulesMd on the descriptor", async () => {
@@ -7207,7 +7207,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     const result = await spawnAgentSession(deps, {
       adapter: "mock",
       cwd: "/tmp",
-      workspaceSlug: "agentik-studio",
+      workspaceSlug: "demo-app",
       role: "executor",
       prompt: "do the thing",
       wait: true,
@@ -7235,7 +7235,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     const result = await spawnAgentSession(deps, {
       adapter: "mock",
       cwd: "/x",
-      workspaceSlug: "agentik-studio",
+      workspaceSlug: "demo-app",
       prompt: "hi",
       wait: true,
     })
@@ -7261,9 +7261,9 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     const { registry, deps } = baseDeps({
       resolveAgentAdapter: makeResolver(startSession),
       resolveWorkspaceRules: async () => ({
-        path: "/buckets/agentik-studio/RULES.md",
+        path: "/buckets/demo-app/RULES.md",
         content: fourRules,
-        block: `--- Workspace RULES.md (/buckets/agentik-studio/RULES.md) ---\n${fourRules}\n--- end Workspace RULES.md ---`,
+        block: `--- Workspace RULES.md (/buckets/demo-app/RULES.md) ---\n${fourRules}\n--- end Workspace RULES.md ---`,
       }),
     })
     const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
@@ -7273,7 +7273,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     const result = await spawnAgentSession(deps, {
       adapter: "mock",
       cwd: "/tmp",
-      workspaceSlug: "agentik-studio",
+      workspaceSlug: "demo-app",
       role: "executor",
       prompt: "hello",
       wait: true,
@@ -7284,7 +7284,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     for (const rule of fourRules.split("\n")) {
       expect(prompt).toContain(rule)
     }
-    expect(result.descriptor.rulesMd).toBe("/buckets/agentik-studio/RULES.md")
+    expect(result.descriptor.rulesMd).toBe("/buckets/demo-app/RULES.md")
   })
 
   it("system-tagging rides along for free: the RULES.md block is part of the daemon-composed preamble recorded as the system slice (WP-R3 generalizes)", async () => {
@@ -7292,7 +7292,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     const { registry, deps } = baseDeps({
       resolveAgentAdapter: makeResolver(startSession),
       resolveWorkspaceRules: async () => ({
-        path: "/buckets/agentik-studio/RULES.md",
+        path: "/buckets/demo-app/RULES.md",
         content: "CONTENT",
         block: RULES_MD_BLOCK,
       }),
@@ -7302,7 +7302,7 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     const result = await spawnAgentSession(deps, {
       adapter: "mock",
       cwd: "/tmp",
-      workspaceSlug: "agentik-studio",
+      workspaceSlug: "demo-app",
       role: "executor",
       prompt: "do the thing",
       wait: true,

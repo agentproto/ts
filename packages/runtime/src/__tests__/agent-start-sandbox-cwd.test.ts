@@ -192,7 +192,7 @@ describe("agent_start sandbox — cwd default + validation", () => {
   it("explicit HOST-only cwd (macOS /Volumes/…) is rejected with sandbox_cwd_invalid — never reaches the box", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "fake-cli",
-      cwd: "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
+      cwd: "/Volumes/SSDExternalMacStudio/Code/products/agentik/demo-app/projects/agentproto/ts",
       sandbox: "fake",
     })
     expect(result.ok).toBe(false)

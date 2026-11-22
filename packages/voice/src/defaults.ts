@@ -1,9 +1,9 @@
 /**
  * The ONE defaults file of @agentproto/voice (AIP-VOICE, "Kit defaults").
  *
- * Every value carries its origin: the studio file:line it was tuned in, and
- * the PR when there is one. Paths: `calls/` is `projects/simone/apps/voice/src/calls/`,
- * `af/` is `packages/agent-framework/src/voice/`, both in agentik-studio.
+ * Every value carries its origin: the file:line it was tuned in, and the PR
+ * when there is one. Paths like `calls/` and `af/` are the call pipeline and
+ * agent-framework voice folders of the host product the values were tuned in.
  * Tests and code read values from here; nothing else in the package holds a
  * tuning number or a vendor model name.
  *
@@ -13,10 +13,8 @@
  *
  * Engine and provider defaults (decision of 2026-11-20): the default engine
  * is the cascade, with ElevenLabs for both stages (Scribe for STT). OpenAI
- * is a provider among others. Deviation to know: the one deployed product
- * (Simone calls) runs STT on OpenAI file transcription by setting
- * `VOICE_STT_PROVIDER=whisper` (deployment/ovh/wa-calls-rt/compose.yaml:89,
- * and projects/simone/apps/voice/src/env.ts:154-159). That is a value it
+ * is a provider among others. A deployment can keep STT on OpenAI file
+ * transcription by setting `VOICE_STT_PROVIDER=whisper`. That is a value it
  * sets itself: the kit default changes, no value changes meaning.
  */
 

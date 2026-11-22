@@ -2,10 +2,8 @@
  * Canonical JSON + sha256 for an approval payload — object keys sorted
  * recursively, arrays keep their order. Deep-equal payloads always produce
  * the same string, which is what makes `payloadSha256` a reliable "this
- * exact payload was approved" check (mirrors
- * `projects/pygmalion/packages/core/src/gate/canonical.ts`; duplicated
- * rather than imported since a runtime package may never depend on an
- * app's `@pygmalion/core`).
+ * exact payload was approved" check (a runtime package
+ * may never depend on an app package, so this is self-contained).
  */
 
 import { createHash } from "node:crypto"

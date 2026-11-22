@@ -89,11 +89,11 @@ Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
 # Optional: configure first
 agentproto config set daemon.workspace /Users/me/code
 agentproto config set daemon.port 18791
-agentproto config set daemon.allowedOrigins https://guilde.work
+agentproto config set daemon.allowedOrigins https://example.com
 # Optional: let a browser-based Telegram client frame the app page
 # (see serve.md, "Framing the app page").
 agentproto config set daemon.frameAncestors https://web.telegram.org,https://webk.telegram.org,https://webz.telegram.org
-agentproto config set tunnel.host wss://guilde.work/api/v1/agentproto/tunnel
+agentproto config set tunnel.host wss://example.com/api/v1/agentproto/tunnel
 agentproto config set tunnel.autoconnect true
 # Optional: end-to-end encrypt the tunnel (needs tunnel.token; the host
 # must also support it, else the daemon falls back to plaintext).
@@ -250,7 +250,7 @@ Tails `~/.agentproto/daemon.log`.
   short-lived test sessions where Ctrl-C should kill everything.
 - **`agentproto daemon`** — managed by the OS. Survives logout/login,
   restarts on crash, logs to a file. Use this when you want the
-  tunnel "always up" for a hosted agent (Guilde, etc.).
+  tunnel "always up" for a hosted agent (Acme, etc.).
 
 Both share the same `config.json` so flipping between them is just
 which way you launched.

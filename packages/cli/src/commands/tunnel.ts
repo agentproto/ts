@@ -87,8 +87,8 @@ One-time named-tunnel setup:
 Examples:
   agentproto tunnel create --port 3000
   agentproto tunnel create --port 5173 --name vite-preview --json
-  agentproto tunnel create --port 3040 --name guilde --provider cloudflare-named \\
-    --hostname guilde-local.example.com --tunnel-id guilde --autostart
+  agentproto tunnel create --port 3040 --name acme --provider cloudflare-named \\
+    --hostname acme-local.example.com --tunnel-id acme --autostart
   agentproto tunnel create --port 4000 --provider cloudflare-provisioned \\
     --root agentproto.cloud
   agentproto tunnel list --active

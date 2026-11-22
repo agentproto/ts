@@ -4,8 +4,8 @@
  *
  * The same-workspace allowance (`defaults.messaging.allowSameWorkspace`)
  * only links two sessions of ONE workspace. Real deployments need more: the
- * Pygmalion brain and its copywriter live in `app-agentik-pygmalion`, while
- * the PMs and the OVH supervisor live in `agentik-studio` - the two families
+ * Orchestrator brain and its copywriter live in `app-orchestrator`, while
+ * the PMs and the OVH supervisor live in `demo-app` - the two families
  * must be able to talk, but an unrelated workspace must not.
  *
  * `defaults.messaging.peerGroups` is an array of arrays of workspace slugs:
@@ -97,18 +97,18 @@ function crossWorkspaceCousins(registry: SessionsRegistry, aWorkspace: string, b
   return { root, a, b, a1, b1 }
 }
 
-const STUDIO = "agentik-studio"
-const PYGMALION = "app-agentik-pygmalion"
+const STUDIO = "demo-app"
+const ORCHESTRATOR = "app-orchestrator"
 
 describe("message_send - peer groups", () => {
   it("allows a cross-workspace pair whose slugs are in the same peer group", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const { a1, b1 } = crossWorkspaceCousins(registry, PYGMALION, STUDIO)
+    const { a1, b1 } = crossWorkspaceCousins(registry, ORCHESTRATOR, STUDIO)
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({
       registry,
       callerSessionId: a1.id,
-      peerGroups: [[STUDIO, PYGMALION]],
+      peerGroups: [[STUDIO, ORCHESTRATOR]],
     })
     try {
       const result = await h.client.callTool({
@@ -125,7 +125,7 @@ describe("message_send - peer groups", () => {
 
   it("refuses a cross-workspace pair that is in no peer group (and names peerGroups)", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const { a1, b1 } = crossWorkspaceCousins(registry, PYGMALION, STUDIO)
+    const { a1, b1 } = crossWorkspaceCousins(registry, ORCHESTRATOR, STUDIO)
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({
       registry,
@@ -147,7 +147,7 @@ describe("message_send - peer groups", () => {
 
   it("the default (no peer groups) refuses a cross-workspace pair", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const { a1, b1 } = crossWorkspaceCousins(registry, PYGMALION, STUDIO)
+    const { a1, b1 } = crossWorkspaceCousins(registry, ORCHESTRATOR, STUDIO)
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({ registry, callerSessionId: a1.id })
     try {
@@ -201,12 +201,12 @@ describe("message_send - peer groups", () => {
 
   it("refuses when a workspace slug is missing on either side", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const { a1, b1 } = crossWorkspaceCousins(registry, PYGMALION, STUDIO)
+    const { a1, b1 } = crossWorkspaceCousins(registry, ORCHESTRATOR, STUDIO)
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({
       registry,
       callerSessionId: a1.id,
-      peerGroups: [[STUDIO, PYGMALION]],
+      peerGroups: [[STUDIO, ORCHESTRATOR]],
     })
     const blanked = registry.get(b1.id)!
     blanked.workspaceSlug = ""
@@ -224,13 +224,13 @@ describe("message_send - peer groups", () => {
 
   it("a peer group holds even when allowSameWorkspace is off", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const { a1, b1 } = crossWorkspaceCousins(registry, PYGMALION, STUDIO)
+    const { a1, b1 } = crossWorkspaceCousins(registry, ORCHESTRATOR, STUDIO)
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({
       registry,
       callerSessionId: a1.id,
       allowSameWorkspace: false,
-      peerGroups: [[STUDIO, PYGMALION]],
+      peerGroups: [[STUDIO, ORCHESTRATOR]],
     })
     try {
       const result = await h.client.callTool({
@@ -253,7 +253,7 @@ describe("message_send - peer groups", () => {
     const h = await harness({
       registry,
       callerSessionId: child.id,
-      peerGroups: [[STUDIO, PYGMALION]],
+      peerGroups: [[STUDIO, ORCHESTRATOR]],
     })
     try {
       const up = await h.client.callTool({
@@ -275,12 +275,12 @@ describe("message_send - peer groups", () => {
     const registry = createSessionsRegistry({ persist: false })
     const root = spawnNode(registry, undefined, STUDIO, "root")
     const child = spawnNode(registry, root.id, STUDIO, "child")
-    const sib = spawnNode(registry, root.id, PYGMALION, "sibling")
+    const sib = spawnNode(registry, root.id, ORCHESTRATOR, "sibling")
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({
       registry,
       callerSessionId: child.id,
-      peerGroups: [[STUDIO, PYGMALION]],
+      peerGroups: [[STUDIO, ORCHESTRATOR]],
     })
     try {
       const toSibling = await h.client.callTool({
@@ -299,7 +299,7 @@ describe("message_send - peer groups", () => {
 describe("config schema - defaults.messaging.peerGroups", () => {
   it("accepts an array of arrays of non-empty strings", () => {
     expect(
-      validateConfigKeyType("defaults.messaging.peerGroups", [[STUDIO, PYGMALION]]),
+      validateConfigKeyType("defaults.messaging.peerGroups", [[STUDIO, ORCHESTRATOR]]),
     ).toEqual({ ok: true })
     expect(validateConfigKeyType("defaults.messaging.peerGroups", [])).toEqual({ ok: true })
   })

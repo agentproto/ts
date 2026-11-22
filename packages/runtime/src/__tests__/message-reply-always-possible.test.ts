@@ -76,7 +76,7 @@ const isError = (r: unknown): boolean => (r as { isError?: boolean }).isError ==
 
 function world(extId: string, host: string) {
   const registry = createSessionsRegistry({ persist: false })
-  const brain = spawnNode(registry, "agentik-studio", "brain")
+  const brain = spawnNode(registry, "demo-app", "brain")
   vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
   registry.touchExternal({ id: extId, host })
   const send = vi.spyOn(registry, "sendMessage")
@@ -171,7 +171,7 @@ for (const [extId, host] of [
 
     it("a replyTo whose original sender is not `to` stays refused", async () => {
       const { registry, brain, send } = world(extId, host)
-      const other = spawnNode(registry, "agentik-studio", "colleague")
+      const other = spawnNode(registry, "demo-app", "colleague")
       const id = await receive(registry, brain.id, other.id)
       send.mockClear()
       const h = await harness({ registry, callerSessionId: brain.id })

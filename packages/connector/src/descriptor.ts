@@ -1,11 +1,11 @@
 /**
  * ConnectorMcpDescriptor — the portable, host-agnostic description of an MCP
- * connector: how its MCP server runs / is reached. Lifted out of guilde (where
- * it lived as a private flat-bag interface) so ANYONE — not just guilde — can
+ * connector: how its MCP server runs / is reached. Lifted out of acme (where
+ * it lived as a private flat-bag interface) so ANYONE — not just acme — can
  * describe an MCP connector against the open standard.
  *
  * It is a discriminated union over `kind` so each kind carries only its valid
- * fields (the guilde original was a flat optional-bag where every field could
+ * fields (the acme original was a flat optional-bag where every field could
  * appear on any kind). The four kinds:
  *
  *   - `hosted`        — the platform runs the MCP server; creds passed in.
@@ -19,8 +19,8 @@
  *
  * What does NOT live here: catalog/marketplace metadata (category, logo,
  * vendor, billing, auth-method UI), vault wiring, DB persistence, and any
- * host-specific resolution (e.g. guilde's bureau device-link). Those stay in
- * the consumer (guilde's `ConnectorProviderConfig` wraps this via its `mcp`
+ * host-specific resolution (e.g. acme's bureau device-link). Those stay in
+ * the consumer (acme's `ConnectorProviderConfig` wraps this via its `mcp`
  * field). This type is just the runnable description.
  */
 
@@ -36,7 +36,7 @@ interface ConnectorMcpBase {
 export interface HostedConnectorMcp extends ConnectorMcpBase {
   kind: "hosted"
   /**
-   * MCP endpoint URL. A host MAY template this (e.g. guilde injects its
+   * MCP endpoint URL. A host MAY template this (e.g. acme injects its
    * public base URL) — the descriptor carries the resolved-or-templated value.
    */
   serverUrl: string

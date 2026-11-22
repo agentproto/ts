@@ -12,7 +12,7 @@
  * `.strict()` and holds only metadata. So each agent carries an optional
  * `body`; when omitted the prompt composes from the agent's persona /
  * boundaries / traits (`composeInstructions` falls back to `description`),
- * the same way Guilde assembles an operator's prompt from AIP-47 role
+ * the same way Acme assembles an operator's prompt from AIP-47 role
  * instructions + AIP-25 persona rather than a stored string.
  */
 

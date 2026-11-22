@@ -3,7 +3,7 @@
  *
  * The runtime already exposes AIP CRUD verbs (create_tool, load_agent, …)
  * via @agentproto/mcp-server. To make the workspace genuinely reachable
- * to remote MCP clients (Guilde cloud agents through a tunnel, IDEs,
+ * to remote MCP clients (Acme cloud agents through a tunnel, IDEs,
  * etc.), we also register canonical filesystem tools that match the
  * shape used by `@modelcontextprotocol/server-filesystem` so existing
  * MCP-fs proxy clients can target the runtime without bespoke logic:

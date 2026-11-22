@@ -35,7 +35,7 @@ daemon's proof that this identity spawned it.
 A session caller is refused when ANY other non-archived session already
 carries the label, live or not: `exited`, `killed`, `error` and retired rows
 count. The error names the holder and its status. A dead holder keeps its name
-because it is expected back: a brain labelled `pygmalion-brain-persistent` that
+because it is expected back: a brain labelled `orchestrator-brain-persistent` that
 is down between two restarts takes the label again on rebirth, and a child
 that grabbed it meanwhile would receive the brain's `label:` messages and then
 turn the address into `ambiguous_label`. Archive the dead session

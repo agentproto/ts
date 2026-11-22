@@ -43,8 +43,8 @@ class InMemoryStorage implements StoragePort {
 }
 
 const CREDIT = defineAsset({
-  ref: "GUILDE_CREDITS",
-  name: "Guilde Credits",
+  ref: "ACME_CREDITS",
+  name: "Acme Credits",
   symbol: "GCR",
   decimals: 2,
   standard: "internal",
@@ -52,26 +52,26 @@ const CREDIT = defineAsset({
 })
 
 const partitions = new Map<string, PartitionSpec>([
-  ["GUILDE_CREDITS:general", { id: "GUILDE_CREDITS:general", asset: "GUILDE_CREDITS", restriction: UNRESTRICTED }],
+  ["ACME_CREDITS:general", { id: "ACME_CREDITS:general", asset: "ACME_CREDITS", restriction: UNRESTRICTED }],
 ])
 
 const NOW = 10_000
 
 describe("defineAsset", () => {
   it("accepts a well-formed declaration and freezes it", () => {
-    expect(CREDIT.ref).toBe("GUILDE_CREDITS")
+    expect(CREDIT.ref).toBe("ACME_CREDITS")
     expect(Object.isFrozen(CREDIT)).toBe(true)
   })
   it("rejects a lowercase ref", () => {
     expect(() =>
-      defineAsset({ ...CREDIT, ref: "guilde_credits" } as AssetDeclaration),
+      defineAsset({ ...CREDIT, ref: "acme_credits" } as AssetDeclaration),
     ).toThrow(/invalid id/)
   })
   it("rejects a self-referential convert edge", () => {
     expect(() =>
       defineAsset({
         ...CREDIT,
-        ruleSet: { ...CREDIT.ruleSet, convertEdges: [{ to: "GUILDE_CREDITS", rate: { kind: "fixed", ratio: 1 } }] },
+        ruleSet: { ...CREDIT.ruleSet, convertEdges: [{ to: "ACME_CREDITS", rate: { kind: "fixed", ratio: 1 } }] },
       } as AssetDeclaration),
     ).toThrow(/edge to itself/)
   })
@@ -85,32 +85,32 @@ describe("grant → spend roundtrip via StoragePort", () => {
     // grant 500.00 credits (mint)
     await store.commit(acct, [
       {
-        id: "e-mint", accountId: acct, kind: "mint", asset: "GUILDE_CREDITS",
-        partitionId: "GUILDE_CREDITS:general", restriction: UNRESTRICTED,
+        id: "e-mint", accountId: acct, kind: "mint", asset: "ACME_CREDITS",
+        partitionId: "ACME_CREDITS:general", restriction: UNRESTRICTED,
         amount: 50000, lotId: "L1", intent: "passive", occurredAt: NOW,
       },
     ])
-    expect(await store.spendableBalance(acct, "GUILDE_CREDITS")).toBe(50000)
+    expect(await store.spendableBalance(acct, "ACME_CREDITS")).toBe(50000)
 
     // spend 120.00 passively — route via coalescing, emit burns
     const lots = await store.loadLots(acct)
     const plan = selectLotsForSpend(
-      lots, { asset: "GUILDE_CREDITS", category: "text", amount: 12000, now: NOW }, CREDIT, partitions,
+      lots, { asset: "ACME_CREDITS", category: "text", amount: 12000, now: NOW }, CREDIT, partitions,
     )
     expect(plan.shortfall).toBe(0)
     await store.commit(
       acct,
       plan.draws.map((d, i) => ({
-        id: `e-burn-${i}`, accountId: acct, kind: "burn" as const, asset: "GUILDE_CREDITS",
-        partitionId: "GUILDE_CREDITS:general", restriction: UNRESTRICTED,
+        id: `e-burn-${i}`, accountId: acct, kind: "burn" as const, asset: "ACME_CREDITS",
+        partitionId: "ACME_CREDITS:general", restriction: UNRESTRICTED,
         amount: d.amount, lotId: d.lotId, intent: "passive" as const, occurredAt: NOW,
       })),
     )
-    expect(await store.spendableBalance(acct, "GUILDE_CREDITS")).toBe(38000)
+    expect(await store.spendableBalance(acct, "ACME_CREDITS")).toBe(38000)
 
     // reconciliation oracle: replay(journal) == projection balance
     const events = await store.loadEvents(acct)
-    const replayed = balanceByAsset(fold(events, NOW), NOW).get("GUILDE_CREDITS")
+    const replayed = balanceByAsset(fold(events, NOW), NOW).get("ACME_CREDITS")
     expect(replayed).toBe(38000)
   })
 
@@ -119,16 +119,16 @@ describe("grant → spend roundtrip via StoragePort", () => {
     const acct = "acct-2"
     await store.commit(acct, [
       {
-        id: "e-mint", accountId: acct, kind: "mint", asset: "GUILDE_CREDITS",
-        partitionId: "GUILDE_CREDITS:general", restriction: UNRESTRICTED,
+        id: "e-mint", accountId: acct, kind: "mint", asset: "ACME_CREDITS",
+        partitionId: "ACME_CREDITS:general", restriction: UNRESTRICTED,
         amount: 100, lotId: "L1", occurredAt: NOW,
       },
     ])
     await expect(
       store.commit(acct, [
         {
-          id: "e-burn", accountId: acct, kind: "burn", asset: "GUILDE_CREDITS",
-          partitionId: "GUILDE_CREDITS:general", restriction: UNRESTRICTED,
+          id: "e-burn", accountId: acct, kind: "burn", asset: "ACME_CREDITS",
+          partitionId: "ACME_CREDITS:general", restriction: UNRESTRICTED,
           amount: 250, lotId: "L1", occurredAt: NOW,
         },
       ]),

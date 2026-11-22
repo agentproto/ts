@@ -20,7 +20,7 @@ import {
 } from "../browser-observers.js"
 
 // Attach/detach events came from the retired `start_browser`; P4b deletes
-// this seam once Pygmalion's recorder moves to Bureau. The per-call hooks
+// this seam once Orchestrator's recorder moves to Bureau. The per-call hooks
 // and the screenshot transform still wrap the Bureau-relayed tools.
 
 const SHOT = { data: "AAAA", format: "png", width: 100, height: 50 }

@@ -8,9 +8,9 @@ import {
 import { defineAuthProvider } from "../define-auth-provider.js"
 
 describe("auth-provider registry", () => {
-  it("is pre-seeded with the guilde builtin", () => {
-    expect(listAuthProviderIds()).toContain("guilde")
-    expect(getAuthProvider("guilde")?.auth.flow).toBe("service-auth")
+  it("ships no builtin provider: a host registers its own", () => {
+    expect(listAuthProviderIds()).not.toContain("acme")
+    expect(getAuthProvider("acme")).toBeUndefined()
   })
 
   it("returns undefined for an unknown id", () => {

@@ -354,7 +354,7 @@ describe("continueAgentSessionFresh", () => {
   it("carries allowPromptFrom forward to the fresh session's new id", async () => {
     const prev = {
       ...makePrev(),
-      allowPromptFrom: ["sess_peer", "label:pygmalion-brain-persistent"],
+      allowPromptFrom: ["sess_peer", "label:orchestrator-brain-persistent"],
     } as SessionDescriptor
     vi.mocked(spawnAgentSession).mockResolvedValue({
       ok: true,
@@ -369,7 +369,7 @@ describe("continueAgentSessionFresh", () => {
 
     expect(fakeRegistry.setPromptPolicy).toHaveBeenCalledWith("sess_new", [
       "sess_peer",
-      "label:pygmalion-brain-persistent",
+      "label:orchestrator-brain-persistent",
     ])
   })
 

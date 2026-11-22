@@ -1,5 +1,5 @@
 /**
- * Service-owner launcher (Pygmalion AIP-standardization, Phase 1b item 2).
+ * Service-owner launcher (Orchestrator AIP-standardization, Phase 1b item 2).
  *
  * An app manifest MAY declare a `services:` block of long-running processes
  * the app needs alongside its agents/workflows:
@@ -479,7 +479,7 @@ export async function ensureAppServiceOwners(
 }
 
 /**
- * Boot counterpart of `ensureAppServiceOwners` (Pygmalion phase 1b item 2):
+ * Boot counterpart of `ensureAppServiceOwners` (Orchestrator phase 1b item 2):
  * the previous daemon's owner rows are gone by definition, so every recorded
  * owner is treated as stale and replaced — liveness is NOT consulted (a
  * rehydrated registry row reports `running` while its process may be dead —

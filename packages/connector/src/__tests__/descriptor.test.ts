@@ -69,17 +69,17 @@ describe("ConnectorMcpDescriptor", () => {
     expect(safeParseConnectorMcp({ kind: "external" })).toBeNull()
   })
 
-  it("back-compat: a flat guilde-style object parses + narrows correctly", () => {
-    // guilde's original flat bag allowed extra fields; the strict per-kind
+  it("back-compat: a flat acme-style object parses + narrows correctly", () => {
+    // acme's original flat bag allowed extra fields; the strict per-kind
     // schema accepts the valid subset for each kind. A hosted entry that also
-    // carried a stray importAlias would have been malformed even in guilde —
+    // carried a stray importAlias would have been malformed even in acme —
     // here a well-formed hosted entry parses cleanly.
-    const guildeHosted = { kind: "hosted", slug: "github", serverUrl: "https://x" }
-    const parsed = parseConnectorMcp(guildeHosted)
+    const acmeHosted = { kind: "hosted", slug: "github", serverUrl: "https://x" }
+    const parsed = parseConnectorMcp(acmeHosted)
     expect(parsed.kind).toBe("hosted")
 
-    const guildeBureau = { kind: "local-daemon", slug: "bureau", importAlias: "bureau" }
-    expect(isLocalDaemonConnector(parseConnectorMcp(guildeBureau))).toBe(true)
+    const acmeBureau = { kind: "local-daemon", slug: "bureau", importAlias: "bureau" }
+    expect(isLocalDaemonConnector(parseConnectorMcp(acmeBureau))).toBe(true)
   })
 
   it("schema covers exactly the four discriminants (exhaustiveness)", () => {

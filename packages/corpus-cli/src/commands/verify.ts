@@ -1,7 +1,7 @@
 /**
  * `corpus verify <workspace>` — ⑤b VERIFY pass for a corpus workspace
  * (deep-research SOP). Ports the semantics of the reference python script
- * (agentik-studio/.claude/skills/deep-research/verify-entries.py) as a
+ * (demo-app/.claude/skills/deep-research/verify-entries.py) as a
  * product command.
  *
  * Two checks, one command:

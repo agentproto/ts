@@ -243,7 +243,7 @@ export interface SpawnDefaultsConfig {
     allowSameWorkspace?: boolean
     /** Groups of workspace slugs. Two sessions may message each other
      *  without a tree edge when both workspace slugs sit in the SAME group
-     *  (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). Default []:
+     *  (e.g. `[["demo-app", "app-orchestrator"]]`). Default []:
      *  no cross-workspace link. Independent of `allowSameWorkspace`. */
     peerGroups?: string[][]
     /** Explicit AIP-38 `session:message`, `session:prompt` and

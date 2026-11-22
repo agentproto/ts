@@ -14,7 +14,7 @@ export const DEFAULT_USER_ORIGINS = ["chat-starter", "vscode"]
  *  cron-spawned job (`origin: "cron:<jobId>"`) and bare `cron` the scheduler's
  *  command sessions; `routine:*` routine-registrar fires; `gate` supervision
  *  gates; `webhook` the inbound watcher; `model-bench*` the model-bench
- *  harness (and its smoketest); `pygmalion` / `pygmalion:*` and
+ *  harness (and its smoketest); `orchestrator` / `orchestrator:*` and
  *  `app-service:*` are roots
  *  owned by their respective runtimes. A root with NO origin, or `cli`/`vscode`/
  *  `chat-starter`, is a human at a keyboard and stays flag-only. */
@@ -27,8 +27,8 @@ export const DEFAULT_CLOSABLE_ORIGINS = [
   "review",
   "webhook",
   "model-bench*",
-  "pygmalion",
-  "pygmalion:*",
+  "orchestrator",
+  "orchestrator:*",
   "app-service:*",
 ]
 
@@ -55,9 +55,13 @@ export function resolveOriginPolicy(policy) {
     const kept = Array.isArray(value) ? value.filter(isNonEmptyString).map((s) => s.trim()) : []
     return kept.length > 0 ? kept : fallback
   }
+  // `extraClosableOrigins` ADDS roots a host owns (its own supervisor label)
+  // to whichever closable list is in force, without restating the defaults.
+  const extra = list(p.extraClosableOrigins, [])
+  const closable = list(p.closableOrigins, DEFAULT_CLOSABLE_ORIGINS)
   return {
     userOrigins: list(p.userOrigins, DEFAULT_USER_ORIGINS),
-    closableOrigins: list(p.closableOrigins, DEFAULT_CLOSABLE_ORIGINS),
+    closableOrigins: [...closable, ...extra.filter((o) => !closable.includes(o))],
   }
 }
 

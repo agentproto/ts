@@ -20,7 +20,7 @@
  *   ~/.agentproto/
  *   ├── workspaces.json          # the registry (workspaces-config.ts)
  *   └── workspaces/              # one bucket per workspace (here)
- *       ├── agentik-studio/sessions.json
+ *       ├── demo-app/sessions.json
  *       └── default/sessions.json
  *
  * The registry (a file) and the state (a directory) are deliberate

@@ -1,7 +1,7 @@
 # Studio review client ↔ decision-route workflow
 
 **Status: contract verified, not activated.** Checked read-only against the
-merged studio change (agentik-studio #684, "one reviewer per range and an
+merged studio change (demo-app #684, "one reviewer per range and an
 explicit free-only profile"): `scripts/gate.mjs`, `REVIEW.md`,
 `scripts/review/router-jev.mjs`. Nothing here edits studio, changes operator
 config, restarts a daemon or turns semantic routing on. The studio gate keeps

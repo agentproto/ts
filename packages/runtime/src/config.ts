@@ -417,7 +417,7 @@ export interface WorktreesConfig {
    * Per-repo overrides of {@link provisionConcurrency}, additional to (never
    * looser than) the global cap. Keys are an absolute repo-root path (`~/`
    * expands) or a bare repo directory name; values as above. Example:
-   * `{ "agentik-studio": 1 }` serializes installs of that repo even when
+   * `{ "demo-app": 1 }` serializes installs of that repo even when
    * other repos may install two at a time.
    */
   provisionConcurrencyByRepo?: Record<string, number>

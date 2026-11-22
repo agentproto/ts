@@ -25,7 +25,7 @@
  * ── Before running this against a rebuilt daemon ──────────────────────
  * `~/.agentproto/start-daemon-local.sh --cli workspace` always execs
  * `node <MAIN-TREE>/packages/cli/dist/cli.mjs` — a path hardcoded to the
- * main checkout at products/agentik/agentik-studio/projects/agentproto/ts,
+ * main checkout,
  * NOT whatever worktree this script happens to live in. Verified
  * empirically: a git worktree only shares `.git`; `node_modules/` and
  * `dist/` are per-checkout, so a worktree has neither until you run

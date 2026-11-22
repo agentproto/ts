@@ -6,10 +6,10 @@ import type { AcpDefinition } from "../types.js"
 const minimalServer = (
   overrides: Partial<AcpDefinition> = {},
 ): AcpDefinition => ({
-  name: "guilde-acp",
-  id: "guilde-acp",
+  name: "acme-acp",
+  id: "acme-acp",
   description:
-    "Guilde operator exposed as an ACP server for IDE clients.",
+    "Acme operator exposed as an ACP server for IDE clients.",
   version: "0.1.0",
   kind: "server",
   transport: "stdio",
@@ -68,7 +68,7 @@ describe("defineAcp (AIP-44)", () => {
 
     it("rejects non-kebab id", () => {
       expect(() =>
-        defineAcp(minimalServer({ id: "Guilde_ACP" })),
+        defineAcp(minimalServer({ id: "Acme_ACP" })),
       ).toThrow(/defineAcp \(AIP-44\)/)
     })
 
@@ -153,9 +153,9 @@ describe("defineAcp (AIP-44)", () => {
   describe("parseAcpManifest", () => {
     it("parses a minimal ACP.md", () => {
       const md = `---
-name: guilde-acp
-id: guilde-acp
-description: Guilde operator exposed as ACP server.
+name: acme-acp
+id: acme-acp
+description: Acme operator exposed as ACP server.
 version: 0.1.0
 kind: server
 transport: stdio
@@ -166,7 +166,7 @@ metadata:
     operator: ./OPERATOR.md
 ---
 
-# guilde-acp
+# acme-acp
 
 ACP server description body.
 `

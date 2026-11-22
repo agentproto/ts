@@ -21,7 +21,7 @@ import type {
  *
  * Generic params:
  *   TFactory      — host-typed factory (e.g. `(input) => WorkspaceSandbox`
- *                   for the Guilde host). Defaults to `unknown`.
+ *                   for the Acme host). Defaults to `unknown`.
  *   TCapabilities — opaque metadata the registry queries on. Per
  *                   AIP-43 § Capability metadata namespace.
  */

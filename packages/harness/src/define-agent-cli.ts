@@ -670,7 +670,7 @@ export function createAgentCliRuntime(
       // pointing right back at this same daemon's `agent_start`, letting an
       // unscoped one-shot worker spawn further unscoped children on its
       // own). Confirmed in production 2026-08-07: a batch worker
-      // (`pmlawhub/tools/fiches/run-lane.sh`) self-spawned dozens of
+      // (`pmlegalhub/tools/fiches/run-lane.sh`) self-spawned dozens of
       // uncontrolled child sessions this way. Verified by reading
       // `@anthropic-ai/claude-agent-sdk`'s bundled `sdk.mjs` directly: the
       // SDK resolves its GLOBAL config file (the one carrying `mcpServers`)

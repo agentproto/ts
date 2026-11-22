@@ -37,7 +37,7 @@ export function registerMcpAppHostTools(
   server.tool(
     "mcp_app_ui_index",
     "MCP Apps host: which tools of one MCP server (as a session's harness " +
-      "names it, e.g. `guilde` in `mcp__guilde__…`) declare a UI " +
+      "names it, e.g. `acme` in `mcp__acme__…`) declare a UI " +
       "(`_meta.ui.resourceUri`), plus every app-only tool. The server is " +
       "resolved in the session's scope (session config → project → user → " +
       "imports). Returns `{ server, status, tools, appOnlyTools, " +

@@ -15,7 +15,7 @@ describe("AIP-42 structured tool item { kind: mcp, server, allow?, deny? }", () 
   it("accepts the structured item next to the AIP-54 ref forms", () => {
     const result = parseTools([
       "plain-builtin",
-      { ref: "tool:katchy/search" },
+      { ref: "tool:nova/search" },
       { kind: "mcp", server: "github" },
       { kind: "mcp", server: "github", allow: ["create_issue"], deny: ["delete_repo"] },
       { kind: "mcp", server: "empty", allow: [] },

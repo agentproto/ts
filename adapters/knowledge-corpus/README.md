@@ -106,7 +106,7 @@ adapter always emits `entryPath` + `sourceIds` provenance).
 
 Lifted from the studio `packages/integration/knowledge` corpus provider. The
 adapter/hydrate/internal-writer/frontmatter/unwrap logic already carried no
-`@guilde`/`@simone`/`@agstudio` edge — it re-homes verbatim (only the
+`@acme`/`@demo`/`@agstudio` edge — it re-homes verbatim (only the
 `IKnowledgeProvider` + data-type imports repoint to
 `@agentproto/knowledge-engine`). The guild-side `KnowledgeEngineDescriptor`
 (recursive registry resolution + Settings-UI fields) is **not** lifted; it

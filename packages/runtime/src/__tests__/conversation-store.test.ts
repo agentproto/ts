@@ -62,8 +62,8 @@ describe("claudeCodeProjectDir with a symlinked cwd", () => {
 
 describe("claudeProjectSlug", () => {
   it("replaces slashes with dashes (the part the old encoder already got right)", () => {
-    expect(claudeProjectSlug("/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio")).toBe(
-      "-Volumes-SSDExternalMacStudio-Code-products-agentik-agentik-studio",
+    expect(claudeProjectSlug("/Volumes/SSDExternalMacStudio/Code/products/agentik/demo-app")).toBe(
+      "-Volumes-SSDExternalMacStudio-Code-products-agentik-demo-app",
     )
   })
 

@@ -88,7 +88,7 @@ Usage:
 Configure defaults via \`agentproto config set\` before \`install\`:
   agentproto config set daemon.workspace /path/to/project
   agentproto config set daemon.port 18790
-  agentproto config set daemon.allowedOrigins https://guilde.work
+  agentproto config set daemon.allowedOrigins https://example.com
 `
 
 export async function runDaemon(args: readonly string[]): Promise<number> {

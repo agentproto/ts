@@ -17,7 +17,7 @@
  *   - HTTP routes (GET /sessions, /sessions/:id, /sessions/:id/stream,
  *     POST /sessions/:id/kill)
  *   - CLI `agentproto sessions` (TUI navigation + attach)
- *   - guilde-web Active tab (session cards + terminal viewer)
+ *   - acme-web Active tab (session cards + terminal viewer)
  */
 
 import type {

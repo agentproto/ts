@@ -16,7 +16,7 @@ vi.mock("../workspace-binding.js", async importOriginal => {
   const mod = await importOriginal<typeof import("../workspace-binding.js")>()
   return {
     ...mod,
-    createWorkspaceOfCwd: () => (cwd: string) => (cwd === "/ws/studio" ? "agentik-studio" : undefined),
+    createWorkspaceOfCwd: () => (cwd: string) => (cwd === "/ws/studio" ? "demo-app" : undefined),
   }
 })
 
@@ -78,7 +78,7 @@ describe("workspace: scope on a drive grant", () => {
     const refused = await kill(registry, inStudio.id, [grant("workspace:other")])
     expect(refused.isError).toBe(true)
     expect(refused.content?.[0]?.text).toContain("agent_kill: session")
-    const admitted = await kill(registry, inStudio.id, [grant("workspace:agentik-studio")])
+    const admitted = await kill(registry, inStudio.id, [grant("workspace:demo-app")])
     expect(admitted.isError).toBeUndefined()
     registry.shutdown()
   })
@@ -86,7 +86,7 @@ describe("workspace: scope on a drive grant", () => {
   it("agent_kill: an unregistered cwd matches no workspace scope", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const stray = target(registry, "/somewhere/else")
-    const refused = await kill(registry, stray.id, [grant("workspace:agentik-studio")])
+    const refused = await kill(registry, stray.id, [grant("workspace:demo-app")])
     expect(refused.isError).toBe(true)
     registry.shutdown()
   })

@@ -1,11 +1,10 @@
 /**
  * One reply turn of the cascade: brain text deltas to TTS audio.
  *
- * Ported from agentik-studio `projects/simone/apps/voice/src/calls/stream-turn.ts`
- * (PRs #1114, #1226). Kept: per-sentence TTS, the continuous-stream mode with
- * its fallback to per-sentence TTS, the brain-failure apology (the text is
- * the product's), characters-sent metering. Removed on purpose, they stay in
- * the product: tool-wait filler phrases, the played-text snapshot from TTS
+ * Covers per-sentence TTS, the continuous-stream mode with its fallback to
+ * per-sentence TTS, the brain-failure apology (the text is the host's) and
+ * characters-sent metering. Left out on purpose, they stay in the host
+ * product: tool-wait filler phrases, the played-text snapshot from TTS
  * alignment, and the interrupted-context hand-back.
  */
 import { VOICE_DEFAULTS } from "../defaults.js"

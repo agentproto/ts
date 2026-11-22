@@ -36,4 +36,4 @@ Coming in M14.1:
 
 ## Architectural seam
 
-The CLI is the **local-topology** host for `@agentproto/corpus`. The kit is pure and consumes ports; this package supplies the concrete `FsPort` (node:fs) and `IdentityPort` (OS user + cwd). The agstudio side ships its own host (`projects/guilde/apps/api/services/corpus-host.ts`) for the cloud topology — same kit, different wiring.
+The CLI is the **local-topology** host for `@agentproto/corpus`. The kit is pure and consumes ports; this package supplies the concrete `FsPort` (node:fs) and `IdentityPort` (OS user + cwd). The agstudio side ships its own host (`projects/acme/apps/api/services/corpus-host.ts`) for the cloud topology — same kit, different wiring.

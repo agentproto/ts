@@ -71,7 +71,7 @@ const isError = (r: unknown): boolean => (r as { isError?: boolean }).isError ==
 
 function world() {
   const registry = createSessionsRegistry({ persist: false })
-  const pm = spawnNode(registry, "agentik-studio", "pm-pygmalion")
+  const pm = spawnNode(registry, "demo-app", "pm-orchestrator")
   vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
   const send = vi.spyOn(registry, "sendMessage")
   // The shared Claude Desktop Chat-tab identity, claimed (unverified).

@@ -2211,7 +2211,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Messaging peer groups",
-    help: "Groups of workspace slugs: two sessions may message each other without a tree edge when both slugs sit in the same group (e.g. [[\"agentik-studio\",\"app-agentik-pygmalion\"]]). Empty (the default) = no cross-workspace link. Independent of allowSameWorkspace. Takes effect on the next call.",
+    help: "Groups of workspace slugs: two sessions may message each other without a tree edge when both slugs sit in the same group (e.g. [[\"demo-app\",\"app-orchestrator\"]]). Empty (the default) = no cross-workspace link. Independent of allowSameWorkspace. Takes effect on the next call.",
     default: [],
   },
   {

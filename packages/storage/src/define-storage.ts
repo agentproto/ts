@@ -25,7 +25,7 @@ import type {
  *
  * Generic params:
  *   TFactory      — host-typed factory function shape (e.g. a Mastra
- *                   `(input) => MastraFilesystem` for the Guilde host).
+ *                   `(input) => MastraFilesystem` for the Acme host).
  *                   Defaults to `unknown`.
  *   TCapabilities — opaque metadata the registry queries on. Per
  *                   AIP-43 § Capability metadata namespace, hosts

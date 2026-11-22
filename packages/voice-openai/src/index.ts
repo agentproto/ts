@@ -29,7 +29,7 @@ export function createOpenAIProvider(cfg: OpenAIProviderConfig = {}): VoiceProvi
     slug: "openai",
     name: "OpenAI",
     env: { apiKey: "OPENAI_API_KEY" },
-    // `whisper` is the historical value of VOICE_STT_PROVIDER (Simone prod, compose.yaml:89).
+    // `whisper` is the historical value of VOICE_STT_PROVIDER.
     valueAliases: { stt: ["whisper"] },
     stt: makeOpenAIStt({ ...t, ...(apiKey !== undefined ? { apiKey } : {}), ...cfg.stt }),
     tts: makeOpenAITts({ ...t, ...(apiKey !== undefined ? { apiKey } : {}), ...cfg.tts }),

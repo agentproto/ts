@@ -1403,8 +1403,8 @@ mcp_servers:
   bureau:
     url: http://localhost:8830/mcp
     enabled: true
-  guilde:
-    url: https://api.example.com/guilde/mcp
+  acme:
+    url: https://api.example.com/acme/mcp
     enabled: true
 other_key:
   foo: bar
@@ -1415,8 +1415,8 @@ other_key:
     const out = upsertHermesMcpServer(realish, "agentproto", url)
     expect(out).toContain("  bureau:")
     expect(out).toContain("http://localhost:8830/mcp")
-    expect(out).toContain("  guilde:")
-    expect(out).toContain("https://api.example.com/guilde/mcp")
+    expect(out).toContain("  acme:")
+    expect(out).toContain("https://api.example.com/acme/mcp")
     expect(out).toContain("other_key:")
     expect(out).toMatch(
       /mcp_servers:\n {2}agentproto:\n {4}url: http:\/\/127\.0\.0\.1:18790\/mcp\n {4}enabled: true\n {2}bureau:/,
@@ -1434,7 +1434,7 @@ other_key:
     expect(updated).toContain("http://127.0.0.1:9999/mcp")
     expect(updated).not.toContain("18790")
     expect(updated).toContain("  bureau:")
-    expect(updated).toContain("  guilde:")
+    expect(updated).toContain("  acme:")
   })
 
   it("converts inline-empty `mcp_servers: {}` to block form", () => {
@@ -1455,7 +1455,7 @@ other_key:
     expect(removed).not.toContain("agentproto")
     expect(removed).toContain("  bureau:")
     expect(removed).toContain("http://localhost:8830/mcp")
-    expect(removed).toContain("  guilde:")
+    expect(removed).toContain("  acme:")
     expect(removed).toContain("other_key:")
   })
 

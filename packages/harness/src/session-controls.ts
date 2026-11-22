@@ -11,7 +11,7 @@
  * They used to live inline inside `createAgentCliRuntime`, which made
  * them unreachable for any host that builds its OWN session over a
  * different transport. Those hosts exist and are the whole point of
- * `createAcpProtocolArm` being exported: guilde runs one runtime whose
+ * `createAcpProtocolArm` being exported: acme runs one runtime whose
  * child lives in an e2b sandbox and another whose child lives on a
  * remote daemon behind a WS tunnel, both driving the same ACP arm. Every
  * such host had to hand-copy this block, and silently broke the day the

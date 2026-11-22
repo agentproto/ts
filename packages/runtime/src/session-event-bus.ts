@@ -85,7 +85,7 @@ export type SessionEventType =
 export type VerdictSeverity = "info" | "low" | "medium" | "high" | "critical"
 
 /** One finding inside a structured judge verdict — mirrors the shape a real
- *  consumer (the agentik-studio push gate reviewer) already produces. */
+ *  consumer (the demo-app push gate reviewer) already produces. */
 export interface VerdictFinding {
   severity: VerdictSeverity
   file?: string

@@ -1,5 +1,5 @@
 /**
- * `POST /sessions/:id/retire` — request/response contract (Lane B / Pygmalion
+ * `POST /sessions/:id/retire` — request/response contract (Lane B / Orchestrator
  * calls this route to migrate a brain's wiring to its replacement).
  */
 

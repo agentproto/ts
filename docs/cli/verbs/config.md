@@ -54,8 +54,8 @@ Dot-notation lookup. Exits non-zero when the key is unset.
 
 ```bash
 agentproto config set daemon.port 18791
-agentproto config set daemon.allowedOrigins https://guilde.work,https://app.example.com
-agentproto config set tunnel.host wss://guilde.work/api/v1/agentproto/tunnel
+agentproto config set daemon.allowedOrigins https://example.com,https://app.example.com
+agentproto config set tunnel.host wss://example.com/api/v1/agentproto/tunnel
 agentproto config set features.pty true
 ```
 

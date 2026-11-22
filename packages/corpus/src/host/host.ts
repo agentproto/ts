@@ -5,7 +5,7 @@
  * OperatorOverlayResolver, resolveKnowledge). What it lacked was a host object
  * that owns a per-scope FsPort and exposes `getPlaybookRegistry` /
  * `resolveKnowledgeEntries` so a Mastra processor or tool can call them without
- * knowing about Guilde or any app-specific storage.
+ * knowing about Acme or any app-specific storage.
  *
  * `MemFsCorpusHost` — reference implementation backed by in-memory FsPorts:
  *   - `mountPack(scopeId, files)` installs a flat file map as the scope's corpus.
@@ -14,7 +14,7 @@
  *   - `registerPackFs(packId, fs)` registers a named FsPort so layer providers
  *     that emit pack refs can have those refs mounted.
  *
- * Standalone: no Guilde, no database, no HTTP. The test proof uses this directly.
+ * Standalone: no Acme, no database, no HTTP. The test proof uses this directly.
  */
 
 import matter from "gray-matter"

@@ -11,12 +11,12 @@ import type { AssetDeclaration } from "../asset.js"
 import type { PartitionSpec } from "../partition.js"
 import { UNRESTRICTED } from "../restriction-lattice.js"
 
-const CREDIT = "GUILDE_CREDITS"
-const P = "GUILDE_CREDITS:general"
+const CREDIT = "ACME_CREDITS"
+const P = "ACME_CREDITS:general"
 
 const ASSET: AssetDeclaration = {
   ref: CREDIT,
-  name: "Guilde Credits",
+  name: "Acme Credits",
   symbol: "GCR",
   decimals: 2,
   standard: "internal",

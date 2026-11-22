@@ -6,8 +6,7 @@
  * `ui_card`, `telegram`) may decide it — never a model-callable MCP tool.
  * An approve writes an AIP-7 `signature` on the pinned payload bytes and
  * appends a hash-chained audit event; a deny appends an audit event with no
- * signature. See `.plans/pygmalion/lanes/E1a.md` for the spec this
- * implements and AIP-7 (https://agentproto.dev/docs/aip-7) for the
+ * signature. See AIP-7 (https://agentproto.dev/docs/aip-7) for the
  * accepted specification.
  */
 
@@ -120,7 +119,7 @@ export class ApprovalNotPendingError extends Error {
 }
 
 /** One-time card ticket for the `ui_card` channel (M2 wire-up point) — only
- *  the hash is ever persisted, mirroring the Pygmalion M1 gate reference. */
+ *  the hash is ever persisted, mirroring the Orchestrator M1 gate reference. */
 export interface CardTicketRecord {
   approvalId: string
   ticketHash: string
@@ -140,7 +139,7 @@ export class CardTicketError extends Error {
   }
 }
 
-/** 10 minutes — same TTL the Pygmalion M1 gate reference uses. */
+/** 10 minutes — same TTL the Orchestrator M1 gate reference uses. */
 export const CARD_TICKET_TTL_MS = 10 * 60 * 1000
 
 /** A decision a subscriber still has to deliver to the system that asked for

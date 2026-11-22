@@ -98,7 +98,7 @@ describe("buildFooter — format parity with the runner lanes", () => {
       prov: {
         ...baseProv,
         source: "local",
-        cwd: "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
+        cwd: "/Volumes/SSDExternalMacStudio/Code/products/agentik/demo-app/projects/agentproto/ts",
         workspaceSlug: "ts",
       },
       authMode: "subscription",

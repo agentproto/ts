@@ -85,7 +85,7 @@ describe("runSessionRetentionPass", () => {
     const old = writeSessionDir("sess_old", 8, { origin: "review", label: "review:x:correctness" })
     const fresh = writeSessionDir("sess_fresh", 2, { origin: "review", label: "review:x:correctness" })
     // A `review:` label alone (no origin) also counts as a review lane.
-    const byLabel = writeSessionDir("sess_label", 9, { label: "review:agentik-studio:security", status: "error" })
+    const byLabel = writeSessionDir("sess_label", 9, { label: "review:demo-app:security", status: "error" })
 
     const res = await runSessionRetentionPass({ baseDir: base, registry: fakeRegistry(), now: () => NOW })
 

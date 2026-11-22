@@ -181,7 +181,7 @@
             "$ref": "#/$defs/railId",
             "description": "SettlementProvider kind; default is the id. Two accounts of one provider are two entries with two ids."
           },
-          "productTag": { "type": "string", "minLength": 1, "description": "The provider account or product tag (for example simone, guilde); filters events when one account serves several products." },
+          "productTag": { "type": "string", "minLength": 1, "description": "The provider account or product tag (for example demo, acme); filters events when one account serves several products." },
           "env": {
             "type": "object",
             "additionalProperties": false,

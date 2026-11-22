@@ -12,7 +12,7 @@
  *   - `load(ref)` — return the parsed manifest, or `null` if not found
  *
  * Sources MUST enforce their own visibility / authorisation. The
- * resolver does NOT inspect `metadata.guilde.visibility` — it trusts
+ * resolver does NOT inspect `metadata.acme.visibility` — it trusts
  * the source to only return manifests the caller may see.
  */
 

@@ -23,13 +23,13 @@ describe("agentproto.lock round-trip", () => {
           version: "0.1.0",
           source: "file:/path/to/seo-crew",
           sha256: "a".repeat(64),
-          attach: "@jeremy/chatcommerce",
-          dataDir: "agentik/chatcommerce/.apps/seo-crew",
+          attach: "@jeremy/shopbot",
+          dataDir: "agentik/shopbot/.apps/seo-crew",
         },
       ],
       packs: [
         {
-          name: "@pygmalion/staff",
+          name: "@orchestrator/staff",
           version: "0.1.0",
           digest: "agentproto-pack-digest/v1:deadbeef",
           attach: "@jeremy/root",
@@ -38,7 +38,7 @@ describe("agentproto.lock round-trip", () => {
     })
     const parsed = parseLock(yaml)
     expect(parsed.apps).toHaveLength(1)
-    expect(parsed.apps[0]?.attach).toBe("@jeremy/chatcommerce")
+    expect(parsed.apps[0]?.attach).toBe("@jeremy/shopbot")
     expect(parsed.packs[0]?.digest).toBe("review.pack-digest/v1:deadbeef")
   })
 
@@ -46,7 +46,7 @@ describe("agentproto.lock round-trip", () => {
     const yaml = `lockfile: workspace.lock/v1
 generated: 2026-10-17T18:00:00Z
 packs:
-  - name: "@pygmalion/staff"
+  - name: "@orchestrator/staff"
     version: 0.1.0
     digest: "review.pack-digest/v1:deadbeef"
     attach: "@jeremy/root"
@@ -90,7 +90,7 @@ packs:
             id: "@agentik/seo-crew",
             version: "0.1.0",
             sha256: "not-a-hash",
-            attach: "@jeremy/chatcommerce",
+            attach: "@jeremy/shopbot",
             dataDir: "x",
           },
         ],

@@ -56,7 +56,7 @@ export interface DistillInput {
 
 /**
  * The LLM boundary. Given a raw source, return refined items. Injected by
- * the host (corpus-cli `AnthropicDistiller`, a Guilde operator, …) so the
+ * the host (corpus-cli `AnthropicDistiller`, a Acme operator, …) so the
  * kit takes no model dependency.
  */
 export interface DistillPort {

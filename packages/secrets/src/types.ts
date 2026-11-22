@@ -9,7 +9,7 @@
  * The `exposures` field on each entry was added by hand (not regen'd
  * yet) — runtime exposure descriptors live in `./exposure/types.ts` so
  * they can be consumed independently by hosts that don't need the
- * full SECRETS.md doctype machinery (Guilde's connector registry,
+ * full SECRETS.md doctype machinery (Acme's connector registry,
  * @agentproto/egress's proxy core).
  */
 

@@ -4,7 +4,7 @@
  * engine the `workspace_brain_query` MCP tool queries).
  *
  * The daemon splits its transcript corpus across MULTIPLE per-workspace
- * brains (default / agentproto / agentik-studio / ...), so `--workspace`
+ * brains (default / agentproto / demo-app / ...), so `--workspace`
  * defaults to `all` — the daemon federates every registered brain, tags
  * each hit with the workspace it came from, and returns the merged top-K.
  * Pass a specific slug to scope the search to one brain instead.
@@ -48,7 +48,7 @@ Usage:
 
 Examples:
   agentproto brain query "brain search design"
-  agentproto brain query "worktree gc" --workspace agentik-studio --topk 5
+  agentproto brain query "worktree gc" --workspace demo-app --topk 5
   agentproto brain query "flaky test" --json
 `
 

@@ -3,7 +3,7 @@
  *
  * Used by the event emitter (attestations) and the access/scope policy
  * layers (which use the identityTree to match `appliesTo`). Production
- * Guilde resolves from session; the local CLI resolves from OS user.
+ * Acme resolves from session; the local CLI resolves from OS user.
  */
 
 export interface CallerIdentity {

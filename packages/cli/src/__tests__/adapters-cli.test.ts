@@ -120,7 +120,7 @@ describe("extractAdapterSlug", () => {
     expect(extractAdapterSlug("antigravity")).toBe("antigravity")
     expect(extractAdapterSlug("@agentproto/adapter-antigravity")).toBe("antigravity")
     expect(extractAdapterSlug("@agentproto/harness-claude-code")).toBe("claude-code")
-    expect(extractAdapterSlug("@guilde/agentproto-bridge")).toBeNull()
+    expect(extractAdapterSlug("@acme/agentproto-bridge")).toBeNull()
     expect(extractAdapterSlug("./local-adapter")).toBeNull()
   })
 })
@@ -200,9 +200,9 @@ describe("agentproto adapters show — installed adapters without manifest", () 
         schema: "agentproto/adapter/v1",
         substrates: [
           {
-            kind: "guilde-mcp",
+            kind: "acme-mcp",
             entry: "./dist/index.mjs",
-            export: "guildeMcpSubstrateFactory",
+            export: "acmeMcpSubstrateFactory",
           },
         ],
         dispatchers: [],
@@ -211,7 +211,7 @@ describe("agentproto adapters show — installed adapters without manifest", () 
       },
     })
 
-    const code = await runAdapters(["show", "@guilde/agentproto-bridge", "--json"])
+    const code = await runAdapters(["show", "@acme/agentproto-bridge", "--json"])
 
     expect(code).toBe(0)
     const parsed = JSON.parse(out.join("")) as Record<string, unknown>

@@ -6,7 +6,7 @@
  * conformity data by:
  *   - `packages/runtime` test suites (this repo) — e.g. the future
  *     `/sessions/:id/chat` route;
- *   - `packages/react-agentproto`'s `normalize.ts` (the agentik-studio repo,
+ *   - `packages/react-agentproto`'s `normalize.ts` (the demo-app repo,
  *     pulled in as `workspace:*`).
  *
  * Zero runtime dependencies — just typed data.

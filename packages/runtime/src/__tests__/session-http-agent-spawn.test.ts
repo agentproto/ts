@@ -263,7 +263,7 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
         debounceMs: 30_000,
         run: {
           command: "node",
-          args: ["projects/pygmalion/scripts/clerk-task-secretary.mjs", "--board", "ws:simone"],
+          args: ["projects/orchestrator/scripts/clerk-task-secretary.mjs", "--board", "ws:demo"],
         },
       },
     }
@@ -371,7 +371,7 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
           enabled: true,
           on: "turn_end",
           debounceMs: 30_000,
-          run: { command: "node", args: ["secretary.mjs", "--board", "ws:simone"] },
+          run: { command: "node", args: ["secretary.mjs", "--board", "ws:demo"] },
         },
       }
       const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
@@ -415,12 +415,12 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
         body: JSON.stringify({
           adapter: "mock",
           cwd: "/tmp",
-          allowPromptFrom: ["label:pygmalion-brain-persistent"],
+          allowPromptFrom: ["label:orchestrator-brain-persistent"],
         }),
       })
       expect(res.status).toBe(201)
       const body = (await res.json()) as { id: string }
-      expect(registry.get(body.id)?.allowPromptFrom).toEqual(["label:pygmalion-brain-persistent"])
+      expect(registry.get(body.id)?.allowPromptFrom).toEqual(["label:orchestrator-brain-persistent"])
     } finally {
       await http.stop()
     }
@@ -627,10 +627,10 @@ describe("POST /sessions/agent: operatorLabel (HTTP twin of agent_start)", () =>
   it("stamps the trimmed label when the spawn is an operator spawn (no parent, no caller)", async () => {
     const { registry, http, spawn } = await startServer()
     try {
-      const res = await spawn({ label: "  pygmalion-brain-persistent  " })
+      const res = await spawn({ label: "  orchestrator-brain-persistent  " })
       expect(res.status).toBe(201)
       const body = (await res.json()) as { id: string }
-      expect(registry.get(body.id)?.operatorLabel).toBe("pygmalion-brain-persistent")
+      expect(registry.get(body.id)?.operatorLabel).toBe("orchestrator-brain-persistent")
     } finally {
       await http.stop()
     }

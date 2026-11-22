@@ -12,7 +12,7 @@
  *     tools that need a target take an optional `workspace` arg and
  *     fall back to `active` when omitted.
  *   - The CLI (`agentproto workspace add/list/remove/use`), the daemon,
- *     and the guilde-web onboarding dialog all read+write the same
+ *     and the acme-web onboarding dialog all read+write the same
  *     file, so changes from one surface are immediately visible to
  *     the others.
  *

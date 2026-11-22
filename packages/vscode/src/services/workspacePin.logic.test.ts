@@ -10,7 +10,7 @@ import {
 const config: WorkspacesConfig = {
   version: 1,
   workspaces: [
-    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Agentik Studio" },
+    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Demo App" },
     { slug: "ts", path: "/Code/studio/projects/agentproto/ts", addedAt: "", updatedAt: "" },
   ],
 }
@@ -27,7 +27,7 @@ describe("mapWorkspacePinQuickPickItems", () => {
   it("lists every registered workspace, labelled and pathed", () => {
     const items = mapWorkspacePinQuickPickItems(config)
     expect(items.slice(1)).toEqual([
-      { label: "Agentik Studio", description: "/Code/studio", slug: "studio" },
+      { label: "Demo App", description: "/Code/studio", slug: "studio" },
       { label: "ts", description: "/Code/studio/projects/agentproto/ts", slug: "ts" },
     ])
   })
@@ -43,7 +43,7 @@ describe("buildPinStatusText", () => {
   })
 
   it("renders the workspace's label when pinned", () => {
-    expect(buildPinStatusText(config, "studio")).toBe("$(root-folder) Agentik Studio")
+    expect(buildPinStatusText(config, "studio")).toBe("$(root-folder) Demo App")
   })
 
   it("falls back to the bare slug when the entry has no label", () => {

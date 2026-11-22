@@ -19,14 +19,14 @@ Three hook mechanisms already run today, in three different places. This
 design is deliberately made of their reusable parts, and of no new
 vocabulary.
 
-### 1. Simone's tool hooks (Mastra) — the in-the-loop pattern
+### 1. Demo's tool hooks (Mastra) — the in-the-loop pattern
 
-> **Note on sources:** the `agentik-studio` repo (which hosts Simone) is
+> **Note on sources:** the `demo-app` repo (which hosts Demo) is
 > private — `git clone --depth 1` fails with `Repository not found` for the
 > token this session runs with, so **we could not read our own code here**.
 > The description below is reconstructed from Mastra's public docs
 > (mastra.ai, `Agent.hooks`, "@mastra/core ≥ 1.49", tool hooks shipped
-> 2026-07, PR #17637); anything Simone does locally and invisibly in those
+> 2026-07, PR #17637); anything Demo does locally and invisibly in those
 > docs must be re-verified by someone with read access.
 
 Mastra gives an agent-level two-point hook around **every** tool call the
@@ -49,7 +49,7 @@ never-fail-the-loop posture. The event shapes map cleanly onto our
 `ToolHookEvent` (`toolName`/`input` → `on`/`args`, `output` → `$result`).
 
 **What we do NOT reuse:** the placement. Mastra's hooks live *inside the
-agent loop* of one adapter (one `Agent` instance — the shape Simone would
+agent loop* of one adapter (one `Agent` instance — the shape Demo would
 plug into). Our hooks must live **below any adapter, at the daemon's MCP
 server surface**: one implementation covers opencode, Mastra, Claude Code
 and any other client, and enrichment output routes through the *daemon's*
@@ -125,7 +125,7 @@ and logged, never retried and never escalated.
 
 ### What we reuse — one sentence
 
-From the field: the before/after two-point shape (Mastra/Simone), the
+From the field: the before/after two-point shape (Mastra/Demo), the
 declarative-config + matcher shape (Claude Code, hardened into AIP-60
 clauses), and the event-pair observability + judge-pass + opt-in-config
 shape (this daemon's policies). None of the in-context execution models, and
@@ -136,7 +136,7 @@ listed in §1.
 
 ## 0. The problem this solves
 
-An orchestrator (the Pygmalion brain) delegates work to agents without first
+An orchestrator (the Orchestrator brain) delegates work to agents without first
 checking what already exists in the workspace. It re-launched, as a "new
 feature", work that had already been merged five days earlier. Three
 non-solutions were rejected up front:
@@ -280,7 +280,7 @@ written at spawn (`session-spawn.ts`). The dispatcher therefore derives
 1. `sessionId`, `label`, `depth` — straight off the caller descriptor.
 2. `agentId` — `caller.meta.agentId`, the daemon-resolved AIP-42 manifest
    identity ("trusted because the daemon resolved it at spawn"). This is the
-   field a Pygmalion-style allowlist should actually match on.
+   field a Orchestrator-style allowlist should actually match on.
 3. `role` — resolved with `resolveRole(explicit, depth, cutoff, registry)`
    (`role.ts`), the *same* function spawn uses: `explicit` comes from
    `OrchestratorScope.role` when the call arrived through the orchestrator
@@ -398,7 +398,7 @@ interface Budget {
       {
         "id": "prior-art-on-delegation",
         "on": "agent_start",
-        "match": { "caller": { "role": "supervisor", "label": "pygmalion*" } },
+        "match": { "caller": { "role": "supervisor", "label": "orchestrator*" } },
         "run": "prior-art",
         "mode": "async",
         "delayMs": 4000,
@@ -483,7 +483,7 @@ instruction, and the daemon says so):
 Existing work detected — confirm BEFORE you start:
 - files: packages/runtime/src/tool-hooks.ts ("tool hook" ×7); docs/design/tool-hooks-enrichers.md
 - PRs: #1858 "tool hooks: queue delivery" merged 5d ago; #1902 open (same topic)
-- memory: "Pygmalion prior-art check" — memory/hooks/MEMORY.md §Prior-art
+- memory: "Orchestrator prior-art check" — memory/hooks/MEMORY.md §Prior-art
 - decisions: PROJECT.md §Hooks; RAPPORT.md 2026-10-15 — "async enrichers, no per-message reviewer"
 - summary: prior art is design-doc + merged PR 1858; extend rather than re-add.
 First step: reply "modify existing" (name the file/PR) or "new" — then proceed.
@@ -611,7 +611,7 @@ there is no undefined "later".
 | Stage | Config | Gate / exit criterion |
 |---|---|---|
 | **v1.0 — land, off** | Dispatcher + `withToolHooks` (async path only, §2.4) + the `prior-art` enricher + the `hooks` config block; `hooks.enabled: false` (absent ⇒ off, `titler` precedent). The optional §3.2 step-7 summary path is *code-complete in v1* (it rides the titler's existing OpenRouter fetch) but config-off: the shipped default budget is `maxLlmCalls: 0`. | `pnpm test` + `pnpm check-types` green (repo gate per `AGENTS.md`). |
-| **v1.1 — Pygmalion first** | One hook: `on: "agent_start"`, `match: { caller: { role: "supervisor", label: "pygmalion*" } }` (role is the coarse gate resolved per §2.2; the label — or `caller.agentId` for the AIP-42 manifest session — is what actually narrows to the Pygmalion brain), `run: "prior-art"`, `mode: "async"`, `delayMs: 4000`, `deliver: { to: "append-to-session-queue", sessionId: "$result.id" }`, `budget.maxLlmCalls: 0` (deterministic pipeline only). | Watch a dozen delegations: block appears in `session_queue_list`, no change to tool latencies, zero `hook:*` errors. |
+| **v1.1 — Orchestrator first** | One hook: `on: "agent_start"`, `match: { caller: { role: "supervisor", label: "orchestrator*" } }` (role is the coarse gate resolved per §2.2; the label — or `caller.agentId` for the AIP-42 manifest session — is what actually narrows to the Orchestrator brain), `run: "prior-art"`, `mode: "async"`, `delayMs: 4000`, `deliver: { to: "append-to-session-queue", sessionId: "$result.id" }`, `budget.maxLlmCalls: 0` (deterministic pipeline only). | Watch a dozen delegations: block appears in `session_queue_list`, no change to tool latencies, zero `hook:*` errors. |
 | **v1.2 — breadth, config-only** | Same shipped unit, more config: `task_create` → `attach-to-task-meta`; `agent_prompt` (re-prompts of an existing child) → queue append with dedup `"task"`; a second brain opts in the same way. | Each added hook gets the same dozen-delegation watch as v1.1. |
 
 From v1.1 on, the rollout is config-only — no code change to widen or
@@ -629,7 +629,7 @@ registry keys for the resolved config.
 | **`hook_list` tool** | `config_get` over the `hooks.*` keys already exposes the resolved config in v1; a dedicated tool would add a daemon tool name plus generated-registry churn for no new information. | The workspace `HOOK.md` merge (below) lands, and `config_get` can no longer show the *merged* view across sources — the tool ships with that milestone. |
 | **`spec-echo` enricher** (§6) | v1 proves the seam with one enricher; each further enricher is one file plus one registry entry (§6), additive the moment the dispatcher is proven in production. | The first workspace with a real spec index (`specs/`, `docs/`, `WORK.md`) whose agents are asked to implement *the* spec — a concrete demand for the "existing spec sections" block. |
 | **`security-check` enricher** (§6) | Same posture: additive, zero dispatcher change, ships when someone will read it. | The first pre-delegation incident of the class the maintainer judge only catches at merge — an `agent_start` already touching `auth\|token\|migrations\|.env\|workflows` that would have escalated anyway. The note pays for itself exactly then. |
-| **Workspace `HOOK.md` loading** (§2.7b) | Two-source precedence (workspace doc > daemon config) is a config-surface change with drift risk; the daemon config alone covers Pygmalion (v1.1) and the second brain (v1.2). | The first real per-workspace divergence: a brain/team that needs a *different* hook set than the daemon-wide config. |
+| **Workspace `HOOK.md` loading** (§2.7b) | Two-source precedence (workspace doc > daemon config) is a config-surface change with drift risk; the daemon config alone covers Orchestrator (v1.1) and the second brain (v1.2). | The first real per-workspace divergence: a brain/team that needs a *different* hook set than the daemon-wide config. |
 | **User/agent-authored enrichment scripts** | AIP-40's parked sandbox problem: a config-declared script body is remote code execution by JSON. Config plus bundled enrichers do not cross that line; a `HOOK.md` that can run third-party scripts would — and that would be a real spec of its own, deliberately left unnumbered while the decided path is the AIP-46 amendment (§8). | A sibling AIP with a sandbox-mediated execution model — AIP-40's explicit parking condition. |
 | **Clerk triggers on `fireExternal`** (§10.4 v2) | The clerk keeps its independently built AIP-68 §5 path in v1 so nothing breaks; the §10 shapes (record, dispatcher, dedup, budget, delivery) are already the ones it will join. | §10.4's v2 milestone: clerk integrations publish into `fireExternal` and their play passes register as enrichers. |
 | **Shared day-window cost accounting** (§10.4 v3) | Per-hook `maxCostUsd` exists in v1; one operator-wide day window spanning both populations is only worth building once both spend against it. | §10.4's v3 milestone: clerk passes and enricher runs share one hard stop. |
@@ -990,7 +990,7 @@ name the reviewer for the §8.1 text before the port.
   (hot, killable); the `prior-art` enricher with its deterministic
   pipeline — shipped default `maxLlmCalls: 0`, with the optional
   free-model summary code-complete but config-off (§7 v1.0) — on
-  Pygmalion/delegations first (§7 v1.1); in-memory module-scope dedup
+  Orchestrator/delegations first (§7 v1.1); in-memory module-scope dedup
   (survives the per-request server rebuild, resets on daemon restart).
 - **Out of v1 — each item carries an explicit reason and a named trigger,
   spelled out in §7's post-v1 table:** `mode: "sync"` installed (the
