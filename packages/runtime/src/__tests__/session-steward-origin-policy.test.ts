@@ -118,6 +118,22 @@ describe("origin policy — resolveOriginPolicy", () => {
       closableOrigins: ["gate"],
     })
   })
+
+  it("extraClosableOrigins adds a host's own roots to the defaults, deduplicated", () => {
+    const r = mod.resolveOriginPolicy({ extraClosableOrigins: ["my-supervisor", "my-supervisor:*", "gate", 7] })
+    expect(r.closableOrigins).toEqual([...mod.DEFAULT_CLOSABLE_ORIGINS, "my-supervisor", "my-supervisor:*"])
+    expect(mod.classifyOrigin({ origin: "my-supervisor:brain" }, { extraClosableOrigins: ["my-supervisor:*"] })).toBe(
+      "closable",
+    )
+    expect(mod.classifyOrigin({ origin: "my-supervisor:brain" }, {})).toBe("user")
+  })
+
+  it("extraClosableOrigins also extends an explicit closable list", () => {
+    expect(mod.resolveOriginPolicy({ closableOrigins: ["gate"], extraClosableOrigins: ["mine"] }).closableOrigins).toEqual([
+      "gate",
+      "mine",
+    ])
+  })
 })
 
 describe("origin policy — classifyOrigin", () => {

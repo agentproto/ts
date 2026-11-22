@@ -114,6 +114,15 @@ inputs:
     items:
       type: string
     default: ["cron:*", "gate", "workflow", "review"]
+  extraClosableOrigins:
+    type: array
+    description: >-
+      Origins ADDED to the closable list (a host's own supervisor label, for
+      example `my-supervisor` and `my-supervisor:*`) without restating the
+      defaults. A trailing `*` is a prefix wildcard. Default none.
+    items:
+      type: string
+    default: []
 outputs: {}
 steps:
   - id: modelRoles

@@ -712,6 +712,12 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
       expect(f({})).toBe(false)
     })
 
+    it("resolveSettings appends extraClosableOrigins to the default closable list", () => {
+      const resolved = stewardEntry.resolveSettings({ extraClosableOrigins: ["mine:*"] }) as { closableOrigins: string[] }
+      expect(resolved.closableOrigins).toContain("mine:*")
+      expect(resolved.closableOrigins).toContain("cron:*")
+    })
+
     it("buildAskQueue still skips a busy or awaiting-input keepAlive session that otherwise qualifies", () => {
       const settings = stewardEntry.resolveSettings({ askSessions: true })
       const row = (id: string, extra: Record<string, unknown>) => ({

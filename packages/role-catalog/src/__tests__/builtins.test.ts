@@ -7,7 +7,7 @@ import {
 import {
   BUILTIN_ROLE_ENTRIES,
   BUILTIN_ROLE_SLUGS,
-  LEGACY_ACME_ROLE_MAP,
+  LEGACY_OPERATOR_ROLE_MAP,
   builtinRoleSource,
   registerBuiltinRoles,
   replaceBuiltinRole,
@@ -87,9 +87,9 @@ describe("@agentproto/role-catalog builtins", () => {
   it("legacy Acme role map covers every VALID_ROLES enum value", () => {
     const legacy = ["ceo", "cmo", "cto", "cfo", "copywriter", "visual", "analytics", "research", "editor", "performance"]
     for (const old of legacy) {
-      expect(LEGACY_ACME_ROLE_MAP[old]).toBeDefined()
+      expect(LEGACY_OPERATOR_ROLE_MAP[old]).toBeDefined()
       // Every mapping target MUST exist in the catalogue.
-      expect(BUILTIN_ROLE_SLUGS).toContain(LEGACY_ACME_ROLE_MAP[old])
+      expect(BUILTIN_ROLE_SLUGS).toContain(LEGACY_OPERATOR_ROLE_MAP[old])
     }
   })
 })

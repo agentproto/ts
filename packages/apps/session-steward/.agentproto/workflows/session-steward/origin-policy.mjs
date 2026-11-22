@@ -55,9 +55,13 @@ export function resolveOriginPolicy(policy) {
     const kept = Array.isArray(value) ? value.filter(isNonEmptyString).map((s) => s.trim()) : []
     return kept.length > 0 ? kept : fallback
   }
+  // `extraClosableOrigins` ADDS roots a host owns (its own supervisor label)
+  // to whichever closable list is in force, without restating the defaults.
+  const extra = list(p.extraClosableOrigins, [])
+  const closable = list(p.closableOrigins, DEFAULT_CLOSABLE_ORIGINS)
   return {
     userOrigins: list(p.userOrigins, DEFAULT_USER_ORIGINS),
-    closableOrigins: list(p.closableOrigins, DEFAULT_CLOSABLE_ORIGINS),
+    closableOrigins: [...closable, ...extra.filter((o) => !closable.includes(o))],
   }
 }
 

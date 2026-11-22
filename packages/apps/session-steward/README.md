@@ -69,6 +69,10 @@ the `userOrigins` / `closableOrigins` inputs:
   those origins at spawn; display labels are never used as authorization
   evidence.
 
+A host that owns its own root label adds it with the `extraClosableOrigins`
+input (for example `["my-supervisor", "my-supervisor:*"]`); it is appended to
+the closable list in force, so the defaults need not be restated.
+
 An origin-less root remains flag-only. That is a legacy/fail-safe state, not
 proof that a human created it: machine launchers must stamp `origin` when they
 spawn. Already-running legacy sessions keep their missing provenance until

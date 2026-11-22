@@ -1062,14 +1062,14 @@ export const BUILTIN_ROLE_ENTRIES: readonly BuiltinRoleEntry[] = SEEDS.map(
 export const BUILTIN_ROLE_SLUGS: readonly string[] = SEEDS.map((s) => s.name)
 
 /**
- * Mapping from Acme's legacy `OperatorRole` enum to a builtin slug
+ * Mapping from a host's legacy `OperatorRole` enum to a builtin slug
  * in this catalogue. Used by migration scripts to backfill
  * `operators.role_slug` from the existing `operators.role` text.
  *
  * Renames per Prakash 2026-05-11 — no CXO branding for AI workers
  * (those titles are reserved for the human executive).
  */
-export const LEGACY_ACME_ROLE_MAP: Readonly<Record<string, string>> = {
+export const LEGACY_OPERATOR_ROLE_MAP: Readonly<Record<string, string>> = {
   ceo: "chief-of-staff",
   cmo: "marketing-manager",
   cto: "technical-manager",

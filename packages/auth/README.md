@@ -289,7 +289,7 @@ provider owns its endpoint yet; the clear error comes at spawn time.
 | `CredentialStore` / `StoreRef` / `StoredCredential` | pluggable-store interface + shapes |
 | `KeychainStore` / `MemoryStore` / `FileStore` / `resolveStoreRef` | built-in backends + ref resolver |
 | `readKeychainToken` / `writeKeychainToken` / `resolveAccount` | Keychain helpers |
-| `acmeAuthProvider` / `BUILTIN_AUTH_PROVIDERS` | shipped builtins |
+| `BUILTIN_AUTH_PROVIDERS` | shipped builtins (empty: hosts register their own) |
 | `registerSubaccountProvider` / `findSubaccountProvider` / `listSubaccountProviders` | sub-account provider registry |
 | `SubaccountProvider` / `SubaccountPin` / `SubaccountError` / `parseSubaccountPin` | sub-account contract |
 

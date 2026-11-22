@@ -151,7 +151,7 @@ export {
   eligibleProfiles,
   type AdapterAuthManifest,
 } from "./eligibility.js"
-export { acmeAuthProvider, BUILTIN_AUTH_PROVIDERS } from "./builtins.js"
+export { BUILTIN_AUTH_PROVIDERS } from "./builtins.js"
 export {
   authProviderFrontmatterSchema,
   authConfigSchema,
