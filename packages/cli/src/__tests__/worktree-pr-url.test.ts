@@ -24,12 +24,12 @@ describe("githubPrUrlBuilder", () => {
       "https://github.com/agentproto/ts/pull/42",
     )
     expect(
-      githubPrUrlBuilder(repoWithOrigin("https://github.com/agentik-studio/agentik-studio.git"))?.(7),
-    ).toBe("https://github.com/agentik-studio/agentik-studio/pull/7")
+      githubPrUrlBuilder(repoWithOrigin("https://github.com/demo-app/demo-app.git"))?.(7),
+    ).toBe("https://github.com/demo-app/demo-app/pull/7")
     // Multi-account ssh host alias.
     expect(
-      githubPrUrlBuilder(repoWithOrigin("git@github.com-agentik:agentik-studio/agentik-studio.git"))?.(307),
-    ).toBe("https://github.com/agentik-studio/agentik-studio/pull/307")
+      githubPrUrlBuilder(repoWithOrigin("git@github.com-agentik:demo-app/demo-app.git"))?.(307),
+    ).toBe("https://github.com/demo-app/demo-app/pull/307")
   })
 
   it("builds nothing for a non-GitHub origin or no origin at all", () => {

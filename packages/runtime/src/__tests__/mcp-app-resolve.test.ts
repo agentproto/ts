@@ -9,7 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { resolveMcpServer } from "../mcp-app-resolve.js"
 
-const ALIAS = "guilde"
+const ALIAS = "acme"
 
 let root: string
 let home: string
@@ -57,11 +57,11 @@ async function writeAllScopes(): Promise<void> {
     version: 1,
     imports: [
       {
-        id: "claude-code:global:guilde",
+        id: "claude-code:global:acme",
         alias: ALIAS,
         addedAt: "2026-09-26T00:00:00.000Z",
         snapshot: {
-          id: "claude-code:global:guilde",
+          id: "claude-code:global:acme",
           source: "claude-code",
           scope: "global",
           name: ALIAS,
@@ -94,24 +94,24 @@ describe("resolveMcpServer", () => {
 
   it("maps a stdio session entry (ref = command) and brokers credentialRef headers", async () => {
     const stdio = await resolveMcpServer(
-      { mcpServers: [{ name: ALIAS, transport: "stdio", ref: "guilde-mcp", args: ["--x"], env: { K: "v" } }] },
+      { mcpServers: [{ name: ALIAS, transport: "stdio", ref: "acme-mcp", args: ["--x"], env: { K: "v" } }] },
       "s1",
       ALIAS,
       opts()
     )
-    expect(stdio?.config).toEqual({ type: "stdio", command: "guilde-mcp", args: ["--x"], env: { K: "v" } })
+    expect(stdio?.config).toEqual({ type: "stdio", command: "acme-mcp", args: ["--x"], env: { K: "v" } })
 
     const brokered = await resolveMcpServer(
       {
         mcpServers: [
-          { name: ALIAS, transport: "http", ref: "https://s/mcp", headers: { Authorization: "static" }, credentialRef: "guilde/token" },
+          { name: ALIAS, transport: "http", ref: "https://s/mcp", headers: { Authorization: "static" }, credentialRef: "acme/token" },
         ],
       },
       "s1",
       ALIAS,
       { ...opts(), resolveCredentialHeaders: async ref => ({ Authorization: `Bearer <${ref}>` }) }
     )
-    expect(brokered?.config.headers).toEqual({ Authorization: "Bearer <guilde/token>" })
+    expect(brokered?.config.headers).toEqual({ Authorization: "Bearer <acme/token>" })
   })
 
   it("strips ?deferred=1|0 from a session entry's url — the host's own connection needs the full tools/list", async () => {

@@ -5,7 +5,7 @@
  *
  * Declared in ROLE.md frontmatter as `contextFiles: tag=path, tag2=path2`.
  * First user: the `recherche` role and the repo map `<carte-depots>`
- * (agentik-studio `docs/agents/recherche-large-contrat.md`): an agent asked to
+ * (see the `recherche-large` skill): an agent asked to
  * "look globally" starts with the list of every repo in front of it instead of
  * the handful it remembers.
  *

@@ -10,7 +10,7 @@
  *
  * # Roles
  *
- *   host    — the orchestrator (e.g. Guilde API). Sends `spawn`,
+ *   host    — the orchestrator (e.g. Acme API). Sends `spawn`,
  *             `stdin`, `kill`, `resize`. Receives `stdout`, `stderr`,
  *             `exit`, `error`. Holds the ACP client; sees the duplex
  *             stream as a `ChildProcess`-shaped duck.

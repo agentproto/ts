@@ -52,13 +52,13 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
 
 const studioConfig: WorkspacesConfig = {
   version: 1,
-  workspaces: [{ slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Agentik Studio" }],
+  workspaces: [{ slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Demo App" }],
 }
 
 const multiConfig: WorkspacesConfig = {
   version: 1,
   workspaces: [
-    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Agentik Studio" },
+    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Demo App" },
     { slug: "other", path: "/Code/other", addedAt: "", updatedAt: "", label: "Other Project" },
   ],
 }
@@ -569,7 +569,7 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     expect(row.ctxPercent).toBe(33)
     // In-place is the unremarkable default — the tag shows WHERE it runs
     // (the workspace label), with the posture + path relegated to the hover.
-    expect(row.tag).toBe("Agentik Studio")
+    expect(row.tag).toBe("Demo App")
     expect(row.tagTitle).toBe("/Code/studio · runs in-place")
     expect(row.workspace?.slug).toBe("studio")
   })

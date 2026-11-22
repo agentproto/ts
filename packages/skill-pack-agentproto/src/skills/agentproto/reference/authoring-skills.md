@@ -18,7 +18,7 @@ distinct places a skill can live, for three purposes:
 | **CI-lane skills** | `agentproto/ts/.github/agent-skills/<name>.md` | short prompts injected into the review/fix harness, referenced from `agentic-review.json` | ✅ yes (separate mechanism) |
 
 Plus a fourth, downstream: the **studio harness install** —
-`agentik-studio/.claude/skills/<slug>/` + `.agents/skills/<slug>/` — is where
+`demo-app/.claude/skills/<slug>/` + `.agents/skills/<slug>/` — is where
 Claude Code loads skills locally. **It is a CONSUMER, not a source.** It can
 drift from the pack whenever it's edited directly instead of via the pack
 `src/skills/`. Source of truth = the pack.

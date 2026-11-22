@@ -18,7 +18,7 @@ owner: { type: "org", id: "org_1", slug: acme }
 storage:
   inline:
     provider: github
-    config: { repo_url: "https://github.com/acme/pygmalion-home", mount_path: "/data/home" }
+    config: { repo_url: "https://github.com/acme/orchestrator-home", mount_path: "/data/home" }
     sync: { mode: "pull-push", push: { branch_policy: "per-conversation", pr_policy: "manual" } }
 ---
 body
@@ -32,7 +32,7 @@ describe("workspaceFromMarkdownText", () => {
       ws as { storage?: { inline?: { provider?: unknown; config?: Record<string, unknown> } | null } }
     )?.storage?.inline
     expect(inline?.provider).toBe("github")
-    expect(inline?.config?.["repo_url"]).toBe("https://github.com/acme/pygmalion-home")
+    expect(inline?.config?.["repo_url"]).toBe("https://github.com/acme/orchestrator-home")
   })
 
   it("returns undefined for text without valid frontmatter", () => {

@@ -1,8 +1,8 @@
 /**
  * The approvals engine — the daemon's human-approval primitive (AIP-7
- * signatures as the mechanism). See `.plans/pygmalion/lanes/E1a.md`.
+ * signatures as the mechanism).
  *
- * Every mutation here is atomic in the sense the Pygmalion M1 gate uses the
+ * Every mutation here is atomic in the sense the Orchestrator M1 gate uses the
  * word: the status check + in-memory mutation + sync persistence happen
  * with NO `await` between them, so a second concurrent call always
  * observes the first call's write. The AIP-7 signature write

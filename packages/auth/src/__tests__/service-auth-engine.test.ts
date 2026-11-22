@@ -23,13 +23,13 @@ const IDENTITY = `${API}/agent/identity`
 const TOKEN = `${AS}/oauth2/token`
 
 const provider = {
-  id: "guilde",
+  id: "acme",
   description: "d",
   apiBase: API,
   auth: {
     flow: "service-auth",
     clientId: "agentproto-cli",
-    tokenStore: { keychain: "bureau-guilde", account: "{server}" },
+    tokenStore: { keychain: "bureau-acme", account: "{server}" },
   },
 } as AuthProviderHandle
 
@@ -39,7 +39,7 @@ const discovered = {
 } as DiscoveredEndpoints
 
 // Matches resolveStoreRef(config.tokenStore, server) for `provider` above.
-const ref = { path: "bureau-guilde", account: API }
+const ref = { path: "bureau-acme", account: API }
 
 function jsonRes(body: unknown, ok = true, status = 200) {
   return {

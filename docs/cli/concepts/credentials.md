@@ -32,7 +32,7 @@ from `agentproto auth login` (RFC 8628 device flow) — see
 {
   "version": 1,
   "hosts": {
-    "wss://guilde.work/api/v1/agentproto/tunnel": {
+    "wss://example.com/api/v1/agentproto/tunnel": {
       "token": "eyJ…",
       "tokenType": "Bearer",
       "expiresAt": "2026-08-08T12:34:56.000Z",

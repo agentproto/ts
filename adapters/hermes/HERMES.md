@@ -105,7 +105,7 @@ multi-provider model routing — over stdio JSON-RPC.
 
 Bind an AIP-9 operator to Hermes when the operator should run inside
 Hermes' agent loop instead of in-process. Common cases: surfacing
-the Guilde / Katchy operator inside an IDE Shell view (M5), running
+the Acme / Nova operator inside an IDE Shell view (M5), running
 a power-user-style agent CLI under operator governance, or letting
 the operator delegate to Hermes-native skills the host doesn't ship.
 

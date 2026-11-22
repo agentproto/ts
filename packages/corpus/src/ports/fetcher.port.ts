@@ -11,7 +11,7 @@
  *   - `plugin-local-browser` (agentproto daemon / PTY): tier-1 YouTube
  *     captions via InnerTube + tier-2 article readability, using the
  *     user's authenticated browser. This is the rich path.
- *   - a server-side headless fetcher (Guilde corpus-host): public
+ *   - a server-side headless fetcher (Acme corpus-host): public
  *     captions + readability only, no user session.
  *   - a fake (tests): canned { title, text } per URL.
  *

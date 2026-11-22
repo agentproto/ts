@@ -4,7 +4,7 @@
  * Lifted VERBATIM from the studio integration package
  * (`packages/integration/knowledge/src/providers/base-knowledge.provider.ts:14-27`)
  * — the interface already imported only its own data types and carried no
- * `@guilde/@simone/@agstudio` edge, so it re-homes as-is. The only change is
+ * `@acme/@demo/@agstudio` edge, so it re-homes as-is. The only change is
  * the import path (`../types/knowledge.types` → `./types.js`) to fit the new
  * package boundary. This is the retrieval sibling of code-brain's
  * `ICodeBrainProvider`.

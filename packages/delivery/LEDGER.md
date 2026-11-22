@@ -98,7 +98,7 @@ history.
 
 ## COMPAT NOTE: out-of-repo report scripts
 
-Two scripts in `agentik-studio/.plans/2026-10-23-agent-comms-rethink/tools/`
+Two scripts in `demo-app/.plans/2026-10-23-agent-comms-rethink/tools/`
 still read the old files and are NOT edited by this change. To move them over,
 read both the old files and the new `delivery-ledger.jsonl` across the cutover
 and filter the new file by `producer`.

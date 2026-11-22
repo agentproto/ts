@@ -65,8 +65,8 @@ it.
 import { createBrainManager } from "@agentproto/workspace-brain"
 
 const manager = createBrainManager({
-  workspace: "agentik-studio",
-  brainDir: "/Users/you/.agentproto/workspaces/agentik-studio/brain",
+  workspace: "demo-app",
+  brainDir: "/Users/you/.agentproto/workspaces/demo-app/brain",
   readSession: async (sessionId) => await loadSessionTranscript(sessionId),
   listSessionRefs: async () => await listSessionIds(),
 })

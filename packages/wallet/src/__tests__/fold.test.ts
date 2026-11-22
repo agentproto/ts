@@ -7,8 +7,8 @@ import {
 } from "../fold.js"
 import { UNRESTRICTED } from "../restriction-lattice.js"
 
-const CREDIT = "GUILDE_CREDITS"
-const P = "GUILDE_CREDITS:general"
+const CREDIT = "ACME_CREDITS"
+const P = "ACME_CREDITS:general"
 
 function ev(p: Partial<WalletEvent> & Pick<WalletEvent, "kind" | "amount" | "lotId">): WalletEvent {
   return {

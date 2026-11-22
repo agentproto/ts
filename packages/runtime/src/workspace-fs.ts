@@ -1,8 +1,8 @@
 /**
  * `WorkspaceFs` — minimal `readFile` / `writeFile` adapter over a
  * workspace directory. Mirrors the `McpWorkspace.filesystem` shape
- * used by `@guilde/mcp` so the daemon can be plugged in as the
- * workspace backend for a Guilde MCP server (via its
+ * used by `@acme/mcp` so the daemon can be plugged in as the
+ * workspace backend for a Acme MCP server (via its
  * `loadGuildWorkspace` injection point) without re-shimming.
  *
  * All paths are workspace-relative. Absolute paths are rejected to

@@ -96,11 +96,11 @@ describe("launchedByText", () => {
     expect(launchedByText({ kind: "session", sessionId: "sess_1" }, () => undefined)).toBe(
       "session sess_1",
     )
-    expect(launchedByText({ kind: "session", sessionId: "sess_1", via: "pygmalion" })).toBe(
-      "session sess_1 via pygmalion",
+    expect(launchedByText({ kind: "session", sessionId: "sess_1", via: "orchestrator" })).toBe(
+      "session sess_1 via orchestrator",
     )
-    expect(launchedByText({ kind: "session", sessionId: "sess_1", via: "pygmalion" }, () => "brain")).toBe(
-      "session sess_1 (brain) via pygmalion",
+    expect(launchedByText({ kind: "session", sessionId: "sess_1", via: "orchestrator" }, () => "brain")).toBe(
+      "session sess_1 (brain) via orchestrator",
     )
   })
 

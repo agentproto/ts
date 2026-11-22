@@ -64,8 +64,8 @@ the `userOrigins` / `closableOrigins` inputs:
 - **Close allowed:** every origin a harness or scheduler stamps — `cron` /
   `cron:*`, `routine:*`, `gate`, `workflow` (step sessions), `review`
   (reviewer lanes), `webhook`, `model-bench*` (the bench harness and its
-  smoketest), `pygmalion` / `pygmalion:*`, `app-service:*` — and executors (a
-  session with a `parentSessionId`). Pygmalion and app service owners stamp
+  smoketest), `orchestrator` / `orchestrator:*`, `app-service:*` — and executors (a
+  session with a `parentSessionId`). Orchestrator and app service owners stamp
   those origins at spawn; display labels are never used as authorization
   evidence.
 

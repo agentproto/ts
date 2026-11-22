@@ -466,7 +466,7 @@ describe("runEagerResumePass (bounded boot pass)", () => {
       {
         id: "stale-operator-label",
         keepAlive: true,
-        operatorLabel: "pygmalion-brain-persistent",
+        operatorLabel: "orchestrator-brain-persistent",
         lastTurnEndedAt: stale,
       },
       { id: "fresh-keepalive", keepAlive: true, lastTurnEndedAt: fresh },

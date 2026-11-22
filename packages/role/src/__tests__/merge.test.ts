@@ -18,7 +18,7 @@ const parent: RoleHandle = {
   strengths: ["Pattern recognition"],
   antiPatterns: ["Publishing without sign-off"],
   tags: ["seo", "marketing"],
-  metadata: { guilde: { visibility: "public" } },
+  metadata: { acme: { visibility: "public" } },
 }
 
 describe("mergeRoles (AIP-47)", () => {
@@ -138,10 +138,10 @@ describe("mergeRoles (AIP-47)", () => {
   describe("metadata deep-merge", () => {
     it("merges vendor namespaces recursively, child keys win", () => {
       const { role } = mergeRoles(parent, {
-        metadata: { guilde: { visibility: "org", organizationId: "org_x" } },
+        metadata: { acme: { visibility: "org", organizationId: "org_x" } },
       })
       expect(role.metadata).toEqual({
-        guilde: { visibility: "org", organizationId: "org_x" },
+        acme: { visibility: "org", organizationId: "org_x" },
       })
     })
   })

@@ -22,8 +22,6 @@
  * Pure data: no behavior. The distill core reads a Lens to set the instruction,
  * constrain kinds, and stamp the `aspect:` tag; synthesis (P2) reads `mode` +
  * `synthesisPath` to drive the report engine.
- *
- * Design: projects/guilde/docs/KNOWLEDGE-LENS-DESIGN.md
  */
 
 import type { RefinedKind } from "./types.js"

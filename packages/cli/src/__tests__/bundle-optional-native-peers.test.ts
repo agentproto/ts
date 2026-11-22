@@ -3,7 +3,7 @@
  * and `linkedom`. linkedom does `try { require("canvas") } catch { shim }`:
  * `canvas` is an optional peer it never needs. Wherever a native `canvas` is
  * installed but not compiled (a pnpm workspace that lists `canvas: false` in
- * `allowBuilds`, such as the agentik-studio monorepo), esbuild follows that
+ * `allowBuilds`, such as the demo-app monorepo), esbuild follows that
  * require into canvas/lib/bindings.js and tsup's native-node-modules plugin
  * fails the whole build on `../build/Release/canvas.node`. Keeping `canvas`
  * external leaves the guarded require to run (and fall back) at load time.

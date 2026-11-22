@@ -20,8 +20,8 @@ const base: SessionDescriptor = {
 
 describe("compactSessionItem launchedBy", () => {
   it("carries the derived text for a child session", () => {
-    expect(compactSessionItem({ ...base, parentSessionId: "sess_parent", origin: "pygmalion" })).toMatchObject({
-      launchedBy: "session sess_parent via pygmalion",
+    expect(compactSessionItem({ ...base, parentSessionId: "sess_parent", origin: "orchestrator" })).toMatchObject({
+      launchedBy: "session sess_parent via orchestrator",
     })
   })
 

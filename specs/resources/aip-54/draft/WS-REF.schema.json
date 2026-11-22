@@ -8,7 +8,7 @@
   "examples": [
     "ws://operators/atlas",
     "ws://wikis/platform/http-server",
-    "ws://workspaces/@acme/agentik-studio",
+    "ws://workspaces/@acme/demo-app",
     "ws://roles/seo-specialist",
     "ws://companies/acme-co/teams/growth",
     "ws://tools/agentproto/session_list"

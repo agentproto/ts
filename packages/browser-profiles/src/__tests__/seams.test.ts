@@ -135,16 +135,16 @@ describe("SessionSource registry seam", () => {
     const r = createSessionSourceRegistry([source("vault")])
     let caught: unknown
     try {
-      r.resolve("guilde")
+      r.resolve("acme")
     } catch (e) {
       caught = e
     }
     expect(caught).toBeInstanceOf(SessionSourceUnknownError)
     const err = caught as SessionSourceUnknownError
     expect(err.code).toBe("browser-profiles:unknown-source")
-    expect(err.kind).toBe("guilde")
+    expect(err.kind).toBe("acme")
     expect(err.registered).toEqual(["vault"])
-    expect(() => r.materialize("guilde", { sessionRef: "x", domains: [] })).toThrow(SessionSourceUnknownError)
+    expect(() => r.materialize("acme", { sessionRef: "x", domains: [] })).toThrow(SessionSourceUnknownError)
   })
 
   it("rejects a duplicate kind and any built-in kind", () => {

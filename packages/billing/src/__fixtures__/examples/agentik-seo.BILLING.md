@@ -4,7 +4,6 @@
 # 1 000 credits = 1 USD, a field value of its own, not a derived one. State of the code on 2026-11-20: the Autumn
 # configuration was pushed to the Autumn SANDBOX on 2026-09-02 and its recreation in production is listed as a to-do
 # (UX-BILLING.md:144-145), so there is no confirmed production behaviour to copy; this file describes that configuration.
-# Paths are in the Agentik studio repository (private); they are provenance, not links.
 schema: billing/v1
 name: agentik-seo
 title: Agentik SEO billing

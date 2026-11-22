@@ -81,8 +81,8 @@ describe("session.message: an explicit allow grant admits the pair", () => {
   })
 
   it("matches the recipient's label: scope and the plain session id", () => {
-    const labels = (id: string) => (id === "B" ? "pm-simone" : undefined)
-    expect(decide(as(A), "session.message", to(B), ctx([grant("label:pm-simone")], { operatorLabelOf: labels })).allow).toBe(true)
+    const labels = (id: string) => (id === "B" ? "pm-demo" : undefined)
+    expect(decide(as(A), "session.message", to(B), ctx([grant("label:pm-demo")], { operatorLabelOf: labels })).allow).toBe(true)
     expect(decide(as(A), "session.message", to(B), ctx([grant("B")])).allow).toBe(true)
     expect(decide(as(A), "session.message", to(B), ctx([grant("label:someone-else")], { operatorLabelOf: labels }))).toMatchObject({
       allow: false,

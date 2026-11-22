@@ -5,10 +5,9 @@
  * a simple silence VAD, transcribed, handed to `onTurn`, and the reply PCM is
  * pushed back through the transport as pcm16 audio messages.
  *
- * Ported from agentik-studio `projects/simone/apps/voice/src/calls/pipeline.ts`
- * (PRs #995, #1220, #1227, #1279). Removed on purpose, they stay in the
- * product: the endpoint and backchannel shadows (observation logs, never read
- * by the pipeline). Generalised: the STT provider labels are injected.
+ * Left out on purpose, they stay in the host product: the endpoint and
+ * backchannel shadows (observation logs, never read by the pipeline). The STT
+ * provider labels are injected.
  *
  * STT/TTS/onTurn are injected so the e2e tests run with mocks.
  */

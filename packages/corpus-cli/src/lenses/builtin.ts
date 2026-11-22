@@ -6,7 +6,7 @@
  * threaded to the distiller as the extraction instruction, its `kinds` constrain
  * the emitted kinds, and its `aspect` is stamped on every produced entry as the
  * `aspect:<value>` facet tag (the query key). See
- * `@agentproto/corpus` `distill/lens.ts` + projects/guilde/docs/KNOWLEDGE-LENS-DESIGN.md.
+ * `@agentproto/corpus` `distill/lens.ts`.
  *
  * This is the CLI-side analog of the guild's built-in catalog
  * (`apps/api` `services/knowledge-generate/lenses.ts`): a workspace can override

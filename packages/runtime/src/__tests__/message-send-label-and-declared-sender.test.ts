@@ -80,7 +80,7 @@ async function harness(opts: {
   return { client, call, close: async () => client.close() }
 }
 
-const LABEL = "pygmalion-brain-persistent"
+const LABEL = "orchestrator-brain-persistent"
 
 function world() {
   const registry = createSessionsRegistry({ persist: false })
@@ -218,7 +218,7 @@ describe("message_send to: label:<label>", () => {
 describe("message_send declaredSender", () => {
   const desktopWorld = () => {
     const w = world()
-    const pm = spawnNode(w.registry, "agentik-studio")
+    const pm = spawnNode(w.registry, "demo-app")
     w.registry.touchExternal({ id: "claude-desktop", host: "claude-desktop" })
     return { ...w, pm }
   }
@@ -281,7 +281,7 @@ describe("message_send declaredSender", () => {
 
   it("is refused for a call that carries a real session identity", async () => {
     const { registry, pm, send } = desktopWorld()
-    const real = spawnNode(registry, "agentik-studio")
+    const real = spawnNode(registry, "demo-app")
     const h = await harness({ registry, callerSessionId: real.id })
     try {
       const r = await h.call({ to: pm.id, text: "ping", declaredSender: "cc:abc" })

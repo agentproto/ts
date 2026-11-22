@@ -62,7 +62,7 @@ async function route(anonymousSend: "block" | "label", urgency = "interrupt") {
   const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
   registry.touchExternal({ id: "claude-desktop", host: "claude-desktop" })
   const recipient = registry.spawnAgent({
-    workspaceSlug: "agentik-studio",
+    workspaceSlug: "demo-app",
     cwd: "/tmp",
     agentSession: idle("r"),
     adapterSlug: "fake",
@@ -129,7 +129,7 @@ async function replyRoute(urgency = "interrupt") {
   const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
   registry.touchExternal({ id: "claude-desktop", host: "claude-desktop" })
   const replier = registry.spawnAgent({
-    workspaceSlug: "agentik-studio",
+    workspaceSlug: "demo-app",
     cwd: "/tmp",
     agentSession: idle("r"),
     adapterSlug: "fake",

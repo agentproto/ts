@@ -501,7 +501,7 @@ function projectSessionForHttp(
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
  * is undefined. Localhost on any port covers the user's own dev environments
- * (Guilde web dev server, playground demos, embedded panels). Production
+ * (Acme web dev server, playground demos, embedded panels). Production
  * origins (https://example.com, …) are NOT included by default — those are
  * opt-in via `agentproto serve --allow-origin <url>`.
  */
@@ -1266,7 +1266,7 @@ export interface RuntimeHttpServerOptions {
   configTools?: ConfigToolsDeps
   heartbeat: HeartbeatRunner
   /** Optional — when wired, exposes /sessions routes for the CLI
-   *  TUI and the guilde-web Active tab to navigate live child
+   *  TUI and the acme-web Active tab to navigate live child
    *  processes. Daemons that don't spawn anything (pure MCP servers)
    *  can omit this and the routes 404. */
   sessions?: SessionsRegistry
@@ -1362,7 +1362,7 @@ export interface RuntimeHttpServerOptions {
    *  url is in this list, the request is allowed without a Bearer
    *  token. Browsers can't read the daemon's runtime.json (mode 0600)
    *  so they can't send the token — Origin-based auth lets a trusted
-   *  page (Guilde web UI, local dev) drive the daemon. Non-browser
+   *  page (Acme web UI, local dev) drive the daemon. Non-browser
    *  callers (curl, the CLI) still use the token.
    *
    *  Match policy: exact origin (`https://example.com`) OR prefix
@@ -3319,7 +3319,7 @@ export async function startHttpServer(
     return false
   }
 
-  // CORS for the loopback gateway. The Guilde web app (localhost:3041) and
+  // CORS for the loopback gateway. The Acme web app (localhost:3041) and
   // other local dev pages probe /health + read-only routes from the browser;
   // without these headers the browser blocks the response. But a credentialed
   // response reflected back to an ARBITRARY origin lets an untrusted page read
@@ -4048,7 +4048,7 @@ export async function startHttpServer(
         // HTTP. Same engine as the `workspace_brain_query` MCP tool
         // (brain-tools.ts), but the daemon splits its corpus across
         // MULTIPLE per-workspace brains (default / agentproto /
-        // agentik-studio / …) — a single-workspace query misses every
+        // demo-app / …) — a single-workspace query misses every
         // other bucket's sessions. `workspace` therefore defaults to
         // `all`: enumerate the SAME workspace list `GET /workspaces`
         // reads (`loadWorkspacesConfig`, plus the implicit `default`
@@ -6852,7 +6852,7 @@ export function buildSpawnSessionHttpArgs(
       : undefined
   const deferredTools = parseBooleanField(b.deferredTools)
   // Agent-level clerk hook — the HTTP twin of `agent_start.hooks`. Without
-  // this mapping a Pygmalion spawn through `POST /sessions/agent` silently
+  // this mapping a Orchestrator spawn through `POST /sessions/agent` silently
   // dropped the manifest's `metadata.hooks.clerk` (the MCP path forwarded it).
   const hooks =
     b.hooks !== undefined
@@ -8355,7 +8355,7 @@ async function handleSessions(
     }
     // The HTTP twin of `agent_start.succeeds` (agent-tools.ts): the new
     // session takes over the replaced session's live children. Checked BEFORE
-    // the spawn so a refused declaration never creates a session. Pygmalion's
+    // the spawn so a refused declaration never creates a session. Orchestrator's
     // `EngineClient` spawns its brain through this route.
     const succeedsId = typeof b.succeeds === "string" ? b.succeeds.trim() : ""
     let succeedsFrom: SessionDescriptor | undefined
@@ -8411,8 +8411,8 @@ async function handleSessions(
     // (agent-tools.ts), same rule: stamped ONLY on an operator spawn (no
     // caller session identity, no resolved `parentSessionId`) that created a
     // fresh session. It is what `label:` entries in `allowPromptFrom` match
-    // on, and Pygmalion launches its persistent agents through this route
-    // with `label`, so its `label:pygmalion-brain-persistent` grants were
+    // on, and Orchestrator launches its persistent agents through this route
+    // with `label`, so its `label:orchestrator-brain-persistent` grants were
     // inert without it. The parent check must use the resolved descriptor
     // (not the raw body) because `attach` can derive a parent. Same
     // discipline as `allowPromptFrom` below: a failure is a warning, never a
@@ -8434,7 +8434,7 @@ async function handleSessions(
     // same as the MCP tool handler (agent-tools.ts) — `allowPromptFrom` is
     // never a `spawnAgentSession` field, only a registry row mutated after
     // the spawn succeeds. Without this the field was silently accepted and
-    // dropped by every caller using `POST /sessions/agent` (Pygmalion's
+    // dropped by every caller using `POST /sessions/agent` (Orchestrator's
     // `EngineClient`, notably), never reaching the session-owner gate.
     // Gated on `!result.deduped` (like the operatorLabel attach): a dedupe
     // lands on an existing session that may belong to a different caller, so
@@ -10995,7 +10995,7 @@ code { color: #9ad; }
   }
 
   // Prompt policy — the HTTP twin of the `agent_set_prompt_policy` MCP
-  // tool, so a non-MCP caller (Pygmalion's `EngineClient`, notably) can
+  // tool, so a non-MCP caller (Orchestrator's `EngineClient`, notably) can
   // (re-)grant `allowPromptFrom` on an ALREADY-LIVE session without going
   // through a fresh spawn: `POST /sessions/agent` only applies the field at
   // spawn time, so a permanent `keepAlive` agent that was already running

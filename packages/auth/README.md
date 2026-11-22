@@ -31,18 +31,18 @@ a malformed `.md` fail with the same diagnostic.
 ```ts
 import { defineAuthProvider } from "@agentproto/auth"
 
-export const guilde = defineAuthProvider({
-  id: "guilde",
-  description: "Guilde AI company platform — browser-approve, no key to paste.",
-  apiBase: "https://api.guilde.work",
+export const acme = defineAuthProvider({
+  id: "acme",
+  description: "Acme AI company platform — browser-approve, no key to paste.",
+  apiBase: "https://api.example.com",
   auth: {
     flow: "service-auth",
     clientId: "agentproto-cli",
-    tokenStore: { keychain: "bureau-guilde", account: "{server}" },
+    tokenStore: { keychain: "bureau-acme", account: "{server}" },
   },
   install: {
-    sealKey: "/guilde/api/v1/connectors/seal-key",
-    secretBacked: "/guilde/api/v1/guilds/{guildId}/connectors/secret-backed",
+    sealKey: "/acme/api/v1/connectors/seal-key",
+    secretBacked: "/acme/api/v1/guilds/{guildId}/connectors/secret-backed",
   },
 })
 ```
@@ -84,8 +84,8 @@ engine selected by `provider.auth.flow` — no `if`/`switch` chains at call site
 ```ts
 import { getAuthProvider, runAuthFlow } from "@agentproto/auth"
 
-const provider = getAuthProvider("guilde")!
-const result = await runAuthFlow(provider, { server: "https://api.guilde.work" })
+const provider = getAuthProvider("acme")!
+const result = await runAuthFlow(provider, { server: "https://api.example.com" })
 // → { accessToken: "oat_…", tokenKind: "oat" }
 ```
 
@@ -181,7 +181,7 @@ under a ref resolves under the **same** ref on read.
 | `MemoryStore` | ephemeral, for tests |
 | `FileStore` | AES-256-GCM at rest; key from `AGENTPROTO_STORE_KEY`, **no plaintext fallback** — for headless hosts with no Keychain |
 
-A host can implement the interface over its own vault (Guilde backs it with an
+A host can implement the interface over its own vault (Acme backs it with an
 AAD-bound, per-user secrets service). The flow engine is none the wiser.
 
 ## Credential broker — `resolveHeaders`
@@ -197,8 +197,8 @@ import { CredentialBroker } from "@agentproto/auth"
 const broker = new CredentialBroker({ store, getProvider: getAuthProvider })
 
 const headers = await broker.resolveHeaders({
-  path: "guilde",              // "<providerId>" or "<providerId>/<account>"
-  server: "https://api.guilde.work", // optional; defaults to provider.apiBase
+  path: "acme",              // "<providerId>" or "<providerId>/<account>"
+  server: "https://api.example.com", // optional; defaults to provider.apiBase
   signal,                      // optional AbortSignal
 })
 // → { Authorization: "Bearer oat_…" }
@@ -289,7 +289,7 @@ provider owns its endpoint yet; the clear error comes at spawn time.
 | `CredentialStore` / `StoreRef` / `StoredCredential` | pluggable-store interface + shapes |
 | `KeychainStore` / `MemoryStore` / `FileStore` / `resolveStoreRef` | built-in backends + ref resolver |
 | `readKeychainToken` / `writeKeychainToken` / `resolveAccount` | Keychain helpers |
-| `guildeAuthProvider` / `BUILTIN_AUTH_PROVIDERS` | shipped builtins |
+| `acmeAuthProvider` / `BUILTIN_AUTH_PROVIDERS` | shipped builtins |
 | `registerSubaccountProvider` / `findSubaccountProvider` / `listSubaccountProviders` | sub-account provider registry |
 | `SubaccountProvider` / `SubaccountPin` / `SubaccountError` / `parseSubaccountPin` | sub-account contract |
 

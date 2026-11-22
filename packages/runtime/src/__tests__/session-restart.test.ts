@@ -447,7 +447,7 @@ describe("session_restart", () => {
       agentSession: fakeAgentSession("hermes"),
       adapterSlug: "hermes",
     })
-    registry.setPromptPolicy(prev.id, ["sess_peer", "label:pygmalion-brain-persistent"])
+    registry.setPromptPolicy(prev.id, ["sess_peer", "label:orchestrator-brain-persistent"])
     registry.kill(prev.id)
 
     const result = await client.callTool({
@@ -460,7 +460,7 @@ describe("session_restart", () => {
     expect(desc.id).not.toBe(prev.id)
     expect(registry.get(desc.id as string)?.allowPromptFrom).toEqual([
       "sess_peer",
-      "label:pygmalion-brain-persistent",
+      "label:orchestrator-brain-persistent",
     ])
 
     await close()

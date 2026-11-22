@@ -8,7 +8,7 @@
  *   - HEARTBEAT.md autonomy loop
  *   - Append-only conversation persistence (`conversations/<id>.md`)
  *   - Workspace filesystem adapter (compatible with the
- *     `McpWorkspace.filesystem` shape used by `@guilde/mcp`)
+ *     `McpWorkspace.filesystem` shape used by `@acme/mcp`)
  *
  * Single entry point: `createGateway(opts)`. Returns a handle with
  * `url` and `stop()` — the rest of the surface lives on the HTTP
@@ -2305,7 +2305,7 @@ export interface GatewayHandle {
   continueInterruptedOnBoot(opts?: {
     isServed?: (desc: SessionDescriptor) => boolean
   }): Promise<ContinueOnBootSummary>
-  /** Boot re-ensure of app-service owners (Pygmalion phase 1b item 2).
+  /** Boot re-ensure of app-service owners (Orchestrator phase 1b item 2).
    *  `app_install`'s `ensureServices` runs only on the install path, so a
     *  service whose owner died with the previous daemon stays down until the
     *  next reinstall; this force-replaces every recorded owner at boot. Gated
@@ -4627,7 +4627,7 @@ export async function createGateway(
       })
     }
     // Agent-session orchestration — operators (Mastra agents in
-    // cloud Guilde, Claude Code as a sub-agent, …) drive long-running
+    // cloud Acme, Claude Code as a sub-agent, …) drive long-running
     // claude/hermes/aider sessions on the user's machine through
     // these MCP tools. The registry + adapter resolver are
     // singletons on the gateway, same closure-rebind pattern.

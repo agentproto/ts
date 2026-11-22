@@ -48,7 +48,7 @@ export interface CamofoxNativeInject {
 /**
  * Cookies materialised at resolve time by a registered {@link SessionSource}.
  * The descriptor carries only the `sessionRef` and `domains`, never cookies.
- * `from` is the source kind (the studio's private store registers `"guilde"`).
+ * `from` is the source kind (the studio's private store registers `"acme"`).
  */
 export interface SourceInject {
   from: string

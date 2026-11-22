@@ -25,7 +25,7 @@ steps:
       apply: true
       salvageDirty: false
       wait: true
-      repoRoot: /Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts
+      repoRoot: /path/to/agentproto/ts
   - id: format
     kind: transform
   - id: notify

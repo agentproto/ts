@@ -3,7 +3,7 @@
  *
  * `ConnectorMcpDescriptor` is the portable, host-agnostic description of an MCP
  * connector (how its server runs / is reached) + the credential requirements
- * vocabulary. Consumers (guilde, a CLI, a third party) import the type to
+ * vocabulary. Consumers (acme, a CLI, a third party) import the type to
  * describe connectors against the open standard; catalog/marketplace metadata,
  * vault wiring, and host-specific resolution stay in the consumer.
  */

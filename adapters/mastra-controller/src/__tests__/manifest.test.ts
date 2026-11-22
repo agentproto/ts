@@ -55,13 +55,13 @@ describe("parseControllerManifest: $resolver references", () => {
   it("survive parsing untouched (markdown form)", () => {
     const manifest = parseControllerManifest(RESEARCH_ASSISTANT)
     expect(manifest.storage).toEqual({
-      $resolver: "@guilde/harness/storage/postgres",
-      input: { connectionStringEnv: "DATABASE_URL", storeId: "guilde-harness" },
+      $resolver: "@acme/harness/storage/postgres",
+      input: { connectionStringEnv: "DATABASE_URL", storeId: "acme-harness" },
     })
-    expect(manifest.memory).toEqual({ $resolver: "@guilde/harness/memory/shared" })
-    expect(manifest.models?.resolver).toEqual({ $resolver: "@guilde/harness/model/resolver" })
+    expect(manifest.memory).toEqual({ $resolver: "@acme/harness/memory/shared" })
+    expect(manifest.models?.resolver).toEqual({ $resolver: "@acme/harness/model/resolver" })
     expect(manifest.modes[1]!.model).toEqual({
-      $resolver: "@guilde/harness/model/for-mode",
+      $resolver: "@acme/harness/model/for-mode",
       input: {
         default: "claude-sonnet-4-6",
         allowed: ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"],

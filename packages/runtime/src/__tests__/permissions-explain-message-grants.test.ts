@@ -17,8 +17,8 @@ type Handler = (input: Record<string, unknown>) => Promise<{
   isError?: boolean
 }>
 
-const sender = { id: "sender", workspaceSlug: "app-agentik-pygmalion", cwd: "/ws/pygmalion" }
-const recipient = { id: "recipient", workspaceSlug: "agentik-studio", cwd: "/ws/studio" }
+const sender = { id: "sender", workspaceSlug: "app-orchestrator", cwd: "/ws/orchestrator" }
+const recipient = { id: "recipient", workspaceSlug: "demo-app", cwd: "/ws/studio" }
 
 function explainer(grants: Grant[]): Handler {
   let handler: Handler | undefined
@@ -36,7 +36,7 @@ function explainer(grants: Grant[]): Handler {
     callerSessionId: sender.id,
     allowSameWorkspace: false,
     messagingGrants: grants,
-    workspaceOfCwd: cwd => (cwd === "/ws/studio" ? "agentik-studio" : cwd === "/ws/pygmalion" ? "app-agentik-pygmalion" : undefined),
+    workspaceOfCwd: cwd => (cwd === "/ws/studio" ? "demo-app" : cwd === "/ws/orchestrator" ? "app-orchestrator" : undefined),
   })
   if (!handler) throw new Error("permissions_explain was not registered")
   return handler
@@ -45,7 +45,7 @@ function explainer(grants: Grant[]): Handler {
 describe("permissions_explain with explicit message grants", () => {
   it("reports policy.matched-grant for a grant-admitted pair", async () => {
     const grants: Grant[] = [
-      { principal: "*", effect: "allow", actions: [{ action: "session:message", scope: "workspace:agentik-studio" }] },
+      { principal: "*", effect: "allow", actions: [{ action: "session:message", scope: "workspace:demo-app" }] },
     ]
     const res = await explainer(grants)({ action: "session.message", sessionId: recipient.id })
     const body = JSON.parse(res.content[0]!.text) as { ok: boolean; decision: Record<string, unknown> }
@@ -63,7 +63,7 @@ describe("permissions_explain with explicit message grants", () => {
       {
         messaging: { allowSameWorkspace: false },
         workspaceOfCwd: cwd =>
-          cwd === "/ws/studio" ? "agentik-studio" : cwd === "/ws/pygmalion" ? "app-agentik-pygmalion" : undefined,
+          cwd === "/ws/studio" ? "demo-app" : cwd === "/ws/orchestrator" ? "app-orchestrator" : undefined,
         operatorLabelOf: () => undefined,
         parentOf: () => undefined,
         policy: { inputs: [{ default: "deny", grants }] },

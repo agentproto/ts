@@ -37,10 +37,10 @@ describe("validateRoleBinding (AIP-47 §Validating a binding)", () => {
   it("accepts a complete, well typed binding", () => {
     const r = validateRoleBinding(slots, {
       bind: {
-        board: "ws://collections/katchy-board",
+        board: "ws://collections/nova-board",
         skill_pack: "skill:seo",
-        product_tools: { kind: "mcp", server: "katchy", allow: ["search"] },
-        one_tool: "tool:katchy/search",
+        product_tools: { kind: "mcp", server: "nova", allow: ["search"] },
+        one_tool: "tool:nova/search",
       },
       with: { language: "en", retries: 3 },
     })
@@ -58,7 +58,7 @@ describe("validateRoleBinding (AIP-47 §Validating a binding)", () => {
 
   it("does not require an optional slot nor a scalar that has a default", () => {
     const r = validateRoleBinding(slots, {
-      bind: { board: "aip://18/katchy-board" },
+      bind: { board: "aip://18/nova-board" },
     })
     expect(r.ok).toBe(true)
   })
@@ -124,7 +124,7 @@ describe("validateRoleBinding (AIP-47 §Validating a binding)", () => {
     const r = validateRoleBinding(slots, {
       bind: {
         board: "ws://collections/b",
-        product_tools: "katchy", // a string where a structured mcp ref is expected
+        product_tools: "nova", // a string where a structured mcp ref is expected
         one_tool: "search", // a bare name is not a tool ref
       },
       with: { language: "de", retries: "3" },
@@ -139,7 +139,7 @@ describe("validateRoleBinding (AIP-47 §Validating a binding)", () => {
       validateRoleBinding(slots, {
         bind: {
           board: "ws://collections/b",
-          one_tool: "ws://tools/katchy/search",
+          one_tool: "ws://tools/nova/search",
           product_tools: { kind: "mcp", server: "has/slash" },
         },
       }).errors.map((e) => e.slot),

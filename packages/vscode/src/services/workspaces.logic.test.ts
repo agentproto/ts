@@ -13,7 +13,7 @@ const config: WorkspacesConfig = {
   version: 1,
   active: "studio",
   workspaces: [
-    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Agentik Studio" },
+    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Demo App" },
     { slug: "ts", path: "/Code/studio/projects/agentproto/ts", addedAt: "", updatedAt: "" },
     { slug: "trailing", path: "/Code/trailing/", addedAt: "", updatedAt: "" },
   ],
@@ -51,7 +51,7 @@ describe("findWorkspaceByPath", () => {
 
 describe("workspaceLabel", () => {
   it("prefers the entry label, falls back to the slug", () => {
-    expect(workspaceLabel(config, "studio")).toBe("Agentik Studio")
+    expect(workspaceLabel(config, "studio")).toBe("Demo App")
     expect(workspaceLabel(config, "ts")).toBe("ts")
   })
 
@@ -65,12 +65,12 @@ describe("workspaceLabelFor", () => {
     // The bug this exists for: a terminal session's slug is "default" even
     // though its cwd sits inside a registered workspace.
     expect(workspaceLabelFor(config, { cwd: "/Code/studio/apps/web", workspaceSlug: "default" }))
-      .toBe("Agentik Studio")
+      .toBe("Demo App")
   })
 
   it("falls back to the slug when cwd matches nothing registered", () => {
     expect(workspaceLabelFor(config, { cwd: "/tmp/x", workspaceSlug: "studio" }))
-      .toBe("Agentik Studio")
+      .toBe("Demo App")
   })
 
   it("omits an unattributed default rather than rendering noise", () => {
@@ -94,7 +94,7 @@ describe("workspaceLabelsIn", () => {
       { cwd: "/Code/studio/apps/web", workspaceSlug: "studio" },
       { cwd: "/tmp/x", workspaceSlug: "default" },
     ]
-    expect(workspaceLabelsIn(config, sessions)).toEqual(["Agentik Studio", "ts"])
+    expect(workspaceLabelsIn(config, sessions)).toEqual(["Demo App", "ts"])
   })
 })
 

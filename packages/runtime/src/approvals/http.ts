@@ -1,6 +1,6 @@
 /**
  * HTTP twins over the approvals engine — for non-MCP clients (a product
- * like Pygmalion's core): `POST /approvals`, `GET /approvals?status=`,
+ * like Orchestrator's core): `POST /approvals`, `GET /approvals?status=`,
  * `GET /approvals/:id`, `GET /approvals/:id/wait`,
  * `POST /approvals/:id/consume`, plus the two decide routes reachable over
  * HTTP: `web_click` (`POST /approvals/:id/decision`) and `telegram`

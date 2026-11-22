@@ -15,7 +15,7 @@ consumers below. That is the point.
 
 - **Consumer B (this repo):** the future `/sessions/:id/chat` route's test
   suite in `packages/runtime`.
-- **Consumer A (agentik-studio repo):** `packages/react-agentproto`'s
+- **Consumer A (demo-app repo):** `packages/react-agentproto`'s
   `normalize.ts`, pulled in as `workspace:*`.
 
 > **Any modification to a kind or a field in `transcript-writer.ts` MUST be
@@ -40,7 +40,7 @@ client-side normalized format that `normalize.ts` produces. Each record has
 | `turn-end` | `sessionId`, `reason?` |
 | `notice` | `sessionId`, `text` |
 
-> **`notice` is the "unknown kind" exercise.** Agentik-studio's
+> **`notice` is the "unknown kind" exercise.** Demo-app's
 > `normalize.ts` does not handle it explicitly — it falls through to the
 > client's `"other"` fallback. This deliberately exercises the "unknown kind"
 > behavior of both consumers' test suites.

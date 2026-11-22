@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadChatSdkReachFactory, planReachRoute } from "../reach/index.js"
 
 const SECRET = "whsec_" + Buffer.alloc(32, 3).toString("base64")
-const webhook = { id: "pygmalion", kind: "webhook", url: "https://receiver.invalid/api/reach", secret: SECRET }
+const webhook = { id: "orchestrator", kind: "webhook", url: "https://receiver.invalid/api/reach", secret: SECRET }
 const floor = { id: "floor", kind: "telegram" }
 const bridge = { announce: async () => ({ posted: true as const }) }
 
@@ -52,7 +52,7 @@ describe("planReachRoute", () => {
   it("is on with a webhook even when the telegram floor cannot serve", () => {
     const plan = planReachRoute([webhook, floor], { telegramAvailable: false })
     expect(plan.on).toBe(true)
-    expect(plan.adapters.map(a => a.id)).toEqual(["pygmalion", "floor"])
+    expect(plan.adapters.map(a => a.id)).toEqual(["orchestrator", "floor"])
     expect(plan.warnings).toEqual([])
   })
 

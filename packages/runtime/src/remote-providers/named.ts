@@ -3,7 +3,7 @@
  *
  * Unlike the quick provider (ephemeral `*.trycloudflare.com`, fresh each
  * run), this runs a *named* cloudflared tunnel bound to a stable hostname
- * you control (e.g. `guilde-local.example.com`). The URL never changes —
+ * you control (e.g. `acme-local.example.com`). The URL never changes —
  * which is what makes a tunnel survivable across restarts and safe to bake
  * into a client config (MCP server URL, webhook, …).
  *

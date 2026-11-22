@@ -6,7 +6,7 @@ import {
 } from "../authorize.js"
 
 const base = {
-  asset: "GUILDE_CREDITS",
+  asset: "ACME_CREDITS",
   category: "text",
   spendableBalance: 1000,
 }
@@ -34,7 +34,7 @@ describe("authorize — agency boundary", () => {
 
   it("active: discretionary cap + counterparty + asset allow-lists", () => {
     const envelope: AllowanceEnvelope = {
-      discretionary: { cap: 100, counterparties: ["svc-x"], assets: ["GUILDE_CREDITS"] },
+      discretionary: { cap: 100, counterparties: ["svc-x"], assets: ["ACME_CREDITS"] },
     }
     expect(
       authorize({ ...base, amount: 50, intent: "active", settleOutAllowed: true, counterparty: "svc-x", envelope }),
@@ -61,7 +61,7 @@ describe("minEnvelope — lineage-min delegation", () => {
   it("a delegate can only narrow caps and intersect allow-lists", () => {
     const root: AllowanceEnvelope = {
       operating: { cap: 1000 },
-      discretionary: { cap: 500, counterparties: ["a", "b", "c"], assets: ["GUILDE_CREDITS", "USD"] },
+      discretionary: { cap: 500, counterparties: ["a", "b", "c"], assets: ["ACME_CREDITS", "USD"] },
     }
     const child: AllowanceEnvelope = {
       operating: { cap: 300 },
@@ -71,6 +71,6 @@ describe("minEnvelope — lineage-min delegation", () => {
     expect(eff.operating?.cap).toBe(300) // min(1000, 300)
     expect(eff.discretionary?.cap).toBe(500) // min(500, 800) — child can't widen
     expect(eff.discretionary?.counterparties).toEqual(["b", "c"]) // intersection
-    expect(eff.discretionary?.assets).toEqual(["GUILDE_CREDITS", "USD"]) // child omits → inherits
+    expect(eff.discretionary?.assets).toEqual(["ACME_CREDITS", "USD"]) // child omits → inherits
   })
 })

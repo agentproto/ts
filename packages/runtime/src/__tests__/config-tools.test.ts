@@ -182,7 +182,7 @@ describe("config_get", () => {
   it("never echoes a reach.routes webhook secret, keeps the rest of the route readable", async () => {
     const secret = "whsec_" + Buffer.alloc(32, 5).toString("base64")
     const route = [
-      { id: "pygmalion", kind: "webhook" as const, url: "http://127.0.0.1:3000/api/reach", secret, timeoutMs: 4000 },
+      { id: "orchestrator", kind: "webhook" as const, url: "http://127.0.0.1:3000/api/reach", secret, timeoutMs: 4000 },
       { id: "floor", kind: "telegram" as const },
     ]
     await writeCfg({ reach: { routes: { owner: route } } })
@@ -193,7 +193,7 @@ describe("config_get", () => {
       expect(JSON.stringify(raw)).not.toContain(secret.slice("whsec_".length, 20))
       const row = findKey(parse(raw), "reach.routes.owner")
       expect(row.value).toEqual([
-        { id: "pygmalion", kind: "webhook", url: "http://127.0.0.1:3000/api/reach", secret: { set: true }, timeoutMs: 4000 },
+        { id: "orchestrator", kind: "webhook", url: "http://127.0.0.1:3000/api/reach", secret: { set: true }, timeoutMs: 4000 },
         { id: "floor", kind: "telegram" },
       ])
       expect(row.effective).toEqual(row.value)

@@ -1,8 +1,8 @@
 # @agentproto/connector
 
 The portable, host-agnostic description of an MCP connector: how its server
-runs / is reached, and what credentials it needs. Lifted out of guilde (where
-it lived as a private flat-bag interface) so any host — not just guilde — can
+runs / is reached, and what credentials it needs. Lifted out of acme (where
+it lived as a private flat-bag interface) so any host — not just acme — can
 describe an MCP connector against an open standard.
 
 This package is a **leaf**: it owns the type + a Zod schema and depends on no

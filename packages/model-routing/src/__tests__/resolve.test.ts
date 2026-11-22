@@ -6,8 +6,8 @@ import type { Layer } from "../types.js"
 type Role = "triage" | "speak" | "deepThink"
 
 const pack = defineRoutingPack<Role>({
-  id: "simone",
-  label: "Simone",
+  id: "demo",
+  label: "Demo",
   keyspace: "role",
   routes: {
     triage: { model: "claude-haiku-4-5-20251001", provider: "anthropic" },

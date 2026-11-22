@@ -389,7 +389,7 @@ async function saveLedger(path: string, ledger: Ledger): Promise<void> {
  * Look up a profile-slug → npm-package alias in
  * `~/.agentproto/config.json` (or `$AGENTPROTO_HOME/config.json`).
  *
- *   { "profileAliases": { "guilde": "@guilde/runtime-profile-guilde" } }
+ *   { "profileAliases": { "acme": "@acme/runtime-profile-acme" } }
  *
  * Returns the resolved package name, or `null` if no alias is set.
  */

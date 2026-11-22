@@ -36,7 +36,7 @@ participation:
   reactions: true
 tags: [research]
 metadata:
-  vendor.namespace: katchy
+  vendor.namespace: nova
 ---
 
 # Lex
@@ -142,7 +142,7 @@ describe("operatorFromManifest", () => {
     expect(op.legacy?.memory?.kind).toBe("operator-context")
     expect(op.autonomy).toBe(5)
     expect(op.participation?.reactions).toBe(true)
-    expect(op.metadata).toEqual({ "vendor.namespace": "katchy" })
+    expect(op.metadata).toEqual({ "vendor.namespace": "nova" })
     expect(Object.isFrozen(op)).toBe(true)
   })
 

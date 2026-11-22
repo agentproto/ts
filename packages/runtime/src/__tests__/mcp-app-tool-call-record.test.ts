@@ -21,9 +21,9 @@ describe("mcp_app_tool_call record", () => {
     const writer = createTranscriptWriter({ baseDir })
     const live: Array<Record<string, unknown>> = []
     writer.subscribe("s1", r => live.push(r))
-    writer.recordEvent("s1", { kind: "tool-call", toolCallId: "tc-1", toolName: "mcp__guilde__dashboard", arguments: {} })
+    writer.recordEvent("s1", { kind: "tool-call", toolCallId: "tc-1", toolName: "mcp__acme__dashboard", arguments: {} })
     writer.recordMcpAppToolCall("s1", {
-      server: "guilde",
+      server: "acme",
       tool: "refresh",
       originToolCallId: "tc-1",
       isError: false,
@@ -38,7 +38,7 @@ describe("mcp_app_tool_call record", () => {
     expect(rest).toEqual({
       kind: "mcp_app_tool_call",
       sessionId: "s1",
-      server: "guilde",
+      server: "acme",
       tool: "refresh",
       originToolCallId: "tc-1",
       isError: false,
@@ -51,7 +51,7 @@ describe("mcp_app_tool_call record", () => {
     const transcriptDir = await mkdtemp(join(tmpdir(), "mcp-app-lookup-"))
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     registry.recordMcpAppToolCall("s1", {
-      server: "guilde",
+      server: "acme",
       tool: "refresh",
       originToolCallId: "tc-1",
       isError: false,
@@ -61,9 +61,9 @@ describe("mcp_app_tool_call record", () => {
     expect(await registry.findToolCallName("missing-session", "tc-1")).toBeUndefined()
 
     const writer = createTranscriptWriter({ baseDir: transcriptDir })
-    writer.recordEvent("s2", { kind: "tool-call", toolCallId: "tc-9", toolName: "mcp__guilde__dashboard", arguments: {} })
+    writer.recordEvent("s2", { kind: "tool-call", toolCallId: "tc-9", toolName: "mcp__acme__dashboard", arguments: {} })
     writer.recordEvent("s2", { kind: "tool-call", toolCallId: "tc-9", toolName: "", arguments: { a: 1 }, isUpdate: true })
     await writer.close("s2")
-    expect(await registry.findToolCallName("s2", "tc-9")).toBe("mcp__guilde__dashboard")
+    expect(await registry.findToolCallName("s2", "tc-9")).toBe("mcp__acme__dashboard")
   })
 })

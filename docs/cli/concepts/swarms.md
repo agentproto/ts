@@ -81,8 +81,8 @@ state, fully offline. Pair with the
 to-go Claude Code scaffolding.
 
 **Transport-bridged** swaps the `substrate` block for a plugin-
-provided one (e.g. `kind: guilde-mcp` from
-`@guilde/agentproto-bridge`). Same kernel, same dispatcher, same
+provided one (e.g. `kind: acme-mcp` from
+`@acme/agentproto-bridge`). Same kernel, same dispatcher, same
 manifest shape — only the substrate changes. Multiple machines can
 participate in the same conversation because the substrate is server-
 side.

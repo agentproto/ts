@@ -35,11 +35,11 @@
  *   - per subagent: `agent`, `model`, `tools`
  *
  * Every object is loose: keys this schema does not name (host profile
- * fields such as Guilde's `builtins`, `color`, `prompt`) pass through
+ * fields such as Acme's `builtins`, `color`, `prompt`) pass through
  * unvalidated so a host profile can layer on top without a fork.
  *
  * `spec` is optional. Besides `mastra.agent-controller/v1` it accepts
- * `harness/v1`, the id agentik-studio's manifests carry today, so those
+ * `harness/v1`, the id demo-app's manifests carry today, so those
  * files parse unchanged.
  */
 
@@ -48,7 +48,7 @@ import { z } from "zod"
 
 export const CONTROLLER_MANIFEST_ID = "mastra.agent-controller/v1"
 
-/** Legacy id written by agentik-studio's `.harness/*.md` files. */
+/** Legacy id written by demo-app's `.harness/*.md` files. */
 export const LEGACY_HARNESS_MANIFEST_ID = "harness/v1"
 
 /** Opaque host reference. Only `$resolver` is checked; the rest is the host's. */

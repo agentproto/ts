@@ -10,7 +10,7 @@
  * MODEL COVERAGE: the union of
  *   - the hand-written PRICING table in
  *     packages/catalog-sync/src/generators/image-replicate.ts, and
- *   - the `provider: "replicate"` entries of agentik-studio's image and video
+ *   - the `provider: "replicate"` entries of demo-app's image and video
  *     catalogs (read-only reference), plus the two test fixtures.
  * A page that is gone (404), has no billing JSON, or bills in a unit this
  * catalog cannot express is reported as SKIPPED and its previous committed
@@ -50,9 +50,9 @@ const REQUEST_DELAY_MS = 250
  * Models to scrape.
  *
  * Image: the 13 names of the hand-written PRICING table (mapped to their
- * Replicate owner/name), the Replicate image models in agentik-studio's
+ * Replicate owner/name), the Replicate image models in demo-app's
  * catalog, and the two fixtures (flux-schnell, rembg).
- * Video: the Replicate video models in agentik-studio's catalog.
+ * Video: the Replicate video models in demo-app's catalog.
  */
 const MODELS = [
   // Hand-written PRICING table in image-replicate.ts (13).
@@ -70,9 +70,9 @@ const MODELS = [
   { owner: "ideogram-ai", name: "ideogram-v3-turbo", modality: "image" },
   { owner: "black-forest-labs", name: "flux-1.1-pro", modality: "image" },
 
-  // agentik-studio image catalog, provider "replicate".
+  // demo-app image catalog, provider "replicate".
   { owner: "agentiknet", name: "avatar-model-001", modality: "image" },
-  { owner: "agentik", name: "custom-simone_infographic_1", modality: "image" },
+  { owner: "agentik", name: "custom-demo_infographic_1", modality: "image" },
   { owner: "agentik-ai", name: "theo-sutter-0.1", modality: "image" },
   { owner: "stability-ai", name: "sdxl", modality: "image" },
   { owner: "stability-ai", name: "stable-diffusion-3", modality: "image" },
@@ -84,7 +84,7 @@ const MODELS = [
   { owner: "black-forest-labs", name: "flux-schnell", modality: "image" },
   { owner: "cjwbw", name: "rembg", modality: "image" },
 
-  // agentik-studio video catalog, provider "replicate".
+  // demo-app video catalog, provider "replicate".
   { owner: "google", name: "veo-3.1-fast", modality: "video" },
   { owner: "google", name: "veo-3.1", modality: "video" },
   { owner: "kwaivgi", name: "kling-v3-omni-video", modality: "video" },

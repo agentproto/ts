@@ -3,7 +3,7 @@
 "@agentproto/cli": patch
 ---
 
-Sessions handoff/profiles fixes (issue: pygmalion brain → Mistral Large 4.0 handoff, 2026-11-21):
+Sessions handoff/profiles fixes (issue: orchestrator brain → Mistral Large 4.0 handoff, 2026-11-21):
 
 - `sessions handoff --dry-run` now validates the eligibility chain the real handoff enforces — the target harness resolves, and the access profile the successor would use (--profile override or the source's inherited wallet) is eligible for the target adapter+route and allows the model — and fails EARLY with the same error code and message the real run gives, before building the checkpoint preview.
 - `access_profile_ineligible` refusals now SUGGEST the fix: which stored profiles would be eligible for the target adapter+route (and would allow the requested model), so the caller no longer has to guess the --profile value.

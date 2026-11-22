@@ -59,7 +59,7 @@ the execution place, @agentproto/usage-presets declares them):
 
 Examples:
   agentproto usage plan pr-fix --json
-  agentproto usage plan implement --cwd ~/ssd/Code/products/agentik/agentik-studio
+  agentproto usage plan implement --cwd ~/code/my-project
 `
 
 /** A slim row of GET /sessions?onlyAlive=true, only what the limiter reads. */

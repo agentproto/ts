@@ -51,8 +51,8 @@ under a custom slug, use one of:
 **Explicit `--package`:**
 
 ```bash
-agentproto install runtime-profile/guilde \
-  --package @guilde/runtime-profile-guilde
+agentproto install runtime-profile/acme \
+  --package @acme/runtime-profile-acme
 ```
 
 **Persistent alias** in `~/.agentproto/config.json`:
@@ -60,7 +60,7 @@ agentproto install runtime-profile/guilde \
 ```jsonc
 {
   "profileAliases": {
-    "guilde": "@guilde/runtime-profile-guilde"
+    "acme": "@acme/runtime-profile-acme"
   }
 }
 ```
@@ -68,7 +68,7 @@ agentproto install runtime-profile/guilde \
 Then:
 
 ```bash
-agentproto install runtime-profile/guilde
+agentproto install runtime-profile/acme
 ```
 
 ## Authoring a profile

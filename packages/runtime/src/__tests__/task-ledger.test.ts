@@ -991,7 +991,7 @@ describe("awaiting_approval — no release while waiting", () => {
 // ── Ownerless inline shell gate: whole shell line in `command` ────────
 
 describe("createSupervisorTaskGateRunner (ownerless inline shell gate)", () => {
-  const LINE = "grep -q 'Re-vérification J+6' /tmp/pm-chatcommerce/RAPPORT.md"
+  const LINE = "grep -q 'Re-vérification J+6' /tmp/pm-shopbot/RAPPORT.md"
   const okResult = {
     exitCode: 0,
     signal: null,

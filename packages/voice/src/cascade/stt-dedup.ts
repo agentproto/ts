@@ -1,10 +1,9 @@
 /**
- * Transcript dedup of the cascade (ported from agentik-studio
- * `packages/agent-framework/src/voice/turn-runner.ts` `createTurnDedupe`):
- * the three guards that stop voice from answering itself.
+ * Transcript dedup of the cascade: the three guards that stop voice from
+ * answering itself.
  *
- *   1. `replyInFlight` — drop a commit while a turn generates. NOT ported as
- *      a guard: the call pipeline is sequential by design, a second
+ *   1. `replyInFlight` — drop a commit while a turn generates. NOT a guard
+ *      here: the call pipeline is sequential by design, a second
  *      utterance is deferred behind the running turn instead of dropped.
  *   2. `recentCommits` — identical (normalized) user text inside
  *      `duplicateWindowMs`: the VAD splitting on an inhale, or a realtime

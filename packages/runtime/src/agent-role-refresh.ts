@@ -1,5 +1,5 @@
 /**
- * AIP-42 hot role refresh — the generic version of Pygmalion's private
+ * AIP-42 hot role refresh — the generic version of Orchestrator's private
  * "composed-prompt-hash" mechanism.
  *
  * AIP-42 agents are rendered ONCE at spawn (`load-agent.ts` is only ever
@@ -16,7 +16,7 @@
  * model (a model change rides `session_restart`'s own `model` override, not
  * this path) and hashes the role text and the sorted tool-id list
  * SEPARATELY, so a caller can tell "the words changed" apart from "the
- * capability ask changed" — the same distinction Pygmalion's private
+ * capability ask changed" — the same distinction Orchestrator's private
  * mechanism drew by hand. `computeAgentRoleRefresh` is the diff half: reload
  * the manifest, re-render, and compare against the fingerprint the session
  * was spawned (or last refreshed) with.

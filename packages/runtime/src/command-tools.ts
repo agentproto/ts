@@ -5,7 +5,7 @@
  * the workspace lives on the user's machine, so the only place a
  * `claude -p`, `gh pr view`, `pnpm test` etc. can actually run *is*
  * the user's machine. This module exposes one MCP tool,
- * `command_execute`, that any MCP client (cloud Guilde Blake,
+ * `command_execute`, that any MCP client (cloud Acme Blake,
  * Claude Code as a sub-agent, …) can call to spawn a subprocess.
  *
  * ## Allowlist

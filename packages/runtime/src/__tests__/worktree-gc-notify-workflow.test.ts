@@ -15,6 +15,9 @@ import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import { createDaemonToolRegistry, type DispatchTool } from "../workflow-tool-registry.js"
 
+// The agentproto/ts checkout (4 levels above this file); entry.mjs resolves the same root.
+const expectedRepoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..")
+
 const WORKFLOW_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -63,8 +66,7 @@ describe("worktree-gc-notify dogfood workflow", () => {
       apply: true,
       salvageDirty: false,
       wait: true,
-      repoRoot:
-        "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts",
+      repoRoot: expectedRepoRoot,
     })
 
     expect(calls[1]!.name).toBe("command_execute")

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { evaluateToolInvoke, qualifyToolName, TOOL_INVOKE_ACTION } from "../tool-invoke.js"
 import type { Grant } from "../types.js"
 
-const WHO = "operator://pm-katchy"
+const WHO = "operator://pm-nova"
 
 function toolGrant(scope: string | undefined, effect?: "deny"): Grant {
   return {
@@ -19,20 +19,20 @@ function call(grants: Grant[], tool: string, implementsAction?: string) {
 describe("qualifyToolName", () => {
   it("turns a legacy bare built-in name into agentproto/<name> and keeps a full name", () => {
     expect(qualifyToolName("cron_create")).toBe("agentproto/cron_create")
-    expect(qualifyToolName("pygmalion/cron_create")).toBe("pygmalion/cron_create")
+    expect(qualifyToolName("orchestrator/cron_create")).toBe("orchestrator/cron_create")
   })
 })
 
 describe("evaluateToolInvoke: tool:invoke scopes (AIP-38 §Tool names)", () => {
   it("matches an exact <server>/<name> and no other tool", () => {
-    const g = [toolGrant("pygmalion/cron_create")]
-    expect(call(g, "pygmalion/cron_create").decision).toBe("allow")
-    expect(call(g, "pygmalion/cron_delete").decision).toBe("deny")
+    const g = [toolGrant("orchestrator/cron_create")]
+    expect(call(g, "orchestrator/cron_create").decision).toBe("allow")
+    expect(call(g, "orchestrator/cron_delete").decision).toBe("deny")
     expect(call(g, "other/cron_create").decision).toBe("deny")
   })
 
   it("matches by <server>/<name> and not by a bare name", () => {
-    expect(call([toolGrant("cron_create")], "pygmalion/cron_create").decision).toBe("deny")
+    expect(call([toolGrant("cron_create")], "orchestrator/cron_create").decision).toBe("deny")
     expect(call([toolGrant("cron_create")], "agentproto/cron_create").decision).toBe("deny")
     expect(call([toolGrant("cron_create")], "cron_create").decision).toBe("deny")
     expect(call([toolGrant("cron_*")], "agentproto/cron_create").decision).toBe("deny")
@@ -46,16 +46,16 @@ describe("evaluateToolInvoke: tool:invoke scopes (AIP-38 §Tool names)", () => {
     const g = [toolGrant("agentproto/*")]
     expect(call(g, "agentproto/cron_create").decision).toBe("allow")
     expect(call(g, "agentproto-extra/cron_create").decision).toBe("deny")
-    expect(call(g, "pygmalion/cron_create").decision).toBe("deny")
+    expect(call(g, "orchestrator/cron_create").decision).toBe("deny")
     const d = [toolGrant(undefined), toolGrant("agentproto/*", "deny")]
-    expect(call(d, "pygmalion/cron_create").decision).toBe("allow")
+    expect(call(d, "orchestrator/cron_create").decision).toBe("allow")
     expect(call(d, "agentproto/cron_create").decision).toBe("deny")
   })
 
   it("supports a <server>/<prefix>* family and a lone * (every tool)", () => {
-    const g = [toolGrant("pygmalion/cron_*")]
-    expect(call(g, "pygmalion/cron_create").decision).toBe("allow")
-    expect(call(g, "pygmalion/session_list").decision).toBe("deny")
+    const g = [toolGrant("orchestrator/cron_*")]
+    expect(call(g, "orchestrator/cron_create").decision).toBe("allow")
+    expect(call(g, "orchestrator/session_list").decision).toBe("deny")
     expect(call([toolGrant("*")], "x/y").decision).toBe("allow")
   })
 
@@ -90,29 +90,29 @@ describe("evaluateToolInvoke: implements (AIP-39 §tool:invoke Evaluation)", () 
   const denyCommit: Grant = { ...commit, effect: "deny" }
 
   it("refuses a tool when a deny targets its implemented action", () => {
-    const grants = [toolGrant("katchy/*"), denyCommit]
-    expect(call(grants, "katchy/commit", "storage:commit")).toMatchObject({ decision: "deny", reason: "explicit-deny" })
+    const grants = [toolGrant("nova/*"), denyCommit]
+    expect(call(grants, "nova/commit", "storage:commit")).toMatchObject({ decision: "deny", reason: "explicit-deny" })
   })
 
   it("refuses when a deny targets tool:invoke even though the implemented action is granted", () => {
-    const grants = [commit, toolGrant("katchy/commit", "deny")]
-    expect(call(grants, "katchy/commit", "storage:commit").decision).toBe("deny")
+    const grants = [commit, toolGrant("nova/commit", "deny")]
+    expect(call(grants, "nova/commit", "storage:commit").decision).toBe("deny")
   })
 
   it("admits when an allow on either name matches and no deny does", () => {
-    expect(call([commit], "katchy/commit", "storage:commit").decision).toBe("allow")
-    expect(call([toolGrant("katchy/commit")], "katchy/commit", "storage:commit").decision).toBe("allow")
-    expect(call([], "katchy/commit", "storage:commit").decision).toBe("deny")
+    expect(call([commit], "nova/commit", "storage:commit").decision).toBe("allow")
+    expect(call([toolGrant("nova/commit")], "nova/commit", "storage:commit").decision).toBe("allow")
+    expect(call([], "nova/commit", "storage:commit").decision).toBe("deny")
   })
 
   it("leaves a tool without implements to tool:invoke alone", () => {
-    expect(call([denyCommit, toolGrant("katchy/*")], "katchy/commit").decision).toBe("allow")
+    expect(call([denyCommit, toolGrant("nova/*")], "nova/commit").decision).toBe("allow")
   })
 
   it("applies a deny from any composed policy", () => {
     const decision = evaluateToolInvoke(
       [{ default: "deny", grants: [commit] }, { default: "deny", grants: [toolGrant(undefined, "deny")] }],
-      { principals: [WHO], tool: "katchy/commit", implements: "storage:commit" },
+      { principals: [WHO], tool: "nova/commit", implements: "storage:commit" },
     )
     expect(decision.decision).toBe("deny")
   })

@@ -329,7 +329,7 @@ export function repoOfPrUrl(url) {
 }
 
 /** `owner/repo#N` when the repo is known, else `#N` — a bare number is
- *  ambiguous across repos (G3: `#504` was agentik-studio's, not agentproto's). */
+ *  ambiguous across repos (G3: `#504` was demo-app's, not agentproto's). */
 export const fmtPr = (n, repo) => (repo ? `${repo}#${n}` : `#${n}`)
 const fmtPrs = (nums, repos) => nums.map(n => fmtPr(n, repos?.[n])).join(", ")
 

@@ -56,7 +56,7 @@ describe("agentproto brain query", () => {
       hits: [
         {
           sourceId: "sess-abc123",
-          workspace: "agentik-studio",
+          workspace: "demo-app",
           sessionId: "sess-abc123",
           title: "Brain search design",
           score: 4.2,
@@ -72,7 +72,7 @@ describe("agentproto brain query", () => {
     )
     const out = stdoutChunks.join("")
     expect(out).toContain("4.20")
-    expect(out).toContain("agentik-studio")
+    expect(out).toContain("demo-app")
     expect(out).toContain("sess-abc123")
     expect(out).toContain("Brain search design")
     expect(out).toContain("…decided to use BM25…")
@@ -115,11 +115,11 @@ describe("agentproto brain query", () => {
           snippet: "fine",
         },
       ],
-      workspacesErrored: ["agentik-studio"],
+      workspacesErrored: ["demo-app"],
     })
     const code = await runBrain(["query", "hi"])
     expect(code).toBe(0)
-    expect(stdoutChunks.join("")).toContain("workspaces skipped due to an error: agentik-studio")
+    expect(stdoutChunks.join("")).toContain("workspaces skipped due to an error: demo-app")
   })
 
   it("rejects a missing query with exit code 2", async () => {

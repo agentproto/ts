@@ -22,7 +22,7 @@ import { findWorkspace, loadWorkspacesConfig } from "../workspaces-config.js"
 import { realGitRunner } from "@agentproto/storage-github"
 
 const APP_ID = "@test/git-app"
-const REPO_URL = "https://github.com/acme/pygmalion-home"
+const REPO_URL = "https://github.com/acme/orchestrator-home"
 
 function git(args: string[], cwd: string): string {
   const res = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
@@ -67,13 +67,13 @@ describe("declaredGithubWorkspace", () => {
     const decl = declaredGithubWorkspace(
       workspaceDecl("/data/home", {
         config: { repo_url: REPO_URL, mount_path: "/data/home", base_branch: "trunk" },
-        auth: { state: { env: ["PYGMALION_GH_TOKEN", "not a name!"] } },
+        auth: { state: { env: ["ORCHESTRATOR_GH_TOKEN", "not a name!"] } },
       }),
     )
     expect(decl).toEqual({
       dir: "/data/home",
       config: { repoUrl: REPO_URL, baseBranch: "trunk", branchPolicy: "per-conversation", prPolicy: "manual" },
-      tokenEnv: ["PYGMALION_GH_TOKEN"],
+      tokenEnv: ["ORCHESTRATOR_GH_TOKEN"],
     })
   })
 

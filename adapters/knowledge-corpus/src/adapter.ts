@@ -20,7 +20,7 @@
  *
  * Lifted VERBATIM from the studio integration package
  * (`packages/integration/knowledge/src/providers/corpus/adapter.ts`) — the
- * class already carried no `@guilde/@simone/@agstudio` edge (it consumes an
+ * class already carried no `@acme/@demo/@agstudio` edge (it consumes an
  * injected `FsPort` + a backing `IKnowledgeProvider` and the vendor-neutral
  * `@agentproto/corpus` access/reader primitives), so it re-homes as-is. The
  * ONLY change is the two import blocks: the `IKnowledgeProvider` contract +
@@ -99,7 +99,7 @@ export interface CorpusAdapterCoreOptions {
    * the adapter behaves as if the caller is fully trusted — useful
    * for admin paths + the indexer's internal writer.
    *
-   * The host (Guilde corpus-host, corpus-cli) builds this per request
+   * The host (Acme corpus-host, corpus-cli) builds this per request
    * via `IdentityPort.resolve()`.
    */
   readonly caller?: AccessCaller
@@ -107,7 +107,7 @@ export interface CorpusAdapterCoreOptions {
    * Workspace context the access policy needs alongside the caller —
    * notably `homeGuild`, which `classification: internal` checks
    * against the caller's identity tree. Hosts that bind a corpus
-   * adapter to a specific guild (Guilde corpus-host) populate this;
+   * adapter to a specific guild (Acme corpus-host) populate this;
    * standalone topologies (corpus-cli, tests) may leave it empty,
    * in which case `internal` fails closed.
    */

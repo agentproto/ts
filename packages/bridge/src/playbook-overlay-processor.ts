@@ -2,10 +2,10 @@
  * makePlaybookOverlayProcessor — portable Mastra InputProcessor factory.
  *
  * Parameterized on a `CorpusHost` and request-context extractors so it
- * can run in any Mastra app without assuming Guilde's request context
- * shape. Guilde's `guildePlaybookOverlayProcessor` can become a thin
+ * can run in any Mastra app without assuming Acme's request context
+ * shape. Acme's `acmePlaybookOverlayProcessor` can become a thin
  * wrapper: call this factory with extractors that read from
- * `asGuildeRequestContext`.
+ * `asAcmeRequestContext`.
  *
  * Before each agent turn it:
  *   1. Extracts scopeId + dimensions from the request context.

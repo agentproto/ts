@@ -24,7 +24,7 @@ Requires a running daemon — see [`serve.md`](./serve.md) /
 
 ```bash
 agentproto brain query "brain search design"
-agentproto brain query "worktree gc" --workspace agentik-studio --topk 5
+agentproto brain query "worktree gc" --workspace demo-app --topk 5
 agentproto brain query "flaky test" --json
 ```
 

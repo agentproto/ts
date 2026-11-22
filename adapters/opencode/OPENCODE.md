@@ -90,7 +90,7 @@ characters per token), prompt "Reply with exactly: OK. Do not use any tool.":
 
 | Variant (cwd, mount)                                   | Request body | ~Tokens |
 |--------------------------------------------------------|-------------:|--------:|
-| Before: `model-bench` (under `agentik-studio`), global opencode config | 548,771 chars | ~137k |
+| Before: `model-bench` (under `demo-app`), global opencode config | 548,771 chars | ~137k |
 | Before: empty temp dir, global opencode config         | 455,232 | ~114k |
 | Clean `HOME`, `model-bench` (AGENTS.md + skills)       | 129,642 | ~32k |
 | Clean `HOME`, empty temp dir (opencode's own floor)    |  33,379 | ~8.3k |

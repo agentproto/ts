@@ -55,7 +55,7 @@ describe("provider declaration", () => {
     expect(p.slug).toBe("openai")
     expect(p.env.apiKey).toBe("OPENAI_API_KEY")
     expect(Object.keys(p.capabilities).sort()).toEqual(["realtime", "stt", "tts"])
-    // "whisper" is the historical VOICE_STT_PROVIDER of Simone prod (compose.yaml:89).
+    // "whisper" is the historical VOICE_STT_PROVIDER.
     expect(p.valueAliases.stt).toEqual(["whisper"])
     expect(p.realtime!.capabilities.id).toBe("openai-realtime")
     expect(openaiDefault.slug).toBe("openai")

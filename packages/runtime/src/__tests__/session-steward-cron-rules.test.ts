@@ -120,9 +120,9 @@ describe("cron rules — readTargetOf", () => {
   })
   it("G7: a recursive rg/grep over a directory, or its pattern, is not a file re-read", () => {
     const sweeps = [
-      "rg -n 'proposeFact' /repo/projects/pygmalion -g '!node_modules' | head",
-      "grep -rl 'confirmFact' /repo/projects/pygmalion/packages --include='*.ts'",
-      "rg -ln 'packages/core/src/core' /repo/projects/pygmalion",
+      "rg -n 'proposeFact' /repo/projects/orchestrator -g '!node_modules' | head",
+      "grep -rl 'confirmFact' /repo/projects/orchestrator/packages --include='*.ts'",
+      "rg -ln 'packages/core/src/core' /repo/projects/orchestrator",
       "ps axo pid,command | grep 'packages/core' | head",
     ]
     for (const command of sweeps) expect(mod.readTargetOf({ tool: "Bash", command })).toBeNull()
@@ -130,7 +130,7 @@ describe("cron rules — readTargetOf", () => {
     const records = Array.from({ length: 6 }, (_, i) => ({
       ts: new Date(1_000_000 + i * 1000).toISOString(),
       tool: "Bash",
-      command: `rg -n 'sym${i}' /repo/projects/pygmalion`,
+      command: `rg -n 'sym${i}' /repo/projects/orchestrator`,
     }))
     expect(mod.detectLoop(records, { nowMs: 1_010_000 }).looping).toBe(false)
   })
@@ -341,9 +341,9 @@ describe("cron rules — terminalRelabelCandidate", () => {
     expect(r.reason).toBe("PRs agentik/agent-studio#1816, agentik/agent-studio#1824 recorded, state unknown")
     expect(mod.prReposOf(withRepo)).toEqual({ 1816: "agentik/agent-studio", 1824: "agentik/agent-studio" })
     expect(mod.prReposOf({ status: "killed", openedPrs: [{ number: 1 }] })).toEqual({})
-    expect(mod.fmtPr(504, "agentik/agentik-studio")).toBe("agentik/agentik-studio#504")
+    expect(mod.fmtPr(504, "agentik/demo-app")).toBe("agentik/demo-app#504")
     expect(mod.fmtPr(504)).toBe("#504")
-    expect(mod.repoOfPrUrl("https://github.com/agentik/agentik-studio/pull/504")).toBe("agentik/agentik-studio")
+    expect(mod.repoOfPrUrl("https://github.com/agentik/demo-app/pull/504")).toBe("agentik/demo-app")
     expect(mod.repoOfPrUrl("nope")).toBeUndefined()
   })
 
@@ -369,15 +369,15 @@ describe("cron rules — terminalRelabelCandidate", () => {
     })
     expect(mod.refineRelabel(base, { pullRequests: { opened: 1, merged: 0, state: null } })).toMatchObject({ proposedVerdict: "unknown", reason: "1 PR opened, state unknown" })
     const own = { ...base, reason: "PR #8 recorded, state unknown", prs: [8] }
-    expect(mod.refineRelabel(own, { worktree: { pr: { state: "merged", number: 8, url: "https://github.com/agentik/agentik-studio/pull/8" } } })).toMatchObject({
+    expect(mod.refineRelabel(own, { worktree: { pr: { state: "merged", number: 8, url: "https://github.com/agentik/demo-app/pull/8" } } })).toMatchObject({
       proposedVerdict: "done",
-      reason: "PR agentik/agentik-studio#8 merged",
-      repos: { 8: "agentik/agentik-studio" },
+      reason: "PR agentik/demo-app#8 merged",
+      repos: { 8: "agentik/demo-app" },
     })
     // G1: an OPEN PR is never `done` — and not even "unknown" when it is the session's own.
-    expect(mod.refineRelabel(own, { worktree: { pr: { state: "open", number: 8, url: "https://github.com/agentik/agentik-studio/pull/8" } } })).toMatchObject({
+    expect(mod.refineRelabel(own, { worktree: { pr: { state: "open", number: 8, url: "https://github.com/agentik/demo-app/pull/8" } } })).toMatchObject({
       proposedVerdict: "needs-follow-up",
-      reason: "PR agentik/agentik-studio#8 open — awaiting review/merge",
+      reason: "PR agentik/demo-app#8 open — awaiting review/merge",
     })
     expect(mod.refineRelabel(base, { worktree: { pr: { state: "open", number: 505 } } })).toMatchObject({ proposedVerdict: "unknown" })
   })

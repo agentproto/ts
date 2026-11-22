@@ -109,7 +109,7 @@ committing them:
 - **`writeFiles`' `path`/`content`** may use a literal `{slug}` placeholder,
   substituted with the worktree's own slug — e.g. pointing pnpm's
   `virtualStoreDir` at a distinct, collision-free directory per worktree
-  (mirrors the real use case this shipped for: `agentik-studio`'s
+  (mirrors the real use case this shipped for: `demo-app`'s
   `infra/cli/src/commands/wt.ts` `defaultWriteFiles`).
 - **`copyGlobs` / `linkPaths` / `depsCmd`** — same shape and semantics as the
   matching `worktree.provision` inputs / `agentproto.json` fields above.

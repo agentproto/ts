@@ -29,7 +29,7 @@ describe("hitsToQuickPickItems", () => {
   const hits: BrainQueryHit[] = [
     {
       sourceId: "sess-abc123",
-      workspace: "agentik-studio",
+      workspace: "demo-app",
       sessionId: "sess-abc123",
       title: "Brain search design",
       score: 4.2,
@@ -59,7 +59,7 @@ describe("hitsToQuickPickItems", () => {
 
   it("description is sessionId/sourceId, with workspace appended when it differs from the caller's", () => {
     const items = hitsToQuickPickItems(hits, "default")
-    expect(items[0]?.description).toBe("sess-abc123 · agentik-studio")
+    expect(items[0]?.description).toBe("sess-abc123 · demo-app")
     // Same workspace as caller — no redundant suffix.
     expect(items[1]?.description).toBe("sess-noTitle")
     expect(items[2]?.description).toBe("sess-bare#1")

@@ -28,7 +28,7 @@ const ourSeo: RoleHandle = {
   mission: "Brand-aligned organic growth.",
   responsibilities: ["Keyword research"], // overlaps for dedupe test
   extends: "builtin/seo-specialist",
-  metadata: { guilde: { visibility: "org" } },
+  metadata: { acme: { visibility: "org" } },
 } as RoleHandle
 
 describe("resolveRole (AIP-47)", () => {
@@ -67,7 +67,7 @@ describe("resolveRole (AIP-47)", () => {
     expect(result.role.tools).toEqual(["ws://tools/ahrefs"])
     expect(result.role.department).toBe("marketing")
     // Metadata deep-merged
-    expect(result.role.metadata).toEqual({ guilde: { visibility: "org" } })
+    expect(result.role.metadata).toEqual({ acme: { visibility: "org" } })
     // Body appended
     expect(result.body).toBe("# parent\n\n---\n\n## child")
     // Chain ordered leaf→root

@@ -156,17 +156,17 @@ describe("a MATCHING allow grant admits a pair the tree refuses", () => {
 })
 
 describe("tool.invoke", () => {
-  const principals = () => ["operator://pm-katchy"]
+  const principals = () => ["operator://pm-nova"]
   const tool = (name: string, impl?: string) => ({ kind: "tool", name, ...(impl ? { implements: impl } : {}) }) as const
   const toolGrant = (effect: "allow" | "deny", scope?: string, action = "tool:invoke"): Grant => ({
-    principal: "operator://pm-katchy",
+    principal: "operator://pm-nova",
     effect,
     actions: [{ action, ...(scope ? { scope } : {}) }],
   })
   const c = (inputs: readonly GrantInput[]): PermissionContext => ({ policy: { inputs, principals } })
 
   it("is not routed, and answers as before, without a policy", () => {
-    expect(decide(operator, "tool.invoke", tool("pygmalion/cron_create"))).toMatchObject({
+    expect(decide(operator, "tool.invoke", tool("orchestrator/cron_create"))).toMatchObject({
       allow: false,
       authoritative: false,
       rule: "not-routed",
@@ -175,29 +175,29 @@ describe("tool.invoke", () => {
 
   it("refuses a call a deny targets even when another policy allows the whole server", () => {
     const inputs = [
-      { default: "deny" as const, grants: [toolGrant("allow", "pygmalion/*")] },
-      { default: "deny" as const, grants: [toolGrant("deny", "pygmalion/cron_create")] },
+      { default: "deny" as const, grants: [toolGrant("allow", "orchestrator/*")] },
+      { default: "deny" as const, grants: [toolGrant("deny", "orchestrator/cron_create")] },
     ]
-    expect(decide(as(A), "tool.invoke", tool("pygmalion/cron_create"), c(inputs))).toMatchObject({
+    expect(decide(as(A), "tool.invoke", tool("orchestrator/cron_create"), c(inputs))).toMatchObject({
       allow: false,
       rule: "policy.explicit-deny",
       authoritative: false,
     })
-    expect(decide(as(A), "tool.invoke", tool("pygmalion/cron_list"), c(inputs)).allow).toBe(true)
+    expect(decide(as(A), "tool.invoke", tool("orchestrator/cron_list"), c(inputs)).allow).toBe(true)
   })
 
   it("matches by <server>/<name> and not by a bare name, and qualifies a legacy built-in", () => {
-    expect(decide(as(A), "tool.invoke", tool("pygmalion/cron_create"), c([toolGrant("allow", "cron_create")])).allow).toBe(false)
+    expect(decide(as(A), "tool.invoke", tool("orchestrator/cron_create"), c([toolGrant("allow", "cron_create")])).allow).toBe(false)
     expect(decide(as(A), "tool.invoke", tool("cron_create"), c([toolGrant("allow", "agentproto/cron_create")])).allow).toBe(true)
   })
 
   it("does not let <server>/* reach another server", () => {
-    expect(decide(as(A), "tool.invoke", tool("pygmalion/x"), c([toolGrant("allow", "agentproto/*")])).allow).toBe(false)
+    expect(decide(as(A), "tool.invoke", tool("orchestrator/x"), c([toolGrant("allow", "agentproto/*")])).allow).toBe(false)
   })
 
   it("refuses an implements-tool when a deny targets the implemented action", () => {
-    const inputs = [toolGrant("allow", "katchy/*"), toolGrant("deny", undefined, "storage:commit")]
-    expect(decide(as(A), "tool.invoke", tool("katchy/commit", "storage:commit"), c(inputs))).toMatchObject({
+    const inputs = [toolGrant("allow", "nova/*"), toolGrant("deny", undefined, "storage:commit")]
+    expect(decide(as(A), "tool.invoke", tool("nova/commit", "storage:commit"), c(inputs))).toMatchObject({
       allow: false,
       rule: "policy.explicit-deny",
     })

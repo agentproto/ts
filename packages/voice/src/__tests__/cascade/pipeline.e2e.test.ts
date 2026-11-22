@@ -1,8 +1,5 @@
 // @ts-nocheck
-// Ported from agentik-studio projects/simone/apps/voice/test/calls/pipeline.e2e.test.ts
-// The expect blocks are unchanged from the studio original; only imports (and,
-// where noted in the PR, injected provider labels) differ. Type checking is off
-// for this file because the studio does not type-check its test files.
+// Type checking is off for this file: it is kept close to a verbatim test suite.
 /**
  * T11 e2e: WebRTC call session factory + sequential cascade with mocked
  * STT / onTurn / TTS. No real WebRTC, Redis, or providers - the transport
@@ -51,7 +48,7 @@ describe("createCallPipeline sequential cascade", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     transport = makeTransport()
-    transcribe = vi.fn(async () => "Bonjour Simone")
+    transcribe = vi.fn(async () => "Bonjour Demo")
     onTurn = vi.fn(async ({ onChunk }: { onChunk: (p: Buffer) => void }) => {
       onChunk(Buffer.from("salut"))
       return "Salut !"
@@ -79,7 +76,7 @@ describe("createCallPipeline sequential cascade", () => {
 
     expect(transcribe).toHaveBeenCalledTimes(1)
     expect(onTurn).toHaveBeenCalledTimes(1)
-    expect(onTurn.mock.calls[0]![0].text).toBe("Bonjour Simone")
+    expect(onTurn.mock.calls[0]![0].text).toBe("Bonjour Demo")
     expect(transport.send).toHaveBeenCalled()
     const audioMsg = transport.sent[0]!
     expect(audioMsg.type).toBe("audio")
@@ -87,7 +84,7 @@ describe("createCallPipeline sequential cascade", () => {
     // TTS is PCM 24 kHz; stamping the inbound 16 kHz rate plays it 1.5x slow.
     expect((audioMsg as { sampleRate?: number }).sampleRate).toBe(24_000)
     expect(transcripts).toEqual([
-      { text: "Bonjour Simone", role: "user" },
+      { text: "Bonjour Demo", role: "user" },
       { text: "Salut !", role: "assistant" },
     ])
   })

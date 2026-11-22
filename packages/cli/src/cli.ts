@@ -255,7 +255,7 @@ Usage:
                                            prints nothing extra when offline)
 
 Examples:
-  agentproto auth login --host wss://guilde.work     # device flow → ~/.agentproto/credentials.json
+  agentproto auth login --host wss://example.com     # device flow → ~/.agentproto/credentials.json
   agentproto install claude-code
   agentproto install runtime-profile/standard  # drops .claude/ swarm scaffolding into the cwd
   agentproto setup openclaw                # re-run setup (idempotent via skip_if + ledger)
@@ -265,12 +265,12 @@ Examples:
   agentproto run-swarm --manifest .runtime/local.yaml --verbose
   agentproto workspace add ~/code/my-project --slug my-project
   agentproto workspace list
-  agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
+  agentproto serve --connect wss://example.com/api/v1/agentproto/tunnel
   agentproto sessions start claude-code --workspace my-app --attach
   agentproto sessions terminal --name claude-tui --attach -- claude
   agentproto sessions stop claude-tui
   agentproto config set daemon.port 18791
-  agentproto config set daemon.allowedOrigins https://guilde.work
+  agentproto config set daemon.allowedOrigins https://example.com
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
   agentproto doctor                    # check the whole install (--fix: let bypass sessions accept messages)

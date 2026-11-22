@@ -67,12 +67,12 @@ const LEGACY_NATIVE = json({
   savedAt: "2026-06-05T12:00:00.000Z",
 })
 
-/** Mirrors: studio `guildeSessionStore` `metaToDescriptor` (the managed-catalog shape; `from:"guilde"` is a registered source kind now). */
-const LEGACY_GUILDE = json({
+/** Mirrors: studio `acmeSessionStore` `metaToDescriptor` (the managed-catalog shape; `from:"acme"` is a registered source kind now). */
+const LEGACY_ACME = json({
   id: "ref-abc123",
   backend: "camofox",
   identity: { account: "team@example.test", platform: "linkedin" },
-  inject: { from: "guilde", sessionRef: "ref-abc123", domains: ["linkedin.com"] },
+  inject: { from: "acme", sessionRef: "ref-abc123", domains: ["linkedin.com"] },
   url: "https://www.linkedin.com/feed/",
 })
 
@@ -124,7 +124,7 @@ const ALL: Array<[string, string]> = [
   ["legacy chrome-profile inject", LEGACY_CHROME_PROFILE],
   ["legacy file inject", LEGACY_FILE],
   ["legacy camofox-native", LEGACY_NATIVE],
-  ["legacy guilde-shaped source inject", LEGACY_GUILDE],
+  ["legacy acme-shaped source inject", LEGACY_ACME],
   ["V2 owned with chrome provenance", V2_OWNED_WITH_CHROME],
   ["V2 chrome backend with probe stamps", V2_CHROME_BACKEND_PROBED],
 ]
@@ -198,10 +198,10 @@ describe("old-code descriptors load unchanged", () => {
     expect(d.strategies).toEqual([{ kind: "authed-storageState", storageStatePath: `${PROFILES_DIR}/linkedin-perso.json` }])
   })
 
-  it("legacy guilde-shaped inject becomes a source strategy of the same kind", () => {
-    const d = normalizeDescriptor(JSON.parse(LEGACY_GUILDE) as SessionDescriptor)
-    expect(d.strategies).toEqual([{ kind: "guilde", domains: ["linkedin.com"], sessionRef: "ref-abc123" }])
-    expect(resolveInjectFromStrategies(d)).toEqual({ from: "guilde", domains: ["linkedin.com"], sessionRef: "ref-abc123" })
+  it("legacy acme-shaped inject becomes a source strategy of the same kind", () => {
+    const d = normalizeDescriptor(JSON.parse(LEGACY_ACME) as SessionDescriptor)
+    expect(d.strategies).toEqual([{ kind: "acme", domains: ["linkedin.com"], sessionRef: "ref-abc123" }])
+    expect(resolveInjectFromStrategies(d)).toEqual({ from: "acme", domains: ["linkedin.com"], sessionRef: "ref-abc123" })
   })
 
   it("a stored credential match synthesizes the recovery strategy (credential index only, never secrets)", () => {
@@ -282,10 +282,10 @@ describe("strategy selection, mapping and freshness (ported semantics)", () => {
     expect(injectKindOf("chrome-profile")).toBe("chrome-cookie")
     expect(injectKindOf("file")).toBe("chrome-cookie")
     expect(injectKindOf("camofox-native")).toBe("authed-storageState")
-    expect(injectKindOf("guilde")).toBe("guilde")
+    expect(injectKindOf("acme")).toBe("acme")
     expect(injectFromOf("chrome-cookie")).toBe("chrome-profile")
     expect(injectFromOf("stored-credential")).toBeUndefined()
-    expect(injectFromOf("guilde")).toBe("guilde")
+    expect(injectFromOf("acme")).toBe("acme")
   })
 
   it("cookieFreshness: chrome sources are fresh, owned ones go by the 7-day TTL", () => {

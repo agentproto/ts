@@ -31,7 +31,7 @@
  * There is no `systemPrompt` field in AIP: the prompt is the AGENT.md
  * BODY (frontmatter is `.strict()`). So each agent carries an optional
  * `body`; omit it and the prompt composes from persona / boundaries /
- * traits, the way Guilde assembles an operator prompt from role + persona.
+ * traits, the way Acme assembles an operator prompt from role + persona.
  *
  * `@mastra/core` is a peer dependency — install it in the host if you
  * call `toMastraAgent(s)`. `emit` has no Mastra dependency.

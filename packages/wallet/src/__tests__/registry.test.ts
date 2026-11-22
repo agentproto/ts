@@ -13,8 +13,8 @@ const USD = defineAsset({
 })
 
 const CREDITS = defineAsset({
-  ref: "GUILDE_CREDITS",
-  name: "Guilde Credits",
+  ref: "ACME_CREDITS",
+  name: "Acme Credits",
   symbol: "GCR",
   decimals: 2,
   standard: "internal",
@@ -28,8 +28,8 @@ const CREDITS = defineAsset({
 })
 
 const POINTS = defineAsset({
-  ref: "GUILDE_POINTS",
-  name: "Guilde Points",
+  ref: "ACME_POINTS",
+  name: "Acme Points",
   symbol: "GPT",
   decimals: 0,
   standard: "internal",
@@ -38,7 +38,7 @@ const POINTS = defineAsset({
     spendableOn: [],
     transfer: "internal",
     convertEdges: [
-      { to: "GUILDE_CREDITS", rate: { kind: "fixed", ratio: 1 }, addsRestriction: ["from-points"] },
+      { to: "ACME_CREDITS", rate: { kind: "fixed", ratio: 1 }, addsRestriction: ["from-points"] },
     ],
   },
 })
@@ -48,12 +48,12 @@ const fixedResolver: RateResolver = e => (e.rate.kind === "fixed" ? e.rate.ratio
 describe("AssetRegistry — config-first catalog (common + app-wide)", () => {
   it("extend layers app assets onto a common set (immutably)", () => {
     const common = AssetRegistry.from([USD])
-    const guilde = common.extend([CREDITS, POINTS])
+    const acme = common.extend([CREDITS, POINTS])
 
-    expect(guilde.has("USD")).toBe(true)
-    expect(guilde.has("GUILDE_CREDITS")).toBe(true)
-    expect(common.has("GUILDE_CREDITS")).toBe(false) // extend did not mutate common
-    expect(guilde.require("GUILDE_POINTS").symbol).toBe("GPT")
+    expect(acme.has("USD")).toBe(true)
+    expect(acme.has("ACME_CREDITS")).toBe(true)
+    expect(common.has("ACME_CREDITS")).toBe(false) // extend did not mutate common
+    expect(acme.require("ACME_POINTS").symbol).toBe("GPT")
   })
 
   it("rejects duplicate refs", () => {
@@ -70,8 +70,8 @@ describe("AssetRegistry — config-first catalog (common + app-wide)", () => {
       ...CREDITS,
       partitions: [
         {
-          id: "GUILDE_CREDITS:image-trial",
-          asset: "GUILDE_CREDITS",
+          id: "ACME_CREDITS:image-trial",
+          asset: "ACME_CREDITS",
           restriction: [],
           policy: [
             { kind: "spendOn", categories: ["image"] },
@@ -82,13 +82,13 @@ describe("AssetRegistry — config-first catalog (common + app-wide)", () => {
     })
     const reg = AssetRegistry.from([USD, CREDITS_WITH_TRANCHES])
 
-    expect(reg.partition("GUILDE_CREDITS:image-trial")?.asset).toBe("GUILDE_CREDITS")
-    expect(reg.policyFor("GUILDE_CREDITS:image-trial")?.[0]).toEqual({
+    expect(reg.partition("ACME_CREDITS:image-trial")?.asset).toBe("ACME_CREDITS")
+    expect(reg.policyFor("ACME_CREDITS:image-trial")?.[0]).toEqual({
       kind: "spendOn",
       categories: ["image"],
     })
     // unknown partition / asset without the tranche → undefined (a valid resolver)
-    expect(reg.policyFor("GUILDE_CREDITS:nope")).toBeUndefined()
+    expect(reg.policyFor("ACME_CREDITS:nope")).toBeUndefined()
     expect(reg.policyFor("USD:general")).toBeUndefined()
   })
 })

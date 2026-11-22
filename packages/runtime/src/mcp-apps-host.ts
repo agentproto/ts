@@ -84,7 +84,7 @@ export interface McpAppsHostDeps {
   /** Append the call record to the session's event log. */
   recordToolCall?(sessionId: string, record: McpAppToolCallRecord): void
   /** Tool name the transcript recorded for a tool-call id (the card that
-   *  hosts the iframe), e.g. `mcp__guilde__guilde_dashboard`. */
+   *  hosts the iframe), e.g. `mcp__acme__acme_dashboard`. */
   lookupToolCallName?(sessionId: string, toolCallId: string): Promise<string | undefined>
   /** Default 60s. */
   negativeTtlMs?: number

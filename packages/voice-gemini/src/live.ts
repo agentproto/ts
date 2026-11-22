@@ -1,7 +1,7 @@
 /**
  * Google Gemini Live as a `RealtimeProvider`: one WebSocket per session over
  * the bidirectional Live API (`BidiGenerateContent`), the wire the studio runs
- * in production (`integration/mastra gemini-live.adapter.ts`, Guilde).
+ * in production (`integration/mastra gemini-live.adapter.ts`, Acme).
  *
  * Wire protocol:
  *   - URL:    `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=<key>`

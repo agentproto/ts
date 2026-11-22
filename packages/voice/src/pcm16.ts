@@ -1,6 +1,5 @@
 /**
- * PCM16 even-chunk alignment (ported from agentik-studio
- * `packages/agent-framework/src/voice/tts-providers.ts:432-457`).
+ * PCM16 even-chunk alignment.
  *
  * PCM16 is 2 bytes per sample: every chunk a vendor hands out MUST be
  * even-aligned, or the client's `Int16Array` decode silently drops the

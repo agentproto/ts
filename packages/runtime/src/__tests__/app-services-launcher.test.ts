@@ -1,6 +1,6 @@
 /**
  * Service-owner launcher — end-to-end wiring through `registerAppTools`
- * (frozen `services:` semantics, Pygmalion phase 1b item 2). A real
+ * (frozen `services:` semantics, Orchestrator phase 1b item 2). A real
  * `McpServer` + InMemoryTransport over a real `createSessionsRegistry`, with a
  * fake `AgentAdapterResolver` (mirrors app-tools.test.ts). Two seams are
  * exercised: the REAL default spawn (now the DETERMINISTIC managed process of

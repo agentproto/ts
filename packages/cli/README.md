@@ -105,8 +105,8 @@ agentproto config path                                          # print the file
 agentproto config get daemon.port                               # read one key
 agentproto config set daemon.port 18791                         # number auto-detected
 agentproto config set daemon.workspace ~/code/my-app
-agentproto config set daemon.allowedOrigins https://guilde.work,https://app.example.com
-agentproto config set tunnel.host wss://guilde.work/api/v1/agentproto/tunnel
+agentproto config set daemon.allowedOrigins https://example.com,https://app.example.com
+agentproto config set tunnel.host wss://example.com/api/v1/agentproto/tunnel
 agentproto config set tunnel.autoconnect true                   # --connect implied at next serve
 agentproto config unset tunnel.host                             # forget
 agentproto config edit                                          # open in $EDITOR
@@ -116,14 +116,14 @@ Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../d
 
 ```jsonc
 {
-  "plugins": ["@guilde/agentproto-bridge"],
-  "profileAliases": { "guilde": "@guilde/runtime-profile-guilde" },
+  "plugins": ["@acme/agentproto-bridge"],
+  "profileAliases": { "acme": "@acme/runtime-profile-acme" },
   "corpusPresetPackages": ["@agentproto/corpus-presets"],
   "daemon": {
     "workspace": "/abs/path",                  // default cwd when not passed
     "port": 18791,
     "bind": "127.0.0.1",
-    "allowedOrigins": ["https://guilde.work"], // extends localhost defaults
+    "allowedOrigins": ["https://example.com"], // extends localhost defaults
     "frameAncestors": ["https://web.telegram.org"], // may frame the app page (never "*")
     "strictOrigins": false,                    // when true, drops localhost defaults
     "authToken": "<random-hex>",               // stable bearer for /mcp, /events, …
@@ -131,7 +131,7 @@ Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../d
     "turnStallAfterMs": 300000                 // turn-liveness watchdog (see below)
   },
   "tunnel": {
-    "host": "wss://guilde.work/api/v1/agentproto/tunnel",
+    "host": "wss://example.com/api/v1/agentproto/tunnel",
     "autoconnect": false                       // bootstrap with --connect at serve
   },
   "pairing": {
@@ -168,7 +168,7 @@ turn produced no output or usage at all since its prompt, the descriptor also
 carries `lastTurnErrorMessage: "no output since prompt — provider retrying?"`. Set the
 threshold to `0` to disable.
 
-**About `strictOrigins`:** by default any browser on `localhost` (any port) is allowed to drive mutating routes — that's what makes Guilde dev / Vite / Storybook all "just work" without per-port config. Set `strictOrigins: true` if you want to lock the daemon down to a literal list (shared host, hardened setup). Note: any local user with shell access can read `runtime.json`'s token regardless of this setting; strict mode only narrows the browser-Origin surface.
+**About `strictOrigins`:** by default any browser on `localhost` (any port) is allowed to drive mutating routes — that's what makes Acme dev / Vite / Storybook all "just work" without per-port config. Set `strictOrigins: true` if you want to lock the daemon down to a literal list (shared host, hardened setup). Note: any local user with shell access can read `runtime.json`'s token regardless of this setting; strict mode only narrows the browser-Origin surface.
 
 ## `daemon` — run as a background service
 
@@ -176,7 +176,7 @@ Wraps the host's init system so you don't keep a terminal open. macOS `launchd`,
 
 ```bash
 agentproto config set daemon.workspace ~/code/my-project   # one-time
-agentproto config set daemon.allowedOrigins https://guilde.work
+agentproto config set daemon.allowedOrigins https://example.com
 agentproto daemon install                                  # write plist + bootstrap
 agentproto daemon status                                   # plist? loaded? /health probe?
 agentproto daemon logs --lines 30                          # tail ~/.agentproto/daemon.log
@@ -191,9 +191,9 @@ agentproto daemon uninstall                                # bootout + delete pl
 ## `auth` — talk to a remote host
 
 ```bash
-agentproto auth login --host wss://guilde.work    # device-flow login → ~/.agentproto/credentials.json
-agentproto auth status --host wss://guilde.work   # show expiry
-agentproto auth logout --host wss://guilde.work   # forget the token
+agentproto auth login --host wss://example.com    # device-flow login → ~/.agentproto/credentials.json
+agentproto auth status --host wss://example.com   # show expiry
+agentproto auth logout --host wss://example.com   # forget the token
 ```
 
 The credential is used automatically by `agentproto serve --connect <host>` to establish the tunnel.
@@ -226,7 +226,7 @@ agentproto serve
 agentproto serve --port 18790 --workspace ~/code/my-project
 
 # Local + tunnel: cloud host can dispatch spawns through the daemon.
-agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
+agentproto serve --connect wss://example.com/api/v1/agentproto/tunnel
 
 # Light banner + chain into the interactive dashboard (same terminal).
 # Quitting the TUI shuts the daemon down too.

@@ -33,8 +33,7 @@ transcription, and brain guards. The brain yields reply text; the engine owns
 synthesis. `vad: false` is a manual mode (push-to-talk): `commit()` ends the
 utterance.
 
-`src/cascade/pipeline.ts` and `src/cascade/speak-turn.ts` are ported from the
-studio call pipeline; the headers say what was removed on purpose and why.
+`src/cascade/pipeline.ts` and `src/cascade/speak-turn.ts` hold the call pipeline; the headers say what is left out on purpose and why.
 
 ## Defaults
 

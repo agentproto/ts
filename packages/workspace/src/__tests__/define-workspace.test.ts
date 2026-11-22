@@ -5,9 +5,9 @@ import type { WorkspaceDefinition } from "../types.js"
 function validDef(): WorkspaceDefinition {
   return {
     schema: "workspace/v2",
-    id: "@jeremy/simone",
+    id: "@jeremy/demo",
     version: "1.0.0",
-    name: "Simone",
+    name: "Demo",
     type: "project",
     owner: { type: "org", id: "agentik", slug: "jeremy" },
     storage: { inline: { provider: "local-fs", config: {} } },
@@ -30,7 +30,7 @@ describe("defineWorkspace (AIP-34 workspace/v2)", () => {
   })
 
   it("rejects a bare (unscoped) id", () => {
-    expect(() => defineWorkspace({ ...validDef(), id: "simone" })).toThrow(
+    expect(() => defineWorkspace({ ...validDef(), id: "demo" })).toThrow(
       /defineWorkspace \(AIP-34\): invalid id/,
     )
   })
@@ -57,7 +57,7 @@ describe("defineWorkspace (AIP-34 workspace/v2)", () => {
       ...validDef(),
       wall: "isolated",
       includes: [{ ref: "ws://workspaces/@jeremy/agentik#commun", mode: "read" }],
-      exports: [{ path: "docs/whatsapp-flows", to: "@jeremy/chatcommerce", mode: "read" }],
+      exports: [{ path: "docs/whatsapp-flows", to: "@jeremy/shopbot", mode: "read" }],
       apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", expose: ["agents", "tools"] }],
       accepted_apps: [{ from: "@jeremy/other", app: "@agentik/seo-crew" }],
       policy: { limits: [{ kind: "budget-usd-per-month", value: 80 }] },
@@ -66,7 +66,7 @@ describe("defineWorkspace (AIP-34 workspace/v2)", () => {
       work: { file: "WORK.md" },
     })
     expect(ws.includes).toHaveLength(1)
-    expect(ws.exports?.[0]?.to).toBe("@jeremy/chatcommerce")
+    expect(ws.exports?.[0]?.to).toBe("@jeremy/shopbot")
     expect(ws.apps?.[0]?.attach).toBe("self")
     expect(ws.accepted_apps?.[0]?.from).toBe("@jeremy/other")
     expect(ws.policy?.limits?.[0]?.value).toBe(80)

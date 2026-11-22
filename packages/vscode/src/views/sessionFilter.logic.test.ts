@@ -28,7 +28,7 @@ function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
 const config: WorkspacesConfig = {
   version: 1,
   workspaces: [
-    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Agentik Studio" },
+    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Demo App" },
     { slug: "other", path: "/Code/other", addedAt: "", updatedAt: "" },
   ],
 }
@@ -39,7 +39,7 @@ describe("isFilterActive", () => {
   })
   it("true when any array field is populated", () => {
     expect(isFilterActive({ ...EMPTY_FILTER, status: ["live"] })).toBe(true)
-    expect(isFilterActive({ ...EMPTY_FILTER, workspaces: ["Agentik Studio"] })).toBe(true)
+    expect(isFilterActive({ ...EMPTY_FILTER, workspaces: ["Demo App"] })).toBe(true)
     expect(isFilterActive({ ...EMPTY_FILTER, adapters: ["claude-code"] })).toBe(true)
     expect(isFilterActive({ ...EMPTY_FILTER, origin: ["gate"] })).toBe(true)
   })
@@ -105,7 +105,7 @@ describe("filterSessions", () => {
       session({ id: "in-studio", cwd: "/Code/studio/packages/vscode" }),
       session({ id: "in-other", cwd: "/Code/other" }),
     ]
-    const state: SessionFilterState = { ...EMPTY_FILTER, workspaces: ["Agentik Studio"] }
+    const state: SessionFilterState = { ...EMPTY_FILTER, workspaces: ["Demo App"] }
     expect(filterSessions(sessions, state, config).map(s => s.id)).toEqual(["in-studio"])
   })
 
@@ -341,11 +341,11 @@ describe("filterSummary", () => {
   it("joins multiple active dimensions with a middle dot", () => {
     const state: SessionFilterState = {
       status: ["live"],
-      workspaces: ["Agentik Studio"],
+      workspaces: ["Demo App"],
       adapters: [],
       search: "sales",
     }
-    expect(filterSummary(state)).toBe('status: live · workspace: Agentik Studio · search: "sales"')
+    expect(filterSummary(state)).toBe('status: live · workspace: Demo App · search: "sales"')
   })
   it("ignores whitespace-only search", () => {
     expect(filterSummary({ ...EMPTY_FILTER, search: "   " })).toBe("")

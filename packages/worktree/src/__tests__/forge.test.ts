@@ -34,27 +34,27 @@ describe("parseGithubOwnerRepo", () => {
     expect(parseGithubOwnerRepo("https://github.com/agentproto/ts")).toEqual({ owner: "agentproto", repo: "ts" })
   })
   it("parses an ssh remote through a multi-account host alias", () => {
-    expect(parseGithubOwnerRepo("git@github.com-agentik:agentik-studio/agentik-studio.git")).toEqual({
-      owner: "agentik-studio",
-      repo: "agentik-studio",
+    expect(parseGithubOwnerRepo("git@github.com-agentik:demo-app/demo-app.git")).toEqual({
+      owner: "demo-app",
+      repo: "demo-app",
     })
   })
   it("normalizes every ssh-alias form of github.com-<alias> to the same slug", () => {
-    const want = { owner: "agentik-studio", repo: "agentik-studio" }
+    const want = { owner: "demo-app", repo: "demo-app" }
     for (const url of [
-      "git@github.com-agentik:agentik-studio/agentik-studio",
-      "git@github.com-agentik:agentik-studio/agentik-studio.git",
-      "git@github.com-agentik:agentik-studio/agentik-studio/",
-      "git@github.com-agentik:agentik-studio/agentik-studio.git/",
-      "ssh://git@github.com-agentik/agentik-studio/agentik-studio",
-      "ssh://git@github.com-agentik/agentik-studio/agentik-studio.git",
-      "ssh://git@github.com-agentik/agentik-studio/agentik-studio.git/",
-      "ssh://git@github.com-agentik:22/agentik-studio/agentik-studio.git",
-      "ssh://git@github.com/agentik-studio/agentik-studio.git",
-      "https://github.com-agentik/agentik-studio/agentik-studio",
-      "https://github.com-agentik/agentik-studio/agentik-studio.git",
-      "https://github.com-agentik/agentik-studio/agentik-studio.git/",
-      "https://user@github.com/agentik-studio/agentik-studio.git/",
+      "git@github.com-agentik:demo-app/demo-app",
+      "git@github.com-agentik:demo-app/demo-app.git",
+      "git@github.com-agentik:demo-app/demo-app/",
+      "git@github.com-agentik:demo-app/demo-app.git/",
+      "ssh://git@github.com-agentik/demo-app/demo-app",
+      "ssh://git@github.com-agentik/demo-app/demo-app.git",
+      "ssh://git@github.com-agentik/demo-app/demo-app.git/",
+      "ssh://git@github.com-agentik:22/demo-app/demo-app.git",
+      "ssh://git@github.com/demo-app/demo-app.git",
+      "https://github.com-agentik/demo-app/demo-app",
+      "https://github.com-agentik/demo-app/demo-app.git",
+      "https://github.com-agentik/demo-app/demo-app.git/",
+      "https://user@github.com/demo-app/demo-app.git/",
     ]) {
       expect(parseGithubOwnerRepo(url), url).toEqual(want)
     }
@@ -203,7 +203,7 @@ describe("createForgeClient — the `gh` usability probe", () => {
   })
 })
 
-const ALIAS_ORIGIN = "git@github.com-agentik:agentik-studio/agentik-studio.git"
+const ALIAS_ORIGIN = "git@github.com-agentik:demo-app/demo-app.git"
 
 function aliasRepoExec(record: Array<{ cmd: string; args: readonly string[]; cwd: string; env?: Record<string, string> }>) {
   return async (
@@ -236,7 +236,7 @@ describe("GhCliForgeClient: independent of cwd-based host detection", () => {
     expect(prLists).toHaveLength(4)
     for (const c of prLists) {
       const i = c.args.indexOf("-R")
-      expect(c.args[i + 1]).toBe("agentik-studio/agentik-studio")
+      expect(c.args[i + 1]).toBe("demo-app/demo-app")
       expect(c.env?.GH_HOST).toBe("github.com")
     }
   })
@@ -246,7 +246,7 @@ describe("GhCliForgeClient: independent of cwd-based host detection", () => {
     execArgvMock.mockImplementation(aliasRepoExec(calls))
     await new GhCliForgeClient("/repo").pullRequestsForCommit("deadbeef")
     const api = calls.find((c) => c.cmd === "gh" && c.args[0] === "api")
-    expect(api?.args[1]).toBe("repos/agentik-studio/agentik-studio/commits/deadbeef/pulls")
+    expect(api?.args[1]).toBe("repos/demo-app/demo-app/commits/deadbeef/pulls")
     expect(api?.env?.GH_HOST).toBe("github.com")
   })
 
@@ -284,7 +284,7 @@ describe("createForgeClient: alias origins", () => {
     process.env.GITHUB_TOKEN = "tok"
     execArgvMock.mockImplementation(async (cmd, args) => {
       if (cmd === "gh") return fail("no host")
-      if (cmd === "git" && args.includes("get-url")) return ok("ssh://git@github.com-agentik/agentik-studio/agentik-studio.git\n")
+      if (cmd === "git" && args.includes("get-url")) return ok("ssh://git@github.com-agentik/demo-app/demo-app.git\n")
       return ok()
     })
     expect(await createForgeClient("/repo")).toBeInstanceOf(RestForgeClient)

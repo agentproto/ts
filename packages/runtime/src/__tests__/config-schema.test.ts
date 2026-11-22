@@ -74,7 +74,7 @@ describe("agentprotoConfigSchema", () => {
         traceRedactor: "secrets",
         agentPromptInterrupt: false,
         messaging: { allowSiblings: false, agentInterrupt: "deny" },
-        tasks: { operatorDelegates: ["label:pygmalion-brain-persistent"] },
+        tasks: { operatorDelegates: ["label:orchestrator-brain-persistent"] },
         mcp: { deferredTools: true },
         spawn: { browser: "headless", defaultAgent: { root: "supervisor", nested: "executor" } },
       },
@@ -227,7 +227,7 @@ describe("secret and lockout classification", () => {
     expect(entry).toMatchObject({ path: "reach.routes.*", apply: "restart", writable: false, secretFields: ["secret", "accessToken"] })
     const secret = "whsec_" + Buffer.alloc(32, 1).toString("base64")
     const ok = [
-      { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret, timeoutMs: 5000 },
+      { id: "orchestrator", kind: "webhook", url: "https://p.invalid/api/reach", secret, timeoutMs: 5000 },
       { id: "floor", kind: "telegram", alias: "default" },
     ]
     expect(entry!.schema.safeParse(ok).success).toBe(true)
@@ -241,7 +241,7 @@ describe("secret and lockout classification", () => {
       expect(entry!.schema.safeParse(bad).success).toBe(false)
     }
     expect(redactConfigValue("reach.routes.owner", ok)).toEqual([
-      { id: "pygmalion", kind: "webhook", url: "https://p.invalid/api/reach", secret: { set: true }, timeoutMs: 5000 },
+      { id: "orchestrator", kind: "webhook", url: "https://p.invalid/api/reach", secret: { set: true }, timeoutMs: 5000 },
       { id: "floor", kind: "telegram", alias: "default" },
     ])
   })
@@ -629,7 +629,7 @@ describe("defaults.identity.requireProof key", () => {
 
 describe("defaults.messaging.grants key", () => {
   const valid = {
-    principal: "session-label://pygmalion-brain-persistent",
+    principal: "session-label://orchestrator-brain-persistent",
     effect: "allow" as const,
     actions: [{ action: "session:message", scope: "workspace:agentik" }],
     ttl_seconds: 3600,

@@ -8,7 +8,7 @@
  * v1 is read-only discovery: we report what's there with source
  * attribution. Future v1.1 ships an "import to daemon" verb that
  * proxies the discovered server through the daemon's own /mcp
- * endpoint so every operator (cloud Guilde, local agents) sees a
+ * endpoint so every operator (cloud Acme, local agents) sees a
  * unified set without per-host config drift.
  *
  * Sources scanned (in priority order):

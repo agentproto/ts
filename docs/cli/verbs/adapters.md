@@ -27,7 +27,7 @@ user-facing CLI surface only.
 > (`@agentproto/adapter-claude-code`, selected via `agentproto sessions
 > start <adapter>` / installed via `install`) drives a specific coding
 > agent, while what this page manages is a swarm-kernel adapter
-> (formerly "plugin", e.g. `@guilde/agentproto-bridge`) that extends
+> (formerly "plugin", e.g. `@acme/agentproto-bridge`) that extends
 > `run-swarm` with transport-specific substrates/dispatchers/executors.
 > They're unrelated packages and registries; only the word collides.
 
@@ -58,8 +58,8 @@ Walks the `adapters[]` array, reads each adapter's manifest, prints
 what it provides:
 
 ```text
-• @guilde/agentproto-bridge
-    substrates: guilde-mcp
+• @acme/agentproto-bridge
+    substrates: acme-mcp
     executors: db-operator
 • @acme/agentproto-slack
     substrates: slack-thread
@@ -100,20 +100,20 @@ unknown)`.
 ### `show`
 
 ```bash
-agentproto adapters show @guilde/agentproto-bridge
-agentproto adapters show @guilde/agentproto-bridge --json
+agentproto adapters show @acme/agentproto-bridge
+agentproto adapters show @acme/agentproto-bridge --json
 ```
 
 Prints the full manifest for one adapter:
 
 ```text
-@guilde/agentproto-bridge
+@acme/agentproto-bridge
   schema: agentproto/adapter/v1
   substrates:
-    • kind: guilde-mcp
-      entry: ./dist/index.mjs → guildeMcpSubstrateFactory
+    • kind: acme-mcp
+      entry: ./dist/index.mjs → acmeMcpSubstrateFactory
       capabilities: mentions, reactions, identity
-      Reads/writes turns through Guilde's MCP server.
+      Reads/writes turns through Acme's MCP server.
   executors:
     • kind: db-operator
       entry: ./dist/index.mjs → dbOperatorExecutorFactory
@@ -125,12 +125,12 @@ Prints the full manifest for one adapter:
 ### `install` / `uninstall`
 
 ```bash
-agentproto adapters install @guilde/agentproto-bridge
+agentproto adapters install @acme/agentproto-bridge
 agentproto adapters install @your-org/agentproto-thing --local         # npm i (no -g)
 agentproto adapters install @your-org/agentproto-thing --skip-npm      # add to config only
 
-agentproto adapters uninstall @guilde/agentproto-bridge
-agentproto adapters uninstall @guilde/agentproto-bridge --skip-npm     # config only
+agentproto adapters uninstall @acme/agentproto-bridge
+agentproto adapters uninstall @acme/agentproto-bridge --skip-npm     # config only
 ```
 
 `install` runs `npm install [-g] <pkg>` then appends `<pkg>` to
@@ -195,7 +195,7 @@ built-in `file` substrate from `registerBuiltins()`. Place it in the
 the next `run-swarm`. Use `run-swarm --verbose` to confirm:
 
 ```text
-agentproto run-swarm: registered: substrates=[file,guilde-mcp] dispatchers=[mention,…] executors=[agent-cli,db-operator] stateStores=[fs]
+agentproto run-swarm: registered: substrates=[file,acme-mcp] dispatchers=[mention,…] executors=[agent-cli,db-operator] stateStores=[fs]
 ```
 
 ## Where it lives
@@ -204,7 +204,7 @@ agentproto run-swarm: registered: substrates=[file,guilde-mcp] dispatchers=[ment
 // ~/.agentproto/config.json
 {
   "adapters": [
-    "@guilde/agentproto-bridge",
+    "@acme/agentproto-bridge",
     "@acme/agentproto-slack"
   ]
 }

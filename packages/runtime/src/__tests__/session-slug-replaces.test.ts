@@ -4,7 +4,7 @@
  * Before: every revival minted `slugify(title || label || adapterSlug)` while
  * the predecessor (still `running` at spawn time, it is stopped only after the
  * spawn) and every older row held the base slug, so a long-lived session ended
- * up at `pygmalion-agent-pm-chatcommerce-32`. Now `replaces` hands the slug to
+ * up at `orchestrator-agent-pm-shopbot-32`. Now `replaces` hands the slug to
  * the new row and the replaced row gives it up, so a slug keeps naming the one
  * live session of the conversation. `resolveSessionRef` is untouched.
  *

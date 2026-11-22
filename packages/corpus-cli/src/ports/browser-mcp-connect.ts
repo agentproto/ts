@@ -17,7 +17,7 @@
  *      match the server's expected version.
  *
  * If your daemon proxies the browser through a different surface (e.g.
- * the @guilde/tunnel `/mcp` or an agentproto driver), swap this file's
+ * the @acme/tunnel `/mcp` or an agentproto driver), swap this file's
  * impl — the `BrowserMcpLike` contract the fetcher consumes is stable.
  * ────────────────────────────────────────────────────────────────────
  */

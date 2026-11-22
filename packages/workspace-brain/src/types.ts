@@ -142,7 +142,7 @@ export interface KnowledgeConfig {
  * real conversation stores of the world.
  */
 export interface BrainConfig {
-  /** Workspace bucket slug this brain belongs to (e.g. `agentik-studio`). */
+  /** Workspace bucket slug this brain belongs to (e.g. `demo-app`). */
   readonly workspace: string
   /** Absolute brain directory (`~/.agentproto/workspaces/<slug>/brain`). */
   readonly brainDir: string

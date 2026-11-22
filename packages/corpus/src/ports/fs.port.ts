@@ -2,9 +2,7 @@
  * FsPort — filesystem boundary the corpus kit consumes.
  *
  * Structural interface, NOT a nominal one — any object exposing this
- * shape satisfies it. Matches the existing Guilde `WorkspaceFsLike`
- * convention (projects/guilde/packages/core/src/services/role-source/
- * workspace.ts:38-47) so cloud and local topologies share the same
+ * shape satisfies it. Cloud and local topologies share the same
  * minimal contract.
  *
  * Paths are relative to the workspace root (no leading slash). The

@@ -276,7 +276,7 @@ export function originLabelFor(origin: string): string {
 /**
  * Origins the daemon stamps for a session that a MACHINE started for its own
  * bookkeeping, not a person — today just `gate` (POST /sessions/agent's
- * `origin: "gate"`, stamped by the agentik-studio push gate's per-push
+ * `origin: "gate"`, stamped by the demo-app push gate's per-push
  * reviewer spawn). Before the gate started labelling+killing its own
  * sessions, 77 of them piled up live on one operator's daemon, and every
  * consumer of the sessions list rendered them identically to a session the

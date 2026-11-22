@@ -70,7 +70,7 @@ vi.mock("@agentproto/sandbox", async importOriginal => {
 import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 
-const CONTROLLER_CWD = "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts"
+const CONTROLLER_CWD = "/Volumes/SSDExternalMacStudio/Code/products/agentik/demo-app/projects/agentproto/ts"
 
 describe("spawnAgentSession — device sandbox stamps the hostSessionId mapping (P7a)", () => {
   let workspace: string

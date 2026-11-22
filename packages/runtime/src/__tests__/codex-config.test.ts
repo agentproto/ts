@@ -18,11 +18,11 @@ command = "agentproto"
 args = ["mcp-bridge", "--port", "8123"]
 env = { AGENTPROTO_TOKEN = "t0k", "WITH SPACE" = "x" }
 
-[mcp_servers."guilde-prod"]
-url = "https://guilde.example/mcp"
-bearer_token_env_var = "GUILDE_TOKEN"
+[mcp_servers."acme-prod"]
+url = "https://acme.example/mcp"
+bearer_token_env_var = "ACME_TOKEN"
 http_headers = { "X-Team" = "core" }
-env_http_headers = { "X-Key" = "GUILDE_KEY" }
+env_http_headers = { "X-Key" = "ACME_KEY" }
 
 [mcp_servers.multi]
 command = "node"
@@ -46,18 +46,18 @@ web_search = false
 describe("parseCodexMcpServers", () => {
   it("maps stdio, http and nested-env entries onto the mcpServers shape", () => {
     const servers = parseCodexMcpServers(CODEX_TOML)
-    expect(Object.keys(servers).sort()).toEqual(["agentproto", "guilde-prod", "multi"])
+    expect(Object.keys(servers).sort()).toEqual(["acme-prod", "agentproto", "multi"])
     expect(servers.agentproto).toEqual({
       command: "agentproto",
       args: ["mcp-bridge", "--port", "8123"],
       env: { AGENTPROTO_TOKEN: "t0k", "WITH SPACE": "x" },
     })
-    expect(servers["guilde-prod"]).toEqual({
-      url: "https://guilde.example/mcp",
+    expect(servers["acme-prod"]).toEqual({
+      url: "https://acme.example/mcp",
       headers: {
         "X-Team": "core",
-        "X-Key": "${GUILDE_KEY}",
-        Authorization: "Bearer ${GUILDE_TOKEN}",
+        "X-Key": "${ACME_KEY}",
+        Authorization: "Bearer ${ACME_TOKEN}",
       },
     })
     expect(servers.multi).toEqual({
@@ -109,8 +109,8 @@ describe("discoverMcps — codex source", () => {
     await writeFile(join(homedir(), ".codex", "config.toml"), CODEX_TOML)
     const found = (await discoverMcps()).filter(m => m.source === "codex")
     expect(found.map(m => [m.name, m.type, m.scope])).toEqual([
+      ["acme-prod", "http", "global"],
       ["agentproto", "stdio", "global"],
-      ["guilde-prod", "http", "global"],
       ["multi", "stdio", "global"],
     ])
   })

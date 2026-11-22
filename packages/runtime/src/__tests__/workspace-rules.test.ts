@@ -58,7 +58,7 @@ describe("resolveWorkspaceRules — membership-validated slug→path (security)"
     // maps it to `default`, so the DEFAULT bucket's file is the one read.
     const d = deps({
       root,
-      registered: ["agentik-studio"],
+      registered: ["demo-app"],
       files: { [join(root, "default", RULES_MD_FILE)]: bytes(7) },
     })
     const res = await resolveWorkspaceRules("../../etc/passwd", d)
@@ -71,21 +71,21 @@ describe("resolveWorkspaceRules — membership-validated slug→path (security)"
   it("a registered slug reads its OWN bucket's RULES.md, not the default's", async () => {
     const d = deps({
       root,
-      registered: ["agentik-studio"],
+      registered: ["demo-app"],
       files: {
-        [join(root, "agentik-studio", RULES_MD_FILE)]: bytes(5),
+        [join(root, "demo-app", RULES_MD_FILE)]: bytes(5),
         [join(root, "default", RULES_MD_FILE)]: bytes(9),
       },
     })
-    const res = await resolveWorkspaceRules("agentik-studio", d)
-    expect(res.path).toBe(join(resolve(root), "agentik-studio", RULES_MD_FILE))
+    const res = await resolveWorkspaceRules("demo-app", d)
+    expect(res.path).toBe(join(resolve(root), "demo-app", RULES_MD_FILE))
     expect(res.content).toBe(bytes(5).toString("utf8"))
   })
 
   it("undefined slug resolves to the default bucket", async () => {
     const d = deps({
       root,
-      registered: ["agentik-studio"],
+      registered: ["demo-app"],
       files: { [join(root, "default", RULES_MD_FILE)]: bytes(3) },
     })
     const res = await resolveWorkspaceRules(undefined, d)

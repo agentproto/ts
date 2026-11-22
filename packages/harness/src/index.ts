@@ -66,7 +66,7 @@ export type {
 // Exposed so callers can build a sandbox-resident `AgentCliRuntime`
 // against the same protocol layer the host-spawn factory uses, by
 // passing a `ChildProcess`-shaped duck whose stdio is bridged to a
-// remote subprocess (e2b sandbox, ssh, etc.). See guilde's
+// remote subprocess (e2b sandbox, ssh, etc.). See acme's
 // `cli-session-spawn/sandbox-runtime.ts` for a worked example.
 export {
   createAcpProtocolArm,

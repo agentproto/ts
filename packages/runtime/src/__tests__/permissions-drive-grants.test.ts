@@ -145,7 +145,7 @@ describe("explicit session:p prompt and session:control grants admit a drive cal
   })
 
   it("(d) a label: or workspace: scope on the target admits; another label or slug does not", () => {
-    const workspaceOfCwd = (cwd: string) => (cwd === "/ws/studio" ? "agentik-studio" : undefined)
+    const workspaceOfCwd = (cwd: string) => (cwd === "/ws/studio" ? "demo-app" : undefined)
     expect(
       decide(as(STRANGER), "session.drive", res("agent_prompt"), ctx([grant("session:prompt", "label:pm")])).allow,
     ).toBe(true)
@@ -157,7 +157,7 @@ describe("explicit session:p prompt and session:control grants admit a drive cal
         as(STRANGER),
         "session.drive",
         res("agent_prompt"),
-        ctx([grant("session:prompt", "workspace:agentik-studio")], { workspaceOfCwd }),
+        ctx([grant("session:prompt", "workspace:demo-app")], { workspaceOfCwd }),
       ).allow,
     ).toBe(true)
     expect(

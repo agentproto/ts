@@ -66,9 +66,9 @@ Je tranche: aucune dérivation automatique « tout en read ». Dériver depuis `
 
 PR1 (~250-300 lignes, ts/): schéma, validation, nommage, filtre lecture dans `mcp-app`. Fichiers: `app/src/{types,manifest-fields,emit,define-app,load-app,exposed-tools}.ts`, `cli/src/app-serve.ts`, `cli/src/commands/mcp-app.ts`, doc `docs/cli/verbs/mcp-app.md` (je pense qu'il est généré/vérifié par `docs.mjs --check`), ce contrat en `docs/`, changeset (app, cli). Tests qui échouent avant: `exposes.tools` accepté (avant: rejeté ou ignoré), `read` refusé sur tag `mutator`, `approval_x` refusé, collision interne refusée, `exposedToolName("bureau","imported:bureau/x",mcpName)` = nom sans `:`/`/`, `mcp-app` n'enregistre pas un tool `write` par défaut (avant: tout `ui.tools`), schéma réel au lieu de `{args}`.
 PR2 (~300-400 lignes, ts/): attend la fusion de PR1 (importe `exposedToolName`; pas de PR empilée, branche depuis `main` après merge). `runtime/src/app-exposed-tools.ts`, `index.ts` (+1 appel), `app-tools.ts` (helper + `performExposedToolCall` + refus de préfixe pris à l'install), `app-registry.ts` (champ `exposes.tools`/`prefix` persistés dans `apps.json`), `sessions.ts`/`spawn-agent-manifest.ts` (`exposedToolOptIn`), config `defaults.apps.exposedTools`, lève la règle 1.6. Tests qui échouent avant: après `app_install`, `tools/list` du gateway contient `jobkit_list` (avant: absent) sans redémarrage; un appelant sans opt-in ne voit pas `jobkit_leads_upsert`, avec opt-in il le voit; un deny AGENT bloque l'appel; préfixe déjà pris: 2e install refusée; coupe-circuit `off`; `DAEMON_TOOL_NAMES` inchangé (test existant).
-PR3 (agentik-studio, après PR2 et un redémarrage du démon par Jeremy): §7.
+PR3 (demo-app, après PR2 et un redémarrage du démon par Jeremy): §7.
 
-## 7. Migration (agentik-studio, `projects/agent-apps`)
+## 7. Migration (demo-app, `projects/agent-apps`)
 
 Bureau, `prefix: bureau`, tout `read`: `bureau.status` -> `bureau_status`, `bureau.setup` -> `bureau_setup`, `bureau.overview` -> `bureau_overview`, `imported:bureau/browser_list_instances` -> `bureau_list_instances` (`mcpName`). Aucun write/approve exposé (les cartes d'approbation sont la surface humaine). Étendre `tests/app-md-safety.test.mjs` à `exposes.tools`.
 Job kit, `prefix: jobkit` (27 TOOL.md; les 13 tools démon de `ui.tools` ne sont pas exposés):

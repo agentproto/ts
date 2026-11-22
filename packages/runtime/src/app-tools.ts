@@ -1533,7 +1533,7 @@ export interface RegisterAppToolsOptions {
   workspacesConfigPath?: string
   /** Absolute path for the persistence file. Defaults to `~/.agentproto/apps.json`. */
   persistPath?: string
-  /** Service-owner ownership store (Pygmalion phase 1b item 2). Defaults to
+  /** Service-owner ownership store (Orchestrator phase 1b item 2). Defaults to
    *  `app-services.json` beside `persistPath` (`~/.agentproto/app-services.json`
    *  in the daemon). Tests inject their own to inspect/seed owner records. */
   serviceStore?: AppServiceStore
@@ -2425,7 +2425,7 @@ export function buildAppServiceEnsurer(
 }
 
 /**
- * Boot re-ensure of app-service owners (Pygmalion phase 1b item 2).
+ * Boot re-ensure of app-service owners (Orchestrator phase 1b item 2).
  * `app_install`'s `ensureServices` runs only on the install path, so a service
  * whose owner died with the previous daemon stays down until the next
  * reinstall. This force-replaces every recorded owner for every installed app
@@ -2515,7 +2515,7 @@ export function registerAppTools(
   const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
   const fallbackCatalogEntries = opts.fallbackCatalogEntries ?? FIRST_PARTY_CATALOG_ENTRIES
 
-  // ── service owners (Pygmalion phase 1b item 2) ──────────────────────────
+  // ── service owners (Orchestrator phase 1b item 2) ──────────────────────────
   const serviceStore: AppServiceStore =
     opts.serviceStore ??
     createAppServiceStore({
