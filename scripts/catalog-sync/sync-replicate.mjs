@@ -72,7 +72,6 @@ const MODELS = [
 
   // demo-app image catalog, provider "replicate".
   { owner: "agentiknet", name: "avatar-model-001", modality: "image" },
-  { owner: "agentik", name: "custom-demo_infographic_1", modality: "image" },
   { owner: "agentik-ai", name: "theo-sutter-0.1", modality: "image" },
   { owner: "stability-ai", name: "sdxl", modality: "image" },
   { owner: "stability-ai", name: "stable-diffusion-3", modality: "image" },

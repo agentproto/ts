@@ -1,5 +1,5 @@
 {
-  "$comment": "Names of private products and repositories that must never appear in this public repository. Each entry is a case-insensitive regular expression. `exceptions` lists repo-relative file paths allowed to match. It is meant to stay empty. Today it holds only the vendored copies of canonical AIP JSON Schemas and the code generated from them: they must match agentproto/agentproto byte for byte (spec drift check), so the names are removed upstream first, then synced here, then these entries are deleted.",
+  "$comment": "Names of private products and repositories that must never appear in this public repository. Each entry is a case-insensitive regular expression. `exceptions` lists repo-relative file paths allowed to match; keep it empty.",
   "names": [
     "simone",
     "agentik[-_ ]studio",
@@ -11,13 +11,5 @@
     "guilde",
     "REGLAGES-VOIX"
   ],
-  "exceptions": [
-    "specs/resources/aip-24/draft/ASSEMBLY.schema.json",
-    "specs/resources/aip-49/draft/ASSET.schema.json",
-    "specs/resources/aip-54/draft/WS-REF.schema.json",
-    "specs/resources/aip-72/draft/MEMORY.schema.json",
-    "packages/assembly/src/schema.ts",
-    "packages/assembly/src/types.ts",
-    "packages/memory/src/schema.ts"
-  ]
+  "exceptions": []
 }

@@ -42,7 +42,7 @@ export type AssemblyDefinition = {
    */
   appliesTo?: string[]
   /**
-   * The collaboration pattern. ONE-WAY SWITCH: once set at any ancestor, descendants MUST NOT change to a different mode. Refusal: assembly_mode_change (HARD). 'advisory' = silent overlay producing persona fragments (the implemented anchor — Simone's Council); 'voting' = quorum decision body; 'peer' = network of equals exchanging messages; 'hierarchy' = reporting tree with bottom-up aggregation.
+   * The collaboration pattern. ONE-WAY SWITCH: once set at any ancestor, descendants MUST NOT change to a different mode. Refusal: assembly_mode_change (HARD). 'advisory' = silent overlay producing persona fragments (the implemented anchor — Demo's Council); 'voting' = quorum decision body; 'peer' = network of equals exchanging messages; 'hierarchy' = reporting tree with bottom-up aggregation.
    */
   mode: "advisory" | "voting" | "peer" | "hierarchy"
   /**
@@ -67,7 +67,7 @@ export type AssemblyDefinition = {
    */
   lockedTraits?: string[]
   /**
-   * Algorithm used to check outputs against lockedTraits. 'substring' (default, matches Simone v1) — case-insensitive substring match. 'regex' — RFC-3987-ish regex. 'semantic' — embedding match against the trait's semantic neighborhood; hosts that don't support semantic MUST fall back to substring with assembly_locked_trait_match_mode_unsupported warning.
+   * Algorithm used to check outputs against lockedTraits. 'substring' (default, matches Demo v1) — case-insensitive substring match. 'regex' — RFC-3987-ish regex. 'semantic' — embedding match against the trait's semantic neighborhood; hosts that don't support semantic MUST fall back to substring with assembly_locked_trait_match_mode_unsupported warning.
    */
   matchMode?: "substring" | "regex" | "semantic"
   /**
