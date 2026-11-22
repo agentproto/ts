@@ -1,0 +1,545 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-74/BILLING.schema.json",
+  "$comment": "DRAFT. Not frozen: it is frozen only after a product has read its own BILLING.md through a parser built from it (AIP-74 status Draft). It checks the SHAPE of the frontmatter. The cross-reference rules of AIP-74 rule 21 (unknown asset, partition, feature, conversion or rail reference, an offer currency that is neither the anchor currency nor an fx key, a grant key without {account}) need the whole document and belong to the parser, not to this schema.",
+  "title": "billing/v1 frontmatter (AIP-74, DRAFT)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "title",
+    "version",
+    "assets",
+    "primaryAsset",
+    "anchor",
+    "accounts",
+    "payer",
+    "rails"
+  ],
+  "properties": {
+    "schema": { "const": "billing/v1" },
+    "name": { "$ref": "#/$defs/id" },
+    "title": { "type": "string", "minLength": 1 },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$",
+      "description": "Semver. Bump on any change of amount, expiry, right, anchor or fx (rule 23)."
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "description": "AIP-49 asset declarations, inline, or { ref } for a shared asset (fiat). The default partition of a fiat asset is implicit.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ref"],
+            "properties": { "ref": { "$ref": "#/$defs/assetRef" } }
+          },
+          { "$ref": "https://agentproto.sh/schemas/aip-49/ASSET.schema.json" }
+        ]
+      }
+    },
+    "primaryAsset": {
+      "$ref": "#/$defs/assetRef",
+      "description": "The asset spends draw from. Its value is defined by `anchor` only (rule 26)."
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currency", "creditsPerUnit"],
+      "description": "The ONE adjustable value of a credit: creditsPerUnit credits of primaryAsset per major unit of `currency` (rule 26).",
+      "properties": {
+        "currency": { "$ref": "#/$defs/currency" },
+        "creditsPerUnit": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "fx": {
+      "type": "object",
+      "description": "Fixed configuration, never a live exchange rate: anchor units per one unit of the local currency (EUR: 1.18 means 1 EUR = 1.18 USD when the anchor is USD). Entry rate of a fiat F = anchor.creditsPerUnit x fx[F] (rule 26).",
+      "propertyNames": { "$ref": "#/$defs/currency" },
+      "additionalProperties": { "type": "number", "exclusiveMinimum": 0 }
+    },
+    "spendOrder": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/partitionId" },
+      "description": "Optional tie-break after the AIP-49 normative order."
+    },
+    "taxBasis": {
+      "enum": ["net", "gross"],
+      "description": "Required by the parser when any conversion starts from fiat (rule 13)."
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type"],
+        "properties": {
+          "id": { "$ref": "#/$defs/featureId" },
+          "type": { "enum": ["boolean", "credits"] }
+        }
+      }
+    },
+    "accounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kinds", "hierarchy"],
+      "properties": {
+        "kinds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/id" },
+          "description": "Host vocabulary."
+        },
+        "hierarchy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxDepth", "funding"],
+          "properties": {
+            "maxDepth": { "type": "integer", "minimum": 0, "maximum": 3 },
+            "funding": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "enum": ["pool", "allocated_budget"] }
+            }
+          }
+        }
+      }
+    },
+    "payer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "owner"],
+      "properties": {
+        "strategy": {
+          "oneOf": [
+            { "enum": ["self", "hierarchy/v1"] },
+            { "$ref": "#/$defs/vendorStrategy" }
+          ]
+        },
+        "owner": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Context keys that identify the payer. Server-side keys only (rule 20)."
+        },
+        "affordability": { "enum": ["balance", "spendable"], "default": "balance" }
+      }
+    },
+    "transfers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow"],
+      "description": "Parent to child allocation (AIP-49 transfer).",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["allocate", "reclaim"] }
+        },
+        "from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/partitionId" },
+          "description": "What a parent may allocate."
+        },
+        "expiry": {
+          "const": "inherit",
+          "description": "The child lot keeps the origin lot's expiry."
+        }
+      }
+    },
+    "conversions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/conversion" }
+    },
+    "offers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/offer" }
+    },
+    "grants": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/grant" }
+    },
+    "rails": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/railId",
+            "description": "Unique in the file (rule 21)."
+          },
+          "provider": {
+            "$ref": "#/$defs/railId",
+            "description": "SettlementProvider kind; default is the id. Two accounts of one provider are two entries with two ids."
+          },
+          "productTag": { "type": "string", "minLength": 1, "description": "The provider account or product tag (for example consumer-app, team-workspace); filters events when one account serves several products." },
+          "env": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Variable NAMES, never values. Defaults are <RAIL>_SECRET_KEY, <RAIL>_WEBHOOK_SECRET, <RAIL>_MODE.",
+            "properties": {
+              "secretKey": { "$ref": "#/$defs/envName" },
+              "webhookSecret": { "$ref": "#/$defs/envName" },
+              "mode": { "$ref": "#/$defs/envName" }
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Vendor extensions, namespaced under <vendor>. Never overrides a field above."
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "featureId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "description": "Underscores allowed: provider feature ids such as Autumn's paid_plan are kept as they are."
+    },
+    "railId": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "envName": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Za-z]{3}$",
+      "description": "ISO 4217, either case; the parser normalises to upper case (rule 22)."
+    },
+    "assetRef": {
+      "type": "string",
+      "pattern": "^(aip://49/)?[A-Z][A-Z0-9_]*$"
+    },
+    "fiatRef": {
+      "type": "string",
+      "pattern": "^(aip://49/)?[A-Z]{3}$"
+    },
+    "partitionId": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*:[A-Za-z0-9_-]+$"
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^P(?=\\d|T\\d)(\\d+Y)?(\\d+M)?(\\d+W)?(\\d+D)?(T(?=\\d)(\\d+H)?(\\d+M)?(\\d+S)?)?$",
+      "description": "ISO 8601 duration."
+    },
+    "vendorStrategy": {
+      "type": "string",
+      "pattern": "^x-[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$",
+      "description": "x-<vendor>:<name>, resolved from a registry fixed at build time. A host that does not know it refuses the manifest."
+    },
+    "expiry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["after"],
+          "properties": { "after": { "$ref": "#/$defs/duration" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["atPeriodEnd"],
+          "properties": { "atPeriodEnd": { "const": true } }
+        }
+      ]
+    },
+    "conversion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "to", "mint"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "from": { "$ref": "#/$defs/assetRef" },
+        "to": { "$ref": "#/$defs/assetRef" },
+        "rate": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "ratio"],
+              "properties": {
+                "kind": { "const": "fixed" },
+                "ratio": { "type": "number", "exclusiveMinimum": 0 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "source"],
+              "properties": {
+                "kind": { "const": "oracle" },
+                "source": { "type": "string", "minLength": 1 }
+              }
+            }
+          ],
+          "description": "Destination major units per source major unit (rule 9). FORBIDDEN when `from` is fiat: that rate is computed from anchor and fx (rule 26)."
+        },
+        "rail": { "$ref": "#/$defs/railId" },
+        "mint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["partition"],
+          "properties": {
+            "partition": { "$ref": "#/$defs/partitionId" },
+            "expires": { "$ref": "#/$defs/expiry" }
+          }
+        },
+        "bonus": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["strategy", "partition", "tiers"],
+          "description": "Fiat entries only (rule 21). Minted as its own lot, never drawn by a conversion, never reclaimed into money (rule 12).",
+          "properties": {
+            "strategy": { "enum": ["tiered-lots/v1"] },
+            "partition": { "$ref": "#/$defs/partitionId" },
+            "tiers": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                  { "type": "integer", "minimum": 0 },
+                  { "type": "number", "minimum": 0, "maximum": 100 }
+                ],
+                "description": "[fromMinor, percent]: the highest tier whose fromMinor is at most the paid amount applies."
+              }
+            }
+          }
+        },
+        "capMinor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amount", "windowSec"],
+          "description": "In minor units of `from`, per principal.",
+          "properties": {
+            "amount": { "type": "integer", "minimum": 0 },
+            "windowSec": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "enabled": { "type": "boolean", "default": true }
+      },
+      "if": {
+        "properties": { "from": { "$ref": "#/$defs/fiatRef" } },
+        "required": ["from"]
+      },
+      "then": {
+        "required": ["rail"],
+        "not": { "required": ["rate"] }
+      },
+      "else": {
+        "required": ["rate"],
+        "not": { "anyOf": [{ "required": ["rail"] }, { "required": ["bonus"] }] }
+      }
+    },
+    "include": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["feature"],
+          "properties": { "feature": { "$ref": "#/$defs/featureId" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["feature", "amountMinor", "partition"],
+          "properties": {
+            "feature": { "$ref": "#/$defs/featureId" },
+            "partition": {
+              "$ref": "#/$defs/partitionId",
+              "description": "The partition the included credits are minted into."
+            },
+            "amountMinor": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Minor units of primaryAsset. NOT derived from the conversion: an include is a period allocation, not a purchase (AIP-74 offer types)."
+            },
+            "rollover": { "enum": ["none", "unbounded"], "default": "none" }
+          }
+        }
+      ]
+    },
+    "price": {
+      "description": "AIP-55 price, extended by AIP-55 annex amendment (subscription, pack and buyer-chosen prepaid-pool, x-<vendor> models).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "amountMinor", "currency"],
+          "properties": {
+            "model": { "enum": ["one-time", "prepaid-pool"] },
+            "amountMinor": { "type": "integer", "minimum": 1 },
+            "currency": { "$ref": "#/$defs/currency" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "amountMinor", "currency"],
+          "properties": {
+            "model": { "const": "prepaid-pool" },
+            "amountMinor": { "const": "buyer" },
+            "minMinor": { "type": "integer", "minimum": 1, "description": "Absent: no minimum." },
+            "maxMinor": { "type": "integer", "minimum": 1, "description": "Absent: no maximum." },
+            "currency": { "$ref": "#/$defs/currency" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "amountMinor", "currency", "interval"],
+          "properties": {
+            "model": { "const": "subscription" },
+            "amountMinor": { "type": "integer", "minimum": 1 },
+            "currency": { "$ref": "#/$defs/currency" },
+            "interval": { "enum": ["week", "month", "year"] },
+            "intervalCount": { "type": "integer", "minimum": 1, "default": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["model"],
+          "properties": {
+            "model": { "$ref": "#/$defs/vendorStrategy" }
+          }
+        }
+      ]
+    },
+    "offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "price"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "price": { "$ref": "#/$defs/price" },
+        "convert": {
+          "$ref": "#/$defs/id",
+          "description": "prepaid-pool only: the conversion the payment runs."
+        },
+        "includes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/include" },
+          "description": "one-time (given once) and subscription (given per paid period). Forbidden on prepaid-pool (rule 21)."
+        },
+        "subscription": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["anchor", "onUpgrade"],
+          "description": "subscription only. `grace` absent means no grace: the period closes at the failed renewal.",
+          "properties": {
+            "anchor": {
+              "enum": ["payment", "calendar"],
+              "description": "When the period's includes are given: at the payment date, or at the calendar period boundary."
+            },
+            "grace": { "$ref": "#/$defs/duration" },
+            "onUpgrade": { "enum": ["none", "prorate"] }
+          }
+        },
+        "rail": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/railId" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lookupKey"],
+            "properties": { "lookupKey": { "type": "string", "minLength": 1 } }
+          },
+          "description": "Existing provider ids to keep (for example a Stripe lookup_key)."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "price": { "properties": { "model": { "const": "prepaid-pool" } }, "required": ["model"] }
+            },
+            "required": ["price"]
+          },
+          "then": { "required": ["convert"], "not": { "required": ["includes"] } },
+          "else": { "not": { "required": ["convert"] } }
+        },
+        {
+          "if": {
+            "properties": {
+              "price": { "properties": { "model": { "const": "subscription" } }, "required": ["model"] }
+            },
+            "required": ["price"]
+          },
+          "then": { "required": ["subscription", "includes"] },
+          "else": { "not": { "required": ["subscription"] } }
+        }
+      ]
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "trigger", "amount", "partition", "key"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "trigger": {
+          "oneOf": [
+            { "$ref": "https://agentproto.sh/schemas/aip-41/ROUTINE.schema.json#/$defs/scheduleCron" },
+            { "$ref": "https://agentproto.sh/schemas/aip-41/ROUTINE.schema.json#/$defs/scheduleCalendar" },
+            { "$ref": "https://agentproto.sh/schemas/aip-41/ROUTINE.schema.json#/$defs/scheduleEvent" },
+            { "$ref": "https://agentproto.sh/schemas/aip-41/ROUTINE.schema.json#/$defs/scheduleManual" }
+          ],
+          "description": "An AIP-41 schedule block: cron, calendar, event or manual. Evaluated in UTC unless the block names a timezone."
+        },
+        "eligible": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "plans": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Offer ids, or the literal none for an account with no paid offer."
+            }
+          }
+        },
+        "amount": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fixedMinor"],
+              "properties": { "fixedMinor": { "type": "integer", "minimum": 1 } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fromContext"],
+              "properties": { "fromContext": { "const": true } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["strategy"],
+              "properties": { "strategy": { "$ref": "#/$defs/vendorStrategy" } }
+            }
+          ]
+        },
+        "partition": { "$ref": "#/$defs/partitionId" },
+        "mode": { "enum": ["add", "top-up"], "default": "add" },
+        "expires": { "$ref": "#/$defs/expiry" },
+        "key": {
+          "type": "string",
+          "pattern": "\\{account\\}",
+          "description": "Suffix template of the deterministic key grant:<id>:<suffix>. MUST contain {account}; {period} for cron and calendar triggers (rule 15)."
+        }
+      }
+    }
+  }
+}
