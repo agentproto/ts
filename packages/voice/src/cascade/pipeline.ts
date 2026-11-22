@@ -14,6 +14,7 @@
  */
 import { VOICE_DEFAULTS } from "../defaults.js"
 import type { SttSession } from "./stt-session.js"
+import type { SttDedup } from "./stt-dedup.js"
 
 /** The two calls the pipeline makes on its outbound side. */
 export interface CascadeTransport {
@@ -89,6 +90,13 @@ export interface CallPipelineDeps {
   sttStream?: SttSession
   /** Bounded wait for a streaming final after commit. Default 2000 ms. */
   sttFinalTimeoutMs?: number
+  /**
+   * Transcript dedup (three-guard, see cascade/stt-dedup.ts). Unset: no
+   * dedup — the raw pipeline leaves the choice to its caller;
+   * `startCascade` mounts one from the kit defaults. A dropped transcript
+   * fires no turn and no transcript callback, only a log line.
+   */
+  sttDedup?: SttDedup
   /**
    * Brain turn. Returns reply PCM (mono s16le) or streams chunks via
    * onChunk (same contract as start-voice-server's onTurn).
@@ -523,6 +531,22 @@ export function createCallPipeline(deps: CallPipelineDeps): CallPipeline {
           }
         }
         if (!text || dead()) return
+        // The dedup guards see the transcript before it becomes a turn: a
+        // double-fire of the same intent, or the assistant's own TTS coming
+        // back through the mic, must not start a reply to itself.
+        if (deps.sttDedup) {
+          const why = deps.sttDedup.isAssistantEcho(text)
+            ? "assistant-echo"
+            : deps.sttDedup.isDuplicateRecentText(text)
+              ? "duplicate"
+              : undefined
+          if (why) {
+            console.log(
+              `${log} stt dedup dropped utt=${id} reason=${why} chars=${text.length}`
+            )
+            return
+          }
+        }
         api.lastUserTranscript = text
         deps.onTranscript?.(text, "user")
 
@@ -586,6 +610,7 @@ export function createCallPipeline(deps: CallPipelineDeps): CallPipeline {
         if (assistantText) {
           api.lastAssistantText = assistantText
           deps.onTranscript?.(assistantText, "assistant")
+          deps.sttDedup?.recordAssistantUtterance(assistantText)
         }
         // The turn ends when the caller has heard it, not when the last byte
         // was queued: otherwise the next utterance (and barge-in) would run

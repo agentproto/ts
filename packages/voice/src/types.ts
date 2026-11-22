@@ -156,6 +156,14 @@ export interface VoiceHooks {
     text: string
     finalizedAt: number
   }): Promise<void>
+  /**
+   * The mic went silent for the session idle bound (defaults.ts
+   * `session.idleMicMs`, 60 s) and the session closed itself: the vendor
+   * socket billed by the second is gone, and the host starts a fresh
+   * session when the caller speaks again. Never called when the bound is
+   * disabled (`idleMicMs: 0`).
+   */
+  onMicIdle?(info: { idleMs: number }): void | Promise<void>
 }
 
 export interface VoiceEmit {
