@@ -38,6 +38,8 @@
 "@agentproto/workspace-brain": patch
 "@agentproto/workspace": patch
 "@agentproto/worktree": patch
+"@agentproto/assembly": patch
+"@agentproto/memory": patch
 ---
 
 Remove private product and repository names from comments, docs, examples and tests.
