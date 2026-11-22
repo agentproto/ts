@@ -31,6 +31,7 @@ interface SessionLike {
 interface Policy {
   userOrigins?: unknown[]
   closableOrigins?: unknown[]
+  extraClosableOrigins?: unknown[]
 }
 
 interface DecideArgs {
