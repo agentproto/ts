@@ -220,6 +220,30 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
       "OpenAI full-duplex voice model (Live API, v1/live/sessions) — listens while it speaks",
     agentVisible: false,
   },
+  // Base GPT-Live tier — same published rates as 1.1 ($0.05/min active,
+  // $0.02/min standby, per platform.openai.com/docs/pricing.md's GPT-Live
+  // table, fetched 2026-11-22). Id confirmed on /v1/models; kept curated so
+  // it bills as a live engine rather than surfacing as auto-sync curation
+  // debt (see audio/live.ts).
+  "openai/gpt-live-1": {
+    id: "openai/gpt-live-1",
+    name: "OpenAI GPT-Live 1",
+    providerId: "gpt-live-1",
+    provider: "openai",
+    capabilities: {
+      s2s: true,
+      languages: ["multi"],
+      streaming: true,
+    },
+    pricing: {
+      billingUnit: "per_minute",
+      // $0.05/min active (billed per second), $0.02/min standby.
+      baseCost: 0.05,
+    },
+    description:
+      "OpenAI full-duplex voice model (Live API, v1/live/sessions) — base GPT-Live tier",
+    agentVisible: false,
+  },
   // Token-billed realtime models. `baseCost` is an ESTIMATE of the blended
   // USD/min assuming ~600 audio-in and ~1200 audio-out tokens per active
   // minute at the published audio rates (2.1: $32 in / $64 out per 1M tokens;

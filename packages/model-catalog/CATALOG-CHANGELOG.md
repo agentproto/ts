@@ -639,3 +639,8 @@ for that.
 
 ### llm:context-windows
 - Added: gemini-3.5-flash-lite, gemini-3.6-flash, gemini-3.8-flash, gemini-4-argon, gemini-4-carbon, gemini-4-hydrogen, gemini-4-neon
+
+## 2026-11-22
+
+### audio:openai-live
+- Added: gpt-live-1, gpt-live-1.1, gpt-live-transcribe, gpt-realtime, gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-2.1, gpt-realtime-2.1-mini, gpt-realtime-mini, gpt-realtime-translate, gpt-realtime-whisper
