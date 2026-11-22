@@ -43,6 +43,25 @@ AssemblyAI and Gemini are providers selected by slug. A deployment that wants
 OpenAI file transcription sets `VOICE_STT_PROVIDER=whisper`: the kit default
 changes, no existing value changes meaning.
 
+Also in `src/defaults.ts` (each value with its origin): the turn-level TTS
+mode (`ttsMode`, `http-sentence` by default, `ws-continuous` opt-in, the
+studio `VOICE_TTS_MODE` spellings accepted and read by `ttsModeFromEnv`), the
+per-sentence TTS transport (`ttsTransport`, the provider's streaming socket by
+default, `http` to opt out — `ttsTransportFromEnv`), the session mic-idle
+close (`idleMicMs`, 60 s by default: vendors that bill the open socket per
+second do not keep a forgotten session alive; 0 disables it;
+`hooks.onMicIdle` is notified), the three-guard STT dedup (`sttDedup`, on by
+default: identical transcripts inside 5 s and echoes of the assistant inside
+10 s at 60 % token overlap never start a turn; `false` disables it), the
+PCM16 even-chunk guarantee (`Pcm16ChunkAligner`, applied on every emitted
+audio frame), and the data-only WebRTC/Opus transport values and per-vendor
+billing model ids for future consumers.
+
+Echo guard caveat: the STT dedup also drops a short genuine reply whose tokens
+mostly appear in the assistant's last utterance within 10 s (answering "yes"
+right after the assistant said "...say yes..."). Tune the thresholds or set
+`sttDedup: false` if your prompts invite that kind of reply.
+
 ## Usage
 
 ```ts
