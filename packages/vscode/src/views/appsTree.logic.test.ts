@@ -9,6 +9,9 @@ import {
   appHasChildren,
   appLabel,
   appManifestPath,
+  appsRootNodes,
+  APPS_LOAD_ERROR_COMMAND_ID,
+  APPS_LOAD_ERROR_LABEL,
   appsWithUi,
   appTooltip,
   categoryDescription,
@@ -238,5 +241,25 @@ describe("empty apps row", () => {
     expect(EMPTY_APPS_LABEL).toBe("Browse the App Store")
     expect(EMPTY_APPS_COMMAND_ID).toBe("agentproto.openStore")
     expect(EMPTY_APPS_ICON).toBe("store")
+  })
+})
+
+describe("appsRootNodes", () => {
+  const groups = groupAppsByCategory([app({ appId: "@a/x" })])
+
+  it("shows the error row, not the empty row, when the load failed", () => {
+    expect(appsRootNodes([], "app_list response was truncated")).toEqual([
+      { kind: "error", message: "app_list response was truncated" },
+    ])
+    expect(APPS_LOAD_ERROR_LABEL).toBe("Couldn't load apps")
+    expect(APPS_LOAD_ERROR_COMMAND_ID).toBe("agentproto.refreshApps")
+  })
+
+  it("shows the empty row only for a registry that really is empty", () => {
+    expect(appsRootNodes([], undefined)).toEqual([{ kind: "empty" }])
+  })
+
+  it("lists one row per category otherwise", () => {
+    expect(appsRootNodes(groups, undefined)).toEqual([{ kind: "category", category: "app", apps: groups[0]!.apps }])
   })
 })

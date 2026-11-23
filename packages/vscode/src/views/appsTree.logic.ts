@@ -31,6 +31,7 @@ export type AppsTreeNode =
   | { kind: "agent"; app: InstalledAppInfo; ref: InstalledAppRef }
   | { kind: "workflow"; app: InstalledAppInfo; ref: InstalledAppRef }
   | { kind: "empty" }
+  | { kind: "error"; message: string }
 
 export type AppChildNode = Extract<AppsTreeNode, { kind: "agent" | "workflow" }>
 
@@ -215,3 +216,20 @@ export const EMPTY_APPS_COMMAND_ID = "agentproto.openStore"
 
 /** Codicon of the empty row, coherent with the tree's other rows. */
 export const EMPTY_APPS_ICON = "store"
+
+/** Label of the row shown when `app_list` fails. A failed load must not
+ *  look like an empty registry ("Browse the App Store"). */
+export const APPS_LOAD_ERROR_LABEL = "Couldn't load apps"
+
+/** Command the error row runs: reload the tree. */
+export const APPS_LOAD_ERROR_COMMAND_ID = "agentproto.refreshApps"
+
+export const APPS_LOAD_ERROR_ICON = "warning"
+
+/** Root rows of the Apps tree: the error row when the load failed, the
+ *  empty row when nothing is installed, else one row per category. */
+export function appsRootNodes(groups: CategoryGroup[], loadError: string | undefined): AppsTreeNode[] {
+  if (loadError !== undefined) return [{ kind: "error", message: loadError }]
+  if (groups.length === 0) return [{ kind: "empty" }]
+  return groups.map(group => ({ kind: "category", category: group.category, apps: group.apps }))
+}

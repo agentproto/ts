@@ -14,6 +14,10 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { AppCatalogEntry, InstalledAppInfo } from "../client/types.js"
 import {
   appChildren,
+  appsRootNodes,
+  APPS_LOAD_ERROR_COMMAND_ID,
+  APPS_LOAD_ERROR_ICON,
+  APPS_LOAD_ERROR_LABEL,
   appContextValue,
   appDescription,
   appHasChildren,
@@ -36,6 +40,7 @@ export type { AppNode, AppsTreeNode }
 export class AppsTreeProvider implements vscode.TreeDataProvider<AppsTreeNode>, vscode.Disposable {
   private readonly client: DaemonClient
   private groups: CategoryGroup[] = []
+  private loadError: string | undefined
   private readonly _onDidChange = new vscode.EventEmitter<AppsTreeNode | undefined>()
   readonly onDidChangeTreeData = this._onDidChange.event
 
@@ -52,8 +57,14 @@ export class AppsTreeProvider implements vscode.TreeDataProvider<AppsTreeNode>, 
     let apps: InstalledAppInfo[]
     try {
       apps = await this.client.listApps()
-    } catch {
-      apps = []
+      this.loadError = undefined
+    } catch (err) {
+      // Show the failure, not the empty-registry row: a truncated or failed
+      // app_list used to read as "no apps installed".
+      this.loadError = err instanceof Error ? err.message : String(err)
+      this.groups = []
+      this._onDidChange.fire(undefined)
+      return
     }
     // The catalog only contributes categories. An older daemon without the
     // verb (or a transient failure) must not blank the tree — every app just
@@ -77,6 +88,15 @@ export class AppsTreeProvider implements vscode.TreeDataProvider<AppsTreeNode>, 
           command: EMPTY_APPS_COMMAND_ID,
           title: "Browse the App Store",
         }
+        return item
+      }
+
+      case "error": {
+        const item = new vscode.TreeItem(APPS_LOAD_ERROR_LABEL)
+        item.description = element.message
+        item.tooltip = `${element.message}\nClick to retry.`
+        item.iconPath = new vscode.ThemeIcon(APPS_LOAD_ERROR_ICON)
+        item.command = { command: APPS_LOAD_ERROR_COMMAND_ID, title: "Refresh Apps" }
         return item
       }
 
@@ -130,10 +150,7 @@ export class AppsTreeProvider implements vscode.TreeDataProvider<AppsTreeNode>, 
   }
 
   getChildren(element?: AppsTreeNode): AppsTreeNode[] {
-    if (!element) {
-      if (this.groups.length === 0) return [{ kind: "empty" }]
-      return this.groups.map(group => ({ kind: "category", category: group.category, apps: group.apps }))
-    }
+    if (!element) return appsRootNodes(this.groups, this.loadError)
     switch (element.kind) {
       case "category":
         return element.apps.map(app => ({ kind: "app", app }))

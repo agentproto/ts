@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import {
   ActivitiesUnavailableError,
+  APP_LIST_PAGE_SIZE,
   DaemonClient,
+  McpResultTruncatedError,
   NoTranscriptError,
   TasksUnavailableError,
   WorkspacesRouteMissingError,
@@ -1070,7 +1072,7 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     const apps = await client().listApps()
     const last = daemon.requests[daemon.requests.length - 1]!
     const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
-    expect(args).toEqual({ full: true })
+    expect(args).toEqual({ full: true, limit: APP_LIST_PAGE_SIZE })
     expect(apps[0]?.dir).toBe("/apps/mail")
     expect(apps[0]?.agents).toEqual([{ id: "triage", path: "/apps/mail/.agentproto/AGENT.md" }])
     expect(apps[0]?.workflows).toEqual([{ id: "ship", path: "/apps/mail/.agentproto/WORKFLOW.md" }])
@@ -2031,3 +2033,95 @@ async function mkdtemp(prefix: string): Promise<string> {
   const { join } = await import("node:path")
   return mkdtemp(prefix)
 }
+
+describe.skipIf(!canBindLoopback)("DaemonClient.listApps over the daemon's MCP result cap", () => {
+  // Mirrors packages/mcp-server/src/to-mcp-tool.ts capResult: a result body
+  // over MCP_RESULT_MAX_BYTES is replaced by the { truncated: true } marker.
+  const CAP = 100_000
+  let daemon: Awaited<ReturnType<typeof mockDaemon>>
+  let registry: Array<{ appId: string; dir: string; description: string }>
+  let pagingSupported: boolean
+
+  function app(i: number, bytes = 4_000): { appId: string; dir: string; description: string } {
+    return { appId: `app-${String(i).padStart(2, "0")}`, dir: `/apps/${i}`, description: "x".repeat(bytes) }
+  }
+
+  beforeEach(async () => {
+    registry = Array.from({ length: 26 }, (_, i) => app(i))
+    pagingSupported = true
+    daemon = await mockDaemon(req => {
+      const rpc = req.body as { method: string; params: { name: string; arguments: { limit?: number; cursor?: string } } }
+      if (rpc?.method !== "tools/call" || rpc.params.name !== "app_list") return { status: 404, body: { error: "not_found" } }
+      const { limit, cursor } = rpc.params.arguments
+      if ((limit !== undefined || cursor !== undefined) && !pagingSupported) {
+        return { status: 200, body: { jsonrpc: "2.0", id: 1, error: { code: -32602, message: 'Invalid arguments: Unrecognized key "limit"' } } }
+      }
+      let payload: unknown = registry
+      if (limit !== undefined || cursor !== undefined) {
+        const start = cursor ? Number(cursor) : 0
+        const end = start + (limit ?? 50)
+        payload = {
+          items: registry.slice(start, end),
+          total: registry.length,
+          ...(end < registry.length ? { nextCursor: String(end) } : {}),
+        }
+      }
+      let text = JSON.stringify(payload)
+      if (Buffer.byteLength(text, "utf8") > CAP) {
+        text = JSON.stringify({ truncated: true, totalBytes: Buffer.byteLength(text, "utf8"), hint: "use limit/cursor/fields" })
+      }
+      return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text }] } } }
+    })
+  })
+
+  afterEach(async () => {
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+  })
+
+  function client(): DaemonClient {
+    return new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+  }
+
+  function appListArgs(): Array<Record<string, unknown>> {
+    // Only the app_list calls: the client also makes body-less probes.
+    return daemon.requests
+      .map(r => r.body as { method?: string; params?: { name?: string; arguments: Record<string, unknown> } } | undefined)
+      .filter(b => b?.method === "tools/call" && b.params?.name === "app_list")
+      .map(b => b!.params!.arguments)
+  }
+
+  it("pages a registry whose unpaged body is over the cap instead of reading the stub as empty", async () => {
+    const apps = await client().listApps()
+    expect(apps.map(a => a.appId)).toEqual(registry.map(a => a.appId))
+    expect(appListArgs()).toEqual([
+      { full: true, limit: APP_LIST_PAGE_SIZE },
+      { full: true, limit: APP_LIST_PAGE_SIZE, cursor: "10" },
+      { full: true, limit: APP_LIST_PAGE_SIZE, cursor: "20" },
+    ])
+  })
+
+  it("halves the page size when one page still trips the cap", async () => {
+    registry[3] = app(3, 80_000)
+    const apps = await client().listApps()
+    expect(apps.map(a => a.appId)).toEqual(registry.map(a => a.appId))
+    expect(appListArgs()[1]).toEqual({ full: true, limit: Math.ceil(APP_LIST_PAGE_SIZE / 2) })
+  })
+
+  it("throws McpResultTruncatedError when a single app is over the cap", async () => {
+    registry[0] = app(0, 120_000)
+    await expect(client().listApps()).rejects.toBeInstanceOf(McpResultTruncatedError)
+  })
+
+  it("falls back to the unpaged call on a daemon that predates limit/cursor", async () => {
+    pagingSupported = false
+    registry = registry.slice(0, 3)
+    const apps = await client().listApps()
+    expect(apps.map(a => a.appId)).toEqual(["app-00", "app-01", "app-02"])
+    expect(appListArgs()).toEqual([{ full: true, limit: APP_LIST_PAGE_SIZE }, { full: true }])
+  })
+
+  it("throws rather than resolving to [] when an unpageable daemon truncates", async () => {
+    pagingSupported = false
+    await expect(client().listApps()).rejects.toBeInstanceOf(McpResultTruncatedError)
+  })
+})

@@ -108,6 +108,11 @@ export class McpInvalidParamsError extends Error {
   }
 }
 
+/** Full `app_list` records per page. A full record runs a few KB (more with
+ *  a long app_run history), so 10 stays well under the daemon's 100 KB MCP
+ *  result cap; a page that still trips it is halved and retried. */
+export const APP_LIST_PAGE_SIZE = 10
+
 /** The daemon replaced a tool result with its over-budget
  *  `{ truncated: true }` marker. A truncated response must never be read
  *  as an empty list — callers surface this as an error. */
@@ -1169,15 +1174,72 @@ export class DaemonClient {
   }
 
   /**
-   * `app_list` is an MCP-only tool — fetch the daemon's installed-app
+   * `app_list` is an MCP-only tool. Fetch the daemon's installed-app
    * registry (each record carries the `ui` block when the app ships a
    * panel).
+   *
+   * The FULL records are paged with limit/cursor: one unpaged call grows
+   * with every installed app (and every app_run kept in its history) until
+   * it passes the daemon's MCP result budget, where the daemon replaces the
+   * whole payload with a `{ truncated: true }` stub. That stub used to be
+   * read as "no apps installed". A page that still trips the cap is retried
+   * with a smaller limit; a single record over the cap THROWS, it never
+   * resolves to an empty list. Daemons that predate limit/cursor fall back
+   * to the single unpaged call.
    */
   async listApps(): Promise<InstalledAppInfo[]> {
-    // `full: true` — compact app_list flattens agents/workflows to bare id
+    // `full: true`: compact app_list flattens agents/workflows to bare id
     // strings and drops `ui`, leaving the Apps tree without manifest paths.
-    const result = await this.mcpCall<InstalledAppInfo[]>("app_list", { full: true })
-    return Array.isArray(result) ? result : []
+    try {
+      return await this.pageAppList(APP_LIST_PAGE_SIZE)
+    } catch (err) {
+      if (err instanceof McpInvalidParamsError) return this.pageAppList(undefined)
+      throw err
+    }
+  }
+
+  /**
+   * Page-walk `app_list { full: true }`. `limit` undefined is the legacy
+   * unpaged call. A truncated page is re-requested from the same cursor
+   * with half the limit, down to one record.
+   */
+  private async pageAppList(limit: number | undefined): Promise<InstalledAppInfo[]> {
+    const apps: InstalledAppInfo[] = []
+    let cursor: string | undefined
+    let pageSize = limit
+    for (;;) {
+      const result = await this.mcpCall<
+        | InstalledAppInfo[]
+        | { items?: InstalledAppInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
+      >("app_list", {
+        full: true,
+        ...(pageSize !== undefined ? { limit: pageSize } : {}),
+        ...(cursor ? { cursor } : {}),
+      })
+      if (Array.isArray(result)) {
+        // Unpaged body: the legacy call, or a daemon that ignores `limit`.
+        apps.push(...result)
+        return apps
+      }
+      if (result && result.truncated === true) {
+        if (pageSize !== undefined && pageSize > 1) {
+          pageSize = Math.ceil(pageSize / 2)
+          continue
+        }
+        const bytes = result.totalBytes
+        throw new McpResultTruncatedError(
+          "app_list response was truncated by the daemon's MCP result cap" +
+            (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
+            (pageSize === undefined ? "; this daemon cannot page app_list" : " even for a single app"),
+        )
+      }
+      if (!result || !Array.isArray(result.items)) {
+        throw new Error(`app_list returned an unexpected response: ${JSON.stringify(result)?.slice(0, 200)}`)
+      }
+      apps.push(...result.items)
+      cursor = result.nextCursor
+      if (!cursor) return apps
+    }
   }
 
   /**
