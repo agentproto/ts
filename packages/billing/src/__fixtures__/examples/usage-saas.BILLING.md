@@ -53,8 +53,6 @@ offers:
       - { feature: paid_plan }
       - { feature: managed_service_access }
       - { feature: credits, amountMinor: 10000, partition: "USAGE_CREDITS:monthly", rollover: none }
-
-    # field is left out. `onUpgrade: none`: no proration configured.
     subscription: { anchor: payment, onUpgrade: none }
   - id: bundle-pro-pack
     price: { model: one-time, amountMinor: 9900, currency: USD }
@@ -64,12 +62,9 @@ offers:
       - { feature: credits, amountMinor: 15000, partition: "USAGE_CREDITS:topup" }   # 15 000 credits into topup_credits
 
 rails:
-  # The bundle was first sold through Lemon Squeezy; on 2026-09-02 the product owner moved it to Stripe via Autumn
-  # case of the earlier draft of this example is gone: one rail. AUTUMN_SECRET_KEY, AUTUMN_WEBHOOK_SECRET, AUTUMN_MODE.
   - { id: autumn, productTag: usage-saas }
 ---
 
-
 The case that tests the spec outside our other products: its own anchor (1 000 credits per dollar), credits with no
-decimals, Autumn as the rail and as the projection (`toAutumnPlan` has to give back `autumn.config.ts`). Included credits
+decimals, Autumn as the rail and as the projection (the rail configuration is projected from this file). Included credits
 of a plan and a one-off bundle are allocations, not conversions: an offer of model `one-time` with `includes`.

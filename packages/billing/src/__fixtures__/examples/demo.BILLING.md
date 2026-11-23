@@ -40,7 +40,6 @@ primaryAsset: DEMO_CREDITS
 # DECIDED 2026-11-20 (~22:36Z): 100 credits = 1 USD, one adjustable field; EUR by a fixed cross rate.
 anchor: { currency: USD, creditsPerUnit: 100 }
 fx: { EUR: 1.18 }                                   # 1 EUR = 118 credits (rule 26)
-# depend on the tax Stripe adds, so the amount paid is credited whole: `gross`. Nothing in the code reads a tax basis.
 taxBasis: gross
 
 features:
@@ -64,7 +63,6 @@ conversions:
     bonus:
       strategy: tiered-lots/v1
       partition: "DEMO_CREDITS:bonus"
-      # not read from the running service.
       tiers: [[5000, 30], [2500, 30], [1000, 20], [500, 10], [0, 0]]
     enabled: true
   # PawaPay is out of v1 (decision 2026-11-20); its 118 credits per EUR path is not described here.
@@ -85,7 +83,6 @@ offers:
   - { id: credits_1200, price: { model: prepaid-pool, amountMinor: 1000, currency: EUR }, convert: eur-to-credits, rail: { stripe: { lookupKey: demo_credits_1200 } } }
   - { id: credits_2400, price: { model: prepaid-pool, amountMinor: 2000, currency: EUR }, convert: eur-to-credits, rail: { stripe: { lookupKey: demo_credits_2000 } } }
   - { id: credits_7500, price: { model: prepaid-pool, amountMinor: 5000, currency: EUR }, convert: eur-to-credits, rail: { stripe: { lookupKey: demo_credits_7500 } } }
-  # the same in EUR and USD, and do NOT follow the anchor today: 600 / 2700 / 9000 credits.
   - id: demo_go_month_eur
     price: { model: subscription, amountMinor: 500, currency: EUR, interval: month }
     includes: [ { feature: credits, amountMinor: 60000, partition: "DEMO_CREDITS:subscription", rollover: none } ]
@@ -116,8 +113,6 @@ offers:
     includes: [ { feature: credits, amountMinor: 900000, partition: "DEMO_CREDITS:subscription", rollover: none } ]
     subscription: { anchor: calendar, grace: P7D, onUpgrade: none }
     rail: { stripe: { lookupKey: demo_max_monthly_usd } }
-  # (startGracePeriod); the paid-period path uses a 1 day slack. DIVERGES from rule 17: includes do NOT continue during
-  # `onUpgrade: none` is the choice recorded as decision 4.6; no proration code was found.
 
 grants:
   - id: welcome

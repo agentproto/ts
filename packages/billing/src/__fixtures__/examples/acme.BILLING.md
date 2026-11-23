@@ -35,8 +35,6 @@ accounts:
   hierarchy: { maxDepth: 1, funding: [pool, allocated_budget] }
 
 payer:
-  # funding model is not `pool`. No cascade. Not the generic hierarchy/v1 walk (a personal organization pays from the
-  # actor's wallet, not from its parent), hence a vendor strategy.
   strategy: x-acme:org-kind
   owner: [organizationId, groupId, userId]
 transfers:
@@ -63,7 +61,6 @@ conversions:
     enabled: true
 
 offers:
-  # the id as <pack>_<currency>). Credits come from the conversion plus its bonus tier.
   - { id: starter_eur, price: { model: prepaid-pool, amountMinor: 1000, currency: EUR }, convert: eur-to-credits, rail: { stripe: { lookupKey: acme_pack_starter_eur } } }
   - { id: growth_eur, price: { model: prepaid-pool, amountMinor: 5000, currency: EUR }, convert: eur-to-credits, rail: { stripe: { lookupKey: acme_pack_growth_eur } } }
   - { id: scale_eur, price: { model: prepaid-pool, amountMinor: 10000, currency: EUR }, convert: eur-to-credits, rail: { stripe: { lookupKey: acme_pack_scale_eur } } }

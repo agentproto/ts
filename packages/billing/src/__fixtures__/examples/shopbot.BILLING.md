@@ -54,7 +54,6 @@ conversions:
     to: SHOPBOT_CREDITS
     rail: stripe
     mint: { partition: "SHOPBOT_CREDITS:purchased", expires: { after: P12M } }
-    # the plan bonus below is another thing.
     bonus: { strategy: tiered-lots/v1, partition: "SHOPBOT_CREDITS:bonus", tiers: [[30001, 15], [12000, 10], [6000, 5], [0, 0]] }
     enabled: true
 
