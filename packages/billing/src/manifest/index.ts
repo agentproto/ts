@@ -1,5 +1,5 @@
 /**
- * BILLING.md parser and manifest-to-handle constructor (AIP-BILLING).
+ * BILLING.md parser and manifest-to-handle constructor (AIP-74).
  *
  * `parseBillingManifest` reads the file and checks its SHAPE with the zod
  * schema derived from `BILLING.schema.json`. `billingFromManifest` then runs
@@ -26,12 +26,12 @@ export interface BillingManifest {
 export function parseBillingManifest(source: string): BillingManifest {
   const parsed = matter(source)
   if (Object.keys(parsed.data).length === 0) {
-    throw new Error("parseBillingManifest (AIP-BILLING): missing or empty frontmatter")
+    throw new Error("parseBillingManifest (AIP-74): missing or empty frontmatter")
   }
   const result = billingFrontmatterSchema.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
-      `parseBillingManifest (AIP-BILLING): invalid frontmatter: ${result.error.issues
+      `parseBillingManifest (AIP-74): invalid frontmatter: ${result.error.issues
         .map(i => `${i.path.join(".")}: ${i.message}`)
         .join("; ")}`,
     )

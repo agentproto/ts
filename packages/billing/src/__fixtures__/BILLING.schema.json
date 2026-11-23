@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-74/BILLING.schema.json",
-  "$comment": "DRAFT. Not frozen: it is frozen only after a product has read its own BILLING.md through a parser built from it (AIP-BILLING status Draft). It checks the SHAPE of the frontmatter. The cross-reference rules of AIP-BILLING rule 21 (unknown asset, partition, feature, conversion or rail reference, an offer currency that is neither the anchor currency nor an fx key, a grant key without {account}) need the whole document and belong to the parser, not to this schema.",
-  "title": "billing/v1 frontmatter (AIP-BILLING, DRAFT)",
+  "$comment": "DRAFT. Not frozen: it is frozen only after a product has read its own BILLING.md through a parser built from it (AIP-74 status Draft). It checks the SHAPE of the frontmatter. The cross-reference rules of AIP-74 rule 21 (unknown asset, partition, feature, conversion or rail reference, an offer currency that is neither the anchor currency nor an fx key, a grant key without {account}) need the whole document and belong to the parser, not to this schema.",
+  "title": "billing/v1 frontmatter (AIP-74, DRAFT)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -181,7 +181,7 @@
             "$ref": "#/$defs/railId",
             "description": "SettlementProvider kind; default is the id. Two accounts of one provider are two entries with two ids."
           },
-          "productTag": { "type": "string", "minLength": 1, "description": "The provider account or product tag (for example demo, acme); filters events when one account serves several products." },
+          "productTag": { "type": "string", "minLength": 1, "description": "The provider account or product tag (for example consumer-app, team-workspace); filters events when one account serves several products." },
           "env": {
             "type": "object",
             "additionalProperties": false,
@@ -363,7 +363,7 @@
             "amountMinor": {
               "type": "integer",
               "minimum": 0,
-              "description": "Minor units of primaryAsset. NOT derived from the conversion: an include is a period allocation, not a purchase (AIP-BILLING offer types)."
+              "description": "Minor units of primaryAsset. NOT derived from the conversion: an include is a period allocation, not a purchase (AIP-74 offer types)."
             },
             "rollover": { "enum": ["none", "unbounded"], "default": "none" }
           }

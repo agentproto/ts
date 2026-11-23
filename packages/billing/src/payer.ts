@@ -1,5 +1,5 @@
 /**
- * Who pays (AIP-BILLING rules 19 and 20).
+ * Who pays (AIP-74 rules 19 and 20).
  *
  * `self`: the account that acts pays. `hierarchy/v1`: walk up while the parent
  * is funded `pool`; a parent funded `allocated_budget` stops the walk and its

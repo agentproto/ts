@@ -1,6 +1,6 @@
 /**
  * The eleven real cases of PLAN-BILLING-FINAL section 5, one test each, run on
- * the four product files of the AIP-BILLING draft (fixtures) and on the in-memory
+ * the four product files of the AIP-74 draft (fixtures) and on the in-memory
  * stores. The table case -> test is in the pull request description.
  */
 import { fold, selectLotsForSpend, type WalletEvent } from "@agentproto/wallet"

@@ -9,7 +9,7 @@ import type { BillingHandle } from "./define-billing-manifest.js"
 
 /**
  * A journal event with the optional AIP-49 amendment fields. `cause` is the
- * identity of the money movement that made the event happen (AIP-BILLING rules 2
+ * identity of the money movement that made the event happen (AIP-74 rules 2
  * and 5); `origin` is the provenance of minted value. A storage adapter that
  * drops them breaks `traceOf`: see README, wallet gaps.
  */

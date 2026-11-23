@@ -1,7 +1,7 @@
 /**
- * BILLING.md frontmatter zod schema (AIP-BILLING).
+ * BILLING.md frontmatter zod schema (AIP-74).
  *
- * Mirrors `BILLING.schema.json` (agentproto/agentproto, AIP-BILLING draft). It is
+ * Mirrors `BILLING.schema.json` (agentproto/agentproto, AIP-74 draft). It is
  * written by hand, NOT emitted by `scripts/scaffold-aip.mjs`: the scaffolder
  * cannot render the draft's `if/then/else` rules (the offer and conversion
  * combinations) nor its external `$ref`s (the AIP-49 asset, the AIP-41

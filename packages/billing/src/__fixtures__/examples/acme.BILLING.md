@@ -1,5 +1,5 @@
 ---
-# DRAFT example, AIP-BILLING v0.4 (billing/v1). Describes Acme as deployed from main on 2026-11-20, with ONE exception
+# DRAFT example, AIP-74 v0.4 (billing/v1). Describes Acme as deployed from main on 2026-11-20, with ONE exception
 # decided the same day: the credit anchor (100 credits = 1 USD, EUR derived from fx). Where deployed code differs,
 # the comment cites the file and says so; migrating Acme to this file is a later step (5a) and nothing in this
 # file is read by Acme today. Minor units: cents, hundredths of a credit (credits have decimals 2).
@@ -20,7 +20,7 @@ assets:
     ruleSet: { settleOut: internal-ledger, spendableOn: ["*"], convertEdges: [], transfer: internal }
     partitions:
       - { id: "ACME_CREDITS:general", asset: ACME_CREDITS, restriction: [] }   # the only tranche (grants-catalog.ts:36-37)
-      # NEW, not declared today: a separate bonus lot is AIP-BILLING rule 12. MIGRATION PENDING (step 5a).
+      # NEW, not declared today: a separate bonus lot is AIP-74 rule 12. MIGRATION PENDING (step 5a).
       - { id: "ACME_CREDITS:bonus", asset: ACME_CREDITS, restriction: [unearned] }
 primaryAsset: ACME_CREDITS
 
@@ -138,7 +138,7 @@ grants:
     amount: { fixedMinor: 50000 }             # 500 credits (5 USD at the anchor)
     partition: "ACME_CREDITS:general"
     # Deployed key is signup-bonus:<userId>, one per USER, not per account: the account-level key below is the
-    # AIP-BILLING form (rule 15). MIGRATION PENDING.
+    # AIP-74 form (rule 15). MIGRATION PENDING.
     key: "{account}:once"
 
 rails:

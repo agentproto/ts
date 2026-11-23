@@ -1,5 +1,5 @@
 /**
- * Parent to child allocation (AIP-BILLING `transfers`, AIP-49 transfer).
+ * Parent to child allocation (AIP-74 `transfers`, AIP-49 transfer).
  *
  * Two journals are touched, the parent's (a `transfer` leg out of the lot) and
  * the child's (a `mint` carrying the origin lot's expiry, `expiry: inherit`).

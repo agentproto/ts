@@ -1,5 +1,5 @@
 ---
-# DRAFT example, AIP-BILLING v0.4 (billing/v1). Describes Shopbot as deployed from main on 2026-11-20, except the
+# DRAFT example, AIP-74 v0.4 (billing/v1). Describes Shopbot as deployed from main on 2026-11-20, except the
 # credit anchor and the EUR rate below. Where deployed code differs, the comment cites the file and says so.
 # Minor units: euro cents, hundredths of a credit (decimals 2).
 schema: billing/v1
@@ -22,7 +22,7 @@ assets:
       - { id: "SHOPBOT_CREDITS:purchased",    asset: SHOPBOT_CREDITS, restriction: [] }
       - { id: "SHOPBOT_CREDITS:subscription", asset: SHOPBOT_CREDITS, restriction: [] }   # the monthly envelope
       - { id: "SHOPBOT_CREDITS:welcome",      asset: SHOPBOT_CREDITS, restriction: [welcome] }
-      # NEW, not declared today: a separate bonus lot is AIP-BILLING rule 12. MIGRATION PENDING.
+      # NEW, not declared today: a separate bonus lot is AIP-74 rule 12. MIGRATION PENDING.
       - { id: "SHOPBOT_CREDITS:bonus",        asset: SHOPBOT_CREDITS, restriction: [unearned] }
 primaryAsset: SHOPBOT_CREDITS
 

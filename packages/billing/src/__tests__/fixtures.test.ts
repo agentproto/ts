@@ -14,7 +14,7 @@ const STRATEGIES = ["x-agentik:org-kind", "x-agentik:welcome-by-country", "x-age
 
 const FILES = ["demo", "acme", "shopbot", "agentik-seo"] as const
 
-describe("the four product files of the AIP-BILLING draft (fixtures, see __fixtures__/SOURCE.md)", () => {
+describe("the four product files of the AIP-74 draft (fixtures, see __fixtures__/SOURCE.md)", () => {
   for (const name of FILES) {
     it(`${name}: parses and derives`, () => {
       const m = loadBillingManifest(read(`../__fixtures__/examples/${name}.BILLING.md`), { strategies: STRATEGIES })

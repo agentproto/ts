@@ -1,5 +1,5 @@
 ---
-# DRAFT example, AIP-BILLING v0.4 (billing/v1). Describes Demo as deployed from main on 2026-11-20, with ONE exception
+# DRAFT example, AIP-74 v0.4 (billing/v1). Describes Demo as deployed from main on 2026-11-20, with ONE exception
 # decided the same day: the credit anchor (100 credits = 1 USD, EUR derived from fx). Where deployed code differs,
 # the comment cites the file and says so; migrating Demo to this file is a later step and nothing in this file is
 # read by Demo today. Minor units: euro cents, hundredths of a credit (credits have decimals 2).
@@ -24,7 +24,7 @@ assets:
       - { id: "DEMO_CREDITS:grant",        asset: DEMO_CREDITS, restriction: [grant] }
       - { id: "DEMO_CREDITS:purchased",    asset: DEMO_CREDITS, restriction: [] }
       # NEW, not in assets-catalog.ts: today the whole pack (base + bonus, `centicredits` of packs.ts) is minted as one
-      # purchased lot. A separate bonus lot is AIP-BILLING rule 12. MIGRATION PENDING (step 5a).
+      # purchased lot. A separate bonus lot is AIP-74 rule 12. MIGRATION PENDING (step 5a).
       - { id: "DEMO_CREDITS:bonus",        asset: DEMO_CREDITS, restriction: [unearned] }
       - { id: "DEMO_CREDITS:subscription", asset: DEMO_CREDITS, restriction: [] }
       - { id: "DEMO_CREDITS:promo-fast",   asset: DEMO_CREDITS, restriction: [promo-fast], spendableOn: ["llm_generation:tier:fast"], defaultTtlMs: 2592000000 }   # inert: no trigger fires it

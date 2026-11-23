@@ -1,5 +1,5 @@
 ---
-# DRAFT example, AIP-BILLING v0.4 (billing/v1). Agentik SEO (hosted OpenSEO fork), from the Autumn configuration versioned
+# DRAFT example, AIP-74 v0.4 (billing/v1). Agentik SEO (hosted OpenSEO fork), from the Autumn configuration versioned
 # in the studio (projects/agentic-verticals/packs/agentic-seo/billing/autumn.config.ts) and projects/agentic-verticals/packs/agentic-seo/briefs/UX-BILLING.md. This product has its own anchor:
 # 1 000 credits = 1 USD, a field value of its own, not a derived one. State of the code on 2026-11-20: the Autumn
 # configuration was pushed to the Autumn SANDBOX on 2026-09-02 and its recreation in production is listed as a to-do
