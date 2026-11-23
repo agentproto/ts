@@ -1,5 +1,10 @@
 # Review-Fix Loop
 
+> **Opt-in.** `pr-fix` no longer runs by default. It runs only when the PR carries the
+> `agentflow:autofix` label or the repo variable `AGENTFLOW_AUTOFIX` is `true`. Otherwise the
+> review leaves its comments and a fix is requested by hand with `/fix`
+> (`.github/workflows/agent-command.yml`).
+
 Automated pipeline that applies review feedback, re-reviews, and escalates to a human when the loop is exhausted.
 
 ## Flow
@@ -39,7 +44,7 @@ PR opened / push
 | `scripts/review-pr.mjs` | Agentic reviewer: reads PR diff, greps codebase, writes changeset, posts APPROVE or CHANGES_REQUESTED |
 | `scripts/apply-review.mjs` | Agentic fixer: reads review comments, reads files, writes fixes to working tree |
 | `.github/workflows/ci.yml` → `pr-review` job | Runs the reviewer after `build-and-test` passes |
-| `.github/workflows/ci.yml` → `pr-fix` job | Runs the fixer after `pr-review`; only active on `CHANGES_REQUESTED` |
+| `.github/workflows/ci.yml` → `pr-fix` job | Runs the fixer after `pr-review`; opt-in (label `agentflow:autofix` or variable `AGENTFLOW_AUTOFIX=true`), then only active on `CHANGES_REQUESTED` |
 
 ## Iteration bounding
 

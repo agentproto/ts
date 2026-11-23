@@ -25,7 +25,7 @@ key. Two entry surfaces share one core.
    every review/fix stage. The single-shot
    `.github/agentproto-workflows/pr-review/WORKFLOW.md` remains the fallback
    tier if the supervised run cannot post.
-5. `pr-fix` - the cross-run fallback: if the supervised loop could not run (or
+5. `pr-fix` - opt-in (label `agentflow:autofix` or repo variable `AGENTFLOW_AUTOFIX=true`; otherwise skipped and a fix is asked with `/fix`), the cross-run fallback: if the supervised loop could not run (or
    was exhausted) and the live review still says `CHANGES_REQUESTED`, this job
    applies the fixes and pushes them. Same `maxFixIterations` budget and
    escalation; free OpenCode Zen model through
