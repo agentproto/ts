@@ -5,7 +5,7 @@ import { loadBillingManifest } from "../manifest/index.js"
 
 export * from "../index.js"
 
-export const STRATEGIES = ["x-agentik:org-kind", "x-agentik:welcome-by-country", "x-agentik:welcome-grant"]
+export const STRATEGIES = ["x-acme:org-kind", "x-acme:welcome-by-country", "x-acme:welcome-grant"]
 
 /** Read a product file of the draft and load it. `edit` lets a test mutate the source first. */
 export function loadBillingManifestForTest(name: string, edit?: (source: string) => string) {

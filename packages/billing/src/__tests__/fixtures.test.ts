@@ -10,9 +10,9 @@ const here = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 const read = (p: string) => readFileSync(here(p), "utf8")
 
 /** The vendor strategies the four product files name: the host registers them. */
-const STRATEGIES = ["x-agentik:org-kind", "x-agentik:welcome-by-country", "x-agentik:welcome-grant"]
+const STRATEGIES = ["x-acme:org-kind", "x-acme:welcome-by-country", "x-acme:welcome-grant"]
 
-const FILES = ["demo", "acme", "shopbot", "agentik-seo"] as const
+const FILES = ["demo", "acme", "shopbot", "usage-saas"] as const
 
 describe("the four product files of the AIP-74 draft (fixtures, see __fixtures__/SOURCE.md)", () => {
   for (const name of FILES) {
@@ -23,18 +23,18 @@ describe("the four product files of the AIP-74 draft (fixtures, see __fixtures__
     })
     it(`${name}: is refused when a vendor strategy is not registered`, () => {
       const src = read(`../__fixtures__/examples/${name}.BILLING.md`)
-      if (!/x-agentik:/.test(src)) return
-      expect(() => loadBillingManifest(src, { strategies: [] })).toThrow(/x-agentik:/)
+      if (!/x-acme:/.test(src)) return
+      expect(() => loadBillingManifest(src, { strategies: [] })).toThrow(/x-acme:/)
     })
   }
 
-  it("derives the rates of the anchor decision: EUR at 118 per euro, USD at 100, Agentik SEO at 1 000 per dollar", () => {
+  it("derives the rates of the anchor decision: EUR at 118 per euro, USD at 100, Usage SaaS at 1 000 per dollar", () => {
     const rate = (name: string, id: string) => loadBillingManifest(read(`../__fixtures__/examples/${name}.BILLING.md`), { strategies: STRATEGIES }).derived.conversions.get(id)!.ratio
     expect(rate("demo", "eur-to-credits")).toBe(118)
     expect(rate("acme", "eur-to-credits")).toBe(118)
     expect(rate("acme", "usd-to-credits")).toBe(100)
     expect(rate("shopbot", "eur-to-credits")).toBe(118)
-    expect(rate("agentik-seo", "usd-to-credits")).toBe(1000)
+    expect(rate("usage-saas", "usd-to-credits")).toBe(1000)
   })
 })
 
