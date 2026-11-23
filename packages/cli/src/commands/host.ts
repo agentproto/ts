@@ -72,8 +72,9 @@ below it ("below" rows). Defaults, each overridable by the flag shown:
 
   check         WARN        CRIT        flags
   load          >=${D.warnLoadPerCore}x/core    >=${D.critLoadPerCore}x/core    --warn-load <x>  --crit-load <x>      (1m load / cores)
-  ram           <${D.warnMemAvailablePercent}% avail   <${D.critMemAvailablePercent}% avail    --warn-mem <%>  --crit-mem <%>       (available / total)
-  swap          >=${D.warnSwapPercent}% used   >=${D.critSwapPercent}% used   --warn-swap <%>  --crit-swap <%>
+  ram           <${D.warnMemAvailablePercent}% avail   (never CRIT alone) --warn-mem <%>  (available / total)
+  swap          >=${D.warnSwapPercent}% used   (never CRIT alone) --warn-swap <%>
+  mem pressure  -           swap >=${D.critSwapPercent}% AND ram <=${D.critMemAvailablePercent}% avail   --crit-swap <%>  --crit-mem <%>
   daemon        up <${D.warnDaemonUptimeSec}s      unreachable --warn-uptime <s>     (unreachable = CRIT)
   sessions      >=${D.warnSessions} live     >=${D.critSessions} live     --warn-sessions <n>  --crit-sessions <n>
   busy          >=${D.warnBusySessions} mid-turn >=${D.critBusySessions} mid-turn --warn-busy <n>  --crit-busy <n>

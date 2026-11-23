@@ -93,6 +93,7 @@ describe("computeHostHealth", () => {
       "load",
       "memory",
       "swap",
+      "memory-pressure",
       "daemon",
       "sessions",
       "busy",
@@ -111,22 +112,74 @@ describe("computeHostHealth", () => {
     expect(at(40)).toBe("CRIT")
   })
 
-  it("ram: WARN below 15% available, CRIT below 5%", () => {
+  it("ram: WARN below 15% available, never CRIT alone", () => {
     const at = (avail: number) =>
       check(computeHostHealth(withReport({ memory: { ...HEALTHY.memory, availableBytes: avail * GB } })), "memory").status
     expect(at(15)).toBe("OK")
     expect(at(14.99)).toBe("WARN")
     expect(at(5)).toBe("WARN")
-    expect(at(4.99)).toBe("CRIT")
+    expect(at(4.99)).toBe("WARN")
   })
 
-  it("swap: WARN at 50%, CRIT at 85%", () => {
+  it("swap: WARN at 50%, never CRIT alone", () => {
     const at = (percent: number) =>
       check(computeHostHealth(withReport({ swap: { ...HEALTHY.swap!, percent } })), "swap").status
     expect(at(49.9)).toBe("OK")
     expect(at(50)).toBe("WARN")
     expect(at(84.9)).toBe("WARN")
-    expect(at(85)).toBe("CRIT")
+    expect(at(99)).toBe("WARN")
+  })
+
+  describe("memory-pressure (swap and RAM only go CRIT together)", () => {
+    const mem = (availPct: number, swapPct: number) =>
+      computeHostHealth(
+        withReport({
+          memory: { ...HEALTHY.memory, availableBytes: availPct },
+          swap: { ...HEALTHY.swap!, percent: swapPct },
+        }),
+      )
+    const pressure = (availGb: number, swapPct: number) => mem(availGb * GB, swapPct)
+
+    it("swap 91% with 59% RAM available is WARN, not CRIT (the 15:30 UTC false alarm)", () => {
+      const h = pressure(59, 91)
+      expect(check(h, "swap").status).toBe("WARN")
+      expect(check(h, "memory").status).toBe("OK")
+      expect(check(h, "memory-pressure").status).toBe("OK")
+      expect(h.verdict).toBe("WARN")
+      expect(h.exitCode).toBe(1)
+    })
+
+    it("RAM 3% available with swap 20% is OK for swap, WARN overall, not CRIT", () => {
+      const h = pressure(3, 20)
+      expect(check(h, "memory").status).toBe("WARN")
+      expect(check(h, "memory-pressure").status).toBe("OK")
+      expect(h.verdict).toBe("WARN")
+    })
+
+    it("swap 96% and 4% RAM available together is CRIT", () => {
+      const h = pressure(4, 96)
+      expect(check(h, "memory-pressure").status).toBe("CRIT")
+      expect(h.verdict).toBe("CRIT")
+      expect(h.exitCode).toBe(2)
+      expect(h.reasons[0]).toContain("at the same time")
+    })
+
+    it("boundaries are inclusive: swap >= 95 and available <= 5", () => {
+      expect(pressure(5, 95).verdict).toBe("CRIT")
+      expect(pressure(5.01, 95).verdict).toBe("WARN")
+      expect(pressure(5, 94.9).verdict).toBe("WARN")
+    })
+
+    it("load above the CRIT limit stays CRIT on its own", () => {
+      const h = computeHostHealth(withReport({ loadAvg: [40, 0, 0] }))
+      expect(check(h, "load").status).toBe("CRIT")
+      expect(h.verdict).toBe("CRIT")
+    })
+
+    it("is SKIP without a swap probe", () => {
+      const { swap: _s, ...noSwap } = HEALTHY
+      expect(check(computeHostHealth(input({ report: noSwap })), "memory-pressure").status).toBe("SKIP")
+    })
   })
 
   it("swap: SKIP without a swap probe, and SKIP never moves the verdict", () => {
@@ -223,12 +276,12 @@ describe("computeHostHealth", () => {
   it("verdict is the worst check; reasons list CRIT before WARN", () => {
     const h = computeHostHealth(
       input({
-        report: { ...HEALTHY, loadAvg: [25, 0, 0], swap: { ...HEALTHY.swap!, percent: 90 } },
+        report: { ...HEALTHY, loadAvg: [40, 0, 0], swap: { ...HEALTHY.swap!, percent: 90 } },
       }),
     )
     expect(h.verdict).toBe("CRIT")
     expect(h.exitCode).toBe(2)
-    expect(h.reasons).toEqual(["swap 1.0 GB of 10.0 GB used (90%)", "load 25.0 on 10 cores = 2.5x per core"])
+    expect(h.reasons).toEqual(["load 40.0 on 10 cores = 4.0x per core", "swap 1.0 GB of 10.0 GB used (90%)"])
 
     const warn = computeHostHealth(withReport({ loadAvg: [25, 0, 0] }))
     expect(warn.verdict).toBe("WARN")
@@ -291,8 +344,9 @@ describe("renderHostHealth", () => {
         "",
         "CHECK         STATUS  VALUE           WARN    CRIT",
         "load          WARN    2.50x per core  >=2x    >=4x",
-        "ram           OK      50.0% avail     <15%    <5%",
-        "swap          OK      10.0% used      >=50%   >=85%",
+        "ram           OK      50.0% avail     <15%    -",
+        "swap          OK      10.0% used      >=50%   -",
+        "mem pressure  OK      ok              -       -",
         "daemon        OK      up 3d           <60s    -",
         "sessions      OK      5 live          >=30    >=60",
         "busy          OK      2 busy          >=8     >=16",
