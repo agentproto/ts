@@ -3,9 +3,9 @@ import { defineWork } from "../define-work.js"
 
 const base = {
   schema: "work.workspace/v2",
-  name: "simone",
-  title: "Simone",
-  description: "Simone's work items.",
+  name: "demo",
+  title: "Demo",
+  description: "Demo's work items.",
 } as const
 
 describe("defineWork (AIP-20)", () => {
@@ -24,7 +24,7 @@ describe("defineWork (AIP-20)", () => {
       },
       views: [{ id: "open", title: "Open work", layout: "board" }],
     } as never)
-    expect(handle.name).toBe("simone")
+    expect(handle.name).toBe("demo")
     expect(handle.containment?.maxDepth).toBe(3)
     expect(handle.statusRollup?.rules?.[0]?.category).toBe("done")
     expect(handle.views).toHaveLength(1)

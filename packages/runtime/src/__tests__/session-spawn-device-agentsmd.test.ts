@@ -89,7 +89,7 @@ import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import { isDeviceSandboxTarget } from "../sandbox-providers/device.js"
 import { cdContractLine, resolveAgentsMd } from "../agents-md.js"
 
-const CONTROLLER_CWD = "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts"
+const CONTROLLER_CWD = "/Volumes/SSDExternalMacStudio/Code/products/agentik/demo-app/projects/agentproto/ts"
 
 /** The prompt the controller forwarded to the DEVICE. The box spawn never
  *  carries it now: it goes over the box's own `agent_prompt` after the

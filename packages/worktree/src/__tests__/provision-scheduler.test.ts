@@ -63,7 +63,7 @@ describe("parseProvisionLimits", () => {
     const parsed = parseProvisionLimits(
       {
         provisionConcurrencyByRepo: {
-          "agentik-studio": 1,
+          "demo-app": 1,
           "/srv/repos/big": 0,
           "~/code/mine": 3,
           bad: -2,
@@ -74,7 +74,7 @@ describe("parseProvisionLimits", () => {
       {},
     )
     expect(parsed.perRepo).toEqual({
-      "agentik-studio": 1,
+      "demo-app": 1,
       [resolve("/srv/repos/big")]: Infinity,
       [resolve(homedir(), "code/mine")]: 3,
     })

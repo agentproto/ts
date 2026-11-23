@@ -1302,7 +1302,7 @@ false`.
 
 Workspaces that belong together can be linked with
 `defaults.messaging.peerGroups`, a list of groups of workspace slugs, e.g.
-`[["agentik-studio", "app-agentik-pygmalion"]]`: two sessions may message
+`[["demo-app", "app-orchestrator"]]`: two sessions may message
 each other without a tree edge when both workspace slugs sit in the **same**
 group. The group allowance is independent of `allowSameWorkspace` (a group
 link holds even when the same-workspace rule is off) and it is narrow: a
@@ -1371,7 +1371,7 @@ Sender principals:
 - `session-label://<label>` - a session carrying that operator label.
 - `*` - any sender.
 
-Worked example: the Pygmalion brain may message the `agentik-studio`
+Worked example: the Orchestrator brain may message the `demo-app`
 workspace, may prompt its sessions, and may control them (interrupt, kill,
 restart, continue fresh); any session of the daemon may reply to the brain:
 
@@ -1382,18 +1382,18 @@ restart, continue fresh); any session of the daemon may reply to the brain:
       "allowSameWorkspace": false,
       "grants": [
         {
-          "principal": "session-label://pygmalion-brain-persistent",
+          "principal": "session-label://orchestrator-brain-persistent",
           "effect": "allow",
           "actions": [
-            { "action": "session:message", "scope": "workspace:agentik-studio" },
-            { "action": "session:prompt", "scope": "workspace:agentik-studio" },
-            { "action": "session:control", "scope": "workspace:agentik-studio" }
+            { "action": "session:message", "scope": "workspace:demo-app" },
+            { "action": "session:prompt", "scope": "workspace:demo-app" },
+            { "action": "session:control", "scope": "workspace:demo-app" }
           ]
         },
         {
           "principal": "*",
           "effect": "allow",
-          "actions": [{ "action": "session:message", "scope": "label:pygmalion-brain-persistent" }]
+          "actions": [{ "action": "session:message", "scope": "label:orchestrator-brain-persistent" }]
         }
       ]
     }

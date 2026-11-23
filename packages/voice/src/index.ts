@@ -15,6 +15,8 @@ export {
 export { startRealtime } from "./realtime.js"
 export {
   startCascade,
+  ttsModeFromEnv,
+  ttsTransportFromEnv,
   type CascadeOptions,
   type CascadeVadOptions,
   type CascadeBargeInOptions,
@@ -22,5 +24,12 @@ export {
 } from "./cascade/start-cascade.js"
 export { consumeBrain, BrainStalledError, type BrainGuardOptions } from "./cascade/brain-guard.js"
 export { wrapSttStream, openSttSession, type SttSession } from "./cascade/stt-session.js"
+export {
+  createSttDedup,
+  DEFAULT_STT_DEDUP,
+  type SttDedup,
+  type SttDedupOptions,
+} from "./cascade/stt-dedup.js"
+export { Pcm16ChunkAligner, isEvenPcm16 } from "./pcm16.js"
 export { makeUsageMeter, type UsageMeter } from "./usage.js"
 export { VOICE_DEFAULTS, VOICE_ENV } from "./defaults.js"

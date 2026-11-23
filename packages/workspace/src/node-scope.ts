@@ -128,8 +128,8 @@ function groundToTreePath(tree: NodeTree, ground: string): string | undefined {
  * The node scope of a session (C3): the nearest declared node whose folder
  * contains the session's AIP-46 `ground`, with the ground's subpath inside it.
  *
- * `ground` is an AIP-54 ref (`ws://workspaces/@acme/agentik/simone/docs`, or
- * the compact `workspace:@acme/agentik/simone/docs`; the subtree is the slash
+ * `ground` is an AIP-54 ref (`ws://workspaces/@acme/agentik/demo/docs`, or
+ * the compact `workspace:@acme/agentik/demo/docs`; the subtree is the slash
  * body, no other syntax) or a path: absolute inside the tree root, or relative
  * to it. Returns `undefined` when no declared node contains the ground (a
  * ground outside the tree, another workspace, a non-workspace ref): no node

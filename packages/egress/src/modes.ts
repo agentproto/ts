@@ -22,7 +22,7 @@
  *                  agent might attempt.
  *
  * Hosts pick which modes are exposed to which guilds via their own
- * tier/policy system (Guilde uses `PlanPolicy.egressModes`).
+ * tier/policy system (Acme uses `PlanPolicy.egressModes`).
  */
 
 export type EgressModeId = "off" | "cooperative" | "strict" | "paranoid"

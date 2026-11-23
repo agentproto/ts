@@ -21,7 +21,7 @@ same cwd/task wastes a process.
   "args": {
     "adapter": "claude-code",
     "model": "claude-sonnet-5",
-    "cwd": "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio",
+    "cwd": "/path/to/project",
     "prompt": "Add input validation to the signup form in apps/agentik/web/src/app/signup — reject empty email and password < 8 chars, add a unit test.",
     "label": "signup-validation",
     "mcpServers": [
@@ -52,7 +52,7 @@ you spawn:
 
 ```bash
 agentproto sessions start claude-code \
-  --cwd /Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio \
+  --cwd /path/to/project \
   --model claude-sonnet-5 \
   --prompt "Add input validation to the signup form..." \
   --label signup-validation \

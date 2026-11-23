@@ -1,7 +1,7 @@
 /**
  * HTTP-level coverage for `POST /sessions/:id/prompt-policy` (http-server.ts)
  * — the transport twin of the `agent_set_prompt_policy` MCP tool, and the
- * only way a non-MCP caller (Pygmalion's `EngineClient`, notably) can
+ * only way a non-MCP caller (Orchestrator's `EngineClient`, notably) can
  * (re-)grant `allowPromptFrom` on a session that is ALREADY LIVE: unlike the
  * spawn-time field, this reaches a permanent `keepAlive` agent that was
  * already running before the grant existed.
@@ -109,11 +109,11 @@ describe("POST /sessions/:id/prompt-policy — HTTP route", () => {
     const id = spawnLive(registry)
     const http = await start(registry)
     try {
-      const res = await post(http, id, { allowPromptFrom: ["label:pygmalion-brain-persistent"] })
+      const res = await post(http, id, { allowPromptFrom: ["label:orchestrator-brain-persistent"] })
       expect(res.status).toBe(200)
       const body = (await res.json()) as { ok: boolean; sessionId: string; allowPromptFrom: string[] }
-      expect(body).toEqual({ ok: true, sessionId: id, allowPromptFrom: ["label:pygmalion-brain-persistent"] })
-      expect(registry.get(id)?.allowPromptFrom).toEqual(["label:pygmalion-brain-persistent"])
+      expect(body).toEqual({ ok: true, sessionId: id, allowPromptFrom: ["label:orchestrator-brain-persistent"] })
+      expect(registry.get(id)?.allowPromptFrom).toEqual(["label:orchestrator-brain-persistent"])
     } finally {
       await http.stop()
       registry.shutdown()

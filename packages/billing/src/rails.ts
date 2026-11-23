@@ -1,4 +1,4 @@
-/** Rail environment variables (AIP-BILLING Adapters, rule 24). Names only, never values. */
+/** Rail environment variables (AIP-74 Adapters, rule 24). Names only, never values. */
 import type { BillingHandle } from "./define-billing-manifest.js"
 import { defaultRailEnv } from "./settlement.js"
 

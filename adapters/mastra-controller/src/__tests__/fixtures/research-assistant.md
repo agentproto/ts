@@ -7,17 +7,17 @@ description:
 version: 0.1.0
 
 storage:
-  $resolver: "@guilde/harness/storage/postgres"
+  $resolver: "@acme/harness/storage/postgres"
   input:
     connectionStringEnv: DATABASE_URL
-    storeId: guilde-harness
+    storeId: acme-harness
 
 models:
   resolver:
-    $resolver: "@guilde/harness/model/resolver"
+    $resolver: "@acme/harness/model/resolver"
 
 memory:
-  $resolver: "@guilde/harness/memory/shared"
+  $resolver: "@acme/harness/memory/shared"
 
 modes:
   - id: plan
@@ -29,11 +29,11 @@ modes:
     transitionsTo: execute
     defaultModelId: claude-sonnet-4-6
     agent:
-      $resolver: "@guilde/harness/agent/operator"
+      $resolver: "@acme/harness/agent/operator"
       input:
         operatorId: research-assistant
     model:
-      $resolver: "@guilde/harness/model/for-mode"
+      $resolver: "@acme/harness/model/for-mode"
       input:
         default: claude-sonnet-4-6
     builtins:
@@ -48,11 +48,11 @@ modes:
     description: Carry out the approved research plan autonomously.
     default: false
     agent:
-      $resolver: "@guilde/harness/agent/operator"
+      $resolver: "@acme/harness/agent/operator"
       input:
         operatorId: research-assistant
     model:
-      $resolver: "@guilde/harness/model/for-mode"
+      $resolver: "@acme/harness/model/for-mode"
       input:
         default: claude-sonnet-4-6
         allowed:

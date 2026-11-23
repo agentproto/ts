@@ -85,9 +85,9 @@ function isError(result: unknown): boolean {
 function cousinTree(registry: SessionsRegistry, aWorkspace: string, bWorkspace: string) {
   const root = spawnNode(registry, undefined, aWorkspace, "root")
   const a = spawnNode(registry, root.id, aWorkspace, "marketing-officer")
-  const b = spawnNode(registry, root.id, bWorkspace, "pm-simone")
+  const b = spawnNode(registry, root.id, bWorkspace, "pm-demo")
   const a1 = spawnNode(registry, a.id, aWorkspace, "marketing-officer-1")
-  const b1 = spawnNode(registry, b.id, bWorkspace, "pm-simone-1")
+  const b1 = spawnNode(registry, b.id, bWorkspace, "pm-demo-1")
   return { root, a, b, a1, b1 }
 }
 

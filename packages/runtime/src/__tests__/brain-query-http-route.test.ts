@@ -130,20 +130,20 @@ describe("GET /brain/query", () => {
   })
 
   it("says when a brain answered from an incomplete index", async () => {
-    registerWorkspaces("agentik-studio")
+    registerWorkspaces("demo-app")
     const hit = (id: string) => ({ sourceId: id, chunkId: id, text: id, score: 1, metadata: {} })
     const brains = fakeBrains(
-      { default: [hit("sess-a")], "agentik-studio": [hit("sess-b")] },
-      ["agentik-studio"],
+      { default: [hit("sess-a")], "demo-app": [hit("sess-b")] },
+      ["demo-app"],
     )
     await withServer(async base => {
-      const named = (await (await fetch(`${base}/brain/query?q=x&workspace=agentik-studio`)).json()) as Record<string, unknown>
+      const named = (await (await fetch(`${base}/brain/query?q=x&workspace=demo-app`)).json()) as Record<string, unknown>
       expect(named.partial).toBe(true)
       const complete = (await (await fetch(`${base}/brain/query?q=x&workspace=default`)).json()) as Record<string, unknown>
       expect(complete.partial).toBeUndefined()
       const all = (await (await fetch(`${base}/brain/query?q=x`)).json()) as Record<string, unknown>
       expect(all.partial).toBe(true)
-      expect(all.workspacesPartial).toEqual(["agentik-studio"])
+      expect(all.workspacesPartial).toEqual(["demo-app"])
     }, brains)
   })
 
@@ -211,7 +211,7 @@ describe("GET /brain/query", () => {
   })
 
   it("federated (default `workspace=all`): merges hits across every registered brain, tags each with its workspace, sorts by score desc, and truncates to topK", async () => {
-    registerWorkspaces("agentik-studio", "agentproto")
+    registerWorkspaces("demo-app", "agentproto")
     const brains = fakeBrains({
       default: [
         {
@@ -222,7 +222,7 @@ describe("GET /brain/query", () => {
           metadata: { sessionId: "sess-d1", title: "Default session" },
         },
       ],
-      "agentik-studio": [
+      "demo-app": [
         {
           sourceId: "sess-s1",
           chunkId: "sess-s1",
@@ -253,16 +253,16 @@ describe("GET /brain/query", () => {
       expect(body.workspacesErrored).toBeUndefined()
       // Sorted by score desc, truncated to topK=2 across ALL three brains.
       expect(body.hits).toHaveLength(2)
-      expect(body.hits[0]).toMatchObject({ sessionId: "sess-s1", workspace: "agentik-studio", score: 9 })
+      expect(body.hits[0]).toMatchObject({ sessionId: "sess-s1", workspace: "demo-app", score: 9 })
       expect(body.hits[1]).toMatchObject({ sessionId: "sess-p1", workspace: "agentproto", score: 5 })
     }, brains)
   })
 
   it("federated: a per-brain provider throw is swallowed and listed in workspacesErrored, other brains' hits still return", async () => {
-    registerWorkspaces("agentik-studio")
+    registerWorkspaces("demo-app")
     const brains: WorkspaceBrains = {
       getBrain: (workspace: string) => {
-        if (workspace === "agentik-studio") {
+        if (workspace === "demo-app") {
           return stubBrainManager(() =>
             stubProvider(async () => {
               throw new Error("studio brain is down")
@@ -298,13 +298,13 @@ describe("GET /brain/query", () => {
         workspacesErrored?: string[]
       }
       expect(body.workspace).toBe("all")
-      expect(body.workspacesErrored).toEqual(["agentik-studio"])
+      expect(body.workspacesErrored).toEqual(["demo-app"])
       expect(body.hits.every(h => h.sessionId === "sess-ok")).toBe(true)
     }, brains)
   })
 
   it("federated: queries the brains one at a time, never two at once", async () => {
-    registerWorkspaces("agentproto", "agentik-studio")
+    registerWorkspaces("agentproto", "demo-app")
     // Each query stands in for a cold index build: it holds the brain for a
     // while. Federated mode must not overlap two of them.
     let running = 0
@@ -342,9 +342,9 @@ describe("GET /brain/query", () => {
       const res = await fetch(`${base}/brain/query?q=hit`)
       expect(res.status).toBe(200)
       const body = (await res.json()) as { hits: Array<{ workspace: string }> }
-      expect(body.hits.map(h => h.workspace).sort()).toEqual(["agentik-studio", "agentproto", "default"])
+      expect(body.hits.map(h => h.workspace).sort()).toEqual(["agentproto", "default", "demo-app"])
     }, brains)
-    expect(order).toEqual(["default", "agentproto", "agentik-studio"])
+    expect(order).toEqual(["default", "agentproto", "demo-app"])
     expect(maxRunning).toBe(1)
   })
 

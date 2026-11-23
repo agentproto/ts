@@ -13,6 +13,7 @@
  */
 import { VOICE_DEFAULTS } from "../defaults.js"
 import { makeUsageMeter } from "../usage.js"
+import { Pcm16ChunkAligner } from "../pcm16.js"
 import type {
   AudioFrame,
   SttProvider,
@@ -34,6 +35,7 @@ import {
   type CallTtsStreamOpener,
 } from "./speak-turn.js"
 import { openSttSession, type SttSession } from "./stt-session.js"
+import { createSttDedup, type SttDedupOptions } from "./stt-dedup.js"
 
 export interface CascadeVadOptions {
   /** Silence that ends an utterance. */
@@ -74,9 +76,32 @@ export interface CascadeOptions {
   /**
    * `sentence`: one TTS request per sentence. `continuous`: one stream per
    * reply fed the raw brain text, with a fallback to `sentence` when the
-   * stream fails (needs `tts.capabilities.chunkedInput`).
+   * stream fails (needs `tts.capabilities.chunkedInput`). The studio
+   * spellings `http-sentence` / `ws-continuous` (`VOICE_TTS_MODE`) are
+   * accepted and mean the same. Default from defaults.ts: `sentence`.
    */
-  ttsMode?: "sentence" | "continuous"
+  ttsMode?: "sentence" | "continuous" | "http-sentence" | "ws-continuous"
+  /**
+   * Per-sentence TTS transport. `stream`: the provider's streaming socket
+   * when it has one. `http`: the one-shot call only, so an operator can
+   * opt out of a flaky socket (`VOICE_TTS_TRANSPORT=http` in the studio).
+   * Default from defaults.ts: `stream`.
+   */
+  ttsTransport?: "stream" | "http"
+  /**
+   * Transcript dedup (three-guard, see cascade/stt-dedup.ts). `false`
+   * disables it; a partial object overrides the kit defaults field by
+   * field. Default: the kit defaults (on).
+   */
+  sttDedup?: false | Partial<SttDedupOptions>
+  /**
+   * Close the session after this long without an inbound mic frame
+   * (`pushAudio`); the mic-idle hook of `hooks` is called first. Some
+   * vendors bill the open socket second, so a forgotten session must not
+   * stay alive. 0 keeps the session open forever. Default from
+   * defaults.ts: 60 s.
+   */
+  idleMicMs?: number
   /** Spoken when the brain fails or returns nothing. The text is the product's. */
   failureText?: string
   logPrefix?: string
@@ -87,14 +112,17 @@ const A = VOICE_DEFAULTS.cascade.audio
 const toBuffer = (frame: AudioFrame): Buffer => Buffer.from(frame.pcm16)
 
 /** A per-sentence TTS call on a provider: a stream when it has one, else a file. */
-function makeSentenceTts(tts: TtsProvider, voiceId: string | undefined, language: string | undefined, sampleRate: number) {
+function makeSentenceTts(tts: TtsProvider, voiceId: string | undefined, language: string | undefined, sampleRate: number, preferStream: boolean) {
   return async (input: {
     text: string
     onChunk: (chunk: Buffer) => void | Promise<void>
     signal?: AbortSignal
   }): Promise<void> => {
     if (input.signal?.aborted) return
-    if (tts.capabilities.streaming) {
+    // `http` transport opts out of the streaming socket, but a provider
+    // that can only stream still streams: no transport ever fails a turn.
+    const useStream = tts.capabilities.streaming && (preferStream || !tts.capabilities.file)
+    if (useStream) {
       const stream = await tts.openStream({
         ...(voiceId ? { voiceId } : {}),
         ...(language ? { language } : {}),
@@ -238,18 +266,28 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
   const sampleRate = opts.sampleRate ?? A.inboundSampleRate.value
   const outboundSampleRate = opts.outboundSampleRate ?? A.outboundSampleRate.value
   const finalTimeoutMs = opts.sttFinalTimeoutMs ?? VOICE_DEFAULTS.cascade.stt.finalTimeoutMs.value
+  // `ws-continuous` (studio spelling of VOICE_TTS_MODE) maps to the kit's
+  // `continuous`; every other value is the per-sentence mode.
+  const ttsContinuous =
+    (opts.ttsMode ?? VOICE_DEFAULTS.tts.mode.value) === "ws-continuous" ||
+    opts.ttsMode === "continuous"
+  const ttsTransport = opts.ttsTransport ?? VOICE_DEFAULTS.tts.transport.value
+  const idleMicMs = opts.idleMicMs ?? VOICE_DEFAULTS.session.idleMicMs.value
   const manual = opts.vad === false
   const vad = opts.vad === false ? {} : (opts.vad ?? {})
   if (!stt.capabilities.streaming && !stt.capabilities.file) {
     throw new Error(`stt provider "${stt.slug}" has neither streaming nor file transcription`)
   }
-  if (opts.ttsMode === "continuous" && !tts.capabilities.chunkedInput) {
+  if (ttsContinuous && !tts.capabilities.chunkedInput) {
     throw new Error(`tts provider "${tts.slug}" cannot take chunked input; use ttsMode "sentence"`)
   }
 
   const meter = makeUsageMeter("cascade")
   let closed = false
   let seq = 0
+  // Every outbound frame is even-aligned PCM16 (see pcm16.ts): a vendor
+  // chunk with an odd byte never reaches the caller as a half-sample.
+  const audioAligner = new Pcm16ChunkAligner()
   let sttSession: SttSession | undefined
   if (stt.capabilities.streaming) {
     try {
@@ -266,20 +304,55 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     }
   }
 
-  const sentenceTts = makeSentenceTts(tts, opts.voiceId, opts.language, outboundSampleRate)
+  const sentenceTts = makeSentenceTts(tts, opts.voiceId, opts.language, outboundSampleRate, ttsTransport === "stream")
   const continuous =
-    opts.ttsMode === "continuous"
+    ttsContinuous
       ? makeContinuousOpener(tts, opts.voiceId, opts.language, outboundSampleRate)
       : undefined
+  const dedup = opts.sttDedup === false ? undefined : createSttDedup(opts.sttDedup ?? {})
 
+  // Mic-idle pause: some vendors bill the open socket per second, so a
+  // session whose mic went quiet closes itself and tells the host (the
+  // host starts a fresh session when the caller comes back). 0 disables.
+  let micIdleTimer: ReturnType<typeof setTimeout> | undefined
+  const disarmMicIdle = () => {
+    clearTimeout(micIdleTimer)
+    micIdleTimer = undefined
+  }
+  const armMicIdle = () => {
+    if (idleMicMs <= 0) return
+    disarmMicIdle()
+    micIdleTimer = setTimeout(() => {
+      if (closed) return
+      console.log(
+        `${opts.logPrefix ?? "[cascade]"} mic idle ${idleMicMs}ms — closing the session`,
+      )
+      try {
+        Promise.resolve(hooks.onMicIdle?.({ idleMs: idleMicMs })).catch(() => undefined)
+      } catch {
+        // the idle hook never affects the close
+      }
+      void closeSession()
+    }, idleMicMs)
+  }
+  const closeSession = async (): Promise<void> => {
+    if (closed) return
+    disarmMicIdle()
+    pipeline.close()
+    closed = true
+    meter.seal()
+  }
   const deps: CallPipelineDeps = {
     transport: {
       isOpen: () => !closed,
       send: msg => {
         if (msg.type === "audio") {
           const bytes = Buffer.from(String(msg.audio), "base64")
+          // Even-align so an odd vendor byte never becomes a half-sample.
+          const aligned = audioAligner.push(bytes)
+          if (aligned.byteLength === 0) return
           const frame: AudioFrame = {
-            pcm16: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+            pcm16: aligned.buffer.slice(aligned.byteOffset, aligned.byteOffset + aligned.byteLength) as ArrayBuffer,
             sampleRate: Number(msg.sampleRate),
             sequenceNumber: seq++,
           }
@@ -294,6 +367,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
       ? { outboundQueueMaxMs: opts.outboundQueueMaxMs }
       : { outboundQueueMaxMs: VOICE_DEFAULTS.cascade.playback.outboundQueueMaxMs.value }),
     ...(opts.bargeIn ? { bargeIn: opts.bargeIn } : {}),
+    ...(dedup ? { sttDedup: dedup } : {}),
     sampleRate,
     outboundSampleRate,
     silenceEndMs: manual ? Infinity : (vad.silenceEndMs ?? VOICE_DEFAULTS.cascade.vad.silenceEndMs.value),
@@ -322,7 +396,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
           },
           tts: sentenceTts,
           ...(continuous ? { ttsStream: continuous } : {}),
-          onTtsChars: n => meter.addTtsCharacters(tts.slug, n),
+          onTtsChars: n => meter.addTtsCharacters(tts.slug, n, tts.model),
           ...(opts.failureText !== undefined ? { failureText: opts.failureText } : {}),
           ...(opts.logPrefix ? { logPrefix: opts.logPrefix } : {}),
         },
@@ -332,6 +406,8 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     ...(opts.logPrefix ? { logPrefix: opts.logPrefix } : {}),
   }
   const pipeline = createCallPipeline(deps)
+  // Armed only once `pipeline` exists: the timer callback closes through it.
+  armMicIdle()
 
   const languages = [...new Set([...stt.capabilities.languages, ...tts.capabilities.languages])]
 
@@ -346,6 +422,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     },
     pushAudio(frame) {
       if (closed) return
+      armMicIdle()
       if (frame.sampleRate !== sampleRate) {
         emit.error(new Error(`cascade expects ${sampleRate} Hz frames, got ${frame.sampleRate}`))
         return
@@ -359,11 +436,38 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
       pipeline.interrupt()
     },
     getUsage: () => meter.snapshot(),
-    async close() {
-      if (closed) return
-      pipeline.close()
-      closed = true
-      meter.seal()
-    },
+    close: closeSession,
   }
+}
+
+/**
+ * Operator tuning for the turn-level TTS mode, read from `VOICE_TTS_MODE`
+ * (the studio name): `http-sentence` (default) keeps one TTS request per
+ * sentence, `ws-continuous` streams the brain's raw deltas into one vendor
+ * stream per reply. Invalid or unset keeps the kit default; the kit
+ * spellings (`sentence`, `continuous`) are also accepted.
+ */
+export function ttsModeFromEnv(
+  value: string | undefined,
+): "sentence" | "continuous" | undefined {
+  const v = value?.trim().toLowerCase()
+  if (!v) return undefined
+  if (v === "ws-continuous" || v === "continuous") return "continuous"
+  if (v === "http-sentence" || v === "sentence") return "sentence"
+  return undefined
+}
+
+/**
+ * Operator opt-out of the per-sentence TTS socket, read from
+ * `VOICE_TTS_TRANSPORT` (the studio name): `http` forces one-shot
+ * synthesis when the provider offers it, anything else keeps the stream.
+ */
+export function ttsTransportFromEnv(
+  value: string | undefined,
+): "stream" | "http" | undefined {
+  const v = value?.trim().toLowerCase()
+  if (!v) return undefined
+  if (v === "http") return "http"
+  if (v === "ws" || v === "stream") return "stream"
+  return undefined
 }

@@ -1,6 +1,6 @@
 /**
  * Sink — the agnostic outbound boundary: push refined corpus entries to an
- * external store. The kit knows NOTHING about any host (Guilde, etc.) — it
+ * external store. The kit knows NOTHING about any host (Acme, etc.) — it
  * just hands `SinkItem`s to a `SinkPort`. Concrete sinks (a config-driven MCP
  * caller, an HTTP endpoint, a local mirror) live in host/adapter packages and
  * are selected by a sink manifest, not by code in the kit.

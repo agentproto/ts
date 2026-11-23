@@ -45,6 +45,12 @@ describe.skipIf(process.platform === "win32")("Codex Desktop wake through the me
   let dir: string
   let server: Server
   let registry: SessionsRegistry
+  // Every registry this test built — useRegistry() and the restart test swap
+  // `registry` mid-test, orphaning the previous one while its transcript
+  // writes are still in flight. afterEach() must drain them all, not just the
+  // survivor, or a late write's mkdir(recursive) re-creates a dir rmSync just
+  // emptied (ENOTEMPTY on the parent rmdir — seen live on CI, run 45035471702).
+  const registries: SessionsRegistry[] = []
   let requests: Record<string, unknown>[]
   let startResponse: Record<string, unknown> | undefined
   let ownerSupportsAppInput: boolean
@@ -55,6 +61,7 @@ describe.skipIf(process.platform === "win32")("Codex Desktop wake through the me
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "ap-cdx-"))
     requests = []
+    registries.length = 0
     ownerSupportsAppInput = true
     startResponse = accepted
     intercept = undefined
@@ -89,17 +96,27 @@ describe.skipIf(process.platform === "win32")("Codex Desktop wake through the me
       transcriptDir: join(dir, "transcripts"),
       codexDesktopWake: { threadIds: [a], directThreadIds: [b], ipcDir: dir, timeoutMs: 250, retryMs: 50 },
     })
+    registries.push(registry)
     registry.touchExternal({ id: `codex:${a}`, host: "codex" })
     registry.touchExternal({ id: `codex:${b}`, host: "codex" })
     registry.touchExternal({ id: `codex:${unlisted}`, host: "codex" })
   })
 
   afterEach(async () => {
+    // touchExternal()/spawnAgent()/inbox parking write transcripts under
+    // `dir` fire-and-forget, and shutdown() itself starts a tracked
+    // transcript-stream close. Drain every registry's pending writes BEFORE
+    // rmSync — the same pattern as command-tools.test.ts's teardown — or the
+    // write's mkdir(recursive) races the removal (ENOTEMPTY on the parent
+    // rmdir, or ENOENT in the writer). maxRetries covers any straggler the
+    // drain can't see.
     registry?.shutdown()
+    for (const r of registries) r.shutdown()
+    await Promise.all(registries.map(r => r.settlePendingWrites()))
     if (server?.listening) await new Promise<void>((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve())
     })
-    if (dir) rmSync(dir, { force: true, recursive: true })
+    if (dir) rmSync(dir, { force: true, recursive: true, maxRetries: 5, retryDelay: 20 })
   })
 
   function message(threadId = a, urgency: "next-turn" | "fyi" = "next-turn") {
@@ -165,6 +182,7 @@ describe.skipIf(process.platform === "win32")("Codex Desktop wake through the me
           ...(byThread ? { trustedSendersByThread: byThread } : {}),
         } as never,
       })
+      registries.push(registry)
       for (const id of [a, b]) registry.touchExternal({ id: `codex:${id}`, host: "codex" })
     }
     const agent = (parentSessionId?: string, label?: string) => registry.spawnAgent({
@@ -316,12 +334,14 @@ describe.skipIf(process.platform === "win32")("Codex Desktop wake through the me
       codexDesktopWake: { threadIds: [a], ipcDir: dir, timeoutMs: 200 },
     }
     registry = createSessionsRegistry(options)
+    registries.push(registry)
     const msg = message()
     registry.touchExternal({ id: msg.to, host: "codex" })
     startResponse = undefined
     await expect(registry.sendMessage(msg)).resolves.toMatchObject({ desktopWake: "uncertain" })
     registry.shutdown()
     registry = createSessionsRegistry(options)
+    registries.push(registry)
     registry.touchExternal({ id: msg.to, host: "codex" })
     expect(registry.listInbox(msg.to)).toMatchObject([{ id: msg.id, text: msg.text }])
     await registry.sendMessage(msg)

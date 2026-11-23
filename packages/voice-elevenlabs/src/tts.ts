@@ -53,6 +53,9 @@ export function makeElevenLabsTts(cfg: ElevenLabsTtsConfig = {}): TtsProvider {
 
   return {
     slug: "elevenlabs",
+    get model() {
+      return model()
+    },
     capabilities: {
       streaming: true,
       file: true,

@@ -174,10 +174,10 @@ describe("TunnelRegistry × cloudflare-managed", () => {
           async start(opts) {
             rec.starts.push(opts)
             return {
-              publicUrl: "https://user-42.pygmalion.sh",
+              publicUrl: "https://user-42.orchestrator.sh",
               pid: 7,
               tunnelId: "tun-1",
-              hostnames: ["user-42.pygmalion.sh"],
+              hostnames: ["user-42.orchestrator.sh"],
             }
           },
         }
@@ -186,10 +186,10 @@ describe("TunnelRegistry × cloudflare-managed", () => {
     live.push(reg)
     const desc = await reg.create({ provider: "cloudflare-provisioned", targetPort: 4870, public: true })
     expect(rec.starts[0]!.tunnel?.hostnames).toEqual([])
-    expect(desc.hostname).toBe("user-42.pygmalion.sh")
-    expect(desc.hostnames).toEqual(["user-42.pygmalion.sh"])
+    expect(desc.hostname).toBe("user-42.orchestrator.sh")
+    expect(desc.hostnames).toEqual(["user-42.orchestrator.sh"])
     expect(await reg.delete(desc.id)).toBe(true)
-    expect(rec.calls.at(-1)).toBe(`destroy ${desc.id} user-42.pygmalion.sh`)
+    expect(rec.calls.at(-1)).toBe(`destroy ${desc.id} user-42.orchestrator.sh`)
   })
 
   describe("cloudflare-provisioned root", () => {

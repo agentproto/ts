@@ -429,7 +429,7 @@ Vendor-specific runtime data goes under `metadata.<vendor>.*`. Examples:
 metadata:
   mastra:
     workflowId: "issue-invoice-with-cap"
-  guilde:
+  acme:
     appliesToOperatorTeams: [billing, sales]
 ```
 

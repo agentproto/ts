@@ -145,7 +145,7 @@ Remote mode (--remote-mcp-url set):
     AGENTPROTO_REMOTE_MCP_URL.
   --remote-mcp-auth <token>:
     Bearer token sent as the Authorization header on every MCP request to
-    the remote server (e.g. a \`gld_…\` API key for Guilde). Env:
+    the remote server (e.g. a \`gld_…\` API key for Acme). Env:
     AGENTPROTO_REMOTE_MCP_AUTH.
   --remote-app-id <appId>:
     The MCP-Apps app id to render, or a full \`ui://…\` resource URI.
@@ -247,7 +247,7 @@ export function createDaemonMcpClientGetter(
 export interface RemoteMcpTarget {
   /** Remote Streamable-HTTP MCP endpoint (e.g. https://api.example.com/mcp). */
   url: string
-  /** Bearer token sent as the Authorization header (e.g. a Guilde `gld_` API key). */
+  /** Bearer token sent as the Authorization header (e.g. a Acme `gld_` API key). */
   authToken?: string
   /** MCP-Apps app id to render (bare id → `ui://<id>`; a full `ui://` URI passes through). */
   appId?: string

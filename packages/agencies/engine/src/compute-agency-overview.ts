@@ -12,7 +12,7 @@
  * Designed to be called from:
  *   - A Mastra workflow (`@agentproto/agencies-mastra` codegen wraps this in suspend/
  *     resume primitives if needed).
- *   - A cron-driven routine engine (e.g. Guilde's routine-executor).
+ *   - A cron-driven routine engine (e.g. Acme's routine-executor).
  *   - Ad-hoc by a CLI (`agencies overview compute <workspace>`).
  *
  * The compute is single-pass — no memoization, no incremental cache. For

@@ -84,7 +84,7 @@ describe("deriveEffectiveGrants", () => {
           {
             id: "s1",
             operatorLabel: "brain",
-            allowPromptFrom: ["label:pygmalion-brain-persistent"],
+            allowPromptFrom: ["label:orchestrator-brain-persistent"],
           },
         ],
       }),
@@ -93,7 +93,7 @@ describe("deriveEffectiveGrants", () => {
     expect(grants).toHaveLength(1)
     expect(grants[0]).toMatchObject({
       grant: {
-        principal: "session-label://pygmalion-brain-persistent",
+        principal: "session-label://orchestrator-brain-persistent",
         effect: "allow",
         actions: [
           { action: "session:prompt", scope: "label:brain" },
@@ -149,14 +149,14 @@ describe("deriveEffectiveGrants", () => {
     const report = deriveEffectiveGrants(
       input({
         messaging: { ...DEFAULTS, allowSameWorkspace: false },
-        operatorDelegates: ["label:pygmalion-brain-persistent"],
+        operatorDelegates: ["label:orchestrator-brain-persistent"],
       }),
     )
     expect(report.grants).toEqual([])
     expect(report.unmapped).toHaveLength(1)
     expect(report.unmapped[0]).toMatchObject({
       source: "defaults.tasks.operatorDelegates",
-      entry: "label:pygmalion-brain-persistent",
+      entry: "label:orchestrator-brain-persistent",
     })
   })
 })

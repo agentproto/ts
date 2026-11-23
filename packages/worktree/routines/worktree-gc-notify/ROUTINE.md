@@ -17,7 +17,7 @@ schedule:
   catchup: skip
 target:
   workflow:
-    file: /Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts/packages/worktree/routines/worktree-gc-notify/WORKFLOW.md
+    file: /path/to/agentproto/ts/packages/worktree/routines/worktree-gc-notify/WORKFLOW.md
   inputs:
     chatId: "<REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID>"
 retry:

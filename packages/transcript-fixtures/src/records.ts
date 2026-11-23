@@ -7,7 +7,7 @@
  * `{seq: number, ts: string (ISO)}` plus kind-specific fields.
  *
  * This is the RAW format produced by the daemon — NOT the normalized
- * client-side format (`normalize.ts` in agentik-studio's
+ * client-side format (`normalize.ts` in demo-app's
  * `packages/react-agentproto` owns that). The point of this package is to be
  * the single source of truth both sides test against.
  *
@@ -97,7 +97,7 @@ export interface AgentprotoRawTurnEnd extends AgentprotoRawTranscriptBase {
 }
 
 /** A daemon-side system notice (not agent output). Deliberately NOT consumed
- *  explicitly by agentik-studio's `normalize.ts` — it falls through to its
+ *  explicitly by demo-app's `normalize.ts` — it falls through to its
  *  `"other"` fallback, and so exercises the "unknown kind" behavior of both
  *  consumer test suites. */
 export interface AgentprotoRawNotice extends AgentprotoRawTranscriptBase {

@@ -1,5 +1,5 @@
 /**
- * Who pays (AIP-BILLING rules 19 and 20).
+ * Who pays (AIP-74 rules 19 and 20).
  *
  * `self`: the account that acts pays. `hierarchy/v1`: walk up while the parent
  * is funded `pool`; a parent funded `allocated_budget` stops the walk and its
@@ -7,7 +7,7 @@
  * parent is an error. There is no cascade: when the payer cannot pay, nobody
  * else does.
  */
-import { fold } from "@agentproto/wallet"
+import { fold, floorOf } from "@agentproto/wallet"
 import type { StoragePort } from "@agentproto/wallet/ports"
 import type { BillingHandle } from "./define-billing-manifest.js"
 
@@ -62,7 +62,9 @@ export async function resolvePayer(
 /**
  * Can `payerId` pay `amount` of the primary asset? `balance` counts what the
  * account owns, holds included; `spendable` removes what is reserved (a dispute
- * freeze, an open hold).
+ * freeze, an open hold). A lot minted with a `floor` (a bounded short position,
+ * `null` for an unbounded one) can be spent below zero down to that floor, the
+ * same bound the journal enforces on commit, so its headroom counts too.
  */
 export async function canPay(
   manifest: BillingHandle,
@@ -75,6 +77,6 @@ export async function canPay(
     l => l.asset === manifest.primaryAsset && !(l.expiresAt !== undefined && l.expiresAt <= now),
   )
   const mode = manifest.payer.affordability ?? "balance"
-  const held = lots.reduce((s, l) => s + l.remaining - (mode === "spendable" ? l.reserved : 0), 0)
+  const held = lots.reduce((s, l) => s + l.remaining - (mode === "spendable" ? l.reserved : 0) - floorOf(l.floor), 0)
   return held >= amount
 }

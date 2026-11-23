@@ -2,7 +2,7 @@
  * McpSink — a config-driven SinkPort that pushes each refined entry by calling
  * a configured MCP tool. Host-agnostic: the endpoint, tool name, and the
  * entry→args mapping all come from a sink manifest, so the corpus links to ANY
- * host (a Guilde guild KB, a Notion db, a vector store) without naming it.
+ * host (a Acme guild KB, a Notion db, a vector store) without naming it.
  *
  * The manifest's `args` is a template: string values containing `${slug}`,
  * `${title}`, `${body}`, `${sources}`, `${tags}`, `${access}`, `${uri}`,

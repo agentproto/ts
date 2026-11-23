@@ -1,5 +1,5 @@
 /**
- * Shared small pieces of the AIP-BILLING implementation: reference and currency
+ * Shared small pieces of the AIP-74 implementation: reference and currency
  * normalisation (rule 22), ISO 8601 durations, fiat asset declarations, and the
  * minor-unit conversion of rule 9.
  */
@@ -11,10 +11,10 @@ export const normalizeRef = (ref: string): string => ref.replace(/^aip:\/\/49\//
 /** Currency codes compare case-insensitively and are stored upper case (rule 22). */
 export const normalizeCurrency = (c: string): string => c.toUpperCase()
 
-/** A fiat reference is a bare ISO 4217 code (AIP-BILLING schema `fiatRef`). */
+/** A fiat reference is a bare ISO 4217 code (AIP-74 schema `fiatRef`). */
 export const isFiatRef = (ref: string): boolean => /^[A-Z]{3}$/.test(normalizeRef(ref))
 
-/** Fiat default partition, implicit in a manifest (AIP-BILLING assets). */
+/** Fiat default partition, implicit in a manifest (AIP-74 assets). */
 export const fiatPartition = (currency: string): string => `${normalizeCurrency(currency)}:default`
 
 /** Currencies with no minor unit, or three. Everything else has two. */

@@ -69,12 +69,12 @@ describe("resolveSession", () => {
     expect(calls[0]?.cookies?.map(c => c.name)).toEqual(["a", "b"])
   })
 
-  it("an old guilde-shaped descriptor with no guilde source registered is a typed unknown-kind error", async () => {
+  it("an old acme-shaped descriptor with no acme source registered is a typed unknown-kind error", async () => {
     const { openCamofox } = opener()
     const desc: SessionDescriptor = {
       id: "g",
       backend: "camofox",
-      inject: { from: "guilde", sessionRef: "ref-abc", domains: ["linkedin.com"] },
+      inject: { from: "acme", sessionRef: "ref-abc", domains: ["linkedin.com"] },
     }
     await expect(resolveSession(desc, { openCamofox })).rejects.toBeInstanceOf(SessionSourceUnknownError)
   })

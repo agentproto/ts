@@ -190,13 +190,13 @@ describe("reduceConversation", () => {
       rec({ kind: "user-prompt", text: "go" }),
       rec({ kind: "text-delta", text: "Checking the client." }), // final, no "\n", no partial
       rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash" }),
-      rec({ kind: "text-delta", text: "Trial logic lives in Simone." }),
+      rec({ kind: "text-delta", text: "Trial logic lives in Demo." }),
       rec({ kind: "turn-end", reason: "completed" }),
     ])
     const asst = conv.turns[1]!
     expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool", "assistant-text"])
     expect(asst.segments[0]).toMatchObject({ text: "Checking the client." })
-    expect(asst.segments[2]).toMatchObject({ text: "Trial logic lives in Simone." })
+    expect(asst.segments[2]).toMatchObject({ text: "Trial logic lives in Demo." })
   })
 
   it("treats a `partial`-flagged flush as unterminated even when it happens to end in a newline", () => {

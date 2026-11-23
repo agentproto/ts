@@ -1,9 +1,9 @@
 /**
  * The ONE defaults file of @agentproto/voice (AIP-VOICE, "Kit defaults").
  *
- * Every value carries its origin: the studio file:line it was tuned in, and
- * the PR when there is one. Paths: `calls/` is `projects/simone/apps/voice/src/calls/`,
- * `af/` is `packages/agent-framework/src/voice/`, both in agentik-studio.
+ * Every value carries its origin: the file:line it was tuned in, and the PR
+ * when there is one. Paths like `calls/` and `af/` are the call pipeline and
+ * agent-framework voice folders of the host product the values were tuned in.
  * Tests and code read values from here; nothing else in the package holds a
  * tuning number or a vendor model name.
  *
@@ -13,10 +13,8 @@
  *
  * Engine and provider defaults (decision of 2026-11-20): the default engine
  * is the cascade, with ElevenLabs for both stages (Scribe for STT). OpenAI
- * is a provider among others. Deviation to know: the one deployed product
- * (Simone calls) runs STT on OpenAI file transcription by setting
- * `VOICE_STT_PROVIDER=whisper` (deployment/ovh/wa-calls-rt/compose.yaml:89,
- * and projects/simone/apps/voice/src/env.ts:154-159). That is a value it
+ * is a provider among others. A deployment can keep STT on OpenAI file
+ * transcription by setting `VOICE_STT_PROVIDER=whisper`. That is a value it
  * sets itself: the kit default changes, no value changes meaning.
  */
 
@@ -41,6 +39,20 @@ export const VOICE_DEFAULTS = {
     realtime: d(
       "elevenlabs",
       "Decision of Jeremy, 2026-11-20: hosted speech-to-speech agent, reached with VOICE_PROVIDER=elevenlabs-s2s",
+    ),
+  },
+
+  /**
+   * Session-level defaults. Only the cascade consumes `idleMicMs` today (the
+   * realtime/S2S engines ignore it). Mic-idle comes from the
+   * studio voice server: a session whose mic went quiet costs money per
+   * second on some vendor sockets, so the kit closes it and tells the host.
+   */
+  session: {
+    /** Close the session after this long without an inbound mic frame. 0 keeps it open forever. */
+    idleMicMs: d(
+      60_000,
+      "af/start-voice-server.ts:1888 MIC_IDLE_PAUSE_MS: close the socket after 60 s of muted mic (some vendors bill the open second, not the turn)",
     ),
   },
 
@@ -76,6 +88,20 @@ export const VOICE_DEFAULTS = {
     },
     stt: {
       finalTimeoutMs: d(2000, "calls/stt-stream.ts:146 (PR #1227)"),
+      /** Three-guard transcript dedup: values only; see cascade/stt-dedup.ts. */
+      dedup: {
+        /** Identical normalized transcripts inside this window are dropped. */
+        duplicateWindowMs: d(
+          5000,
+          "af/turn-runner.ts:32,64 DEDUPE_WINDOW_MS (VAD splits on an inhale, partial + final double-fire)",
+        ),
+        /** Window in which a transcript may match what the assistant just said. */
+        echoWindowMs: d(10_000, "af/turn-runner.ts:61 ECHO_WINDOW_MS (own TTS bouncing back through the mic)"),
+        /** Share of tokens (>= minTokenLength) that must match to call it an echo. */
+        echoOverlapRatio: d(0.6, "af/turn-runner.ts:89-112: 60 % covers truncated echoes without flagging genuine replies"),
+        /** Tokens shorter than this never count for the echo overlap. */
+        minTokenLength: d(3, "af/turn-runner.ts:76-78: short words never identify an echo"),
+      },
     },
     audio: {
       inboundSampleRate: d(16_000, "calls/pipeline.ts:237"),
@@ -84,6 +110,29 @@ export const VOICE_DEFAULTS = {
   },
 
   tts: {
+    /**
+     * Turn-level TTS mode. `http-sentence`: one TTS request per sentence.
+     * `ws-continuous`: one vendor stream per reply fed the raw brain text
+     * (server-side chunking, no per-sentence handshake), with the fallback
+     * to `http-sentence` bounded by `continuous` below. Kept on `http-sentence`
+     * until `ws-continuous` is validated on a real call. Env:
+     * `VOICE_TTS_MODE` (see `ttsModeFromEnv`).
+     */
+    mode: d<"http-sentence" | "ws-continuous">(
+      "http-sentence",
+      "voice/env.ts:60-62 VOICE_TTS_MODE (PR #1226)",
+    ),
+    /**
+     * Per-sentence TTS transport. `stream`: the provider's streaming socket
+     * when it has one (ElevenLabs `stream-input` WS, ~200-400 ms less TTFB per
+     * sentence). `http`: opt-out that forces one-shot synthesis so an
+     * operator can kill a flaky socket without redeploying. Env:
+     * `VOICE_TTS_TRANSPORT` (see `ttsTransportFromEnv`).
+     */
+    transport: d<"stream" | "http">(
+      "stream",
+      "af/start-voice-server.ts:2095 VOICE_TTS_TRANSPORT: the WS unless the operator sets http",
+    ),
     split: {
       minSentenceChars: d(12, "af/sentence-pipeliner.ts:54 (PR #1114)"),
       firstClauseMinChars: d(24, "af/sentence-pipeliner.ts:39-45,55 (PR #1114)"),
@@ -171,6 +220,45 @@ export const VOICE_DEFAULTS = {
         undefined,
         "PR #2804 review: no deployment language in kit defaults; assemblyai.com/docs/speech-to-text, read 2026-11-21",
       ),
+    },
+  },
+
+  /**
+   * Data only, no consumer in this package yet: the values a future
+   * WebRTC/RTP transport package reads (the transport of the studio call
+   * bridge; WhatsApp-specific rows stay in the product). Listed so the
+   * tuning lives in this one file when that package exists.
+   */
+  transport: {
+    webrtc: {
+      /** Opus decodes/encodes at 48 kHz whatever the PCM rate; resampled at the edges. */
+      opusSampleRate: d(48_000, "af/transports/webrtc.ts:13 OPUS_RATE"),
+      frameMs: d(20, "af/transports/webrtc.ts:14 FRAME_MS (960 samples at 48 kHz)"),
+      payloadType: d(111, "af/transports/webrtc.ts:16 OPUS_PAYLOAD_TYPE (standard Opus PT)"),
+      opusBitrate: d(32_000, "af/transports/webrtc.ts:43 opusBitrate default (bit/s)"),
+      /** `audio` = CELT, waveform-faithful; `voip` = SILK, lower rate. */
+      opusApplication: d<"audio" | "voip">("audio", "af/transports/webrtc.ts:63-64,151-158"),
+      /** PCM edge conversion between the session rate and the Opus rate. */
+      resampler: d<"windowed-sinc">("windowed-sinc", "af/transports/pcm-resampler.ts; webrtc.ts:556-562"),
+      /** Safety cap on queued outbound audio. A speech-to-speech reply arrives faster than real time. */
+      maxOutboundQueueMs: d(
+        120_000,
+        "af/transports/webrtc.ts:65-71 maxOutboundQueueMs: a long reply fits, a runaway producer hits the cap",
+      ),
+    },
+  },
+
+  /**
+   * Data only: the model-catalog id billed for each vendor's hosted
+   * speech-to-speech product, for a usage registry that accounts per
+   * engine (the kit itself reports the model actually run). Same ids as
+   * the studio billing mapping.
+   */
+  billing: {
+    s2sModel: {
+      openai: d("openai/gpt-realtime", "af/strategies/engines.ts:100; catalog id of the GA realtime model"),
+      elevenlabs: d("elevenlabs/conversational", "af/strategies/engines.ts:148; catalog id of Conversational AI"),
+      gemini: d("google/gemini-live", "af/strategies/engines.ts:200,295; catalog id of the Live API"),
     },
   },
 } as const

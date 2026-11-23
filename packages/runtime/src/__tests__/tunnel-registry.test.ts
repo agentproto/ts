@@ -393,14 +393,14 @@ describe("TunnelRegistry", () => {
     const desc = await reg.create({
       targetPort: 3040,
       provider: "named",
-      hostname: "guilde-local.example.com",
-      tunnelId: "guilde",
+      hostname: "acme-local.example.com",
+      tunnelId: "acme",
       autostart: true,
     })
 
     expect(desc.provider).toBe("named")
-    expect(desc.hostname).toBe("guilde-local.example.com")
-    expect(desc.tunnelId).toBe("guilde")
+    expect(desc.hostname).toBe("acme-local.example.com")
+    expect(desc.tunnelId).toBe("acme")
     expect(desc.autostart).toBe(true)
     expect(desc.status).toBe("active")
   })
@@ -414,23 +414,23 @@ describe("TunnelRegistry", () => {
         tunnels: [
           {
             id: "tun_named",
-            name: "guilde",
+            name: "acme",
             provider: "named",
             targetHost: "127.0.0.1",
             targetPort: 3040,
-            publicUrl: "https://guilde-local.example.com",
+            publicUrl: "https://acme-local.example.com",
             status: "active",
             pid: 4242,
             createdAt: "2026-01-01T00:00:00Z",
             autostart: true,
-            hostname: "guilde-local.example.com",
-            tunnelId: "guilde",
+            hostname: "acme-local.example.com",
+            tunnelId: "acme",
           },
         ],
       }),
     )
 
-    const mock = makeMockProvider({ startUrl: "https://guilde-local.example.com" })
+    const mock = makeMockProvider({ startUrl: "https://acme-local.example.com" })
     const { reg } = makeRegistry(tmp, mock)
 
     // Ghosted to stopped on load…
@@ -439,7 +439,7 @@ describe("TunnelRegistry", () => {
     await reg.restoreOnBoot()
 
     expect(reg.get("tun_named")?.status).toBe("active")
-    expect(reg.get("tun_named")?.publicUrl).toBe("https://guilde-local.example.com")
+    expect(reg.get("tun_named")?.publicUrl).toBe("https://acme-local.example.com")
     expect(mock.startCalled).toBe(1)
   })
 

@@ -378,7 +378,7 @@ describe("mapFolderQuickPickItems", () => {
 const workspaces: WorkspacesConfig = {
   version: 1,
   workspaces: [
-    { slug: "studio", path: "/repo/app", addedAt: "", updatedAt: "", label: "Agentik Studio" },
+    { slug: "studio", path: "/repo/app", addedAt: "", updatedAt: "", label: "Demo App" },
     { slug: "infra", path: "/repo/infra", addedAt: "", updatedAt: "" },
   ],
 }
@@ -401,7 +401,7 @@ describe("resolveWorkspaceSlug", () => {
 describe("buildSpawnPlaceHolder", () => {
   it("shows the workspace label and cwd when the cwd matches a registered workspace", () => {
     expect(buildSpawnPlaceHolder(workspaces, "/repo/app")).toBe(
-      "Spawning in Agentik Studio (/repo/app) — select adapter · model",
+      "Spawning in Demo App (/repo/app) — select adapter · model",
     )
   })
 
@@ -428,7 +428,7 @@ describe("buildSpawnPlaceHolder", () => {
 
   it("announces permission-hold up front — a session that stops at every tool must not be a surprise", () => {
     expect(buildSpawnPlaceHolder(workspaces, "/repo/app", true)).toBe(
-      "Spawning in Agentik Studio (/repo/app) — select adapter · model · asking before each tool",
+      "Spawning in Demo App (/repo/app) — select adapter · model · asking before each tool",
     )
     expect(buildSpawnPlaceHolder(workspaces, undefined, true)).toBe(
       "No workspace folder open — select adapter · model · asking before each tool (Configure… to set a working directory)",
@@ -980,7 +980,7 @@ function session(overrides: Partial<SessionDescriptor> = {}): SessionDescriptor 
   return {
     id: "s1",
     kind: "agent-cli",
-    workspaceSlug: "agentik-studio",
+    workspaceSlug: "demo-app",
     command: "claude",
     pid: 1,
     status: "exited",
@@ -1016,7 +1016,7 @@ describe("deriveRecentSpawns", () => {
       "hermes/glm-5.2/openrouter",
     ])
     // The recent hermes row carries the wallet to replay one-click.
-    expect(recent[1]).toMatchObject({ accessProfileRef: "or-key", gateway: "openrouter", workspaceSlug: "agentik-studio" })
+    expect(recent[1]).toMatchObject({ accessProfileRef: "or-key", gateway: "openrouter", workspaceSlug: "demo-app" })
   })
 
   it("honours the limit", () => {

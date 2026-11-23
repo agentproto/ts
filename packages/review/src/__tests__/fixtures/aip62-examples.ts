@@ -5,8 +5,8 @@
 
 export const EXAMPLE_PUSH_GATE = `---
 kind: review
-id: agentik-studio
-name: agentik-studio push gate
+id: demo-app
+name: demo-app push gate
 description: >-
   What \`git push\` (scripts/gate.mjs) asks the local agentproto daemon to attest:
   advisory turbo/structure lanes plus one blocking agentic review.
@@ -49,7 +49,7 @@ bindings:
   local: { on: pre-push, checks: [types, test, structure, gate, correctness] }
 ---
 
-# agentik-studio review manifest
+# demo-app review manifest
 
 \`scripts/gate.mjs\` (the pre-push hook, \`pnpm gate\`, \`pnpm gate:push\`) is a thin
 client: it resolves the pushed range and calls the daemon's \`review_run\` with

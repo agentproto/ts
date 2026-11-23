@@ -12,7 +12,7 @@
 import { officeFrontmatterSchema, type OfficeFrontmatter } from "./schema.js"
 
 export interface OfficeTreeNodeInput {
-  /** AIP-34 id of the node, e.g. `@acme/simone`. */
+  /** AIP-34 id of the node, e.g. `@acme/demo`. */
   ref: string
   /** Folder of the node, posix, relative to the tree root; "" for the root. */
   dir: string

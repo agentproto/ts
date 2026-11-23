@@ -104,7 +104,7 @@ A credentials file after logging into two hosts:
 {
   "version": 1,
   "hosts": {
-    "https://guilde.work": {
+    "https://example.com": {
       "token": "eyJhbGciOiJIUzI1NiIs…",
       "tokenType": "Bearer",
       "expiresAt": "2026-08-08T12:34:56.000Z",

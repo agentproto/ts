@@ -1,5 +1,5 @@
 /**
- * `SettlementProvider`: the payment provider contract of AIP-BILLING. It extends the
+ * `SettlementProvider`: the payment provider contract of AIP-74. It extends the
  * AIP-49 `SettlementPort` (`charge`, `pay`) with what a payment path needs.
  * There is no second settlement interface: this one IS the port plus webhook
  * verification, an optional refund and an optional catalog push.
@@ -60,7 +60,7 @@ export interface SettlementProvider extends SettlementPort {
   /** The rail id this provider settles. */
   readonly id: string
   readonly name: string
-  /** Variable NAMES the provider reads, never values (AIP-BILLING Adapters). */
+  /** Variable NAMES the provider reads, never values (AIP-74 Adapters). */
   readonly env: { secretKey: string; webhookSecret: string; mode: string }
   /**
    * Verify the signature and turn a webhook into a fact, or return null for an

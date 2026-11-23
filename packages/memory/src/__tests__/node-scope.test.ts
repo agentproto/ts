@@ -20,11 +20,11 @@ import {
 const NOW = new Date("2026-10-28T12:00:00.000Z")
 
 const ROOT = "@acme/agentik"
-const SIMONE = "@acme/simone"
-const KATCHY = "@acme/katchy"
+const DEMO = "@acme/demo"
+const NOVA = "@acme/nova"
 
-const SIMONE_SESSION: MemoryScope = { nodes: [SIMONE, ROOT], tree: ROOT, operator: "pm-simone" }
-const KATCHY_SESSION: MemoryScope = { nodes: [KATCHY, ROOT], tree: ROOT, operator: "pm-katchy" }
+const DEMO_SESSION: MemoryScope = { nodes: [DEMO, ROOT], tree: ROOT, operator: "pm-demo" }
+const NOVA_SESSION: MemoryScope = { nodes: [NOVA, ROOT], tree: ROOT, operator: "pm-nova" }
 
 let dir: string
 let store: FilesMemoryStore
@@ -74,45 +74,45 @@ describe("writes", () => {
   })
 
   it("accepts a host call that names a node anchor, and a store whose host declares no tree as before", async () => {
-    const named = await store.write(doc({ tags: ["project:acme", `node:${SIMONE}`] }), { mode: "commit" })
-    expect(named.item.tags).toContain(`node:${SIMONE}`)
+    const named = await store.write(doc({ tags: ["project:acme", `node:${DEMO}`] }), { mode: "commit" })
+    expect(named.item.tags).toContain(`node:${DEMO}`)
     const plain = new FilesMemoryStore({ root: join(dir, "plain"), now: () => NOW })
     const free = await plain.write(doc({ tags: ["project:acme"] }), { mode: "commit" })
     expect(free.item.tags).toEqual(["project:acme"])
   })
 
   it("adds the session's node and its operator when the document names neither (rule 31)", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION })
-    expect(written.item.tags).toEqual(["project:acme", `node:${SIMONE}`, "operator:pm-simone"])
-    const proposed = await store.write(doc({ slug: "other" }), { mode: "propose", scope: SIMONE_SESSION })
-    expect(proposed.item.tags).toEqual(["project:acme", `node:${SIMONE}`, "operator:pm-simone"])
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION })
+    expect(written.item.tags).toEqual(["project:acme", `node:${DEMO}`, "operator:pm-demo"])
+    const proposed = await store.write(doc({ slug: "other" }), { mode: "propose", scope: DEMO_SESSION })
+    expect(proposed.item.tags).toEqual(["project:acme", `node:${DEMO}`, "operator:pm-demo"])
   })
 
   it("adds no operator anchor when the writer shares the item with the node (rule 32)", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION, owner: "node" })
-    expect(written.item.tags).toEqual(["project:acme", `node:${SIMONE}`])
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION, owner: "node" })
+    expect(written.item.tags).toEqual(["project:acme", `node:${DEMO}`])
   })
 
   it("refuses a node anchor outside the session's nodes and an operator anchor that is not its own (rules 31, 32)", async () => {
     const sibling = await rejection(
-      store.write(doc({ tags: ["project:acme", `node:${KATCHY}`] }), { mode: "commit", scope: SIMONE_SESSION }),
+      store.write(doc({ tags: ["project:acme", `node:${NOVA}`] }), { mode: "commit", scope: DEMO_SESSION }),
     )
     expect(sibling).toBeInstanceOf(MemoryValidationError)
     expect((sibling as MemoryValidationError).field).toBe("tags")
     const other = await rejection(
-      store.write(doc({ tags: ["project:acme", "operator:pm-katchy"] }), { mode: "commit", scope: SIMONE_SESSION }),
+      store.write(doc({ tags: ["project:acme", "operator:pm-nova"] }), { mode: "commit", scope: DEMO_SESSION }),
     )
     expect(other).toBeInstanceOf(MemoryValidationError)
     expect((other as MemoryValidationError).field).toBe("tags")
   })
 
   it("gives a global item the tree root's node anchor, and refuses any other node with global (rule 33)", async () => {
-    const written = await store.write(doc({ tags: ["global"] }), { mode: "commit", scope: SIMONE_SESSION })
-    expect(written.item.tags).toEqual(["global", `node:${ROOT}`, "operator:pm-simone"])
+    const written = await store.write(doc({ tags: ["global"] }), { mode: "commit", scope: DEMO_SESSION })
+    expect(written.item.tags).toEqual(["global", `node:${ROOT}`, "operator:pm-demo"])
     const wrong = await rejection(
-      store.write(doc({ slug: "other", tags: ["global", `node:${SIMONE}`] }), {
+      store.write(doc({ slug: "other", tags: ["global", `node:${DEMO}`] }), {
         mode: "commit",
-        scope: SIMONE_SESSION,
+        scope: DEMO_SESSION,
       }),
     )
     expect(wrong).toBeInstanceOf(MemoryValidationError)
@@ -130,71 +130,71 @@ describe("writes", () => {
     const free = await store.write(doc(), { mode: "commit", scope: { nodes: [] } })
     expect(free.item.tags).toEqual(["project:acme"])
     const into = await rejection(
-      store.write(doc({ slug: "x", tags: [`node:${SIMONE}`] }), { mode: "commit", scope: { nodes: [] } }),
+      store.write(doc({ slug: "x", tags: [`node:${DEMO}`] }), { mode: "commit", scope: { nodes: [] } }),
     )
     expect(into).toBeInstanceOf(MemoryValidationError)
   })
 })
 
 describe("projection on every operation (rules 27 to 29)", () => {
-  async function seedTwoGuilds(): Promise<{ simone: string; katchy: string }> {
-    const simone = await store.write(doc({ slug: "simone-rule", title: "Simone rule" }), {
+  async function seedTwoGuilds(): Promise<{ demo: string; nova: string }> {
+    const demo = await store.write(doc({ slug: "demo-rule", title: "Demo rule" }), {
       mode: "commit",
-      scope: SIMONE_SESSION,
+      scope: DEMO_SESSION,
     })
-    const katchy = await store.write(doc({ slug: "katchy-rule", title: "Katchy rule" }), {
+    const nova = await store.write(doc({ slug: "nova-rule", title: "Nova rule" }), {
       mode: "commit",
-      scope: KATCHY_SESSION,
+      scope: NOVA_SESSION,
     })
-    return { simone: simone.item.id as string, katchy: katchy.item.id as string }
+    return { demo: demo.item.id as string, nova: nova.item.id as string }
   }
 
   it("does not list, read, find by search or change an item on a sibling node, and reports it as not found (rule 28)", async () => {
-    const { simone, katchy } = await seedTwoGuilds()
-    expect((await store.list({ scope: SIMONE_SESSION })).map((r) => r.item.id)).toEqual([simone])
-    expect(await store.read(katchy, { scope: SIMONE_SESSION })).toBeNull()
-    expect((await store.read(simone, { scope: SIMONE_SESSION }))?.item.id).toBe(simone)
+    const { demo, nova } = await seedTwoGuilds()
+    expect((await store.list({ scope: DEMO_SESSION })).map((r) => r.item.id)).toEqual([demo])
+    expect(await store.read(nova, { scope: DEMO_SESSION })).toBeNull()
+    expect((await store.read(demo, { scope: DEMO_SESSION }))?.item.id).toBe(demo)
 
-    const hits = await store.search("rule", { filter: { scope: SIMONE_SESSION } })
-    expect(hits.map((h) => h.id)).toEqual([simone])
+    const hits = await store.search("rule", { filter: { scope: DEMO_SESSION } })
+    expect(hits.map((h) => h.id)).toEqual([demo])
 
-    const hidden = await store.read(katchy)
+    const hidden = await store.read(nova)
     const revision = hidden?.revision
-    expect(await rejection(store.archive(katchy, { scope: SIMONE_SESSION, ...(revision ? { ifRevision: revision } : {}) }))).toBeInstanceOf(
+    expect(await rejection(store.archive(nova, { scope: DEMO_SESSION, ...(revision ? { ifRevision: revision } : {}) }))).toBeInstanceOf(
       MemoryNotFoundError,
     )
     expect(
-      await rejection(store.supersede(katchy, doc({ id: "n1", slug: "n1" }), { scope: SIMONE_SESSION })),
+      await rejection(store.supersede(nova, doc({ id: "n1", slug: "n1" }), { scope: DEMO_SESSION })),
     ).toBeInstanceOf(MemoryNotFoundError)
     expect(
-      await rejection(store.write(doc({ id: katchy }), { mode: "commit", scope: SIMONE_SESSION, ifRevision: revision as string })),
+      await rejection(store.write(doc({ id: nova }), { mode: "commit", scope: DEMO_SESSION, ifRevision: revision as string })),
     ).toBeInstanceOf(MemoryNotFoundError)
-    expect((await store.read(katchy))?.item.status ?? "active").toBe("active")
+    expect((await store.read(nova))?.item.status ?? "active").toBe("active")
   })
 
   it("applies the projection to proposals: not listed, not dismissable (rules 27, 28)", async () => {
-    const proposed = await store.write(doc({ slug: "pending-note" }), { mode: "propose", scope: KATCHY_SESSION })
-    expect(await store.list({ proposals: true, scope: SIMONE_SESSION })).toEqual([])
-    expect((await store.list({ proposals: true, scope: KATCHY_SESSION })).length).toBe(1)
-    expect(await rejection(store.dismiss(proposed.proposalId as string, { scope: SIMONE_SESSION }))).toBeInstanceOf(
+    const proposed = await store.write(doc({ slug: "pending-note" }), { mode: "propose", scope: NOVA_SESSION })
+    expect(await store.list({ proposals: true, scope: DEMO_SESSION })).toEqual([])
+    expect((await store.list({ proposals: true, scope: NOVA_SESSION })).length).toBe(1)
+    expect(await rejection(store.dismiss(proposed.proposalId as string, { scope: DEMO_SESSION }))).toBeInstanceOf(
       MemoryNotFoundError,
     )
-    await store.dismiss(proposed.proposalId as string, { scope: KATCHY_SESSION })
+    await store.dismiss(proposed.proposalId as string, { scope: NOVA_SESSION })
     expect(await store.list({ proposals: true })).toEqual([])
   })
 
   it("filters before the search limit: a hidden better match never takes a slot (rule 29)", async () => {
     for (let i = 0; i < 3; i++) {
-      await store.write(doc({ slug: `katchy-${i}`, title: `deploy deploy deploy ${i}` }), {
+      await store.write(doc({ slug: `nova-${i}`, title: `deploy deploy deploy ${i}` }), {
         mode: "commit",
-        scope: KATCHY_SESSION,
+        scope: NOVA_SESSION,
       })
     }
-    const mine = await store.write(doc({ slug: "simone-deploy", title: "deploy", body: "one mention\n" }), {
+    const mine = await store.write(doc({ slug: "demo-deploy", title: "deploy", body: "one mention\n" }), {
       mode: "commit",
-      scope: SIMONE_SESSION,
+      scope: DEMO_SESSION,
     })
-    const hits = await store.search("deploy", { limit: 1, filter: { scope: SIMONE_SESSION } })
+    const hits = await store.search("deploy", { limit: 1, filter: { scope: DEMO_SESSION } })
     expect(hits.map((h) => h.id)).toEqual([mine.item.id])
   })
 
@@ -210,8 +210,8 @@ describe("projection on every operation (rules 27 to 29)", () => {
         },
       },
     })
-    await store.write(doc({ slug: "secret", body: "needle in a hidden item\n" }), { mode: "commit", scope: KATCHY_SESSION })
-    const hits = await guarded.search("needle", { filter: { scope: SIMONE_SESSION } })
+    await store.write(doc({ slug: "secret", body: "needle in a hidden item\n" }), { mode: "commit", scope: NOVA_SESSION })
+    const hits = await guarded.search("needle", { filter: { scope: DEMO_SESSION } })
     expect(hits).toEqual([])
     expect(queried).toBe(0)
   })
@@ -230,41 +230,41 @@ describe("promotion (rule 34)", () => {
   }
 
   it("re-tags a node-shared item onto an ancestor node, and only then does the parent's projection include it", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION, owner: "node" })
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION, owner: "node" })
     const id = written.item.id as string
     expect(await store.read(id, { scope: parentSession })).toBeNull()
-    expect(await store.read(id, { scope: KATCHY_SESSION })).toBeNull()
+    expect(await store.read(id, { scope: NOVA_SESSION })).toBeNull()
 
     const promoted = await store.write(retag(written.item, ROOT), {
       mode: "commit",
-      scope: SIMONE_SESSION,
+      scope: DEMO_SESSION,
       ifRevision: written.revision,
     })
     expect(promoted.item.tags).toEqual(["project:acme", `node:${ROOT}`])
 
     expect((await store.read(id, { scope: parentSession }))?.item.id).toBe(id)
-    expect((await store.list({ scope: KATCHY_SESSION })).map((r) => r.item.id)).toEqual([id])
+    expect((await store.list({ scope: NOVA_SESSION })).map((r) => r.item.id)).toEqual([id])
   })
 
   it("keeps the operator anchor on a promoted item: the parent's projection includes it for its owner only", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION })
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION })
     const id = written.item.id as string
     const promoted = await store.write(retag(written.item, ROOT), {
       mode: "commit",
-      scope: SIMONE_SESSION,
+      scope: DEMO_SESSION,
       ifRevision: written.revision,
     })
-    expect(promoted.item.tags).toEqual(["project:acme", `node:${ROOT}`, "operator:pm-simone"])
+    expect(promoted.item.tags).toEqual(["project:acme", `node:${ROOT}`, "operator:pm-demo"])
     expect(await store.read(id, { scope: parentSession })).toBeNull()
-    expect((await store.read(id, { scope: { ...parentSession, operator: "pm-simone" } }))?.item.id).toBe(id)
+    expect((await store.read(id, { scope: { ...parentSession, operator: "pm-demo" } }))?.item.id).toBe(id)
   })
 
   it("refuses a re-tag onto a node outside the session's projection, such as a sibling", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION })
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION })
     const err = await rejection(
-      store.write(retag(written.item, KATCHY), {
+      store.write(retag(written.item, NOVA), {
         mode: "commit",
-        scope: SIMONE_SESSION,
+        scope: DEMO_SESSION,
         ifRevision: written.revision,
       }),
     )
@@ -273,11 +273,11 @@ describe("promotion (rule 34)", () => {
   })
 
   it("refuses a re-tag that also changes the item's other anchors", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION })
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION })
     const err = await rejection(
       store.write(
-        { ...written.item, tags: ["global", `node:${ROOT}`, "operator:pm-simone"] },
-        { mode: "commit", scope: SIMONE_SESSION, ifRevision: written.revision },
+        { ...written.item, tags: ["global", `node:${ROOT}`, "operator:pm-demo"] },
+        { mode: "commit", scope: DEMO_SESSION, ifRevision: written.revision },
       ),
     )
     expect(err).toBeInstanceOf(MemoryValidationError)
@@ -285,38 +285,38 @@ describe("promotion (rule 34)", () => {
   })
 
   it("never promotes by itself: an edit that names no node anchor keeps the item where it is", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION })
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION })
     const edited = await store.write(
       { ...written.item, tags: ["project:acme"], body: "Edited.\n" },
-      { mode: "commit", scope: SIMONE_SESSION, ifRevision: written.revision },
+      { mode: "commit", scope: DEMO_SESSION, ifRevision: written.revision },
     )
-    expect(edited.item.tags).toEqual(["project:acme", `node:${SIMONE}`, "operator:pm-simone"])
+    expect(edited.item.tags).toEqual(["project:acme", `node:${DEMO}`, "operator:pm-demo"])
   })
 
   it("keeps the node and ownership of the item a supersede replaces", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION, owner: "node" })
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION, owner: "node" })
     const next = await store.supersede(
       written.item.id as string,
       doc({ id: "replacement", slug: "cite-sources-2" }),
-      { scope: SIMONE_SESSION, ifRevision: written.revision },
+      { scope: DEMO_SESSION, ifRevision: written.revision },
     )
-    expect(next.next.item.tags).toEqual(["project:acme", `node:${SIMONE}`])
+    expect(next.next.item.tags).toEqual(["project:acme", `node:${DEMO}`])
   })
 
   it("holds a supersede that moves the node anchor to the same re-tag-only rule", async () => {
-    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION })
+    const written = await store.write(doc(), { mode: "commit", scope: DEMO_SESSION })
     const rejected = await rejection(
       store.supersede(
         written.item.id as string,
         doc({ id: "replacement", slug: "cite-sources-2", tags: ["project:other", `node:${ROOT}`] }),
-        { scope: SIMONE_SESSION, ifRevision: written.revision },
+        { scope: DEMO_SESSION, ifRevision: written.revision },
       ),
     )
     expect(rejected).toBeInstanceOf(MemoryValidationError)
     const moved = await store.supersede(
       written.item.id as string,
       doc({ id: "replacement", slug: "cite-sources-2", tags: ["project:acme", `node:${ROOT}`] }),
-      { scope: SIMONE_SESSION, ifRevision: written.revision },
+      { scope: DEMO_SESSION, ifRevision: written.revision },
     )
     expect(moved.next.item.tags).toContain(`node:${ROOT}`)
   })

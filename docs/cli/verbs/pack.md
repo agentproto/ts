@@ -38,7 +38,7 @@ hand-declared manifest version.
   "description": "Operate and supervise a fleet …",
   "version": "0.3.0",
   "skills": ["slug1", "slug2"],
-  "sourceDir": "${AGENTIK_STUDIO_ROOT}/.claude/skills",
+  "sourceDir": "${DEMO_APP_ROOT}/.claude/skills",
   "author": { "name": "Name" },
   "keywords": ["kw1", "kw2"]
 }
@@ -87,14 +87,14 @@ agentproto pack skill --manifest ./skills-pack.json --bump patch
 
 # Source lives in another repo; override for one run
 agentproto pack skill --manifest ./skills-pack.json \
-  --source ~/code/agentik-studio/.claude/skills --out ./dist/packs
+  --source ~/code/demo-app/.claude/skills --out ./dist/packs
 ```
 
 ```text
 [dry-run] agentproto pack skill
   version: 0.3.0 → 0.3.1 (patch)
   output: /Users/me/code/proj/.skills/agentproto-plugin-v0.3.1
-  source: /Users/me/code/agentik-studio/.claude/skills
+  source: /Users/me/code/demo-app/.claude/skills
   skills:
     + nested-orchestration — will copy
     ~ fleet-supervision — will overwrite

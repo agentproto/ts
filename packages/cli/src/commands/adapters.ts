@@ -12,7 +12,7 @@
  *
  * Adapter list lives in `~/.agentproto/config.json`:
  *
- *   { "adapters": ["@guilde/agentproto-bridge", "@acme/agentproto-slack"] }
+ *   { "adapters": ["@acme/agentproto-bridge", "@acme/agentproto-slack"] }
  *
  * Adapters are loaded by `agentproto run-swarm` in the order they
  * appear. Last one to register a `kind` wins — useful for overriding
@@ -459,7 +459,7 @@ async function runShow(args: readonly string[]): Promise<number> {
   const pkg = positionals[0]
   if (!pkg) {
     process.stderr.write(
-      "agentproto adapters show: missing <pkg>. Try: agentproto adapters show @guilde/agentproto-bridge\n"
+      "agentproto adapters show: missing <pkg>. Try: agentproto adapters show @acme/agentproto-bridge\n"
     )
     return 2
   }

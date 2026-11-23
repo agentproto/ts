@@ -102,7 +102,7 @@ caps:
     currency: EUR
 threshold: single
 metadata:
-  vendor.namespace: katchy
+  vendor.namespace: nova
 ---
 
 # Invoice cap 500 EUR
@@ -119,7 +119,7 @@ Body content explaining the policy.
     const cap = policy.caps[0]
     expect(cap).toBeDefined()
     expect(cap?.max).toBe(500)
-    expect(policy.metadata).toEqual({ "vendor.namespace": "katchy" })
+    expect(policy.metadata).toEqual({ "vendor.namespace": "nova" })
     expect(Object.isFrozen(policy)).toBe(true)
   })
 

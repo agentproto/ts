@@ -134,8 +134,8 @@ agentproto run-swarm --manifest .runtime/multi-agent.md --once
 agentproto run-swarm --manifest .runtime/multi-agent.md --interval 500ms -v
 
 # Install a transport adapter persistently
-agentproto adapters install @guilde/agentproto-bridge
-agentproto run-swarm --manifest .runtime/guilde.md --verbose
+agentproto adapters install @acme/agentproto-bridge
+agentproto run-swarm --manifest .runtime/acme.md --verbose
 
 # Or load an adapter for just this run (without persisting)
 agentproto run-swarm --manifest ./swarm.md --adapter @your-org/agentproto-something

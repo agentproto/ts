@@ -64,12 +64,12 @@ describe("McpSink", () => {
   it("wraps via mcp_imported_call when importedAlias is set", async () => {
     const { client, calls } = fakeClient()
     const sink = new McpSink(
-      { endpoint: "http://x/mcp", tool: "ingest_knowledge", importedAlias: "guilde", args: { content: "${body}" } },
+      { endpoint: "http://x/mcp", tool: "ingest_knowledge", importedAlias: "acme", args: { content: "${body}" } },
       client
     )
     await sink.push(item)
     expect(calls[0]!.name).toBe("mcp_imported_call")
-    expect(calls[0]!.args.alias).toBe("guilde")
+    expect(calls[0]!.args.alias).toBe("acme")
     expect(calls[0]!.args.toolName).toBe("ingest_knowledge")
     expect(argsRecord.parse(calls[0]!.args.args).content).toBe(item.body)
   })

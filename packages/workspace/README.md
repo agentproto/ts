@@ -30,7 +30,7 @@ import { resolveNodeScope, nodeChain, nodeProjection, composeNodeChainPolicy } f
 import { loadNodeTree } from "@agentproto/workspace/checker"
 
 const tree = loadNodeTree("/path/to/tree")
-const scope = resolveNodeScope(tree, "ws://workspaces/@acme/agentik/simone/docs") // { node, subpath: "docs" } or undefined
+const scope = resolveNodeScope(tree, "ws://workspaces/@acme/agentik/demo/docs") // { node, subpath: "docs" } or undefined
 const chain = nodeChain(tree, scope.node) // nearest first, up to the tree root, each node with its `wall`
 const memoryNodes = nodeProjection(chain) // AIP-72 section 10: cut after the first sealed or hard node
 const policy = composeNodeChainPolicy(chain) // AIP-38 composition inputs over the whole chain

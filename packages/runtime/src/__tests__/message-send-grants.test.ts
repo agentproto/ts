@@ -81,8 +81,8 @@ const grantTo = (sessionId: string): Grant => ({
 describe("message_send / message_reply - explicit grants", () => {
   it("admits a refused cross-workspace pair and delivers relation granted", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const brain = spawnNode(registry, "app-agentik-pygmalion", "pygmalion-brain-persistent")
-    const pm = spawnNode(registry, "agentik-studio", "pm-simone")
+    const brain = spawnNode(registry, "app-orchestrator", "orchestrator-brain-persistent")
+    const pm = spawnNode(registry, "demo-app", "pm-demo")
     vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const send = vi.spyOn(registry, "sendMessage")
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
@@ -128,8 +128,8 @@ describe("message_send / message_reply - explicit grants", () => {
 
   it("keeps the previous refusal when no grant matches", async () => {
     const registry = createSessionsRegistry({ persist: false })
-    const brain = spawnNode(registry, "app-agentik-pygmalion", "pygmalion-brain-persistent")
-    const pm = spawnNode(registry, "agentik-studio", "pm-simone")
+    const brain = spawnNode(registry, "app-orchestrator", "orchestrator-brain-persistent")
+    const pm = spawnNode(registry, "demo-app", "pm-demo")
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({
       registry,
@@ -150,22 +150,22 @@ describe("message_send / message_reply - explicit grants", () => {
   })
 
   it("admits by operator labels end to end: a session-label:// sender principal and a label: recipient scope", async () => {
-    // The R12 shape: the brain may message pm-simone by name, nobody else
+    // The R12 shape: the brain may message pm-demo by name, nobody else
     // may, and nothing opens the reverse direction. This goes through the
     // shared context builder, which is what makes a sender's operator label
     // resolvable as a `session-label://` principal.
     const registry = createSessionsRegistry({ persist: false })
-    const brain = spawnNode(registry, "app-agentik-pygmalion")
-    const pm = spawnNode(registry, "agentik-studio")
+    const brain = spawnNode(registry, "app-orchestrator")
+    const pm = spawnNode(registry, "demo-app")
     const stranger = spawnNode(registry, "another-workspace")
-    registry.setOperatorLabel(brain.id, "pygmalion-brain-persistent")
-    registry.setOperatorLabel(pm.id, "pm-simone")
+    registry.setOperatorLabel(brain.id, "orchestrator-brain-persistent")
+    registry.setOperatorLabel(pm.id, "pm-demo")
     vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const grants: Grant[] = [
       {
-        principal: "session-label://pygmalion-brain-persistent",
+        principal: "session-label://orchestrator-brain-persistent",
         effect: "allow",
-        actions: [{ action: "session:message", scope: "label:pm-simone" }],
+        actions: [{ action: "session:message", scope: "label:pm-demo" }],
       },
     ]
     const asBrain = await harness({ registry, callerSessionId: brain.id, messagingGrants: grants })
@@ -187,7 +187,7 @@ describe("message_send / message_reply - explicit grants", () => {
       expect(isError(refusedStranger)).toBe(true)
       expect(textOf(refusedStranger)).toContain("forbidden_recipient")
 
-      // The grant is one-way: pm-simone cannot message the brain.
+      // The grant is one-way: pm-demo cannot message the brain.
       const refusedReverse = await asPm.client.callTool({
         name: "message_send",
         arguments: { to: brain.id, text: "hello" },

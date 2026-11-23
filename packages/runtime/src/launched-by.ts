@@ -44,7 +44,7 @@ export function launchedByOf(d: LaunchedBySource): LaunchedBy | undefined {
 }
 
 /** Human-readable text for a `LaunchedBy`, e.g. `session sess_1 (brain) via
- *  pygmalion`, `operator via vscode`, or `cron`. `labelOf` supplies the
+ *  orchestrator`, `operator via vscode`, or `cron`. `labelOf` supplies the
  *  display label for a session id when the caller has one; an empty result
  *  is treated as no label. */
 export function launchedByText(

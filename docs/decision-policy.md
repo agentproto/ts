@@ -102,8 +102,8 @@ context evidence, never ownership authority.
 Provenance must therefore be stamped by the producer at spawn time. Missing
 `origin` on a root means incomplete authorization evidence, not “human” and
 not “machine”: the safe action is to flag/keep it and surface the provenance
-gap. The session steward follows this contract. Pygmalion roots use
-`pygmalion` / `pygmalion:*`; installed app service owners use
+gap. The session steward follows this contract. Orchestrator roots use
+`orchestrator` / `orchestrator:*`; installed app service owners use
 `app-service:*`; workflow, review, routine, cron and bench producers keep their
 existing explicit origins. Legacy origin-less roots are not retroactively
 inferred from labels.

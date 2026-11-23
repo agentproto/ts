@@ -1,5 +1,5 @@
 /**
- * Free credits (AIP-BILLING `grants`, rules 15 and 21).
+ * Free credits (AIP-74 `grants`, rules 15 and 21).
  *
  * Every write has a deterministic key `grant:<id>:<suffix>`, so a grant that
  * fires twice for the same account and period writes once, and two grants never

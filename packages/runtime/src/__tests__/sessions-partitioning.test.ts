@@ -337,7 +337,7 @@ describe("sessions registry — per-workspace partitioning", () => {
   // ── 2026-07-18 bucket-clobber incident ──────────────────────────────
   //
   // A second/skewed daemon shared the same `~/.agentproto/workspaces/`
-  // bucket root, and a persist from it emptied `agentik-studio` (61
+  // bucket root, and a persist from it emptied `demo-app` (61
   // rows → 0) and `choisir-service-public-app` (8 → 0) while the
   // migration marker still recorded the original counts. Three
   // compounding defects, each proven independently below:

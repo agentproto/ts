@@ -26,17 +26,17 @@ describe("@agentproto/secrets cli — provision auth-header brokering", () => {
   it("with no --header and a registered provider, resolves the Authorization header via the broker", async () => {
     const { deps, calls } = fakeDeps({ registered: true })
 
-    const headers = await resolveProvisionHeaders("guilde", [], deps)
+    const headers = await resolveProvisionHeaders("acme", [], deps)
 
     expect(headers).toEqual({ Authorization: "Bearer brokered-token" })
-    expect(calls).toEqual([{ path: "guilde", audience: "api" }])
+    expect(calls).toEqual([{ path: "acme", audience: "api" }])
   })
 
   it("--header overrides the broker, which is never consulted", async () => {
     const { deps, calls } = fakeDeps({ registered: true })
 
     const headers = await resolveProvisionHeaders(
-      "guilde",
+      "acme",
       ["Authorization: Bearer explicit-token"],
       deps,
     )
@@ -52,7 +52,7 @@ describe("@agentproto/secrets cli — provision auth-header brokering", () => {
     })
 
     const headers = await resolveProvisionHeaders(
-      "guilde",
+      "acme",
       ["X-Custom: mine"],
       deps,
     )
@@ -86,13 +86,13 @@ describe("@agentproto/secrets cli — provision auth-header brokering", () => {
   it("propagates a broker resolution failure (e.g. auth flow error) rather than swallowing it", async () => {
     const resolver: AuthHeaderResolver = {
       async resolveHeaders() {
-        throw new Error("auth flow for \"guilde\" failed")
+        throw new Error("auth flow for \"acme\" failed")
       },
     }
     const deps: ProvisionAuthDeps = { isRegistered: () => true, resolver }
 
-    await expect(resolveProvisionHeaders("guilde", [], deps)).rejects.toThrow(
-      /auth flow for "guilde" failed/,
+    await expect(resolveProvisionHeaders("acme", [], deps)).rejects.toThrow(
+      /auth flow for "acme" failed/,
     )
   })
 })

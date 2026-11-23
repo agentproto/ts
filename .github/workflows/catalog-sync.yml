@@ -90,6 +90,11 @@ jobs:
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
           REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
+          # audio:openai-live — OpenAI's authoritative /v1/models id list for
+          # the live/realtime audio roster (OPENAI_LIVE_MODELS). Absent =
+          # the source's refresh is skipped and the committed snapshot is
+          # reused, like every other provider key here.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         # Invoke the built entrypoint directly rather than the `catalog-sync`
         # bin: that bin points at `./dist/bin.mjs`, which does not exist when
         # `pnpm install --frozen-lockfile` runs on a fresh checkout, so pnpm

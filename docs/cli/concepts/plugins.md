@@ -13,19 +13,19 @@ Plugins ship as npm packages, declare what they provide via the
 ## Quick example
 
 ```bash
-agentproto adapters install @guilde/agentproto-bridge
+agentproto adapters install @acme/agentproto-bridge
 agentproto adapters list
-agentproto adapters show @guilde/agentproto-bridge
+agentproto adapters show @acme/agentproto-bridge
 ```
 
-After install, the bridge's `guilde-mcp` substrate and `db-operator`
+After install, the bridge's `acme-mcp` substrate and `db-operator`
 executor are wired automatically — manifests can reference those
 kinds:
 
 ```yaml
 substrate:
-  kind: guilde-mcp
-  endpoint: https://guilde.work/mcp
+  kind: acme-mcp
+  endpoint: https://example.com/mcp
   conversationId: <uuid>
 participants:
   - id: curator
@@ -57,9 +57,9 @@ Two different extension points; see
 | Drives a specific CLI agent              | Extends the swarm kernel                            |
 | Installed via `agentproto install`       | Installed via `agentproto adapters install`         |
 | Used by `run`, `sessions`, `agent-cli` swarm executor | Used by `run-swarm` substrate / dispatcher / executor / state |
-| Examples: claude-code, hermes, goose     | Examples: guilde-mcp substrate, db-operator         |
+| Examples: claude-code, hermes, goose     | Examples: acme-mcp substrate, db-operator         |
 
-You can hold both — a Guilde swarm uses the `@guilde/agentproto-bridge`
+You can hold both — a Acme swarm uses the `@acme/agentproto-bridge`
 plugin to talk to the conversation AND the `claude-code` adapter to
 drive participants whose `executor: agent-cli`.
 
@@ -91,7 +91,7 @@ package.json.
 ```jsonc
 {
   "adapters": [
-    "@guilde/agentproto-bridge",
+    "@acme/agentproto-bridge",
     "@acme/agentproto-slack"
   ]
 }

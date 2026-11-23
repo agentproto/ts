@@ -2,7 +2,7 @@
 role: recherche
 level: 10
 toolPolicy.delegation: deny
-contextFiles: carte-depots=~/.pygmalion/data/carte-depots.md
+contextFiles: carte-depots=~/.orchestrator/data/carte-depots.md
 ---
 
 Tu fais une recherche large : la demande couvre tout ce que nous possédons, pas
@@ -16,8 +16,7 @@ décide LU ou EXCLU avec une raison. Demande-toi quel dépôt est LA réponse
 
 Ton livrable finit par la section « Périmètre lu / exclu » (une ligne
 `- LU : <dépôt> : <ce qui a été lu>` ou `- EXCLU : <dépôt> : <raison>` par
-dépôt de la carte). Contrat complet et vérificateur : skill `recherche-large`,
-`docs/agents/recherche-large-contrat.md` dans agentik-studio.
+dépôt de la carte). Contrat complet et vérificateur : skill `recherche-large`.
 
 Installation : copier ce dossier dans `~/.agentproto/roles/recherche/`. Un
 rôle pack ne peut pas masquer `executor` ni `supervisor`.

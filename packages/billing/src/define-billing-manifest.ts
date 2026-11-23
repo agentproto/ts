@@ -284,12 +284,12 @@ export function deriveManifest(def: BillingDefinition, opts: DefineBillingManife
 }
 
 /**
- * AIP-BILLING reference constructor `defineBillingManifest`.
+ * AIP-74 reference constructor `defineBillingManifest`.
  *
  * Built on `createDoctype`, like every AIP defineX. Field-level validation is
  * the zod schema derived from `BILLING.schema.json` (`./schema.ts`), the same
  * one the `BILLING.md` path runs, so a TypeScript-authored manifest fails with
- * the diagnostic of a malformed file. The cross-reference rules of AIP-BILLING rule
+ * the diagnostic of a malformed file. The cross-reference rules of AIP-74 rule
  * 21 and the arbitrage check of rule 14 then run on the normalised document.
  */
 export function defineBillingManifest(def: BillingDefinition, opts: DefineBillingManifestOptions = {}): BillingHandle {
@@ -302,12 +302,12 @@ export function defineBillingManifest(def: BillingDefinition, opts: DefineBillin
       const shape = billingFrontmatterSchema.safeParse(d)
       if (!shape.success) {
         throw new Error(
-          `defineBillingManifest (AIP-BILLING): ${shape.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+          `defineBillingManifest (AIP-74): ${shape.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
         )
       }
       // Cross-field rules of the JSON Schema (if/then) and rule 21 are not zod-shaped.
       const problems = manifestProblems(d, opts)
-      if (problems.length > 0) throw new Error(`defineBillingManifest (AIP-BILLING): ${problems.join("; ")}`)
+      if (problems.length > 0) throw new Error(`defineBillingManifest (AIP-74): ${problems.join("; ")}`)
     },
     build(d) {
       const normalized = normalizeManifest(d)

@@ -1,7 +1,7 @@
 /**
  * Approvals engine — gate semantics, ticket handling, signature/audit
- * chain, and restart persistence. Ports the Pygmalion M1 gate reference's
- * test semantics (`projects/pygmalion/packages/core/src/__tests__/gate.test.ts`
+ * chain, and restart persistence. Ports the Orchestrator M1 gate reference's
+ * test semantics (`projects/orchestrator/packages/core/src/__tests__/gate.test.ts`
  * in the studio repo) onto `ApprovalsEngine`, plus the AIP-7 signing layer
  * the engine adds on top.
  */

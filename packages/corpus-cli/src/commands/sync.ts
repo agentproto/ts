@@ -3,7 +3,7 @@
  *
  * Pushes refined entries to an external store via a config-driven MCP sink.
  * Host-agnostic: the sink manifest names the endpoint + tool + entry→args
- * mapping (a Guilde guild KB, a vector store, …) — the CLI knows none of it.
+ * mapping (a Acme guild KB, a vector store, …) — the CLI knows none of it.
  *
  * Sink manifest (JSON):
  *   { "endpoint": "https://…/mcp", "tool": "ingest_knowledge",

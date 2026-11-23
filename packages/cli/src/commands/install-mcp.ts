@@ -1232,7 +1232,7 @@ async function registerAider(
  *
  * Unlike aider (where agentproto is typically the only server, so a
  * remove-and-append is safe), a real hermes config carries other MCP servers
- * (bureau, guilde, …) under `mcp_servers:`. We therefore edit surgically and
+ * (bureau, acme, …) under `mcp_servers:`. We therefore edit surgically and
  * preserve every sibling + the rest of the hand-maintained file.
  */
 async function registerHermes(

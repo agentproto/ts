@@ -24,8 +24,8 @@ TUI is picky about terminal size.
   "tool": "terminal_start",
   "args": {
     "argv": ["claude"],
-    "cwd": "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/apps/simone",
-    "name": "simone-claude-tui",
+    "cwd": "/path/to/project/apps/demo",
+    "name": "demo-claude-tui",
     "cols": 120,
     "rows": 40
   }

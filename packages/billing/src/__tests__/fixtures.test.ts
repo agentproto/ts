@@ -10,11 +10,11 @@ const here = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 const read = (p: string) => readFileSync(here(p), "utf8")
 
 /** The vendor strategies the four product files name: the host registers them. */
-const STRATEGIES = ["x-agentik:org-kind", "x-agentik:welcome-by-country", "x-agentik:welcome-grant"]
+const STRATEGIES = ["x-acme:org-kind", "x-acme:welcome-by-country", "x-acme:welcome-grant"]
 
-const FILES = ["simone", "guilde", "chatcommerce", "agentik-seo"] as const
+const FILES = ["demo", "acme", "shopbot", "usage-saas"] as const
 
-describe("the four product files of the AIP-BILLING draft (fixtures, see __fixtures__/SOURCE.md)", () => {
+describe("the four product files of the AIP-74 draft (fixtures, see __fixtures__/SOURCE.md)", () => {
   for (const name of FILES) {
     it(`${name}: parses and derives`, () => {
       const m = loadBillingManifest(read(`../__fixtures__/examples/${name}.BILLING.md`), { strategies: STRATEGIES })
@@ -23,18 +23,18 @@ describe("the four product files of the AIP-BILLING draft (fixtures, see __fixtu
     })
     it(`${name}: is refused when a vendor strategy is not registered`, () => {
       const src = read(`../__fixtures__/examples/${name}.BILLING.md`)
-      if (!/x-agentik:/.test(src)) return
-      expect(() => loadBillingManifest(src, { strategies: [] })).toThrow(/x-agentik:/)
+      if (!/x-acme:/.test(src)) return
+      expect(() => loadBillingManifest(src, { strategies: [] })).toThrow(/x-acme:/)
     })
   }
 
-  it("derives the rates of the anchor decision: EUR at 118 per euro, USD at 100, Agentik SEO at 1 000 per dollar", () => {
+  it("derives the rates of the anchor decision: EUR at 118 per euro, USD at 100, Usage SaaS at 1 000 per dollar", () => {
     const rate = (name: string, id: string) => loadBillingManifest(read(`../__fixtures__/examples/${name}.BILLING.md`), { strategies: STRATEGIES }).derived.conversions.get(id)!.ratio
-    expect(rate("simone", "eur-to-credits")).toBe(118)
-    expect(rate("guilde", "eur-to-credits")).toBe(118)
-    expect(rate("guilde", "usd-to-credits")).toBe(100)
-    expect(rate("chatcommerce", "eur-to-credits")).toBe(118)
-    expect(rate("agentik-seo", "usd-to-credits")).toBe(1000)
+    expect(rate("demo", "eur-to-credits")).toBe(118)
+    expect(rate("acme", "eur-to-credits")).toBe(118)
+    expect(rate("acme", "usd-to-credits")).toBe(100)
+    expect(rate("shopbot", "eur-to-credits")).toBe(118)
+    expect(rate("usage-saas", "usd-to-credits")).toBe(1000)
   })
 })
 
@@ -54,7 +54,7 @@ describe("the zod schema and BILLING.schema.json give the same verdict (no silen
     "subscription without includes": d => { delete d.offers.find((o: any) => o.price.model === "subscription").includes },
     "prepaid-pool with includes": d => { d.offers.find((o: any) => o.price.model === "prepaid-pool").includes = [{ feature: "credits" }] },
     "prepaid-pool without convert": d => { delete d.offers.find((o: any) => o.price.model === "prepaid-pool").convert },
-    "bonus on a non-fiat conversion": d => { d.conversions.push({ id: "p2c", from: "SIMONE_POINTS", to: "SIMONE_CREDITS", rate: { kind: "fixed", ratio: 1 }, mint: { partition: "SIMONE_CREDITS:grant" }, bonus: d.conversions[0].bonus }) },
+    "bonus on a non-fiat conversion": d => { d.conversions.push({ id: "p2c", from: "DEMO_POINTS", to: "DEMO_CREDITS", rate: { kind: "fixed", ratio: 1 }, mint: { partition: "DEMO_CREDITS:grant" }, bonus: d.conversions[0].bonus }) },
     "grant key without {account}": d => { d.grants[0].key = "once" },
     "four-letter currency": d => { d.fx = { EURO: 1.18 } },
     "lower-case currency (accepted, normalised later)": d => { d.fx = { eur: 1.18 } },

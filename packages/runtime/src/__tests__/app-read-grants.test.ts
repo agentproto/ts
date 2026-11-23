@@ -36,10 +36,10 @@ beforeEach(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), "app-grants-")))
   home = join(base, "home")
   appDir = join(home, "apps", "editorial-desk")
-  facts = join(home, "code", "simone")
+  facts = join(home, "code", "demo")
   mkdirSync(appDir, { recursive: true })
   mkdirSync(join(facts, "docs"), { recursive: true })
-  writeFileSync(join(facts, "docs", "facts.md"), "simone facts")
+  writeFileSync(join(facts, "docs", "facts.md"), "demo facts")
   writeFileSync(join(facts, ".env"), "SECRET=1")
   writeFileSync(join(facts, ".env.example"), "SECRET=")
   mkdirSync(join(home, ".ssh"), { recursive: true })
@@ -58,7 +58,7 @@ describe("validateAppReadGrants", () => {
   it("accepts an existing absolute directory and returns its canonical path", () => {
     const link = join(base, "link-to-facts")
     symlinkSync(facts, link)
-    const r = grantsFor({ "editorial-desk": [facts, link, `~/code/simone`] })
+    const r = grantsFor({ "editorial-desk": [facts, link, `~/code/demo`] })
     expect(r.rejected).toEqual([])
     expect(r.granted.get("editorial-desk")).toEqual([facts])
   })
@@ -74,7 +74,7 @@ describe("validateAppReadGrants", () => {
     ["a .env file", () => join(facts, ".env"), /secrets file/],
     ["/etc", () => "/etc", /system/],
     ["a path that does not exist", () => join(home, "nope"), /does not exist/],
-    ["a relative path", () => "projects/simone", /absolute/],
+    ["a relative path", () => "projects/demo", /absolute/],
     ["a non-string entry", () => 42 as unknown as string, /string/],
     ["an empty string", () => "  ", /string/],
   ])("rejects %s", (_label, path, reason) => {
@@ -93,7 +93,7 @@ describe("validateAppReadGrants", () => {
   })
 
   it("rejects the daemon workspace and any ancestor of it", () => {
-    const ws = join(home, "code", "simone", "daemon-ws")
+    const ws = join(home, "code", "demo", "daemon-ws")
     mkdirSync(ws, { recursive: true })
     const r = grantsFor({ app: [ws, facts, join(home, "code")] }, { daemonWorkspace: ws })
     expect(r.granted.size).toBe(0)
@@ -249,7 +249,7 @@ describe.skipIf(!canRunSandbox)("operator grant under the Seatbelt sandbox", () 
   it("reads the grant, cannot write it, cannot read the secret inside it, and still cannot read the rest of the repo", () => {
     const repo = join(realBase, "repo")
     const app = join(repo, "apps", "editorial-desk")
-    const granted = join(repo, "simone")
+    const granted = join(repo, "demo")
     const other = join(repo, "other")
     mkdirSync(app, { recursive: true })
     mkdirSync(granted, { recursive: true })

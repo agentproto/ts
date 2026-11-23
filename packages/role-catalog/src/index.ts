@@ -41,7 +41,7 @@ import { BUILTIN_ROLE_ENTRIES } from "./builtins.js"
 export {
   BUILTIN_ROLE_ENTRIES,
   BUILTIN_ROLE_SLUGS,
-  LEGACY_GUILDE_ROLE_MAP,
+  LEGACY_OPERATOR_ROLE_MAP,
 } from "./builtins.js"
 
 export {

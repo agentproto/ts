@@ -4,7 +4,7 @@
  * surface their tools through dedicated MCP tools on the daemon's
  * own server. The chain looks like:
  *
- *   operator (cloud Guilde)  ──MCP──▶  agentproto-daemon (this proxy)
+ *   operator (cloud Acme)  ──MCP──▶  agentproto-daemon (this proxy)
  *                                       │
  *                                       ├──stdio──▶ chrome-devtools-mcp
  *                                       └──http───▶ goose-bridge

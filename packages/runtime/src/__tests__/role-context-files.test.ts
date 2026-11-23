@@ -2,7 +2,7 @@
  * Role `contextFiles`: a ROLE.md can name files whose content is injected,
  * fenced by a tag, into the spawn prompt right after the role disposition.
  * First user: the `recherche` role and the repo map (`<carte-depots>`), see
- * docs/agents/recherche-large-contrat.md in agentik-studio.
+ * the `recherche-large` skill contract.
  */
 
 import { describe, it, expect } from "vitest"
@@ -23,10 +23,10 @@ const base = { role: "recherche", level: "50", "toolPolicy.delegation": "deny" }
 describe("parseRolePack contextFiles", () => {
   it("parses tag=path entries", () => {
     const role = parseRolePack(
-      md({ ...base, contextFiles: "carte-depots=~/.pygmalion/data/carte-depots.md, notes=/tmp/n.md" }),
+      md({ ...base, contextFiles: "carte-depots=~/.orchestrator/data/carte-depots.md, notes=/tmp/n.md" }),
     )
     expect(role.contextFiles).toEqual([
-      { tag: "carte-depots", path: "~/.pygmalion/data/carte-depots.md" },
+      { tag: "carte-depots", path: "~/.orchestrator/data/carte-depots.md" },
       { tag: "notes", path: "/tmp/n.md" },
     ])
   })
@@ -45,7 +45,7 @@ describe("parseRolePack contextFiles", () => {
     const role = parseRolePack(readFileSync(file, "utf8"))
     expect(role.name).toBe("recherche")
     expect(role.contextFiles).toEqual([
-      { tag: "carte-depots", path: "~/.pygmalion/data/carte-depots.md" },
+      { tag: "carte-depots", path: "~/.orchestrator/data/carte-depots.md" },
     ])
   })
 

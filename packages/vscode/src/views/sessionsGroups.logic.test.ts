@@ -42,8 +42,8 @@ function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
 const config: WorkspacesConfig = {
   version: 1,
   workspaces: [
-    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Agentik Studio" },
-    { slug: "guilde", path: "/Code/guilde", addedAt: "", updatedAt: "" },
+    { slug: "studio", path: "/Code/studio", addedAt: "", updatedAt: "", label: "Demo App" },
+    { slug: "acme", path: "/Code/acme", addedAt: "", updatedAt: "" },
   ],
 }
 
@@ -53,11 +53,11 @@ describe("partitionSessionsByWorkspace", () => {
   it("buckets a session by its cwd's longest-prefix workspace", () => {
     const sessions = [
       session({ id: "a", cwd: "/Code/studio/packages/vscode" }),
-      session({ id: "b", cwd: "/Code/guilde" }),
+      session({ id: "b", cwd: "/Code/acme" }),
     ]
     const { bySlug, unassigned } = partitionSessionsByWorkspace(sessions, config)
     expect(bySlug.get("studio")?.map(s => s.id)).toEqual(["a"])
-    expect(bySlug.get("guilde")?.map(s => s.id)).toEqual(["b"])
+    expect(bySlug.get("acme")?.map(s => s.id)).toEqual(["b"])
     expect(unassigned).toEqual([])
   })
 
@@ -72,10 +72,10 @@ describe("partitionSessionsByWorkspace", () => {
   })
 
   it("cwd wins over a mismatched workspaceSlug", () => {
-    // workspaceSlug claims "studio" but cwd lives under "guilde" — cwd is authoritative.
-    const sessions = [session({ id: "a", workspaceSlug: "studio", cwd: "/Code/guilde" })]
+    // workspaceSlug claims "studio" but cwd lives under "acme" — cwd is authoritative.
+    const sessions = [session({ id: "a", workspaceSlug: "studio", cwd: "/Code/acme" })]
     const { bySlug, unassigned } = partitionSessionsByWorkspace(sessions, config)
-    expect(bySlug.get("guilde")?.map(s => s.id)).toEqual(["a"])
+    expect(bySlug.get("acme")?.map(s => s.id)).toEqual(["a"])
     expect(unassigned).toEqual([])
   })
 
@@ -99,8 +99,8 @@ describe("partitionSessionsByWorkspace", () => {
 
 describe("resolveOpenWorkspaceSlugs", () => {
   it("resolves open folder paths to their registered workspace slugs", () => {
-    const slugs = resolveOpenWorkspaceSlugs(config, ["/Code/studio/packages/vscode", "/Code/guilde"])
-    expect(slugs).toEqual(new Set(["studio", "guilde"]))
+    const slugs = resolveOpenWorkspaceSlugs(config, ["/Code/studio/packages/vscode", "/Code/acme"])
+    expect(slugs).toEqual(new Set(["studio", "acme"]))
   })
 
   it("skips an open folder matching no registered workspace", () => {
@@ -130,7 +130,7 @@ describe("buildCreateWorkspaceCtas", () => {
   })
 
   it("returns nothing when every open folder is already registered", () => {
-    expect(buildCreateWorkspaceCtas(config, ["/Code/studio", "/Code/guilde"])).toEqual([])
+    expect(buildCreateWorkspaceCtas(config, ["/Code/studio", "/Code/acme"])).toEqual([])
   })
 
   it("returns nothing when no folder is open", () => {
@@ -157,7 +157,7 @@ describe("isGroupNode / isCtaNode", () => {
       kind: "group",
       id: groupNodeId("studio"),
       slug: "studio",
-      label: "Agentik Studio",
+      label: "Demo App",
       count: 0,
       isOpen: false,
       children: [],
@@ -173,7 +173,7 @@ describe("isGroupNode / isCtaNode", () => {
 describe("buildWorkspaceGroups", () => {
   it("emits one group per registered workspace, even with zero sessions, by default", () => {
     const groups = buildWorkspaceGroups([], config, [], NOW)
-    expect(groups.map(g => g.slug).sort()).toEqual(["guilde", "studio"])
+    expect(groups.map(g => g.slug).sort()).toEqual(["acme", "studio"])
     expect(groups.every(g => g.count === 0)).toBe(true)
   })
 
@@ -181,11 +181,11 @@ describe("buildWorkspaceGroups", () => {
     const sessions = [
       session({ id: "a", cwd: "/Code/studio" }),
       session({ id: "b", cwd: "/Code/studio/sub" }),
-      session({ id: "c", cwd: "/Code/guilde" }),
+      session({ id: "c", cwd: "/Code/acme" }),
     ]
     const groups = buildWorkspaceGroups(sessions, config, [], NOW)
     expect(groups.find(g => g.slug === "studio")?.count).toBe(2)
-    expect(groups.find(g => g.slug === "guilde")?.count).toBe(1)
+    expect(groups.find(g => g.slug === "acme")?.count).toBe(1)
   })
 
   it("appends a trailing unassigned group only when a session matches nothing", () => {
@@ -199,8 +199,8 @@ describe("buildWorkspaceGroups", () => {
   })
 
   it("marks the group matching an open folder isOpen and sorts it first", () => {
-    const groups = buildWorkspaceGroups([], config, ["/Code/guilde"], NOW)
-    expect(groups[0]?.slug).toBe("guilde")
+    const groups = buildWorkspaceGroups([], config, ["/Code/acme"], NOW)
+    expect(groups[0]?.slug).toBe("acme")
     expect(groups[0]?.isOpen).toBe(true)
     expect(groups[1]?.isOpen).toBe(false)
   })
@@ -219,7 +219,7 @@ describe("buildWorkspaceGroups", () => {
 
   it("label falls back to slug when no label is set", () => {
     const groups = buildWorkspaceGroups([], config, [], NOW)
-    expect(groups.find(g => g.slug === "guilde")?.label).toBe("guilde")
+    expect(groups.find(g => g.slug === "acme")?.label).toBe("acme")
   })
 
   it("hideEmpty drops zero-count groups (the active-filter behavior)", () => {

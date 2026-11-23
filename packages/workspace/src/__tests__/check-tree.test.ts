@@ -28,7 +28,7 @@ const TYPES = {
   },
 }
 
-/** A clean, fully-wired tree: root → agentik(company) → {simone, chatcommerce}(project). */
+/** A clean, fully-wired tree: root → agentik(company) → {demo, shopbot}(project). */
 function buildValidTree(base: string): void {
   writeFileSync(join(base, "TYPES.md"), writeTypesManifest(TYPES))
   node(base, {
@@ -57,42 +57,42 @@ function buildValidTree(base: string): void {
   mkdirSync(join(agentikDir, ".secrets"), { recursive: true })
   writeFileSync(
     join(agentikDir, ".secrets", "SECRETS.md"),
-    `---\nsecrets:\n  - slug: stripe-key\n    name: Stripe\n    description: Payments.\n    access:\n      bind:\n        - workspace: "@test/chatcommerce"\n---\n`,
+    `---\nsecrets:\n  - slug: stripe-key\n    name: Stripe\n    description: Payments.\n    access:\n      bind:\n        - workspace: "@test/shopbot"\n---\n`,
   )
 
-  const simoneDir = join(agentikDir, "simone")
+  const demoDir = join(agentikDir, "demo")
   node(
-    simoneDir,
+    demoDir,
     {
       schema: "workspace/v2",
-      id: "@test/simone",
+      id: "@test/demo",
       version: "1.0.0",
-      name: "Simone",
+      name: "Demo",
       type: "project",
       owner: { type: "org", id: "agentik", slug: "jeremy" },
       storage: { inline: { provider: "local-fs", config: {} } },
       work: { file: "WORK.md" },
-      exports: [{ path: "docs/whatsapp-flows", to: "@test/chatcommerce", mode: "read" }],
+      exports: [{ path: "docs/whatsapp-flows", to: "@test/shopbot", mode: "read" }],
       policy: { limits: [{ kind: "budget-usd-per-month", value: 80 }] },
     },
   )
-  writeFileSync(join(simoneDir, "WORK.md"), minimalWorkMd("simone", "Simone"))
+  writeFileSync(join(demoDir, "WORK.md"), minimalWorkMd("demo", "Demo"))
 
-  const ccDir = join(agentikDir, "chatcommerce")
+  const ccDir = join(agentikDir, "shopbot")
   node(ccDir, {
     schema: "workspace/v2",
-    id: "@test/chatcommerce",
+    id: "@test/shopbot",
     version: "1.0.0",
-    name: "ChatCommerce",
+    name: "Shopbot",
     type: "project",
     owner: { type: "org", id: "agentik", slug: "jeremy" },
     storage: { inline: { provider: "local-fs", config: {} } },
     work: { file: "WORK.md" },
-    includes: [{ ref: "ws://workspaces/@test/simone#docs/whatsapp-flows", mode: "read" }],
+    includes: [{ ref: "ws://workspaces/@test/demo#docs/whatsapp-flows", mode: "read" }],
     uses_secrets: [{ from: "@test/agentik", slug: "stripe-key", mode: "bind" }],
     policy: { limits: [{ kind: "budget-usd-per-month", value: 60 }] },
   })
-  writeFileSync(join(ccDir, "WORK.md"), minimalWorkMd("chatcommerce", "ChatCommerce"))
+  writeFileSync(join(ccDir, "WORK.md"), minimalWorkMd("shopbot", "Shopbot"))
 }
 
 beforeEach(() => {
@@ -110,9 +110,9 @@ describe("checkWorkspaceTree — valid tree", () => {
     expect(report.ok).toBe(true)
     expect(report.findings.filter((f) => f.level === "error")).toHaveLength(0)
     expect(report.nodeCount).toBe(4)
-    const chatcommerce = report.nodes.find((n) => n.id === "@test/chatcommerce")
-    expect(chatcommerce?.effectiveBudgetUsdPerMonth).toBe(60)
-    expect(chatcommerce?.parentId).toBe("@test/agentik")
+    const shopbot = report.nodes.find((n) => n.id === "@test/shopbot")
+    expect(shopbot?.effectiveBudgetUsdPerMonth).toBe(60)
+    expect(shopbot?.parentId).toBe("@test/agentik")
   })
 
   it("defaults every node's status/effectiveStatus to active with no statusInheritedFrom", () => {
@@ -153,10 +153,10 @@ describe("checkWorkspaceTree — status inheritance is reported, never an error 
     expect(agentik?.effectiveStatus).toBe("paused")
     expect(agentik?.statusInheritedFrom).toBeUndefined()
 
-    const simone = report.nodes.find((n) => n.id === "@test/simone")
-    expect(simone?.status).toBe("active")
-    expect(simone?.effectiveStatus).toBe("paused")
-    expect(simone?.statusInheritedFrom).toBe("@test/agentik")
+    const demo = report.nodes.find((n) => n.id === "@test/demo")
+    expect(demo?.status).toBe("active")
+    expect(demo?.effectiveStatus).toBe("paused")
+    expect(demo?.statusInheritedFrom).toBe("@test/agentik")
   })
 
   it("an active child under an archived root is effectively archived, and that is not an error", () => {
@@ -178,24 +178,24 @@ describe("checkWorkspaceTree — status inheritance is reported, never an error 
     const report = checkWorkspaceTree(root)
     expect(report.ok).toBe(true)
     expect(report.findings.filter((f) => f.level === "error")).toHaveLength(0)
-    const chatcommerce = report.nodes.find((n) => n.id === "@test/chatcommerce")
-    expect(chatcommerce?.effectiveStatus).toBe("archived")
-    expect(chatcommerce?.statusInheritedFrom).toBe("@test/root")
+    const shopbot = report.nodes.find((n) => n.id === "@test/shopbot")
+    expect(shopbot?.effectiveStatus).toBe("archived")
+    expect(shopbot?.statusInheritedFrom).toBe("@test/root")
   })
 })
 
 describe("checkWorkspaceTree — broken trees", () => {
   it("flags an include with no matching export as an error", () => {
     buildValidTree(root)
-    // Remove simone's export — chatcommerce's include is now one-sided.
-    const simoneWs = join(root, "agentik", "simone", "WORKSPACE.md")
+    // Remove demo's export — shopbot's include is now one-sided.
+    const demoWs = join(root, "agentik", "demo", "WORKSPACE.md")
     writeFileSync(
-      simoneWs,
+      demoWs,
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
@@ -214,7 +214,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     writeFileSync(
       join(root, "agentik", ".secrets", "SECRETS.md"),
-      `---\nsecrets:\n  - slug: stripe-key\n    name: Stripe\n    description: Payments.\n    value: sk-liveSECRETVALUE1234567890\n    access:\n      bind:\n        - workspace: "@test/chatcommerce"\n---\n`,
+      `---\nsecrets:\n  - slug: stripe-key\n    name: Stripe\n    description: Payments.\n    value: sk-liveSECRETVALUE1234567890\n    access:\n      bind:\n        - workspace: "@test/shopbot"\n---\n`,
     )
     const report = checkWorkspaceTree(root)
     expect(report.ok).toBe(false)
@@ -286,24 +286,24 @@ describe("checkWorkspaceTree — broken trees", () => {
 
   it("flags a work: file that doesn't resolve to a valid WORK.md", () => {
     buildValidTree(root)
-    writeFileSync(join(root, "agentik", "simone", "WORK.md"), "not frontmatter at all")
+    writeFileSync(join(root, "agentik", "demo", "WORK.md"), "not frontmatter at all")
     const report = checkWorkspaceTree(root)
     expect(report.ok).toBe(false)
     expect(
       report.findings.some(
-        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("work.file does not resolve to a valid WORK.md"),
+        (f) => f.level === "error" && f.nodeId === "@test/demo" && f.message.includes("work.file does not resolve to a valid WORK.md"),
       ),
     ).toBe(true)
   })
 
   it("flags a work: file that is simply missing", () => {
     buildValidTree(root)
-    rmSync(join(root, "agentik", "chatcommerce", "WORK.md"))
+    rmSync(join(root, "agentik", "shopbot", "WORK.md"))
     const report = checkWorkspaceTree(root)
     expect(report.ok).toBe(false)
     expect(
       report.findings.some(
-        (f) => f.level === "error" && f.nodeId === "@test/chatcommerce" && f.message.includes("work.file does not resolve"),
+        (f) => f.level === "error" && f.nodeId === "@test/shopbot" && f.message.includes("work.file does not resolve"),
       ),
     ).toBe(true)
   })
@@ -311,12 +311,12 @@ describe("checkWorkspaceTree — broken trees", () => {
   it("reports a finding, never throws, when work.file is not a string", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
@@ -329,7 +329,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     }).not.toThrow()
     expect(
       report?.findings.some(
-        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("work.file must be a string path, got number"),
+        (f) => f.level === "error" && f.nodeId === "@test/demo" && f.message.includes("work.file must be a string path, got number"),
       ),
     ).toBe(true)
   })
@@ -337,12 +337,12 @@ describe("checkWorkspaceTree — broken trees", () => {
   it("reports a finding, never throws, when work: itself is not an object", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
@@ -355,7 +355,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     }).not.toThrow()
     expect(
       report?.findings.some(
-        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("must be an object with one of inline/ref/file, got string"),
+        (f) => f.level === "error" && f.nodeId === "@test/demo" && f.message.includes("must be an object with one of inline/ref/file, got string"),
       ),
     ).toBe(true)
   })
@@ -363,49 +363,49 @@ describe("checkWorkspaceTree — broken trees", () => {
   it("validates work.inline directly against workFrontmatterSchema", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
         work: {
           inline: {
             schema: "work.workspace/v2",
-            name: "simone",
-            title: "Simone",
-            description: "Simone's board.",
+            name: "demo",
+            title: "Demo",
+            description: "Demo's board.",
           },
         },
       }),
     )
     const report = checkWorkspaceTree(root)
-    expect(report.findings.some((f) => f.nodeId === "@test/simone" && f.level === "error")).toBe(false)
+    expect(report.findings.some((f) => f.nodeId === "@test/demo" && f.level === "error")).toBe(false)
   })
 
   it("flags an invalid work.inline frontmatter", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
-        work: { inline: { schema: "work.workspace/v2", name: "simone" } }, // missing title/description
+        work: { inline: { schema: "work.workspace/v2", name: "demo" } }, // missing title/description
       }),
     )
     const report = checkWorkspaceTree(root)
     expect(report.ok).toBe(false)
     expect(
       report.findings.some(
-        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("work.inline is not a valid WORK.md frontmatter"),
+        (f) => f.level === "error" && f.nodeId === "@test/demo" && f.message.includes("work.inline is not a valid WORK.md frontmatter"),
       ),
     ).toBe(true)
   })
@@ -413,23 +413,23 @@ describe("checkWorkspaceTree — broken trees", () => {
   it("reports work.ref as an info-level, unresolved-by-this-check finding", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
-        work: { ref: "@agentik/simone-board" },
+        work: { ref: "@agentik/demo-board" },
       }),
     )
     const report = checkWorkspaceTree(root)
-    expect(report.findings.some((f) => f.nodeId === "@test/simone" && f.level === "error")).toBe(false)
+    expect(report.findings.some((f) => f.nodeId === "@test/demo" && f.level === "error")).toBe(false)
     expect(
       report.findings.some(
-        (f) => f.level === "info" && f.nodeId === "@test/simone" && f.message.includes('work.ref "@agentik/simone-board"'),
+        (f) => f.level === "info" && f.nodeId === "@test/demo" && f.message.includes('work.ref "@agentik/demo-board"'),
       ),
     ).toBe(true)
   })
@@ -437,31 +437,31 @@ describe("checkWorkspaceTree — broken trees", () => {
   it("does not require work: at all — a project without one is not an error", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
       }),
     )
     const report = checkWorkspaceTree(root)
-    expect(report.findings.some((f) => f.nodeId === "@test/simone" && f.level === "error")).toBe(false)
+    expect(report.findings.some((f) => f.nodeId === "@test/demo" && f.level === "error")).toBe(false)
   })
 
   it("warns (does not error) when a child's declared budget exceeds its resolved ancestor ceiling", () => {
     buildValidTree(root)
-    const ccWs = join(root, "agentik", "chatcommerce", "WORKSPACE.md")
+    const ccWs = join(root, "agentik", "shopbot", "WORKSPACE.md")
     writeFileSync(
       ccWs,
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/chatcommerce",
+        id: "@test/shopbot",
         version: "1.0.0",
-        name: "ChatCommerce",
+        name: "Shopbot",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
@@ -469,7 +469,7 @@ describe("checkWorkspaceTree — broken trees", () => {
       }),
     )
     const report = checkWorkspaceTree(root)
-    const node = report.nodes.find((n) => n.id === "@test/chatcommerce")
+    const node = report.nodes.find((n) => n.id === "@test/shopbot")
     expect(node?.effectiveBudgetUsdPerMonth).toBe(250) // capped by agentik, not root's 400
     expect(
       report.findings.some((f) => f.level === "warning" && f.message.includes("effective ceiling is 250")),
@@ -521,48 +521,48 @@ describe("checkWorkspaceTree — broken trees", () => {
   it("honours apps[].attach to another node when accepted_apps grants it", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
-        apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", attach: "@test/chatcommerce" }],
+        apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", attach: "@test/shopbot" }],
       }),
     )
     writeFileSync(
-      join(root, "agentik", "chatcommerce", "WORKSPACE.md"),
+      join(root, "agentik", "shopbot", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/chatcommerce",
+        id: "@test/shopbot",
         version: "1.0.0",
-        name: "ChatCommerce",
+        name: "Shopbot",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
-        accepted_apps: [{ from: "@test/simone", app: "@agentik/seo-crew" }],
+        accepted_apps: [{ from: "@test/demo", app: "@agentik/seo-crew" }],
       }),
     )
     const report = checkWorkspaceTree(root)
-    expect(report.findings.some((f) => f.level === "error" && f.nodeId === "@test/simone")).toBe(false)
+    expect(report.findings.some((f) => f.level === "error" && f.nodeId === "@test/demo")).toBe(false)
   })
 
   it("flags apps[].attach to another node with no accepted_apps grant", () => {
     buildValidTree(root)
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
-        apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", attach: "@test/chatcommerce" }],
+        apps: [{ id: "@agentik/seo-crew", version: "^0.1.0", attach: "@test/shopbot" }],
       }),
     )
     const report = checkWorkspaceTree(root)
@@ -571,8 +571,8 @@ describe("checkWorkspaceTree — broken trees", () => {
       report.findings.some(
         (f) =>
           f.level === "error" &&
-          f.nodeId === "@test/simone" &&
-          f.message.includes("has no accepted_apps grant for @test/simone"),
+          f.nodeId === "@test/demo" &&
+          f.message.includes("has no accepted_apps grant for @test/demo"),
       ),
     ).toBe(true)
   })
@@ -581,14 +581,14 @@ describe("checkWorkspaceTree — broken trees", () => {
     buildValidTree(root)
     const outside = mkdtempSync(join(tmpdir(), "agentproto-outside-"))
     writeFileSync(join(outside, "SECRET_WORK.md"), minimalWorkMd("escaped", "Escaped"))
-    symlinkSync(join(outside, "SECRET_WORK.md"), join(root, "agentik", "simone", "ESCAPE.md"))
+    symlinkSync(join(outside, "SECRET_WORK.md"), join(root, "agentik", "demo", "ESCAPE.md"))
     writeFileSync(
-      join(root, "agentik", "simone", "WORKSPACE.md"),
+      join(root, "agentik", "demo", "WORKSPACE.md"),
       writeWorkspaceManifest({
         schema: "workspace/v2",
-        id: "@test/simone",
+        id: "@test/demo",
         version: "1.0.0",
-        name: "Simone",
+        name: "Demo",
         type: "project",
         owner: { type: "org", id: "agentik", slug: "jeremy" },
         storage: { inline: { provider: "local-fs", config: {} } },
@@ -599,7 +599,7 @@ describe("checkWorkspaceTree — broken trees", () => {
     expect(report.ok).toBe(false)
     expect(
       report.findings.some(
-        (f) => f.level === "error" && f.nodeId === "@test/simone" && f.message.includes("resolves outside the tree root via a symlink"),
+        (f) => f.level === "error" && f.nodeId === "@test/demo" && f.message.includes("resolves outside the tree root via a symlink"),
       ),
     ).toBe(true)
     rmSync(outside, { recursive: true, force: true })

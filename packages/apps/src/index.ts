@@ -12,7 +12,7 @@
  *     manifests for a runtime that loads from a workspace.
  *
  * Teams are generic (`@agentproto/…` ids, no product dependency), so any host
- * — including agentik-studio — can consume them. Each team lives in its own
+ * — including demo-app — can consume them. Each team lives in its own
  * folder (`code-team/`, `content-team/`) with `agents/` + `workflows/`, and is
  * re-exported here + as a subpath (`@agentproto/apps/<team>`).
  *

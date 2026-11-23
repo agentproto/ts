@@ -116,7 +116,11 @@ function explicitOrRole(explicit, modelRoles, role) {
  *  never a raw `$input.*` that may be absent. */
 export function resolveSettings(input, modelRoles) {
   const i = input ?? {}
-  const originPolicy = resolveOriginPolicy({ userOrigins: i.userOrigins, closableOrigins: i.closableOrigins })
+  const originPolicy = resolveOriginPolicy({
+    userOrigins: i.userOrigins,
+    closableOrigins: i.closableOrigins,
+    extraClosableOrigins: i.extraClosableOrigins,
+  })
   return {
     idleMinutes: Math.floor(num(i.idleMinutes, DEFAULT_IDLE_MINUTES, { min: 1 })),
     apply: i.apply === true,
@@ -1116,6 +1120,7 @@ export default {
     stableVerdictPasses: { type: "number", description: `Consecutive passes on an unchanged evidence fingerprint before the judge cache stops re-judging. Default ${DEFAULT_STABLE_VERDICT_PASSES}.`, default: DEFAULT_STABLE_VERDICT_PASSES },
     userOrigins: { type: "array", description: `Origins that are ALWAYS flag-only, never closed (a human is in the loop). Trailing \`*\` is a prefix wildcard. Default ${JSON.stringify(DEFAULT_USER_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_USER_ORIGINS },
     closableOrigins: { type: "array", description: `Origins that may be closed under the current rules (cron jobs, gates, workflow steps, reviewer lanes). Trailing \`*\` is a prefix wildcard. Executors (a session with a parentSessionId) are closable regardless. Default ${JSON.stringify(DEFAULT_CLOSABLE_ORIGINS)}.`, items: { type: "string" }, default: DEFAULT_CLOSABLE_ORIGINS },
+    extraClosableOrigins: { type: "array", description: "Origins ADDED to the closable list (a host's own supervisor label, e.g. `my-supervisor` and `my-supervisor:*`) without restating the defaults. Trailing `*` is a prefix wildcard. Default none.", items: { type: "string" }, default: [] },
   },
   outputs: {},
   steps: [

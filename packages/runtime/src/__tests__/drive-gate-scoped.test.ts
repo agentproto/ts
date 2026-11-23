@@ -46,14 +46,14 @@ async function callContinueFresh(grants: Grant[] | undefined): Promise<{ isError
   eventRing.wire(sessionEvents)
   const registry: SessionsRegistry = createSessionsRegistry({ sessionEvents, persist: false })
   const caller = registry.spawnAgent({
-    workspaceSlug: "agentik-studio",
+    workspaceSlug: "demo-app",
     cwd: "/tmp",
     agentSession: idle(),
     adapterSlug: "mock",
     depth: 0,
   })
   const target = registry.spawnAgent({
-    workspaceSlug: "agentik-studio",
+    workspaceSlug: "demo-app",
     cwd: "/tmp",
     agentSession: idle(),
     adapterSlug: "mock",

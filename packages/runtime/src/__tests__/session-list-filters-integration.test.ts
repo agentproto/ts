@@ -59,7 +59,7 @@ function seed(registry: SessionsRegistry): Seeded {
       adapterSlug: "fake",
       ...extra,
     } as never).id
-  const main = agent({ label: "pygmalion-brain", title: "Fix the checkout bug" })
+  const main = agent({ label: "orchestrator-brain", title: "Fix the checkout bug" })
   const review = agent({ label: "review:studio:claims", origin: "review", parentSessionId: main })
   const wf = agent({ label: "wf:revise/reader-probe", origin: "workflow" })
   const child = agent({ label: "helper", parentSessionId: main })
@@ -202,7 +202,7 @@ describe("session_list filters (MCP)", () => {
       cwd: "/work/app",
       agentSession: fakeAgentSession("agent"),
       adapterSlug: "fake",
-      label: "pygmalion-brain",
+      label: "orchestrator-brain",
       resumedFrom: ids.main,
     } as never).id
     const got = (await call({})).body.sessions.map((s: { id: string }) => s.id)
@@ -218,7 +218,7 @@ describe("session_list filters (MCP)", () => {
       cwd: "/work/app",
       agentSession: fakeAgentSession("agent"),
       adapterSlug: "fake",
-      label: "pygmalion-brain",
+      label: "orchestrator-brain",
       resumedFrom: ids.main,
     } as never).id
     const got = (await call({ collapseLineage: true })).body.sessions.map((s: { id: string }) => s.id)
@@ -237,7 +237,7 @@ describe("session_list filters (MCP)", () => {
       cwd: "/work/app",
       agentSession: fakeAgentSession("agent"),
       adapterSlug: "fake",
-      label: "pygmalion-brain",
+      label: "orchestrator-brain",
     } as never).id
     registry!.setLineageSuccessor(ids.main, successor)
     const got = (await call({ collapseLineage: true })).body.sessions.map((s: { id: string }) => s.id)
@@ -349,7 +349,7 @@ describe("GET /sessions filters (HTTP)", () => {
         cwd: "/work/app",
         agentSession: fakeAgentSession("agent"),
         adapterSlug: "fake",
-        label: "pygmalion-brain",
+        label: "orchestrator-brain",
         resumedFrom: ids.main,
       } as never).id
       const got = await idsOf(await get(""))
@@ -366,7 +366,7 @@ describe("GET /sessions filters (HTTP)", () => {
         cwd: "/work/app",
         agentSession: fakeAgentSession("agent"),
         adapterSlug: "fake",
-        label: "pygmalion-brain",
+        label: "orchestrator-brain",
         resumedFrom: ids.main,
       } as never).id
       const got = await idsOf(await get("?collapseLineage=true"))
@@ -385,7 +385,7 @@ describe("GET /sessions filters (HTTP)", () => {
         cwd: "/work/app",
         agentSession: fakeAgentSession("agent"),
         adapterSlug: "fake",
-        label: "pygmalion-brain",
+        label: "orchestrator-brain",
       } as never).id
       registry.setLineageSuccessor(ids.main, successor)
       const got = await idsOf(await get("?collapseLineage=true"))

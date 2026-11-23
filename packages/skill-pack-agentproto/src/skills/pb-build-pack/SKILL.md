@@ -18,7 +18,7 @@ board; the pack machinery itself lives in this repo, not the daemon.
 
 ### 1. Read the committed SOP first
 
-Read `projects/guilde/docs/PACK-SOP.md` before anything else. It is the
+Read the pack authoring SOP before anything else. It is the
 authoritative authoring SOP — folder layout, marker semantics, what each
 doctype handler consumes. This playbook sequences the work; the SOP defines
 the artifacts.
@@ -26,7 +26,7 @@ the artifacts.
 ### 2. Scaffold with the authoring CLI
 
 ```
-pnpm --filter @guilde/api run pack init <kind> <slug>
+pnpm --filter @acme/api run pack init <kind> <slug>
 ```
 
 `kind` is one of `company` | `agency` | `knowledge` — the ROOT MARKER file
@@ -87,7 +87,7 @@ jsonb). An import that cannot survive a resync was not really installed.
   through the guild's `packSources`, never paste tokens into pack files.
 - The canonical import types live in `@agstudio/agent-package-import`
   (`materializeAgentPackage`, `computePackageSha`); doctype handlers in
-  `@guilde/core/domain/import/handlers.ts` are first-match-wins by path —
+  `@acme/core/domain/import/handlers.ts` are first-match-wins by path —
   ordering matters when one path could match two handlers.
 
 ## Verify

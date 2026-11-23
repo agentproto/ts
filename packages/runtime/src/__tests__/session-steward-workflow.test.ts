@@ -712,6 +712,12 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
       expect(f({})).toBe(false)
     })
 
+    it("resolveSettings appends extraClosableOrigins to the default closable list", () => {
+      const resolved = stewardEntry.resolveSettings({ extraClosableOrigins: ["mine:*"] }) as { closableOrigins: string[] }
+      expect(resolved.closableOrigins).toContain("mine:*")
+      expect(resolved.closableOrigins).toContain("cron:*")
+    })
+
     it("buildAskQueue still skips a busy or awaiting-input keepAlive session that otherwise qualifies", () => {
       const settings = stewardEntry.resolveSettings({ askSessions: true })
       const row = (id: string, extra: Record<string, unknown>) => ({
@@ -1082,11 +1088,11 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
       const { byId } = await relabelOf(
         [prRow("sess_merged", [1738, 1740]), terminalRow("sess_wt", hoursAgo(2))],
         {
-          sess_merged: { worktree: { branch: "wt/x", pr: { state: "merged", number: 1738, url: "https://github.com/agentik/agentik-studio/pull/1738" } }, pullRequests: { opened: 2, merged: 1, state: "merged" } },
+          sess_merged: { worktree: { branch: "wt/x", pr: { state: "merged", number: 1738, url: "https://github.com/agentik/demo-app/pull/1738" } }, pullRequests: { opened: 2, merged: 1, state: "merged" } },
           sess_wt: { worktree: { branch: "wt/y", pr: { state: "merged", number: 9 } }, pullRequests: { opened: 0, merged: 1, state: "merged" } },
         },
       )
-      expect(byId.sess_merged).toMatchObject({ proposedVerdict: "done", reason: "PR agentik/agentik-studio#1738 merged" })
+      expect(byId.sess_merged).toMatchObject({ proposedVerdict: "done", reason: "PR agentik/demo-app#1738 merged" })
       expect(byId.sess_wt).toMatchObject({ proposedVerdict: "unknown", reason: "worktree PR #9 merged, not recorded by this session (shared worktree)" })
     })
 
@@ -1106,11 +1112,11 @@ describe("session-steward workflow — mechanical cron rules (mission items 1-10
       const { byId } = await relabelOf(
         [prRow("sess_29762d5d", [505]), terminalRow("sess_other", hoursAgo(2)), terminalRow("sess_nothing", hoursAgo(3))],
         {
-          sess_29762d5d: { worktree: { branch: "wt/z", pr: { state: "open", number: 505, url: "https://github.com/agentik/agentik-studio/pull/505" } }, pullRequests: { opened: 1, merged: 0, state: "open" } },
+          sess_29762d5d: { worktree: { branch: "wt/z", pr: { state: "open", number: 505, url: "https://github.com/agentik/demo-app/pull/505" } }, pullRequests: { opened: 1, merged: 0, state: "open" } },
           sess_other: { worktree: { branch: "wt/z", pr: { state: "open", number: 505 } }, pullRequests: { opened: 0, merged: 0, state: "open" } },
         },
       )
-      expect(byId.sess_29762d5d).toMatchObject({ proposedVerdict: "needs-follow-up", reason: "PR agentik/agentik-studio#505 open — awaiting review/merge" })
+      expect(byId.sess_29762d5d).toMatchObject({ proposedVerdict: "needs-follow-up", reason: "PR agentik/demo-app#505 open — awaiting review/merge" })
       expect(byId.sess_other).toMatchObject({ proposedVerdict: "unknown", reason: "worktree PR #505 open, not recorded by this session" })
       expect(byId.sess_nothing).toMatchObject({ proposedVerdict: "unknown" })
     })

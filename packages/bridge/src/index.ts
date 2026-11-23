@@ -40,7 +40,7 @@ export type {
 } from "./types.js"
 
 // Component C — portable playbook overlay InputProcessor factory (AIP-12).
-// Guilde's guildePlaybookOverlayProcessor can become a thin wrapper around this.
+// Acme's acmePlaybookOverlayProcessor can become a thin wrapper around this.
 export { makePlaybookOverlayProcessor } from "./playbook-overlay-processor.js"
 export type { PlaybookOverlayProcessorOptions } from "./playbook-overlay-processor.js"
 

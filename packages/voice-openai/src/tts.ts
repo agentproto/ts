@@ -25,6 +25,9 @@ export function makeOpenAITts(cfg: OpenAITtsConfig = {}): TtsProvider {
 
   return {
     slug: "openai",
+    get model() {
+      return model()
+    },
     capabilities: {
       streaming: false,
       file: true,

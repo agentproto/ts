@@ -9,29 +9,29 @@ import type { WorkspaceDefinition } from "../types.js"
 function validDef(): WorkspaceDefinition {
   return {
     schema: "workspace/v2",
-    id: "@jeremy/chatcommerce",
+    id: "@jeremy/shopbot",
     version: "1.0.0",
-    name: "ChatCommerce",
+    name: "Shopbot",
     type: "project",
     wall: "isolated",
     owner: { type: "org", id: "agentik", slug: "jeremy" },
-    storage: { inline: { provider: "local-fs", config: { mount_path: "/tmp/agentik/chatcommerce" } } },
-    includes: [{ ref: "ws://workspaces/@jeremy/simone#docs/whatsapp-flows", mode: "read" }],
+    storage: { inline: { provider: "local-fs", config: { mount_path: "/tmp/agentik/shopbot" } } },
+    includes: [{ ref: "ws://workspaces/@jeremy/demo#docs/whatsapp-flows", mode: "read" }],
   }
 }
 
 describe("workspace/v2 manifest round-trip", () => {
   it("writes a definition to markdown and parses it back to the same handle", () => {
-    const md = writeWorkspaceManifest(validDef(), "## Description\n\nChatCommerce's project node.\n")
+    const md = writeWorkspaceManifest(validDef(), "## Description\n\nShopbot's project node.\n")
     expect(md).toContain("schema: workspace/v2")
-    expect(md).toContain("id: '@jeremy/chatcommerce'")
+    expect(md).toContain("id: '@jeremy/shopbot'")
 
     const manifest = parseWorkspaceManifest(md)
-    expect(manifest.frontmatter.id).toBe("@jeremy/chatcommerce")
-    expect(manifest.body.trim()).toBe("## Description\n\nChatCommerce's project node.".trim())
+    expect(manifest.frontmatter.id).toBe("@jeremy/shopbot")
+    expect(manifest.body.trim()).toBe("## Description\n\nShopbot's project node.".trim())
 
     const handle = workspaceFromManifest(manifest)
-    expect(handle.id).toBe("@jeremy/chatcommerce")
+    expect(handle.id).toBe("@jeremy/shopbot")
     expect(handle.includes).toHaveLength(1)
     expect(handle.wall).toBe("isolated")
   })

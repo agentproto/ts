@@ -11,7 +11,7 @@ name: Update deps
 #                 (stays within declared ranges, never a major).
 #   scoped-latest bump one package family/glob to its latest npm version,
 #                 applied with the portable GNU/BSD sed used by the
-#                 agentik-studio reference script.
+#                 demo-app reference script.
 #
 # The PR title is a fixed dedup key (see the "Dedup contract" note in each
 # generated PR body).

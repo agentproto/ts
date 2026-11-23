@@ -35,12 +35,12 @@ describe("restart carries the display name", () => {
     const registry = createSessionsRegistry({ persist: false })
     const prev = registry.spawnAgent({
       workspaceSlug: "default", cwd: "/tmp", agentSession: fake(), adapterSlug: "hermes",
-      label: "pygmalion-agent-pm-chatcommerce", title: "Old auto title",
+      label: "orchestrator-agent-pm-shopbot", title: "Old auto title",
     })
-    registry.renameSession(prev.id, { label: "pygmalion-agent-pm-chatcommerce" })
+    registry.renameSession(prev.id, { label: "orchestrator-agent-pm-shopbot" })
     const { desc } = await restartAgentSession(registry, resolver, registry.get(prev.id)!, opts)
     expect(desc.renamedByUser).toBe(true)
-    expect(sessionDisplayName(desc)).toBe("pygmalion-agent-pm-chatcommerce")
+    expect(sessionDisplayName(desc)).toBe("orchestrator-agent-pm-shopbot")
   })
 
   it("keeps the original derived title, not the resume prompt's", async () => {

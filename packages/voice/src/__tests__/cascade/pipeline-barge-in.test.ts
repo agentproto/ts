@@ -1,8 +1,5 @@
 // @ts-nocheck
-// Ported from agentik-studio projects/simone/apps/voice/test/calls/pipeline-barge-in.test.ts
-// The expect blocks are unchanged from the studio original; only imports (and,
-// where noted in the PR, injected provider labels) differ. Type checking is off
-// for this file because the studio does not type-check its test files.
+// Type checking is off for this file: it is kept close to a verbatim test suite.
 /**
  * Barge-in: the caller talks over the assistant. Uses a fake clock so the VAD's
  * wall-clock timing is exact, and a counter-based outbound queue so "audio

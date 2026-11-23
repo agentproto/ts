@@ -88,5 +88,5 @@ panel, the terminal, stays in `@agentproto/runtime` (`terminal-panel-app.ts`)
 
 Team ids are `@agentproto/…` and depend on **no** product package (the
 architecture invariant: nothing under `@agentproto/*` may import an app's
-`@<app>/core`). That's what lets any host — including agentik-studio — import a
+`@<app>/core`). That's what lets any host — including demo-app — import a
 team and use its agents/workflows directly.

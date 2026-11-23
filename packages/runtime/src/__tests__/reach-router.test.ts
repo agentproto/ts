@@ -104,7 +104,7 @@ describe("REACH router", () => {
   let router: ReachRouter | undefined
   let logs: string[]
 
-  const webhookEntry = (over: Record<string, unknown> = {}) => ({ id: "pygmalion", kind: "webhook", url: RECEIVER, secret: SECRET, ...over })
+  const webhookEntry = (over: Record<string, unknown> = {}) => ({ id: "orchestrator", kind: "webhook", url: RECEIVER, secret: SECRET, ...over })
   const floorEntry = { id: "floor", kind: "telegram" }
 
   function startReach(opts: { route?: unknown[]; answer?: (call: HookCall) => HookAnswer; tgRefuse?: (c: TgCall) => string | undefined } = {}) {
@@ -194,7 +194,7 @@ describe("REACH router", () => {
 
     const rs = receipts(record.id)
     expect(rs).toHaveLength(1)
-    expect(rs[0]).toMatchObject({ dedupeKey: `approval:${record.id}`, adapterId: "pygmalion", kind: "webhook", status: "delivered", trigger: "route" })
+    expect(rs[0]).toMatchObject({ dedupeKey: `approval:${record.id}`, adapterId: "orchestrator", kind: "webhook", status: "delivered", trigger: "route" })
     expect(JSON.stringify(rs)).not.toContain(SECRET)
     expect(JSON.stringify(rs)).not.toContain(RECEIVER)
     expect(events.some(e => e.type === "reach:undelivered")).toBe(false)
@@ -214,7 +214,7 @@ describe("REACH router", () => {
     expect(sends).toHaveLength(1)
     expect(sends[0]!.body.chat_id).toBe(CHAT)
     expect(receipts(record.id).map(e => [e.adapterId, e.status, e.reason])).toEqual([
-      ["pygmalion", "failed", reason],
+      ["orchestrator", "failed", reason],
       ["floor", "delivered", undefined],
     ])
   })
@@ -225,7 +225,7 @@ describe("REACH router", () => {
     await r.route(record.id)
     expect(tg.calls).toHaveLength(0)
     const rs = receipts(record.id)
-    expect(rs).toEqual([expect.objectContaining({ adapterId: "pygmalion", status: "delivered" })])
+    expect(rs).toEqual([expect.objectContaining({ adapterId: "orchestrator", status: "delivered" })])
     expect(JSON.stringify(rs)).not.toMatch(/messageId|traceId|m-1|t-1/)
   })
 
@@ -251,7 +251,7 @@ describe("REACH router", () => {
 
     expect(tg.calls.filter(c => c.method === "sendMessage")).toHaveLength(1)
     expect(receipts(record.id).map(e => [e.adapterId, e.status, e.reason])).toEqual([
-      ["pygmalion", "undelivered", "deferred-past-due"],
+      ["orchestrator", "undelivered", "deferred-past-due"],
       ["floor", "delivered", undefined],
     ])
   })
@@ -279,7 +279,7 @@ describe("REACH router", () => {
       dedupeKey: `approval:${record.id}`,
       trigger: "route",
       attempts: [
-        { adapterId: "pygmalion", status: "failed", reason: "http-503" },
+        { adapterId: "orchestrator", status: "failed", reason: "http-503" },
         { adapterId: "floor", status: "failed", reason: "telegram-send-failed" },
       ],
     })
@@ -293,7 +293,7 @@ describe("REACH router", () => {
 
     expect(tg.calls).toHaveLength(0)
     expect(receipts(record.id).map(e => [e.adapterId, e.status, e.reason])).toEqual([
-      ["pygmalion", "failed", "http-500"],
+      ["orchestrator", "failed", "http-500"],
       ["floor", "undelivered", "channel-not-listed"],
     ])
     expect(events.filter(e => e.type === "reach:undelivered")).toHaveLength(1)

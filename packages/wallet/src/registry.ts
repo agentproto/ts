@@ -4,7 +4,7 @@
  * Mirrors the catalog shape used elsewhere (GrantCatalog, plan catalogs): a base
  * class hosts populate, an immutable `extend` layers app assets onto a shared
  * common set, and `verify` runs the no-arbitrage check across the union. The
- * registry is brand-neutral — concrete assets (USD/EUR, GUILDE_CREDITS, …) live
+ * registry is brand-neutral — concrete assets (USD/EUR, ACME_CREDITS, …) live
  * in the host, declared via `defineAsset`.
  *
  * Config-first today; a host MAY seed additional entries from a DB loader for

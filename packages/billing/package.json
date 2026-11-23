@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/billing",
   "version": "0.0.0",
-  "description": "@agentproto/billing: AIP-BILLING reference implementation. The BILLING.md parser and defineBillingManifest, the payment path on the AIP-49 journal, the SettlementProvider contract, the provider registry and the BILL-* conformance cases. No payment provider in this package.",
+  "description": "@agentproto/billing: AIP-74 reference implementation. The BILLING.md parser and defineBillingManifest, the payment path on the AIP-49 journal, the SettlementProvider contract, the provider registry and the BILL-* conformance cases. No payment provider in this package.",
   "keywords": [
     "agentproto",
     "aip-74",
@@ -70,5 +70,7 @@
     "vitest": "^3.2.7",
     "ajv": "^8.20.0"
   },
-  "private": true
+  "publishConfig": {
+    "access": "public"
+  }
 }

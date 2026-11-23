@@ -101,7 +101,7 @@ function fakeGatherDeps(overrides: Partial<SettingsGatherDeps> = {}): SettingsGa
             name: "local-chrome",
             type: "stdio",
             command: "/Users/jeremy/.agentproto/chrome-mcp/node_modules/.bin/chrome-devtools-mcp",
-            args: ["--profile", "/Users/jeremy/.agentproto/chrome-profile-guildebrowser"],
+            args: ["--profile", "/Users/jeremy/.agentproto/chrome-profile-acmebrowser"],
           },
         },
       ],
@@ -382,13 +382,13 @@ describe("applySettingsBundle", () => {
   // `expiresAt` must also survive the round trip rather than vanish (an
   // absent `expiresAt` reads as always-fresh downstream).
   it("restores a sealed secret's exact kind and expiresAt, not just its value", async () => {
-    const assertionProfile: ExportedAuthProfile = { id: "work-service", endpoint: "guilde", method: "oauth-bearer" }
+    const assertionProfile: ExportedAuthProfile = { id: "work-service", endpoint: "acme", method: "oauth-bearer" }
     const gatherDeps = fakeGatherDeps({
-      listAuthProfiles: async () => [{ ...assertionProfile, credentialRef: "agentproto.auth.guilde.sub" }],
+      listAuthProfiles: async () => [{ ...assertionProfile, credentialRef: "agentproto.auth.acme.sub" }],
       getAuthProfile: async (id: string) =>
-        id === assertionProfile.id ? { ...assertionProfile, credentialRef: "agentproto.auth.guilde.sub" } : undefined,
+        id === assertionProfile.id ? { ...assertionProfile, credentialRef: "agentproto.auth.acme.sub" } : undefined,
       credentialStore: fakeCredentialStore({
-        "agentproto.auth.guilde.sub": {
+        "agentproto.auth.acme.sub": {
           value: "eyJhbGciOi.assertion.jwt",
           kind: "assertion",
           expiresAt: "2026-06-01T00:00:00.000Z",

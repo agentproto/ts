@@ -11,7 +11,7 @@
  *      (`LocalFilesImporter`).
  *   2. Adapter packages (Notion, Drive, web-crawl, …) implement the
  *      contract via their own SDKs/HTTP layer.
- *   3. The host (Guilde corpus-host) wires a registry + dispatch.
+ *   3. The host (Acme corpus-host) wires a registry + dispatch.
  *
  * Importers write to two places, atomically per source:
  *   - `sources/<importer-id>/<batch>/<slug>.md`  — archived AIP-10 source

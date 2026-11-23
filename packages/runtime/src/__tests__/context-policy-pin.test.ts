@@ -1,6 +1,6 @@
 /**
  * Characterization tests: what the context subsystem does TODAY for the
- * policies the Pygmalion product really uses (auto-compact, percent ladder,
+ * policies the Orchestrator product really uses (auto-compact, percent ladder,
  * hard floor, compactRequiresOperator). A safety net for the context rework,
  * not a statement of what the behaviour should be.
  */
@@ -59,7 +59,7 @@ function harness(used: number, size: number, usedAfterCompact = 1_000): Harness 
 
 const isCompact = (p: string): boolean => p.startsWith("/compact")
 
-describe("context behaviour pinned before the rework (Pygmalion profile)", () => {
+describe("context behaviour pinned before the rework (Orchestrator profile)", () => {
   let tmp: string
   let reg: SessionsRegistry
 

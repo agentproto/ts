@@ -47,9 +47,9 @@ const GLOBS = [
 
 // Packages with no workspace dependents in this repo -> archived. Verified
 // by scanning all workspace package.json dependency fields. Dependents in
-// sibling repos count too: adapter-mastra (agentik-studio mcp-aip and
-// research-analyst), egress (agentik-studio core and guilde) and
-// role-catalog (guilde api) are used elsewhere, so they are not listed.
+// sibling repos count too: adapter-mastra (demo-app mcp-aip and
+// research-analyst), egress (demo-app core and acme) and
+// role-catalog (acme api) are used elsewhere, so they are not listed.
 const ARCHIVED = new Set([
   "@agentproto/driver-sdk", // packages/driver/sdk
   "@agentproto/workflow-ai-sdk", // packages/workflow-ai-sdk

@@ -221,7 +221,7 @@ export function originIdentitiesIn(sessions: readonly SessionDescriptor[]): stri
 
 /**
  * Short human summary of the active filter, e.g.
- * `status: live · workspace: Agentik Studio · search: "sales"` — for the
+ * `status: live · workspace: Demo App · search: "sales"` — for the
  * tree view's `description`. Empty string when the filter is inactive.
  */
 export function filterSummary(state: SessionFilterState): string {

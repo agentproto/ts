@@ -7,7 +7,7 @@
  * unchanged.
  *
  * Primary use: a knowledge PACK whose entries are inlined into the JS bundle
- * at build time (see `@guilde/knowledge-packs`). Reading from an in-memory map
+ * at build time (see `@acme/knowledge-packs`). Reading from an in-memory map
  * means packs ride inside `dist` — no runtime `fs`, no path resolution, no
  * loose data files for the deploy to drop. Wrap in `ReadOnlyFs` for packs.
  */

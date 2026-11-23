@@ -9,7 +9,7 @@
  *   "description": "Operate and supervise a fleet ...",
  *   "version": "0.3.0",  // optional when --version is passed on the CLI
  *   "skills": ["slug1", "slug2", ...],
- *   "sourceDir": "${AGENTIK_STUDIO_ROOT}/.claude/skills",  // optional; use env-var form when source lives in a private/external repo
+ *   "sourceDir": "${DEMO_APP_ROOT}/.claude/skills",  // optional; use env-var form when source lives in a private/external repo
  *   "author": { "name": "Name" },
  *   "keywords": ["kw1", "kw2", ...]
  * }
@@ -28,13 +28,13 @@
  * Precedence mirrors --source: CLI flag wins over the manifest field.
  *
  * When the manifest's sourceDir lives in a *different* git repo from the
- * packager itself (e.g. agentik-studio/.claude/skills vs agentproto/ts),
+ * packager itself (e.g. demo-app/.claude/skills vs agentproto/ts),
  * relative resolution will fail. Two portable options, in precedence order:
  *   1. --source <absolute> — one-off override, wins over everything.
  *   2. sourceDir: "${SOME_ENV_VAR}/.claude/skills" — the manifest expands
  *      `${VAR}` against the environment before resolving, so the same
  *      manifest works on any machine that sets that var (e.g.
- *      AGENTIK_STUDIO_ROOT=/path/to/agentik-studio in your shell profile).
+ *      DEMO_APP_ROOT=/path/to/demo-app in your shell profile).
  *      Referencing an unset var is a hard error, not a silent path.
  *
  * Relationship to install-skill.ts:

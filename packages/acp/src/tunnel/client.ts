@@ -1,7 +1,7 @@
 /**
  * Tunnel client (host side).
  *
- * Sits on the orchestrator (e.g. Guilde API). Speaks to a remote daemon
+ * Sits on the orchestrator (e.g. Acme API). Speaks to a remote daemon
  * over a `FrameSink`. Exposes `spawn(command, args, opts)` that returns
  * an object shaped like Node's `ChildProcess` — same `.stdin` /
  * `.stdout` / `.stderr` / `.on('exit')` / `.kill()` surface. This lets

@@ -176,7 +176,7 @@ yet.
 `harness/v1` names AIP-45's own AGENT-CLI document. This manifest describes
 one Mastra controller, a vendor-specific runtime, so it gets a
 vendor-namespaced id. The parser still accepts `spec: harness/v1` so the
-manifests agentik-studio already ships parse unchanged.
+manifests demo-app already ships parse unchanged.
 
 ## Portable vs host-resolved
 

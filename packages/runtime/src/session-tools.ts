@@ -7,7 +7,7 @@
  * so existing callers of `registerSessionTools` continue to work
  * unchanged.
  *
- * Lets a remote operator (Mastra agent in cloud Guilde,
+ * Lets a remote operator (Mastra agent in cloud Acme,
  * Claude Code as a sub-agent, …) spawn + drive agent CLIs on the
  * user's machine through the same MCP connection they already use
  * for fs/exec.
@@ -7828,7 +7828,7 @@ export function registerSessionTools(
   // ── session_role_refresh ──────────────────────────────────────────
   // AIP-42 hot role refresh — the generic version of the ad-hoc "re-read
   // AGENT.md and push a replace-your-role notice" mechanism an app like
-  // Pygmalion used to hand-roll for its own personas. Only works for a
+  // Orchestrator used to hand-roll for its own personas. Only works for a
   // session spawned with `agentId`/`agentPath` (carries
   // `meta.agentManifestPath`); modeled on session_set_keepalive: resolve +
   // subtree-scope + delegate to the registry, which does the reload/diff/

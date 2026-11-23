@@ -1,0 +1,15 @@
+{
+  "$comment": "Names of private products and repositories that must never appear in this public repository. Each entry is a case-insensitive regular expression. `exceptions` lists repo-relative file paths allowed to match; keep it empty.",
+  "names": [
+    "simone",
+    "agentik[-_ ]studio",
+    "pygmalion",
+    "chatcommerce",
+    "agentcart",
+    "law[ -]?hub",
+    "katchy",
+    "guilde",
+    "REGLAGES-VOIX"
+  ],
+  "exceptions": []
+}

@@ -1592,7 +1592,7 @@ describe("runShellGate() with a shell line in `command`", () => {
     timedOut: false,
     durationMs: 0,
   }
-  const LINE = "grep -q 'Re-vérification J+6' /tmp/pm-chatcommerce/RAPPORT.md"
+  const LINE = "grep -q 'Re-vérification J+6' /tmp/pm-shopbot/RAPPORT.md"
   let workspaces: string[] = []
 
   afterEach(async () => {

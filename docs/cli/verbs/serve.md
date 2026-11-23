@@ -92,8 +92,8 @@ in the browser, `agentproto sessions`, MCP clients) talk to
 ### Tunnel
 
 ```bash
-agentproto auth login --host wss://guilde.work
-agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
+agentproto auth login --host wss://example.com
+agentproto serve --connect wss://example.com/api/v1/agentproto/tunnel
 ```
 
 Boots the same local gateway *and* opens a WS to the host. Every
@@ -118,7 +118,7 @@ end-to-end, so even the trusted host loses plaintext visibility:
 // ~/.agentproto/config.json
 {
   "tunnel": {
-    "host": "wss://guilde.work/api/v1/agentproto/tunnel",
+    "host": "wss://example.com/api/v1/agentproto/tunnel",
     "token": "apt_…",   // REQUIRED — the E2E handshake authenticates on it
     "e2e": true
   }
@@ -167,7 +167,7 @@ running.
   pty          enabled (node-pty)
   origins      localhost:* only (default)
   endpoints    /mcp · /sessions · /events · /sessions/:id/pty (WS) · /sessions/:id/terminal/input · /sessions/:id (PATCH)
-  mode         tunnel → wss://guilde.work/api/v1/agentproto/tunnel
+  mode         tunnel → wss://example.com/api/v1/agentproto/tunnel
 ```
 
 Each line is a quick sanity check:

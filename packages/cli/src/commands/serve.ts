@@ -4,13 +4,13 @@
  * The single canonical agentproto daemon. Boots a local gateway
  * (HTTP + MCP server + sessions registry + workspace fs +
  * heartbeat) on `--port` (default 18790), and OPTIONALLY opens an
- * outbound WebSocket tunnel to a host (Guilde-shaped API) when
+ * outbound WebSocket tunnel to a host (Acme-shaped API) when
  * `--connect <url>` is set. With or without the tunnel:
  *
  *   - HTTP /sessions, /sessions/agent, /sessions/:id/* routes work
  *   - MCP tools (agent_start, agent_prompt, …) are
  *     reachable via the daemon's /mcp transport
- *   - the LocalDaemonSessionsCard in guilde-web sees every spawn
+ *   - the LocalDaemonSessionsCard in acme-web sees every spawn
  *
  * When the tunnel is up, every tunnel-driven spawn is also adopted
  * into the gateway's sessions registry via the
@@ -219,7 +219,7 @@ spawns land in the same /sessions list as local ones.
 
 Examples:
   agentproto serve                                   # local-only daemon on :18790
-  agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
+  agentproto serve --connect wss://example.com/api/v1/agentproto/tunnel
   agentproto serve --profile prod --workspace ~/code/my-app
 `
 
@@ -1249,7 +1249,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           `${color.reset}\n`,
       )
     }
-    // App-service boot re-ensure (Pygmalion phase 1b item 2). Strictly AFTER
+    // App-service boot re-ensure (Orchestrator phase 1b item 2). Strictly AFTER
     // the resume passes above: it force-replaces every app-service owner, so
     // it must not race them for an owner session id. `ensureServices` otherwise
     // runs only on the install path, leaving a service whose owner died with

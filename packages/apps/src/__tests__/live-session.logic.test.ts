@@ -74,12 +74,12 @@ describe("reduceEvent", () => {
     const state = reduceAll([
       { seq: 1, kind: "text-delta", sessionId: "s1", text: "Checking the client." },
       { seq: 2, kind: "tool-call", sessionId: "s1", toolCallId: "c1", toolName: "bash" },
-      { seq: 3, kind: "text-delta", sessionId: "s1", text: "Trial logic lives in Simone." },
+      { seq: 3, kind: "text-delta", sessionId: "s1", text: "Trial logic lives in Demo." },
     ])
 
     expect(state.rows.map(r => r.kind)).toEqual(["text", "tool-call", "text"])
     expect(state.rows[0]).toMatchObject({ text: "Checking the client." })
-    expect(state.rows[2]).toMatchObject({ text: "Trial logic lives in Simone." })
+    expect(state.rows[2]).toMatchObject({ text: "Trial logic lives in Demo." })
   })
 
   it("never rejoins across a turn-end, even when the fragment was unterminated", () => {

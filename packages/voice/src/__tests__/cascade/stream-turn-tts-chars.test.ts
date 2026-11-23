@@ -1,8 +1,5 @@
 // @ts-nocheck
-// Ported from agentik-studio projects/simone/apps/voice/test/calls/stream-turn-tts-chars.test.ts
-// The expect blocks are unchanged from the studio original; only imports (and,
-// where noted in the PR, injected provider labels) differ. Type checking is off
-// for this file because the studio does not type-check its test files.
+// Type checking is off for this file: it is kept close to a verbatim test suite.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   streamTurnWithSentences,

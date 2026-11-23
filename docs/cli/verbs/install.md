@@ -139,11 +139,11 @@ landed in a ledger at `~/.agentproto/profiles/<name>.json`, so:
 
 ```bash
 # Use a non-standard package for the profile
-agentproto install runtime-profile/guilde --package @guilde/runtime-profile-guilde
+agentproto install runtime-profile/acme --package @acme/runtime-profile-acme
 
 # Or set it once in config so the flag isn't needed
-agentproto config set profileAliases.guilde @guilde/runtime-profile-guilde
-agentproto install runtime-profile/guilde
+agentproto config set profileAliases.acme @acme/runtime-profile-acme
+agentproto install runtime-profile/acme
 ```
 
 Resolution order for the npm package backing a profile slug:

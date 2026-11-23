@@ -23,7 +23,7 @@ import {
   type AppGithubWorkspaceSync,
 } from "../sandbox-app-serve.js"
 
-const REPO_URL = "https://github.com/acme/pygmalion-home"
+const REPO_URL = "https://github.com/acme/orchestrator-home"
 
 function git(args: string[], cwd: string): string {
   const res = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })

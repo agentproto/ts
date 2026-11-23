@@ -55,10 +55,14 @@ describe("provider declaration", () => {
     expect(p.slug).toBe("openai")
     expect(p.env.apiKey).toBe("OPENAI_API_KEY")
     expect(Object.keys(p.capabilities).sort()).toEqual(["realtime", "stt", "tts"])
-    // "whisper" is the historical VOICE_STT_PROVIDER of Simone prod (compose.yaml:89).
+    // "whisper" is the historical VOICE_STT_PROVIDER.
     expect(p.valueAliases.stt).toEqual(["whisper"])
     expect(p.realtime!.capabilities.id).toBe("openai-realtime")
     expect(openaiDefault.slug).toBe("openai")
+  })
+  it("exposes the model it synthesizes with, the configured one over the default", () => {
+    expect(makeOpenAITts().model).toBe("gpt-4o-mini-tts")
+    expect(makeOpenAITts({ modelId: "tts-1" }).model).toBe("tts-1")
   })
   it("refuses to open anything without a key, naming the variable", async () => {
     const saved = process.env.OPENAI_API_KEY

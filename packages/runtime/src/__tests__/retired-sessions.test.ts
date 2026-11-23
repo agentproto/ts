@@ -5,7 +5,7 @@
  * revive one — in place or under a new id — and a human prompt to a row that
  * has a successor is refused with `session_superseded`.
  *
- * Incident: Pygmalion's replaced brain `sess_97f8303c` was revived in place by
+ * Incident: Orchestrator's replaced brain `sess_97f8303c` was revived in place by
  * a human prompt and became a duplicate brain, while follows/sentinels aimed
  * at dead brains were revived under NEW ids by follow digests / sentinel
  * notices.

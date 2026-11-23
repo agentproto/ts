@@ -31,6 +31,7 @@ interface SessionLike {
 interface Policy {
   userOrigins?: unknown[]
   closableOrigins?: unknown[]
+  extraClosableOrigins?: unknown[]
 }
 
 interface DecideArgs {
@@ -118,6 +119,22 @@ describe("origin policy — resolveOriginPolicy", () => {
       closableOrigins: ["gate"],
     })
   })
+
+  it("extraClosableOrigins adds a host's own roots to the defaults, deduplicated", () => {
+    const r = mod.resolveOriginPolicy({ extraClosableOrigins: ["my-supervisor", "my-supervisor:*", "gate", 7] })
+    expect(r.closableOrigins).toEqual([...mod.DEFAULT_CLOSABLE_ORIGINS, "my-supervisor", "my-supervisor:*"])
+    expect(mod.classifyOrigin({ origin: "my-supervisor:brain" }, { extraClosableOrigins: ["my-supervisor:*"] })).toBe(
+      "closable",
+    )
+    expect(mod.classifyOrigin({ origin: "my-supervisor:brain" }, {})).toBe("user")
+  })
+
+  it("extraClosableOrigins also extends an explicit closable list", () => {
+    expect(mod.resolveOriginPolicy({ closableOrigins: ["gate"], extraClosableOrigins: ["mine"] }).closableOrigins).toEqual([
+      "gate",
+      "mine",
+    ])
+  })
 })
 
 describe("origin policy — classifyOrigin", () => {
@@ -132,9 +149,9 @@ describe("origin policy — classifyOrigin", () => {
     ["bare cron scheduler origin", { origin: "cron" }, "closable"],
     ["routine registrar fire", { origin: "routine:session-steward-hourly" }, "closable"],
     ["inbound webhook", { origin: "webhook" }, "closable"],
-    ["Pygmalion root", { origin: "pygmalion" }, "closable"],
-    ["Pygmalion subsystem root", { origin: "pygmalion:brain" }, "closable"],
-    ["app service owner", { origin: "app-service:@agentik/pygmalion" }, "closable"],
+    ["Orchestrator root", { origin: "orchestrator" }, "closable"],
+    ["Orchestrator subsystem root", { origin: "orchestrator:brain" }, "closable"],
+    ["app service owner", { origin: "app-service:@agentik/orchestrator" }, "closable"],
     ["cli stays a human at a keyboard", { origin: "cli" }, "user"],
     ["executor (parent, no origin)", EXECUTOR, "closable"],
     ["executor with an unknown origin", EXECUTOR_UNKNOWN_ORIGIN, "closable"],

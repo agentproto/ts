@@ -16,8 +16,8 @@ import { buildMemoryDigest, selectMemoryItems } from "../memory-digest.js"
 const NOW = new Date("2026-10-28T12:00:00.000Z")
 
 const ROOT = "@acme/agentik"
-const SIMONE = "@acme/simone"
-const KATCHY = "@acme/katchy"
+const DEMO = "@acme/demo"
+const NOVA = "@acme/nova"
 const PERSO = "@jeremy/perso"
 const USER_ROOT = "@jeremy/root"
 
@@ -62,12 +62,12 @@ const ANCHORS = { session: "sess_1" }
 describe("digest node projection (AIP-72 section 10)", () => {
   it("drops an item on a sibling node and keeps the session's node and its ancestors", async () => {
     await seed([
-      item("on-simone", ["global", `node:${SIMONE}`]),
-      item("on-katchy", ["global", `node:${KATCHY}`]),
+      item("on-team", ["global", `node:${DEMO}`]),
+      item("on-nova", ["global", `node:${NOVA}`]),
       item("on-root", ["global", `node:${ROOT}`]),
     ])
-    const ids = await visibleIds({ anchors: ANCHORS, scope: { nodes: [SIMONE, ROOT], tree: ROOT } })
-    expect(ids).toEqual(["on-root", "on-simone"])
+    const ids = await visibleIds({ anchors: ANCHORS, scope: { nodes: [DEMO, ROOT], tree: ROOT } })
+    expect(ids).toEqual(["on-root", "on-team"])
   })
 
   it("drops an item above a sealed wall: the projection is already cut at the sealed node", async () => {
@@ -82,76 +82,76 @@ describe("digest node projection (AIP-72 section 10)", () => {
   })
 
   it("drops an item with no node anchor from a session that has a node scope", async () => {
-    await seed([item("untagged", ["global"]), item("tagged", ["global", `node:${SIMONE}`])])
-    expect(await visibleIds({ anchors: ANCHORS, scope: { nodes: [SIMONE], tree: ROOT } })).toEqual(["tagged"])
+    await seed([item("untagged", ["global"]), item("tagged", ["global", `node:${DEMO}`])])
+    expect(await visibleIds({ anchors: ANCHORS, scope: { nodes: [DEMO], tree: ROOT } })).toEqual(["tagged"])
   })
 
   it("drops an item with a node anchor from a session that has no node scope, and keeps the untagged ones", async () => {
-    await seed([item("untagged", ["global"]), item("tagged", ["global", `node:${SIMONE}`])])
+    await seed([item("untagged", ["global"]), item("tagged", ["global", `node:${DEMO}`])])
     expect(await visibleIds({ anchors: ANCHORS })).toEqual(["untagged"])
     expect(await visibleIds({ anchors: ANCHORS, scope: { nodes: [] } })).toEqual(["untagged"])
   })
 
   it("drops an operator's own item on a node outside the session's chain (C4)", async () => {
     await seed([
-      item("mine-here", ["global", `node:${SIMONE}`, "operator:pm-simone"]),
-      item("mine-elsewhere", ["global", `node:${KATCHY}`, "operator:pm-simone"]),
+      item("mine-here", ["global", `node:${DEMO}`, "operator:pm-demo"]),
+      item("mine-elsewhere", ["global", `node:${NOVA}`, "operator:pm-demo"]),
     ])
     const ids = await visibleIds({
       anchors: ANCHORS,
-      scope: { nodes: [SIMONE, ROOT], tree: ROOT, operator: "pm-simone" },
+      scope: { nodes: [DEMO, ROOT], tree: ROOT, operator: "pm-demo" },
     })
     expect(ids).toEqual(["mine-here"])
   })
 
   it("drops another operator's item unless a read grant reaches the session, and a grant never crosses a node", async () => {
     await seed([
-      item("theirs", ["global", `node:${SIMONE}`, "operator:coo"]),
-      item("theirs-off-chain", ["global", `node:${KATCHY}`, "operator:coo"]),
-      item("node-shared", ["global", `node:${SIMONE}`]),
+      item("theirs", ["global", `node:${DEMO}`, "operator:coo"]),
+      item("theirs-off-chain", ["global", `node:${NOVA}`, "operator:coo"]),
+      item("node-shared", ["global", `node:${DEMO}`]),
     ])
-    const scope = { nodes: [SIMONE, ROOT], tree: ROOT, operator: "pm-simone" }
+    const scope = { nodes: [DEMO, ROOT], tree: ROOT, operator: "pm-demo" }
     expect(await visibleIds({ anchors: ANCHORS, scope })).toEqual(["node-shared"])
     expect(await visibleIds({ anchors: ANCHORS, scope, operatorGrants: ["coo"] })).toEqual(["node-shared", "theirs"])
   })
 
   it("hides an operator-owned item from a session that runs no operator", async () => {
-    await seed([item("owned", ["global", `node:${SIMONE}`, "operator:pm-simone"])])
-    expect(await visibleIds({ anchors: ANCHORS, scope: { nodes: [SIMONE], tree: ROOT } })).toEqual([])
+    await seed([item("owned", ["global", `node:${DEMO}`, "operator:pm-demo"])])
+    expect(await visibleIds({ anchors: ANCHORS, scope: { nodes: [DEMO], tree: ROOT } })).toEqual([])
   })
 
   it("keeps node and operator tags out of the anchor condition: an unmatched flat anchor still excludes", async () => {
-    await seed([item("other-project", ["project:other", `node:${SIMONE}`])])
-    expect(await visibleIds({ anchors: ANCHORS, scope: { nodes: [SIMONE], tree: ROOT } })).toEqual([])
+    await seed([item("other-project", ["project:other", `node:${DEMO}`])])
+    expect(await visibleIds({ anchors: ANCHORS, scope: { nodes: [DEMO], tree: ROOT } })).toEqual([])
   })
 
   it("orders by section 9: the operator's own item before a node item, the session's own node before its ancestors", async () => {
     await seed([
       item("at-root", ["global", `node:${ROOT}`]),
-      item("at-simone", ["global", `node:${SIMONE}`]),
-      item("owned", ["global", `node:${ROOT}`, "operator:pm-simone"]),
+      item("at-demo", ["global", `node:${DEMO}`]),
+      item("owned", ["global", `node:${ROOT}`, "operator:pm-demo"]),
     ])
     const ids = (
       await selectMemoryItems(store, {
         anchors: ANCHORS,
-        scope: { nodes: [SIMONE, ROOT], tree: ROOT, operator: "pm-simone" },
+        scope: { nodes: [DEMO, ROOT], tree: ROOT, operator: "pm-demo" },
       })
     ).map((d) => d.id)
-    expect(ids).toEqual(["owned", "at-simone", "at-root"])
+    expect(ids).toEqual(["owned", "at-demo", "at-root"])
   })
 
   it("applies the size bound after the filter: a hidden item never takes a slot or counts as left out", async () => {
     const visible = ["v1", "v2", "v3", "v4"]
     await seed([
       ...visible.map((id, i) =>
-        item(id, ["global", `node:${SIMONE}`], { updated_at: `2026-10-0${i + 1}T00:00:00.000Z` }),
+        item(id, ["global", `node:${DEMO}`], { updated_at: `2026-10-0${i + 1}T00:00:00.000Z` }),
       ),
       // Newest, so it would sort first and take the first slot if it were not filtered out.
       ...["h1", "h2", "h3"].map((id) =>
-        item(id, ["global", `node:${KATCHY}`], { updated_at: "2026-10-20T00:00:00.000Z" }),
+        item(id, ["global", `node:${NOVA}`], { updated_at: "2026-10-20T00:00:00.000Z" }),
       ),
     ])
-    const scope = { nodes: [SIMONE, ROOT], tree: ROOT }
+    const scope = { nodes: [DEMO, ROOT], tree: ROOT }
     const all = await buildMemoryDigest(store, { anchors: ANCHORS, scope, maxChars: 100_000 })
     expect(all?.included).toBe(4)
 

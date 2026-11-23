@@ -67,12 +67,12 @@ function fixtureResolvers(
   extra: Record<string, ControllerResolver> = {},
 ): Record<string, ControllerResolver> {
   return {
-    "@guilde/harness/storage/postgres": () => new InMemoryStore(),
-    "@guilde/harness/model/resolver": () => () => model,
-    "@guilde/harness/memory/shared": () => undefined,
-    "@guilde/harness/model/for-mode": ref =>
+    "@acme/harness/storage/postgres": () => new InMemoryStore(),
+    "@acme/harness/model/resolver": () => () => model,
+    "@acme/harness/memory/shared": () => undefined,
+    "@acme/harness/model/for-mode": ref =>
       (ref.input as { default: string }).default,
-    "@guilde/harness/agent/operator": () =>
+    "@acme/harness/agent/operator": () =>
       new Agent({ id: "operator", name: "operator", instructions: "You research.", model }),
     ...extra,
   }
@@ -247,15 +247,15 @@ describe("createAgentControllerHost resolvers", () => {
     const storage = vi.fn<ControllerResolver>(() => store)
     const model = textModel("ok")
     const host = createAgentControllerHost({
-      resolvers: fixtureResolvers(model, { "@guilde/harness/storage/postgres": storage }),
+      resolvers: fixtureResolvers(model, { "@acme/harness/storage/postgres": storage }),
     })
     const config = await host.buildConfig(manifest, { cwd: "/work" })
 
     expect(storage).toHaveBeenCalledTimes(1)
     const [ref, ctx] = storage.mock.calls[0]!
     expect(ref).toEqual({
-      $resolver: "@guilde/harness/storage/postgres",
-      input: { connectionStringEnv: "DATABASE_URL", storeId: "guilde-harness" },
+      $resolver: "@acme/harness/storage/postgres",
+      input: { connectionStringEnv: "DATABASE_URL", storeId: "acme-harness" },
     })
     expect(ctx).toMatchObject({ path: "storage", cwd: "/work" })
     expect(config.storage).toBe(store)
@@ -269,14 +269,14 @@ describe("createAgentControllerHost resolvers", () => {
 
   it("an unregistered $resolver fails with the field path", async () => {
     const resolvers = fixtureResolvers(textModel("ok"))
-    delete resolvers["@guilde/harness/model/for-mode"]
+    delete resolvers["@acme/harness/model/for-mode"]
     const host = createAgentControllerHost({ resolvers })
 
     const err = await host.buildConfig(manifest).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(UnresolvedReferenceError)
-    expect(err).toMatchObject({ path: "modes.0.model", resolver: "@guilde/harness/model/for-mode" })
+    expect(err).toMatchObject({ path: "modes.0.model", resolver: "@acme/harness/model/for-mode" })
     expect((err as Error).message).toMatch(
-      /modes\.0\.model references \$resolver '@guilde\/harness\/model\/for-mode'/,
+      /modes\.0\.model references \$resolver '@acme\/harness\/model\/for-mode'/,
     )
   })
 

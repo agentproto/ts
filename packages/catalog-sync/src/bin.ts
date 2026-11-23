@@ -21,6 +21,7 @@ import { llmHuggingfaceGenerator } from "./generators/llm-huggingface.js"
 import { llmContextWindowsGenerator } from "./generators/llm-context-windows.js"
 import { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
 import { voiceMinimax } from "./generators/voice-minimax.js"
+import { audioOpenAILive } from "./generators/audio-openai-live.js"
 import { imageReplicate } from "./generators/image-replicate.js"
 import {
   mediaOpenRouterImage,
@@ -58,6 +59,7 @@ const generators = [
   llmContextWindowsGenerator,
   voiceElevenlabs,
   voiceMinimax,
+  audioOpenAILive,
   imageReplicate,
   mediaOpenRouterImage,
   mediaOpenRouterVideo,

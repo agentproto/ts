@@ -4,7 +4,7 @@
  * bridge). The descriptor carries only a `kind`, a `sessionRef` and `domains`;
  * the registered source materialises the cookies at resolve time.
  *
- * Replaces the hard-wired `guilde` inject: the studio registers a `"guilde"`
+ * Replaces the hard-wired `acme` inject: the studio registers a `"acme"`
  * source, the open package never mentions it.
  */
 

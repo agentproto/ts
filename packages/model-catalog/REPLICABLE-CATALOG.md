@@ -6,8 +6,8 @@ Two goals, from the maintainer:
    model lists, and voices should come from provider sources via a generator
    that runs in CI — reproducible, reviewable diffs, no hand-maintenance.
 2. **Consumers can add aliases / entries without forking the core.** App-specific
-   bits (Simone's legacy `simone-N` voice slugs, a `simone-infographic`
-   fine-tune, Katchy image styles) live as a **consumer overlay**, never in the
+   bits (Demo's legacy `demo-N` voice slugs, a `demo-infographic`
+   fine-tune, Nova image styles) live as a **consumer overlay**, never in the
    OSS data.
 
 ## Architecture
@@ -31,8 +31,8 @@ provider APIs ──(generator, pinned source)──▶ *.generated.ts   ← can
 - **P1 — Overlay API (this PR).** `overlay.ts`: `registerCatalogOverlay`,
   `clearCatalogOverlays`, `CatalogOverlay`. `getModel`/`resolveAlias`/`listModels`
   consult it. Tested.
-- **P2 — De-brand via overlay (this PR).** Strip `simone-N` aliases + the
-  `simone-infographic` entry from core data; ship them as `overlays/simone.ts`
+- **P2 — De-brand via overlay (this PR).** Strip `demo-N` aliases + the
+  `demo-infographic` entry from core data; ship them as `overlays/demo.ts`
   (an example consumer overlay). Fix stale `@agstudio/*` doc comments.
 - **P3 — Generator framework.** A `catalog-sync` entry per provider/modality that
   fetches a **pinned** provider source → emits `*.generated.ts`. Start with the
@@ -44,7 +44,7 @@ provider APIs ──(generator, pinned source)──▶ *.generated.ts   ← can
 
 ## Invariants
 
-- The OSS core ships **no product names** (`simone`, `katchy`, …) in data.
+- The OSS core ships **no product names** (`demo`, `nova`, …) in data.
 - Generated files are deterministic from their pinned source — re-running with
   the same snapshot yields no diff.
 - Overlays are additive: a consumer never edits core files to add an alias.

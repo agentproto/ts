@@ -81,12 +81,12 @@ fi
 # ── 3. Server deploy ──────────────────────────────────────────────────────────
 if ! $NPM_ONLY; then
   echo
-  echo "━━ guilde-tunnel → ${ENV}"
-  if confirm "Deploy guilde-tunnel to ${ENV}?"; then
+  echo "━━ acme-tunnel → ${ENV}"
+  if confirm "Deploy acme-tunnel to ${ENV}?"; then
     if $DRY_RUN; then
-      echo "(dry-run) skipping: pnpm agentik deploy guilde-tunnel --env ${ENV} -y"
+      echo "(dry-run) skipping: pnpm agentik deploy acme-tunnel --env ${ENV} -y"
     else
-      (cd "$REPO_ROOT" && pnpm agentik deploy guilde-tunnel --env "$ENV" -y)
+      (cd "$REPO_ROOT" && pnpm agentik deploy acme-tunnel --env "$ENV" -y)
     fi
     echo "✓ server deploy triggered"
   else

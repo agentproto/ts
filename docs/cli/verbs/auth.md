@@ -15,7 +15,7 @@ agentproto auth discover [--endpoint <e>] [--json]
 ```
 
 Manages host-binding tokens — the JWT `agentproto serve --connect <host>`
-sends to its tunnel host (Guilde, a self-hosted gateway, anything that
+sends to its tunnel host (Acme, a self-hosted gateway, anything that
 exposes the well-known metadata document). Tokens land in
 `~/.agentproto/credentials.json`, mode 0600. See
 [`../concepts/credentials.md`](../concepts/credentials.md) and
@@ -45,13 +45,13 @@ host-agnostic — any host that publishes the metadata works.
 
 ```bash
 # First login — host required
-agentproto auth login --host wss://guilde.work
+agentproto auth login --host wss://example.com
 
 # Subsequent logins to the same host can omit --host
 agentproto auth login
 
 # Headless / SSH: don't try to open a browser, just print the URL
-agentproto auth login --host wss://guilde.work --no-browser
+agentproto auth login --host wss://example.com --no-browser
 ```
 
 Flags:
@@ -71,7 +71,7 @@ keyed by the (trailing-slash-stripped) host URL.
 
 ```bash
 agentproto auth status
-agentproto auth status --host wss://guilde.work
+agentproto auth status --host wss://example.com
 agentproto auth status --json
 ```
 
@@ -86,7 +86,7 @@ not an error.
 ## `logout`
 
 ```bash
-agentproto auth logout --host wss://guilde.work
+agentproto auth logout --host wss://example.com
 # Single-host setup: --host can be omitted
 agentproto auth logout
 ```
@@ -101,17 +101,17 @@ When the credentials file ends up empty, it's removed.
 ## Examples
 
 ```bash
-# Log into a guilde host, status, logout
-agentproto auth login --host wss://guilde.work
+# Log into a acme host, status, logout
+agentproto auth login --host wss://example.com
 agentproto auth status
-agentproto auth logout --host wss://guilde.work
+agentproto auth logout --host wss://example.com
 
 # Self-hosted gateway with a custom label
 agentproto auth login --host wss://acme.internal --label "ci-runner-3"
 
 # Use the stored token implicitly with serve
-agentproto auth login --host wss://guilde.work
-agentproto serve --connect wss://guilde.work   # picks up the token automatically
+agentproto auth login --host wss://example.com
+agentproto serve --connect wss://example.com   # picks up the token automatically
 ```
 
 ## Token resolution in `serve`

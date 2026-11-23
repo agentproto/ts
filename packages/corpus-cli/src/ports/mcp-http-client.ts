@@ -126,7 +126,7 @@ class StreamableHttpMcpClient implements McpClientLike {
 /**
  * Legacy HTTP+SSE MCP transport: GET the stream → first `endpoint` event gives
  * the POST URL → POST JSON-RPC requests there; responses arrive back on the
- * stream (correlated by id). Used for servers like Guilde's `/guilde/mcp/sse`.
+ * stream (correlated by id). Used for servers like Acme's `/acme/mcp/sse`.
  */
 class SseMcpClient implements McpClientLike {
   private id = 0

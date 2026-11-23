@@ -109,6 +109,23 @@ describe("startCascade", () => {
     await session.close()
   })
 
+  it("puts the TTS provider's vendor model on the TTS usage entry", async () => {
+    const { emit } = recorder([])
+    const session = await startCascade({
+      emit,
+      hooks: {},
+      stt: makeFakeStt({ slug: "sttvendor" }),
+      tts: makeFakeTts({ slug: "ttsvendor", model: "vendor-fast-1" }),
+      vad: { silenceEndMs: SILENCE },
+      brain: () => words("Une phrase à dire. "),
+    })
+    await speak(session)
+    const entries = session.getUsage!()!.entries
+    expect(entries.find(e => e.stage === "tts")?.model).toBe("vendor-fast-1")
+    expect(entries.find(e => e.stage === "stt")).not.toHaveProperty("model")
+    await session.close()
+  })
+
   it("reports usage: STT seconds and TTS characters, cumulative, final after close", async () => {
     const { emit } = recorder([])
     const stt = makeFakeStt({ slug: "sttvendor" })
@@ -371,12 +388,12 @@ describe("startCascade", () => {
       await session.close()
     })
 
-    it("continuous mode is refused for a provider that cannot take chunked input", async () => {
+    it.each(["continuous", "ws-continuous"] as const)("%s mode is refused for a provider that cannot take chunked input", async mode => {
       const { emit } = recorder([])
       const tts = makeFakeTts()
       ;(tts.capabilities as { chunkedInput: boolean }).chunkedInput = false
       await expect(
-        startCascade({ emit, hooks: {}, stt: makeFakeStt(), tts, ttsMode: "continuous", brain: () => words("x") }),
+        startCascade({ emit, hooks: {}, stt: makeFakeStt(), tts, ttsMode: mode, brain: () => words("x") }),
       ).rejects.toThrow(/chunked input/)
     })
   })

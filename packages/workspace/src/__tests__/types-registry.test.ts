@@ -94,7 +94,7 @@ describe("resolveTypeEntry — extends inheritance (AIP-34 TYPES.md)", () => {
       default_wall: "isolated" as const,
       max_per_tree: 5,
       requires_files: ["RAPPORT.md"],
-      starter: { agents: [{ template: "@pygmalion/staff/project-lead" }] },
+      starter: { agents: [{ template: "@orchestrator/staff/project-lead" }] },
       adds_fields: { budget: "number" },
     },
     guild: { extends: "project", requires_files: [] },
@@ -107,7 +107,7 @@ describe("resolveTypeEntry — extends inheritance (AIP-34 TYPES.md)", () => {
     expect(resolved?.default_wall).toBe("isolated")
     expect(resolved?.max_per_tree).toBe(5)
     expect(resolved?.requires_files).toEqual(["RAPPORT.md"])
-    expect(resolved?.starter?.agents).toEqual([{ template: "@pygmalion/staff/project-lead" }])
+    expect(resolved?.starter?.agents).toEqual([{ template: "@orchestrator/staff/project-lead" }])
     expect(resolved?.adds_fields).toEqual({ budget: "number" })
   })
 

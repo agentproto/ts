@@ -1,13 +1,13 @@
 /**
- * Dimension assembly — portable port of guilde's dimension-sources.ts.
+ * Dimension assembly — portable port of acme's dimension-sources.ts.
  *
  * An ordered list of `DimensionProvider`s is consulted left-to-right;
  * the first provider to supply a non-empty value for a key wins (same
- * semantics as guilde's first-match-per-key merge). The resulting
+ * semantics as acme's first-match-per-key merge). The resulting
  * `Dimensions` bag feeds both the StackResolver (pick which layers apply)
  * and the PlaybookRegistry/OperatorOverlayResolver (which playbooks bind).
  *
- * No guilde-specific imports — only `slugify` from this package.
+ * No acme-specific imports — only `slugify` from this package.
  */
 
 import { slugify } from "../util/slug.js"
@@ -62,8 +62,8 @@ export interface StandardSubject {
  * a `StandardSubject`. Host apps can prepend higher-priority providers
  * for app-specific axes (org / region / compliance / tier).
  *
- * Mirrors `operatorDimensionSource` from guilde's dimension-sources.ts
- * without importing anything guilde-specific.
+ * Mirrors `operatorDimensionSource` from acme's dimension-sources.ts
+ * without importing anything acme-specific.
  */
 export const standardDimensionProvider: DimensionProvider<StandardSubject> = {
   id: "standard",

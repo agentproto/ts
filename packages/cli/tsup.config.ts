@@ -138,7 +138,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // which loads it as `try { require("canvas") } catch { shim }`. It is not a
     // dependency of this package, so it must never be bundled: in a pnpm
     // workspace where another package installs it with its build script
-    // disabled (the agentik-studio monorepo), esbuild would follow the require
+    // disabled (the demo-app monorepo), esbuild would follow the require
     // into canvas/lib/bindings.js and fail on the missing canvas.node. Left
     // external, the guarded require runs at load time and falls back to the shim.
     "canvas",

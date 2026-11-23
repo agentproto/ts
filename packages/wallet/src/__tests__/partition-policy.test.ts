@@ -138,8 +138,8 @@ function lot(p: Partial<Lot> & Pick<Lot, "remaining">): Lot {
   const base = {
     id: "L1",
     accountId: "acct-1",
-    asset: "GUILDE_CREDITS",
-    partitionId: "GUILDE_CREDITS:general",
+    asset: "ACME_CREDITS",
+    partitionId: "ACME_CREDITS:general",
     restriction: UNRESTRICTED,
     reserved: 0,
     sourceEventId: "e1",
@@ -152,16 +152,16 @@ function lot(p: Partial<Lot> & Pick<Lot, "remaining">): Lot {
 describe("spendableBalanceUnderPolicy — policy-aware fold", () => {
   it("applies decay per lot and removes reserved", () => {
     const lots = [
-      lot({ id: "L1", remaining: 1000, reserved: 100, partitionId: "GUILDE_CREDITS:decay" }),
+      lot({ id: "L1", remaining: 1000, reserved: 100, partitionId: "ACME_CREDITS:decay" }),
     ]
     const resolve: PolicyResolver = pid =>
-      pid === "GUILDE_CREDITS:decay"
+      pid === "ACME_CREDITS:decay"
         ? [{ kind: "decay", curve: "linear", ratePerDay: 0.1 }]
         : undefined
     // day 5: 1000 × 0.5 = 500 spendable, minus 100 reserved → 400
     const total = spendableBalanceUnderPolicy(
       lots,
-      "GUILDE_CREDITS",
+      "ACME_CREDITS",
       GRANT + 5 * DAY,
       resolve,
     )
@@ -176,12 +176,12 @@ describe("spendableBalanceUnderPolicy — policy-aware fold", () => {
     const resolve: PolicyResolver = () => undefined
     // at day 5: L1 expired, L2 alive → 200
     expect(
-      spendableBalanceUnderPolicy(lots, "GUILDE_CREDITS", GRANT + 5 * DAY, resolve),
+      spendableBalanceUnderPolicy(lots, "ACME_CREDITS", GRANT + 5 * DAY, resolve),
     ).toBe(200)
   })
 
   it("single-lot helper returns 0 when the policy makes it ineligible", () => {
-    const l = lot({ remaining: 500, partitionId: "GUILDE_CREDITS:image" })
+    const l = lot({ remaining: 500, partitionId: "ACME_CREDITS:image" })
     const policy: PartitionPolicy = [{ kind: "spendOn", categories: ["image"] }]
     expect(spendableLotUnderPolicy(l, policy, GRANT, "text")).toBe(0)
     expect(spendableLotUnderPolicy(l, policy, GRANT, "image")).toBe(500)
@@ -297,7 +297,7 @@ describe("qualify — caller-asserted spend qualifier", () => {
   })
 
   it("flows through the fold helpers", () => {
-    const l = lot({ remaining: 500, partitionId: "GUILDE_CREDITS:app-only" })
+    const l = lot({ remaining: 500, partitionId: "ACME_CREDITS:app-only" })
     expect(spendableLotUnderPolicy(l, APP_ONLY, GRANT, "chat", { channel: "app" })).toBe(500)
     expect(spendableLotUnderPolicy(l, APP_ONLY, GRANT, "chat", { channel: "web" })).toBe(0)
     expect(spendableLotUnderPolicy(l, APP_ONLY, GRANT, "chat")).toBe(0)
@@ -306,22 +306,22 @@ describe("qualify — caller-asserted spend qualifier", () => {
     const resolve: PolicyResolver = () => APP_ONLY
     const lots = [l]
     expect(
-      spendableBalanceUnderPolicy(lots, "GUILDE_CREDITS", GRANT, resolve, "chat", {
+      spendableBalanceUnderPolicy(lots, "ACME_CREDITS", GRANT, resolve, "chat", {
         channel: "app",
       }),
     ).toBe(500)
     expect(
-      spendableBalanceUnderPolicy(lots, "GUILDE_CREDITS", GRANT, resolve, "chat", {
+      spendableBalanceUnderPolicy(lots, "ACME_CREDITS", GRANT, resolve, "chat", {
         channel: "web",
       }),
     ).toBe(0)
-    expect(spendableBalanceUnderPolicy(lots, "GUILDE_CREDITS", GRANT, resolve)).toBe(500)
+    expect(spendableBalanceUnderPolicy(lots, "ACME_CREDITS", GRANT, resolve)).toBe(500)
   })
 
   it("is accepted by defineAsset's schema; malformed rules are rejected", () => {
     const base = {
-      ref: "SIMONE_CREDITS",
-      name: "Simone Credits",
+      ref: "DEMO_CREDITS",
+      name: "Demo Credits",
       symbol: "SMC",
       decimals: 2,
       standard: "internal" as const,
@@ -336,7 +336,7 @@ describe("qualify — caller-asserted spend qualifier", () => {
       defineAsset({
         ...base,
         partitions: [
-          { id: "SIMONE_CREDITS:app", asset: "SIMONE_CREDITS", restriction: [], policy },
+          { id: "DEMO_CREDITS:app", asset: "DEMO_CREDITS", restriction: [], policy },
         ],
       } as never)
 
@@ -358,8 +358,8 @@ describe("qualify — caller-asserted spend qualifier", () => {
 
 describe("GUILD_X — guild-minted token, decay + collateralized convert", () => {
   const CREDITS = defineAsset({
-    ref: "GUILDE_CREDITS",
-    name: "Guilde Credits",
+    ref: "ACME_CREDITS",
+    name: "Acme Credits",
     symbol: "GCR",
     decimals: 2,
     standard: "internal",
@@ -384,7 +384,7 @@ describe("GUILD_X — guild-minted token, decay + collateralized convert", () =>
       spendableOn: ["*"],
       // 1 AX → 0.5 credits, capped. No reverse edge → no round-trip to arbitrage.
       convertEdges: [
-        { to: "GUILDE_CREDITS", rate: { kind: "fixed", ratio: 0.5 } },
+        { to: "ACME_CREDITS", rate: { kind: "fixed", ratio: 0.5 } },
       ],
       transfer: "internal",
     },

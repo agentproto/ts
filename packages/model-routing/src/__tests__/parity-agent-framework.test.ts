@@ -32,9 +32,9 @@ type Role = "triage" | "speak" | "deepThink"
 
 const KNOWN_PROVIDERS = ["openai", "anthropic", "google", "openrouter", "moonshot"]
 
-const simone = defineRoutingPack<Role>({
-  id: "simone",
-  label: "Simone",
+const demo = defineRoutingPack<Role>({
+  id: "demo",
+  label: "Demo",
   keyspace: "role",
   routes: {
     triage: { model: "claude-haiku-4-5-20251001", provider: "anthropic" },
@@ -46,7 +46,7 @@ const simone = defineRoutingPack<Role>({
 
 describe("parity: agent-framework model-routing.ts", () => {
   it("resolveRoute(pack, role, {}) === pack layer, unchanged", () => {
-    expect(resolve(simone, "speak", [])).toEqual({ key: "speak", source: "pack", model: "kimi-k2.6" })
+    expect(resolve(demo, "speak", [])).toEqual({ key: "speak", source: "pack", model: "kimi-k2.6" })
   })
 
   it("a role gated null throws-equivalent — RoleUnavailableError becomes resolve(...) === null", () => {
@@ -56,8 +56,8 @@ describe("parity: agent-framework model-routing.ts", () => {
       }
     }
     function createModelForRole(role: Role, layers: readonly Layer<Role>[] = []) {
-      const resolved = resolve(simone, role, layers)
-      if (!resolved) throw new RoleUnavailableError(simone.id, role)
+      const resolved = resolve(demo, role, layers)
+      if (!resolved) throw new RoleUnavailableError(demo.id, role)
       return resolved
     }
     expect(() => createModelForRole("deepThink")).toThrow(/declared unavailable/)
@@ -71,37 +71,37 @@ describe("parity: agent-framework model-routing.ts", () => {
     // listed highest-precedence (per-user) first.
     const perUser: Layer<Role> = { source: "override", entries: {} } // user set nothing
     const perGuild: Layer<Role> = { source: "override", catchAll: { model: "gpt-4o" } }
-    const resolved = resolve(simone, "speak", [perUser, perGuild])
+    const resolved = resolve(demo, "speak", [perUser, perGuild])
     expect(resolved).toMatchObject({ model: "gpt-4o", source: "override" })
   })
 
   it("caller override beats env beats pack — full precedence stack", () => {
     const override: Layer<Role> = { source: "override", entries: { triage: { model: "o3-pro" } } }
     const env: Layer<Role> = { source: "env", entries: { triage: { model: "gpt-4o" } } }
-    expect(resolve(simone, "triage", [override, env])).toMatchObject({ model: "o3-pro", source: "override" })
-    expect(resolve(simone, "triage", [env])).toMatchObject({ model: "gpt-4o", source: "env" })
+    expect(resolve(demo, "triage", [override, env])).toMatchObject({ model: "o3-pro", source: "override" })
+    expect(resolve(demo, "triage", [env])).toMatchObject({ model: "gpt-4o", source: "env" })
   })
 
-  it("a catch-all (env's SIMONE_DEFAULT_MODEL) does not re-enable a pack-gated role", () => {
-    const env = envLayer<Role>("SIMONE", ["triage", "speak", "deepThink"], {
-      SIMONE_DEFAULT_MODEL: "gpt-4o-mini",
+  it("a catch-all (env's DEMO_DEFAULT_MODEL) does not re-enable a pack-gated role", () => {
+    const env = envLayer<Role>("DEMO", ["triage", "speak", "deepThink"], {
+      DEMO_DEFAULT_MODEL: "gpt-4o-mini",
     })
-    expect(resolve(simone, "speak", [env])).toMatchObject({ model: "gpt-4o-mini", source: "env" })
-    expect(resolve(simone, "deepThink", [env])).toBeNull()
+    expect(resolve(demo, "speak", [env])).toMatchObject({ model: "gpt-4o-mini", source: "env" })
+    expect(resolve(demo, "deepThink", [env])).toBeNull()
   })
 
-  it("naming the role explicitly in env DOES re-enable it — SIMONE_DEEPTHINK_MODEL", () => {
+  it("naming the role explicitly in env DOES re-enable it — DEMO_DEEPTHINK_MODEL", () => {
     const env = envLayer<Role>(
-      "SIMONE",
+      "DEMO",
       ["triage", "speak", "deepThink"],
       {
         // envKeySuffix("deepThink") -> "DEEP_THINK", matching the original's envSuffix()
-        SIMONE_DEEP_THINK_MODEL: "openrouter:anthropic/claude-3-5-sonnet-20241022",
-        SIMONE_DEFAULT_MODEL: "gpt-4o-mini",
+        DEMO_DEEP_THINK_MODEL: "openrouter:anthropic/claude-3-5-sonnet-20241022",
+        DEMO_DEFAULT_MODEL: "gpt-4o-mini",
       },
       { knownProviders: KNOWN_PROVIDERS }
     )
-    const resolved = resolve(simone, "deepThink", [env])
+    const resolved = resolve(demo, "deepThink", [env])
     expect(resolved).toMatchObject({ provider: "openrouter", model: "anthropic/claude-3-5-sonnet-20241022" })
   })
 
@@ -120,22 +120,22 @@ describe("parity: agent-framework model-routing.ts", () => {
 
   it("providerPinnedInId is now just `resolved.provider !== undefined` — resolve never infers a provider", () => {
     const env = envLayer<Role>(
-      "SIMONE",
+      "DEMO",
       ["triage"],
-      { SIMONE_TRIAGE_MODEL: "openrouter:gpt-4o" },
+      { DEMO_TRIAGE_MODEL: "openrouter:gpt-4o" },
       { knownProviders: KNOWN_PROVIDERS }
     )
-    const pinned = resolve(simone, "triage", [env])
+    const pinned = resolve(demo, "triage", [env])
     expect(pinned?.provider).toBe("openrouter") // explicitly pinned by the env layer
 
-    const unpinned = resolve(simone, "speak", [])
+    const unpinned = resolve(demo, "speak", [])
     expect(unpinned?.provider).toBeUndefined() // pack never pinned one — host infers downstream, outside `resolve`
   })
 
   it("overlayPack: re-routing every role at once for a provider outage, without touching call sites", () => {
-    const failover = overlay(simone, {
-      id: "simone-openai-only",
-      label: "Simone (Anthropic down)",
+    const failover = overlay(demo, {
+      id: "demo-openai-only",
+      label: "Demo (Anthropic down)",
       routes: {
         triage: { model: "gpt-4o-mini", provider: "openai" },
         speak: { model: "gpt-4o", provider: "openai" },
@@ -164,7 +164,7 @@ describe("parity: agent-framework model-routing.ts", () => {
   })
 
   it("an env override for a role's fallback chain is expressible as a full Route in entries — no dedicated API needed", () => {
-    // Original had a separate SIMONE_TRIAGE_FALLBACK env var, parsed
+    // Original had a separate DEMO_TRIAGE_FALLBACK env var, parsed
     // independently of the model override. Because a Layer's `entries` carry
     // a full Route (not a bare model string), the host can attach `fallbacks`
     // to that Route directly while building the env layer itself — no extra
@@ -174,6 +174,6 @@ describe("parity: agent-framework model-routing.ts", () => {
       source: "env",
       entries: { triage: { model: "o3-pro", provider: "openai", fallbacks: [rung] } },
     }
-    expect(resolve(simone, "triage", [env])?.fallbacks).toEqual([rung])
+    expect(resolve(demo, "triage", [env])?.fallbacks).toEqual([rung])
   })
 })

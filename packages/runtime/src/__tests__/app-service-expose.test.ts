@@ -137,15 +137,15 @@ describe("appServiceTunnelKey (AIP-53 Tunnel key)", () => {
   const PROVISIONER_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/
 
   it("derives the spec's exact key", () => {
-    expect(appServiceTunnelKey("@agentik/pygmalion", "telegram-miniapp")).toBe(
-      "app.agentik-pygmalion.telegram-miniapp.f29069fe",
+    expect(appServiceTunnelKey("@agentik/orchestrator", "telegram-miniapp")).toBe(
+      "app.agentik-orchestrator.telegram-miniapp.fcf57831",
     )
   })
 
   it("always matches the provisioner key alphabet, and keeps apart ids that reduce alike", () => {
     const long = `a${"b-".repeat(29)}c` // 60 chars, a valid kebab name
     expect(long).toHaveLength(60)
-    const ids = ["@agentik/pygmalion", "@Scope/My_App.V2", "---", "@@//", "UPPER/Case/Path/With/Many/Segments/And/More", "x"]
+    const ids = ["@agentik/orchestrator", "@Scope/My_App.V2", "---", "@@//", "UPPER/Case/Path/With/Many/Segments/And/More", "x"]
     for (const id of ids) {
       for (const name of ["web", "telegram-miniapp", long]) {
         const key = appServiceTunnelKey(id, name)
@@ -333,10 +333,10 @@ describe("createTunnelRegistryExposer", () => {
     const rec = newRec()
     const reg = makeRegistry(rec)
     const exposer = createTunnelRegistryExposer({ registry: reg, readCreds: provisioned })
-    const appId = "@agentik/pygmalion"
+    const appId = "@agentik/orchestrator"
     await exposer.ensure(appId, { ...miniapp, name: "telegram-miniapp" })
     await exposer.ensure(appId, { name: "web", entry: "x", port: 4000, expose: {} })
-    expect(rec.starts[0]!.tunnel?.key).toBe("app.agentik-pygmalion.telegram-miniapp.f29069fe")
+    expect(rec.starts[0]!.tunnel?.key).toBe("app.agentik-orchestrator.telegram-miniapp.fcf57831")
     expect(exposer.list(appId).sort()).toEqual(["telegram-miniapp", "web"])
     expect(exposer.list("@agentik/other")).toEqual([])
 
@@ -353,7 +353,7 @@ describe("createTunnelRegistryExposer", () => {
       exposer,
     })
     expect(result.unexposed).toEqual(["telegram-miniapp"])
-    expect(rec.destroys.map(d => d.key)).toEqual(["app.agentik-pygmalion.telegram-miniapp.f29069fe"])
+    expect(rec.destroys.map(d => d.key)).toEqual(["app.agentik-orchestrator.telegram-miniapp.fcf57831"])
     expect(exposer.list(appId)).toEqual(["web"])
   })
 

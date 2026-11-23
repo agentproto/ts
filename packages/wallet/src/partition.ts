@@ -4,7 +4,7 @@
  * Lots in the same partition are mutually coalescible (same value, merge
  * freely). A partition narrows its asset along two axes: a `restriction` it
  * carries, and an optional `spendableOn` that NARROWS the asset's categories
- * (e.g. an `image-trial` partition of GUILDE_CREDITS spendable only on `image`).
+ * (e.g. an `image-trial` partition of ACME_CREDITS spendable only on `image`).
  *
  * "image-only can't pay for text" is therefore a MISSING capability on the
  * partition, not a runtime `if`.
@@ -14,7 +14,7 @@ import type { AssetRef } from "./asset.js"
 import type { Restriction } from "./restriction-lattice.js"
 import type { PartitionPolicy } from "./partition-policy.js"
 
-/** `<asset>:<tranche>` — e.g. "GUILDE_CREDITS:general", "GUILDE_CREDITS:image-trial". */
+/** `<asset>:<tranche>` — e.g. "ACME_CREDITS:general", "ACME_CREDITS:image-trial". */
 export type PartitionId = string
 
 export interface PartitionSpec {

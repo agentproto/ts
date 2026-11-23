@@ -5,7 +5,7 @@
  * builds the handle so both authoring paths converge on one validated shape.
  *
  * This parser is the extension seam: a host reads its own external `.md`
- * manifests (e.g. vendor-shipped `guilde.auth.md`) and registers them without
+ * manifests (e.g. vendor-shipped `acme.auth.md`) and registers them without
  * editing this package.
  */
 

@@ -84,9 +84,9 @@ describe("approval wake", () => {
   })
 
   it("an agent label resolves at decision time to the newest live session", async () => {
-    sessions.set("sess_1", live("sess_1", "pygmalion-agent-emploi", "2026-11-10T10:00:00Z"))
-    const rec = ask({ agent: "Pygmalion-Agent-Emploi" })
-    sessions.set("sess_2", live("sess_2", "pygmalion-agent-emploi", "2026-11-10T12:00:00Z"))
+    sessions.set("sess_1", live("sess_1", "orchestrator-agent-emploi", "2026-11-10T10:00:00Z"))
+    const rec = ask({ agent: "Orchestrator-Agent-Emploi" })
+    sessions.set("sess_2", live("sess_2", "orchestrator-agent-emploi", "2026-11-10T12:00:00Z"))
 
     await engine.decideWeb(rec.id, "approve", evidence)
 

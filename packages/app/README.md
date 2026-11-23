@@ -63,8 +63,8 @@ instead of inventing tenant folders, because AIP-34/35 already model both axes:
 
 Pass either a `{ id, name, owner, storage? }` **shorthand** (completed with a
 local-fs default + validated by `defineWorkspace`) or a pre-built
-[`defineWorkspace`](../workspace) handle. This is the same workspace model Guilde
-already uses — a guild's `system` workspace mounted at `/.guilde` holding its
+[`defineWorkspace`](../workspace) handle. This is the same workspace model Acme
+already uses — a guild's `system` workspace mounted at `/.acme` holding its
 operator / role / skill definitions.
 
 ## Where is the system prompt? — it's the `body`
@@ -73,7 +73,7 @@ There is **no `systemPrompt` field anywhere in AIP**. An AGENT.md is
 *frontmatter (metadata) + body (the prompt)*, and the frontmatter schema is
 `.strict()` — so `defineAgent` structurally cannot hold prose. The prompt is the
 **body**, and it's optional: omit it and the prompt composes from the agent's
-`persona` (AIP-25), `boundaries`, and `traits` — the same way Guilde assembles an
+`persona` (AIP-25), `boundaries`, and `traits` — the same way Acme assembles an
 operator's prompt from AIP-47 role instructions + persona rather than a stored
 string. `composeInstructions` (in [`@agentproto/bridge`](../mastra)) is the
 assembler.
