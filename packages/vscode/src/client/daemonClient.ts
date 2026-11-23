@@ -1276,9 +1276,62 @@ export class DaemonClient {
 
   /** `bundle_list` — capability bundles, each with its computed `dangling` import ids. */
   async listBundles(): Promise<CapabilityBundle[]> {
-    const result = await this.mcpCall<{ bundles?: CapabilityBundle[] } | CapabilityBundle[]>("bundle_list")
-    if (Array.isArray(result)) return result
-    return result.bundles ?? []
+    return this.pageList<CapabilityBundle>("bundle_list", {}, "bundles")
+  }
+
+  /**
+   * Every row of a paged list tool (`{ items, nextCursor?, total }` under
+   * limit/cursor). The unpaged call grows until the daemon's MCP result cap
+   * replaces it with a `{ truncated: true }` marker, which `result.x ?? []`
+   * read as an empty list. A page over the cap is re-requested with half the
+   * limit; a single row over it, or an unreadable page, THROWS. A daemon
+   * that predates limit/cursor gets the unpaged call, read through
+   * `legacyKey`.
+   */
+  private async pageList<T>(tool: string, args: Record<string, unknown>, legacyKey: string): Promise<T[]> {
+    const rows: T[] = []
+    let cursor: string | undefined
+    let pageSize: number | undefined = 50
+    for (;;) {
+      let result: unknown
+      let marker: { totalBytes: number } | undefined
+      try {
+        result = await this.mcpCall<unknown>(tool, {
+          ...args,
+          ...(pageSize !== undefined ? { limit: pageSize } : {}),
+          ...(cursor ? { cursor } : {}),
+        })
+        marker = capMarkerOf(result)
+      } catch (err) {
+        if (err instanceof McpInvalidParamsError && pageSize !== undefined && cursor === undefined) {
+          pageSize = undefined
+          continue
+        }
+        marker = err instanceof Error ? capMarkerOf(err.message) : undefined
+        if (!marker && err instanceof McpResultTruncatedError) marker = { totalBytes: 0 }
+        if (!marker) throw err
+      }
+      if (marker) {
+        if (pageSize !== undefined && pageSize > 1) {
+          pageSize = Math.ceil(pageSize / 2)
+          continue
+        }
+        throw new McpResultTruncatedError(
+          `${tool} response was truncated by the daemon's MCP result cap (${marker.totalBytes} bytes)` +
+            (pageSize === undefined ? "; this daemon cannot page it" : " even for a single row"),
+        )
+      }
+      if (Array.isArray(result)) return rows.concat(result as T[])
+      const page = (result ?? {}) as { items?: unknown; nextCursor?: unknown; [key: string]: unknown }
+      if (Array.isArray(page.items)) {
+        rows.push(...(page.items as T[]))
+        if (typeof page.nextCursor !== "string" || !page.nextCursor) return rows
+        cursor = page.nextCursor
+        continue
+      }
+      if (Array.isArray(page[legacyKey])) return rows.concat(page[legacyKey] as T[])
+      throw new Error(`${tool} returned an unexpected response: ${JSON.stringify(result)?.slice(0, 200)}`)
+    }
   }
 
   /** `session_capabilities` — the MCP servers and skills one session actually received. */
@@ -1471,12 +1524,7 @@ export class DaemonClient {
    * one billing endpoint.
    */
   async listAuthProfiles(endpoint?: string): Promise<AuthProfileSummary[]> {
-    const result = await this.mcpCall<{ profiles?: AuthProfileSummary[] } | AuthProfileSummary[]>(
-      "auth_profile_list",
-      endpoint ? { endpoint } : {},
-    )
-    if (Array.isArray(result)) return result
-    return result.profiles ?? []
+    return this.pageList<AuthProfileSummary>("auth_profile_list", endpoint ? { endpoint } : {}, "profiles")
   }
 
   /**
@@ -2129,6 +2177,24 @@ function truncatedError(toolName: string, marker: { totalBytes: number; hint: st
     `${toolName} response was truncated by the daemon's MCP result cap (${marker.totalBytes} bytes)` +
       (marker.hint ? `; ${marker.hint}` : ""),
   )
+}
+
+/** The daemon's result-cap marker (`capResult`,
+ *  packages/mcp-server/src/to-mcp-tool.ts) in a parsed body or an error text. */
+function capMarkerOf(value: unknown): { totalBytes: number } | undefined {
+  let v = value
+  if (typeof v === "string") {
+    const json = /\{"truncated":true[^{}]*\}/.exec(v)?.[0]
+    if (!json) return undefined
+    try {
+      v = JSON.parse(json)
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined
+  const o = v as { truncated?: unknown; totalBytes?: unknown }
+  return o.truncated === true && typeof o.totalBytes === "number" ? { totalBytes: o.totalBytes } : undefined
 }
 
 async function describeError(res: Response): Promise<string> {

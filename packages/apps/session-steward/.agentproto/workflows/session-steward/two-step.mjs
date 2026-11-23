@@ -558,7 +558,9 @@ const mapOver = (id, over, parallelism, steps) => ({ id, kind: "map", over, para
 const rulesStep = { id: "rules", kind: "transform", compute: b => resolveRules(b.input) }
 
 const memoryAppSteps = [
-  { id: "installedApps", kind: "tool", tool: "app_list", inputs: {} },
+  // Only the ids: an unpaged app_list ships every app's record and run
+  // history, passes the MCP result cap, and fails this step.
+  { id: "installedApps", kind: "tool", tool: "app_list", inputs: { limit: 200, fields: ["appId"] } },
   { id: "memoryApp", kind: "transform", compute: b => resolveMemoryApp(b.steps.settings, b.steps.installedApps) },
 ]
 

@@ -240,12 +240,13 @@ function refresh(): Promise<void> {
       const snapshotRaw = (catalogRaw as { catalog?: unknown[]; installed?: unknown[]; updates?: unknown[] }) ?? {}
       const rows: unknown[] = Array.isArray(snapshotRaw.catalog) ? snapshotRaw.catalog : (Array.isArray(catalogRaw) ? (catalogRaw as unknown[]) : [])
       snapshot.catalog = (rows as CatalogRow[]).filter(r => r && r.appId)
-      return callTool<Record<string, never>, unknown>("app_list", {})
+      // Paged: the unpaged list grows with every install until the daemon
+      // replaces it with its result-cap marker, which read as "0 installed".
+      // `installed` is the snapshot wrapper a non-paging host answers with.
+      return callToolPaged<Record<string, never>, InstalledRow>("app_list", {}, "installed")
     })
-    .then(appsRaw => {
-      const snapshotRaw = (appsRaw as { installed?: unknown[] }) ?? {}
-      const rows: unknown[] = Array.isArray(snapshotRaw.installed) ? snapshotRaw.installed : (Array.isArray(appsRaw) ? (appsRaw as unknown[]) : [])
-      snapshot.installed = (rows as InstalledRow[]).filter(a => a && a.appId)
+    .then(rows => {
+      snapshot.installed = rows.filter(a => a && a.appId)
       return callTool<Record<string, never>, unknown>("app_updates", {})
     })
     .then(updatesRaw => {

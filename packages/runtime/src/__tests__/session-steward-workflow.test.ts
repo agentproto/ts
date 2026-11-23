@@ -1405,6 +1405,34 @@ describe("session-steward workflow — footprint (no whole-registry step output)
   })
 })
 
+describe("session-steward workflow: installed-app lookup over the MCP result cap", () => {
+  it("finds its verdict-memory app through a bounded, projected app_list instead of reading the cap marker as no apps", async () => {
+    const { dispatchTool: base } = fakeTools({ entries: [] })
+    // An unpaged app_list ships every record and run history: past the cap
+    // the daemon replaces it with its marker, which installedAppIdsOf read
+    // as "nothing installed", turning verdict memory off without a word.
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "app_list") {
+        if (inputs.limit === undefined) return mcpResult({ truncated: true, totalBytes: 140_000, hint: "use limit/cursor/fields" })
+        return mcpResult({ items: [{ appId: "@agentproto/session-steward" }], total: 1 })
+      }
+      return base(name, inputs)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, { ...createDaemonToolRegistry(handle, dispatchTool), agentRefs: { [JUDGE_REF]: { adapter: "mock-agent" } } })
+    let memoryApp: { appId: string | null; note: string | null } | undefined
+    await runWorkflow({
+      workflow: compiled,
+      agents: judgeHost({}).host,
+      input: { callerSessionId: SELF },
+      onStepComplete: (id: string, out: unknown) => {
+        if (id === "memoryApp") memoryApp = out as typeof memoryApp
+      },
+    })
+    expect(memoryApp?.appId).toBe("@agentproto/session-steward")
+  })
+})
+
 describe("session-steward workflow — over-cap session_list pages", () => {
   /** Terminal rows shaped like a real 72 h window: the `outcome` object alone
    *  is ~600 B, so 200 rows × these fields runs well past the 100 KB MCP cap

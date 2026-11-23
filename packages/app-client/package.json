@@ -44,6 +44,11 @@
       "import": "./dist/display-mode.mjs",
       "default": "./dist/display-mode.mjs"
     },
+    "./page-all": {
+      "types": "./dist/page-all.d.ts",
+      "import": "./dist/page-all.mjs",
+      "default": "./dist/page-all.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

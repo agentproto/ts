@@ -26,6 +26,7 @@ import {
   WATCHDOG_TICK_PROMPT,
   WATCHDOG_TICK_SCHEDULE,
 } from "./agents/watchdog.js"
+import { pageAll } from "@agentproto/app-client/page-all"
 import { unwrapText } from "../unwrap-text.js"
 
 export const OPS_PANEL_TOOLS = [
@@ -314,18 +315,12 @@ function cronByLabel(label) {
 
 // session_list is bounded by default (first page + nextCursor); follow the
 // cursor so the ops panels always see the full session list.
+// Every row: follows nextCursor and halves a page that hits the daemon's
+// MCP result cap (a full session page can pass 100 KB), rejecting rather
+// than resolving a partial list. Shared: @agentproto/app-client/page-all.
+var pageAll = ${pageAll.toString()};
 function callAppPaged(tool, args, listKey) {
-  function step(cursor, acc) {
-    var a = Object.assign({}, args);
-    if (a.limit === undefined) a.limit = 100;
-    if (cursor) a.cursor = cursor;
-    return callApp(tool, a).then(function (d) {
-      var page = (d && Array.isArray(d.items)) ? d.items : (d && d[listKey]) || [];
-      var rows = acc.concat(page);
-      return d && d.nextCursor ? step(d.nextCursor, rows) : rows;
-    });
-  }
-  return step(null, []);
+  return pageAll(callApp, tool, args, { limit: (args && args.limit) || 100, listKey: listKey });
 }
 
 function loadAll() {

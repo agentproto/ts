@@ -2198,3 +2198,58 @@ describe.skipIf(!canBindLoopback)("DaemonClient.listApps over the daemon's MCP r
     await expect(client().listApps()).rejects.toBeInstanceOf(McpResultTruncatedError)
   })
 })
+
+describe.skipIf(!canBindLoopback)("DaemonClient list readers over the daemon's MCP result cap", () => {
+  // bundle_list / auth_profile_list used to read `result.bundles ?? []`: past
+  // MCP_RESULT_MAX_BYTES the daemon's { truncated: true } marker became "no
+  // bundles". They now page; a page over the cap is halved.
+  const CAP = 100_000
+  let daemon: Awaited<ReturnType<typeof mockDaemon>>
+  let markerAsError = false
+  const bundles = Array.from({ length: 40 }, (_, i) => ({ id: `bundle-${String(i).padStart(2, "0")}`, note: "x".repeat(4_000) }))
+  const profiles = Array.from({ length: 40 }, (_, i) => ({ id: `profile-${String(i).padStart(2, "0")}`, note: "x".repeat(4_000) }))
+
+  beforeEach(async () => {
+    markerAsError = false
+    daemon = await mockDaemon(req => {
+      const rpc = req.body as { method: string; params: { name: string; arguments: { limit?: number; cursor?: string } } }
+      if (rpc?.method !== "tools/call") return { status: 404, body: { error: "not_found" } }
+      const table = rpc.params.name === "bundle_list" ? { key: "bundles", rows: bundles } : rpc.params.name === "auth_profile_list" ? { key: "profiles", rows: profiles } : undefined
+      if (!table) return { status: 404, body: { error: "not_found" } }
+      const { limit, cursor } = rpc.params.arguments
+      let payload: unknown = { [table.key]: table.rows }
+      if (limit !== undefined || cursor !== undefined) {
+        const start = cursor ? Number(cursor) : 0
+        const end = start + (limit ?? 50)
+        payload = { items: table.rows.slice(start, end), total: table.rows.length, ...(end < table.rows.length ? { nextCursor: String(end) } : {}) }
+      }
+      let text = JSON.stringify(payload)
+      let over = false
+      if (Buffer.byteLength(text, "utf8") > CAP) {
+        over = true
+        text = JSON.stringify({ truncated: true, totalBytes: Buffer.byteLength(text, "utf8"), hint: "use limit/cursor/fields" })
+      }
+      return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text }], ...(over && markerAsError ? { isError: true } : {}) } } }
+    })
+  })
+
+  afterEach(async () => {
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+  })
+
+  function client(): DaemonClient {
+    return new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+  }
+
+  it.each([false, true])("listBundles() returns every bundle instead of [] (marker as error: %s)", async errorForm => {
+    markerAsError = errorForm
+    const rows = await client().listBundles()
+    expect(rows.map(b => b.id)).toEqual(bundles.map(b => b.id))
+  })
+
+  it.each([false, true])("listAuthProfiles() returns every profile instead of [] (marker as error: %s)", async errorForm => {
+    markerAsError = errorForm
+    const rows = await client().listAuthProfiles()
+    expect(rows.map(p => p.id)).toEqual(profiles.map(p => p.id))
+  })
+})

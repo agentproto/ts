@@ -17,6 +17,8 @@
  * billing, same as an unpinned `agent_start`.
  */
 
+import { pageAll } from "./page-all.js"
+
 /** The read-only, non-secret discovery tools every installed app UI gets
  *  for free regardless of its own `ui.tools` allowlist — see
  *  `performAppToolCall`'s effective allowlist (`installed.ui.tools ∪
@@ -85,6 +87,9 @@ export const RUNNER_SELECT_SCRIPT = `<script>
 (function () {
   if (window.AgentprotoUI && window.AgentprotoUI.mountRunnerSelect) return;
   window.AgentprotoUI = window.AgentprotoUI || {};
+
+  // Every row of a paged list tool (./page-all.ts, embedded verbatim).
+  var pageAll = ${pageAll.toString()};
 
   var STYLE_ID = "agentproto-runner-select-style";
   function ensureStyle() {
@@ -274,39 +279,21 @@ export const RUNNER_SELECT_SCRIPT = `<script>
 
     // adapter_list with NO arguments can exceed the daemon's MCP result
     // budget (the model-id arrays alone ran to >100 KB) - the daemon then
-    // answers with a truncated:true stub that callers used to misread
-    // as an empty list. So: take the COMPACT rows (slug/name/version/
-    // protocol/installed/modelCount - a page of 50 is a few KB), walk the
-    // limit/cursor pages until done, and treat a truncated stub as an
-    // error, never as "nothing installed". Deliberately NO fields list:
-    // an explicit fields filter bypasses the compact projection and would
-    // re-ship the unbounded model arrays this walk exists to avoid.
+    // answers with its truncated marker, which callers used to misread as
+    // an empty list. So: take the COMPACT rows (slug/name/version/
+    // protocol/installed/modelCount - a page of 50 is a few KB) and page
+    // them with pageAll, which halves a page over the cap and rejects
+    // (error note below) instead of resolving "nothing installed".
+    // Deliberately NO fields list: an explicit fields filter bypasses the
+    // compact projection and would re-ship the unbounded model arrays.
     function fetchAdapters() {
-      var collected = [];
-      function page(args) {
-        return safeCallTool("adapter_list", args).then(function (r) {
-          // Current daemons send the cap marker as an error result, so the
-          // call rejects (error note below); this catches the SUCCESSFUL
-          // marker older daemons sent.
-          if (r && r.truncated === true && !Array.isArray(r.items)) {
-            throw new Error("adapter_list response was truncated by the daemon's result cap");
-          }
-          if (Array.isArray(r)) return r;
-          if (r && r.items) {
-            collected = collected.concat(r.items);
-            if (r.nextCursor) return page({ limit: 50, cursor: r.nextCursor });
-            return collected;
-          }
-          return (r && r.adapters) || [];
-        });
-      }
-      return page({ limit: 50 });
+      return pageAll(safeCallTool, "adapter_list", {}, { limit: 50, listKey: "adapters" });
     }
 
     function refresh() {
-      var harnessPromise = safeCallTool("harness_preset_list").then(
-        function (r) {
-          presets = (r && r.presets) || [];
+      var harnessPromise = pageAll(safeCallTool, "harness_preset_list", {}, { listKey: "presets" }).then(
+        function (rows) {
+          presets = rows;
           harnessNote = "";
         },
         function (err) {

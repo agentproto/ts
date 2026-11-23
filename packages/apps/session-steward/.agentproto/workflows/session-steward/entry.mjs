@@ -1169,7 +1169,9 @@ export default {
     },
     // Verdict memory (item 10): read the app_state ledger best-effort. The
     // map is empty when no app id is set, so a caller can turn memory off.
-    { id: "installedApps", kind: "tool", tool: "app_list", inputs: {} },
+    // Only the ids: an unpaged app_list ships every app's record and run
+    // history, passes the MCP result cap, and fails this step.
+    { id: "installedApps", kind: "tool", tool: "app_list", inputs: { limit: 200, fields: ["appId"] } },
     { id: "memoryApp", kind: "transform", compute: b => resolveMemoryApp(b.steps.settings, b.steps.installedApps) },
     { id: "memoryQueue", kind: "transform", compute: b => (b.steps.memoryApp?.appId ? [{ appId: b.steps.memoryApp.appId }] : []) },
     {

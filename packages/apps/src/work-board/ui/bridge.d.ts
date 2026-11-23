@@ -20,4 +20,15 @@ declare global {
    *  `TArgs` is inferred from the literal object passed at each call site,
    *  so every call stays concretely typed with no `any`/`unknown`. */
   function callTool<TArgs extends object, TResult>(name: string, args?: TArgs): Promise<TResult>
+
+  /** Every row of a paged list tool (`@agentproto/app-client/page-all`):
+   *  follows `nextCursor`, halves a page over the MCP result cap, rejects
+   *  instead of resolving a partial or empty list. `onPage` sees each page
+   *  envelope (fields beside the rows, e.g. `task_list`'s `boardId`). */
+  function callToolPaged<TArgs extends object, TRow>(
+    name: string,
+    args: TArgs,
+    listKey: string,
+    opts?: { limit?: number; onPage?: (page: Record<string, unknown>) => void },
+  ): Promise<TRow[]>
 }

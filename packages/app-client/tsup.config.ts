@@ -10,6 +10,7 @@ export default createTsupConfig({
     react: "src/react.ts",
     "runner-select": "src/runner-select.ts",
     "display-mode": "src/display-mode.ts",
+    "page-all": "src/page-all.ts",
   },
   format: ["esm"],
   splitting: false,
