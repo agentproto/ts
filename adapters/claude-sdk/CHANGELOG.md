@@ -1,5 +1,36 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.37
+
+### Patch Changes
+
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
+- Updated dependencies [ed6759b]
+- Updated dependencies [9c1faeb]
+- Updated dependencies [98a217c]
+- Updated dependencies [fdb4d55]
+- Updated dependencies [8fe3dd3]
+- Updated dependencies [0cf4ee3]
+- Updated dependencies [5b792bc]
+- Updated dependencies [d1b33fa]
+  - @agentproto/model-catalog@0.16.0
+  - @agentproto/harness@4.1.0
+  - @agentproto/provider-presets@0.7.2
+
 ## 0.7.36
 
 ### Patch Changes

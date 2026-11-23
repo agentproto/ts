@@ -1,5 +1,13 @@
 # @agentproto/agent
 
+## 0.6.1
+
+### Patch Changes
+
+- 5b792bc: Covers the packages the PR's own changesets (`remove-private-names.md`, `voice-kit-turn-settings.md`) miss. Private product and repository names were scrubbed from comments, docs, changelogs, fixtures and tests in these packages; no runtime behavior changes (changelog/docs/test-only edits, plus the catalog-sync ledger key noted in the review).
+  - @agentproto/doctype@0.2.0
+  - @agentproto/manifest@0.3.0
+
 ## 0.6.0
 
 ### Minor Changes

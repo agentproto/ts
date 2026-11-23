@@ -1,5 +1,11 @@
 # @agentproto/model-routing
 
+## 1.0.1
+
+### Patch Changes
+
+- 5b792bc: Covers the packages the PR's own changesets (`remove-private-names.md`, `voice-kit-turn-settings.md`) miss. Private product and repository names were scrubbed from comments, docs, changelogs, fixtures and tests in these packages; no runtime behavior changes (changelog/docs/test-only edits, plus the catalog-sync ledger key noted in the review).
+
 ## 1.0.0
 
 ### Major Changes

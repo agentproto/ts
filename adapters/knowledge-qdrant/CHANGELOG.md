@@ -1,5 +1,16 @@
 # @agentproto/adapter-knowledge-qdrant
 
+## 0.3.8
+
+### Patch Changes
+
+- Updated dependencies [765660d]
+- Updated dependencies [1741e68]
+- Updated dependencies [5b792bc]
+- Updated dependencies [89258dd]
+  - @agentproto/provider-kit@0.7.0
+  - @agentproto/knowledge-engine@0.4.2
+
 ## 0.3.7
 
 ### Patch Changes

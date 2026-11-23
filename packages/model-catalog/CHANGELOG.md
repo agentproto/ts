@@ -1,5 +1,30 @@
 # @agentproto/model-catalog
 
+## 0.16.0
+
+### Minor Changes
+
+- 98a217c: Price the models the `copilot-cli` harness runs from GitHub Copilot's own price list, synced automatically like the other vendors. New `scripts/catalog-sync/sync-copilot.mjs` (picked up by the weekly `run-all.mjs`) reads `data/tables/copilot/models-and-pricing.yml` and the promo footnotes of `models-and-pricing.md` in github/docs and writes `copilot-pricing.generated.ts`: `mai-code-2`, `mai-code-2-flash`, `mai-code-1.1-flash` and the dotted ids (`claude-sonnet-5.5`, `claude-haiku-5.5`, ...) that no native vendor sync spells that way. Native generators still win on any id they also price. Rows carry `priceSource: "github-copilot"`, cache-read/write ratios and prompt-length tiers. New optional `LLMPricing.promo` (`until` + `then`) and `effectivePricing()`: a dated promo (MAI Code 2: $0.50/$2.50 until 2027-05-17, $1/$5 from that day) resolves to its standard price on its own, in `resolvePricing*` and `agentproto models`. If the source is unreachable or its layout changes, the sync keeps the committed file and exits 2 with the reason.
+
+  `agentproto models`: a model with no price now prints `price n/a: <reason>` (and `priceNote` in `--json`) instead of a blank; `copilot-cli` models are `runnable` when the adapter is ready (its own login), not "unavailable" for lack of a provider key.
+
+### Patch Changes
+
+- ed6759b: Add the newest OpenAI and Google models: GPT-Live 1.1, Realtime 2.1, transcribe/translate models, Gemini 3.8 Live and TTS, Gemini 3.8/3.6 Flash, 3.5 Flash Lite and the Gemini 4 family.
+- 9c1faeb: Sync generated catalog data from the pinned provider sources.
+- fdb4d55: Fix the `google/gemini-live` audio catalog entry: its `providerId` pointed at `gemini-2.5-flash-preview-tts`, a TTS-only model the bidirectional Live API refuses (only `*-live-*` models take realtime audio in and out); it now carries `gemini-3.1-flash-live-preview`, the model the studio voice engine runs, and `DEFAULT_GEMINI_LIVE_MODEL` follows.
+- 8fe3dd3: Add the `audio:openai-live` generator: OpenAI live/realtime audio ids now auto-sync from the pinned `/v1/models` snapshot (weekly catalog-sync workflow) into `OPENAI_LIVE_MODELS`, like the LLM halves. Capabilities + pricing stay curated in `AUDIO_MODEL_CATALOG` — each synced id carries `needsCuration` until a curated entry claims it — and the new curated `openai/gpt-live-1` entry (base GPT-Live tier, published $0.05/min) completes the GPT-Live pair. New curation-bridge helpers (`openaiLiveIdsNeedingCuration`, `isCuratedOpenAIAudioModel`) and an anti-drift test keep curated live engines on ids OpenAI actually serves.
+- 0cf4ee3: mistral-vibe: default to Mistral Large 4 (`mistral-large-4-0`) and list the ids Vibe 3.1.3 really offers (Medium 3.5, GLM 5.3, GLM 5.3 Flash); Devstral and `local` are dropped. Catalog: Large 4 pricing synced, `mistral-large-latest` / `mistral-medium-latest` derive from the current models, Devstral rows marked legacy.
+- 5b792bc: Remove private product and repository names from comments, docs, examples and tests.
+
+  `@agentproto/auth` no longer ships a vendor provider: the `acmeAuthProvider`-style builtin export is removed and `BUILTIN_AUTH_PROVIDERS` is empty, so the registry starts empty. A host declares its own provider with `parseAuthProviderManifest` (or `defineAuthProvider`) and `registerAuthProvider`, which already existed. Breaking for code that imported the old export or looked the old id up without registering it.
+
+  `@agentproto/role-catalog`: the legacy role map export is now `LEGACY_OPERATOR_ROLE_MAP`.
+
+  `@agentproto/apps` (session-steward): new `extraClosableOrigins` input appended to the closable origin list in force. The generic default roots are `orchestrator` and `orchestrator:*`; a host that stamps its own root label adds it with `extraClosableOrigins`.
+
+  The private Replicate fine-tune entry is dropped from the model catalog.
+
 ## 0.15.3
 
 ### Patch Changes

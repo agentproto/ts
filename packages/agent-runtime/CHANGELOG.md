@@ -1,5 +1,13 @@
 # @agentproto/agent-runtime
 
+## 1.0.1
+
+### Patch Changes
+
+- Updated dependencies [89258dd]
+  - @agentproto/telemetry@0.2.5
+  - @agentproto/cli-exec@0.1.2
+
 ## 1.0.0
 
 ### Major Changes

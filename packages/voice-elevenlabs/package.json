@@ -1,17 +1,27 @@
 {
   "name": "@agentproto/voice-elevenlabs",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "publishConfig": {
     "access": "public"
   },
   "description": "@agentproto/voice-elevenlabs: ElevenLabs voice provider for @agentproto/voice. TTS (HTTP and WebSocket stream-input), Scribe speech-to-text (realtime stream and file), and the hosted speech-to-speech agent. Talks to ElevenLabs directly; no agent framework.",
-  "keywords": ["agentproto", "voice", "elevenlabs", "tts", "stt", "scribe", "realtime"],
+  "keywords": [
+    "agentproto",
+    "voice",
+    "elevenlabs",
+    "tts",
+    "stt",
+    "scribe",
+    "realtime"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
     "directory": "packages/voice-elevenlabs"
   },
-  "bugs": { "url": "https://github.com/agentproto/ts/issues" },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.mjs",
@@ -25,7 +35,11 @@
     },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
