@@ -60,6 +60,10 @@ describe("provider declaration", () => {
     expect(p.realtime!.capabilities.id).toBe("openai-realtime")
     expect(openaiDefault.slug).toBe("openai")
   })
+  it("exposes the model it synthesizes with, the configured one over the default", () => {
+    expect(makeOpenAITts().model).toBe("gpt-4o-mini-tts")
+    expect(makeOpenAITts({ modelId: "tts-1" }).model).toBe("tts-1")
+  })
   it("refuses to open anything without a key, naming the variable", async () => {
     const saved = process.env.OPENAI_API_KEY
     delete process.env.OPENAI_API_KEY
