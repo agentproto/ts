@@ -14,6 +14,7 @@
  * referenced, not here.
  */
 
+import { constants } from "node:fs"
 import { copyFile, lstat, mkdir, open, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -126,10 +127,21 @@ export async function salvageWorktree(input: SalvageWorktreeInput): Promise<Salv
   const tipShort = input.tipSha.slice(0, 7)
   const dateStamp = createdAt.slice(0, 10)
   const dirName = `${sanitizeSegment(input.slug)}-${tipShort}-${dateStamp}`
-  const dir = resolve(input.salvageRoot ?? SALVAGE_ROOT(), sanitizeSegment(input.repoName), dirName)
-  // `mkdir -p` returns the first directory it created (undefined when `dir`
-  // already existed): that is exactly what a failed call may remove again.
-  const createdRoot = await mkdir(dir, { recursive: true })
+  const parent = resolve(input.salvageRoot ?? SALVAGE_ROOT(), sanitizeSegment(input.repoName))
+  // Always a fresh directory for THIS call: a same-day replay of the same tip
+  // gets `-2`, `-3`, ... instead of mixing into (or cleaning up) an earlier archive.
+  const createdParent = await mkdir(parent, { recursive: true })
+  let dir = resolve(parent, dirName)
+  for (let n = 2; ; n++) {
+    try {
+      await mkdir(dir)
+      break
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
+      dir = resolve(parent, `${dirName}-${n}`)
+    }
+  }
+  const createdRoot = createdParent ?? dir
 
   try {
     const [patch, untrackedEntries, provenance] = await Promise.all([
@@ -180,7 +192,7 @@ export async function salvageWorktree(input: SalvageWorktreeInput): Promise<Salv
     return { dir, manifest }
   } catch (err) {
     // Never leave a half-written archive behind; only what THIS call created, never the worktree.
-    if (createdRoot) await rm(createdRoot, { recursive: true, force: true }).catch(() => undefined)
+    await rm(createdRoot, { recursive: true, force: true }).catch(() => undefined)
     throw err
   }
 }
@@ -195,23 +207,38 @@ function entryKind(st: import("node:fs").Stats): string {
 
 /**
  * Restore a salvage archive into `targetPath`: copies the untracked files,
- * recreates the symlinks (target verbatim, existing paths are left alone) and
- * applies `changes.patch` when it has content. Returns what was restored.
+ * recreates the symlinks (target verbatim) and
+ * applies `changes.patch` when it has content. Never overwrites: a path that
+ * already exists (a dangling link counts) is skipped and returned in `skipped`.
  */
 export async function restoreSalvage(
   salvageDir: string,
   targetPath: string,
-): Promise<{ files: number; symlinks: number; patchApplied: boolean }> {
+): Promise<{ files: number; symlinks: number; patchApplied: boolean; skipped: string[] }> {
   const manifest = JSON.parse(await readFile(join(salvageDir, "MANIFEST.json"), "utf8")) as SalvageManifest
+  const skipped: string[] = []
+  const exists = (p: string) => lstat(p).then(() => true, () => false)
+  let files = 0
+  let links = 0
   for (const relPath of manifest.untrackedFiles) {
     const dest = join(targetPath, relPath)
+    if (await exists(dest)) {
+      skipped.push(relPath)
+      continue
+    }
     await mkdir(dirname(dest), { recursive: true })
-    await copyFile(join(salvageDir, "untracked", relPath), dest)
+    await copyFile(join(salvageDir, "untracked", relPath), dest, constants.COPYFILE_EXCL)
+    files++
   }
   for (const link of manifest.symlinks ?? []) {
     const dest = join(targetPath, link.path)
+    if (await exists(dest)) {
+      skipped.push(link.path)
+      continue
+    }
     await mkdir(dirname(dest), { recursive: true })
     await symlink(link.target, dest)
+    links++
   }
   let patchApplied = false
   if (manifest.hasPatch) {
@@ -219,5 +246,5 @@ export async function restoreSalvage(
     if (res.exitCode !== 0) throw new Error(`git apply failed in ${targetPath} (exit ${res.exitCode}): ${res.stderr.trim()}`)
     patchApplied = true
   }
-  return { files: manifest.untrackedFiles.length, symlinks: manifest.symlinks?.length ?? 0, patchApplied }
+  return { files, symlinks: links, patchApplied, skipped }
 }

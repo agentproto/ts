@@ -94,6 +94,48 @@ describe("salvageWorktree", () => {
     expect(await readFile(locked, "utf8")).toBe("secret\n")
   })
 
+  it("gives two same-day salvages of the same tip distinct archives; a failing second leaves the first intact", async () => {
+    const { wtDir, salvageRoot, run } = await dirtyWorktree("twice")
+    await symlink("somewhere", join(wtDir, "link"))
+    const first = await run()
+    const second = await run()
+    expect(second.dir).not.toBe(first.dir)
+    expect(second.dir.endsWith("-2")).toBe(true)
+    expect(await readlink(join(second.dir, "untracked", "link"))).toBe("somewhere")
+
+    if (process.getuid?.() !== 0) {
+      const locked = join(wtDir, "locked.txt")
+      await writeFile(locked, "x\n")
+      await chmod(locked, 0o000)
+      try {
+        await expect(run()).rejects.toThrow()
+      } finally {
+        await chmod(locked, 0o644)
+      }
+      expect(await readdir(join(salvageRoot, "test-repo"))).toHaveLength(2)
+      expect(await readlink(join(first.dir, "untracked", "link"))).toBe("somewhere")
+      expect(JSON.parse(await readFile(join(first.dir, "MANIFEST.json"), "utf8")).symlinks).toHaveLength(1)
+    }
+  })
+
+  it("restore never overwrites: existing paths are skipped and reported", async () => {
+    const { wtDir, run } = await dirtyWorktree("norestore")
+    await writeFile(join(wtDir, "f.txt"), "salvaged\n")
+    await writeFile(join(wtDir, "g.txt"), "salvaged-g\n")
+    await symlink("t", join(wtDir, "l"))
+    const { dir } = await run()
+    const fresh = await mkdtemp(join(tmpdir(), "wt-salvage-restore-"))
+    cleanupPaths.push(fresh)
+    await writeFile(join(fresh, "f.txt"), "keep me\n")
+    await symlink("other", join(fresh, "l"))
+    const res = await restoreSalvage(dir, fresh)
+    expect(res.skipped.sort()).toEqual(["f.txt", "l"])
+    expect(res).toMatchObject({ files: 1, symlinks: 0 })
+    expect(await readFile(join(fresh, "f.txt"), "utf8")).toBe("keep me\n")
+    expect(await readlink(join(fresh, "l"))).toBe("other")
+    expect(await readFile(join(fresh, "g.txt"), "utf8")).toBe("salvaged-g\n")
+  })
+
   it("captures a changes.patch for modified tracked files and copies untracked files, with a matching manifest", async () => {
     const repoRoot = await makeTempRepo()
     cleanupPaths.push(repoRoot)
