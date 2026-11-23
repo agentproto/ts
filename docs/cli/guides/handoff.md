@@ -155,7 +155,7 @@ options: continue-fresh · handoff:codex · keep-going
 Answering `handoff:codex` is the same as `agentproto sessions handoff <id> --to
 codex`. This only fires for adapters whose usage frames carry both a context
 window size and the tokens used: `claude-code`, `claude-sdk`, `pi` and
-`opencode` do. Adapters that report `size: 0` (`antigravity`, `jcode`) never reach the
+`opencode` do. Adapters that report `size: 0` (`jcode`) never reach the
 threshold, so no question is raised there; for any other ACP-backed adapter it
 depends on whether its server sends a `usage_update` with both figures.
 

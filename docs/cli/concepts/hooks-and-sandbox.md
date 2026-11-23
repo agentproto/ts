@@ -77,12 +77,12 @@ tools in-process behind a local ACP host and never raise
 
 | Tier | Adapters | Raises `request_permission`? | Plane 1 reach | Plane 2 reach |
 |---|---|---|---|---|
-| **1 — Blockable** | claude-code, codex, copilot-cli, gemini, grok-cli, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
+| **1 — Blockable** | antigravity, claude-code, codex, copilot-cli, gemini, grok-cli, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
 | **2 — Observable only** | claude-sdk, mastra-agent | No — in-process, `bypassPermissions`; ACP is transport only | Log only (after the fact) | Confined (both axes) |
-| **3 — Opaque** | antigravity, jcode, pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
+| **3 — Opaque** | jcode, pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
 
-**~7/14 harnesses are semantically gateable (tier 1). ~9/14 are loggable
-(tiers 1+2). ~5/14 are opaque to Plane 1 entirely (tier 3).** State this
+**~8/14 harnesses are semantically gateable (tier 1). ~10/14 are loggable
+(tiers 1+2). ~4/14 are opaque to Plane 1 entirely (tier 3).** State this
 loudly on every surface that talks about "a cross-harness hook engine" — a
 silent ~50% cliff reads as 100% coverage, and that's the exact failure mode
 this doc exists to prevent.
