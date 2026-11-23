@@ -1,5 +1,5 @@
 /**
- * BILL-* conformance cases (AIP-BILLING Conformance), framework-free: each case is a
+ * BILL-* conformance cases (AIP-74 Conformance), framework-free: each case is a
  * name and an async function that throws on failure.
  *
  *   for (const c of billingConformanceCases(ctx)) it(c.name, c.run)

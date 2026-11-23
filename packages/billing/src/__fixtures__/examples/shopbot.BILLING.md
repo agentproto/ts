@@ -1,7 +1,5 @@
 ---
-# DRAFT example, AIP-BILLING v0.4 (billing/v1). Describes Shopbot as deployed from main on 2026-11-20, except the
-# credit anchor and the EUR rate below. Where deployed code differs, the comment cites the file and says so.
-# Minor units: euro cents, hundredths of a credit (decimals 2).
+# DRAFT example, AIP-74 v0.4 (billing/v1). Illustrative product file; nothing here describes a real deployment.
 schema: billing/v1
 name: shopbot
 title: Shopbot billing
@@ -15,42 +13,37 @@ assets:
     symbol: CCR
     decimals: 2
     standard: internal
-    # No wallet asset exists today: credits live on the kit tables with two origins, purchased and subscription
-    # (kit-credits.ts:65-76). This declaration is derived for the file. 1 displayed credit = 100 centicredits.
+    # No wallet asset exists today: credits live on separate tables with two origins, purchased and subscription
     ruleSet: { settleOut: internal-ledger, spendableOn: ["*"], convertEdges: [], transfer: internal }
     partitions:
       - { id: "SHOPBOT_CREDITS:purchased",    asset: SHOPBOT_CREDITS, restriction: [] }
       - { id: "SHOPBOT_CREDITS:subscription", asset: SHOPBOT_CREDITS, restriction: [] }   # the monthly envelope
       - { id: "SHOPBOT_CREDITS:welcome",      asset: SHOPBOT_CREDITS, restriction: [welcome] }
-      # NEW, not declared today: a separate bonus lot is AIP-BILLING rule 12. MIGRATION PENDING.
       - { id: "SHOPBOT_CREDITS:bonus",        asset: SHOPBOT_CREDITS, restriction: [unearned] }
 primaryAsset: SHOPBOT_CREDITS
 
-# Rate decided on 2026-11-20; production moves to this rate at step 5a.1. Current code: shopbot-billing.ts:40-41,
-# plan-envelopes.ts:41.
 anchor: { currency: USD, creditsPerUnit: 100 }
 fx: { EUR: 1.18 }
-taxBasis: net              # prices are excluding tax (shopbot-billing.ts:40, plan-envelopes.ts:9)
+taxBasis: net
+
 
 features:
   - { id: credits, type: credits }
-  # Boolean rights per plan (PLAN_RIGHTS, rights/registry.ts:62-). The numeric limit shopCap and the other plan limits
-  # (PLAN_SHOP_CAPS, plan-limits.ts) are not features: they stay in TypeScript.
   - { id: cart, type: boolean }
   - { id: branding, type: boolean }
   - { id: agency_console, type: boolean }
 
 accounts:
   kinds: [organization, agency]
-  hierarchy: { maxDepth: 1, funding: [pool, allocated_budget] }   # shopbot-billing.ts:49 (childModels pool, allocated)
+  hierarchy: { maxDepth: 1, funding: [pool, allocated_budget] }
+
 payer:
   strategy: hierarchy/v1
-  owner: [orgId]           # scopeToOwner, shopbot-billing.ts:51
-  affordability: spendable # shopbot-billing.ts:52
+  owner: [orgId]
+
+  affordability: spendable
+
 transfers:
-  # An agency allocates credits to a client organization from its purchased credits (agency-credits.ts:179-194,
-  # model `allocated` only), and can take back (agency-credits.ts:17). Off unless AGENCY_ACCOUNTS_ENABLED=1
-  # (contract.ts:84; the production value was not verified).
   allow: [allocate, reclaim]
   from: ["SHOPBOT_CREDITS:purchased"]
   expiry: inherit
@@ -60,28 +53,16 @@ conversions:
     from: EUR
     to: SHOPBOT_CREDITS
     rail: stripe
-    # Purchased credits are valid 12 months (PURCHASED_CREDIT_VALIDITY_MONTHS, catalog.ts:212; kit-credits.ts:246).
     mint: { partition: "SHOPBOT_CREDITS:purchased", expires: { after: P12M } }
-    # Volume bonus on a free-amount purchase, PURCHASE_BONUS_TIERS (shopbot-billing.ts:17-23). Purchases only:
-    # the plan bonus below is another thing.
     bonus: { strategy: tiered-lots/v1, partition: "SHOPBOT_CREDITS:bonus", tiers: [[30001, 15], [12000, 10], [6000, 5], [0, 0]] }
     enabled: true
 
 offers:
-  - id: credits            # free amount, bounds MIN_PURCHASE_CENTS and MAX_PURCHASE_CENTS (purchase.ts:30-31)
+  - id: credits
     price: { model: prepaid-pool, amountMinor: buyer, minMinor: 1000, maxMinor: 100000, currency: EUR }
     convert: eur-to-credits
-  # Plans (PLAN_PRICE_EUR, plan-envelopes.ts:19-25), monthly, excluding tax.
   # The envelopes do NOT go through the conversion: they are included credits, an allocation of the period, computed
-  # outside the file by planEnvelopeCredits (plan-envelopes.ts:37-43) = price x credits per EUR x (1 + plan bonus),
-  # rounded to the nearest hundred; the plan bonus is 10 / 15 / 20 % (PLAN_BONUS_PERCENT, shopbot-billing.ts:26-31),
   # not the purchase tiers. Written here: 79 x 118 x 1.10 = 10 300, 149 x 118 x 1.15 = 20 200,
-  # 399 x 118 x 1.20 = 56 500 (rate decided on 2026-11-20; production moves to it at step 5a.1).
-  # OPEN DECISION (rollover): `none` is today's behaviour, the envelope expires at the end of its calendar month
-  # (kit-credits.ts:206-225, endOfPeriod); `unbounded` would carry it over.
-  # `anchor: calendar`: the envelope of a month is granted once, on first use in the month (gate.ts:50-69).
-  # OPEN DECISION (grace): there is no grace today. A past_due subscription keeps access but nothing runs: level
-  # no_draws (entitlement.ts:49-50). No `grace` field means no grace.
   # `onUpgrade: none`: no proration code was found in the cloud billing module.
   - id: visibilite
     price: { model: subscription, amountMinor: 7900, currency: EUR, interval: month }
@@ -98,17 +79,13 @@ offers:
 
 grants:
   - id: welcome
-    trigger: { kind: manual }                     # at signup completion (pg-welcome-grants.ts)
-    # The amount is the operator setting onboarding.welcome_grant_credits stored in the database (app-settings.contract.ts:13-24);
-    # plan-envelopes.ts:23 speaks of "50 + 50". Each grant carries its own expiry and is bounded by a daily budget and
-    # by e-mail, shop and IP deduplication (pg-welcome-grants.ts:21-): behaviour that stays in TypeScript.
-    amount: { strategy: "x-agentik:welcome-grant" }
+    trigger: { kind: manual }
+
+    amount: { strategy: "x-acme:welcome-grant" }
     partition: "SHOPBOT_CREDITS:welcome"
     key: "{account}:once"
 
 rails:
-  # Shopbot keeps its own Stripe provider today (stripeAccounts: [], shopbot-billing.ts:13-14, 42): the rail
-  # is declared here for the step that adopts it. Credits are inert while CREDITS_ENABLED is off (store.ts:155).
   - { id: stripe, productTag: shopbot }
 ---
 

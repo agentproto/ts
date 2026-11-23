@@ -1,5 +1,5 @@
 /**
- * Paid subscription periods and the includes they give (AIP-BILLING rules 7, 16, 17).
+ * Paid subscription periods and the includes they give (AIP-74 rules 7, 16, 17).
  *
  * A period is opened by a subscription payment and keyed by its movement. The
  * includes of a monthly or weekly period are given once, at its start; a yearly
@@ -63,7 +63,7 @@ export function dueDrops(p: PeriodRecord, now: number): IncludeDrop[] {
   return includeDrops(p).filter(d => d.at <= now && !p.given.includes(d.index))
 }
 
-/** Events of one drop: credits into their partitions, expiry from one source (AIP-BILLING Expiry). */
+/** Events of one drop: credits into their partitions, expiry from one source (AIP-74 Expiry). */
 export function dropEvents(
   manifest: BillingHandle,
   offer: Offer,

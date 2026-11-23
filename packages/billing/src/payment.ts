@@ -1,5 +1,5 @@
 /**
- * The payment path of AIP-BILLING: check, fact, effect, trace.
+ * The payment path of AIP-74: check, fact, effect, trace.
  *
  *   rail event -> verifyWebhook -> PaymentFact
  *   1. CHECK   offer, rail, currency, amount against the price
@@ -68,7 +68,7 @@ export function checkPayment(manifest: BillingHandle, fact: PaymentFact): CheckR
   return { ok: true, offer }
 }
 
-/** Percent of the highest tier whose `from` is at most the paid amount (AIP-BILLING bonus). */
+/** Percent of the highest tier whose `from` is at most the paid amount (AIP-74 bonus). */
 export function bonusPercent(tiers: readonly (readonly [number, number])[], amountMinor: number): number {
   let best: readonly [number, number] | undefined
   for (const t of tiers) if (t[0] <= amountMinor && (best === undefined || t[0] > best[0])) best = t

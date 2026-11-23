@@ -1,6 +1,6 @@
 # @agentproto/billing
 
-Reference implementation of [AIP-BILLING](https://agentproto.sh/docs/aip-74), a
+Reference implementation of [AIP-74](https://agentproto.sh/docs/aip-74), a
 **draft**. Private until step 7 of the kits plan: it is not published.
 
 ```

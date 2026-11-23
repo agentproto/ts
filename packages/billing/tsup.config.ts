@@ -3,7 +3,7 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 export default createTsupConfig({
   banner: `/**
  * @agentproto/billing
- * AIP-BILLING: BILLING.md parser, defineBillingManifest, the payment path on the AIP-49 journal, SettlementProvider.
+ * AIP-74: BILLING.md parser, defineBillingManifest, the payment path on the AIP-49 journal, SettlementProvider.
  */`,
   entry: {
     index: "src/index.ts",

@@ -1,6 +1,6 @@
 /**
  * The eleven real cases of PLAN-BILLING-FINAL section 5, one test each, run on
- * the four product files of the AIP-BILLING draft (fixtures) and on the in-memory
+ * the four product files of the AIP-74 draft (fixtures) and on the in-memory
  * stores. The table case -> test is in the pull request description.
  */
 import { fold, selectLotsForSpend, type WalletEvent } from "@agentproto/wallet"
@@ -126,32 +126,32 @@ describe("case 3: Demo, points to credits", () => {
   })
 })
 
-describe("case 4: Acme, an organization funds its guilds; packs in EUR and USD are two prices at the anchor", () => {
-  it("prices the same pack in both currencies, allocates org to guild and refuses reclaim", async () => {
+describe("case 4: Acme, an organization funds its groups; packs in EUR and USD are two prices at the anchor", () => {
+  it("prices the same pack in both currencies, allocates org to group and refuses reclaim", async () => {
     const w = world("acme", "stripe")
-    const eur = w.pay("starter_eur", 1000, "EUR", { organizationId: "org", guildId: "g", userId: "u" })
-    const usd = w.pay("starter_usd", 1000, "USD", { organizationId: "org", guildId: "g", userId: "u2" })
+    const eur = w.pay("starter_eur", 1000, "EUR", { organizationId: "org", groupId: "g", userId: "u" })
+    const usd = w.pay("starter_usd", 1000, "USD", { organizationId: "org", groupId: "g", userId: "u2" })
     await applyPayment(w.deps, eur)
     await applyPayment(w.deps, usd)
     expect(await balance(w, "org:g:u")).toBe(118_000 + 11_800) // 10 EUR at 118, +10 percent
     expect(await balance(w, "org:g:u2")).toBe(100_000 + 10_000) // 10 USD at 100, +10 percent
-    const moved = await applyTransfer(w.deps, { kind: "allocate", ref: "alloc-1", parentId: "org:g:u", childId: "guild-1", amount: 50_000 })
+    const moved = await applyTransfer(w.deps, { kind: "allocate", ref: "alloc-1", parentId: "org:g:u", childId: "group-1", amount: 50_000 })
     expect(moved).toMatchObject({ status: "applied", moved: 50_000 })
-    expect(await balance(w, "guild-1")).toBe(50_000)
-    expect((await applyTransfer(w.deps, { kind: "reclaim", ref: "reclaim-1", parentId: "org:g:u", childId: "guild-1", amount: 1 })).status).toBe("refused")
-    expect((await applyTransfer(w.deps, { kind: "allocate", ref: "alloc-1", parentId: "org:g:u", childId: "guild-1", amount: 50_000 })).status).toBe("replayed")
+    expect(await balance(w, "group-1")).toBe(50_000)
+    expect((await applyTransfer(w.deps, { kind: "reclaim", ref: "reclaim-1", parentId: "org:g:u", childId: "group-1", amount: 1 })).status).toBe("refused")
+    expect((await applyTransfer(w.deps, { kind: "allocate", ref: "alloc-1", parentId: "org:g:u", childId: "group-1", amount: 50_000 })).status).toBe("replayed")
   })
   it("resolves the payer by organization kind through a registered vendor strategy", async () => {
     const w = world("acme", "stripe")
     const dir: AccountDirectory = { get: async id => (id === "me" ? { id: "me", parentId: null } : null) }
-    const strat = { "x-agentik:org-kind": async (id: string) => ({ ok: true as const, payerId: id, path: [id] }) }
+    const strat = { "x-acme:org-kind": async (id: string) => ({ ok: true as const, payerId: id, path: [id] }) }
     expect(await resolvePayer(w.m, dir, "me", strat)).toMatchObject({ ok: true, payerId: "me" })
     expect(await resolvePayer(w.m, dir, "me")).toMatchObject({ ok: false })
   })
   it("a crash between the two commits loses nothing: the retry mints the child leg from the recorded out leg", async () => {
     const w = world("acme", "stripe")
-    await applyPayment(w.deps, w.pay("starter_eur", 1000, "EUR", { organizationId: "org", guildId: "g", userId: "u" }))
-    const req: TransferRequest = { kind: "allocate", ref: "alloc-crash", parentId: "org:g:u", childId: "guild-crash", amount: 50_000 }
+    await applyPayment(w.deps, w.pay("starter_eur", 1000, "EUR", { organizationId: "org", groupId: "g", userId: "u" }))
+    const req: TransferRequest = { kind: "allocate", ref: "alloc-crash", parentId: "org:g:u", childId: "group-crash", amount: 50_000 }
     // A storage that dies after the source leg was committed, before the destination leg.
     const crash: StoragePort = Object.create(w.storage) as StoragePort
     crash.commit = async (accountId: string, events: readonly WalletEvent[]): Promise<void> => {
@@ -160,16 +160,16 @@ describe("case 4: Acme, an organization funds its guilds; packs in EUR and USD a
     }
     await expect(applyTransfer({ ...w.deps, storage: crash }, req)).rejects.toThrow(/crash/)
     expect(await balance(w, "org:g:u")).toBe(118_000 + 11_800 - 50_000) // the source leg is committed
-    expect(await balance(w, "guild-crash")).toBe(0) // the destination leg is not
+    expect(await balance(w, "group-crash")).toBe(0) // the destination leg is not
     const retry = await applyTransfer(w.deps, req)
     expect(retry.status).toBe("replayed")
-    expect(await balance(w, "guild-crash")).toBe(50_000) // repaired from the recorded out leg
-    const ins = (await w.storage.loadEvents("guild-crash")) as CauseEvent[]
+    expect(await balance(w, "group-crash")).toBe(50_000) // repaired from the recorded out leg
+    const ins = (await w.storage.loadEvents("group-crash")) as CauseEvent[]
     expect(ins.filter(e => e.id.startsWith("alloc-crash:in:"))).toHaveLength(1)
     expect(ins.find(e => e.id.startsWith("alloc-crash:in:"))).toMatchObject({ kind: "mint", amount: 50_000, cause: "alloc-crash" })
     const n = ins.length
     expect((await applyTransfer(w.deps, req)).status).toBe("replayed")
-    expect((await w.storage.loadEvents("guild-crash")).length).toBe(n) // still idempotent
+    expect((await w.storage.loadEvents("group-crash")).length).toBe(n) // still idempotent
   })
 })
 
@@ -233,19 +233,19 @@ describe("case 7: a 50 EUR pack with a +30 percent bonus (Nova has the same form
   })
 })
 
-describe("case 8: Agentik SEO, its own anchor, decimals 0, two partitions", () => {
+describe("case 8: Usage SaaS, its own anchor, decimals 0, two partitions", () => {
   it("converts 1 USD to 1 000 credits with no decimals, spends the monthly allowance first, and the bundle is a one-time purchase", async () => {
-    const w = world("agentik-seo", "autumn")
+    const w = world("usage-saas", "autumn")
     expect(convertMinor(100, w.m.derived.conversions.get("usd-to-credits")!.ratio, 2, 0)).toBe(1000)
     await applyPayment(w.deps, w.pay("credit-top-up", 500, "USD", { organizationId: "s" }))
     await applyPayment(w.deps, w.pay("base-plan", 1900, "USD", { organizationId: "s" }))
     expect(await balance(w, "s")).toBe(5000 + 10_000)
-    const asset = w.m.derived.assets.get("SEO_CREDITS")!
-    const plan = selectLotsForSpend(await w.storage.loadLots("s"), { asset: "SEO_CREDITS", category: "x", amount: 100, now: T0 }, asset, w.m.derived.partitions)
+    const asset = w.m.derived.assets.get("USAGE_CREDITS")!
+    const plan = selectLotsForSpend(await w.storage.loadLots("s"), { asset: "USAGE_CREDITS", category: "x", amount: 100, now: T0 }, asset, w.m.derived.partitions)
     const drawn = (await lots(w, "s")).find(l => l.id === plan.draws[0]!.lotId)!
-    expect(drawn.partitionId).toBe("SEO_CREDITS:monthly")
-    expect(w.m.spendOrder).toEqual(["SEO_CREDITS:monthly", "SEO_CREDITS:topup"])
-    const b = w.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    expect(drawn.partitionId).toBe("USAGE_CREDITS:monthly")
+    expect(w.m.spendOrder).toEqual(["USAGE_CREDITS:monthly", "USAGE_CREDITS:topup"])
+    const b = w.pay("bundle-pro-pack", 9900, "USD", { organizationId: "b" })
     await applyPayment(w.deps, b)
     expect(await balance(w, "b")).toBe(15_000)
     expect((await traceOf(w.storage, "b", b.movement)).map(e => e.kind)).toEqual(["mint", "burn", "mint"])
@@ -256,36 +256,36 @@ describe("one-time include rollover (rule 16, schema default none)", () => {
   const TTL = 30 * DAY
   const topupTtl = (src: string) =>
     src.replace(
-      '- { id: "SEO_CREDITS:topup",   asset: SEO_CREDITS, restriction: [] }',
-      `- { id: "SEO_CREDITS:topup",   asset: SEO_CREDITS, restriction: [], defaultTtlMs: ${TTL} }`,
+      '- { id: "USAGE_CREDITS:topup",   asset: USAGE_CREDITS, restriction: [] }',
+      `- { id: "USAGE_CREDITS:topup",   asset: USAGE_CREDITS, restriction: [], defaultTtlMs: ${TTL} }`,
     )
   const bundleInclude = (rollover?: string) => (src: string) =>
     topupTtl(src).replace(
-      '- { feature: credits, amountMinor: 15000, partition: "SEO_CREDITS:topup" }',
-      `- { feature: credits, amountMinor: 15000, partition: "SEO_CREDITS:topup"${rollover ? `, rollover: ${rollover}` : ""} }`,
+      '- { feature: credits, amountMinor: 15000, partition: "USAGE_CREDITS:topup" }',
+      `- { feature: credits, amountMinor: 15000, partition: "USAGE_CREDITS:topup"${rollover ? `, rollover: ${rollover}` : ""} }`,
     )
   const includeEvent = async (w: World, movement: string) =>
     ((await traceOf(w.storage, "b", movement)) as CauseEvent[]).find(e => e.id.includes(":incl:"))!
 
   it("rollover omitted (default none) expires the include with the partition TTL", async () => {
-    const w = world("agentik-seo", "autumn", bundleInclude())
-    const b = w.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    const w = world("usage-saas", "autumn", bundleInclude())
+    const b = w.pay("bundle-pro-pack", 9900, "USD", { organizationId: "b" })
     await applyPayment(w.deps, b)
     expect((await includeEvent(w, b.movement)).expiresAt).toBe(T0 + TTL)
   })
   it("rollover none expires it with the partition TTL, unbounded never expires", async () => {
-    const wNone = world("agentik-seo", "autumn", bundleInclude("none"))
-    const fNone = wNone.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    const wNone = world("usage-saas", "autumn", bundleInclude("none"))
+    const fNone = wNone.pay("bundle-pro-pack", 9900, "USD", { organizationId: "b" })
     await applyPayment(wNone.deps, fNone)
     expect((await includeEvent(wNone, fNone.movement)).expiresAt).toBe(T0 + TTL)
-    const wUnb = world("agentik-seo", "autumn", bundleInclude("unbounded"))
-    const fUnb = wUnb.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+    const wUnb = world("usage-saas", "autumn", bundleInclude("unbounded"))
+    const fUnb = wUnb.pay("bundle-pro-pack", 9900, "USD", { organizationId: "b" })
     await applyPayment(wUnb.deps, fUnb)
     expect((await includeEvent(wUnb, fUnb.movement)).expiresAt).toBeUndefined()
   })
-  it("with no partition TTL, none and unbounded both keep the include (Agentik SEO topup never expires)", async () => {
-    const w = world("agentik-seo", "autumn")
-    const b = w.pay("bundle-seo-augmente", 9900, "USD", { organizationId: "b" })
+  it("with no partition TTL, none and unbounded both keep the include (Usage SaaS topup never expires)", async () => {
+    const w = world("usage-saas", "autumn")
+    const b = w.pay("bundle-pro-pack", 9900, "USD", { organizationId: "b" })
     await applyPayment(w.deps, b)
     expect((await includeEvent(w, b.movement)).expiresAt).toBeUndefined()
   })
