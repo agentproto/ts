@@ -59,7 +59,10 @@ agreed verdicts (`applyReviewed`), under `branch_gc`'s line-coverage guard.
 
 ## Configuring (per user, never in this file)
 
-Nothing personal lives in this routine: which repos, which ones to skip and
+Nothing personal lives in this routine. The repos are the ones agentproto
+already manages: every workspace registered with `agentproto workspace add
+<path>` (a repo root, not app-owned), plus repos owning a worktree under the
+worktrees root. Take a repo out with `maintain.exclude`. Extra repos and
 where the report goes are read from the daemon's user config, which each
 operator edits for themselves:
 
@@ -68,6 +71,7 @@ operator edits for themselves:
 {
   "worktrees": { "extraRoots": ["~/code/_worktrees"] },
   "maintain": {
+    "workspaces": true,               // registered workspaces (agentproto workspace add), default true
     "discover": true,                  // repos owning a worktree under worktrees.root + extraRoots (default true)
     "repos": ["~/code/my-app"],        // added on top of discovery
     "exclude": ["~/code/scratch"],     // left out

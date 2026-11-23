@@ -468,12 +468,18 @@ export interface MaintainNotifyConfig {
  * target) lives here, in the uncommitted user config, so the shipped
  * routines stay generic.
  *
- * Repo list = (discover ? repos owning a worktree under `worktrees.root` +
- * `worktrees.extraRoots` : none) + `repos`, minus `exclude`, deduped by
+ * Repo list = (workspaces ? registered non-app workspaces that are a repo
+ * toplevel : none) + (discover ? repos owning a worktree under
+ * `worktrees.root` + `worktrees.extraRoots` : none) + `repos`, minus
+ * `exclude`, deduped by
  * realpath of each repo's main toplevel. Explicit `--repo` / `repos` inputs
  * are added on top and are not filtered by `exclude`.
  */
 export interface MaintainConfig {
+  /** Include every workspace registered in `~/.agentproto/workspaces.json`
+   *  (`agentproto workspace add`) that is not app-owned (`ownerApp`) and
+   *  whose path is a git repo's toplevel. Default true. */
+  workspaces?: boolean
   /** Discover repos owning a worktree under the worktrees roots. Default true. */
   discover?: boolean
   /** Extra repos (any dir inside one; `~/` expands), added to discovery. */

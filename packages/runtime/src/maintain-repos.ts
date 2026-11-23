@@ -24,6 +24,7 @@ import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import type { AgentprotoConfig, MaintainConfig, MaintainNotifyConfig } from "./config.js"
 import { maintainConfigSchema } from "./config-schema.js"
+import { loadWorkspacesConfig, type WorkspaceEntry } from "./workspaces-config.js"
 
 /** Expand a leading `~` / `~/` and resolve to an absolute path. */
 function expandHome(raw: string, home: string): string {
@@ -159,6 +160,15 @@ export function mainRepoRootOf(dir: string): string | null {
 	return gitDir ? resolve(dirname(gitDir)) : null
 }
 
+/** `git rev-parse --show-toplevel` of `dir` (realpath'd), or `null` outside
+ *  a repo. A registered workspace counts as a repo only when this equals its
+ *  own path: a subdir of a repo is not a repo. */
+export function gitToplevelOf(dir: string): string | null {
+	const res = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" })
+	if (res.status !== 0) return null
+	return res.stdout.trim() || null
+}
+
 /**
  * The config's `maintain` section, validated with the same schema
  * `config_set` uses. `loadConfig` itself does not validate, so a hand-edited
@@ -176,6 +186,10 @@ export function readMaintainConfig(config: AgentprotoConfig | undefined): Mainta
 }
 
 export interface ResolveMaintainReposExtra {
+	/** The registered workspaces; default: read `<home>/.agentproto/workspaces.json`. */
+	workspaces?: readonly WorkspaceEntry[]
+	/** Dir -> its git toplevel; default {@link gitToplevelOf}. */
+	resolveToplevel?: (dir: string) => string | null
 	/** Worktrees root to scan; default {@link configuredWorktreesRoot}. */
 	worktreesRoot?: string
 	/** Extra roots to scan on top of config `worktrees.extraRoots`
@@ -193,10 +207,11 @@ export interface ResolveMaintainReposExtra {
 
 export interface ResolvedMaintainRepos {
 	/** Repos to maintain, realpath'd main roots, deduped, stable order:
-	 *  discovered (sorted), then `maintain.repos`, then explicit ones. */
+	 *  registered workspaces (registry order), discovered (sorted), then
+	 *  `maintain.repos`, then explicit ones. */
 	repos: string[]
 	/** Entries that could not be used, with the reason (not in a git repo). */
-	skipped: Array<{ path: string; source: "config" | "explicit" | "exclude"; reason: string }>
+	skipped: Array<{ path: string; source: "config" | "explicit" | "exclude" | "workspaces"; reason: string }>
 	/** Repos removed by `maintain.exclude`. */
 	excluded: string[]
 	/** The roots that were scanned (empty when nothing was discovered). */
@@ -205,9 +220,13 @@ export interface ResolvedMaintainRepos {
 
 /**
  * The repo list of a `maintain --all` / `maintain_run {all:true}` pass:
- * `(maintain.discover !== false ? repos owning a worktree under
- * worktrees.root + worktrees.extraRoots : none)` + extra scanned roots +
- * `maintain.repos`, minus `maintain.exclude`, plus the explicit repos.
+ * `(maintain.workspaces !== false ? every registered workspace
+ * (`agentproto workspace add`) without `ownerApp` whose path is a git
+ * toplevel : none)` + `(maintain.discover !== false ? repos owning a
+ * worktree under worktrees.root + worktrees.extraRoots : none)` + extra
+ * scanned roots + `maintain.repos`, minus `maintain.exclude`, plus the
+ * explicit repos. App workspaces, non-git paths and subdirs of a repo are
+ * ignored.
  * Every entry is normalised to the realpath of its main repo root, so a dir
  * inside a repo, a worktree of it and the repo itself all name one repo.
  * Throws on an invalid `maintain` section (see {@link readMaintainConfig}).
@@ -244,6 +263,30 @@ export async function resolveMaintainRepos(
 				)
 	const discovered = await resolveAllRepos(scannedRoots)
 
+	const registered: string[] = []
+	if (maintain.workspaces !== false) {
+		let entries: readonly WorkspaceEntry[] = []
+		if (extra.workspaces) entries = extra.workspaces
+		else {
+			const registryPath = join(home, ".agentproto", "workspaces.json")
+			try {
+				entries = (await loadWorkspacesConfig(registryPath)).workspaces
+			} catch (err) {
+				// An unreadable registry must not stop the pass: report it.
+				skipped.push({ path: registryPath, source: "workspaces", reason: err instanceof Error ? err.message : String(err) })
+			}
+		}
+		const toplevelOf = extra.resolveToplevel ?? gitToplevelOf
+		for (const ws of entries) {
+			if (ws.ownerApp) continue
+			const path = await realpathOr(ws.path)
+			const top = toplevelOf(path)
+			if (!top || (await realpathOr(top)) !== path) continue
+			const root = toRoot(path)
+			if (root) registered.push(await realpathOr(root))
+		}
+	}
+
 	const configured: string[] = []
 	for (const raw of maintain.repos ?? []) {
 		const root = await normalize(raw, "config")
@@ -265,7 +308,7 @@ export async function resolveMaintainRepos(
 
 	const out: string[] = []
 	const excluded: string[] = []
-	for (const repo of [...discovered, ...configured]) {
+	for (const repo of [...registered, ...discovered, ...configured]) {
 		if (excludedSet.has(repo)) {
 			if (!excluded.includes(repo)) excluded.push(repo)
 			continue

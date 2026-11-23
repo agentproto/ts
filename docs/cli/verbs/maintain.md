@@ -88,7 +88,7 @@ branch.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
-| `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root (unless config `maintain.discover` is `false`), plus config `maintain.repos`, minus config `maintain.exclude`, plus any `--repo` dirs. Prints the resolved repo list first (and the excluded ones); exits `1` if any run fails. See [User config](#user-config-maintain). |
+| `--all` | `false` | Run once per repo: every registered workspace that is a repo root (`agentproto workspace add`, unless config `maintain.workspaces` is `false`), every main repo that owns a worktree under the worktrees root (unless config `maintain.discover` is `false`), plus config `maintain.repos`, minus config `maintain.exclude`, plus any `--repo` dirs. Prints the resolved repo list first (and the excluded ones); exits `1` if any run fails. See [User config](#user-config-maintain). |
 | `--worktrees-root <dir>` | none | With `--all`: also scan this dir for worktrees, in addition to the configured worktrees root. **Repeatable.** A dir holds worktrees directly (`<dir>/<slug>`) or in buckets (`<dir>/<repo>/<slug>`); main checkouts inside it are skipped. Use it for pools outside the root (e.g. a repo's `_worktrees/`), or set them once in config `worktrees.extraRoots`; the flag adds to that list. |
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
 | `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) unless its verified-pr pass proves them, and reports them; ignored without `--apply-merged`. |
@@ -109,9 +109,18 @@ Or pass `--wait` to block until it finishes and print the report inline.
 
 ## User config: `maintain`
 
-The repo set of `--all` and the run defaults come from the `maintain`
-section of the user config `~/.agentproto/config.json` (never committed, each
-operator writes their own). The daemon tool `maintain_run` reads the same
+The repo set of `--all` starts from what agentproto already knows about
+your repos: every workspace you registered with
+[`agentproto workspace add`](./workspace.md) (`~/.agentproto/workspaces.json`).
+
+- **For a repo to be maintained:** `agentproto workspace add <path>` (the
+  path must be the repo's root).
+- **To take it out:** add it to `maintain.exclude`.
+
+On top of the registry, repos owning a worktree under the worktrees root are
+discovered, and the `maintain` section of the user config
+`~/.agentproto/config.json` (never committed, each operator writes their own)
+adds repos, removes some, and sets the run defaults. The daemon tool `maintain_run` reads the same
 section through the same code (`@agentproto/runtime/maintain-repos`), so
 `agentproto maintain --all` previews exactly what a `maintain_run {all: true}`
 routine covers.
@@ -120,6 +129,7 @@ routine covers.
 {
   "worktrees": { "extraRoots": ["~/code/_worktrees"] },
   "maintain": {
+    "workspaces": true,               // default true: registered workspaces (agentproto workspace add)
     "discover": true,                 // default true: repos owning a worktree under worktrees.root + worktrees.extraRoots
     "repos": ["~/code/my-app"],       // added on top of discovery (any dir inside a repo)
     "exclude": ["~/code/scratch"],    // removed, compared by realpath of the repo root
@@ -130,8 +140,13 @@ routine covers.
 }
 ```
 
-- The `--all` list is `(discover ? discovered : none) + repos - exclude`,
-  then the `--repo` dirs on top (an explicit `--repo` is never excluded).
+- The `--all` list is `(workspaces ? registered : none) + (discover ?
+  discovered : none) + repos - exclude`, then the `--repo` dirs on top (an
+  explicit `--repo` is never excluded).
+- A registered workspace counts only when it is not app-owned (`ownerApp`,
+  the `app-<slug>` workspaces installed apps register) and its path is a git
+  repo's toplevel (`git rev-parse --show-toplevel`, realpath); a non-git path
+  or a subdir of a repo is ignored.
   Every entry is normalised to the realpath of its main repo root, so a
   worktree, a subdir and the repo itself name one repo.
 - `--worktrees-root` dirs are scanned even with `discover: false`.
@@ -151,7 +166,7 @@ without the CLI, for MCP callers and routines
 
 | Input | Meaning |
 |-------|---------|
-| `all` | Repos from the config's `maintain` section (as `--all`). |
+| `all` | The `--all` repo set: registered workspaces + discovered repos + `maintain.repos` - `maintain.exclude`. |
 | `repos` | Explicit repos (any dir inside each). With `all`, added on top. One of `all`/`repos` is required. |
 | `applyMerged`, `applyReviewed`, `requireOperatorBelowGuard` | As the CLI flags. |
 | `maxReviews`, `reviewPreset`, `notify` | Default to `maintain.*` in the config. |

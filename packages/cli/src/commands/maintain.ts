@@ -48,8 +48,10 @@ Usage:
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
                    toplevel.
-  --all            Run the workflow once per repo: every main repo that owns
-                   a worktree under the worktrees root (unless config
+  --all            Run the workflow once per repo: every registered workspace
+                   that is a repo root (agentproto workspace add; unless
+                   config maintain.workspaces is false), every main repo that
+                   owns a worktree under the worktrees root (unless config
                    maintain.discover is false), plus config maintain.repos,
                    minus config maintain.exclude, plus any --repo dirs.
                    The resolved list is printed first; --apply-merged
@@ -89,8 +91,10 @@ Usage:
   --json           Print the raw workflow_run_file reply (with --wait: the
                    finished run records, one per repo).
 
-Config (~/.agentproto/config.json, section \`maintain\`): \`discover\`,
-\`repos\`, \`exclude\` shape the --all list; \`maxReviews\`, \`reviewPreset\`
+To have a repo maintained: \`agentproto workspace add <path>\`; to take it
+out: config \`maintain.exclude\`.
+Config (~/.agentproto/config.json, section \`maintain\`): \`workspaces\`,
+\`discover\`, \`repos\`, \`exclude\` shape the --all list; \`maxReviews\`, \`reviewPreset\`
 and \`notify\` are the run defaults when the flags are absent (flags win).
 
 Runs the built-in repo-maintenance app's \`maintain\` workflow via the

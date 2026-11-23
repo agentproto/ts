@@ -72,6 +72,7 @@ function fakeDeps(
 		loadConfig: async () => config,
 		resolveApp: () => ({ appDir: "/apps/repo-maintenance", workflowPath: "/apps/repo-maintenance/maintain/WORKFLOW.md" }),
 		env: {},
+		loadWorkspaces: async () => [],
 		dispatchTool: async (name, inputs) => {
 			calls.push({ name, inputs })
 			if (name === "app_install") return opts.installReply ?? ok({ appId: "repo-maintenance" })

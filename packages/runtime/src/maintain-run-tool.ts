@@ -35,6 +35,7 @@ import {
 	type MaintainRunOptions,
 	type ResolvedMaintainRepos,
 } from "./maintain-repos.js"
+import type { WorkspaceEntry } from "./workspaces-config.js"
 
 export type MaintainDispatchTool = (name: string, inputs: Record<string, unknown>) => Promise<unknown>
 
@@ -45,6 +46,8 @@ export interface MaintainRunDeps {
 	loadConfig?: () => Promise<AgentprotoConfig>
 	/** Default: the bundled app under `@agentproto/apps`. */
 	resolveApp?: () => { appDir: string; workflowPath: string }
+	/** The registered workspaces. Default: `<home>/.agentproto/workspaces.json`. */
+	loadWorkspaces?: () => Promise<WorkspaceEntry[]>
 	/** Dir -> main repo root. Default: `git rev-parse --git-common-dir`. */
 	resolveRepoRoot?: (dir: string) => string | null
 	env?: NodeJS.ProcessEnv
@@ -70,7 +73,8 @@ export const maintainRunInputShape = {
 		.boolean()
 		.optional()
 		.describe(
-			"Maintain every repo the daemon config's `maintain` section names: repos owning a worktree under " +
+			"Maintain every repo agentproto manages: registered workspaces (`agentproto workspace add`, not " +
+				"app-owned, path = a git toplevel, unless `maintain.workspaces` is false), repos owning a worktree under " +
 				"`worktrees.root` + `worktrees.extraRoots` (unless `maintain.discover` is false), plus `maintain.repos`, " +
 				"minus `maintain.exclude`.",
 		),
@@ -164,6 +168,7 @@ export async function runMaintainRun(input: MaintainRunInput, deps: MaintainRunD
 	if (input.all === true) {
 		resolved = await resolveMaintainRepos(config, {
 			repos: explicit,
+			...(deps.loadWorkspaces ? { workspaces: await deps.loadWorkspaces() } : {}),
 			...(deps.resolveRepoRoot ? { resolveRepoRoot: deps.resolveRepoRoot } : {}),
 			...(deps.env ? { env: deps.env } : {}),
 			...(deps.home ? { home: deps.home } : {}),
@@ -171,7 +176,7 @@ export async function runMaintainRun(input: MaintainRunInput, deps: MaintainRunD
 	} else {
 		// Explicit repos only: no discovery, no config repos, no exclude.
 		resolved = await resolveMaintainRepos(
-			{ ...config, maintain: { discover: false } },
+			{ ...config, maintain: { discover: false, workspaces: false } },
 			{
 				repos: explicit,
 				...(deps.resolveRepoRoot ? { resolveRepoRoot: deps.resolveRepoRoot } : {}),
@@ -244,7 +249,8 @@ export function registerMaintainRunTools(server: McpServer, deps: MaintainRunDep
 		"maintain_run",
 		"Run repo maintenance (the bundled repo-maintenance app's `maintain` workflow: plan worktree/branch gc, review " +
 			"unmerged branches, optionally apply) over several repos at once. `all: true` takes the repo list from the " +
-			"daemon config's `maintain` section (discovered worktree-owning repos + `maintain.repos` - `maintain.exclude`); " +
+			"registered workspaces + discovered worktree-owning repos + `maintain.repos` - `maintain.exclude` (daemon config " +
+			"`maintain` section); " +
 			"else pass `repos`. `maxReviews`/`reviewPreset`/`notify` default to `maintain.*` in the config. Starts one " +
 			"background run per repo and returns at once with `runs: [{repo, runId}]` (poll each with `workflow_status`); " +
 			"a repo that fails to start is reported in its `error` and does not stop the others.",

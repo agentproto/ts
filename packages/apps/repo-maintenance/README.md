@@ -176,13 +176,16 @@ and `routines/repo-maintenance-weekly` (`applyMerged: true` +
 `enabled: false`. Both target the daemon tool `maintain_run` with
 `all: true`, which starts one `maintain` run per repo the daemon's user
 config names and returns at once with the run ids. The templates hold no
-path and no chat id: the repo set and the run defaults live in the
-`maintain` section of `~/.agentproto/config.json`, which each operator
-edits for themselves:
+path and no chat id. The repo set is the workspaces registered with
+`agentproto workspace add <path>` (repo roots, not app-owned) plus the repos
+owning a worktree under the worktrees root; `maintain.exclude` takes one out.
+Extra repos and the run defaults live in the `maintain` section of
+`~/.agentproto/config.json`, which each operator edits for themselves:
 
 ```jsonc
 {
   "maintain": {
+    "workspaces": true,               // registered workspaces (agentproto workspace add), default true
     "discover": true,                 // repos owning a worktree under worktrees.root + worktrees.extraRoots (default true)
     "repos": ["~/code/my-app"],       // added on top of discovery
     "exclude": ["~/code/scratch"],    // left out

@@ -133,6 +133,7 @@ agentproto config set daemon.port 18791
   // Repo-maintenance repo set + run defaults (`maintain --all`,
   // `maintain_run`). See "maintain" below.
   "maintain": {
+    "workspaces": true,
     "discover": true,
     "repos": ["~/code/my-app"],
     "exclude": ["~/code/scratch"],
@@ -414,6 +415,7 @@ for the CLI) instead of maintaining the wrong set.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
+| `workspaces` | boolean | Include every workspace registered with `agentproto workspace add` (`~/.agentproto/workspaces.json`) that is not app-owned (`ownerApp`) and whose path is a git repo's toplevel. Default `true`. This is how a repo gets maintained: `agentproto workspace add <path>`; take it out with `exclude`. |
 | `discover` | boolean | Include every repo owning a worktree under `worktrees.root` + `worktrees.extraRoots`. Default `true`. `false`: only `repos` (plus explicit `--repo` / `repos` inputs). |
 | `repos` | string[] | Repos added on top of discovery. Any dir inside a repo; `~/` expands; normalised to the main repo root. An entry outside a git repo is skipped with a warning. |
 | `exclude` | string[] | Repos left out, compared by the realpath of the main repo root (a worktree or subdir of an excluded repo excludes it too). Does not filter an explicit `--repo` / `repos` input. |

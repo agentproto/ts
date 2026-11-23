@@ -509,6 +509,7 @@ const maintainNotifyConfigSchema: z.ZodType<MaintainNotifyConfig> = z
  *  validates the section with the same schema `config_set` uses. */
 export const maintainConfigSchema: z.ZodType<MaintainConfig> = z
   .object({
+    workspaces: z.boolean().optional(),
     discover: z.boolean().optional(),
     repos: z.array(z.string().min(1)).optional(),
     exclude: z.array(z.string().min(1)).optional(),
@@ -1883,6 +1884,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Extra worktrees roots",
     help: "Extra directories `maintain --all` scans for worktrees, in addition to `worktrees.root`; `--worktrees-root` adds to this list.",
     default: [],
+  },
+  {
+    path: "maintain.workspaces",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Maintain: registered workspaces",
+    help: "`maintain --all` / `maintain_run {all:true}` cover every workspace registered with `agentproto workspace add` (`~/.agentproto/workspaces.json`) that is not app-owned and whose path is a git repo's toplevel. False: skip the registry.",
+    default: true,
   },
   {
     path: "maintain.discover",
