@@ -4,7 +4,7 @@
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
  * npm dependency) so a single
- * `npx -y @agentclientprotocol/codex-acp@2.5.0`
+ * `npx -y @agentclientprotocol/codex-acp@2.10.0`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -42,11 +42,11 @@ export const codex: AgentCliHandle = defineHarness({
   // adapter already speaks. The v2 session surface, native subagent sessions,
   // steering, and background tasks are opt-in via protocol/capability
   // negotiation, so they stay inert for this adapter.
-  bin_args: ["-y", "@agentclientprotocol/codex-acp@2.5.0"],
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@2.10.0"],
   install: [
     {
       method: "npm",
-      package: "@agentclientprotocol/codex-acp@2.5.0",
+      package: "@agentclientprotocol/codex-acp@2.10.0",
       global: true,
     },
   ],
@@ -55,7 +55,7 @@ export const codex: AgentCliHandle = defineHarness({
     // claude-code's version_check note for the npm-view trap this replaces.
     cmd: "npm ls -g @agentclientprotocol/codex-acp --depth=0",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: "=2.5.0",
+    range: "=2.10.0",
     timeout_ms: 15_000,
   },
   auth: {

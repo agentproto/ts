@@ -93,7 +93,7 @@ export const claudeCode: AgentCliHandle = defineHarness({
   // still negotiates `initialize` down to v1 for a v1 client. Verified with
   // `agentproto harness check claude-code` (initialize + session/new, no
   // tokens spent) before relying on a real spawn.
-  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.106.0"],
+  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.110.0"],
   install: [
     {
       method: "npm",
