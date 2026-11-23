@@ -44,6 +44,34 @@ describe("salvageWorktree", () => {
     return { repoRoot, salvageRoot, wtDir, run }
   }
 
+  it("archives an untracked nested git repo recursively (never skipped, then deleted)", async () => {
+    const { wtDir, run } = await dirtyWorktree("nested")
+    const nested = join(wtDir, "nested")
+    await mkdir(nested, { recursive: true })
+    await execGit(nested, ["init", "-b", "main"])
+    await execGit(nested, ["config", "user.email", "t@example.com"])
+    await execGit(nested, ["config", "user.name", "T"])
+    await writeFile(join(nested, "f.txt"), "nested bytes\n")
+    await execGit(nested, ["add", "."])
+    await execGit(nested, ["commit", "-m", "n"])
+
+    const { dir, manifest } = await run()
+    expect(manifest.skippedEntries).toBeUndefined()
+    expect(manifest.untrackedFiles).toContain("nested/f.txt")
+    expect(await readFile(join(dir, "untracked", "nested", "f.txt"), "utf8")).toBe("nested bytes\n")
+    expect(manifest.untrackedFiles.some((f) => f.startsWith("nested/.git/"))).toBe(true)
+  })
+
+  it("archives files whose names git would C-quote (non-ASCII, tab, quote)", async () => {
+    const { wtDir, run } = await dirtyWorktree("quoted")
+    const names = ["café.txt", "tab\tname.txt", 'quote"name.txt']
+    for (const n of names) await writeFile(join(wtDir, n), `content of ${n}\n`)
+
+    const { dir, manifest } = await run()
+    expect([...manifest.untrackedFiles].sort()).toEqual([...names].sort())
+    for (const n of names) expect(await readFile(join(dir, "untracked", n), "utf8")).toBe(`content of ${n}\n`)
+  })
+
   it("keeps an untracked symlink to a directory as a link, lists it, and restore recreates it", async () => {
     const { wtDir, run } = await dirtyWorktree("sym-dir")
     await mkdir(join(wtDir, "real-dir"), { recursive: true })

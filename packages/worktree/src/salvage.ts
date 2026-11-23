@@ -15,7 +15,7 @@
  */
 
 import { constants } from "node:fs"
-import { copyFile, lstat, mkdir, open, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises"
+import { copyFile, lstat, mkdir, open, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { execArgv } from "./exec.js"
@@ -34,7 +34,7 @@ export interface SalvageManifest {
   untrackedFiles: string[]
   /** Untracked symbolic links, recreated in the archive with their target kept verbatim (never followed, never copied). Absent in older manifests. */
   symlinks?: Array<{ path: string; target: string }>
-  /** Untracked entries that cannot be byte-copied (socket, fifo, device, nested repo directory): listed, not archived, so one of them cannot block the whole salvage. */
+  /** Untracked entries that cannot be byte-copied (socket, fifo, device): listed, not archived, so one of them cannot block the whole salvage. */
   skippedEntries?: Array<{ path: string; kind: string }>
   /** Whether `changes.patch` has any content (tracked-file changes existed). */
   hasPatch: boolean
@@ -76,11 +76,12 @@ export interface SalvageResult {
  * anchors the same way.
  */
 async function listUntrackedFiles(repoRoot: string, worktreePath: string): Promise<string[]> {
-  const res = await execArgv("git", ["-C", worktreePath, "ls-files", "--others", "--exclude-standard"], repoRoot)
+  const res = await execArgv("git", ["-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"], repoRoot)
   if (res.exitCode !== 0) {
     throw new Error(`git ls-files --others failed in ${worktreePath} (exit ${res.exitCode}): ${res.stderr.trim()}`)
   }
-  return res.stdout.split("\n").filter(Boolean)
+  // -z: NUL-separated, never C-quoted (core.quotePath) and safe for newlines in names.
+  return res.stdout.split("\0").filter(Boolean)
 }
 
 /** `git diff HEAD` — staged + unstaged changes to tracked files, uniformly.
@@ -101,7 +102,7 @@ function sanitizeSegment(value: string): string {
 
 /** fsync one file by path — the durability guarantee: only after this resolves is the byte "saved". */
 async function fsyncFile(path: string): Promise<void> {
-  const handle = await open(path, "r+")
+  const handle = await open(path, "r")
   try {
     await handle.sync()
   } finally {
@@ -155,10 +156,18 @@ export async function salvageWorktree(input: SalvageWorktreeInput): Promise<Salv
     const untrackedFiles: string[] = []
     const symlinks: Array<{ path: string; target: string }> = []
     const skippedEntries: Array<{ path: string; kind: string }> = []
-    for (const relPath of untrackedEntries) {
+    const archiveEntry = async (relPath: string, top: boolean): Promise<void> => {
       const src = join(input.worktreePath, relPath)
       const dest = join(dir, "untracked", relPath)
-      const st = await lstat(src)
+      let st
+      try {
+        st = await lstat(src)
+      } catch (err) {
+        // A top-level entry git just listed must exist: failing here keeps the worktree.
+        // Below a directory, an entry that vanished mid-walk is simply gone.
+        if (!top && (err as NodeJS.ErrnoException).code === "ENOENT") return
+        throw err
+      }
       if (st.isSymbolicLink()) {
         // Keep the link itself; `copyFile`/`open` would follow it (ENOTSUP onto a directory).
         const target = await readlink(src)
@@ -170,10 +179,15 @@ export async function salvageWorktree(input: SalvageWorktreeInput): Promise<Salv
         await copyFile(src, dest)
         await fsyncFile(dest)
         untrackedFiles.push(relPath)
+      } else if (st.isDirectory()) {
+        // e.g. an untracked nested git repo, which git lists as a single `dir/` entry.
+        await mkdir(dest, { recursive: true })
+        for (const name of (await readdir(src)).sort()) await archiveEntry(`${relPath}/${name}`, false)
       } else {
         skippedEntries.push({ path: relPath, kind: entryKind(st) })
       }
     }
+    for (const entry of untrackedEntries) await archiveEntry(entry.replace(/\/+$/, ""), true)
 
     const manifest: SalvageManifest = {
       repo: input.repoName,
