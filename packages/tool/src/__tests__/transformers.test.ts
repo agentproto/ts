@@ -179,6 +179,14 @@ describe("paginated", () => {
       expect(second.items.map(r => r.id)).toEqual(["m3", "m4", "m5", "m6"])
     })
 
+    it("flags the first page as partial, keeping truncated only as a deprecated alias", async () => {
+      const t = paginated<Item>({ project: compact, keyOf: i => i.id, defaultLimit: 3 })
+      const first = JSON.parse(textOf((await t.wrapHandler(async () => many)({})) as McpTextResult)) as Record<string, unknown>
+      expect(first).toMatchObject({ partial: true, truncated: true, total: 7 })
+      // Never the shape of the MCP result-cap marker.
+      expect(first).not.toHaveProperty("totalBytes")
+    })
+
     it("leaves a list within the cap, and an explicit limit, exactly as before", async () => {
       const t = paginated<Item>({ project: compact, itemKey: "things", defaultLimit: 7 })
       const w = t.wrapHandler(async () => many)
@@ -227,6 +235,45 @@ describe("paginated", () => {
       expect(trunc.truncated).toBe(true)
       expect(trunc.things).toEqual([{ id: "a" }, { id: "b" }])
     })
+  })
+
+  describe("defaultBody / pageExtra / pass-through (folded paginatedLegacyList)", () => {
+    it("defaultBody shapes the unpaged answer and still honours fields on it", async () => {
+      const t = paginated<Item>({ project: compact, keyOf: i => i.id, defaultBody: rows => rows })
+      const w = t.wrapHandler(async () => items)
+      expect(JSON.parse(textOf((await w({ full: true, fields: ["id"] })) as McpTextResult))).toEqual([
+        { id: "a" },
+        { id: "b" },
+        { id: "c" },
+      ])
+      const boarded = paginated<Item>({
+        project: compact,
+        defaultBody: (rows, input) => ({ boardId: (input as { boardId?: string }).boardId, tasks: rows }),
+      }).wrapHandler(async () => items)
+      expect(JSON.parse(textOf((await boarded({ boardId: "ws:x" })) as McpTextResult))).toMatchObject({
+        boardId: "ws:x",
+        tasks: [{ id: "a", name: "alpha" }, { id: "b", name: "beta" }, { id: "c", name: "gamma" }],
+      })
+    })
+
+    it("pageExtra rides on every paged envelope", async () => {
+      const t = paginated<Item>({ project: compact, keyOf: i => i.id, pageExtra: () => ({ boardId: "tree:s1" }) })
+      const page = JSON.parse(textOf((await t.wrapHandler(async () => items)({ limit: 1 })) as McpTextResult)) as Record<string, unknown>
+      expect(page).toMatchObject({ boardId: "tree:s1", total: 3, items: [{ id: "a", name: "alpha" }] })
+    })
+
+    it("passes a non-array handler output (the tool's own error result) through untouched", async () => {
+      const refusal: McpTextResult = { content: [{ type: "text", text: "no ledger" }], isError: true }
+      const t = paginated<Item>({ project: compact })
+      const w = t.wrapHandler(async () => refusal as unknown as Item[])
+      expect(await w({ limit: 5 })).toBe(refusal)
+      expect(await w({})).toBe(refusal)
+    })
+  })
+
+  it("refuses a maxLimit the page schema can never reach", () => {
+    expect(() => paginated<Item>({ project: compact, maxLimit: 500 })).toThrow(/maxLimit 500/)
+    expect(() => paginated<Item>({ project: compact, maxLimit: 200 })).not.toThrow()
   })
 
   it("defaults itemKey to 'items'", async () => {

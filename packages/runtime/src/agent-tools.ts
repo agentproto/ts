@@ -2601,7 +2601,8 @@ export function registerAgentTools(
         paginated({
           project: (row: AdapterModelRow) => row,
           keyOf: (row: AdapterModelRow) => row.id,
-          maxLimit: 500,
+          // The page schema caps `limit` at 200; a higher ceiling was dead.
+          maxLimit: 200,
           itemKey: "models",
         }),
       ],

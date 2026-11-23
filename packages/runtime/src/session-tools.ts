@@ -1655,7 +1655,7 @@ export function registerSessionTools(
     description: "List sessions tracked by the daemon (agent-CLI and terminal/PTY). " +
       "Rows are newest-activity first and COMPACT by default (`full:true` for the whole " +
       "descriptor). NARROW BEFORE YOU READ: filter (`q`, `excludeNoise`, `rootOnly`, …) " +
-      "and/or pass `limit` (default 50 rows, then `truncated` + `nextCursor`); `ids:[...]` reads known sessions. `includeCold` also returns history the registry dropped at boot. " +
+      "and/or pass `limit` (default 50 rows, then `partial` + `nextCursor`); `ids:[...]` reads known sessions. `includeCold` also returns history the registry dropped at boot. " +
       "Detail: tool_help {name:\"session_list\"}; ranked search: `session_search`.",
     inputSchema: sessionListSchema,
     handler: async (input) => {
@@ -3604,7 +3604,7 @@ export function registerSessionTools(
       "projection; pass `full: true` (or `compact: false`) for the complete, " +
       "unprojected per-session record. Without `limit`/`cursor` at most 50 rows " +
       "come back; when there are more the reply carries `total`, " +
-      "`truncated: true` and a `nextCursor` — pass it as `cursor` (with a " +
+      "`partial: true` and a `nextCursor`; pass it as `cursor` (with a " +
       "`limit`) for the rest, or filter with `onlyAlive` / `status`.",
     schema: terminalSessionsListSchema,
     body: async input => {

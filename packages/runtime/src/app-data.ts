@@ -55,7 +55,7 @@
 
 import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
-import { z, type ZodRawShape } from "zod"
+import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import { assertServed, callerScopes, type CallerScope, type CallerScopes } from "./caller-scope.js"
@@ -68,45 +68,10 @@ import {
   readAppStateEvents,
 } from "./app-state.js"
 import type { AppStateEvent } from "./app-state.js"
-import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
-import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { catchErrors, paginated } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
-
-/**
- * Local companion to the shared `paginated()` transformer for tools whose
- * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
- * wrapper — here `{appId, dir, entries}`. Same cursor/limit/compact/fields
- * pipeline via the shared primitives, but the default branch emits
- * `defaultBody(projectedRows)`, and any non-array handler output (this
- * file's `errorResult(...)` replies) passes through untouched.
- */
-function paginatedLegacyList<TItem extends object>(opts: {
-  project: (item: TItem) => object
-  keyOf: (item: TItem) => string | number | null
-  defaultBody: (rows: object[], input: unknown) => unknown
-}): ToolTransformer<unknown, unknown, McpTextResult> {
-  return {
-    name: "paginatedLegacyList",
-    wrapShape: (shape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
-    wrapHandler: inner => async input => {
-      const params = (input ?? {}) as PageParams
-      const out = (await inner(input)) as unknown
-      if (!Array.isArray(out)) return out as McpTextResult
-      const items = out as readonly TItem[]
-      const full = params.full === true
-      const compact = full ? false : params.compact !== false
-      if (params.limit !== undefined || params.cursor !== undefined) {
-        const page = paginate(items, params, { maxLimit: 200, keyOf: opts.keyOf })
-        const rows = compact ? page.items.map(opts.project) : page.items
-        return { content: [{ type: "text", text: toolText({ ...page, items: [...rows] }, params) }] }
-      }
-      const rows = compact ? items.map(opts.project) : [...items]
-      return { content: [{ type: "text", text: JSON.stringify(opts.defaultBody(rows as object[], input)) }] }
-    },
-  }
-}
 
 /** Thrown when a relative app path resolves outside the app's own directory. */
 export class AppPathTraversalError extends Error {
@@ -549,7 +514,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
     },
     transformers: [
       catchErrors(),
-      paginatedLegacyList({
+      paginated({
         project: (entry: AppDataListEntry) => entry,
         keyOf: e => e.name,
         defaultBody: (rows, listInput) => {

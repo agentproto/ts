@@ -18,7 +18,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
-import { registerAppTools } from "../app-tools.js"
+import { APP_LIST_RUNS_KEPT, registerAppTools } from "../app-tools.js"
 import { createAppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { registerTaskTools } from "../task-tools.js"
@@ -282,6 +282,14 @@ describe("task_list (paginated transformer)", () => {
     await client.close()
   })
 
+  it("pages carry boardId like the unpaged body, so a paging reader keeps its board", async () => {
+    const { client } = await setup([taskRecord({ taskId: "task_1" }), taskRecord({ taskId: "task_2" })])
+    const page = parseToolJson(await client.callTool({ name: "task_list", arguments: { limit: 1 } }))
+    expect(page.boardId).toBe("ws:default")
+    expect(page.items).toHaveLength(1)
+    await client.close()
+  })
+
   it("the no-ledger guard reply keeps its structured {error} shape", async () => {
     const { client } = await setup([], { noLedger: true })
     const res = await client.callTool({ name: "task_list", arguments: {} })
@@ -365,6 +373,27 @@ describe("app_list / app_list_applied (paginated transformer)", () => {
 
     const union = await pageWalk(client, "app_list", {}, "items", 3)
     expect(union.map((a: { appId: string }) => a.appId)).toEqual(ids)
+    await client.close()
+  })
+
+  it("app_list honours fields without limit/cursor (a full listing narrowed to ids stays small)", async () => {
+    const { client, ids } = await installApps(3)
+    const narrowed = parseToolJson(
+      await client.callTool({ name: "app_list", arguments: { full: true, fields: ["appId"] } }),
+    )
+    expect(narrowed).toEqual(ids.map(appId => ({ appId })))
+    await client.close()
+  })
+
+  it("app_list ships the latest runs only, with runCount for the total", async () => {
+    const { client, ids, appRegistry } = await installApps(1)
+    const created = Array.from({ length: APP_LIST_RUNS_KEPT + 5 }, () => appRegistry.createRun({ appId: ids[0]!, sessions: [] }))
+    for (const args of [{}, { full: true }]) {
+      const [app] = parseToolJson(await client.callTool({ name: "app_list", arguments: args }))
+      expect(app.runCount).toBe(APP_LIST_RUNS_KEPT + 5)
+      expect(app.runs).toHaveLength(APP_LIST_RUNS_KEPT)
+      expect(app.runs.at(-1).appRunId).toBe(created.at(-1)!.appRunId)
+    }
     await client.close()
   })
 

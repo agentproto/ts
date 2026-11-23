@@ -35,14 +35,13 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { z, type ZodRawShape } from "zod"
+import { z } from "zod"
 
 import { gateInputSchema } from "./orchestration-tools.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { opaqueSchema } from "./tool-schema-opaque.js"
 import { withToolSubset } from "./tool-subset.js"
-import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
-import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { catchErrors, paginated } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { TASK_STATUSES } from "./task-ledger.js"
 import type {
@@ -53,41 +52,6 @@ import type {
 } from "./task-ledger.js"
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
-
-/**
- * Local companion to the shared `paginated()` transformer for tools whose
- * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
- * wrapper — here `{boardId, tasks}`. Same cursor/limit/compact/fields
- * pipeline via the shared primitives, but the default branch emits
- * `defaultBody(projectedRows)`, and any non-array handler output (this
- * file's guard replies: no-ledger, unbound-scope) passes through
- * untouched.
- */
-function paginatedLegacyList<TItem extends object>(opts: {
-  project: (item: TItem) => object
-  keyOf: (item: TItem) => string | number | null
-  defaultBody: (rows: object[], input: unknown) => unknown
-}): ToolTransformer<unknown, unknown, McpTextResult> {
-  return {
-    name: "paginatedLegacyList",
-    wrapShape: (shape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
-    wrapHandler: inner => async input => {
-      const params = (input ?? {}) as PageParams
-      const out = (await inner(input)) as unknown
-      if (!Array.isArray(out)) return out as McpTextResult
-      const items = out as readonly TItem[]
-      const full = params.full === true
-      const compact = full ? false : params.compact !== false
-      if (params.limit !== undefined || params.cursor !== undefined) {
-        const page = paginate(items, params, { maxLimit: 200, keyOf: opts.keyOf })
-        const rows = compact ? page.items.map(opts.project) : page.items
-        return { content: [{ type: "text", text: toolText({ ...page, items: [...rows] }, params) }] }
-      }
-      const rows = compact ? items.map(opts.project) : [...items]
-      return { content: [{ type: "text", text: JSON.stringify(opts.defaultBody(rows as object[], input)) }] }
-    },
-  }
-}
 
 export interface RegisterTaskToolsOptions {
   /** The ledger. Absent → the tools register but answer a structured
@@ -183,6 +147,12 @@ export function registerTaskTools(
   }
 
   const notAvailable = jsonContent({ error: "task ledger not available" })
+
+  /** The board a `task_list` call reads (its `boardId`, else the caller's). */
+  const resolvedBoardId = (taskListCall: unknown): string => {
+    const boardFilter = (taskListCall ?? {}) as { boardId?: string }
+    return (ledger as TaskLedger).resolveBoardId(resolveCaller() as TaskCaller, boardFilter.boardId)
+  }
 
   // ── task_create ───────────────────────────────────────────────────
   server.tool(
@@ -303,17 +273,13 @@ export function registerTaskTools(
     },
     transformers: [
       catchErrors(),
-      paginatedLegacyList({
+      paginated({
         project: compactTaskItem,
         keyOf: t => t.taskId,
-        defaultBody: (rows, taskListCall) => {
-          const caller = resolveCaller() as TaskCaller
-          const boardFilter = (taskListCall ?? {}) as { boardId?: string }
-          return {
-            boardId: (ledger as TaskLedger).resolveBoardId(caller, boardFilter.boardId),
-            tasks: rows,
-          }
-        },
+        defaultBody: (rows, taskListCall) => ({ boardId: resolvedBoardId(taskListCall), tasks: rows }),
+        // Pages carry the board too, so a paging reader (the work board)
+        // still learns which board it is showing.
+        pageExtra: taskListCall => ({ boardId: resolvedBoardId(taskListCall) }),
       }),
     ],
   })

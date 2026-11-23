@@ -82,6 +82,8 @@ export interface InstalledRow {
   /** Flat app-id dependency list (compact app_list). */
   requires?: string[]
   runs?: RunRow[]
+  /** Total runs; `runs` holds only the latest few (app_list `runCount`). */
+  runCount?: number
 }
 
 /** The panel's view state, mirrored in the URL (`?app=`, `?q=`, `?cat=`). */

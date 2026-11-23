@@ -24,7 +24,7 @@ import { readFile, readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
-import { z, type ZodRawShape } from "zod"
+import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { exposedToolName, loadAppHandle, loadAppBundledTools, parseExposedTools, peekAppUi, type AppExposedTool, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
@@ -116,13 +116,14 @@ import {
 import { FIRST_PARTY_CATALOG_ENTRIES } from "./first-party-catalog.js"
 import { loadConfig, type CatalogConfig } from "./config.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
-import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
-import { catchErrors, type ToolTransformer } from "@agentproto/tool"
+import { catchErrors, paginated } from "@agentproto/tool"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { createHash, randomBytes } from "node:crypto"
 import { ADAPTER_FIELD_DEPRECATION } from "./harness-alias.js"
 
-type McpTextResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+/** Most recent runs `app_list` ships per app (the rest is counted in
+ *  `runCount`; `app_status` reads any run by id). */
+export const APP_LIST_RUNS_KEPT = 20
 
 /** Data-plane tools an app UI may only point at its own app (`args.appId`). */
 const APP_DATA_PLANE_TOOLS: ReadonlySet<string> = new Set([
@@ -134,42 +135,6 @@ const APP_DATA_PLANE_TOOLS: ReadonlySet<string> = new Set([
   "app_state_get",
   "app_state_list",
 ])
-
-/**
- * Local companion to the shared `paginated()` transformer for tools whose
- * LEGACY (non-paginated) output is not `paginated`'s `{[itemKey]: rows}`
- * wrapper — here, a bare top-level array. Composed INSIDE `catchErrors()`
- * and OUTSIDE `paginated()` semantics-wise, it re-implements the same
- * cursor/limit/compact/fields pipeline via the shared primitives, but the
- * default branch (no limit/cursor) emits `defaultBody(projectedRows)`
- * instead of the `{items: ...}` envelope, and any non-array handler output
- * (this file's `errorResult(...)` replies) passes through untouched.
- */
-function paginatedLegacyList<TItem extends object>(opts: {
-  project: (item: TItem) => object
-  keyOf: (item: TItem) => string | number | null
-  defaultBody: (rows: object[], input: unknown) => unknown
-}): ToolTransformer<unknown, unknown, McpTextResult> {
-  return {
-    name: "paginatedLegacyList",
-    wrapShape: (shape): ZodRawShape => ({ ...shape, ...pageParamsShape }),
-    wrapHandler: inner => async input => {
-      const params = (input ?? {}) as PageParams
-      const out = (await inner(input)) as unknown
-      if (!Array.isArray(out)) return out as McpTextResult
-      const items = out as readonly TItem[]
-      const full = params.full === true
-      const compact = full ? false : params.compact !== false
-      if (params.limit !== undefined || params.cursor !== undefined) {
-        const page = paginate(items, params, { maxLimit: 200, keyOf: opts.keyOf })
-        const rows = compact ? page.items.map(opts.project) : page.items
-        return { content: [{ type: "text", text: toolText({ ...page, items: [...rows] }, params) }] }
-      }
-      const rows = compact ? items.map(opts.project) : [...items]
-      return { content: [{ type: "text", text: JSON.stringify(opts.defaultBody(rows as object[], input)) }] }
-    },
-  }
-}
 
 /** A spawned session descriptor's terminal statuses (see `SessionStatus` in
  *  sessions.ts): clean exit, operator kill, or a crash/error. Any of these
@@ -2936,6 +2901,7 @@ export function registerAppTools(
       operatorReadGrants?: string[]
       registryProblems?: string[]
       unmetRequires?: UnmetRequirement[]
+      runCount: number
       runs: {
         appRunId: string
         status: string
@@ -2962,6 +2928,7 @@ export function registerAppTools(
     agents: app.agents.map(a => a.id),
     workflows: app.workflows.map(w => w.id),
     requires: app.requires,
+    runCount: app.runCount,
     runs: app.runs,
   })
 
@@ -2974,7 +2941,8 @@ export function registerAppTools(
       "COMPACT BY DEFAULT: each entry keeps appId/name/version/description/" +
       "dir/dataDir plus slim agent/workflow id lists and the per-run " +
       "summary (appRunId/status/timing/adapter/harness/model/session " +
-      "count); pass `full: true` (or `compact: false`) for the complete " +
+      `count) of its latest ${APP_LIST_RUNS_KEPT} runs, with \`runCount\` for the total; pass ` +
+      "`full: true` (or `compact: false`) for the complete " +
       "installed record including ui/artifact/skill/dev details and the " +
       "full agent/workflow refs. `dirMissing: true` flags an install whose " +
       "`dir` no longer exists on disk (moved worktree, deleted checkout) — " +
@@ -3001,8 +2969,14 @@ export function registerAppTools(
         // A completed self-heal, not a problem: reported apart.
         ...(repairs.has(app.appId) ? { registryRepair: repairs.get(app.appId) } : {}),
         ...unmetRequiresField(appRegistry, app),
+        // The registry keeps every run forever (no pruning), so the history
+        // grows each record without bound and pushed app_list past the MCP
+        // result cap. Ship the latest APP_LIST_RUNS_KEPT plus the count;
+        // app_status reads any one run in full.
+        runCount: runs.filter(r => r.appId === app.appId).length,
         runs: runs
           .filter(r => r.appId === app.appId)
+          .slice(-APP_LIST_RUNS_KEPT)
           .map(r => ({
             appRunId: r.appRunId,
             status: r.status,
@@ -3017,7 +2991,7 @@ export function registerAppTools(
     },
     transformers: [
       catchErrors(),
-      paginatedLegacyList({
+      paginated({
         project: compactAppListItem,
         keyOf: a => a.appId,
         defaultBody: rows => rows,
@@ -3730,7 +3704,7 @@ export function registerAppTools(
     },
     transformers: [
       catchErrors(),
-      paginatedLegacyList({
+      paginated({
         project: compactAppliedMount,
         keyOf: m => `${m.scopeId}/${m.appId}`,
         defaultBody: rows => rows,

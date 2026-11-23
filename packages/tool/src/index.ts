@@ -59,6 +59,7 @@ export {
   encodeCursor,
   decodeCursor,
   pageParamsShape,
+  PAGE_LIMIT_MAX,
   type Page,
   type PageParams,
   type PaginateOpts,
