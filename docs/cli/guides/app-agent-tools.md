@@ -122,12 +122,14 @@ What a link-SESSION token can reach, and nothing more:
 
 - **Reads over HTTP**, for its own session only (a token with a `sessionId`
   claim): `GET /sessions/:id`, `/sessions/:id/events`,
-  `/sessions/:id/events/stream`, `/sessions/:id/capabilities` and the live
+  `/sessions/:id/events/stream`, `/sessions/:id/capabilities`, the live
   browser frames `/sessions/:id/screencast`, `/sessions/:id/screencast.jpg`,
-  `/sessions/:id/screencast.mjpg`. The token may ride as `?token=<session
-  token>` (an `<img>` cannot send headers). Any other `/sessions/*` route
-  (kill, PTY, prompt, the plain `/stream` tail, another session's reads or
-  screencast) and `/mcp` stay behind the tunnel bearer.
+  `/sessions/:id/screencast.mjpg`, and the live relay
+  `/sessions/:id/live.mjpeg` plus `/sessions/:id/live/:streamId/replay.mp4`
+  (that one also answers `HEAD`, for a `<video>` probe). The token may ride as
+  `?token=<session token>` (an `<img>` cannot send headers). Any other
+  `/sessions/*` route (kill, PTY, prompt, the plain `/stream` tail, another
+  session's reads or screencast) and `/mcp` stay behind the tunnel bearer.
 - **The screencast of the session's own open Bureau tab**: `GET
   /sessions/<sessionId>/screencast.jpg` answers a JPEG screenshot of the
   session's newest open Bureau tab (no recording, the session does nothing). The
@@ -140,9 +142,12 @@ What a link-SESSION token can reach, and nothing more:
   extensionless viewer stay 404 for such an id.
 - **The screencast of a chrome-live browser session** (retired), for a token
   with a `browserSessionId` claim (pass it through `claims`): the claim unlocks
-  `GET /sessions/<browserSessionId>/screencast`, `.jpg` and `.mjpg` and nothing
-  else, but only a chrome-live descriptor answers there and the daemon no
-  longer registers one. A token may carry both `sessionId` and
+  `GET /sessions/<browserSessionId>/screencast`, `.jpg` and `.mjpg` plus the
+  live relay `/sessions/<browserSessionId>/live.mjpeg` and
+  `/sessions/<browserSessionId>/live/:streamId/replay.mp4`, and nothing else.
+  Only a chrome-live descriptor ever answered the screencast routes there and
+  the daemon no longer registers one; the relay's Bureau lookup finds no tab
+  for such an id either. A token may carry both `sessionId` and
   `browserSessionId`; each keeps its own rule.
 - **One daemon approval**, for a token with an `approvalId` claim (pass it
   through `claims`): `GET /approvals/<approvalId>` reads that approval (the
