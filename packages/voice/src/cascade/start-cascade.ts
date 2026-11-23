@@ -396,7 +396,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
           },
           tts: sentenceTts,
           ...(continuous ? { ttsStream: continuous } : {}),
-          onTtsChars: n => meter.addTtsCharacters(tts.slug, n),
+          onTtsChars: n => meter.addTtsCharacters(tts.slug, n, tts.model),
           ...(opts.failureText !== undefined ? { failureText: opts.failureText } : {}),
           ...(opts.logPrefix ? { logPrefix: opts.logPrefix } : {}),
         },
