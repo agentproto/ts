@@ -45,6 +45,8 @@ import type {
   TitlerConfig,
   TunnelConfig,
   WorktreesConfig,
+  MaintainConfig,
+  MaintainNotifyConfig,
 } from "./config.js"
 import type {
   DefaultsAdapterAuthConfig,
@@ -493,6 +495,29 @@ const worktreesConfigSchema: z.ZodType<WorktreesConfig> = z
   })
   .passthrough()
 
+const maintainNotifyConfigSchema: z.ZodType<MaintainNotifyConfig> = z
+  .object({
+    provider: z.enum(["telegram", "agentpush"]).optional(),
+    alias: z.string().min(1).optional(),
+    address: z.string().min(1).optional(),
+    source: z.string().min(1).optional(),
+    channel: z.string().min(1).optional(),
+  })
+  .passthrough()
+
+/** `maintain` block (see `MaintainConfig`). Exported so `maintain-repos.ts`
+ *  validates the section with the same schema `config_set` uses. */
+export const maintainConfigSchema: z.ZodType<MaintainConfig> = z
+  .object({
+    discover: z.boolean().optional(),
+    repos: z.array(z.string().min(1)).optional(),
+    exclude: z.array(z.string().min(1)).optional(),
+    maxReviews: z.number().int().min(1).optional(),
+    reviewPreset: z.enum(MODEL_ROLE_PRESET_NAMES).optional(),
+    notify: maintainNotifyConfigSchema.optional(),
+  })
+  .passthrough()
+
 const spawnConfigSchema: z.ZodType<SpawnConfig> = z
   .object({
     attach: z.enum(["always", "on-request"]).optional(),
@@ -713,6 +738,7 @@ export const agentprotoConfigSchema = z
     features: featuresConfigSchema.optional(),
     pairing: pairingConfigSchema.optional(),
     worktrees: worktreesConfigSchema.optional(),
+    maintain: maintainConfigSchema.optional(),
     spawn: spawnConfigSchema.optional(),
     sessions: sessionsConfigSchema.optional(),
     provenance: provenanceConfigSchema.optional(),
@@ -778,6 +804,7 @@ type ConfigTopLevelKey =
   | "features"
   | "pairing"
   | "worktrees"
+  | "maintain"
   | "spawn"
   | "sessions"
   | "provenance"
@@ -1856,6 +1883,63 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Extra worktrees roots",
     help: "Extra directories `maintain --all` scans for worktrees, in addition to `worktrees.root`; `--worktrees-root` adds to this list.",
     default: [],
+  },
+  {
+    path: "maintain.discover",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Maintain: discover repos",
+    help: "`maintain --all` / `maintain_run {all:true}` cover every repo owning a worktree under `worktrees.root` + `worktrees.extraRoots`. False: only `maintain.repos`.",
+    default: true,
+  },
+  {
+    path: "maintain.repos",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Maintain: extra repos",
+    help: "Repos (any dir inside one; `~/` expands) `maintain --all` / `maintain_run {all:true}` cover in addition to the discovered ones.",
+    default: [],
+  },
+  {
+    path: "maintain.exclude",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Maintain: excluded repos",
+    help: "Repos (any dir inside one; `~/` expands) left out of `maintain --all` / `maintain_run {all:true}`, compared by the realpath of the repo root. An explicit `--repo` / `repos` input is not filtered.",
+    default: [],
+  },
+  {
+    path: "maintain.maxReviews",
+    schema: z.number().int().min(1),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Maintain: max reviews",
+    help: "Default `maxReviews` of a maintain run when `--max-reviews` / the `maxReviews` input is absent. Unset: the workflow's own default (40).",
+  },
+  {
+    path: "maintain.reviewPreset",
+    schema: z.enum(MODEL_ROLE_PRESET_NAMES),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Maintain: review preset",
+    help: "Default reviewer model preset of a maintain run when `--review-preset` / the `reviewPreset` input is absent. Unset: the daemon's `modelRolePreset`.",
+  },
+  {
+    path: "maintain.notify",
+    schema: maintainNotifyConfigSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Maintain: notify target",
+    help: "Default report target of a maintain run when the caller passes no `notify`: the maintain workflow's `notify` input, `{ provider?, alias?, address?, source? }` (provider telegram or agentpush). Unset: no notification.",
   },
   {
     path: "worktrees.isolation",

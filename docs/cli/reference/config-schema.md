@@ -130,6 +130,17 @@ agentproto config set daemon.port 18791
     "provisionMaxMs": 1800000
   },
 
+  // Repo-maintenance repo set + run defaults (`maintain --all`,
+  // `maintain_run`). See "maintain" below.
+  "maintain": {
+    "discover": true,
+    "repos": ["~/code/my-app"],
+    "exclude": ["~/code/scratch"],
+    "maxReviews": 10,
+    "reviewPreset": "sonnet",
+    "notify": { "provider": "telegram", "address": "<chat id>" }
+  },
+
   // The default AIP-72 memory store. See "memory" below.
   "memory": {
     "root": "~/.agentproto/memory"
@@ -390,6 +401,25 @@ policy for isolating spawned agent sessions into one.
 | `provisionLoadFactor` | number | Optional load guard. When `> 0`, a queued provisioning is not admitted while the 1-minute load average exceeds `cores x provisionLoadFactor`, unless nothing is running (an idle scheduler always admits one, so a permanently loaded host cannot deadlock). Default `0` (off). |
 | `provisionStallTimeoutMs` | integer >= 0 | Stall bound on the heavy provisioning segment, in ms: if the `depsCmd` / `worktree.setup` process prints nothing for this long, its whole process tree is killed and the spawn fails (session `error`) naming the phase, elapsed time and last output lines. Output resets the clock, so a slow install that keeps printing never trips it. Not counted while queued. `0` disables. Default `120000`. Resolution order: per-spawn `agent_start.worktree.stallTimeoutMs` > `AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS` env > this field > the default. Hot-applied. |
 | `provisionMaxMs` | integer >= 0 | Hard cap on the whole heavy provisioning segment, in ms, output or not; same failure path as the stall bound. `0` disables. Default `1800000` (30 min). Resolution order: per-spawn `agent_start.worktree.maxMs` > `AGENTPROTO_WORKTREES_PROVISION_MAX_MS` env > this field > the default. Hot-applied. |
+
+### `maintain: object`
+
+Which repos a repo-maintenance pass covers and its run defaults, read by
+[`agentproto maintain --all`](../verbs/maintain.md#user-config-maintain) and
+the daemon tool `maintain_run` (`all: true`), which the shipped
+`repo-maintenance-daily`/`-weekly` routines call. Everything personal to one
+operator lives here, so the shipped routines carry no path and no chat id.
+Hot-applied: read on every run. An invalid section fails the run (exit `2`
+for the CLI) instead of maintaining the wrong set.
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `discover` | boolean | Include every repo owning a worktree under `worktrees.root` + `worktrees.extraRoots`. Default `true`. `false`: only `repos` (plus explicit `--repo` / `repos` inputs). |
+| `repos` | string[] | Repos added on top of discovery. Any dir inside a repo; `~/` expands; normalised to the main repo root. An entry outside a git repo is skipped with a warning. |
+| `exclude` | string[] | Repos left out, compared by the realpath of the main repo root (a worktree or subdir of an excluded repo excludes it too). Does not filter an explicit `--repo` / `repos` input. |
+| `maxReviews` | integer >= 1 | Run default for `maxReviews` when `--max-reviews` / the input is absent. Unset: the workflow's own (`40`). |
+| `reviewPreset` | string | Run default for the reviewer model preset when `--review-preset` / the input is absent (same names as [`modelRolePreset`](#modelrolepreset-string)). |
+| `notify` | object | Run default report target when the caller passes none: the maintain workflow's `notify` input, `{ provider?: "telegram" \| "agentpush", alias?, address?, source? }`. Unset: no notification. |
 
 ### `spawn: object`
 

@@ -2,8 +2,9 @@
 schema: routine/v1
 id: repo-maintenance-weekly
 description: |
-  Weekly plan + review + APPLY pass of the `maintain` workflow —
-  `applyMerged: true` + `applyReviewed: true`, so after the review agent
+  Weekly plan + review + APPLY pass of the `maintain` workflow over every
+  repo the daemon config's `maintain` section names (`maintain_run` with
+  `all: true`), `applyMerged: true` + `applyReviewed: true`, so after the review agent
   runs, `branch_gc` and `worktree_gc` execute their plans:
   merged/squash-merged/patch-merged/content-merged branches,
   review-class branches whose stored verdict agreed (subject to branch_gc's
@@ -21,17 +22,14 @@ schedule:
   timezone: "UTC"
   catchup: skip
 target:
-  workflow:
-    file: <absolute-path-to-agentproto-ts>/packages/apps/repo-maintenance/.agentproto/workflows/maintain/WORKFLOW.md
+  tool: maintain_run
   inputs:
+    all: true
     applyMerged: true
     # Opt in to reclaiming review-class branches whose stored verdict agreed.
     # branch_gc still refuses an approval below its line-coverage guard (95%).
     # Drop this key (or set false) to apply reclaim-class refs only.
     applyReviewed: true
-    notify:
-      provider: telegram
-      address: "<REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID>"
 retry:
   max_attempts: 1
   backoff: fixed
@@ -47,8 +45,11 @@ tags: [repo-maintenance, branch-gc, worktree-gc, maintenance]
 
 # Repo maintenance — weekly plan + review + apply
 
-Runs weekly, Sunday **05:00 UTC**, firing the same `maintain` workflow as
-`repo-maintenance-daily/ROUTINE.md` but with `applyMerged: true`. Every run
+Runs weekly, Sunday **05:00 UTC**, calling `maintain_run` with `all: true`,
+like `repo-maintenance-daily/ROUTINE.md`, but with `applyReviewed: true` on
+top of `applyMerged: true`. The repo list, the exclusions and the notify
+target come from the daemon's user config (`~/.agentproto/config.json`,
+section `maintain`, see the daily routine), never from this file. Every run
 does everything the daily routine does (plan, review fan-out, verdict-gap
 check), then:
 
@@ -79,24 +80,14 @@ to `false` (or drop the key) if you want the apply pass to touch only
 
 ## Enabling
 
-Same steps as `repo-maintenance-daily/ROUTINE.md`: copy this directory to
-`<workspace>/.routines/repo-maintenance-weekly/`, set `enabled: true`, point
-`target.workflow.file` at wherever `maintain/WORKFLOW.md` lives in that
-environment, set or drop `target.inputs.notify`, then reload routines. A
-relative `target.workflow.file` resolves against this routine's workspace
-root; when `target.inputs.repoRoot` is omitted it defaults to that same
-workspace root (an explicit `repoRoot` always wins), so the run is scoped to
-this workspace rather than the daemon's active one. If
-`notify` is kept, make sure its provider is configured on the daemon: the
-notify step goes through `transmit_message` (`bind: false`), so the default
-`provider: telegram` needs a bot token from `telegram_bot_token_set` and
-ignores `source`, while `provider: agentpush` needs the imported MCP alias in
-`notify.alias`, the agentpush channel in `notify.source`, and the recipient
-in `notify.address`. The legacy `channel` field still works:
-`channel: telegram|agentpush` names the provider, any other value is the
-agentpush channel. An unconfigured provider does not fail the run: the report
-ends with `notify skipped: <reason>`. No `bash` allowlist or
-`AGENTPUSH_API_KEY` is needed.
+Same steps as `repo-maintenance-daily/ROUTINE.md`: configure the `maintain`
+section of `~/.agentproto/config.json` (repos, exclusions, optional
+`notify`), copy this directory to
+`<workspace>/.routines/repo-maintenance-weekly/`, set `enabled: true`, then
+reload routines. The workspace only hosts the schedule. If `maintain.notify`
+is set, make sure its provider is configured on the daemon (see the daily
+routine); an unconfigured provider does not fail the run, the report ends
+with `notify skipped: <reason>`.
 
 Enable ONLY after you've watched `repo-maintenance-daily` run clean a few
 times — this routine deletes branches and worktrees, the daily one never
