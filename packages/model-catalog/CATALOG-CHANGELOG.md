@@ -644,3 +644,24 @@ for that.
 
 ### audio:openai-live
 - Added: gpt-live-1, gpt-live-1.1, gpt-live-transcribe, gpt-realtime, gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-2.1, gpt-realtime-2.1-mini, gpt-realtime-mini, gpt-realtime-translate, gpt-realtime-whisper
+
+## 2026-11-23
+
+### llm:openrouter
+- Added: radixark/daisyrose-27b, thinkingmachines/inkling-2-mini
+- Removed: meituan/longcat-2.0, tencent/hy3-preview
+
+### llm:requesty
+- Added: azure/gpt-5.6-luna@polandcentral, azure/gpt-5.6-sol@polandcentral, azure/gpt-5.6-terra@polandcentral, azure/gpt-6-luna@polandcentral, azure/gpt-6-sol@polandcentral, azure/gpt-6.1-sol@polandcentral, azure/gpt-6.1-terra@polandcentral, azure/gpt-6.2-astra@polandcentral, azure/gpt-6.2-sol@polandcentral
+- Removed: minimaxi/minimax-m2, minimaxi/minimax-m2.5, minimaxi/minimax-m2.5-highspeed, minimaxi/minimax-m2.7, minimaxi/minimax-m2.7-highspeed, minimaxi/minimax-m3, minimaxi/minimax-m3.1-flash, novita/minimax/minimax-m2.7, novita/minimax/minimax-m2.7-highspeed, sail/gpt-oss-120b, vertex/deepseek-v3.2, xai/grok-build-0.1
+
+### llm:opencode-go
+- Added: opencode-go/longcat-2.5
+- Removed: opencode-go/longcat-2.0, opencode-go/longcat-2.5-free
+
+### llm:opencode-zen
+- Removed: opencode/longcat-2.5-free
+
+### llm:huggingface
+- Added: LiquidAI/LFM2.5-24B-A2B, thinkingmachines/Inkling-2-Mini
+- Removed: MiniMaxAI/MiniMax-M1-80k, MiniMaxAI/MiniMax-M2.7, deepseek-ai/DeepSeek-V3.1-Terminus, deepseek-ai/DeepSeek-V3.2-Exp, moonshotai/Kimi-K2-Thinking, swiss-ai/Apertus-8B-Instruct-2509, tencent/Hy4-flash

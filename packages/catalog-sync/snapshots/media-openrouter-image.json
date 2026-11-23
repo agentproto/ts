@@ -52,16 +52,16 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1314,
-            "win_rate": 62,
+            "elo": 1377,
+            "win_rate": 58.1,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1275,
+            "elo": 1333,
             "win_rate": 61.9,
-            "rank": 3
+            "rank": 2
           }
         ]
       }
@@ -118,15 +118,15 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1338,
-            "win_rate": 64.5,
-            "rank": 1
+            "elo": 1399,
+            "win_rate": 60.8,
+            "rank": 2
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1276,
-            "win_rate": 62.1,
+            "elo": 1334,
+            "win_rate": 62.2,
             "rank": 1
           }
         ]
@@ -1173,28 +1173,28 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1330,
+            "elo": 1388,
             "win_rate": 62.7,
             "rank": 2
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1296,
-            "win_rate": 60.8,
+            "elo": 1363,
+            "win_rate": 60.1,
             "rank": 4
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1215,
-            "win_rate": 50.5,
+            "elo": 1272,
+            "win_rate": 50.6,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1292,
+            "elo": 1332,
             "win_rate": 58.4,
             "rank": 2
           }
@@ -1253,28 +1253,28 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1308,
+            "elo": 1366,
             "win_rate": 61.4,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1284,
-            "win_rate": 60,
+            "elo": 1350,
+            "win_rate": 59.2,
             "rank": 5
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1227,
+            "elo": 1283,
             "win_rate": 55.9,
             "rank": 4
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1268,
+            "elo": 1308,
             "win_rate": 56,
             "rank": 3
           }
@@ -2123,7 +2123,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1075,
+            "elo": 1131,
             "win_rate": 46.6,
             "rank": 9
           }
@@ -2378,30 +2378,30 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1411,
+            "elo": 1469,
             "win_rate": 74.4,
             "rank": 1
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1337,
+            "elo": 1404,
             "win_rate": 67.9,
-            "rank": 2
+            "rank": 1
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1297,
+            "elo": 1337,
             "win_rate": 63.7,
             "rank": 1
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1276,
+            "elo": 1331,
             "win_rate": 60.7,
-            "rank": 2
+            "rank": 3
           }
         ]
       },
@@ -2532,28 +2532,28 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1210,
+            "elo": 1268,
             "win_rate": 52.3,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1210,
+            "elo": 1277,
             "win_rate": 54.4,
             "rank": 8
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1195,
+            "elo": 1251,
             "win_rate": 52.4,
             "rank": 7
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1248,
+            "elo": 1288,
             "win_rate": 53.6,
             "rank": 5
           }
@@ -3237,21 +3237,21 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1261,
+            "elo": 1319,
             "win_rate": 66.3,
             "rank": 4
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1252,
+            "elo": 1319,
             "win_rate": 65.1,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1263,
+            "elo": 1303,
             "win_rate": 62.9,
             "rank": 4
           }
@@ -3417,29 +3417,29 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1005,
+            "elo": 1063,
             "win_rate": 35.7,
             "rank": 12
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1039,
+            "elo": 1107,
             "win_rate": 38.6,
             "rank": 14
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1060,
+            "elo": 1100,
             "win_rate": 38,
             "rank": 12
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1026,
-            "win_rate": 38.5,
+            "elo": 1081,
+            "win_rate": 38.2,
             "rank": 10
           }
         ]
@@ -3602,21 +3602,21 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1189,
+            "elo": 1247,
             "win_rate": 54.6,
             "rank": 7
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1175,
+            "elo": 1243,
             "win_rate": 54.7,
             "rank": 9
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1209,
+            "elo": 1249,
             "win_rate": 54,
             "rank": 7
           }
@@ -3676,28 +3676,28 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1172,
+            "elo": 1230,
             "win_rate": 46.9,
             "rank": 8
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1171,
+            "elo": 1239,
             "win_rate": 49,
             "rank": 10
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1192,
+            "elo": 1232,
             "win_rate": 48.8,
             "rank": 10
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1105,
+            "elo": 1161,
             "win_rate": 46.6,
             "rank": 8
           }
@@ -3777,28 +3777,28 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1251,
+            "elo": 1309,
             "win_rate": 65.8,
             "rank": 5
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1219,
+            "elo": 1286,
             "win_rate": 62.1,
             "rank": 7
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1241,
+            "elo": 1281,
             "win_rate": 61,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1221,
+            "elo": 1277,
             "win_rate": 66,
             "rank": 5
           }
@@ -3879,21 +3879,21 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1165,
+            "elo": 1223,
             "win_rate": 47.7,
             "rank": 11
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1159,
+            "elo": 1227,
             "win_rate": 51,
             "rank": 13
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1209,
+            "elo": 1249,
             "win_rate": 51.4,
             "rank": 8
           }
@@ -3974,21 +3974,21 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1172,
+            "elo": 1230,
             "win_rate": 48.9,
             "rank": 9
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1167,
+            "elo": 1234,
             "win_rate": 53.9,
             "rank": 11
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1202,
+            "elo": 1242,
             "win_rate": 52.7,
             "rank": 9
           }
@@ -4069,21 +4069,21 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1167,
+            "elo": 1225,
             "win_rate": 56.9,
             "rank": 10
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1162,
+            "elo": 1229,
             "win_rate": 55.6,
             "rank": 12
           },
           {
             "arena": "models",
             "category": "logo",
-            "elo": 1169,
+            "elo": 1209,
             "win_rate": 51.4,
             "rank": 11
           }

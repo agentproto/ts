@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-openai.mjs
-// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-11-20T16:07:54.446Z)
+// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-11-23T16:49:04.610Z)
 //
 // Provenance is recorded PER ROW — `idSource` says which list the id came
 // from, `priceSource` which source priced it:
@@ -113,9 +113,9 @@ export const OPENAI_GENERATED_PRICING = {
   "gpt-audio": { inputPer1M: 2.5, outputPer1M: 10, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-audio-mini": { inputPer1M: 0.6, outputPer1M: 2.4, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-chat-latest": { inputPer1M: 5, outputPer1M: 30, cacheReadMultiplier: 0.1, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
-  "gpt-oss-120b": { inputPer1M: 0.09, outputPer1M: 0.36, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
+  "gpt-oss-120b": { inputPer1M: 0.05, outputPer1M: 0.25, cacheReadMultiplier: 1, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-oss-120b:batch": { inputPer1M: 0.0296, outputPer1M: 0.136, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
-  "gpt-oss-20b": { inputPer1M: 0.018, outputPer1M: 0.09, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
+  "gpt-oss-20b": { inputPer1M: 0.03, outputPer1M: 0.13, cacheReadMultiplier: 1, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-oss-20b:batch": { inputPer1M: 0.024, outputPer1M: 0.112, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-oss-safeguard-20b": { inputPer1M: 0.075, outputPer1M: 0.3, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "o3": { inputPer1M: 2, outputPer1M: 8, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },

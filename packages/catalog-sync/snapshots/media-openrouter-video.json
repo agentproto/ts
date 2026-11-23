@@ -1453,59 +1453,6 @@
       ]
     },
     {
-      "id": "alibaba/wan-2.7",
-      "canonical_slug": "alibaba/wan-2.7-20260414",
-      "hugging_face_id": null,
-      "name": "Alibaba: Wan 2.7",
-      "created": 1776211362,
-      "description": "Wan 2.7 is a video generation model from Alibaba. It supports text-to-video, image-to-video with first and last frame control, and reference-to-video, where multiple reference images guide the style and content...",
-      "context_length": 0,
-      "architecture": {
-        "modality": "text+image->video",
-        "input_modalities": [
-          "text",
-          "image"
-        ],
-        "output_modalities": [
-          "video"
-        ],
-        "tokenizer": "Other",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      },
-      "top_provider": {
-        "context_length": 0,
-        "max_completion_tokens": 0,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "max_tokens",
-        "temperature",
-        "top_p"
-      ],
-      "default_parameters": {
-        "temperature": null,
-        "top_p": null,
-        "top_k": null,
-        "frequency_penalty": null,
-        "presence_penalty": null,
-        "repetition_penalty": null
-      },
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": null,
-      "links": {
-        "details": "/api/v1/models/alibaba/wan-2.7-20260414/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/videos"
-      ]
-    },
-    {
       "id": "bytedance/seedance-2.0",
       "canonical_slug": "bytedance/seedance-2.0-20260414",
       "hugging_face_id": null,
@@ -1612,59 +1559,6 @@
       ]
     },
     {
-      "id": "alibaba/wan-2.6",
-      "canonical_slug": "alibaba/wan-2.6-20260327",
-      "hugging_face_id": null,
-      "name": "Alibaba: Wan 2.6",
-      "created": 1774659190,
-      "description": "Alibaba's most advanced video generation model, supporting over 10 visual creation capabilities in a unified system. Wan 2.6 generates 1080p video at 24fps from text, images, reference videos, or audio,...",
-      "context_length": 0,
-      "architecture": {
-        "modality": "text+image->video",
-        "input_modalities": [
-          "text",
-          "image"
-        ],
-        "output_modalities": [
-          "video"
-        ],
-        "tokenizer": "Other",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      },
-      "top_provider": {
-        "context_length": 0,
-        "max_completion_tokens": 0,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "max_tokens",
-        "temperature",
-        "top_p"
-      ],
-      "default_parameters": {
-        "temperature": null,
-        "top_p": null,
-        "top_k": null,
-        "frequency_penalty": null,
-        "presence_penalty": null,
-        "repetition_penalty": null
-      },
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": null,
-      "links": {
-        "details": "/api/v1/models/alibaba/wan-2.6-20260327/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/videos"
-      ]
-    },
-    {
       "id": "google/veo-3.1",
       "canonical_slug": "google/veo-3.1-20260320",
       "hugging_face_id": null,
@@ -1720,7 +1614,7 @@
       ]
     }
   ],
-  "total_count": 35,
+  "total_count": 33,
   "links": {
     "next": null
   }
