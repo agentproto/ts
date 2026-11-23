@@ -1,5 +1,44 @@
 # @agentproto/worktree
 
+## 0.23.0
+
+### Minor Changes
+
+- e3f1165: Worktree salvage: an untracked symlink (e.g. to a directory) no longer aborts the salvage with ENOTSUP. The link is recreated in the archive with its target kept verbatim and listed in the manifest (`symlinks`); untracked directories (including nested git repos) are archived recursively, and names git would C-quote are read with `ls-files -z`; non-copyable entries (socket, fifo, device) are listed in `skippedEntries`. A failed salvage now removes the archive directory it created, and `restoreSalvage` recreates files, links and the patch.
+
+### Patch Changes
+
+- 5b792bc: Remove private product and repository names from comments, docs, examples and tests.
+
+  `@agentproto/auth` no longer ships a vendor provider: the `acmeAuthProvider`-style builtin export is removed and `BUILTIN_AUTH_PROVIDERS` is empty, so the registry starts empty. A host declares its own provider with `parseAuthProviderManifest` (or `defineAuthProvider`) and `registerAuthProvider`, which already existed. Breaking for code that imported the old export or looked the old id up without registering it.
+
+  `@agentproto/role-catalog`: the legacy role map export is now `LEGACY_OPERATOR_ROLE_MAP`.
+
+  `@agentproto/apps` (session-steward): new `extraClosableOrigins` input appended to the closable origin list in force. The generic default roots are `orchestrator` and `orchestrator:*`; a host that stamps its own root label adds it with `extraClosableOrigins`.
+
+  The private Replicate fine-tune entry is dropped from the model catalog.
+
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
+- Updated dependencies [89258dd]
+  - @agentproto/session-presets@0.7.2
+  - @agentproto/driver@0.4.2
+  - @agentproto/tool@0.6.1
+  - @agentproto/workflow-runtime@0.21.2
+
 ## 0.22.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @agentproto/run
 
+## 0.2.4
+
+### Patch Changes
+
+- @agentproto/workflow-runtime@0.21.2
+
 ## 0.2.3
 
 ### Patch Changes

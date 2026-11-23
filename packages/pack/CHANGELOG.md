@@ -1,5 +1,16 @@
 # @agentproto/pack
 
+## 1.0.1
+
+### Patch Changes
+
+- Updated dependencies [5b792bc]
+- Updated dependencies [5b792bc]
+  - @agentproto/policy@0.3.1
+  - @agentproto/role@0.3.1
+  - @agentproto/doctype@0.2.0
+  - @agentproto/persona@0.2.0
+
 ## 1.0.0
 
 ### Major Changes

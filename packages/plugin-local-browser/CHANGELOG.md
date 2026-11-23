@@ -1,5 +1,13 @@
 # @agentproto/plugin-local-browser
 
+## 0.3.9
+
+### Patch Changes
+
+- 5b792bc: Covers the packages the PR's own changesets (`remove-private-names.md`, `voice-kit-turn-settings.md`) miss. Private product and repository names were scrubbed from comments, docs, changelogs, fixtures and tests in these packages; no runtime behavior changes (changelog/docs/test-only edits, plus the catalog-sync ledger key noted in the review).
+- Updated dependencies [5b792bc]
+  - @agentproto/browser-profiles@0.2.7
+
 ## 0.3.8
 
 ### Patch Changes

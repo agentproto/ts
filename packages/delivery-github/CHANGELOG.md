@@ -1,5 +1,13 @@
 # @agentproto/delivery-github
 
+## 0.3.1
+
+### Patch Changes
+
+- 7144821: README: refresh the documented behaviour to match the shipped code (docs sync after the latest release).
+- Updated dependencies [5b792bc]
+  - @agentproto/delivery@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes

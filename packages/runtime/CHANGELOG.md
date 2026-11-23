@@ -1,5 +1,167 @@
 # @agentproto/runtime
 
+## 6.5.0
+
+### Minor Changes
+
+- 0ca42d7: Capability bundles gain optional per-import `toolFilters` (`{allow?, deny?}` keyed by import id, validated against `mcpImports`, deny wins). `mountImports` bakes them into the `/mcp/imported/<id>` ref as `allowTools`/`denyTools`; `bundle_create`/`bundle_update` and `POST/PUT /bundles` accept them. The imported-MCP mount now accepts `*` patterns (`list_*`) in those lists.
+- 4c7253f: Stop context-continuation loops. (1) A fresh continuation now receives the STATE first (`## status: DONE` when the source finished its turn with no open task, else `IN PROGRESS` with the next step) and the original prompt only as a labelled reference (`## goal (reference only ...)`), so it never re-runs a task that was already carried out (and its side effects). (2) A chain of consecutive "rapid" continuations (each session lived under 15 min, cap 3) is refused with `ContinueFreshSpawnError` code `continuation_cap`; the automatic path hard-stops the last link and sends the parent a `[continuation-loop]` blocker message instead of spawning another successor. A long-lived session (a brain running for hours) is unaffected. (3) `mistral-vibe` declares `deferredToolDiscovery` (new `acpAgents.*.deferred_tool_discovery` config field), proved live: the daemon self-mount is now deferred for Vibe, which stays at ~16% context instead of starting at 85-88% with every tool schema loaded. This reproduces and fixes the 2026-11-18 loop where a Vibe sub-session was continued 11 times in a row.
+- 5015995: `desktop_conversation_ask` now also asks Codex Desktop threads (`app: "codex"`): the thread is registered as a `codex:<id>` external row and the message goes through `message_send`'s path. A turn only starts through the opt-in Desktop wake (`daemon.codexDesktopWakeThreadIds`, `next-turn` urgency); the result carries `desktopWake` and a note saying why nothing woke otherwise. The answer is read from the thread's rollout.
+- bd7b215: New MCP tool `desktop_conversation_ask { app: "claude", id, text, urgency?, waitMs? }`: sends a message to a Claude Desktop conversation listed by `desktop_conversation_list` (registering its `cc:<id>` external row) and waits for its answer in the transcript. Delivery is the daemon's existing external path: a direct wake over the chat's Claude Code socket when `daemon.claudeSocketWake` is on, else the chat's inbox (reported as `delivered.via`, no reply).
+
+  The send goes through the same path as `message_send` (`registerMessageTools` now returns `sendAsCaller`): same caller resolution, permission decision and `noCallerIdentity` policy, so a refusal sends nothing and is surfaced.
+
+  Because that path is a permission decision, the chat's external row is stamped with the workspace slug resolved from its `cwd` (a new optional `workspaceSlug` on `SessionsRegistry.touchExternal`), so the default same-workspace rule binds. A **session** caller whose workspace is not the chat's is still refused with `forbidden_recipient` unless a `defaults.messaging` grant, peer group, or `peerBinding: "verified"` allows it; the refusal text names the requirement, and `permissions_explain` answers why. Operator/root callers are unaffected.
+
+- bf809ab: New MCP tool `desktop_conversation_create { app: "codex", cwd, prompt, model?, sandbox?, timeoutMs? }`: creates a Codex conversation with `codex exec --json` (read-only unless `workspace-write` is asked) and returns the thread id (`codex:<id>`) and its first answer. The thread is stored as a `codex exec` thread, so `desktop_conversation_list` / `read` / `ask` reach it; the Desktop sidebar may not show it. `app: "claude"` is refused with the reason: Claude Desktop has no supported way to create a chat from outside the app.
+- fd346e8: New read-only MCP tool `desktop_conversation_list`: lists the Claude Desktop (Code tab) and Codex Desktop conversations from the apps' own local stores (`Claude` and `Claude-3p` `claude-code-sessions/*.json`, `~/.codex/state_5.sqlite`), newest first, with the `cc:<id>` / `codex:<id>` address each chat uses when it calls the daemon. Includes chats that never called agentproto.
+- bd7b215: New read-only MCP tool `desktop_conversation_read { app, id, tail? }`: the last messages of a Claude Desktop or Codex Desktop conversation listed by `desktop_conversation_list`, read from its Claude Code jsonl / Codex rollout.
+- 0e15a50: Opt-in trusted senders for the Codex Desktop direct wake: `daemon.desktopTrustedSenders` (`off` default | `operator` | `tree` | an explicit list of session ids, `label:<x>`, `human` or `claude-desktop`) and a per-chat `daemon.desktopTrustedSendersByThread`. A message from a trusted sender reaches the chat as an instruction in the turn text with the sender named, instead of as `untrusted_input` data. System and anonymous senders and external rows are never trusted; the unverified `claude-desktop` identity only when listed. Off by default, restart to apply, read-only over MCP.
+- 8075ad4: Hermes sessions started with a Hugging Face access profile now work end to end: the profile resolver injects `HF_TOKEN` (keychain, never a plaintext file) and the model is sent as `huggingface:<model>` so Hermes selects its native `huggingface` provider per session (its config.yaml `model.provider` otherwise wins over env). The hermes manifest declares `HF_TOKEN` as a provider key.
+- d7ea5cc: Label addressing policy: `defaults.messaging.labelAddressing` (`open` | `tree` | `operator`, default `tree`) and per-session `agent_start.labelAddressing`. Under `tree` (default) a `label` a supervisor gives a child at `agent_start` becomes a protected family name: `message_send to:"label:<x>"` (and the drive tools) resolve it only for the parent and the child's siblings, it is unique in the family, and only the parent can set it. `open` lets any session address any label; `operator` keeps the previous behaviour (only operator/owner-stamped labels, resolved for everyone). Operator-stamped root labels are unchanged in every mode.
+- 6e0a7aa: Repo maintenance covers every repo agentproto manages, from the CLI and from the daemon. The default source is the workspace registry: every workspace registered with `agentproto workspace add` that is not app-owned and whose path is a git repo's toplevel, plus the repos owning a worktree under the worktrees roots.
+
+  - New `maintain` section in `~/.agentproto/config.json` (`workspaces`, `discover`, `repos`, `exclude`, `maxReviews`, `reviewPreset`, `notify`), typed and validated like the rest of the config.
+  - New `@agentproto/runtime/maintain-repos` module: worktree-owning repo discovery plus `resolveMaintainRepos(config, extra)` (workspaces/discover/repos/exclude, deduped by realpath of the main repo root), shared by the CLI and the daemon.
+  - New daemon tool `maintain_run` (`all` or `repos`, `applyMerged`, `applyReviewed`, `requireOperatorBelowGuard`, `maxReviews`, `reviewPreset`, `notify`): installs the repo-maintenance app, starts one background `maintain` run per repo and returns `{repo, runId}` at once. A repo that fails to start does not stop the others. Usable from MCP and as a routine `target.tool`.
+  - `agentproto maintain --all` honors the registry and `maintain.workspaces/discover/repos/exclude`, and every `maintain` run takes `maxReviews`/`reviewPreset`/`notify` from the config when the flags are absent (flags win). An invalid `maintain` section exits 2.
+  - The shipped `repo-maintenance-daily`/`-weekly` routines now target `maintain_run` with `all: true` and hold no repo path and no chat id.
+
+- e446a6a: `agentproto mcp login` gains `--timeout <duration>` (e.g. `30m`, `1800s`; 10s–2h, default 5m) and `--manual`/`--paste`, which also accepts the pasted callback URL on stdin alongside the loopback listener. `loginMcpOAuth` takes a `manualCallback` option and exports `parseAuthorizationCallback`; the pasted state is verified and code/state are never logged.
+- c70c12b: ROLE.md accepts `contextFiles: tag=path, ...`: the daemon injects each file, fenced by `<tag>...</tag>`, into the spawn prompt right after the role disposition (`~` and `$VAR` expanded, an unreadable file announced as `<tag absent="path"/>`, 64 KiB cap). Ships `templates/roles/recherche/ROLE.md`, a role that puts the repo map in front of an agent asked to search globally.
+- d1b33fa: A session can now change its own model or harness and run its own harness commands.
+
+  - New MCP tool `session_handoff` (callable on the caller itself): hands the work to another model and/or harness. The successor takes the label, parent, children, follows and the declared succession (`succeeds`); the source is closed only after the successor is confirmed running. `context` picks what travels: `handoff-summary` (default; status plus the previous session id and a `transcript_read` pointer), `harness-compact` (native `/compact`, then the model switch) or `none` (model switch in place, no new session). Model policy and auth-profile allow-lists are enforced with an explicit `model_refused`.
+  - New MCP tool `session_command_self`: queues a harness slash-command (`/compact`, `/clear`, `/model x`, ...) on the caller's own prompt queue, run when its current turn ends. Gated by an allow-list in the adapter manifest (`capabilities.selfCommands`, config `acpAgents.*.self_commands`; only the confirmed `compact`/`compress`/`model` are declared) and by the commands the harness advertises; `compactRequiresOperator` still applies.
+
+- 221360d: `session-message-sent` transcript records now carry the message body (`text`, bounded to 4000 chars, with `textTruncated: true` when cut). A viewer can show what a session sent without reading the recipient's transcript, which a desktop chat (`cc:`/`codex:`) or a scoped Telegram link cannot offer. Records written before this have no `text`.
+- 0727856: Add Claude Desktop title search, live filter, and composer draft links
+- 7c0f9fd: A provider TUI launched as a PTY (`agentproto sessions terminal -- claude|codex|opencode|hermes|…`) can now RECEIVE `message_send`, not only emit it: the message is parked in the terminal's inbox and typed into the PTY (bracketed paste + Enter) once the TUI is idle (no activity-grade paint for `quietMs`; invisible chunks and isolated status-bar clock ticks are ignored). Plain shells still refuse. `codex` and `copilot` bare bins are now classified as provider TUIs. `sessions terminal --access <profile>` (and a preset's `accessProfile`, `terminal_start.accessProfile`, `POST /sessions/terminal {accessProfile}`) pins a named auth profile onto the PTY (credential env set, conflicting vars scrubbed, `accessProfile` echo recorded), failing closed when it cannot be resolved.
+- fb34c1f: Native-TUI terminal sessions (`claude`, `codex`, `opencode`, `hermes` run in a PTY) now carry model, tokens and cost like agent-cli sessions. Once the PTY is linked to its provider conversation, the daemon polls that harness's own usage journal (Claude Code transcript JSONL, Codex rollout `token_count`, `opencode.db`, hermes `state.db`) and prices the tokens against the model catalog. New `billing` (`subscription` | `api-key` | `free` | `unknown`) and `paidCostUsd` fields keep `costUsd` as the value at API price and report what the account actually pays (0 on a subscription or free model). The Claude Code and OpenCode usage readers also return the session's model.
+
+### Patch Changes
+
+- f4b7be3: `catalog_models` now treats a harness that authenticates itself (its CLI owns the login, no provider and no API key: `copilot-cli`, `antigravity`) as runnable without any auth profile when the caller names that harness. Before, every row was `runnable:false`, so the chat's `runnableOnly` read returned nothing and the model picker stayed empty. `eligibleProfiles` stays empty (pickers show "Harness login"). Global listings and provider-scoped external logins (codex, gemini) are unchanged.
+- 5015995: `desktop_conversation_ask` review follow-ups: the wait loop no longer re-lists every conversation on each poll (it reuses the resolved one), returns the full reply when a turn adds more than 200 messages, and still recognises the answer when the transcript ends on a system line; the list/read calls receive only the fields they use.
+- 2530309: `desktop_conversation_create` review follow-ups: a timed-out creation now really stops the `codex` process (SIGTERM, then SIGKILL after a grace period, returning once the child closed); a failed or timed-out creation is an error result, like `desktop_conversation_ask`; the tool description warns that `cwd` is unscoped and `workspace-write` is not limited to agentproto workspaces; `ask` only falls back to the Claude project path for the transcript shortcut when the chat is a Claude one.
+- 1a3836b: `desktop_conversation_list` follow-ups from review: a missing `node:sqlite` (Node before 22.5) no longer fails the whole list, only the Codex half is skipped; the docs now say a Claude chat that has not run a turn yet is not listed, and that a renamed Codex state file yields no Codex rows.
+- dbc1964: `desktop_conversation_create` now records the calling session as the owner of the thread it creates (`ownerSessionId` on the external row, a `parent` messaging relation), so the same session can `desktop_conversation_ask` it afterwards; every other session is still refused. Without `model`, a Codex first turn refused with "not supported" (the model of `~/.codex/config.toml` is rejected by the ChatGPT account) now fails with an error naming the models that did work on this account (read from the Codex thread history, e.g. `gpt-5.6-terra`).
+- ee63a96: `desktop_conversation_read` / `desktop_conversation_ask` on a Claude Desktop chat whose cwd is a symlinked path (macOS `/tmp/x` → `/private/tmp/x`) no longer fail with "JSONL file not found": `claudeCodeProjectDir` falls back to the realpath slug when the typed path has no project directory. Both tools also accept the `externalId` the list shows (`cc:<id>` / `codex:<id>`) as the conversation id instead of answering "no … Desktop conversation".
+
+  Exporting a conversation to the native Claude Code store (`writeToNativeStore`, `claude --resume`) from a symlinked cwd now writes under the resolved cwd's project directory, the one Claude Code reads. The `desktop_conversation_read` / `ask` tool schemas document the `externalId` form of `id`.
+
+- 4223bf1: session_follow: a follow `key` is now scoped to its follower. Two sessions reusing the same key no longer overwrite each other's follow; `session_unfollow` by key only touches the caller's own follow (`DELETE /follows/:key?follower=` for HTTP).
+- 28b4c6b: Sessions handoff/profiles fixes (issue: orchestrator brain → Mistral Large 4.0 handoff, 2026-11-21):
+
+  - `sessions handoff --dry-run` now validates the eligibility chain the real handoff enforces — the target harness resolves, and the access profile the successor would use (--profile override or the source's inherited wallet) is eligible for the target adapter+route and allows the model — and fails EARLY with the same error code and message the real run gives, before building the checkpoint preview.
+  - `access_profile_ineligible` refusals now SUGGEST the fix: which stored profiles would be eligible for the target adapter+route (and would allow the requested model), so the caller no longer has to guess the --profile value.
+  - `agentproto auth status` lists credential-backed profiles (api-key, no login — e.g. mistral-vibe-pro, mistral-api): a `credentialProfiles` array in --json and a table section naming the flag that uses them. Login-backed `profiles` rows are unchanged.
+  - `agentproto models <adapter>` reads the merged native + generic-ACP listing, so a curated generic-ACP harness (mistral-vibe, kimi-cli, …) lists its models instead of coming back empty; per-model provider declarations decide runnability (mistral-vibe's hosted z-ai ids bill through mistral).
+  - `sessions start` accepts `--profile` (short alias of `--access-profile`); `sessions handoff` accepts `--access-profile` (long alias of `--profile`); conflicting values are exit 2 before any daemon call. Handoff/checkpoint errors frame the daemon's structured access_profile_* refusals with the same actionable hint `sessions start` prints.
+
+- d1da214: hermes on the Hugging Face gateway: the session descriptor now names `huggingface` as `adapterProvider` (was the manifest's `openrouter`), and cost is priced from the catalogue's per-model/provider HF route table. hermes' own bogus `estimated_cost_usd` for HF sessions (e.g. $4494 for 18k tokens) is ignored, and a model with no published price shows as unpriced instead of a wrong figure.
+- 4b56ce9: Replace the retired opencode/glm-5.3-flash-free with opencode-go/glm-5.3-flash in the usage presets and the default rotation.
+
+  Behaviour note: the `explore` and `implement` presets now resolve to the free deepseek model (local, with sandbox overflow); the glm 5.3 flash model on the Go subscription (not free, no per-IP limit) serves `pr-fix` and `review` in the sandbox. No preset spends more than before except where the retired free glm sat.
+
+- 73f1b23: Turn-retry tests no longer hard-code real catalog ids: `helpers/catalog-models.ts` derives `FREE_MODEL`/`OTHER_FREE_MODEL`/`THIRD_FREE_MODEL`, the same-route rotation pair and a non-rotation `PAID_MODEL` from the live opencode route table, so a weekly Catalog Sync adding or retiring an id can no longer take the suite with it.
+- 765660d: Move the sandbox and tunnel families onto `makeProviderFamily()`, with no behavior change: same tool names, descriptions, results and hints. provider-kit gains an explicit `legacySetup` option that reproduces their setup semantics (a field without `required` is optional, re-setup replaces the stored creds, store and ledger errors propagate), `load` now also receives slugs outside the catalog (a composite slug such as `auto`), and `registerTools` accepts a missing `list`.
+- 5b792bc: Remove private product and repository names from comments, docs, examples and tests.
+
+  `@agentproto/auth` no longer ships a vendor provider: the `acmeAuthProvider`-style builtin export is removed and `BUILTIN_AUTH_PROVIDERS` is empty, so the registry starts empty. A host declares its own provider with `parseAuthProviderManifest` (or `defineAuthProvider`) and `registerAuthProvider`, which already existed. Breaking for code that imported the old export or looked the old id up without registering it.
+
+  `@agentproto/role-catalog`: the legacy role map export is now `LEGACY_OPERATOR_ROLE_MAP`.
+
+  `@agentproto/apps` (session-steward): new `extraClosableOrigins` input appended to the closable origin list in force. The generic default roots are `orchestrator` and `orchestrator:*`; a host that stamps its own root label adds it with `extraClosableOrigins`.
+
+  The private Replicate fine-tune entry is dropped from the model catalog.
+
+- 1d0cbd5: message_reply: a message delivered to an external (Claude Desktop) session over its Claude Code socket is now recorded as received, so the chat can `message_reply` to a `desktop_conversation_ask` instead of getting `unknown_message`.
+- 069a055: Slim `session_handoff`: no `full-resume` mode, the new-session case reuses `session_continue_fresh`'s path, and every continuation prompt now points at `transcript_read` for the previous session. `harness-compact` is source-less for an operator call (honours `compactRequiresOperator`) and refuses when the harness doesn't advertise the compact command; a self-handoff reports `sourceClosePending`. Adapter manifests declare only the confirmed `selfCommands` (`compact`; hermes `compress`, `model`).
+- e01f33d: Fix terminal_start / POST /sessions/terminal with an access profile: the argv `--model` is now checked against the profile allowlist instead of the adapter default model.
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
+- Updated dependencies [ed6759b]
+- Updated dependencies [9c1faeb]
+- Updated dependencies [2727165]
+- Updated dependencies [98a217c]
+- Updated dependencies [7144821]
+- Updated dependencies [fdb4d55]
+- Updated dependencies [8fe3dd3]
+- Updated dependencies [6e0a7aa]
+- Updated dependencies [0cf4ee3]
+- Updated dependencies [5b792bc]
+- Updated dependencies [765660d]
+- Updated dependencies [1741e68]
+- Updated dependencies [5b792bc]
+- Updated dependencies [d1b33fa]
+- Updated dependencies [89258dd]
+  - @agentproto/model-catalog@0.16.0
+  - @agentproto/acp@0.16.0
+  - @agentproto/delivery-github@0.3.1
+  - @agentproto/apps@0.28.0
+  - @agentproto/adapter-browser@0.9.3
+  - @agentproto/agent@0.6.1
+  - @agentproto/delivery@0.3.1
+  - @agentproto/operator@1.1.1
+  - @agentproto/plugin-local-browser@0.3.9
+  - @agentproto/policy@0.3.1
+  - @agentproto/review@1.0.1
+  - @agentproto/provider-kit@0.7.0
+  - @agentproto/app@2.6.1
+  - @agentproto/auth@2.0.0
+  - @agentproto/governance@1.0.1
+  - @agentproto/harness@4.1.0
+  - @agentproto/sandbox@1.0.1
+  - @agentproto/secrets@2.2.2
+  - @agentproto/workspace-brain@0.7.2
+  - @agentproto/workspace@2.0.1
+  - @agentproto/memory@0.1.1
+  - @agentproto/app-client@0.5.1
+  - @agentproto/mcp-server@0.7.5
+  - @agentproto/pairing-host@0.4.2
+  - @agentproto/sentinel@0.7.1
+  - @agentproto/providers-store@0.4.7
+  - @agentproto/a2a@0.2.2
+  - @agentproto/clerk@0.2.1
+  - @agentproto/cloud-agent@0.2.0
+  - @agentproto/command-sandbox@0.4.0
+  - @agentproto/decision@0.2.0
+  - @agentproto/driver-browser@0.4.2
+  - @agentproto/driver@0.4.2
+  - @agentproto/driver-http@0.2.2
+  - @agentproto/eval-reporters@0.2.33
+  - @agentproto/governance-engine@1.0.2
+  - @agentproto/inference-endpoint@1.0.5
+  - @agentproto/lifecycle@0.2.0
+  - @agentproto/manifest@0.3.0
+  - @agentproto/model-intel@0.4.2
+  - @agentproto/processor@0.3.0
+  - @agentproto/provider-presets@0.7.2
+  - @agentproto/quota@0.3.0
+  - @agentproto/reach@0.1.0
+  - @agentproto/routine@1.0.0
+  - @agentproto/run@0.2.4
+  - @agentproto/storage-github@0.2.4
+  - @agentproto/telemetry-langfuse@0.2.31
+  - @agentproto/tool@0.6.1
+  - @agentproto/workflow@0.8.0
+  - @agentproto/workflow-loader@0.2.10
+  - @agentproto/workflow-runtime@0.21.2
+
 ## 6.4.0
 
 ### Minor Changes

@@ -1,5 +1,29 @@
 # @agentproto/catalog-sync
 
+## 0.10.0
+
+### Minor Changes
+
+- 8fe3dd3: Add the `audio:openai-live` generator: OpenAI live/realtime audio ids now auto-sync from the pinned `/v1/models` snapshot (weekly catalog-sync workflow) into `OPENAI_LIVE_MODELS`, like the LLM halves. Capabilities + pricing stay curated in `AUDIO_MODEL_CATALOG` — each synced id carries `needsCuration` until a curated entry claims it — and the new curated `openai/gpt-live-1` entry (base GPT-Live tier, published $0.05/min) completes the GPT-Live pair. New curation-bridge helpers (`openaiLiveIdsNeedingCuration`, `isCuratedOpenAIAudioModel`) and an anti-drift test keep curated live engines on ids OpenAI actually serves.
+
+### Patch Changes
+
+- ed6759b: Add the newest OpenAI and Google models: GPT-Live 1.1, Realtime 2.1, transcribe/translate models, Gemini 3.8 Live and TTS, Gemini 3.8/3.6 Flash, 3.5 Flash Lite and the Gemini 4 family.
+- 9c1faeb: Sync generated catalog data from the pinned provider sources.
+- 98a217c: Price the models the `copilot-cli` harness runs from GitHub Copilot's own price list, synced automatically like the other vendors. New `scripts/catalog-sync/sync-copilot.mjs` (picked up by the weekly `run-all.mjs`) reads `data/tables/copilot/models-and-pricing.yml` and the promo footnotes of `models-and-pricing.md` in github/docs and writes `copilot-pricing.generated.ts`: `mai-code-2`, `mai-code-2-flash`, `mai-code-1.1-flash` and the dotted ids (`claude-sonnet-5.5`, `claude-haiku-5.5`, ...) that no native vendor sync spells that way. Native generators still win on any id they also price. Rows carry `priceSource: "github-copilot"`, cache-read/write ratios and prompt-length tiers. New optional `LLMPricing.promo` (`until` + `then`) and `effectivePricing()`: a dated promo (MAI Code 2: $0.50/$2.50 until 2027-05-17, $1/$5 from that day) resolves to its standard price on its own, in `resolvePricing*` and `agentproto models`. If the source is unreachable or its layout changes, the sync keeps the committed file and exits 2 with the reason.
+
+  `agentproto models`: a model with no price now prints `price n/a: <reason>` (and `priceNote` in `--json`) instead of a blank; `copilot-cli` models are `runnable` when the adapter is ready (its own login), not "unavailable" for lack of a provider key.
+
+- 5b792bc: Covers the packages the PR's own changesets (`remove-private-names.md`, `voice-kit-turn-settings.md`) miss. Private product and repository names were scrubbed from comments, docs, changelogs, fixtures and tests in these packages; no runtime behavior changes (changelog/docs/test-only edits, plus the catalog-sync ledger key noted in the review).
+- Updated dependencies [ed6759b]
+- Updated dependencies [9c1faeb]
+- Updated dependencies [98a217c]
+- Updated dependencies [fdb4d55]
+- Updated dependencies [8fe3dd3]
+- Updated dependencies [0cf4ee3]
+- Updated dependencies [5b792bc]
+  - @agentproto/model-catalog@0.16.0
+
 ## 0.9.3
 
 ### Patch Changes

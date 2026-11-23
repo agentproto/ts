@@ -1,5 +1,23 @@
 # @agentproto/transcript-fixtures
 
+## 0.5.0
+
+### Minor Changes
+
+- 221360d: `session-message-sent` transcript records now carry the message body (`text`, bounded to 4000 chars, with `textTruncated: true` when cut). A viewer can show what a session sent without reading the recipient's transcript, which a desktop chat (`cc:`/`codex:`) or a scoped Telegram link cannot offer. Records written before this have no `text`.
+
+### Patch Changes
+
+- 5b792bc: Remove private product and repository names from comments, docs, examples and tests.
+
+  `@agentproto/auth` no longer ships a vendor provider: the `acmeAuthProvider`-style builtin export is removed and `BUILTIN_AUTH_PROVIDERS` is empty, so the registry starts empty. A host declares its own provider with `parseAuthProviderManifest` (or `defineAuthProvider`) and `registerAuthProvider`, which already existed. Breaking for code that imported the old export or looked the old id up without registering it.
+
+  `@agentproto/role-catalog`: the legacy role map export is now `LEGACY_OPERATOR_ROLE_MAP`.
+
+  `@agentproto/apps` (session-steward): new `extraClosableOrigins` input appended to the closable origin list in force. The generic default roots are `orchestrator` and `orchestrator:*`; a host that stamps its own root label adds it with `extraClosableOrigins`.
+
+  The private Replicate fine-tune entry is dropped from the model catalog.
+
 ## 0.4.1
 
 ### Patch Changes

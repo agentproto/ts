@@ -1,5 +1,52 @@
 # @agentproto/apps
 
+## 0.28.0
+
+### Minor Changes
+
+- 5b792bc: Remove private product and repository names from comments, docs, examples and tests.
+
+  `@agentproto/auth` no longer ships a vendor provider: the `acmeAuthProvider`-style builtin export is removed and `BUILTIN_AUTH_PROVIDERS` is empty, so the registry starts empty. A host declares its own provider with `parseAuthProviderManifest` (or `defineAuthProvider`) and `registerAuthProvider`, which already existed. Breaking for code that imported the old export or looked the old id up without registering it.
+
+  `@agentproto/role-catalog`: the legacy role map export is now `LEGACY_OPERATOR_ROLE_MAP`.
+
+  `@agentproto/apps` (session-steward): new `extraClosableOrigins` input appended to the closable origin list in force. The generic default roots are `orchestrator` and `orchestrator:*`; a host that stamps its own root label adds it with `extraClosableOrigins`.
+
+  The private Replicate fine-tune entry is dropped from the model catalog.
+
+### Patch Changes
+
+- 6e0a7aa: Repo maintenance covers every repo agentproto manages, from the CLI and from the daemon. The default source is the workspace registry: every workspace registered with `agentproto workspace add` that is not app-owned and whose path is a git repo's toplevel, plus the repos owning a worktree under the worktrees roots.
+
+  - New `maintain` section in `~/.agentproto/config.json` (`workspaces`, `discover`, `repos`, `exclude`, `maxReviews`, `reviewPreset`, `notify`), typed and validated like the rest of the config.
+  - New `@agentproto/runtime/maintain-repos` module: worktree-owning repo discovery plus `resolveMaintainRepos(config, extra)` (workspaces/discover/repos/exclude, deduped by realpath of the main repo root), shared by the CLI and the daemon.
+  - New daemon tool `maintain_run` (`all` or `repos`, `applyMerged`, `applyReviewed`, `requireOperatorBelowGuard`, `maxReviews`, `reviewPreset`, `notify`): installs the repo-maintenance app, starts one background `maintain` run per repo and returns `{repo, runId}` at once. A repo that fails to start does not stop the others. Usable from MCP and as a routine `target.tool`.
+  - `agentproto maintain --all` honors the registry and `maintain.workspaces/discover/repos/exclude`, and every `maintain` run takes `maxReviews`/`reviewPreset`/`notify` from the config when the flags are absent (flags win). An invalid `maintain` section exits 2.
+  - The shipped `repo-maintenance-daily`/`-weekly` routines now target `maintain_run` with `all: true` and hold no repo path and no chat id.
+
+- 89258dd: Weekly dependency refresh (minor-patch).
+
+  Held back: `@mastra/code-sdk` stays at 1.14.0 via a root `pnpm.overrides` entry.
+
+  From 1.16.0, `@mastra/code-sdk` declares `@mastra/core` as a peer (`>=1.80.0`)
+  instead of an exact dependency, so pnpm binds it to this workspace's deliberately
+  pinned `@mastra/core@1.66.0` — a version whose "exports" map does not define the
+  `./knowledge` subpath that code-sdk's dist imports, which makes importing
+  `@agentproto/adapter-mastracode-inprocess` (and every CLI test that imports it)
+  fail with `Package subpath './knowledge' is not defined by "exports"`. 1.14.0 is
+  the resolution this lockfile already proved green, so the hold pins it exactly
+  rather than float onto an untested 1.15.x. Lift the hold once the
+  mastracode-inprocess adapter moves to a `@mastra/core` that exports
+  `./knowledge` (>= 1.78.0).
+
+- Updated dependencies [5b792bc]
+- Updated dependencies [5b792bc]
+- Updated dependencies [89258dd]
+  - @agentproto/agent@0.6.1
+  - @agentproto/app@2.6.1
+  - @agentproto/app-client@0.5.1
+  - @agentproto/workflow@0.8.0
+
 ## 0.27.2
 
 ### Patch Changes

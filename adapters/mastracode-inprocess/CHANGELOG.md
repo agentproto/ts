@@ -1,5 +1,24 @@
 # @agentproto/adapter-mastracode-inprocess
 
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies [ed6759b]
+- Updated dependencies [9c1faeb]
+- Updated dependencies [98a217c]
+- Updated dependencies [fdb4d55]
+- Updated dependencies [8fe3dd3]
+- Updated dependencies [0cf4ee3]
+- Updated dependencies [765660d]
+- Updated dependencies [1741e68]
+- Updated dependencies [5b792bc]
+- Updated dependencies [d1b33fa]
+- Updated dependencies [89258dd]
+  - @agentproto/model-catalog@0.16.0
+  - @agentproto/provider-kit@0.7.0
+  - @agentproto/harness@4.1.0
+
 ## 0.6.1
 
 ### Patch Changes

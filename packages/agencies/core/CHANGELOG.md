@@ -1,5 +1,12 @@
 # @agentproto/agencies
 
+## 1.0.1
+
+### Patch Changes
+
+- Updated dependencies [5b792bc]
+  - @agentproto/governance@1.0.1
+
 ## 1.0.0
 
 ### Major Changes

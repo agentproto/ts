@@ -1,5 +1,50 @@
 # agentproto-vscode
 
+## 0.26.5
+
+### Patch Changes
+
+- 5b792bc: Covers the packages the PR's own changesets (`remove-private-names.md`, `voice-kit-turn-settings.md`) miss. Private product and repository names were scrubbed from comments, docs, changelogs, fixtures and tests in these packages; no runtime behavior changes (changelog/docs/test-only edits, plus the catalog-sync ledger key noted in the review).
+- 693a4d1: The VS Code Apps view pages the daemon's MCP-only `app_list` with limit/cursor so a large installed-app registry no longer trips the daemon's MCP result cap and reads back as the `{ truncated: true }` stub — which the tree used to render as an empty registry. A page that still exceeds the cap is retried with a halved limit; a single record over the cap throws instead of resolving to an empty list, and a daemon that predates limit/cursor falls back to the unpaged call. A failed load now shows a "Couldn't load apps" row with a retry command rather than the "Browse the App Store" empty row.
+- Updated dependencies [0ca42d7]
+- Updated dependencies [f4b7be3]
+- Updated dependencies [4c7253f]
+- Updated dependencies [5015995]
+- Updated dependencies [5015995]
+- Updated dependencies [bd7b215]
+- Updated dependencies [2530309]
+- Updated dependencies [bf809ab]
+- Updated dependencies [1a3836b]
+- Updated dependencies [fd346e8]
+- Updated dependencies [dbc1964]
+- Updated dependencies [bd7b215]
+- Updated dependencies [ee63a96]
+- Updated dependencies [0e15a50]
+- Updated dependencies [4223bf1]
+- Updated dependencies [28b4c6b]
+- Updated dependencies [d1da214]
+- Updated dependencies [8075ad4]
+- Updated dependencies [d7ea5cc]
+- Updated dependencies [6e0a7aa]
+- Updated dependencies [e446a6a]
+- Updated dependencies [4b56ce9]
+- Updated dependencies [73f1b23]
+- Updated dependencies [765660d]
+- Updated dependencies [5b792bc]
+- Updated dependencies [1d0cbd5]
+- Updated dependencies [c70c12b]
+- Updated dependencies [d1b33fa]
+- Updated dependencies [069a055]
+- Updated dependencies [221360d]
+- Updated dependencies [0727856]
+- Updated dependencies [7c0f9fd]
+- Updated dependencies [e01f33d]
+- Updated dependencies [fb34c1f]
+- Updated dependencies [89258dd]
+  - @agentproto/runtime@6.5.0
+  - @agentproto/apps@0.28.0
+  - @agentproto/mcp-app-host@0.1.6
+
 ## 0.26.4
 
 ### Patch Changes
