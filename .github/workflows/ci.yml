@@ -404,7 +404,7 @@ jobs:
       # `pnpm test`-only gate would miss these files entirely (they live outside
       # packages/**/adapters/**).
       - name: Run pr-review entry tests
-        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/agentproto-workflows/lib/sandbox-agent.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs .github/actions/agentproto-run/credential-rotation.test.mjs scripts/lib/tools.test.mjs scripts/workflow-env.test.mjs
+        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/default-inputs.test.mjs .github/agentproto-workflows/lib/sandbox-agent.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs .github/actions/agentproto-run/credential-rotation.test.mjs scripts/lib/tools.test.mjs scripts/workflow-env.test.mjs
 
       # Guards the CI artifact ledger — the pure record/marker/select helpers
       # the delivery helper, the agentproto-run driver, and both stamp scripts
