@@ -84,6 +84,11 @@
       "import": "./dist/config.mjs",
       "default": "./dist/config.mjs"
     },
+    "./maintain-repos": {
+      "types": "./dist/maintain-repos.d.ts",
+      "import": "./dist/maintain-repos.mjs",
+      "default": "./dist/maintain-repos.mjs"
+    },
     "./config-schema": {
       "types": "./dist/config-schema.d.ts",
       "import": "./dist/config-schema.mjs",

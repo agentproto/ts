@@ -58,6 +58,7 @@ import { resolveBrowserBuiltin } from "./browser-proxy.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
+import { registerMaintainRunTools } from "./maintain-run-tool.js"
 import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 import { registerDecisionTools } from "./decision-tools.js"
 import { createDaemonEscalationHost } from "./decision-escalation.js"
@@ -84,6 +85,7 @@ export {
 } from "./model-roles.js"
 export { createWorkspaceOfCwd } from "./workspace-binding.js"
 export { loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
+export { registerMaintainRunTools, runMaintainRun, resolveRepoMaintenanceApp, type MaintainRunDeps, type MaintainRunInput, type MaintainRunResult } from "./maintain-run-tool.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerAccountSlotTools } from "./account-slot-tools.js"
 import { registerAccountHealthTools, summarizeAccountHealth } from "./account-health-tools.js"
@@ -4761,6 +4763,12 @@ export async function createGateway(
     // `model_roles` — read-only role → model listing (model-roles.ts). Same
     // root-only exposure; workflow `tool` steps reach it through dispatchTool.
     registerModelRolesTools(server)
+    // `maintain_run` — repo maintenance over the repo set the user config's
+    // `maintain` section names (maintain-run-tool.ts). Starts one background
+    // `maintain` workflow run per repo through the same in-process
+    // `dispatchTool` routines use, so a routine `target.tool: maintain_run`
+    // returns at once with the run ids.
+    registerMaintainRunTools(server, { dispatchTool })
     // `decision_decide` — the DECISION.md decision router (decision.ts).
     // Root-only like `model_roles`; workflows pass policy markdown + evidence
     // from `tool` steps. Classifier = the generic Jev client; no escalation

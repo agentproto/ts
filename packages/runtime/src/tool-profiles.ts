@@ -208,6 +208,7 @@ export const ADMIN_PROFILE_TOOLS: readonly string[] = [
   "llm_endpoint_start",
   "llm_endpoint_status",
   "llm_endpoint_stop",
+  "maintain_run",
   "pair_confirm",
   "pair_decline",
   "pair_list",

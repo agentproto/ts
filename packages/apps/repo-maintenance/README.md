@@ -170,11 +170,35 @@ agentproto workflow run-file \
 
 ## Routines
 
-`routines/repo-maintenance-daily` (plan + review, `applyMerged: false`) and
-`routines/repo-maintenance-weekly` (`applyMerged: true`) are AIP-41
-`ROUTINE.md` templates targeting the `maintain` workflow, shipped
-`enabled: false`. Each documents its own enabling steps — copy the directory
-into a workspace's `.routines/`, point `target.workflow.file` at wherever
-`maintain/WORKFLOW.md` lives in that environment, set `enabled: true`, and
-reload routines. Enable the daily one first and watch it run clean a few
-times before enabling weekly — only weekly deletes anything.
+`routines/repo-maintenance-daily` (`applyMerged: true`: reclaim-class only)
+and `routines/repo-maintenance-weekly` (`applyMerged: true` +
+`applyReviewed: true`) are AIP-41 `ROUTINE.md` templates, shipped
+`enabled: false`. Both target the daemon tool `maintain_run` with
+`all: true`, which starts one `maintain` run per repo the daemon's user
+config names and returns at once with the run ids. The templates hold no
+path and no chat id. The repo set is the workspaces registered with
+`agentproto workspace add <path>` (repo roots, not app-owned) plus the repos
+owning a worktree under the worktrees root; `maintain.exclude` takes one out.
+Extra repos and the run defaults live in the `maintain` section of
+`~/.agentproto/config.json`, which each operator edits for themselves:
+
+```jsonc
+{
+  "maintain": {
+    "workspaces": true,               // registered workspaces (agentproto workspace add), default true
+    "discover": true,                 // repos owning a worktree under worktrees.root + worktrees.extraRoots (default true)
+    "repos": ["~/code/my-app"],       // added on top of discovery
+    "exclude": ["~/code/scratch"],    // left out
+    "maxReviews": 10,                 // optional run default
+    "reviewPreset": "sonnet",         // optional run default
+    "notify": { "provider": "telegram", "address": "<your chat id>" }  // optional run default
+  }
+}
+```
+
+`agentproto maintain --all` resolves the same list and prints it first, so
+it doubles as a preview of what the routines will cover. To enable one,
+copy its directory into a workspace's `.routines/`, set `enabled: true`,
+and reload routines. Enable the daily one first and watch it run clean a
+few times before enabling weekly: only weekly reclaims review-class
+branches on an agreed verdict.

@@ -178,6 +178,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "llm_endpoint_start",
   "llm_endpoint_status",
   "llm_endpoint_stop",
+  "maintain_run",
   "mcp_app_tool_call",
   "mcp_app_ui_index",
   "mcp_app_ui_read",

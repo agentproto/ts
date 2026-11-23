@@ -176,6 +176,56 @@ describe("agentproto maintain --all — argument handling", () => {
 		expect(cap.stdout.chunks.join("")).not.toContain("repo(s)")
 	})
 
+	it("--all honors config maintain.exclude and maintain.repos", { timeout: 60_000 }, async () => {
+		const repoA = await makeRepo("a")
+		const repoB = await makeRepo("b")
+		const repoC = await makeRepo("c")
+		const root = await makeWorktreesRoot([
+			{ repoRoot: repoA, bucket: "repo-a", slugs: ["one"] },
+			{ repoRoot: repoB, bucket: "repo-b", slugs: ["two"] },
+		])
+		process.env["AGENTPROTO_WORKTREES_ROOT"] = root
+		await mkdir(join(home, ".agentproto"), { recursive: true })
+		await writeFile(
+			join(home, ".agentproto", "config.json"),
+			JSON.stringify({ maintain: { exclude: [repoB], repos: [repoC] } }),
+		)
+		// Never reach a live daemon from this test: found-but-dead, exit 1.
+		process.env["AGENTPROTO_DAEMON_URL"] = "http://127.0.0.1:9"
+
+		const cap = captureOut()
+		let code: number
+		try {
+			code = await runMaintain(["--all"])
+		} finally {
+			cap.stdout.restore()
+			cap.stderr.restore()
+		}
+		expect(code === 0 || code === 1 || code === 3).toBe(true)
+		const out = cap.stdout.chunks.join("")
+		const list = out.split("excluded by config")[0] ?? ""
+		expect(list).toContain("2 repo(s)")
+		expect(list).toContain(repoA)
+		expect(list).toContain(repoC)
+		expect(list).not.toContain(repoB)
+		expect(out).toContain(`excluded by config maintain.exclude:\n  ${repoB}`)
+	})
+
+	it("an invalid config maintain section exits 2 before any daemon contact", { timeout: 30_000 }, async () => {
+		await mkdir(join(home, ".agentproto"), { recursive: true })
+		await writeFile(join(home, ".agentproto", "config.json"), JSON.stringify({ maintain: { exclude: "nope" } }))
+		const cap = captureOut()
+		let code: number
+		try {
+			code = await runMaintain(["--all"])
+		} finally {
+			cap.stdout.restore()
+			cap.stderr.restore()
+		}
+		expect(code).toBe(2)
+		expect(cap.stderr.chunks.join("")).toContain("invalid `maintain` config: maintain.exclude")
+	})
+
 	it("--all with an empty worktrees root and no --repo exits 2 with an explanation", { timeout: 30_000 }, async () => {
 		const empty = realpathSync(await mkdtemp(join(tmpdir(), "maintain-all-empty-")))
 		cleanupPaths.push(empty)

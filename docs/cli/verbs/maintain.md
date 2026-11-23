@@ -88,13 +88,13 @@ branch.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
-| `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root, plus any `--repo` dirs. Prints the discovered repo list first; exits `1` if any run fails. |
+| `--all` | `false` | Run once per repo: every registered workspace that is a repo root (`agentproto workspace add`, unless config `maintain.workspaces` is `false`), every main repo that owns a worktree under the worktrees root (unless config `maintain.discover` is `false`), plus config `maintain.repos`, minus config `maintain.exclude`, plus any `--repo` dirs. Prints the resolved repo list first (and the excluded ones); exits `1` if any run fails. See [User config](#user-config-maintain). |
 | `--worktrees-root <dir>` | none | With `--all`: also scan this dir for worktrees, in addition to the configured worktrees root. **Repeatable.** A dir holds worktrees directly (`<dir>/<slug>`) or in buckets (`<dir>/<repo>/<slug>`); main checkouts inside it are skipped. Use it for pools outside the root (e.g. a repo's `_worktrees/`), or set them once in config `worktrees.extraRoots`; the flag adds to that list. |
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
 | `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) unless its verified-pr pass proves them, and reports them; ignored without `--apply-merged`. |
 | `--require-operator-below-guard` | `false` | Workflow input `requireOperatorBelowGuard`: turn the verified-pr, dep-bump and history-covered passes off, so below the guard only an operator approval reclaims. |
-| `--review-preset <name>` | daemon `modelRolePreset` | Reviewer model set for this run: `opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet` (see [`modelRolePreset`](../reference/config-schema.md#modelrolepreset-string)). Each reviewer spawns on the adapter its model needs, so `go-free` runs on opencode. |
-| `--max-reviews <n>` | workflow `maxReviews` (`40`) | Cap how many unmerged branches this run sends to a reviewer (newest tip first). Must be a positive integer, else exit `2` before any daemon contact. Branches with a stored verdict are never re-reviewed, so repeated runs walk the backlog. |
+| `--review-preset <name>` | config `maintain.reviewPreset`, else daemon `modelRolePreset` | Reviewer model set for this run: `opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet` (see [`modelRolePreset`](../reference/config-schema.md#modelrolepreset-string)). Each reviewer spawns on the adapter its model needs, so `go-free` runs on opencode. |
+| `--max-reviews <n>` | config `maintain.maxReviews`, else workflow `maxReviews` (`40`) | Cap how many unmerged branches this run sends to a reviewer (newest tip first). Must be a positive integer, else exit `2` before any daemon contact. Branches with a stored verdict are never re-reviewed, so repeated runs walk the backlog. |
 | `--wait` | `false` | Block until each run ends, then print its markdown report. Exit `0` when all done, `1` when any failed or was cancelled. |
 | `--json` | `false` | Print the raw `workflow_run_file` reply (with `--wait`: the finished run records, one per repo). |
 
@@ -106,6 +106,76 @@ agentproto workflow status <runId>
 ```
 
 Or pass `--wait` to block until it finishes and print the report inline.
+
+## User config: `maintain`
+
+The repo set of `--all` starts from what agentproto already knows about
+your repos: every workspace you registered with
+[`agentproto workspace add`](./workspace.md) (`~/.agentproto/workspaces.json`).
+
+- **For a repo to be maintained:** `agentproto workspace add <path>` (the
+  path must be the repo's root).
+- **To take it out:** add it to `maintain.exclude`.
+
+On top of the registry, repos owning a worktree under the worktrees root are
+discovered, and the `maintain` section of the user config
+`~/.agentproto/config.json` (never committed, each operator writes their own)
+adds repos, removes some, and sets the run defaults. The daemon tool `maintain_run` reads the same
+section through the same code (`@agentproto/runtime/maintain-repos`), so
+`agentproto maintain --all` previews exactly what a `maintain_run {all: true}`
+routine covers.
+
+```jsonc
+{
+  "worktrees": { "extraRoots": ["~/code/_worktrees"] },
+  "maintain": {
+    "workspaces": true,               // default true: registered workspaces (agentproto workspace add)
+    "discover": true,                 // default true: repos owning a worktree under worktrees.root + worktrees.extraRoots
+    "repos": ["~/code/my-app"],       // added on top of discovery (any dir inside a repo)
+    "exclude": ["~/code/scratch"],    // removed, compared by realpath of the repo root
+    "maxReviews": 10,                 // default for --max-reviews
+    "reviewPreset": "sonnet",         // default for --review-preset
+    "notify": { "provider": "telegram", "address": "<chat id>" }  // report target, no CLI flag
+  }
+}
+```
+
+- The `--all` list is `(workspaces ? registered : none) + (discover ?
+  discovered : none) + repos - exclude`, then the `--repo` dirs on top (an
+  explicit `--repo` is never excluded).
+- A registered workspace counts only when it is not app-owned (`ownerApp`,
+  the `app-<slug>` workspaces installed apps register) and its path is a git
+  repo's toplevel (`git rev-parse --show-toplevel`, realpath); a non-git path
+  or a subdir of a repo is ignored.
+  Every entry is normalised to the realpath of its main repo root, so a
+  worktree, a subdir and the repo itself name one repo.
+- `--worktrees-root` dirs are scanned even with `discover: false`.
+- `maxReviews`, `reviewPreset` and `notify` apply to every run, `--all` or
+  not, when the matching flag is absent; a flag always wins. `notify` has no
+  flag: remove it from the config to run silently.
+- An invalid `maintain` section exits `2` before any daemon contact. A
+  `maintain.repos` entry outside a git repo is skipped with a warning.
+
+Full field reference: [config schema](../reference/config-schema.md#maintain-object).
+
+## From the daemon: `maintain_run`
+
+The daemon tool `maintain_run` runs the same workflow over several repos
+without the CLI, for MCP callers and routines
+(`target.tool: maintain_run`):
+
+| Input | Meaning |
+|-------|---------|
+| `all` | The `--all` repo set: registered workspaces + discovered repos + `maintain.repos` - `maintain.exclude`. |
+| `repos` | Explicit repos (any dir inside each). With `all`, added on top. One of `all`/`repos` is required. |
+| `applyMerged`, `applyReviewed`, `requireOperatorBelowGuard` | As the CLI flags. |
+| `maxReviews`, `reviewPreset`, `notify` | Default to `maintain.*` in the config. |
+
+It installs the repo-maintenance app (an install refused as a worktree
+re-point keeps the installed copy), starts one background run per repo and
+returns at once with `{ runs: [{ repo, runId, status }], app, skipped,
+excluded }`. A repo whose run fails to start carries an `error` and the
+others still start; the call is an error only when no run started.
 
 ## Examples
 
@@ -129,8 +199,9 @@ agentproto maintain --repo ~/code/my-app --wait
 ## Scheduling it
 
 `packages/apps/repo-maintenance/routines/` ships two AIP-41 `ROUTINE.md`
-templates targeting the same `maintain` workflow, both `enabled: false`:
-`repo-maintenance-daily` (plan + review, no apply) and
-`repo-maintenance-weekly` (`applyMerged: true` + `applyReviewed: true`; drop
-`applyReviewed` to keep the weekly apply reclaim-class only). See that
-directory's README for how to enable one per workspace.
+templates, both `enabled: false`, both calling `maintain_run` with
+`all: true`: `repo-maintenance-daily` (`applyMerged: true`, reclaim-class
+only) and `repo-maintenance-weekly` (`applyMerged: true` +
+`applyReviewed: true`). They hold no path and no chat id: configure the
+`maintain` section above, copy a routine into a workspace's `.routines/`,
+set `enabled: true` and reload routines. See that directory's README.

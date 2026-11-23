@@ -449,6 +449,52 @@ export interface WorktreesConfig {
 }
 
 /**
+ * Where `maintain_run` reports: the same shape as the `maintain` workflow's
+ * `notify` input (`{ provider?, alias?, address?, source? }`, plus the
+ * legacy `channel`). Passed to the workflow verbatim.
+ */
+export interface MaintainNotifyConfig {
+  provider?: "telegram" | "agentpush"
+  alias?: string
+  address?: string
+  source?: string
+  channel?: string
+}
+
+/**
+ * `maintain`: which repos the repo-maintenance runs cover, and the run
+ * defaults, for `agentproto maintain --all` and the daemon's `maintain_run`
+ * tool. Everything personal to one operator (which repos, the notification
+ * target) lives here, in the uncommitted user config, so the shipped
+ * routines stay generic.
+ *
+ * Repo list = (workspaces ? registered non-app workspaces that are a repo
+ * toplevel : none) + (discover ? repos owning a worktree under
+ * `worktrees.root` + `worktrees.extraRoots` : none) + `repos`, minus
+ * `exclude`, deduped by
+ * realpath of each repo's main toplevel. Explicit `--repo` / `repos` inputs
+ * are added on top and are not filtered by `exclude`.
+ */
+export interface MaintainConfig {
+  /** Include every workspace registered in `~/.agentproto/workspaces.json`
+   *  (`agentproto workspace add`) that is not app-owned (`ownerApp`) and
+   *  whose path is a git repo's toplevel. Default true. */
+  workspaces?: boolean
+  /** Discover repos owning a worktree under the worktrees roots. Default true. */
+  discover?: boolean
+  /** Extra repos (any dir inside one; `~/` expands), added to discovery. */
+  repos?: string[]
+  /** Repos left out (any dir inside one; `~/` expands). */
+  exclude?: string[]
+  /** Default `maxReviews` per run when the caller gives none. */
+  maxReviews?: number
+  /** Default reviewer model preset when the caller gives none. */
+  reviewPreset?: string
+  /** Default report target when the caller gives none. */
+  notify?: MaintainNotifyConfig
+}
+
+/**
  * Policy for `agent_start.attach` — whether a spawn AUTO-attaches to its
  * calling session as parent lineage. `"always"` (the default) nests a
  * spawned child under the session that spawned it whenever that identity is
@@ -912,6 +958,9 @@ export interface AgentprotoConfig {
   /** Where `agentproto worktree new` creates worktrees. See
    *  {@link WorktreesConfig}. */
   worktrees?: WorktreesConfig
+  /** Repo-maintenance repo set + run defaults (`maintain --all`,
+   *  `maintain_run`). See {@link MaintainConfig}. */
+  maintain?: MaintainConfig
   /** Spawn-time policy (`agent_start`). See {@link SpawnConfig}. */
   spawn?: SpawnConfig
   /** Session-presence policy for the dashboard. See {@link SessionsConfig}. */

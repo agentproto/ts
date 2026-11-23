@@ -28,8 +28,15 @@ import { basename, dirname, join, resolve } from "node:path"
 import { mcpToolCall, withDaemon } from "./workflow.js"
 import { repoRootOf } from "./worktree.js"
 import { resolveWorktreesRoot } from "./worktree.js"
-import { discoverWorktreeOwningRepos, normalizeExtraRoots, resolveAllRepos } from "./maintain-discovery.js"
+import { discoverWorktreeOwningRepos, resolveAllRepos } from "./maintain-discovery.js"
 import { loadConfig } from "@agentproto/runtime/config"
+import type { AgentprotoConfig } from "@agentproto/runtime/config"
+import {
+	maintainWorkflowInput,
+	readMaintainConfig,
+	resolveMaintainRepos,
+	type MaintainRunOptions,
+} from "@agentproto/runtime/maintain-repos"
 import { httpGetJson } from "./_daemon-helpers.js"
 import { APP_INSTALL_WORKTREE_REPOINT_REFUSED, MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
 
@@ -41,9 +48,13 @@ Usage:
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
                    toplevel.
-  --all            Run the workflow once per repo: every main repo that owns
-                   a worktree under the worktrees root, plus any --repo dirs.
-                   The discovered list is printed first; --apply-merged
+  --all            Run the workflow once per repo: every registered workspace
+                   that is a repo root (agentproto workspace add; unless
+                   config maintain.workspaces is false), every main repo that
+                   owns a worktree under the worktrees root (unless config
+                   maintain.discover is false), plus config maintain.repos,
+                   minus config maintain.exclude, plus any --repo dirs.
+                   The resolved list is printed first; --apply-merged
                    applies to every repo. Exit 1 if any repo's run failed.
   --apply-merged   After review, apply branch_gc (reclaim-class only by
                    default) and worktree_gc. Default: dry run (plan + review
@@ -79,6 +90,12 @@ Usage:
                    (exit 0 when all done, 1 when any failed/was cancelled).
   --json           Print the raw workflow_run_file reply (with --wait: the
                    finished run records, one per repo).
+
+To have a repo maintained: \`agentproto workspace add <path>\`; to take it
+out: config \`maintain.exclude\`.
+Config (~/.agentproto/config.json, section \`maintain\`): \`workspaces\`,
+\`discover\`, \`repos\`, \`exclude\` shape the --all list; \`maxReviews\`, \`reviewPreset\`
+and \`notify\` are the run defaults when the flags are absent (flags win).
 
 Runs the built-in repo-maintenance app's \`maintain\` workflow via the
 daemon's workflow_run_file — needs a running daemon (\`agentproto serve\`),
@@ -150,10 +167,10 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 		},
 	})
 
-	const reviewPreset = values["review-preset"]
-	if (reviewPreset !== undefined && !MODEL_ROLE_PRESET_NAMES.includes(reviewPreset)) {
+	const flagPreset = values["review-preset"]
+	if (flagPreset !== undefined && !MODEL_ROLE_PRESET_NAMES.includes(flagPreset)) {
 		process.stderr.write(
-			`agentproto maintain: unknown --review-preset "${reviewPreset}" (known: ${MODEL_ROLE_PRESET_NAMES.join(", ")})\n`,
+			`agentproto maintain: unknown --review-preset "${flagPreset}" (known: ${MODEL_ROLE_PRESET_NAMES.join(", ")})\n`,
 		)
 		return 2
 	}
@@ -166,29 +183,51 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 		return 2
 	}
 
-	// Repo list: --all discovers every main repo owning a worktree under the
-	// worktrees root (plus the explicit --repo dirs); without it, exactly one
-	// repo — the lone --repo or the cwd's toplevel, as before.
+	// The user config's `maintain` section: the --all repo set and the run
+	// defaults. An unreadable config must not stop a maintenance run (fall
+	// back to flags alone); an INVALID `maintain` section is a typo the
+	// operator must see, so it stops here, before any daemon contact.
+	const cfg: AgentprotoConfig | undefined = await loadConfig().catch(() => undefined)
+	let maintainCfg: ReturnType<typeof readMaintainConfig>
+	try {
+		maintainCfg = readMaintainConfig(cfg)
+	} catch (err) {
+		process.stderr.write(`agentproto maintain: ${err instanceof Error ? err.message : String(err)}\n`)
+		return 2
+	}
+
+	// Repo list: --all resolves the configured set (maintain-repos.ts, shared
+	// with the daemon's maintain_run) plus the explicit --repo dirs; without
+	// it, exactly one repo — the lone --repo or the cwd's toplevel, as before.
 	// (Kept ahead of `withDaemon` on purpose: a malformed invocation must be
 	// diagnosed before any daemon contact, and the list itself is the
 	// command's first output in --all mode.)
 	let repos: string[]
 	if (values.all) {
 		const worktreesRoot = await resolveWorktreesRoot(undefined)
-		const explicit = repoValues(values).map((dir) => {
-			const root = repoRootOf(resolve(dir))
-			if (!root) {
-				process.stderr.write(`agentproto maintain: --repo "${dir}" is not inside a git repository.\n`)
-				return null
+		let resolved: Awaited<ReturnType<typeof resolveMaintainRepos>>
+		try {
+			resolved = await resolveMaintainRepos(cfg, {
+				worktreesRoot,
+				extraRoots: values["worktrees-root"] ?? [],
+				repos: repoValues(values),
+				resolveRepoRoot: repoRootOf,
+			})
+		} catch (err) {
+			process.stderr.write(`agentproto maintain: ${err instanceof Error ? err.message : String(err)}\n`)
+			return 2
+		}
+		const badExplicit = resolved.skipped.filter(s => s.source === "explicit")
+		for (const bad of badExplicit) {
+			process.stderr.write(`agentproto maintain: --repo "${bad.path}" is not inside a git repository.\n`)
+		}
+		if (badExplicit.length > 0) return 2
+		for (const bad of resolved.skipped) {
+			if (bad.source === "config") {
+				process.stderr.write(`agentproto maintain: config maintain.repos "${bad.path}" skipped: ${bad.reason}.\n`)
 			}
-			return root
-		})
-		if (explicit.some((r) => r === null)) return 2
-		// Config `worktrees.extraRoots` first, then the flag. An unreadable
-		// config must not stop a maintenance run: fall back to the flag alone.
-		const cfg = await loadConfig().catch(() => undefined)
-		const extraRoots = normalizeExtraRoots([...(cfg?.worktrees?.extraRoots ?? []), ...(values["worktrees-root"] ?? [])])
-		repos = await resolveAllRepos([worktreesRoot, ...extraRoots], explicit as string[])
+		}
+		repos = resolved.repos
 		if (repos.length === 0) {
 			process.stderr.write(
 				`agentproto maintain: --all found no repos — no worktrees under ${worktreesRoot} and no --repo given.\n`,
@@ -197,6 +236,10 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 		}
 		process.stdout.write(`agentproto maintain: ${repos.length} repo(s):\n`)
 		for (const repo of repos) process.stdout.write(`  ${repo}\n`)
+		if (resolved.excluded.length > 0) {
+			process.stdout.write(`agentproto maintain: excluded by config maintain.exclude:\n`)
+			for (const repo of resolved.excluded) process.stdout.write(`  ${repo}\n`)
+		}
 	} else {
 		const explicit = repoValues(values)
 		const repoRoot = repoRootOf(resolve(explicit[0] ?? process.cwd()))
@@ -205,6 +248,16 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			return 2
 		}
 		repos = [repoRoot]
+	}
+
+	// Flags win; `maintainWorkflowInput` falls back to the config's
+	// maxReviews / reviewPreset / notify, then the workflow's own defaults.
+	const runOpts: MaintainRunOptions = {
+		applyMerged: values["apply-merged"] === true,
+		applyReviewed: values["apply-reviewed"] === true,
+		requireOperatorBelowGuard: values["require-operator-below-guard"] === true,
+		...(flagPreset !== undefined ? { reviewPreset: flagPreset } : {}),
+		...(maxReviews !== undefined ? { maxReviews } : {}),
 	}
 
 	let appDir: string
@@ -261,14 +314,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 		try {
 			result = (await mcpToolCall(daemon.endpoint, "workflow_run_file", {
 				path: workflowPath,
-				input: {
-					repoRoot: repo,
-					applyMerged: values["apply-merged"] === true,
-					applyReviewed: values["apply-reviewed"] === true,
-					...(values["require-operator-below-guard"] === true ? { requireOperatorBelowGuard: true } : {}),
-					...(reviewPreset !== undefined ? { reviewPreset } : {}),
-					...(maxReviews !== undefined ? { maxReviews } : {}),
-				},
+				input: maintainWorkflowInput(repo, runOpts, maintainCfg),
 			})) as Record<string, unknown>
 		} catch (err) {
 			process.stderr.write(`agentproto maintain: ${err instanceof Error ? err.message : String(err)}\n`)
