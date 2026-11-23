@@ -325,11 +325,11 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
           // Simulate the daemon's over-budget marker: the whole payload is
           // replaced by { truncated: true, totalBytes, hint }.
           if (adapterListTruncated) {
-            return envelope({ truncated: true, totalBytes: 325_984, hint: "use limit/cursor/fields" })
+            return markerEnvelope(325_984, "use limit/cursor/fields")
           }
           // A full single-adapter detail over the cap (the fallback path).
           if (adapterDetailTruncated && args.full && args.fields === undefined) {
-            return envelope({ truncated: true, totalBytes: 150_000, hint: "page the models" })
+            return markerEnvelope(150_000, "page the models")
           }
           // Daemon 0.20+ additive pagination: limit/cursor return the
           // { items, total, nextCursor } page envelope (opaque base64url
@@ -367,7 +367,7 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
           const row = adapterListRows().find(r => r.slug === args.adapter)
           const envelope = (payload: unknown) => ({ status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } } })
           if (adapterModelsTruncated) {
-            return envelope({ truncated: true, totalBytes: 120_000, hint: "page the models" })
+            return markerEnvelope(120_000, "page the models")
           }
           if (!row) {
             // The runtime tool's own failure wording (agent-tools.ts): a
@@ -420,7 +420,7 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
             return { status: 200, body: { jsonrpc: "2.0", id: 1, error: { code: -32602, message: 'Invalid arguments: Unrecognized key "limit"' } } }
           }
           if (catalogRoutesTruncated && (args.limit !== undefined || args.cursor !== undefined)) {
-            return envelope({ truncated: true, totalBytes: 325_984, hint: "use limit/cursor/fields" })
+            return markerEnvelope(325_984, "use limit/cursor/fields")
           }
           if (args.limit !== undefined || args.cursor !== undefined) {
             const limit = Math.min(args.limit ?? 50, 200)
@@ -493,6 +493,7 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     // daemon is undefined — don't turn one root failure into a cascade.
     if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
     adapterListTruncated = false
+    markerAsError = false
     adapterListNoPaging = false
     adapterDetailTruncated = false
     adapterModelsTruncated = false
@@ -530,6 +531,20 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     },
   ]
   let adapterListTruncated = false
+  /** Send the over-cap marker the way current daemons do: an ERROR result
+   *  (capResult, to-mcp-tool.ts). Off = the successful form older daemons sent. */
+  let markerAsError = false
+  const markerEnvelope = (totalBytes: number, hint: string) => ({
+    status: 200,
+    body: {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ truncated: true, totalBytes, hint }) }],
+        ...(markerAsError ? { isError: true } : {}),
+      },
+    },
+  })
   let adapterListNoPaging = false
   let adapterDetailTruncated = false
   let adapterModelsTruncated = false
@@ -894,6 +909,42 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     // The regression this pins: the old code returned `result.adapters ?? []`
     // for exactly this payload, so callers read a truncated response as
     // « 0 installed » / « adapter no longer installed ».
+  })
+
+  it("listAdapters() throws McpResultTruncatedError when the marker arrives as an error result", async () => {
+    adapterListTruncated = true
+    markerAsError = true
+    const err = await client().listAdapters().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(McpResultTruncatedError)
+    expect((err as Error).message).toMatch(/adapter_list.*truncated.*325984 bytes/)
+  })
+
+  it("getAdapter() still falls back to paged models when the full row's marker arrives as an error result", async () => {
+    adapterDetailTruncated = true
+    markerAsError = true
+    adapterListRows = () => [
+      {
+        slug: "opencode",
+        name: "OpenCode",
+        protocol: "acp",
+        version: "1.0.0",
+        models: ["openrouter/a", "openrouter/b"],
+        modelDetails: [
+          { id: "openrouter/a", provider: "openrouter" },
+          { id: "openrouter/b", provider: "openrouter" },
+        ],
+        modes: [{ id: "subscription", status: "active" }],
+        status: "ready",
+      },
+    ]
+    const adapter = await client().getAdapter("opencode")
+    expect(adapter?.models).toEqual(["openrouter/a", "openrouter/b"])
+  })
+
+  it("catalogModels() throws McpResultTruncatedError when the marker arrives as an error result", async () => {
+    catalogRoutesTruncated = true
+    markerAsError = true
+    await expect(client().catalogModels()).rejects.toBeInstanceOf(McpResultTruncatedError)
   })
 
   it("listAdapters() falls back to the single unpaged call on a daemon without limit/cursor", async () => {
@@ -2041,6 +2092,8 @@ describe.skipIf(!canBindLoopback)("DaemonClient.listApps over the daemon's MCP r
   let daemon: Awaited<ReturnType<typeof mockDaemon>>
   let registry: Array<{ appId: string; dir: string; description: string }>
   let pagingSupported: boolean
+  /** Current daemons send the marker as an error result (capResult). */
+  let markerAsError: boolean
 
   function app(i: number, bytes = 4_000): { appId: string; dir: string; description: string } {
     return { appId: `app-${String(i).padStart(2, "0")}`, dir: `/apps/${i}`, description: "x".repeat(bytes) }
@@ -2049,6 +2102,7 @@ describe.skipIf(!canBindLoopback)("DaemonClient.listApps over the daemon's MCP r
   beforeEach(async () => {
     registry = Array.from({ length: 26 }, (_, i) => app(i))
     pagingSupported = true
+    markerAsError = false
     daemon = await mockDaemon(req => {
       const rpc = req.body as { method: string; params: { name: string; arguments: { limit?: number; cursor?: string } } }
       if (rpc?.method !== "tools/call" || rpc.params.name !== "app_list") return { status: 404, body: { error: "not_found" } }
@@ -2067,10 +2121,15 @@ describe.skipIf(!canBindLoopback)("DaemonClient.listApps over the daemon's MCP r
         }
       }
       let text = JSON.stringify(payload)
+      let over = false
       if (Buffer.byteLength(text, "utf8") > CAP) {
+        over = true
         text = JSON.stringify({ truncated: true, totalBytes: Buffer.byteLength(text, "utf8"), hint: "use limit/cursor/fields" })
       }
-      return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text }] } } }
+      return {
+        status: 200,
+        body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text }], ...(over && markerAsError ? { isError: true } : {}) } },
+      }
     })
   })
 
@@ -2105,6 +2164,20 @@ describe.skipIf(!canBindLoopback)("DaemonClient.listApps over the daemon's MCP r
     const apps = await client().listApps()
     expect(apps.map(a => a.appId)).toEqual(registry.map(a => a.appId))
     expect(appListArgs()[1]).toEqual({ full: true, limit: Math.ceil(APP_LIST_PAGE_SIZE / 2) })
+  })
+
+  it("halves the page size when the marker arrives as an error result (current daemons)", async () => {
+    markerAsError = true
+    registry[3] = app(3, 80_000)
+    const apps = await client().listApps()
+    expect(apps.map(a => a.appId)).toEqual(registry.map(a => a.appId))
+    expect(appListArgs()[1]).toEqual({ full: true, limit: Math.ceil(APP_LIST_PAGE_SIZE / 2) })
+  })
+
+  it("throws McpResultTruncatedError when a single app's error-form marker cannot be paged smaller", async () => {
+    markerAsError = true
+    registry[0] = app(0, 120_000)
+    await expect(client().listApps()).rejects.toBeInstanceOf(McpResultTruncatedError)
   })
 
   it("throws McpResultTruncatedError when a single app is over the cap", async () => {

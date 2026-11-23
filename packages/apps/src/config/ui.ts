@@ -40,6 +40,7 @@
  */
 
 import { parseConfigFragment, buildConfigFragment, shouldApplyIncomingView } from "./fragment.js"
+import { unwrapText } from "../unwrap-text.js"
 
 export const CONFIG_TOOLS = [
   "auth_profile_list",
@@ -257,24 +258,9 @@ ${parseConfigFragment.toString()}
 ${buildConfigFragment.toString()}
 ${shouldApplyIncomingView.toString()}
 
-// app_tool_call wraps its dispatch result at least once (its own text-result
-// body is the JSON-stringified inner MCP tool result); peel back through
-// nested {content:[{type:"text",text:...}]} shells until the payload stops
-// looking like one — same convention as ops-panel/session-viewer.
-function unwrapText(result) {
-  var cur = result;
-  for (var i = 0; i < 4; i++) {
-    if (typeof cur === "string") {
-      try { cur = JSON.parse(cur); continue; } catch (e) { return cur; }
-    }
-    if (cur && Array.isArray(cur.content) && cur.content[0] && typeof cur.content[0].text === "string") {
-      cur = cur.content[0].text;
-      continue;
-    }
-    break;
-  }
-  return cur;
-}
+// Shared unwrapText (../unwrap-text.ts): peels app_tool_call's nested
+// envelopes and throws on the daemon's result-cap marker.
+var unwrapText = ${unwrapText.toString()};
 
 function callApp(tool, args) {
   return callTool("app_tool_call", { appId: APP_ID, tool: tool, args: args || {} }).then(unwrapText);

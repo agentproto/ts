@@ -1463,4 +1463,33 @@ describe("session-steward workflow — over-cap session_list pages", () => {
     expect(scan?.counts.terminal).toBe(800)
     expect(String(report)).toContain("TRUNCATED at 800 rows per query")
   })
+
+  it("fails the run when a later page comes back as the daemon's error-form truncation marker, instead of dropping its rows", async () => {
+    const rows = terminalRows(120)
+    const { dispatchTool: base } = fakeTools({ entries: [], liveExtra: rows })
+    // Current daemons send the over-cap marker as an ERROR result
+    // (capResult, to-mcp-tool.ts). Page 2+ run inside a tolerant map, which
+    // turns that error into a rejected item: the scan used to read it as
+    // "no rows on this page" and quietly report 50 of 120 sessions.
+    const marker = { truncated: true, totalBytes: 131_072, hint: "use limit/cursor/fields" }
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "session_list" && inputs.updatedSince !== undefined && inputs.cursor !== undefined) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(marker) }], isError: true }
+      }
+      return base(name, inputs)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, { ...createDaemonToolRegistry(handle, dispatchTool), agentRefs: { [JUDGE_REF]: { adapter: "mock-agent" } } })
+    let scan: { counts: { terminal: number } } | undefined
+    const run = runWorkflow({
+      workflow: compiled,
+      agents: judgeHost({}).host,
+      input: { callerSessionId: SELF },
+      onStepComplete: (id: string, out: unknown) => {
+        if (id === "scan") scan = out as typeof scan
+      },
+    })
+    await expect(run).rejects.toThrow(/truncated by the MCP result cap \(131072 bytes/)
+    expect(scan).toBeUndefined()
+  })
 })

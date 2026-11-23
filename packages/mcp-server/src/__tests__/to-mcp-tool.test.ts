@@ -553,7 +553,7 @@ describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
       implementations: [implementTool(bigTool, ({ input }) => ({ blob: "x".repeat(input.n) }))],
     })
 
-    it("replaces an oversize result with a truncated marker and no structuredContent", async () => {
+    it("replaces an oversize result with a truncated marker sent as an error, no structuredContent", async () => {
       const reg = buildMcpTool({ tool: bigTool, candidates: [bigDriver] })
       // `bigTool` has no paging parameters in its input shape — the marker
       // hint must not tell the caller to paginate.
@@ -562,6 +562,9 @@ describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
       expect(body.truncated).toBe(true)
       expect(body.totalBytes).toBeGreaterThan(MCP_RESULT_MAX_BYTES)
       expect(body.hint).toContain("narrow the request arguments")
+      // An error, not a success: a lenient list reader must never see this
+      // marker as an empty payload.
+      expect(res.isError).toBe(true)
       expect(res.structuredContent).toBeUndefined()
       expect(res.content[0]!.text.length).toBeLessThan(200)
     })
@@ -589,6 +592,7 @@ describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
     it("passes a result under the cap through untouched", async () => {
       const reg = buildMcpTool({ tool: bigTool, candidates: [bigDriver] })
       const res = await reg.handler({ n: 1000 })
+      expect(res.isError).toBeUndefined()
       expect(parse(res).blob).toHaveLength(1000)
       expect(res.structuredContent).toBeDefined()
     })
@@ -608,6 +612,7 @@ describe("toMcpTool manifest-only tools (JSON-Schema inputs)", () => {
       })
       const res = await reg.handler({ n: 1 })
       expect(parse(res).truncated).toBe(true)
+      expect(res.isError).toBe(true)
     })
   })
 })
