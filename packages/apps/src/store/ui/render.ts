@@ -428,7 +428,8 @@ function idList(ids: readonly string[] | undefined): string {
   return `<ul class="store-detail-list">${ids.map(id => `<li class="mono">${esc(id)}</li>`).join("")}</ul>`
 }
 
-function renderRuns(runs: readonly RunRow[] | undefined): string {
+/** `total` is the daemon's `runCount` (app_list ships only the latest runs). */
+function renderRuns(runs: readonly RunRow[] | undefined, total?: number): string {
   if (!runs || runs.length === 0) return ""
   const sorted = runs.slice().sort((a, b) => ((b.startedAt || "") < (a.startedAt || "") ? -1 : (b.startedAt || "") > (a.startedAt || "") ? 1 : 0))
   const shown = sorted.slice(0, 10)
@@ -438,7 +439,8 @@ function renderRuns(runs: readonly RunRow[] | undefined): string {
       return `<tr><td>${text(r.status, "—")}</td><td>${esc(formatTime(r.startedAt))}</td><td>${esc(formatDuration(r.startedAt, r.endedAt))}</td><td>${text(where, "—")}</td></tr>`
     })
     .join("")
-  const more = runs.length > shown.length ? ` <span class="store-detail-more">(last ${shown.length} of ${runs.length})</span>` : ""
+  const count = Math.max(total ?? 0, runs.length)
+  const more = count > shown.length ? ` <span class="store-detail-more">(last ${shown.length} of ${count})</span>` : ""
   return `<h3 class="store-detail-section">Recent runs${more}</h3><table class="store-runs"><thead><tr><th>Status</th><th>Started</th><th>Duration</th><th>Harness / model</th></tr></thead><tbody>${rows}</tbody></table>`
 }
 
@@ -535,7 +537,7 @@ export function renderDetail(snapshot: StoreSnapshot, view: ViewState): string {
   if (agents !== "") sections.push(`<h3 class="store-detail-section">Agents</h3>${agents}`)
   const workflows = idList(inst?.workflows)
   if (workflows !== "") sections.push(`<h3 class="store-detail-section">Workflows</h3>${workflows}`)
-  const runs = renderRuns(inst?.runs)
+  const runs = renderRuns(inst?.runs, inst?.runCount)
   if (runs !== "") sections.push(runs)
   sections.push(renderCopyBlock(copyItems(entry, inst, appId)))
   return `<div class="store-detail" data-appid="${esc(appId)}">${back}${sections.join("")}</div>`

@@ -100,9 +100,13 @@ export function toolText<T extends object>(page: Page<T>, params?: Pick<PagePara
   return JSON.stringify({ ...page, items })
 }
 
+/** Largest `limit` {@link pageParamsShape} accepts. A tool's `maxLimit`
+ *  above it could never be reached (the schema rejects the call first). */
+export const PAGE_LIMIT_MAX = 200
+
 /** Zod fragment to spread into each list tool's input schema. */
 export const pageParamsShape = {
-  limit: z.number().int().min(1).max(200).optional().describe("Max items per page. Default 50."),
+  limit: z.number().int().min(1).max(PAGE_LIMIT_MAX).optional().describe("Max items per page. Default 50."),
   cursor: z.string().optional().describe("Opaque token from a prior call's `nextCursor`."),
   compact: z
     .boolean()
