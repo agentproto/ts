@@ -261,6 +261,55 @@ describe("mountRunnerSelect (DOM, happy-dom)", () => {
     // not because no harness is installed.
   })
 
+  it("pages harness_preset_list instead of reading the daemon's cap marker as no presets", async () => {
+    const presets = Array.from({ length: 70 }, (_, i) => ({
+      id: `p-${i}`,
+      harnessSlug: i === 69 ? "hermes" : `h-${i}`,
+      name: `Preset ${i}`,
+      isDefault: i === 69,
+      defaultModel: i === 69 ? "z-ai/glm-5.2" : undefined,
+    }))
+    const { container, handle } = mount({
+      callTool: async (tool, args) => {
+        const a = (args ?? {}) as { limit?: number; cursor?: string }
+        if (tool === "harness_preset_list") {
+          // The daemon's cap: the unpaged list is over it and comes back as
+          // the marker; limit/cursor pages fit.
+          if (a.limit === undefined) return { truncated: true, totalBytes: 130_000, hint: "use limit/cursor/fields" }
+          const start = a.cursor ? Number(a.cursor) : 0
+          const end = start + a.limit
+          return { items: presets.slice(start, end), total: presets.length, ...(end < presets.length ? { nextCursor: String(end) } : {}) }
+        }
+        return { items: [{ slug: "hermes", name: "Hermes", installed: true, modelCount: 0 }], total: 1 }
+      },
+    })
+    await handle.refresh()
+    const select = container.querySelector("select")
+    if (!select) throw new Error("no select rendered")
+    // The default preset sits on page 2: its label proves every page was read.
+    expect(select.options[0]?.textContent).toBe("Hermes — Preset 69")
+  })
+
+  it("halves an adapter_list page that still trips the cap instead of failing discovery", async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({ slug: `a-${i}`, name: `A ${i}`, installed: true, modelCount: 0 }))
+    const { container, handle } = mount({
+      callTool: async (tool, args) => {
+        if (tool === "harness_preset_list") return { presets: [] }
+        const a = (args ?? {}) as { limit?: number; cursor?: string }
+        const limit = a.limit ?? 50
+        // A page of 50 is over the cap on this daemon; 25 fits.
+        if (limit > 25) return { truncated: true, totalBytes: 101_000, hint: "use limit/cursor/fields" }
+        const start = a.cursor ? Number(a.cursor) : 0
+        const end = start + limit
+        return { items: rows.slice(start, end), total: rows.length, ...(end < rows.length ? { nextCursor: String(end) } : {}) }
+      },
+    })
+    await handle.refresh()
+    const select = container.querySelector("select")
+    if (!select) throw new Error("no select rendered")
+    expect(select.options.length).toBe(50)
+  })
+
   it("degrades gracefully when a discovery call rejects: empty source + muted note, no throw", async () => {
     const { container, handle } = mount({
       callTool: async tool => {

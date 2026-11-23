@@ -39,6 +39,7 @@
  * every tool-input notification after that re-routes unconditionally.
  */
 
+import { pageAll } from "@agentproto/app-client/page-all"
 import { parseConfigFragment, buildConfigFragment, shouldApplyIncomingView } from "./fragment.js"
 import { unwrapText } from "../unwrap-text.js"
 
@@ -285,6 +286,25 @@ function loadTool(tool, args) {
   }).catch(function (e) {
     var msg = (e && e.message) || String(e);
     return { ok: false, message: msg, unknown: false };
+  });
+}
+
+// Every row of a paged list tool (@agentproto/app-client/page-all): walks
+// nextCursor, halves a page over the daemon's MCP result cap, rejects on a
+// page it cannot read.
+var pageAll = ${pageAll.toString()};
+
+// loadTool's never-throws shape for a list read through pageAll: the rows
+// land under data[listKey], where the unpaged body kept them. An unpaged
+// call grows past the result cap and its marker read as "no rows".
+function loadPaged(tool, args, listKey) {
+  return pageAll(callApp, tool, args, { listKey: listKey }).then(function (rows) {
+    var data = {};
+    data[listKey] = rows;
+    return { ok: true, data: data };
+  }).catch(function (e) {
+    var msg = (e && e.message) || String(e);
+    return { ok: false, message: msg, unknown: /unknown daemon tool/.test(msg) };
   });
 }
 
@@ -1366,7 +1386,7 @@ function wireWalletCards(container) {
         if (exp.curate) {
           var profile = findProfile(id);
           if (profile && !walletsState.providerModelsByEndpoint[profile.endpoint]) {
-            loadTool("catalog_provider_models", { endpoint: profile.endpoint, limit: 200 }).then(function (r) {
+            loadPaged("catalog_provider_models", { endpoint: profile.endpoint, limit: 200 }, "models").then(function (r) {
               walletsState.providerModelsByEndpoint[profile.endpoint] = r.ok ? (r.data.models || []) : [];
               renderWalletCards();
             });
@@ -1785,7 +1805,7 @@ var modelsState = { routes: [], runnableOnly: false, walletFilter: "", titlerRow
 
 function loadModels() {
   return Promise.all([
-    loadTool("catalog_models", { full: true }),
+    loadPaged("catalog_models", { full: true }, "routes"),
     loadTool("auth_profile_list", { full: true }),
     loadTool("config_get", { keys: ["titler.model"] }),
   ]).then(function (results) {
@@ -2109,7 +2129,7 @@ function wireMcpTab(container) {
         if (!host) return;
         if (!expanded) { host.innerHTML = ""; return; }
         host.innerHTML = '<div class="muted-note">Loading tools&hellip;</div>';
-        loadTool("mcp_imported_tool_list", { alias: alias }).then(function (r) {
+        loadPaged("mcp_imported_tool_list", { alias: alias }, "tools").then(function (r) {
           if (!r.ok) { host.innerHTML = '<div class="muted-note">mcp_imported_tool_list: ' + escHtml(r.message) + '</div>'; return; }
           var tools = (r.data && r.data.tools) || [];
           if (tools.length === 0) { host.innerHTML = '<div class="empty">No tools (server may not be connected yet).</div>'; return; }

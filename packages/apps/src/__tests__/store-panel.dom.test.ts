@@ -656,6 +656,47 @@ describe("store panel — detail view, copy block, icons, search", () => {
   })
 })
 
+describe("store panel: app_list over the daemon's MCP result cap", () => {
+  const CAP = 100_000
+  const installed = Array.from({ length: 30 }, (_, i) => ({
+    appId: `@acme/app-${String(i).padStart(2, "0")}`,
+    name: `App ${i}`,
+    description: "x".repeat(4_000),
+  }))
+  /** The daemon's app_list: unpaged = every row; limit/cursor = a page; any
+   *  body over the cap is replaced by the marker (success form = daemons
+   *  before the marker became an error, error form = current daemons). */
+  function cappedAppList(errorForm: boolean): ToolHandler {
+    return args => {
+      const limit = typeof args.limit === "number" ? args.limit : undefined
+      const start = typeof args.cursor === "string" ? Number(args.cursor) : 0
+      const body =
+        limit === undefined
+          ? installed
+          : {
+              items: installed.slice(start, start + limit),
+              total: installed.length,
+              ...(start + limit < installed.length ? { nextCursor: String(start + limit) } : {}),
+            }
+      const text = JSON.stringify(body)
+      if (text.length <= CAP) return ok(body)
+      const marker = JSON.stringify({ truncated: true, totalBytes: text.length, hint: "use limit/cursor/fields" })
+      return errorForm ? { content: [{ type: "text", text: marker }], isError: true } : ok(JSON.parse(marker))
+    }
+  }
+
+  it.each([
+    ["successful marker", false],
+    ["error marker", true],
+  ])("pages every installed app instead of showing 0 installed (%s)", async (_label, errorForm) => {
+    const { window, calls } = renderPanel({ handlers: { app_list: cappedAppList(errorForm) } })
+    await settle(150)
+    expect(window.document.getElementById("statusbar")?.textContent).toContain("30 installed")
+    const listCalls = calls.filter(c => c.tool === "app_list")
+    expect(listCalls.every(c => typeof c.args.limit === "number")).toBe(true)
+  })
+})
+
 describe("STORE app identity", () => {
   it("names the builtin per the convention of the other panels", () => {
     expect(STORE_APP_ID).toBe("@agentproto/store")

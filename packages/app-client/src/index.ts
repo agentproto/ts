@@ -373,3 +373,5 @@ export async function connectMcpApp(options: ConnectOptions = {}): Promise<McpCo
   }
   return createFallbackConnection(bridgeRoute, standaloneTools)
 }
+
+export { pageAll, type PageAllOptions } from "./page-all.js"

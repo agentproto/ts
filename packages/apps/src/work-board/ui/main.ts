@@ -1,6 +1,6 @@
 import "./style.css"
 import { renderColumns, type CardAction } from "./render.js"
-import type { Task, TaskCreateResult, TaskListResult, TaskWriteReply } from "./types.js"
+import type { Task, TaskCreateResult, TaskWriteReply } from "./types.js"
 
 function getEl(id: string): HTMLElement {
   const el = document.getElementById(id)
@@ -70,10 +70,16 @@ function boot(): void {
       full: true,
       ...(boardId ? { boardId } : {}),
     }
-    return callTool<typeof args, TaskListResult>("task_list", args)
-      .then(data => {
-        boardId = data.boardId ?? boardId
-        tasks = data.tasks ?? []
+    // Paged: one unpaged `full: true` call grows with the board until the
+    // daemon replaces it with its result-cap marker, which read as 0 tasks.
+    // The page envelope carries `boardId` like the unpaged body.
+    return callToolPaged<typeof args, Task>("task_list", args, "tasks", {
+      onPage: page => {
+        if (typeof page.boardId === "string") boardId = page.boardId
+      },
+    })
+      .then(rows => {
+        tasks = rows
         render()
         setStatus(`${tasks.length} task${tasks.length === 1 ? "" : "s"} · ${new Date().toLocaleTimeString()}`)
       })

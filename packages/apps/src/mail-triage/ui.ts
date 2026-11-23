@@ -20,6 +20,7 @@
  * a selector appears in the toolbar when several respond.
  */
 
+import { pageAll } from "@agentproto/app-client/page-all"
 import { unwrapText } from "../unwrap-text.js"
 
 const ALIAS_TOOL_NAMES = [
@@ -709,10 +710,14 @@ function renderRuns(runs) {
   }
 }
 
+// Every row of a paged list tool (@agentproto/app-client/page-all). The
+// unpaged app_list grows with every install and run until the daemon
+// replaces it with its result-cap marker, which read as "no runs yet".
+var pageAll = ${pageAll.toString()};
+
 function loadRuns() {
-  return callApp("app_list", {})
-    .then(function (result) {
-      var apps = Array.isArray(result) ? result : [];
+  return pageAll(callApp, "app_list", { fields: ["appId", "runs"] })
+    .then(function (apps) {
       var mine = null;
       for (var i = 0; i < apps.length; i++) {
         if (apps[i] && apps[i].appId === APP_ID) { mine = apps[i]; break; }
