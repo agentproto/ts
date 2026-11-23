@@ -56,9 +56,14 @@ export const DEFAULT_HEALTH_THRESHOLDS: HostHealthThresholds = {
   warnLoadPerCore: 2,
   // Same limit the daemon's own host_load `load` warning uses.
   critLoadPerCore: DEFAULT_HOST_LOAD_THRESHOLDS.loadPerCoreLimit,
-  // Same limits as the host_load `swap` warning (warn / critical).
+  // Swap and RAM never reach CRIT alone (macOS keeps swap after a spike, so a
+  // high swap on a host with free RAM is not an emergency). The crit limits
+  // below only apply to the combined `memory-pressure` check: CRIT when swap
+  // >= critSwapPercent AND RAM available <= critMemAvailablePercent. They are
+  // deliberately decoupled from DEFAULT_HOST_LOAD_THRESHOLDS.swapCriticalPercent
+  // (85), which the runtime's own `host_load` swap warning still uses.
   warnSwapPercent: DEFAULT_HOST_LOAD_THRESHOLDS.swapWarnPercent,
-  critSwapPercent: DEFAULT_HOST_LOAD_THRESHOLDS.swapCriticalPercent,
+  critSwapPercent: 95,
   warnMemAvailablePercent: 15,
   critMemAvailablePercent: 5,
   warnDaemonUptimeSec: 60,
@@ -134,7 +139,7 @@ export function resolveThresholds(
 // ── model ───────────────────────────────────────────────────────────
 
 export interface HealthCheck {
-  id: "load" | "memory" | "swap" | "daemon" | "sessions" | "busy" | "orphans" | "busy-orphans" | "disk"
+  id: "load" | "memory" | "swap" | "memory-pressure" | "daemon" | "sessions" | "busy" | "orphans" | "busy-orphans" | "disk"
   label: string
   status: CheckStatus
   /** Numeric value in {@link HealthCheck.unit}; null when unavailable. */
@@ -195,6 +200,9 @@ function grade(value: number, warn: number, crit: number, dir: Dir): HealthVerdi
   return value < crit ? "CRIT" : value < warn ? "WARN" : "OK"
 }
 
+/** Swap and RAM alone are advisory: they cap at WARN (see `memory-pressure`). */
+const capWarn = (v: HealthVerdict): HealthVerdict => (v === "CRIT" ? "WARN" : v)
+
 const round = (n: number, d: number): number => Math.round(n * 10 ** d) / 10 ** d
 const num = (n: number): string => String(round(n, 2))
 
@@ -239,11 +247,11 @@ export function computeHostHealth(input: HostHealthInput, th: HostHealthThreshol
     checks.push({
       id: "memory",
       label: "ram",
-      status: grade(availPct, th.warnMemAvailablePercent, th.critMemAvailablePercent, "below"),
+      status: capWarn(grade(availPct, th.warnMemAvailablePercent, th.critMemAvailablePercent, "below")),
       value: round(availPct, 1),
       unit: "%",
       display: `${availPct.toFixed(1)}% avail`,
-      threshold: { warn: th.warnMemAvailablePercent, crit: th.critMemAvailablePercent, direction: "below" },
+      threshold: { warn: th.warnMemAvailablePercent, crit: null, direction: "below" },
       detail: `only ${formatBytes(report.memory.availableBytes)} of ${formatBytes(total)} RAM available (${availPct.toFixed(1)}%)`,
     })
   } else {
@@ -255,15 +263,35 @@ export function computeHostHealth(input: HostHealthInput, th: HostHealthThreshol
     checks.push({
       id: "swap",
       label: "swap",
-      status: grade(pct, th.warnSwapPercent, th.critSwapPercent, "above"),
+      status: capWarn(grade(pct, th.warnSwapPercent, th.critSwapPercent, "above")),
       value: round(pct, 1),
       unit: "%",
       display: `${pct.toFixed(1)}% used`,
-      threshold: { warn: th.warnSwapPercent, crit: th.critSwapPercent, direction: "above" },
+      threshold: { warn: th.warnSwapPercent, crit: null, direction: "above" },
       detail: `swap ${formatBytes(report.swap.usedBytes)} of ${formatBytes(report.swap.totalBytes)} used (${Math.round(pct)}%)`,
     })
   } else {
     checks.push(skipped("swap", "swap", "%", "swap usage unavailable"))
+  }
+
+  if (total > 0 && report.swap) {
+    const availPct = (report.memory.availableBytes / total) * 100
+    const swapPct = report.swap.percent
+    const exhausted = swapPct >= th.critSwapPercent && availPct <= th.critMemAvailablePercent
+    checks.push({
+      id: "memory-pressure",
+      label: "mem pressure",
+      status: exhausted ? "CRIT" : "OK",
+      value: null,
+      unit: "",
+      display: exhausted ? "exhausted" : "ok",
+      threshold: null,
+      detail: exhausted
+        ? `swap ${swapPct.toFixed(0)}% used (>= ${num(th.critSwapPercent)}%) and RAM ${availPct.toFixed(1)}% available (<= ${num(th.critMemAvailablePercent)}%) at the same time`
+        : `CRIT only when swap >= ${num(th.critSwapPercent)}% and RAM available <= ${num(th.critMemAvailablePercent)}% together`,
+    })
+  } else {
+    checks.push(skipped("memory-pressure", "mem pressure", "", "needs both a RAM size and a swap probe"))
   }
 
   if (!input.daemon) {

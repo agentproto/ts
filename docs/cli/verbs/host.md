@@ -136,8 +136,9 @@ WARN  load 2.6x per core on 12 cores; 11 orphan processes (ppid 1)
 
 CHECK         STATUS  VALUE          WARN   CRIT
 load          WARN    2.60x per core >=2x   >=4x
-ram           OK      41.2% avail    <15%   <5%
-swap          OK      12.0% used     >=50%  >=85%
+ram           OK      41.2% avail    <15%   -
+swap          OK      12.0% used     >=50%  -
+mem pressure  OK      ok             -      -
 daemon        OK      up 3d          <60s   -
 sessions      OK      9 live         >=30   >=60
 busy          OK      3 busy         >=8    >=16
@@ -156,19 +157,28 @@ verdict.
 A limit trips when the value is **at or above** it (load, swap, counts) or
 **below** it (RAM available, uptime, disk free). The defaults live in one place,
 `DEFAULT_HEALTH_THRESHOLDS` in `packages/cli/src/commands/host-health.ts`; the
-load and swap limits are the daemon's own `host_load` limits.
+load limit and the swap WARN limit are the daemon's own `host_load` limits. The
+swap CRIT limit (95%) is deliberately **not**: it is decoupled from the runtime's
+`swapCriticalPercent` (85), which keeps driving the `host_load` swap warning.
 
 | Check | WARN | CRIT | Flags |
 |-------|------|------|-------|
 | `load`: 1-minute load / cores | `>= 2` | `>= 4` | `--warn-load` `--crit-load` |
-| `ram`: available / total (free + reclaimable) | `< 15%` | `< 5%` | `--warn-mem` `--crit-mem` |
-| `swap`: used percent | `>= 50%` | `>= 85%` | `--warn-swap` `--crit-swap` |
+| `ram`: available / total (free + reclaimable) | `< 15%` | never alone | `--warn-mem` |
+| `swap`: used percent | `>= 50%` | never alone | `--warn-swap` |
+| `mem pressure`: swap **and** RAM exhausted together | - | swap `>= 95%` and RAM available `<= 5%` | `--crit-swap` `--crit-mem` |
 | `daemon`: `GET /health` | uptime `< 60 s` (just restarted) | unreachable | `--warn-uptime` |
 | `sessions`: live agent sessions | `>= 30` | `>= 60` | `--warn-sessions` `--crit-sessions` |
 | `busy`: live sessions mid-turn | `>= 8` | `>= 16` | `--warn-busy` `--crit-busy` |
 | `orphans`: processes reparented to init | `>= 10` | `>= 30` | `--warn-orphans` `--crit-orphans` |
 | `busy orphans`: the `orphan` warnings of `host_load` (old and busy) | `>= 1` | `>= 5` | `--warn-busy-orphans` `--crit-busy-orphans` |
 | `disk`: free space where the sessions dir lives | `< 10 GB` | `< 2 GB` | `--warn-disk` `--crit-disk` (GB) |
+
+**Swap and RAM are advisory.** Each caps at `WARN` on its own: macOS does not
+release swap after a spike, so 91% swap with 59% of the RAM free is not an
+emergency (and `host guard` would otherwise block every gate for hours). Only
+both being at their limit at the same moment makes `mem pressure` (and the
+verdict) `CRIT`. `--crit-swap` and `--crit-mem` set that combined limit.
 
 Overrides must stay ordered (`--warn-load` at most `--crit-load`, `--warn-mem`
 at least `--crit-mem`, and so on). A check with no data (no swap probe, or
