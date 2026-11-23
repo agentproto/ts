@@ -6,11 +6,11 @@ describe("codex spawn version", () => {
     expect(codex.bin).toBe("npx")
     expect(codex.bin_args).toEqual([
       "-y",
-      "@agentclientprotocol/codex-acp@2.5.0",
+      "@agentclientprotocol/codex-acp@2.10.0",
     ])
     expect(codex.install).toContainEqual({
       method: "npm",
-      package: "@agentclientprotocol/codex-acp@2.5.0",
+      package: "@agentclientprotocol/codex-acp@2.10.0",
       global: true,
     })
   })
