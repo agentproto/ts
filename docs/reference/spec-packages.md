@@ -8,8 +8,8 @@ Packages in the `spec-reference` tier: reference implementations of AIP file for
 |---|---|---|---|---|
 | @agentproto/action | `packages/action` | AIP-39 | 0.2.1 | @agentproto/action — AIP-39 ACTION.md reference implementation. |
 | @agentproto/agency | `packages/agency` | AIP-21 | 1.0.0 | @agentproto/agency: AIP-21 AGENCY.md reference implementation. |
-| @agentproto/agent | `packages/agent` | AIP-42 | 0.6.0 | @agentproto/agent — AIP-42 AGENT.md reference implementation. |
-| @agentproto/assembly | `packages/assembly` | AIP-24 | 0.2.0 | @agentproto/assembly — AIP-24 ASSEMBLY.md reference implementation. |
+| @agentproto/agent | `packages/agent` | AIP-42 | 0.6.1 | @agentproto/agent — AIP-42 AGENT.md reference implementation. |
+| @agentproto/assembly | `packages/assembly` | AIP-24 | 0.2.1 | @agentproto/assembly — AIP-24 ASSEMBLY.md reference implementation. |
 | @agentproto/canvakit | `packages/canvakit` | AIP-5 | 0.2.0 | @agentproto/canvakit — AIP-5 TEMPLATE.md reference implementation. |
 | @agentproto/code | `packages/code` | AIP-26 | 0.2.0 | @agentproto/code — AIP-26 CODE.md reference implementation. |
 | @agentproto/collection | `packages/collection` | AIP-18 | 0.2.0 | @agentproto/collection — AIP-18 COLLECTION.md reference implementation. |
@@ -17,24 +17,24 @@ Packages in the `spec-reference` tier: reference implementations of AIP file for
 | @agentproto/design | `packages/design` | AIP-4 | 0.2.0 | @agentproto/design — AIP-4 DESIGN.md reference implementation. |
 | @agentproto/doctype | `packages/doctype` |  | 0.2.0 | agentproto/doctype - meta-factory for AIP `defineX(definition)` constructors. |
 | @agentproto/extension | `packages/extension` | AIP-40 | 0.3.1 | @agentproto/extension — AIP-40 EXTENSION.md reference implementation. |
-| @agentproto/governance | `packages/governance/core` |  | 1.0.0 | agentgovernance/v1 — universal contractual approval framework. |
+| @agentproto/governance | `packages/governance/core` |  | 1.0.1 | agentgovernance/v1 — universal contractual approval framework. |
 | @agentproto/identity | `packages/identity` | AIP-23 | 0.3.0 | @agentproto/identity — AIP-23 IDENTITY.md reference implementation. |
 | @agentproto/intent | `packages/intent` | AIP-28 | 0.2.0 | @agentproto/intent — AIP-28 INTENT.md reference implementation. |
 | @agentproto/io | `packages/io` | AIP-16 | 0.2.0 | @agentproto/io — AIP-16 IO.md reference implementation. |
 | @agentproto/knowledge | `packages/knowledge` | AIP-10 | 0.2.0 | @agentproto/knowledge — AIP-10 KNOWLEDGE.md reference implementation. |
 | @agentproto/lesson | `packages/lesson` | AIP-11 | 0.2.0 | @agentproto/lesson — AIP-11 LESSON.md reference implementation. |
 | @agentproto/manifest | `packages/manifest` |  | 0.3.0 | agentproto/manifest — generic verbs for AIP doctypes (create, load, list, update, resolve, delete). |
-| @agentproto/memory | `packages/memory` | AIP-72 | 0.1.0 | @agentproto/memory: AIP-72 memory/v1 reference implementation. |
-| @agentproto/office | `packages/office` | AIP-22 | 0.3.0 | @agentproto/office — AIP-22 OFFICE.md reference implementation. |
+| @agentproto/memory | `packages/memory` | AIP-72 | 0.1.1 | @agentproto/memory: AIP-72 memory/v1 reference implementation. |
+| @agentproto/office | `packages/office` | AIP-22 | 0.3.1 | @agentproto/office — AIP-22 OFFICE.md reference implementation. |
 | @agentproto/persona | `packages/persona` | AIP-25 | 0.2.0 | @agentproto/persona — AIP-25 PERSONA.md reference implementation. |
 | @agentproto/playbook | `packages/playbook` | AIP-12 | 0.2.0 | @agentproto/playbook — AIP-12 PLAYBOOK.md reference implementation. |
-| @agentproto/policy | `packages/policy` | AIP-38 | 0.3.0 | @agentproto/policy — AIP-38 POLICY.md reference implementation. |
+| @agentproto/policy | `packages/policy` | AIP-38 | 0.3.1 | @agentproto/policy — AIP-38 POLICY.md reference implementation. |
 | @agentproto/routine | `packages/routine` | AIP-41 | 1.0.0 | @agentproto/routine — AIP-41 ROUTINE.md reference implementation. |
 | @agentproto/runner | `packages/runner` | AIP-17 | 0.2.0 | @agentproto/runner — AIP-17 RUNNER.md reference implementation. |
 | @agentproto/skill | `packages/skill` | AIP-3 | 0.4.0 | @agentproto/skill — AIP-3 SKILL.md reference implementation. |
-| @agentproto/storage | `packages/storage` | AIP-35 | 0.4.1 | @agentproto/storage — AIP-35 STORAGE.md reference implementation. |
+| @agentproto/storage | `packages/storage` | AIP-35 | 0.4.2 | @agentproto/storage — AIP-35 STORAGE.md reference implementation. |
 | @agentproto/tool | `packages/tool` | AIP-14 | 0.6.1 | agentproto/tool-runtime — reference implementation of AIP-14 TOOL.md `defineTool` contract. |
-| @agentproto/wallet | `packages/wallet` | AIP-49 | 0.3.0 | @agentproto/wallet — AIP-49 principal-owned multi-asset wallet primitive. |
-| @agentproto/work | `packages/work` | AIP-20 | 0.3.0 | @agentproto/work — AIP-20 WORK.md reference implementation. |
+| @agentproto/wallet | `packages/wallet` | AIP-49 | 0.3.1 | @agentproto/wallet — AIP-49 principal-owned multi-asset wallet primitive. |
+| @agentproto/work | `packages/work` | AIP-20 | 0.3.1 | @agentproto/work — AIP-20 WORK.md reference implementation. |
 | @agentproto/workflow | `packages/workflow` | AIP-15 | 0.8.0 | @agentproto/workflow — AIP-15 WORKFLOW.md reference implementation. |
-| @agentproto/workspace | `packages/workspace` | AIP-34 | 2.0.0 | @agentproto/workspace — AIP-34 WORKSPACE.md reference implementation. |
+| @agentproto/workspace | `packages/workspace` | AIP-34 | 2.0.1 | @agentproto/workspace — AIP-34 WORKSPACE.md reference implementation. |
