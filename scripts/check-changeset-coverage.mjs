@@ -24,7 +24,7 @@
  *   - a README / LICENSE / CHANGELOG at the package ROOT (`isImplicitRootFile`):
  *     npm always ships it and the npm page only updates on a publish;
  *   - under one of the package's `files` entries other than `dist` (built
- *     from `src`, covered above) — e.g. catalog-sync's `snapshots/`, an
+ *     from `src`, covered above), e.g. catalog-sync's `snapshots/`, an
  *     adapter's `HERMES.md`, a skill pack's `skills/`.
  * Docs outside `files[]` (`packages/x/docs/*.md`), test-only and config-only
  * changes do NOT require a bump. This is the ONE rule: the presence gate
