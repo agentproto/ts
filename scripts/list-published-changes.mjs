@@ -47,6 +47,11 @@
  * (private packages contribute nothing to the published surface) rather than
  * the whole test.
  *
+ * The implicit-root-file and test rules live in `check-changeset-coverage.mjs`
+ * (`isImplicitRootFile`, `isTestPath`), shared with the reviewer's coverage
+ * gate so the two never disagree (PR #2820: README changed, this gate asked
+ * for a changeset, the reviewer said none owed).
+ *
  * Usage: git diff --name-only <base>...HEAD -- 'packages/**' 'adapters/**' \
  *          | node scripts/list-published-changes.mjs
  * Prints the subset of stdin's paths that land in some package's published
@@ -56,12 +61,9 @@ import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { isTestPath, workspacePackageDirs } from './check-changeset-coverage.mjs'
+import { isImplicitRootFile, isTestPath, workspacePackageDirs } from './check-changeset-coverage.mjs'
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..')
-
-// npm always includes these at a package's root regardless of `files[]`.
-const IMPLICIT_ROOT_RE = /^(readme|license|licence|changelog)(\..+)?$/i
 
 /**
  * `[{ dir, name, private, files, hasSrcDir }]` for every workspace package
@@ -99,7 +101,7 @@ export function buildPackageIndex(root = ROOT) {
  */
 export function isPublishedPath(relPath, files, { hasSrcDir = false } = {}) {
   if (relPath === 'package.json') return true
-  if (!relPath.includes('/') && IMPLICIT_ROOT_RE.test(relPath)) return true
+  if (isImplicitRootFile(relPath)) return true
   // Tests under src/ are not build input; they only ship if `files[]` names
   // `src` itself, which the checks below still catch.
   if (hasSrcDir && (relPath === 'src' || relPath.startsWith('src/')) && !isTestPath(relPath)) return true

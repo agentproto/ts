@@ -21,11 +21,15 @@
  *   - under `src/` and not a test (`__tests__/`, `__snapshots__/`,
  *     `*.test.*`, `*.spec.*`) — packages publish `dist`, built from `src`,
  *     and tests are never part of that build;
+ *   - a README / LICENSE / CHANGELOG at the package ROOT (`isImplicitRootFile`):
+ *     npm always ships it and the npm page only updates on a publish;
  *   - under one of the package's `files` entries other than `dist` (built
- *     from `src`, covered above) and README/LICENSE — e.g. catalog-sync's
- *     `snapshots/`, an adapter's `HERMES.md`, a skill pack's `skills/`.
- * Docs-only / test-only / config-only changes do NOT require a bump (mirrors
- * the presence gate's intent).
+ *     from `src`, covered above), e.g. catalog-sync's `snapshots/`, an
+ *     adapter's `HERMES.md`, a skill pack's `skills/`.
+ * Docs outside `files[]` (`packages/x/docs/*.md`), test-only and config-only
+ * changes do NOT require a bump. This is the ONE rule: the presence gate
+ * (`list-published-changes.mjs`) and the reviewer both go through
+ * `isImplicitRootFile` / `isPublishAffecting`, never their own copy.
  *
  * Deliberately lenient on timing: with ZERO changesets present it exits 0 and
  * defers to the presence gate (the reviewer writes changesets after the first
@@ -103,6 +107,17 @@ const TEST_PATH = /(^|\/)(__tests__|__snapshots__)\/|\.(test|spec)\.[^/]+$/
 export function isTestPath(path) {
   return TEST_PATH.test(path)
 }
+
+const IMPLICIT_ROOT_RE = /^(readme|license|licence|changelog)(\..+)?$/i
+
+/**
+ * A file npm ALWAYS puts in the tarball regardless of `files[]`: README,
+ * LICENSE/LICENCE or CHANGELOG at the package root. `relPath` is relative to
+ * the package dir. Single source of truth shared by both changeset gates.
+ */
+export function isImplicitRootFile(relPath) {
+  return !relPath.includes('/') && IMPLICIT_ROOT_RE.test(relPath)
+}
 const UNSHIPPED_FILES_ENTRY = /^(dist|readme|license)(\..*)?$/i
 
 /**
@@ -144,6 +159,7 @@ function filesFromDisk(root) {
  */
 export function isPublishAffecting(rest, files) {
   if (rest === 'package.json') return true
+  if (isImplicitRootFile(rest)) return true
   if (rest.startsWith('src/')) return !isTestPath(rest)
   return publishedFileEntries(files).some((entry) => rest === entry || rest.startsWith(`${entry}/`))
 }
