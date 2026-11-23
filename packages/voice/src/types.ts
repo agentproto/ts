@@ -122,6 +122,12 @@ export interface TtsResult {
 
 export interface TtsProvider {
   readonly slug: string
+  /**
+   * The vendor model the provider synthesizes with, when it knows one. The
+   * cascade copies it onto the TTS usage entry so a host can price the
+   * characters against the model that actually ran.
+   */
+  readonly model?: string
   readonly capabilities: TtsCapabilities
   openStream(opts: TtsStreamOptions): Promise<TtsStream>
   synthesize(input: {

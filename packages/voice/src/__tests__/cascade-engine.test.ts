@@ -109,6 +109,23 @@ describe("startCascade", () => {
     await session.close()
   })
 
+  it("puts the TTS provider's vendor model on the TTS usage entry", async () => {
+    const { emit } = recorder([])
+    const session = await startCascade({
+      emit,
+      hooks: {},
+      stt: makeFakeStt({ slug: "sttvendor" }),
+      tts: makeFakeTts({ slug: "ttsvendor", model: "vendor-fast-1" }),
+      vad: { silenceEndMs: SILENCE },
+      brain: () => words("Une phrase à dire. "),
+    })
+    await speak(session)
+    const entries = session.getUsage!()!.entries
+    expect(entries.find(e => e.stage === "tts")?.model).toBe("vendor-fast-1")
+    expect(entries.find(e => e.stage === "stt")).not.toHaveProperty("model")
+    await session.close()
+  })
+
   it("reports usage: STT seconds and TTS characters, cumulative, final after close", async () => {
     const { emit } = recorder([])
     const stt = makeFakeStt({ slug: "sttvendor" })

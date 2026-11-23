@@ -98,6 +98,8 @@ export function makeFakeStt(opts: FakeSttOptions = {}): FakeStt {
 
 export interface FakeTtsOptions {
   slug?: string
+  /** Reported as `model` on the provider (and so on the TTS usage entry). */
+  model?: string
   streaming?: boolean
   file?: boolean
   /** Audio per input character, in ms. Default 10. */
@@ -126,6 +128,7 @@ export function makeFakeTts(opts: FakeTtsOptions = {}): FakeTts {
   const msPerChar = opts.msPerChar ?? 10
   return {
     slug: opts.slug ?? "faketts",
+    ...(opts.model ? { model: opts.model } : {}),
     capabilities: {
       streaming: opts.streaming ?? true,
       file: opts.file ?? true,

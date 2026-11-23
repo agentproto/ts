@@ -467,3 +467,8 @@ describe("hosted agent (realtime), scripted protocol frames", () => {
     for (const c of sessionConformanceCases(harness as never)) await c.run()
   })
 })
+    it("exposes the model it synthesizes with, the configured one over the default", () => {
+      expect(makeElevenLabsTts().model).toBe("eleven_flash_v2_5")
+      expect(makeElevenLabsTts({ modelId: "eleven_turbo_v2_5" }).model).toBe("eleven_turbo_v2_5")
+    })
+
