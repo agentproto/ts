@@ -22,6 +22,7 @@ export { worktreeProvider } from "./provider/index.js"
 export { WorktreeNotRemovableError } from "./provider/bodies/cleanup-worktree.body.js"
 export {
   salvageWorktree,
+  restoreSalvage,
   SALVAGE_ROOT,
   type SalvageManifest,
   type SalvageWorktreeInput,
