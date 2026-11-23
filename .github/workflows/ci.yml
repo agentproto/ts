@@ -1441,8 +1441,9 @@ jobs:
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
           langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
           langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
-          # ONE supervised run: review -> (changes requested) fix -> re-review,
-          # bounded by maxFixIterations. The `supervisor` input spawns the
+          # ONE supervised run. Without the opt-in (`autofix` input below) it is a
+          # single review: no fixer, no re-review. With it: review -> (changes
+          # requested) fix -> re-review, bounded by maxFixIterations. The `supervisor` input spawns the
           # parent session the reviewer/fixer nest under. The fallback tiers
           # below keep the single-shot workflow as a safe fallback.
           workflow-path: .github/agentproto-workflows/pr-review-supervised/WORKFLOW.md
@@ -1457,7 +1458,8 @@ jobs:
               "lastReviewedSha": "${{ steps.lastreview.outputs.sha }}",
               "priorReviewBody": ${{ toJSON(steps.lastreview.outputs.body) }},
               "githubToken": "${{ steps.setup.outputs.token }}",
-              "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
+              "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }},
+              "autofix": ${{ (vars.AGENTFLOW_AUTOFIX == 'true' || contains(github.event.pull_request.labels.*.name, 'agentflow:autofix')) && 'true' || 'false' }}
             }
           timeout-minutes: 50
 
@@ -2168,6 +2170,9 @@ jobs:
             echo "- changeset commit: $([ "$build_ok" = "true" ] && echo pushed || echo withheld)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # OPT-IN (label `agentflow:autofix` / repo variable AGENTFLOW_AUTOFIX):
+      # without it no fixer ran, so there is nothing to commit and this step is
+      # skipped; the changeset step below is independent of it.
       # The supervised loop's fixer writes the WORKING TREE only
       # (`fixDelivery: "commit"` - agents never commit/push). The calling job
       # owns delivery: once this run's build gate is green (same rule as the
@@ -2182,7 +2187,8 @@ jobs:
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
           steps.buildwait.outputs.build_ok == 'true' &&
-          steps.reviewer-agentproto.outputs.status == 'done'
+          steps.reviewer-agentproto.outputs.status == 'done' &&
+          (vars.AGENTFLOW_AUTOFIX == 'true' || contains(github.event.pull_request.labels.*.name, 'agentflow:autofix'))
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
