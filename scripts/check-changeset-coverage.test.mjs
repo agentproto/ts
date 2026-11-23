@@ -38,13 +38,19 @@ test('package.json change counts', () => {
   assert.deepEqual([...touched], ['@agentproto/cli'])
 })
 
-test('README / test / config changes do NOT count', () => {
+test('a package-root README / LICENSE counts, docs outside files[] do not', () => {
+  assert.deepEqual([...changedPublishablePackages(['packages/auth/README.md'], pkgMap, opts)], ['@agentproto/auth'])
+  assert.deepEqual([...changedPublishablePackages(['packages/auth/LICENSE'], pkgMap, opts)], ['@agentproto/auth'])
+  assert.equal(changedPublishablePackages(['packages/auth/docs/x.md'], pkgMap, opts).size, 0)
+  assert.equal(isPublishAffecting('README.md', ['dist']), true)
+  assert.equal(isPublishAffecting('docs/README.md', ['dist']), false)
+})
+
+test('test / config changes do NOT count', () => {
   const touched = changedPublishablePackages(
     [
-      'packages/auth/README.md',
       'packages/auth/src/__tests__/x.test.ts',
       'packages/cli/tsconfig.json',
-      'packages/cli/CHANGELOG.md',
       'packages/cli/dist/index.mjs',
     ],
     pkgMap,

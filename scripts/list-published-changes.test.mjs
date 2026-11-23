@@ -137,3 +137,16 @@ test('buildPackageIndex: nested packages are indexed; a template inside a packag
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('presence gate and coverage gate agree on README / LICENSE / docs', async () => {
+  const { isPublishAffecting } = await import('./check-changeset-coverage.mjs')
+  const files = ['dist', 'README.md', 'LICENSE']
+  for (const [rel, want] of [
+    ['README.md', true],
+    ['LICENSE', true],
+    ['docs/x.md', false],
+  ]) {
+    assert.equal(isPublishedPath(rel, files), want, `presence gate: ${rel}`)
+    assert.equal(isPublishAffecting(rel, files), want, `coverage gate: ${rel}`)
+  }
+})

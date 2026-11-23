@@ -22,6 +22,12 @@
  * required" (the gate only requires one for a publishable change) from the
  * name itself.
  *
+ * Note: this lists every touched package and does not judge publishability.
+ * Whether a change is owed a changeset is decided by `isPublishAffecting` in
+ * `check-changeset-coverage.mjs`, the same function the presence gate uses
+ * (a package-root README/LICENSE/CHANGELOG counts; `docs/**` outside `files[]`
+ * does not).
+ *
  * Usage: node scripts/list-changed-packages.mjs [<base-ref>]
  *   base-ref defaults to origin/main (the PR diff base).
  */

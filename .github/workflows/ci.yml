@@ -624,8 +624,10 @@ jobs:
           # any package with a `src/` dir — see the script) land in the
           # tarball. A docs-only change under a public package's `files[]`
           # exclusions (e.g. `packages/inference-endpoint/docs/*.md`, PR #690) does
-          # NOT require one; a change to README, LICENSE, or shipped source
-          # does. See scripts/list-published-changes.mjs for the exact rule.
+          # NOT require one; a change to a package-root README/LICENSE (the npm
+          # page only updates on publish) or to shipped source does. The rule is
+          # shared with the reviewer (isPublishAffecting in
+          # scripts/check-changeset-coverage.mjs); see list-published-changes.mjs.
           PUBLISHABLE_CHANGES=$(echo "$PKG_CHANGES" | node scripts/list-published-changes.mjs)
           if [ -z "$PUBLISHABLE_CHANGES" ]; then
             echo "Package changes present ($PKG_CHANGES) but none reach the published npm surface — no changeset required."
