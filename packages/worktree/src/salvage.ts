@@ -14,7 +14,7 @@
  * referenced, not here.
  */
 
-import { copyFile, mkdir, open, writeFile } from "node:fs/promises"
+import { copyFile, lstat, mkdir, open, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { execArgv } from "./exec.js"
@@ -29,8 +29,12 @@ export interface SalvageManifest {
   branch: string | null
   tipSha: string
   createdAt: string
-  /** Relative paths of every unignored untracked file that was copied in. */
+  /** Relative paths of every unignored untracked regular file that was copied in. */
   untrackedFiles: string[]
+  /** Untracked symbolic links, recreated in the archive with their target kept verbatim (never followed, never copied). Absent in older manifests. */
+  symlinks?: Array<{ path: string; target: string }>
+  /** Untracked entries that cannot be byte-copied (socket, fifo, device, nested repo directory): listed, not archived, so one of them cannot block the whole salvage. */
+  skippedEntries?: Array<{ path: string; kind: string }>
   /** Whether `changes.patch` has any content (tracked-file changes existed). */
   hasPatch: boolean
   provenance: ProvenanceInfo
@@ -123,34 +127,97 @@ export async function salvageWorktree(input: SalvageWorktreeInput): Promise<Salv
   const dateStamp = createdAt.slice(0, 10)
   const dirName = `${sanitizeSegment(input.slug)}-${tipShort}-${dateStamp}`
   const dir = resolve(input.salvageRoot ?? SALVAGE_ROOT(), sanitizeSegment(input.repoName), dirName)
-  await mkdir(dir, { recursive: true })
+  // `mkdir -p` returns the first directory it created (undefined when `dir`
+  // already existed): that is exactly what a failed call may remove again.
+  const createdRoot = await mkdir(dir, { recursive: true })
 
-  const [patch, untrackedFiles, provenance] = await Promise.all([
-    diffHead(input.repoRoot, input.worktreePath),
-    listUntrackedFiles(input.repoRoot, input.worktreePath),
-    computeProvenance(input.repoRoot, input.worktreePath, { sessionsPath: input.sessionsPath }),
-  ])
+  try {
+    const [patch, untrackedEntries, provenance] = await Promise.all([
+      diffHead(input.repoRoot, input.worktreePath),
+      listUntrackedFiles(input.repoRoot, input.worktreePath),
+      computeProvenance(input.repoRoot, input.worktreePath, { sessionsPath: input.sessionsPath }),
+    ])
 
-  await writeFileSynced(join(dir, "changes.patch"), patch)
+    await writeFileSynced(join(dir, "changes.patch"), patch)
 
-  for (const relPath of untrackedFiles) {
-    const dest = join(dir, "untracked", relPath)
+    const untrackedFiles: string[] = []
+    const symlinks: Array<{ path: string; target: string }> = []
+    const skippedEntries: Array<{ path: string; kind: string }> = []
+    for (const relPath of untrackedEntries) {
+      const src = join(input.worktreePath, relPath)
+      const dest = join(dir, "untracked", relPath)
+      const st = await lstat(src)
+      if (st.isSymbolicLink()) {
+        // Keep the link itself; `copyFile`/`open` would follow it (ENOTSUP onto a directory).
+        const target = await readlink(src)
+        await mkdir(dirname(dest), { recursive: true })
+        await symlink(target, dest)
+        symlinks.push({ path: relPath, target })
+      } else if (st.isFile()) {
+        await mkdir(dirname(dest), { recursive: true })
+        await copyFile(src, dest)
+        await fsyncFile(dest)
+        untrackedFiles.push(relPath)
+      } else {
+        skippedEntries.push({ path: relPath, kind: entryKind(st) })
+      }
+    }
+
+    const manifest: SalvageManifest = {
+      repo: input.repoName,
+      branch: input.branch,
+      tipSha: input.tipSha,
+      createdAt,
+      untrackedFiles,
+      ...(symlinks.length ? { symlinks } : {}),
+      ...(skippedEntries.length ? { skippedEntries } : {}),
+      hasPatch: patch.length > 0,
+      provenance,
+      ...(input.branchDecision ? { branchDecision: input.branchDecision } : {}),
+    }
+    await writeFileSynced(join(dir, "MANIFEST.json"), JSON.stringify(manifest, null, 2) + "\n")
+
+    return { dir, manifest }
+  } catch (err) {
+    // Never leave a half-written archive behind; only what THIS call created, never the worktree.
+    if (createdRoot) await rm(createdRoot, { recursive: true, force: true }).catch(() => undefined)
+    throw err
+  }
+}
+
+function entryKind(st: import("node:fs").Stats): string {
+  if (st.isDirectory()) return "directory"
+  if (st.isSocket()) return "socket"
+  if (st.isFIFO()) return "fifo"
+  if (st.isBlockDevice() || st.isCharacterDevice()) return "device"
+  return "other"
+}
+
+/**
+ * Restore a salvage archive into `targetPath`: copies the untracked files,
+ * recreates the symlinks (target verbatim, existing paths are left alone) and
+ * applies `changes.patch` when it has content. Returns what was restored.
+ */
+export async function restoreSalvage(
+  salvageDir: string,
+  targetPath: string,
+): Promise<{ files: number; symlinks: number; patchApplied: boolean }> {
+  const manifest = JSON.parse(await readFile(join(salvageDir, "MANIFEST.json"), "utf8")) as SalvageManifest
+  for (const relPath of manifest.untrackedFiles) {
+    const dest = join(targetPath, relPath)
     await mkdir(dirname(dest), { recursive: true })
-    await copyFile(join(input.worktreePath, relPath), dest)
-    await fsyncFile(dest)
+    await copyFile(join(salvageDir, "untracked", relPath), dest)
   }
-
-  const manifest: SalvageManifest = {
-    repo: input.repoName,
-    branch: input.branch,
-    tipSha: input.tipSha,
-    createdAt,
-    untrackedFiles,
-    hasPatch: patch.length > 0,
-    provenance,
-    ...(input.branchDecision ? { branchDecision: input.branchDecision } : {}),
+  for (const link of manifest.symlinks ?? []) {
+    const dest = join(targetPath, link.path)
+    await mkdir(dirname(dest), { recursive: true })
+    await symlink(link.target, dest)
   }
-  await writeFileSynced(join(dir, "MANIFEST.json"), JSON.stringify(manifest, null, 2) + "\n")
-
-  return { dir, manifest }
+  let patchApplied = false
+  if (manifest.hasPatch) {
+    const res = await execArgv("git", ["-C", targetPath, "apply", join(salvageDir, "changes.patch")], targetPath)
+    if (res.exitCode !== 0) throw new Error(`git apply failed in ${targetPath} (exit ${res.exitCode}): ${res.stderr.trim()}`)
+    patchApplied = true
+  }
+  return { files: manifest.untrackedFiles.length, symlinks: manifest.symlinks?.length ?? 0, patchApplied }
 }
