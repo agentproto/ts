@@ -20,6 +20,8 @@
  * a selector appears in the toolbar when several respond.
  */
 
+import { unwrapText } from "../unwrap-text.js"
+
 const ALIAS_TOOL_NAMES = [
   "mailbox_list",
   "mailbox_search",
@@ -217,28 +219,9 @@ function setStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
 
-// See media-viewer/ui.ts for why this loop exists: app_tool_call wraps its
-// dispatch result in at least one more {content:[{type:"text",text:...}]}
-// shell than the underlying tool returned.
-function unwrapText(result) {
-  var cur = result;
-  for (var i = 0; i < 4; i++) {
-    if (typeof cur === "string") {
-      try {
-        cur = JSON.parse(cur);
-        continue;
-      } catch (e) {
-        return cur;
-      }
-    }
-    if (cur && Array.isArray(cur.content) && cur.content[0] && typeof cur.content[0].text === "string") {
-      cur = cur.content[0].text;
-      continue;
-    }
-    break;
-  }
-  return cur;
-}
+// Shared unwrapText (../unwrap-text.ts): peels app_tool_call's nested
+// envelopes and throws on the daemon's result-cap marker.
+var unwrapText = ${unwrapText.toString()};
 
 function callApp(tool, args) {
   if (!callTool) {

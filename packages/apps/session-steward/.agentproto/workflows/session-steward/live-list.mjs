@@ -65,8 +65,21 @@ const cursorId = (id, n) => `${id}Cursor${n}`
 
 const DEFAULT_TRUNCATED_HINT = "use limit/cursor/fields"
 
-/** The daemon's over-cap marker, if `v` is one. */
+/** The daemon's over-cap marker, if `v` is one. `v` is a parsed page, or
+ *  the error text of a page that failed: current daemons send the marker as
+ *  an ERROR result, so a tolerant (`onError: "collect"`) map records it as
+ *  `{ status: "rejected", error: "<marker JSON>" }`. */
 function truncatedMarkerOf(v) {
+  if (typeof v === "string") {
+    // The step error may carry a prefix ("tool session_list failed: …").
+    const json = /\{"truncated":true[^{}]*\}/.exec(v)?.[0]
+    if (!json) return null
+    try {
+      v = JSON.parse(json)
+    } catch {
+      return null
+    }
+  }
   if (!v || typeof v !== "object" || v.truncated !== true) return null
   return {
     totalBytes: typeof v.totalBytes === "number" ? v.totalBytes : 0,
@@ -83,8 +96,10 @@ function truncatedMarkerOf(v) {
  *  visibly instead of silently classifying an empty fleet. */
 function pageOf(out, what = "session_list") {
   if (Array.isArray(out?.items)) return out
-  const v = out?.results?.[0]?.value
-  const marker = truncatedMarkerOf(out) ?? truncatedMarkerOf(v)
+  const first = out?.results?.[0]
+  const v = first?.value
+  const marker =
+    truncatedMarkerOf(out) ?? truncatedMarkerOf(v) ?? (first?.status === "rejected" ? truncatedMarkerOf(first.error) : null)
   if (marker) {
     throw new Error(
       `${what} page was truncated by the MCP result cap (${marker.totalBytes} bytes; hint: ${marker.hint}) — refusing to treat it as an empty page`,

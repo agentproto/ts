@@ -261,7 +261,10 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
  *  replaced by a {@link McpTruncatedMarker}. */
 export const MCP_RESULT_MAX_BYTES = 100_000
 
-/** What a result over {@link MCP_RESULT_MAX_BYTES} is replaced with. */
+/** What a result over {@link MCP_RESULT_MAX_BYTES} is replaced with. It is
+ *  sent as an ERROR result (`isError: true`): the payload is gone, and a
+ *  successful marker was read as an empty list by every lenient reader
+ *  (`Array.isArray(r) ? r : []`, `r.items ?? []`). */
 export interface McpTruncatedMarker {
   truncated: true
   totalBytes: number
@@ -286,8 +289,9 @@ function capResult(result: McpToolResult, inputShape: ZodRawShape): McpToolResul
       ? "use limit/cursor/fields"
       : "no limit/cursor/fields on this tool; narrow the request arguments so the result fits",
   }
-  return { content: [{ type: "text", text: JSON.stringify(marker) }] }
+  return { content: [{ type: "text", text: JSON.stringify(marker) }], isError: true }
 }
+
 
 function isMcpTextResult(value: unknown): value is McpToolResult {
   return (

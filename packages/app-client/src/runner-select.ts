@@ -285,7 +285,10 @@ export const RUNNER_SELECT_SCRIPT = `<script>
       var collected = [];
       function page(args) {
         return safeCallTool("adapter_list", args).then(function (r) {
-          if (r && r.truncated) {
+          // Current daemons send the cap marker as an error result, so the
+          // call rejects (error note below); this catches the SUCCESSFUL
+          // marker older daemons sent.
+          if (r && r.truncated === true && !Array.isArray(r.items)) {
             throw new Error("adapter_list response was truncated by the daemon's result cap");
           }
           if (Array.isArray(r)) return r;

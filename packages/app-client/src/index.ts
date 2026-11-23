@@ -68,6 +68,53 @@ export class McpToolError extends Error {
   }
 }
 
+/** The daemon's over-budget marker (`MCP_RESULT_MAX_BYTES`,
+ *  `packages/mcp-server/src/to-mcp-tool.ts` `capResult`): the whole result
+ *  was dropped, so it must never be read as an empty payload. */
+export interface McpTruncatedMarker {
+  truncated: true
+  totalBytes: number
+  hint: string
+}
+
+/** A tool result the daemon replaced with its {@link McpTruncatedMarker}.
+ *  Subclass of {@link McpToolError}, so existing `catch` blocks still see a
+ *  failed call; paging callers test `instanceof` to retry with a smaller
+ *  page. */
+export class McpResultTruncatedError extends McpToolError {
+  readonly totalBytes: number
+  readonly hint: string
+
+  constructor(toolName: string, mode: McpConnectionMode, marker: McpTruncatedMarker) {
+    super(
+      toolName,
+      mode,
+      `result truncated by the daemon's MCP result cap (${marker.totalBytes} bytes)${marker.hint ? `; ${marker.hint}` : ""}`,
+    )
+    this.name = "McpResultTruncatedError"
+    this.totalBytes = marker.totalBytes
+    this.hint = marker.hint
+  }
+}
+
+/** The {@link McpTruncatedMarker} in `value` (a parsed body or a raw text),
+ *  else `undefined`. Matches the error form current daemons send and the
+ *  successful form older daemons sent. */
+export function parseTruncatedMarker(value: unknown): McpTruncatedMarker | undefined {
+  let v = value
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v)
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined
+  const o = v as Record<string, unknown>
+  if (o.truncated !== true || typeof o.totalBytes !== "number") return undefined
+  return { truncated: true, totalBytes: o.totalBytes, hint: typeof o.hint === "string" ? o.hint : "" }
+}
+
 export type StandaloneToolHandler = (
   args: Record<string, unknown>,
 ) => Promise<unknown> | unknown
@@ -121,7 +168,10 @@ function unwrapEnvelope<TResult>(
   const envelope = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>
 
   if (envelope.isError === true) {
-    throw new McpToolError(toolName, mode, extractTextDetail(envelope))
+    const detail = extractTextDetail(envelope)
+    const marker = parseTruncatedMarker(detail)
+    if (marker) throw new McpResultTruncatedError(toolName, mode, marker)
+    throw new McpToolError(toolName, mode, detail)
   }
 
   const structuredContent = envelope.structuredContent
@@ -134,11 +184,17 @@ function unwrapEnvelope<TResult>(
     const first = content[0] as Record<string, unknown> | undefined
     const text = first?.text
     if (typeof text === "string") {
+      let parsed: unknown
       try {
-        return JSON.parse(text) as TResult
+        parsed = JSON.parse(text)
       } catch {
         return text as unknown as TResult
       }
+      // An older daemon sent the marker as a SUCCESS; it is still a lost
+      // payload, never data.
+      const marker = parseTruncatedMarker(parsed)
+      if (marker) throw new McpResultTruncatedError(toolName, mode, marker)
+      return parsed as TResult
     }
   }
 

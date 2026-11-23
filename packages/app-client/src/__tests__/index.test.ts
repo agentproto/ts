@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { connectMcpApp, McpToolError, type McpAppBridge } from "../index.js"
+import { connectMcpApp, McpResultTruncatedError, McpToolError, type McpAppBridge } from "../index.js"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -79,6 +79,32 @@ describe("host mode", () => {
       mode: "host",
       detail: "line one\nline two",
     })
+  })
+
+  it("rejects with McpResultTruncatedError when the daemon sends its over-cap marker as an error", async () => {
+    const marker = { truncated: true, totalBytes: 104_812, hint: "use limit/cursor/fields" }
+    stubHost({
+      callTool: () => Promise.resolve({ isError: true, content: [{ type: "text", text: JSON.stringify(marker) }] }),
+    })
+    const conn = await connectMcpApp()
+    const err = await conn.callTool("app_list").catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(McpResultTruncatedError)
+    expect(err).toBeInstanceOf(McpToolError)
+    expect(err).toMatchObject({ toolName: "app_list", totalBytes: 104_812, hint: "use limit/cursor/fields" })
+  })
+
+  it("rejects with McpResultTruncatedError on an older daemon's SUCCESSFUL marker, never resolving it as data", async () => {
+    const marker = { truncated: true, totalBytes: 104_812, hint: "use limit/cursor/fields" }
+    stubHost({ callTool: () => Promise.resolve({ content: [{ type: "text", text: JSON.stringify(marker) }] }) })
+    const conn = await connectMcpApp()
+    await expect(conn.callTool("app_list")).rejects.toBeInstanceOf(McpResultTruncatedError)
+  })
+
+  it("still resolves a first-page envelope that only carries a partial flag", async () => {
+    const page = { items: [{ id: 1 }], total: 80, truncated: true, nextCursor: "abc" }
+    stubHost({ callTool: () => Promise.resolve({ content: [{ type: "text", text: JSON.stringify(page) }] }) })
+    const conn = await connectMcpApp()
+    await expect(conn.callTool("task_list")).resolves.toEqual(page)
   })
 
   it("delegates updateModelContext/openLink/onTeardown to the host bridge", async () => {

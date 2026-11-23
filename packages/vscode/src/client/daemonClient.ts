@@ -885,7 +885,7 @@ export class DaemonClient {
       }
       throw new Error(`MCP ${toolName} error: ${JSON.stringify(envelope.error)}`)
     }
-    return unwrapMcpResult<T>(envelope.result)
+    return unwrapMcpResult<T>(envelope.result, toolName)
   }
 
   /**
@@ -985,16 +985,8 @@ export class DaemonClient {
         const result = await this.mcpCall<
           | AdapterModelInfo[]
           | { models?: AdapterModelInfo[] }
-          | { items?: AdapterModelInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
+          | { items?: AdapterModelInfo[]; nextCursor?: string }
         >("adapter_models", { adapter: slug, limit: 100, ...(cursor ? { cursor } : {}) })
-        if (!Array.isArray(result) && (result as { truncated?: unknown }).truncated === true) {
-          const bytes = (result as { totalBytes?: number }).totalBytes
-          throw new McpResultTruncatedError(
-            "adapter_models response was truncated by the daemon's MCP result cap" +
-              (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
-              " — page the request with limit/cursor",
-          )
-        }
         if (Array.isArray(result)) {
           models.push(...result)
           break
@@ -1025,19 +1017,10 @@ export class DaemonClient {
       const result = await this.mcpCall<
         | AdapterInfo[]
         | { adapters?: AdapterInfo[] }
-        | { items?: AdapterInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
+        | { items?: AdapterInfo[]; nextCursor?: string }
       >("adapter_list", { ...args, ...(cursor ? { cursor } : {}) })
-      // The daemon's over-budget marker replaces the whole payload — it is
-      // neither an array nor an { adapters } wrapper. Never mistake it for
-      // an empty list.
-      if (!Array.isArray(result) && (result as { truncated?: unknown }).truncated === true) {
-        const bytes = (result as { totalBytes?: number }).totalBytes
-        throw new McpResultTruncatedError(
-          "adapter_list response was truncated by the daemon's MCP result cap" +
-            (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
-            " — page the request with limit/cursor",
-        )
-      }
+      // The daemon's over-budget marker never reaches here: mcpCall throws
+      // McpResultTruncatedError for it (unwrapMcpResult).
       if (Array.isArray(result)) {
         adapters.push(...result)
         break
@@ -1097,20 +1080,8 @@ export class DaemonClient {
         unknown[] | { routes?: unknown[]; vendors?: unknown } | {
           items?: unknown[]
           nextCursor?: string
-          truncated?: true
-          totalBytes?: number
         }
       >("catalog_models", { ...args, ...(cursor ? { cursor } : {}) })
-      if (
-        !Array.isArray(result) && (result as { truncated?: unknown }).truncated === true
-      ) {
-        const bytes = (result as { totalBytes?: number }).totalBytes
-        throw new McpResultTruncatedError(
-          "catalog_models response was truncated by the daemon's MCP result cap" +
-            (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
-            " — page the request with limit/cursor",
-        )
-      }
       if (Array.isArray(result)) {
         rows.push(...result)
         break
@@ -1208,30 +1179,30 @@ export class DaemonClient {
     let cursor: string | undefined
     let pageSize = limit
     for (;;) {
-      const result = await this.mcpCall<
-        | InstalledAppInfo[]
-        | { items?: InstalledAppInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
-      >("app_list", {
-        full: true,
-        ...(pageSize !== undefined ? { limit: pageSize } : {}),
-        ...(cursor ? { cursor } : {}),
-      })
-      if (Array.isArray(result)) {
-        // Unpaged body: the legacy call, or a daemon that ignores `limit`.
-        apps.push(...result)
-        return apps
-      }
-      if (result && result.truncated === true) {
+      let result: InstalledAppInfo[] | { items?: InstalledAppInfo[]; nextCursor?: string }
+      try {
+        result = await this.mcpCall<InstalledAppInfo[] | { items?: InstalledAppInfo[]; nextCursor?: string }>(
+          "app_list",
+          {
+            full: true,
+            ...(pageSize !== undefined ? { limit: pageSize } : {}),
+            ...(cursor ? { cursor } : {}),
+          },
+        )
+      } catch (err) {
+        if (!(err instanceof McpResultTruncatedError)) throw err
         if (pageSize !== undefined && pageSize > 1) {
           pageSize = Math.ceil(pageSize / 2)
           continue
         }
-        const bytes = result.totalBytes
         throw new McpResultTruncatedError(
-          "app_list response was truncated by the daemon's MCP result cap" +
-            (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
-            (pageSize === undefined ? "; this daemon cannot page app_list" : " even for a single app"),
+          `${err.message}${pageSize === undefined ? " (this daemon cannot page app_list)" : " (even for a single app)"}`,
         )
+      }
+      if (Array.isArray(result)) {
+        // Unpaged body: the legacy call, or a daemon that ignores `limit`.
+        apps.push(...result)
+        return apps
       }
       if (!result || !Array.isArray(result.items)) {
         throw new Error(`app_list returned an unexpected response: ${JSON.stringify(result)?.slice(0, 200)}`)
@@ -2114,19 +2085,50 @@ async function parseMcpBody<R = McpResult>(res: Response): Promise<McpResponse<R
   throw new Error("MCP SSE response contained no JSON-RPC envelope")
 }
 
-function unwrapMcpResult<T>(result: McpResult | undefined): T {
+function unwrapMcpResult<T>(result: McpResult | undefined, toolName: string): T {
   if (!result) return undefined as unknown as T
   if (result.isError) {
     const text = result.content?.[0]?.text ?? "MCP tool returned an error"
+    const marker = truncatedMarkerOf(text)
+    if (marker) throw truncatedError(toolName, marker)
     throw new Error(text)
   }
   const text = result.content?.[0]?.text
   if (typeof text !== "string") return undefined as unknown as T
+  let parsed: unknown
   try {
-    return JSON.parse(text) as T
+    parsed = JSON.parse(text)
   } catch {
     return text as unknown as T
   }
+  // Older daemons sent the marker as a SUCCESS; the payload is still gone.
+  const marker = truncatedMarkerOf(parsed)
+  if (marker) throw truncatedError(toolName, marker)
+  return parsed as T
+}
+
+/** The daemon's over-budget marker (`capResult`,
+ *  packages/mcp-server/src/to-mcp-tool.ts) in a parsed body or raw text. */
+function truncatedMarkerOf(value: unknown): { totalBytes: number; hint: string } | undefined {
+  let v = value
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v)
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined
+  const o = v as Record<string, unknown>
+  if (o.truncated !== true || typeof o.totalBytes !== "number") return undefined
+  return { totalBytes: o.totalBytes, hint: typeof o.hint === "string" ? o.hint : "" }
+}
+
+function truncatedError(toolName: string, marker: { totalBytes: number; hint: string }): McpResultTruncatedError {
+  return new McpResultTruncatedError(
+    `${toolName} response was truncated by the daemon's MCP result cap (${marker.totalBytes} bytes)` +
+      (marker.hint ? `; ${marker.hint}` : ""),
+  )
 }
 
 async function describeError(res: Response): Promise<string> {
