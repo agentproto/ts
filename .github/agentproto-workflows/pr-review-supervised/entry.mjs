@@ -149,6 +149,7 @@ const reviewPrompt = (bindings) => {
     reviewConfig = {},
     lastReviewedSha = "",
     priorReviewBody = "",
+    autofix = false,
   } = bindings?.input ?? {}
   const cfg = reviewConfig || {}
   const blocking = cfg.blocking ?? true
@@ -212,7 +213,7 @@ const reviewPrompt = (bindings) => {
   return [
     `You are an expert code reviewer for the @agentproto/ts monorepo - a TypeScript implementation of open agent standards (AIPs).`,
     ``,
-    `Your job: review PR #${prNumber}${repo ? ` (${repo})` : ""} and post ONE structured GitHub review. This is pass ${firstPass ? "1" : "2+"} of a supervised review/fix loop; the supervisor session is your parent.`,
+    `Your job: review PR #${prNumber}${repo ? ` (${repo})` : ""} and post ONE structured GitHub review. ${autofix === true ? `This is pass ${firstPass ? "1" : "2+"} of a supervised review/fix loop` : `This is the ONLY pass of this run: no fixer runs and there is no re-review, so make the findings actionable for the PR author`}; the supervisor session is your parent.`,
     ``,
     incrementalBlock,
     `## Phase 1: Analyze`,
@@ -349,13 +350,38 @@ export const finalReviewBranch = {
   ],
 }
 
+// Review-only arm: exactly ONE review, no fix, no re-review, no trailing pass.
+// A loop capped at one iteration whose `while` holds for any input that took
+// this arm; it reuses the `review` step so the prompts and the summary builder
+// see an ordinary review execution.
+export const singleReviewStep = {
+  kind: "loop",
+  id: "single-review",
+  while: "$input.autofix == false",
+  max_iterations: 1,
+  steps: [reviewStep],
+}
+
+// Opt-in gate. `autofix` (input, default false) selects the arm: true runs the
+// supervised review/fix/re-review loop (+ trailing review), anything else runs
+// the single review. The arms are exclusive, so the fixer step can never be
+// scheduled without the opt-in. (Setting maxFixIterations to 0 would also give
+// a review-only run, but it is read once at load from the config file, not per
+// run, so it cannot carry a per-PR opt-in.)
+export const autofixGate = {
+  kind: "branch",
+  id: "autofix-gate",
+  branches: [{ when: "$input.autofix == true", next: "supervised-review" }],
+  default: "single-review",
+}
+
 export { fixPrompt, reviewPrompt }
 
 export default {
   name: "Agentproto PR Review (supervised)",
   id: "agentproto-pr-review-supervised",
   description:
-    "One supervised review loop: review, then (on changes requested) fix the working tree and re-review, bounded by maxFixIterations. Reviewer and fixer are children of the supervisor session the runner passes in.",
+    "One supervised review. With the `autofix` opt-in: review, then (on changes requested) fix the working tree and re-review, bounded by maxFixIterations. Without it: a single review. Reviewer and fixer are children of the supervisor session the runner passes in.",
   version: "0.1.0",
   inputs: {
     prNumber: {
@@ -389,6 +415,12 @@ export default {
       description: "Parsed .github/agentic-review.json config.",
       default: {},
     },
+    autofix: {
+      type: "boolean",
+      description:
+        "Opt-in to the fix step. false (default): ONE review, no fixer, no re-review. true: the supervised review/fix/re-review loop.",
+      default: false,
+    },
   },
   outputs: {
     conclusion: { type: "string", description: "approved | changes_requested | comment" },
@@ -396,5 +428,5 @@ export default {
     changesetWritten: { type: "boolean", description: "Whether a changeset was written." },
     error: { type: "string", description: "Error message if the review failed." },
   },
-  steps: [supervisedReviewStep, finalReviewBranch, reviewStep],
+  steps: [autofixGate, supervisedReviewStep, finalReviewBranch, reviewStep, singleReviewStep],
 }

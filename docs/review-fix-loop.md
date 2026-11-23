@@ -1,5 +1,14 @@
 # Review-Fix Loop
 
+> **Opt-in.** Nothing fixes automatically by default. Both fix paths, the supervised
+> fix/re-review loop inside `pr-review` and the `pr-fix` job, run only when the PR carries the
+> `agentflow:autofix` label or the repo variable `AGENTFLOW_AUTOFIX` is `true`. Without it,
+> `pr-review` does ONE review (comments + verdict, plus the reviewer's changeset commit, which
+> is not a fix), `pr-fix` is skipped, and a fix is requested by hand with `/fix`
+> (`.github/workflows/agent-command.yml`). `pr-review` receives the opt-in as the
+> `autofix` workflow input (default `false`); the commit step for the fixer's working tree is
+> skipped without it. The rest of this page describes the opted-in loop.
+
 Automated pipeline that applies review feedback, re-reviews, and escalates to a human when the loop is exhausted.
 
 ## Flow
@@ -39,7 +48,7 @@ PR opened / push
 | `scripts/review-pr.mjs` | Agentic reviewer: reads PR diff, greps codebase, writes changeset, posts APPROVE or CHANGES_REQUESTED |
 | `scripts/apply-review.mjs` | Agentic fixer: reads review comments, reads files, writes fixes to working tree |
 | `.github/workflows/ci.yml` → `pr-review` job | Runs the reviewer after `build-and-test` passes |
-| `.github/workflows/ci.yml` → `pr-fix` job | Runs the fixer after `pr-review`; only active on `CHANGES_REQUESTED` |
+| `.github/workflows/ci.yml` → `pr-fix` job | Runs the fixer after `pr-review`; opt-in (label `agentflow:autofix` or variable `AGENTFLOW_AUTOFIX=true`), then only active on `CHANGES_REQUESTED` |
 
 ## Iteration bounding
 

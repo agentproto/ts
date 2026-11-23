@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import workflow, {
+  autofixGate,
   buildReviewSummary,
   fixerModelFor,
   maxFixIterations,
@@ -19,12 +20,18 @@ import { stageDiagram as sharedDiagram } from '../../../scripts/lib/review-run-s
 // These assertions fail on the pre-supervised single-step workflow: it had no
 // loop, no fixer step and no re-review path inside one run.
 
-const loop = workflow.steps[0]
+const loop = workflow.steps.find((s) => s.id === 'supervised-review')
 
 test('the review is a supervised loop plus a final review, not a one-shot review', () => {
   assert.deepEqual(
     workflow.steps.map((s) => `${s.id}:${s.kind}`),
-    ['supervised-review:loop', 'needs-final-review:branch', 'review:agent'],
+    [
+      'autofix-gate:branch',
+      'supervised-review:loop',
+      'needs-final-review:branch',
+      'review:agent',
+      'single-review:loop',
+    ],
   )
   assert.equal(loop.kind, 'loop')
   assert.equal(loop.id, 'supervised-review')
@@ -373,4 +380,76 @@ test('a config with no reviewerTurnRetry, or a claude-cloud opt-out, yields no p
 
 test('host steps carry no placement ladder (that is the box lanes only)', () => {
   for (const [name, st] of hostSteps) assert.equal(st.placement, undefined, name)
+})
+
+// ── the fix step is opt-in (`autofix` input, default false) ─────────────────
+// Mirrors the exclusive-branch semantics of compileExclusiveBranch
+// (packages/workflow-runtime): the arm bodies are the siblings from each arm
+// target up to the next arm target. Collects every step id (nested included)
+// that is SCHEDULED for a given `autofix` input.
+
+const collectIds = (steps, out = []) => {
+  for (const s of steps) {
+    out.push(s.id)
+    if (Array.isArray(s.steps)) collectIds(s.steps, out)
+  }
+  return out
+}
+
+const scheduledIds = (autofix) => {
+  const steps = workflow.steps
+  const gateIdx = steps.findIndex((s) => s.id === autofixGate.id)
+  const taken = autofixGate.branches.find(
+    (b) => b.when === `$input.autofix == ${autofix}` || (autofix === true && b.when === '$input.autofix == true'),
+  )
+  const target = taken ? taken.next : autofixGate.default
+  const targets = [...autofixGate.branches.map((b) => b.next), autofixGate.default]
+    .map((id) => steps.findIndex((s) => s.id === id))
+    .sort((a, b) => a - b)
+  const start = steps.findIndex((s) => s.id === target)
+  const end = targets.find((i) => i > start) ?? steps.length
+  assert.ok(start > gateIdx)
+  return collectIds(steps.slice(start, end))
+}
+
+test('without the opt-in no fix step is scheduled and exactly one review runs', () => {
+  const ids = scheduledIds(false)
+  assert.ok(!ids.includes('fix'), `fix scheduled without opt-in: ${ids}`)
+  assert.ok(!ids.includes('supervised-review'))
+  assert.ok(!ids.includes('needs-final-review'), 'no trailing re-review without opt-in')
+  assert.deepEqual(ids, ['single-review', 'review'])
+  const single = workflow.steps.find((s) => s.id === 'single-review')
+  assert.equal(single.max_iterations, 1)
+  assert.equal(single.while, '$input.autofix == false')
+})
+
+test('with the opt-in the current loop (review, fix, re-review, final review) is scheduled', () => {
+  const ids = scheduledIds(true)
+  assert.ok(ids.includes('fix'))
+  assert.deepEqual(ids, [
+    'supervised-review', 'review', 'needs-fix', 'fix', 'needs-final-review', 'review',
+  ])
+  assert.ok(!ids.includes('single-review'))
+})
+
+test('autofix is a boolean input that defaults to false (opt-in, never implicit)', () => {
+  assert.equal(workflow.inputs.autofix.type, 'boolean')
+  assert.equal(workflow.inputs.autofix.default, false)
+  assert.deepEqual(autofixGate.branches, [{ when: '$input.autofix == true', next: 'supervised-review' }])
+})
+
+test('the manifest frontmatter mirrors the top-level graph and declares autofix', () => {
+  const md = readFileSync(new URL('./WORKFLOW.md', import.meta.url), 'utf8')
+  const front = md.split('---')[1]
+  const ids = [...front.matchAll(/^  - id: (\S+)$/gm)].map((m) => m[1])
+  assert.deepEqual(ids, workflow.steps.map((s) => s.id))
+  assert.match(front, /^  autofix:\n    type: boolean/m)
+})
+
+test('the single review keeps the changeset on its first pass and says no fixer runs', () => {
+  const text = reviewPrompt({ input: { prNumber: 42, autofix: false } })
+  assert.match(text, /node scripts\/list-changed-packages\.mjs/)
+  assert.match(text, /no fixer runs and there is no re-review/)
+  const loopText = reviewPrompt({ input: { prNumber: 42, autofix: true } })
+  assert.match(loopText, /pass 1 of a supervised review\/fix loop/)
 })

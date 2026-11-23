@@ -39,6 +39,12 @@ inputs:
   reviewConfig:
     type: object
     description: Parsed .github/agentic-review.json config.
+  autofix:
+    type: boolean
+    description: >
+      Opt-in to the fix step. false (default) runs ONE review, no fixer and no
+      re-review; true runs the review/fix/re-review loop.
+    default: false
 outputs:
   conclusion:
     type: string
@@ -53,12 +59,16 @@ outputs:
     type: string
     description: Error message if the review failed.
 steps:
+  - id: autofix-gate
+    kind: branch
   - id: supervised-review
     kind: loop
   - id: needs-final-review
     kind: branch
   - id: review
     kind: agent
+  - id: single-review
+    kind: loop
 ---
 
 # Agentproto PR Review (supervised)
@@ -71,7 +81,23 @@ The manifest above mirrors the entry's top-level step graph for governance
 (AIP-15 `reconcileEntry`); `entry.mjs` is the source of truth for the nested
 steps and the runtime `agent` steps.
 
-## Flow
+## Opt-in (`autofix`)
+
+The fix step is opt-in. The `autofix` input (boolean, default `false`) picks the
+arm of the top-level `autofix-gate` branch:
+
+- `autofix: false` (default): the `single-review` arm. ONE review, its comments
+  and verdict, then the run ends. No fixer is scheduled, there is no re-review
+  and no trailing pass, so nothing writes the working tree.
+- `autofix: true`: the loop below, unchanged.
+
+CI sets it to true only when the PR carries the `agentflow:autofix` label or
+the repo variable `AGENTFLOW_AUTOFIX` is `true`. A fix is otherwise requested
+with `/fix` (`agent-command.yml`). `maxFixIterations: 0` also yields a
+review-only run, but it is read once from the config file at load time, so it
+cannot express a per-PR opt-in; that is why this is a separate input.
+
+## Flow (`autofix: true`)
 
 ```
 review ─▶ changes requested? ─▶ fix ─▶ re-review ─┐

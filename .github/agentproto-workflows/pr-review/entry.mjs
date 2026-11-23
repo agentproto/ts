@@ -219,7 +219,7 @@ const reviewPrompt = (bindings) => {
         changesetRulesBlock(),
         ``,
         changesetDeliveryInstruction(placement, prNumber, repo),
-        `3. If you requested changes (REQUEST_CHANGES), note that the \`pr-fix\` job will later read your review and attempt to apply fixes automatically.`,
+        `3. If you requested changes (REQUEST_CHANGES), note that fixes are applied only on request (\`/fix\`) or when the PR opted into auto-fix (label \`agentflow:autofix\`); write the review so it is actionable either way.`,
       ].join("\n")
 
   return [

@@ -15,17 +15,23 @@ key. Two entry surfaces share one core.
 3. `hygiene-check` — fast check that no root-level scratch docs (`PLAN.md`,
    `BRIEF.md`, `MERGE-CONFLICT-BRIEF*.md`) or AI-attribution trailers rode in.
 4. `pr-review` - ONE supervised run
-   (`.github/agentproto-workflows/pr-review-supervised/WORKFLOW.md`): the
-   reviewer posts a structured review, then (only on `request_changes`) a
-   fixer applies the findings to the working tree and the reviewer re-reviews,
-   bounded by `maxFixIterations`. Reviewer and fixer are children of the
-   supervisor session the runner passes in. The job commits and pushes the
-   fixer's working tree (`fixDelivery: "commit"`) once the build gate is green,
-   and posts a check run titled with the final verdict whose summary lists
-   every review/fix stage. The single-shot
+   (`.github/agentproto-workflows/pr-review-supervised/WORKFLOW.md`). **By
+   default it is a single review**: the reviewer posts its structured review
+   and verdict, the run ends, and no fixer, re-review or fix commit exists.
+   Fixing is opt-in (label `agentflow:autofix` or repo variable
+   `AGENTFLOW_AUTOFIX=true`, passed to the workflow as the `autofix` input,
+   default false); otherwise a fix is requested on demand with `/fix`
+   (`agent-command.yml`). With the opt-in, a fixer applies the findings to the
+   working tree on `request_changes` and the reviewer re-reviews, bounded by
+   `maxFixIterations`; the job then commits and pushes the fixer's working
+   tree (`fixDelivery: "commit"`) once the build gate is green. Either way the
+   reviewer's changeset is pushed as before (it is not a fix), and the job posts
+   a check run titled with the final verdict whose summary lists every
+   stage. Reviewer and fixer are children of the supervisor session the runner
+   passes in. The single-shot
    `.github/agentproto-workflows/pr-review/WORKFLOW.md` remains the fallback
    tier if the supervised run cannot post.
-5. `pr-fix` - the cross-run fallback: if the supervised loop could not run (or
+5. `pr-fix` - opt-in (label `agentflow:autofix` or repo variable `AGENTFLOW_AUTOFIX=true`; otherwise skipped and a fix is asked with `/fix`), the cross-run fallback: if the supervised loop could not run (or
    was exhausted) and the live review still says `CHANGES_REQUESTED`, this job
    applies the fixes and pushes them. Same `maxFixIterations` budget and
    escalation; free OpenCode Zen model through
