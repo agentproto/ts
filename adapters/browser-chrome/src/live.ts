@@ -1101,12 +1101,17 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   /**
    * Opens a blank tab from `anchor` (one of ours) with `window.open(..., "noopener")`, run as a user gesture so
    * the popup blocker lets it through, and returns its target id (found by `openerId`, which Chrome sets even for
-   * a `noopener` tab). `undefined` when the anchor cannot run script or no such tab appears: the caller falls back.
+   * a `noopener` tab). `targetId` is undefined when the anchor cannot run script (`ran: false`, try another one)
+   * or when the script ran but no tab appeared (`ran: true`: blocked, so the caller falls back at once).
+   *
+   * The value of `window.open` is never read: with "noopener" the HTML spec makes it return null whether or not
+   * the tab opened. Reading null as "blocked" left one orphan about:blank tab per agent tab on every new tab.
    */
-  async function openFromAnchor(entry: LiveEntry, anchor: string): Promise<string | undefined> {
+  async function openFromAnchor(entry: LiveEntry, anchor: string): Promise<{ targetId?: string; ran: boolean }> {
+    let ran = false
     try {
       const known = await pageTargets(entry)
-      if (!known.has(anchor)) return undefined
+      if (!known.has(anchor)) return { ran }
       // One helper session per opener, kept: detaching it would make Chrome report a detach for the anchor, and
       // the connection handler (`Target.detachedFromTarget` -> `forget`) would stop tracking the agent's own tab.
       let sessionId = entry.openers.get(anchor)
@@ -1114,28 +1119,29 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         ;({ sessionId } = await entry.conn.send<{ sessionId: string }>("Target.attachToTarget", { targetId: anchor, flatten: true }))
         entry.openers.set(anchor, sessionId)
       }
-      let opened: { result?: { value?: unknown } } | undefined
       try {
-        opened = await entry.conn.send<{ result?: { value?: unknown } }>(
+        await entry.conn.send(
           "Runtime.evaluate",
-          { expression: 'window.open("about:blank", "_blank", "noopener") !== null', userGesture: true, returnByValue: true },
+          { expression: 'void window.open("about:blank", "_blank", "noopener")', userGesture: true },
           sessionId,
         )
       } catch (err) {
         entry.openers.delete(anchor)
         throw err
       }
-      // window.open returned null (blocked, or a page that cannot open one): no tab to wait for.
-      if (opened?.result?.value !== true) return undefined
+      ran = true
       for (let i = 0; i < 20; i++) {
         for (const [id, info] of await pageTargets(entry)) {
-          if (!known.has(id) && info.openerId === anchor) return id
+          if (known.has(id) || entry.targets.has(id) || info.openerId !== anchor) continue
+          // Claimed in the same tick it is seen, so two new tabs opened at once never both take this one.
+          entry.targets.add(id)
+          return { targetId: id, ran }
         }
         await new Promise((resolve) => setTimeout(resolve, 100))
       }
-      return undefined
+      return { ran }
     } catch {
-      return undefined
+      return { ran }
     }
   }
 
@@ -1153,7 +1159,9 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     // one of ours with window.open always lands in the opener's window, whatever has the focus.
     if (url === "about:blank") {
       for (const anchor of [...entry.targets]) {
-        const opened = await openFromAnchor(entry, anchor)
+        const { targetId: opened, ran } = await openFromAnchor(entry, anchor)
+        // The script ran and no tab came: another anchor would not do better, and a late tab would be one more orphan.
+        if (opened === undefined && ran) break
         if (opened === undefined) continue
         entry.targets.add(opened)
         const windowId = await windowOf(entry, opened)

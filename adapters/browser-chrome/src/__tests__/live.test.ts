@@ -104,6 +104,7 @@ describe("chrome-live: attach to the user's running Chrome", () => {
 
   it("reuses the agent window across repeated launch().then(attach), as Bureau does", async () => {
     const f = await fake()
+    f.options.windowOpen = true
     const p = provider(f)
     const owner = await p.launch({}, {})
     await owner.attach()
@@ -115,6 +116,7 @@ describe("chrome-live: attach to the user's running Chrome", () => {
 
   it("concurrent launches share one connection (the in-flight connect is memoized)", async () => {
     const f = await fake()
+    f.options.windowOpen = true
     const p = provider(f)
     const all = await Promise.all([p.launch({}, {}), p.launch({}, {}), p.launch({}, {})])
     expect(f.connections).toBe(1)
@@ -250,6 +252,48 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     const third = await instance.attach()
     expect(f.targets.get(third.target.id)?.windowId).toBe(agentWindow)
     expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(1)
+    await instance.stop()
+  })
+
+  it("adopts the tab a noopener window.open opened although it answers null, and leaves no orphan blank tab", async () => {
+    const f = await fake()
+    f.options.windowOpen = true
+    const instance = await provider(f).launch({}, {})
+    const tabs = [await instance.attach()]
+    for (let i = 0; i < 3; i++) tabs.push(await instance.attach())
+    const ours = new Set(tabs.map((t) => t.target.id))
+    // every tab Chrome opened is one the adapter handed out: none is left behind as about:blank
+    expect([...f.targets.entries()].filter(([id, t]) => t.created && !ours.has(id)).map(([id]) => id)).toEqual([])
+    // one window.open per new tab, not one per tab already open
+    expect(f.windowOpenCalls).toBe(3)
+    expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(1)
+    await instance.stop()
+  })
+
+  it("gives each of several tabs opened at once its own tab, and leaves none behind", async () => {
+    const f = await fake()
+    f.options.windowOpen = true
+    const instance = await provider(f).launch({}, {})
+    await instance.attach()
+    await instance.attach()
+    const tabs = await Promise.all([instance.attach(), instance.attach(), instance.attach()])
+    const ids = tabs.map((t) => t.target.id)
+    expect(new Set(ids).size).toBe(3)
+    const owned = [...f.targets.entries()].filter(([, t]) => t.created).map(([id]) => id)
+    expect(owned).toHaveLength(5)
+    for (const id of ids) expect(owned).toContain(id)
+    await instance.stop()
+  })
+
+  it("falls back after one window.open that opened nothing, instead of trying it from every agent tab", async () => {
+    const f = await fake()
+    f.options.windowOpen = true
+    const instance = await provider(f).launch({}, {})
+    for (let i = 0; i < 3; i++) await instance.attach()
+    const before = f.windowOpenCalls
+    f.options.windowOpen = false
+    await instance.attach()
+    expect(f.windowOpenCalls - before).toBe(1)
     await instance.stop()
   })
 

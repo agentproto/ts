@@ -17,7 +17,7 @@ export interface FakeChromeOptions {
   consent?: "allow" | "hold" | "reject" | "silent"
   /** After Target.activateTarget, focus jumps back to the user's window (a user clicking elsewhere). */
   stealFocus?: boolean
-  /** `window.open` from an agent tab opens a tab in THAT tab's window (what Chrome does), with `openerId`. Default off: the call answers false. */
+  /** `window.open` from an agent tab opens a tab in THAT tab's window (what Chrome does), with `openerId`. Default off: no tab opens. Either way a `noopener` call answers null, as in Chrome. */
   windowOpen?: boolean
   /** `Runtime.evaluate("document.documentElement.outerHTML")` answers with this. Default a minimal page. */
   domHtml?: string
@@ -58,6 +58,8 @@ export interface FakeChrome {
   filesAttached: Map<string, string[]>
   /** Key presses (Input.dispatchKeyEvent) seen, in order. */
   keyEvents: Array<Record<string, unknown>>
+  /** `window.open(` evaluations received. */
+  windowOpenCalls: number
   options: FakeChromeOptions
   /** Emit a Page.screencastFrame event into an open flat session (test hook). */
   emitScreencastFrame(
@@ -117,6 +119,7 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
     ]),
     filesAttached: new Map(),
     keyEvents: [],
+    windowOpenCalls: 0,
     options,
     emitScreencastFrame(cdpSessionId, frame) {
       for (const send of senders) {
@@ -250,15 +253,20 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
         case "Runtime.evaluate": {
           const expression = String(msg.params?.expression ?? "")
           if (expression.includes("window.open(")) {
+            fake.windowOpenCalls += 1
             const opener = msg.sessionId?.replace(/^session-/, "")
             const from = opener ? fake.targets.get(opener) : undefined
             if (fake.options.windowOpen && from) {
               const id = `agent-target-${++nextTarget}`
               created.add(id)
               fake.targets.set(id, { windowId: from.windowId, url: "about:blank", created: true, openerId: opener! })
-              return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: true } })
             }
-            return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: false } })
+            // Like Chrome: with "noopener" the HTML spec makes window.open return null whether or not the tab
+            // opened, so the answer is the same in both cases and says nothing.
+            const value = expression.includes('"noopener"') ? null : Boolean(fake.options.windowOpen && from)
+            if (expression.startsWith("void ")) return reply(msg.id, msg.sessionId, { result: { type: "undefined" } })
+            if (expression.endsWith("!== null")) return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: value !== null } })
+            return reply(msg.id, msg.sessionId, { result: value === null ? { type: "object", subtype: "null", value: null } : { type: "boolean", value } })
           }
           if (expression === "document.documentElement.outerHTML") {
             return reply(msg.id, msg.sessionId, { result: { type: "string", value: fake.options.domHtml ?? "<html><body>hi</body></html>" } })
