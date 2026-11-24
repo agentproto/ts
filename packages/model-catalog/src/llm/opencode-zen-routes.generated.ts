@@ -178,8 +178,8 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     provider: "opencode",
   },
   "opencode/deepseek-v4.1-flash": {
-    inputPer1M: 0.3,
-    outputPer1M: 1.2,
+    inputPer1M: 0.12,
+    outputPer1M: 0.48,
     cacheReadMultiplier: 0.02,
     addedAt: "2026-09-10",
     vendor: "deepseek",
@@ -272,8 +272,8 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     provider: "opencode",
   },
   "opencode/glm-5.3": {
-    inputPer1M: 1.4,
-    outputPer1M: 4.4,
+    inputPer1M: 0.56,
+    outputPer1M: 1.76,
     cacheReadMultiplier: 0.185714,
     addedAt: "2026-08-14",
     vendor: "z-ai",
@@ -581,13 +581,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     cacheWriteMultiplier: 1,
     addedAt: "2026-07-16",
     vendor: "moonshotai",
-    provider: "opencode",
-  },
-  "opencode/longcat-2.5-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-11-02",
-    vendor: "meituan",
     provider: "opencode",
   },
   "opencode/mimo-v2.6-flash-free": {

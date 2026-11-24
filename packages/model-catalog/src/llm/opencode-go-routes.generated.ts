@@ -166,17 +166,11 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "moonshotai",
     provider: "opencode-go",
   },
-  "opencode-go/longcat-2.0": {
+  "opencode-go/longcat-2.5": {
     inputPer1M: 0.3,
     outputPer1M: 1.2,
     cacheReadMultiplier: 0.02,
-    addedAt: "2026-06-30",
-    vendor: "meituan",
-    provider: "opencode-go",
-  },
-  "opencode-go/longcat-2.5-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
+    cacheWriteMultiplier: 0,
     addedAt: "2026-11-02",
     vendor: "meituan",
     provider: "opencode-go",
