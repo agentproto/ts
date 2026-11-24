@@ -1,5 +1,11 @@
 # @agentproto/model-catalog
 
+## 0.16.1
+
+### Patch Changes
+
+- b84d691: Sync generated catalog data from the pinned provider sources.
+
 ## 0.16.0
 
 ### Minor Changes

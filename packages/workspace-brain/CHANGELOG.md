@@ -1,5 +1,14 @@
 # @agentproto/workspace-brain
 
+## 0.7.3
+
+### Patch Changes
+
+- @agentproto/adapter-knowledge-files@0.5.3
+- @agentproto/adapter-knowledge-gbrain-doc@0.3.9
+- @agentproto/adapter-knowledge-qdrant@0.3.9
+- @agentproto/knowledge-engine@0.4.3
+
 ## 0.7.2
 
 ### Patch Changes

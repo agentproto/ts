@@ -1,5 +1,11 @@
 # @agentproto/voice-assemblyai
 
+## 0.1.1
+
+### Patch Changes
+
+- 8e61d2f: Weekly dependency refresh (minor-patch).
+
 ## 0.1.0
 
 ### Minor Changes

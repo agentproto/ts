@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-code
 
+## 2.9.1
+
+### Patch Changes
+
+- 9d74d76: Bump adapter npm pins to the latest minor/patch (smoke tested on the update PR).
+- Updated dependencies [b84d691]
+  - @agentproto/model-catalog@0.16.1
+
 ## 2.9.0
 
 ### Minor Changes

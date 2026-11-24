@@ -1,5 +1,14 @@
 # @agentproto/adapter-ai-sdk
 
+## 0.1.19
+
+### Patch Changes
+
+- 8e61d2f: Weekly dependency refresh (minor-patch).
+- Updated dependencies [48a0e38]
+  - @agentproto/tool@0.7.0
+  - @agentproto/driver@0.4.3
+
 ## 0.1.18
 
 ### Patch Changes

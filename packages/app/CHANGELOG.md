@@ -1,5 +1,15 @@
 # @agentproto/app-kit
 
+## 2.6.2
+
+### Patch Changes
+
+- Updated dependencies [48a0e38]
+  - @agentproto/tool@0.7.0
+  - @agentproto/driver-cli@0.3.3
+  - @agentproto/driver@0.4.3
+  - @agentproto/driver-http@0.2.3
+
 ## 2.6.1
 
 ### Patch Changes
