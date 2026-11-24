@@ -261,9 +261,12 @@ async function openWorker(config: FtsStoreConfig): Promise<Transport> {
   })
   worker.unref()
 
+  // Reject every request still waiting and refuse new ones. Safe to call
+  // more than once: the first cause stays in `dead`, and each call still
+  // rejects whatever was posted since the previous one.
   const failAll = (err: Error) => {
-    dead = err
-    for (const p of pending.values()) p.reject(err)
+    dead ??= err
+    for (const p of pending.values()) p.reject(dead)
     pending.clear()
   }
   worker.on("message", (msg: { id: number; ok: boolean; value?: unknown; error?: string }) => {
@@ -275,9 +278,7 @@ async function openWorker(config: FtsStoreConfig): Promise<Transport> {
     else p.reject(new Error(msg.error))
   })
   worker.on("error", (err: Error) => failAll(new Error(`index worker crashed: ${err.message}`)))
-  worker.on("exit", code => {
-    if (!dead) failAll(new Error(`index worker exited (code ${code})`))
-  })
+  worker.on("exit", code => failAll(new Error(`index worker exited (code ${code})`)))
 
   const call = (op: FtsOp, args: unknown): Promise<unknown> => {
     if (dead) return Promise.reject(dead)
@@ -299,7 +300,11 @@ async function openWorker(config: FtsStoreConfig): Promise<Transport> {
       } catch {
         // already gone
       }
-      dead = new Error("index closed")
+      // A request posted after "close" (a build step racing dispose()) is
+      // answered, if at all, after the store is closed, and terminate()
+      // drops that answer. Reject it here: left pending, it never settles,
+      // and the build awaiting it holds the process-wide build lock forever.
+      failAll(new Error("index closed"))
       await worker.terminate()
     },
   }

@@ -10,7 +10,7 @@ import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { FilesKnowledgeAdapter } from "../adapter.js"
+import { FilesKnowledgeAdapter, filesIndexBuildsRunning } from "../adapter.js"
 import { stripFrontmatter, tokenize } from "../bm25.js"
 import { openFtsIndex } from "../fts-index.js"
 import { LocalFs } from "../local-fs.js"
@@ -342,6 +342,63 @@ describe("on-disk index edges", () => {
       expect(await handle.request("tokenize", { text })).toEqual(tokenize(stripFrontmatter(text)))
     }
     await handle.release()
+  })
+
+  it("settles a request posted after release() even when the worker stops before answering it", async () => {
+    // A build step racing dispose(): release() posts "close", then the step
+    // posts its next request. The worker answers "close" first and is then
+    // terminated; whatever it had not answered yet (a slow op here, a thread
+    // descheduled on a loaded CI runner in the wild) must still settle, or
+    // the build waiting on it holds the process-wide build lock forever.
+    const handle = await openFtsIndex({ path: path.join(root, "late.sqlite"), worker: true })
+    const closing = handle.release()
+    // tokenize needs no database, so the worker is still busy with it when
+    // the main thread terminates it after the "close" answer.
+    const late = handle.request("tokenize", { text: "slow ".repeat(2_000_000) }).then(
+      () => "answered",
+      (err: Error) => `rejected: ${err.message}`
+    )
+    await closing
+    const outcome = await Promise.race([
+      late,
+      new Promise(resolve => setTimeout(() => resolve("never settled"), 2_000)),
+    ])
+    expect(outcome).toBe("rejected: index closed")
+  })
+
+  it("a build still running when its adapter is disposed does not hold the build lock", async () => {
+    const fs = new LocalFs({ root })
+    await writeCorpus(fs, CORPUS)
+    const disk = new FilesKnowledgeAdapter({
+      fs,
+      workspacePath: WS,
+      indexPath: path.join(root, ".index", "fts.sqlite"),
+      log: () => {},
+    })
+    // Hold the first build inside its file reads, then dispose under it.
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    let held = 0
+    const realRead = fs.readFile.bind(fs)
+    fs.readFile = async p => {
+      held++
+      await gate
+      return realRead(p)
+    }
+    await disk.query({ query: "x" }) // opens the index, starts the build
+    for (let i = 0; i < 200 && held === 0; i++) await new Promise(r => setTimeout(r, 10))
+    expect(held).toBeGreaterThan(0)
+    expect(filesIndexBuildsRunning()).toBe(1)
+    const disposing = disk.dispose()
+    release()
+    await disposing
+    // The next build in the process (an in-memory one here) runs at once.
+    fs.readFile = realRead
+    const memory = new FilesKnowledgeAdapter({ fs, workspacePath: WS, log: () => {} })
+    const res = await memory.query({ query: "needle" })
+    expect(res.partial).toBeUndefined()
+    expect(res.hits).toHaveLength(1)
+    expect(filesIndexBuildsRunning()).toBe(0)
   })
 })
 
