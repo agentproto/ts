@@ -1,5 +1,12 @@
 # @agentproto/workspace-brain
 
+## 0.7.4
+
+### Patch Changes
+
+- Updated dependencies [c0f5328]
+  - @agentproto/adapter-knowledge-files@0.5.4
+
 ## 0.7.3
 
 ### Patch Changes
