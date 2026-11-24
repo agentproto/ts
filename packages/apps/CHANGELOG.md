@@ -1,5 +1,18 @@
 # @agentproto/apps
 
+## 0.28.1
+
+### Patch Changes
+
+- a98623c: A tool result over the MCP result cap (`MCP_RESULT_MAX_BYTES`) is now sent as an error result (`isError: true`) carrying the `{ truncated, totalBytes, hint }` marker, instead of a successful one. Clients that read lists leniently (`Array.isArray(r) ? r : []`, `r.items ?? []`) showed a truncated payload as an empty list; now every generic unwrapper rejects. `@agentproto/app-client` adds `McpResultTruncatedError` (a `McpToolError` subclass) and `parseTruncatedMarker`, raised for both the error form and the successful form older daemons sent. The inline app panels (config, ops-panel, session-viewer, media-viewer, mail-triage) share one `unwrapText` that throws on the marker nested in `app_tool_call`'s envelope, and the session-steward scan fails instead of silently dropping a page that came back as the marker.
+- 7bbbeee: List readers that called a daemon list tool unpaged now read every row through one shared helper, `pageAll` (`@agentproto/app-client`, also the `./page-all` subpath): it walks `nextCursor`, halves a page that hits the MCP result cap, and throws instead of resolving an empty list. Used by the config app (Models catalog, wallet model curation, imported MCP tools), the Store, the work board, the ops panel and session viewer (`session_list` pages), the mail-triage run history, the panel bridge's `callToolPaged`, and the runner selector (`adapter_list`, `harness_preset_list`). The session steward reads installed app ids with a bounded, projected `app_list`. `task_list` pages now carry `boardId` like the unpaged body.
+- 48a0e38: `paginated()` gains `defaultBody` (shape the unpaged answer: a bare array, or fields beside the rows) and `pageExtra` (fields merged into every page), and passes a non-array handler output (a tool's own error result) through untouched. The four local `paginatedLegacyList` copies in the runtime (`app_list`, `app_list_applied`, `task_list`, `app_data_list`, `app_external_list`) now use it, so `fields` is honoured on the unpaged call too (`app_list { full: true, fields: ["appId"] }` no longer ships every full record). The `defaultLimit` first page now flags itself `partial: true`; `truncated: true` stays on it as a deprecated alias, so "first page of many" is no longer only spelled like the MCP result-cap marker. `paginated()` refuses a `maxLimit` above `PAGE_LIMIT_MAX` (200, the most the page schema accepts); `harness_models`/`adapter_models` declared an unreachable 500. `app_list` ships each app's latest 20 runs plus `runCount` (the registry never prunes runs, so the history grew every record without bound); `task_list` pages carry `boardId`. The Store shows "last N of runCount".
+- Updated dependencies [a98623c]
+- Updated dependencies [7bbbeee]
+- Updated dependencies [8e61d2f]
+  - @agentproto/app-client@0.6.0
+  - @agentproto/app@2.6.2
+
 ## 0.28.0
 
 ### Minor Changes

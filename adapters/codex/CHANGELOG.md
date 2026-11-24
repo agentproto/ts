@@ -1,5 +1,11 @@
 # @agentproto/adapter-codex
 
+## 2.1.6
+
+### Patch Changes
+
+- 9d74d76: Bump adapter npm pins to the latest minor/patch (smoke tested on the update PR).
+
 ## 2.1.5
 
 ### Patch Changes

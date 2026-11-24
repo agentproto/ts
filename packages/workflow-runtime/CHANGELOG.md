@@ -1,5 +1,13 @@
 # @agentproto/workflow-runtime
 
+## 0.21.3
+
+### Patch Changes
+
+- Updated dependencies [48a0e38]
+  - @agentproto/tool@0.7.0
+  - @agentproto/driver@0.4.3
+
 ## 0.21.2
 
 ### Patch Changes

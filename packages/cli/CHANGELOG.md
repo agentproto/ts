@@ -1,5 +1,28 @@
 # @agentproto/cli
 
+## 1.37.1
+
+### Patch Changes
+
+- Updated dependencies [b84d691]
+- Updated dependencies [a98623c]
+- Updated dependencies [7bbbeee]
+- Updated dependencies [48a0e38]
+- Updated dependencies [8e61d2f]
+  - @agentproto/model-catalog@0.16.1
+  - @agentproto/app-client@0.6.0
+  - @agentproto/apps@0.28.1
+  - @agentproto/adapter-browser@0.9.4
+  - create-agentproto-app@0.3.12
+  - @agentproto/app@2.6.2
+  - @agentproto/driver@0.4.3
+  - @agentproto/worktree@0.23.1
+  - @agentproto/inference-endpoint@1.0.6
+  - @agentproto/sandbox-box@0.2.43
+  - @agentproto/sandbox-computer@0.8.2
+  - @agentproto/sandbox-e2b@0.11.5
+  - @agentproto/sandbox-instabox@0.2.10
+
 ## 1.37.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @agentproto/driver-browser
 
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [48a0e38]
+  - @agentproto/tool@0.7.0
+
 ## 0.4.2
 
 ### Patch Changes

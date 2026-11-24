@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.38
+
+### Patch Changes
+
+- 8e61d2f: Weekly dependency refresh (minor-patch).
+- Updated dependencies [b84d691]
+  - @agentproto/model-catalog@0.16.1
+
 ## 0.7.37
 
 ### Patch Changes

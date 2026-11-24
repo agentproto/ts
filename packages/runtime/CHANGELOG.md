@@ -1,5 +1,42 @@
 # @agentproto/runtime
 
+## 6.6.0
+
+### Minor Changes
+
+- 48a0e38: `paginated()` gains `defaultBody` (shape the unpaged answer: a bare array, or fields beside the rows) and `pageExtra` (fields merged into every page), and passes a non-array handler output (a tool's own error result) through untouched. The four local `paginatedLegacyList` copies in the runtime (`app_list`, `app_list_applied`, `task_list`, `app_data_list`, `app_external_list`) now use it, so `fields` is honoured on the unpaged call too (`app_list { full: true, fields: ["appId"] }` no longer ships every full record). The `defaultLimit` first page now flags itself `partial: true`; `truncated: true` stays on it as a deprecated alias, so "first page of many" is no longer only spelled like the MCP result-cap marker. `paginated()` refuses a `maxLimit` above `PAGE_LIMIT_MAX` (200, the most the page schema accepts); `harness_models`/`adapter_models` declared an unreachable 500. `app_list` ships each app's latest 20 runs plus `runCount` (the registry never prunes runs, so the history grew every record without bound); `task_list` pages carry `boardId`. The Store shows "last N of runCount".
+
+### Patch Changes
+
+- 7bbbeee: List readers that called a daemon list tool unpaged now read every row through one shared helper, `pageAll` (`@agentproto/app-client`, also the `./page-all` subpath): it walks `nextCursor`, halves a page that hits the MCP result cap, and throws instead of resolving an empty list. Used by the config app (Models catalog, wallet model curation, imported MCP tools), the Store, the work board, the ops panel and session viewer (`session_list` pages), the mail-triage run history, the panel bridge's `callToolPaged`, and the runner selector (`adapter_list`, `harness_preset_list`). The session steward reads installed app ids with a bounded, projected `app_list`. `task_list` pages now carry `boardId` like the unpaged body.
+- 8e61d2f: Weekly dependency refresh (minor-patch).
+- Updated dependencies [b84d691]
+- Updated dependencies [a98623c]
+- Updated dependencies [7bbbeee]
+- Updated dependencies [48a0e38]
+- Updated dependencies [8e61d2f]
+  - @agentproto/model-catalog@0.16.1
+  - @agentproto/mcp-server@0.8.0
+  - @agentproto/app-client@0.6.0
+  - @agentproto/apps@0.28.1
+  - @agentproto/tool@0.7.0
+  - @agentproto/providers-store@0.4.8
+  - @agentproto/adapter-browser@0.9.4
+  - @agentproto/app@2.6.2
+  - @agentproto/driver-browser@0.4.3
+  - @agentproto/driver@0.4.3
+  - @agentproto/driver-http@0.2.3
+  - @agentproto/governance-engine@1.0.3
+  - @agentproto/workflow-runtime@0.21.3
+  - @agentproto/inference-endpoint@1.0.6
+  - @agentproto/plugin-local-browser@0.3.10
+  - @agentproto/eval-reporters@0.2.34
+  - @agentproto/telemetry-langfuse@0.2.32
+  - @agentproto/workspace-brain@0.7.3
+  - @agentproto/review@1.0.1
+  - @agentproto/run@0.2.5
+  - @agentproto/sandbox@1.0.2
+
 ## 6.5.0
 
 ### Minor Changes

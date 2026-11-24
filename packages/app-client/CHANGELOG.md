@@ -1,5 +1,16 @@
 # @agentproto/app-client
 
+## 0.6.0
+
+### Minor Changes
+
+- a98623c: A tool result over the MCP result cap (`MCP_RESULT_MAX_BYTES`) is now sent as an error result (`isError: true`) carrying the `{ truncated, totalBytes, hint }` marker, instead of a successful one. Clients that read lists leniently (`Array.isArray(r) ? r : []`, `r.items ?? []`) showed a truncated payload as an empty list; now every generic unwrapper rejects. `@agentproto/app-client` adds `McpResultTruncatedError` (a `McpToolError` subclass) and `parseTruncatedMarker`, raised for both the error form and the successful form older daemons sent. The inline app panels (config, ops-panel, session-viewer, media-viewer, mail-triage) share one `unwrapText` that throws on the marker nested in `app_tool_call`'s envelope, and the session-steward scan fails instead of silently dropping a page that came back as the marker.
+- 7bbbeee: List readers that called a daemon list tool unpaged now read every row through one shared helper, `pageAll` (`@agentproto/app-client`, also the `./page-all` subpath): it walks `nextCursor`, halves a page that hits the MCP result cap, and throws instead of resolving an empty list. Used by the config app (Models catalog, wallet model curation, imported MCP tools), the Store, the work board, the ops panel and session viewer (`session_list` pages), the mail-triage run history, the panel bridge's `callToolPaged`, and the runner selector (`adapter_list`, `harness_preset_list`). The session steward reads installed app ids with a bounded, projected `app_list`. `task_list` pages now carry `boardId` like the unpaged body.
+
+### Patch Changes
+
+- 8e61d2f: Weekly dependency refresh (minor-patch).
+
 ## 0.5.1
 
 ### Patch Changes

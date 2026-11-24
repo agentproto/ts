@@ -1,5 +1,12 @@
 # @agentproto/workflow-ai-sdk
 
+## 0.1.28
+
+### Patch Changes
+
+- 8e61d2f: Weekly dependency refresh (minor-patch).
+  - @agentproto/workflow-runtime@0.21.3
+
 ## 0.1.27
 
 ### Patch Changes
