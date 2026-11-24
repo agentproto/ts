@@ -1,5 +1,11 @@
 # @agentproto/runtime
 
+## 6.6.1
+
+### Patch Changes
+
+- @agentproto/workspace-brain@0.7.4
+
 ## 6.6.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @agentproto/pr-outcome
 
+## 0.1.13
+
+### Patch Changes
+
+- @agentproto/runtime@6.6.1
+
 ## 0.1.12
 
 ### Patch Changes
