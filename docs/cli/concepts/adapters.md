@@ -207,8 +207,10 @@ Newly shipped manifest fields (this release):
   two are mutually exclusive.
 - `print.event_schema?: "claude-stream-json" | "mastra-jsonl" | "antigravity-stream-json"`
   selects the wire-event taxonomy for `protocol: "print"` adapters. The
-  `antigravity-stream-json` value is new this release and drives Google
-  Antigravity's `--output-format stream-json` output.
+  `antigravity-stream-json` value still parses Google Antigravity's
+  `--output-format stream-json` output, but no shipped adapter runs it:
+  antigravity now spawns `agy acp` on `protocol: "acp"` instead of the
+  print arm.
 
 The AgentProto spec for the adapter shape is AIP-45 — see
 <https://agentproto.sh/docs/aip-45>.
