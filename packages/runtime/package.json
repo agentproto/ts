@@ -290,7 +290,7 @@
     "@agentproto/workspace-brain": "workspace:*",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "ai": "^6.0.333",
+    "ai": "^6.0.336",
     "croner": "^9.1.0",
     "defuddle": "^0.19.13",
     "gray-matter": "^4.0.3",
