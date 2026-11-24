@@ -131,6 +131,13 @@ jobs:
           if [ "$MODE" = "minor-patch" ]; then
             echo "Applying range-respecting update across the workspace: pnpm up -r"
             pnpm up -r || { echo "::error::pnpm up -r failed."; exit 1; }
+            # `pnpm up -r` (pnpm 10) writes the resolved caret range as the
+            # lockfile specifier of every package pinned by `pnpm.overrides`
+            # (vitest, ws, vite, ...) instead of the override range, so the
+            # PR's frozen install fails with ERR_PNPM_OUTDATED_LOCKFILE (#2838).
+            # A lockfile-only install writes the override ranges back without
+            # changing any resolved version.
+            pnpm install --lockfile-only || { echo "::error::pnpm install --lockfile-only failed."; exit 1; }
           else
             if [ -z "$SCOPE" ]; then
               echo "mode=scoped-latest but no scope provided — nothing to do."
@@ -198,6 +205,15 @@ jobs:
       - name: Sanity build & type-check
         if: steps.apply.outputs.changed == 'true'
         run: |
+          # The PR CI installs with --frozen-lockfile: refuse to open a PR
+          # whose lockfile it would reject.
+          F=0
+          pnpm install --frozen-lockfile --lockfile-only > /tmp/update-frozen.log 2>&1 || F=$?
+          if [ "$F" -ne 0 ]; then
+            cat /tmp/update-frozen.log
+            echo "::error::pnpm-lock.yaml does not match the bumped package.json files (frozen install exit $F)."
+            exit 1
+          fi
           B=0
           T=0
           pnpm build > /tmp/update-build.log 2>&1 || B=$?
