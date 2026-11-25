@@ -4,10 +4,10 @@ id: codex
 description: OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via a version-pinned npx package and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.
 version: 0.1.0
 bin: npx
-bin_args: ["-y", "@agentclientprotocol/codex-acp@2.10.0"]
+bin_args: ["-y", "@agentclientprotocol/codex-acp@2.12.0"]
 install:
   - method: npm
-    package: "@agentclientprotocol/codex-acp@2.10.0"
+    package: "@agentclientprotocol/codex-acp@2.12.0"
     global: true
 version_check:
   cmd: npm ls -g @agentclientprotocol/codex-acp --depth=0
@@ -70,6 +70,14 @@ models:
     - gpt-6-sol-pro
     - gpt-6-astra
     - gpt-6-astra-pro
+    - gpt-6.1-sol
+    - gpt-6.1-sol-pro
+    - gpt-6.1-terra
+    - gpt-6.1-terra-pro
+    - gpt-6.2-sol
+    - gpt-6.2-sol-pro
+    - gpt-6.2-astra
+    - gpt-6.2-astra-pro
     # GPT-4.1 / 4o generation.
     - gpt-4.1
     - gpt-4.1-mini
@@ -119,10 +127,10 @@ full-access session modes.
 
 ```bash
 # npm (global) — recommended for fast spawn
-npm install -g @agentclientprotocol/codex-acp@2.10.0
+npm install -g @agentclientprotocol/codex-acp@2.12.0
 
 # or rely on the npx form (no manual install)
-npx -y @agentclientprotocol/codex-acp@2.10.0
+npx -y @agentclientprotocol/codex-acp@2.12.0
 ```
 
 The wrapper ships platform-specific native binaries via npm optional

@@ -4,7 +4,7 @@
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
  * npm dependency) so a single
- * `npx -y @agentclientprotocol/codex-acp@2.10.0`
+ * `npx -y @agentclientprotocol/codex-acp@2.12.0`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -42,11 +42,11 @@ export const codex: AgentCliHandle = defineHarness({
   // adapter already speaks. The v2 session surface, native subagent sessions,
   // steering, and background tasks are opt-in via protocol/capability
   // negotiation, so they stay inert for this adapter.
-  bin_args: ["-y", "@agentclientprotocol/codex-acp@2.10.0"],
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@2.12.0"],
   install: [
     {
       method: "npm",
-      package: "@agentclientprotocol/codex-acp@2.10.0",
+      package: "@agentclientprotocol/codex-acp@2.12.0",
       global: true,
     },
   ],
@@ -184,21 +184,27 @@ export const codex: AgentCliHandle = defineHarness({
       "gpt-5.6-sol-pro",
       "gpt-5.6-terra",
       "gpt-5.6-terra-pro",
-      // GPT-6 family. Exactly the six ids that exist upstream — taken from
-      // the catalog's own synced OpenAI list (`openai-pricing.generated.ts`,
-      // OpenRouter passthrough) and cross-checked against the opencode-zen
-      // snapshot, which carries gpt-6-astra/luna/sol. Deliberately NOT a
-      // symmetric fill of the 5.6 shape: there is no `gpt-6-terra`, and no
-      // `gpt-6-codex` — inventing either would put an id in the menu that
-      // the bridge would reject on selection. The `:batch` variants the
-      // catalog also carries are omitted on purpose; batch is an offline
-      // job surface, not something an interactive ACP session selects.
+      // GPT-6 family. Only ids present in the catalog's synced OpenAI list
+      // (`openai-pricing.generated.ts`) and in the codex CLI model cache.
+      // There is no `gpt-6-terra` (terra starts at 6.1) and no `gpt-6-codex`:
+      // listing either would put an id in the menu that the bridge would
+      // reject on selection. The `:batch` variants the catalog also carries
+      // are omitted on purpose; batch is an offline job surface, not
+      // something an interactive ACP session selects.
       "gpt-6-luna",
       "gpt-6-luna-pro",
       "gpt-6-sol",
       "gpt-6-sol-pro",
       "gpt-6-astra",
       "gpt-6-astra-pro",
+      "gpt-6.1-sol",
+      "gpt-6.1-sol-pro",
+      "gpt-6.1-terra",
+      "gpt-6.1-terra-pro",
+      "gpt-6.2-sol",
+      "gpt-6.2-sol-pro",
+      "gpt-6.2-astra",
+      "gpt-6.2-astra-pro",
       // GPT-4.1 / 4o generation.
       "gpt-4.1",
       "gpt-4.1-mini",
