@@ -58,14 +58,16 @@ jobs:
           node-version: 22
       - name: Is a changeset pending?
         id: changesets
+        continue-on-error: true
         run: node scripts/release-needed.mjs
       - name: Is a version on main missing from npm?
         id: unpublished
-        if: ${{ github.event_name != 'workflow_dispatch' && steps.changesets.outputs.pending == 'false' }}
+        if: ${{ always() && github.event_name != 'workflow_dispatch' && steps.changesets.outputs.pending == 'false' }}
         continue-on-error: true
         run: node scripts/list-unpublished-packages.mjs
       - name: Decide
         id: decide
+        if: ${{ always() }}
         env:
           EVENT: ${{ github.event_name }}
           CHANGESETS: ${{ steps.changesets.outputs.pending }}

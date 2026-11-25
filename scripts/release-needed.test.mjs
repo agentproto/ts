@@ -45,3 +45,11 @@ test('the Release workflow runs its job only behind the gate, and skips only on 
   assert.match(wf, /\n  release:\n    name: Version or publish\n    needs: gate\n    if: \$\{\{ needs\.gate\.outputs\.run == 'true' \}\}\n/)
   assert.match(wf, /\[ "\$EVENT" != "workflow_dispatch" \] && \[ "\$CHANGESETS" = "false" \] && \[ "\$UNPUBLISHED" = "false" \]/)
 })
+
+test('a failing check never skips the release: both checks continue on error and Decide always runs', async () => {
+  const { readFileSync } = await import('node:fs')
+  const wf = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
+  assert.match(wf, /id: changesets\n        continue-on-error: true\n/)
+  assert.match(wf, /id: unpublished\n[\s\S]*?continue-on-error: true\n/)
+  assert.match(wf, /id: decide\n        if: \$\{\{ always\(\) \}\}\n/)
+})
