@@ -11563,6 +11563,8 @@ async function handleFollows(
       json(400, { error: "invalid_body" })
       return true
     }
+    // No `parentOf` here (REST has no ambient caller identity), so the own-child
+    // `turn-end` safety net of the MCP `session_follow` path does not apply.
     const result = upsertSessionFollow(deps, body)
     if (!result.ok) {
       json(result.status, { error: result.error, message: result.message })

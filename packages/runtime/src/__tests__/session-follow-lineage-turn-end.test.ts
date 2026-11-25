@@ -92,7 +92,8 @@ describe("a follow survives its watched session being restarted", () => {
     const [sup, oldId, newId] = ids as [string, string, string]
     followStore.upsert({ follower: sup, selector: { sessionIds: [oldId] }, events: ["turn-end"] })
     registry.markRetired(oldId, { continuedTo: newId, cause: "continued" })
-    await sweepWiringLifecycle({ registry, followStore, sentinelStore, cancelSentinel: vi.fn(), log: () => {} })
+    const result = await sweepWiringLifecycle({ registry, followStore, sentinelStore, cancelSentinel: vi.fn(), log: () => {} })
+    expect(result.followsRelinked).toBe(1)
     expect(followStore.list()[0]!.selector.sessionIds).toEqual([newId])
   })
 })
