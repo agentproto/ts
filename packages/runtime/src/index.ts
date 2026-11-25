@@ -5163,6 +5163,7 @@ export async function createGateway(
       store: sessionFollowStore,
       hasSession: id => sessions.get(id) !== undefined,
       sessionKind: id => sessions.get(id)?.kind,
+      parentOf: id => sessions.get(id)?.parentSessionId,
       codexDesktopWakeEnabled: id => sessions.get(id)?.externalHost === "codex" &&
         codexWakeThreadIds.some(threadId => id === `codex:${threadId}`),
       ...(callerSessionId ? { callerSessionId } : {}),

@@ -115,10 +115,13 @@ export interface SessionFollowDeps {
   hasSession: (sessionId: string) => boolean
   /** Default follower when the input omits it (MCP caller's own session). */
   defaultFollower?: string
+  /** Parent of a session, when known. Enables the child-follow safety net:
+   *  a follow on the follower's own descendant always delivers `turn-end`. */
+  parentOf?: (sessionId: string) => string | undefined
 }
 
 export type UpsertFollowResult =
-  | { ok: true; follow: SessionFollow; created: boolean }
+  | { ok: true; follow: SessionFollow; created: boolean; warnings?: string[] }
   | { ok: false; status: 400 | 404; error: string; message: string }
 
 export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): UpsertFollowResult {
@@ -157,6 +160,28 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
   if (!deps.hasSession(follower)) {
     return { ok: false, status: 404, error: "session_not_found", message: `follower session "${follower}" not found` }
   }
+  // Safe default: a supervisor following its OWN child must be woken when the
+  // child finishes a turn. An explicit event list without `turn-end` (only
+  // exited/crashed/awaiting-input) would never wake it for a normal finish.
+  const warnings: string[] = []
+  let events = body.events
+  if (events && events.length > 0 && !events.includes("turn-end") && deps.parentOf) {
+    const isDescendant = (id: string): boolean => {
+      let cur = deps.parentOf?.(id)
+      for (let i = 0; cur && i < 32; i++) {
+        if (cur === follower) return true
+        cur = deps.parentOf?.(cur)
+      }
+      return false
+    }
+    const child = (sel.sessionIds ?? []).find(isDescendant)
+    if (child) {
+      events = [...events, "turn-end"]
+      warnings.push(
+        `events lacked "turn-end" while following your own child ${child}; added it so you are woken when the child finishes a turn.`,
+      )
+    }
+  }
   const input: SessionFollowInput = {
     follower,
     selector: {
@@ -168,7 +193,7 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
     },
     ...(body.key ? { key: body.key } : {}),
     ...(body.exclude ? { exclude: body.exclude } : {}),
-    ...(body.events ? { events: body.events } : {}),
+    ...(events ? { events } : {}),
     ...(body.batchMs !== undefined ? { batchMs: body.batchMs } : {}),
     ...(body.skipEmptyTurns !== undefined ? { skipEmptyTurns: body.skipEmptyTurns } : {}),
     ...(body.excludeFollowerChildren !== undefined
@@ -179,7 +204,7 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
     ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
   }
   const { follow, created } = deps.store.upsert(input)
-  return { ok: true, follow, created }
+  return { ok: true, follow, created, ...(warnings.length > 0 ? { warnings } : {}) }
 }
 
 /** `false` only means "no such follow" (by id or key). */
@@ -203,6 +228,7 @@ export interface RegisterSessionFollowToolsOptions {
   hasSession: (sessionId: string) => boolean
   /** External sessions receive an inbox digest. */
   sessionKind?: (sessionId: string) => string | undefined
+  parentOf?: (sessionId: string) => string | undefined
   codexDesktopWakeEnabled?: (sessionId: string) => boolean
   /** Trusted `?callerSessionId=` of the connecting `/mcp` client. */
   callerSessionId?: string
@@ -273,7 +299,7 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
     },
     async (input: Record<string, unknown>) => {
       const result = upsertSessionFollow(
-        { store, hasSession, ...(callerSessionId ? { defaultFollower: callerSessionId } : {}) },
+        { store, hasSession, ...(opts.parentOf ? { parentOf: opts.parentOf } : {}), ...(callerSessionId ? { defaultFollower: callerSessionId } : {}) },
         input,
       )
       if (!result.ok) return fail(result.error, `session_follow: ${result.message}`)
@@ -282,6 +308,7 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       return ok({
         created: result.created,
         follow: followView(result.follow),
+        ...(result.warnings ? { warnings: result.warnings } : {}),
         ...(codex ? { delivery: {
           mode: "codex-desktop-ipc",
           wakesFollower: true,

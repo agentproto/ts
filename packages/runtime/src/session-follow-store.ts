@@ -131,6 +131,11 @@ export interface SessionFollowStore {
   upsert(input: SessionFollowInput): { follow: SessionFollow; created: boolean }
   /** Re-point a follow at another follower session (a revived follower). */
   setFollower(id: string, follower: string): SessionFollow | undefined
+  /** A watched session was superseded (restart / continue-fresh / handoff):
+   *  in every follow whose `selector.sessionIds` names `from`, swap it for
+   *  `to`, so the follow keeps covering the lineage (same events, same key).
+   *  Returns the follows that changed. */
+  retargetSelectedSession(from: string, to: string): SessionFollow[]
   /** Remove by id or key (key scoped to `follower` when given). */
   remove(idOrKey: string, follower?: string): SessionFollow | undefined
   /** Synchronous flush for shutdown paths. */
@@ -341,6 +346,20 @@ export function createSessionFollowStore(opts?: SessionFollowStoreOptions): Sess
       follows.set(id, next)
       schedulePersist()
       return next
+    },
+    retargetSelectedSession(from, to) {
+      const changed: SessionFollow[] = []
+      if (from === to) return changed
+      for (const [id, existing] of follows) {
+        const ids = existing.selector.sessionIds
+        if (!ids?.includes(from)) continue
+        const sessionIds = [...new Set(ids.map(x => (x === from ? to : x)))]
+        const next = { ...existing, selector: { ...existing.selector, sessionIds } }
+        follows.set(id, next)
+        changed.push(next)
+      }
+      if (changed.length > 0) schedulePersist()
+      return changed
     },
     remove(idOrKey, follower) {
       const existing = follows.get(idOrKey) ?? findByKey(idOrKey, follower)
