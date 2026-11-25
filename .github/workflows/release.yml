@@ -36,8 +36,54 @@ permissions:
   id-token: write # npm provenance attestation
 
 jobs:
+  # Most pushes to main release nothing: no changeset is pending and every
+  # version on main is already on npm. Those used to pay for a full install and
+  # build (about 9 minutes) before changesets/action found nothing to do. This
+  # job decides in under a minute whether the real job is needed; a skipped job
+  # is not billed. It never skips when unsure: a manual dispatch always runs, a
+  # pending changeset runs, and an unpublished version, a registry error or a
+  # failed check all run (scripts/list-unpublished-packages.mjs fails open).
+  gate:
+    name: Does this push release anything?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Is a changeset pending?
+        id: changesets
+        run: node scripts/release-needed.mjs
+      - name: Is a version on main missing from npm?
+        id: unpublished
+        if: ${{ github.event_name != 'workflow_dispatch' && steps.changesets.outputs.pending == 'false' }}
+        continue-on-error: true
+        run: node scripts/list-unpublished-packages.mjs
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGESETS: ${{ steps.changesets.outputs.pending }}
+          UNPUBLISHED: ${{ steps.unpublished.outputs.pending }}
+        run: |
+          # Only an explicit "nothing to do" from both checks skips the release.
+          if [ "$EVENT" != "workflow_dispatch" ] && [ "$CHANGESETS" = "false" ] && [ "$UNPUBLISHED" = "false" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No pending changeset and every version is on npm: nothing to release."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "event=$EVENT changesets-pending=${CHANGESETS:-unknown} unpublished=${UNPUBLISHED:-unknown}: running the release job."
+          fi
+
   release:
     name: Version or publish
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     # Must cover the worst case of BOTH LLM ladders running every lane to its
     # own ceiling. Notes: cloud-primary 45 + free 20 + free-fallback 20 +
