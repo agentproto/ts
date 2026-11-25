@@ -584,6 +584,36 @@ export function unknownSessionsSubcommandMessage(sub: string): string {
   return `agentproto sessions: unknown subcommand ${sub}, ${tail}  Run \`agentproto sessions --help\` for usage.\n`
 }
 
+function parseListArgs(args: readonly string[]) {
+  return parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: {
+      watch: { type: "boolean" },
+      json: { type: "boolean" },
+      attach: { type: "string" },
+      simple: { type: "boolean" },
+      "no-color": { type: "boolean" },
+      q: { type: "string" },
+      label: { type: "string" },
+      cwd: { type: "string" },
+      "exclude-noise": { type: "boolean" },
+      "exclude-label-prefix": { type: "string", multiple: true },
+      "exclude-label": { type: "string", multiple: true },
+      "exclude-kind": { type: "string", multiple: true },
+      "root-only": { type: "boolean" },
+      parent: { type: "string" },
+      "updated-since": { type: "string" },
+      "started-since": { type: "string" },
+      status: { type: "string" },
+      alive: { type: "boolean" },
+      limit: { type: "string" },
+      fields: { type: "string" },
+    },
+  })
+}
+
 export async function runSessions(args: readonly string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(args[0] === "checkpoint" ? CHECKPOINT_USAGE : args[0] === "handoff" ? HANDOFF_USAGE : args[0] === "migrate" ? MIGRATE_USAGE : USAGE)
@@ -642,33 +672,20 @@ export async function runSessions(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  const { values } = parseArgs({
-    args: [...listArgs],
-    allowPositionals: false,
-    strict: true,
-    options: {
-      watch: { type: "boolean" },
-      json: { type: "boolean" },
-      attach: { type: "string" },
-      simple: { type: "boolean" },
-      "no-color": { type: "boolean" },
-      q: { type: "string" },
-      label: { type: "string" },
-      cwd: { type: "string" },
-      "exclude-noise": { type: "boolean" },
-      "exclude-label-prefix": { type: "string", multiple: true },
-      "exclude-label": { type: "string", multiple: true },
-      "exclude-kind": { type: "string", multiple: true },
-      "root-only": { type: "boolean" },
-      parent: { type: "string" },
-      "updated-since": { type: "string" },
-      "started-since": { type: "string" },
-      status: { type: "string" },
-      alive: { type: "boolean" },
-      limit: { type: "string" },
-      fields: { type: "string" },
-    },
-  })
+  let values: ReturnType<typeof parseListArgs>["values"]
+  try {
+    values = parseListArgs(listArgs).values
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code
+    if (typeof code !== "string" || !code.startsWith("ERR_PARSE_ARGS")) throw err
+    const bare = listArgs.find((a) => !a.startsWith("-"))
+    process.stderr.write(
+      bare !== undefined
+        ? unknownSessionsSubcommandMessage(bare)
+        : `agentproto sessions: ${(err as Error).message}\n  Run \`agentproto sessions --help\` for usage.\n`
+    )
+    return 2
+  }
   const listQuery = buildSessionListQuery(values)
   if (listQuery && values.watch) {
     process.stderr.write("agentproto sessions: list filters can't be combined with --watch\n")

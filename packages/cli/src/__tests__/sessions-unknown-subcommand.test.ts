@@ -38,6 +38,20 @@ describe("sessions: unknown subcommand", () => {
     expect(err).not.toMatch(/TypeError|ERR_PARSE_ARGS/)
   })
 
+  it("also catches a bare word after a flag (`sessions --json stpo`)", async () => {
+    const { code, err } = await run(["--json", "stpo"])
+    expect(code).toBe(2)
+    expect(err).toContain("unknown subcommand stpo, did you mean stop?")
+    expect(err).not.toMatch(/TypeError|ERR_PARSE_ARGS/)
+  })
+
+  it("reports an unknown flag cleanly too", async () => {
+    const { code, err } = await run(["--nope"])
+    expect(code).toBe(2)
+    expect(err).toContain("agentproto sessions:")
+    expect(err).not.toMatch(/TypeError|\n\s+at /)
+  })
+
   it("suggests from synonyms and near misses", () => {
     expect(suggestSessionsSubcommand("rm")).toBe("stop")
     expect(suggestSessionsSubcommand("ls")).toBe("list")
