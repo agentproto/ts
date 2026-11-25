@@ -54,7 +54,7 @@ agentproto sessions story    <id-or-name> [--json] [--no-color]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
                                            [--source auto|native|daemon]
                                            [--harness <slug>] [--cwd <dir>]
-agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
+agentproto sessions stop|kill <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
                                            [--error-kind <kind>] [--next-step <text>]
                                            [--question <text>] [--note <text>] [--json]
 agentproto sessions wait     <id-or-name>... [--until <event>] [--any]
@@ -831,7 +831,9 @@ failed to parse). `--source` values other than `auto`/`native`/`daemon`
 are rejected client-side by the CLI (exit `2`) before any request is
 made.
 
-### `stop <id-or-name>`
+### `stop <id-or-name>` (alias `kill`)
+
+`kill` is an alias of `stop`: same options, same behaviour. An unknown `sessions` subcommand exits `2` with `unknown subcommand <x>, did you mean <y>?` on stderr (or the list of valid subcommands when nothing is close).
 
 ```bash
 agentproto sessions stop ses_abc12
