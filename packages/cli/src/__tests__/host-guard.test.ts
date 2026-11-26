@@ -10,6 +10,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest"
 import {
+  DEFAULT_GUARD_LEVEL_PATH,
+  decideEscalation,
+  readGuardLevel,
+  type GuardLevelMemory,
   DEFAULT_GUARD_POLICY,
   GUARD_STATE_TTL_MS,
   heavyWorkflowBlockReason,
@@ -23,6 +27,18 @@ import {
 } from "../commands/host-guard.js"
 import type { HealthVerdict } from "../commands/host-health.js"
 
+// The default memory/marker paths live under the home directory, resolved
+// when the module loads: point HOME at a throwaway directory first so no
+// test ever touches the real ~/.agentproto.
+const fakeHome = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs")
+  const { tmpdir: tmp } = await import("node:os")
+  const { join: joinPath } = await import("node:path")
+  const home = mkdtempSync(joinPath(tmp(), "host-guard-home-"))
+  process.env.HOME = home
+  return home
+})
+
 // ── I/O mocks for the runner tests ──────────────────────────────────
 const io = vi.hoisted(() => ({
   verdict: "OK" as "OK" | "WARN" | "CRIT",
@@ -32,6 +48,8 @@ const io = vi.hoisted(() => ({
   reaps: [] as string[],
   kills: [] as string[],
   reapFails: new Set<string>(),
+  /** Escalations sent: prompts to an existing session, or agent spawns. */
+  escalations: [] as string[],
 }))
 
 vi.mock("../commands/_daemon-helpers.js", () => ({
@@ -39,6 +57,15 @@ vi.mock("../commands/_daemon-helpers.js", () => ({
   printNoDaemonError: () => undefined,
   httpGetJson: async () => ({ sessions: io.sessions }),
   httpPostJson: async (url: string) => {
+    const prompt = /\/sessions\/([^/]+)\/prompt/.exec(url)
+    if (prompt) {
+      io.escalations.push(`notify:${decodeURIComponent(prompt[1] as string)}`)
+      return {}
+    }
+    if (url.endsWith("/sessions/agent")) {
+      io.escalations.push("spawn")
+      return { session: { id: "sess_escalation" } }
+    }
     const m = /\/sessions\/([^/]+)\/(reap|kill)$/.exec(url)
     if (!m) return {}
     const id = decodeURIComponent(m[1] as string)
@@ -556,6 +583,170 @@ describe("runHostGuard — I/O runner", () => {
     io.verdict = "OK"
     await run()
     expect(await readGuardState(statePath)).toBeNull()
+  })
+})
+
+describe("decideEscalation", () => {
+  const T0 = Date.parse("2026-11-26T12:00:00.000Z")
+  const memo = (over: Partial<GuardLevelMemory> = {}): GuardLevelMemory => ({
+    level: "OK",
+    since: new Date(T0 - 60 * MIN).toISOString(),
+    escalatedLevel: "OK",
+    ...over,
+  })
+  const decide = (
+    level: HealthVerdict,
+    previous: GuardLevelMemory | null,
+    opts: { escalateOn?: "warn" | "crit"; nowMs?: number; renotifyAfterMs?: number } = {},
+  ) =>
+    decideEscalation({
+      escalateOn: opts.escalateOn ?? "crit",
+      level,
+      previous,
+      nowMs: opts.nowMs ?? T0,
+      renotifyAfterMs: opts.renotifyAfterMs ?? 120 * MIN,
+    })
+
+  it("crit (default): escalates on OK→CRIT and WARN→CRIT, never on WARN", () => {
+    expect(decide("CRIT", memo()).escalate).toBe(true)
+    expect(decide("CRIT", memo({ level: "WARN" })).reason).toBe("crossed")
+    expect(decide("WARN", memo()).escalate).toBe(false)
+  })
+
+  it("warn: escalates on OK→WARN, then again on WARN→CRIT", () => {
+    const first = decide("WARN", memo(), { escalateOn: "warn" })
+    expect(first).toMatchObject({ escalate: true, reason: "crossed" })
+    const second = decide("CRIT", first.memoryIfSent, { escalateOn: "warn", nowMs: T0 + 5 * MIN })
+    expect(second).toMatchObject({ escalate: true, reason: "crossed" })
+  })
+
+  it("does not escalate again while the level stays the same", () => {
+    const sent = decide("CRIT", memo()).memoryIfSent
+    const next = decide("CRIT", sent, { nowMs: T0 + 20 * MIN })
+    expect(next).toMatchObject({ escalate: false, reason: "already-escalated" })
+  })
+
+  it("escalates again when CRIT lasts past the renotify delay", () => {
+    const sent = decide("CRIT", memo()).memoryIfSent
+    expect(decide("CRIT", sent, { nowMs: T0 + 119 * MIN }).escalate).toBe(false)
+    expect(decide("CRIT", sent, { nowMs: T0 + 120 * MIN })).toMatchObject({ escalate: true, reason: "still-crit" })
+    expect(decide("CRIT", sent, { nowMs: T0 + 600 * MIN, renotifyAfterMs: 0 }).escalate).toBe(false)
+  })
+
+  it("counts a climb back up after a drop as a new crossing", () => {
+    const sent = decide("CRIT", memo()).memoryIfSent
+    const dropped = decide("WARN", sent, { nowMs: T0 + 5 * MIN })
+    expect(dropped.escalate).toBe(false)
+    expect(dropped.memory.escalatedLevel).toBe("WARN")
+    expect(decide("CRIT", dropped.memory, { nowMs: T0 + 10 * MIN }).reason).toBe("crossed")
+  })
+
+  it("keeps the start of a level across runs, and resets it on change", () => {
+    const sent = decide("CRIT", memo({ level: "CRIT", since: "2026-11-26T10:00:00.000Z" })).memoryIfSent
+    expect(sent.since).toBe("2026-11-26T10:00:00.000Z")
+    expect(decide("OK", sent).memory.since).toBe(new Date(T0).toISOString())
+  })
+
+  it("without memory, escalates at or above the level (previous behaviour)", () => {
+    expect(decide("CRIT", null).escalate).toBe(true)
+    expect(decide("WARN", null).escalate).toBe(false)
+    expect(decide("WARN", null, { escalateOn: "warn" }).escalate).toBe(true)
+  })
+})
+
+describe("runHostGuard — escalation on level change", () => {
+  let dir: string
+  let statePath: string
+  let levelPath: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "host-guard-level-"))
+    statePath = join(dir, "state.json")
+    levelPath = join(dir, "level.json")
+    io.verdict = "OK"
+    io.sessions = []
+    io.reaps = []
+    io.kills = []
+    io.reapFails = new Set()
+    io.escalations = []
+    vi.spyOn(process.stdout, "write").mockImplementation((() => true) as typeof process.stdout.write)
+    vi.spyOn(process.stderr, "write").mockImplementation((() => true) as typeof process.stderr.write)
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const run = (extra: string[] = []) =>
+    runHostGuard([
+      "--json", "--no-log", "--settle", "0", "--state", statePath, "--level-state", levelPath,
+      "--notify-session", "brain", ...extra,
+    ])
+
+  it("escalates once for a host that stays CRIT, not on every run", async () => {
+    io.verdict = "CRIT"
+    for (let i = 0; i < 3; i++) await run()
+    expect(io.escalations).toEqual(["notify:brain"])
+    expect((await readGuardLevel(levelPath))?.escalatedLevel).toBe("CRIT")
+  })
+
+  it("--escalate-on warn: escalates on OK→WARN and WARN→CRIT only", async () => {
+    await run(["--escalate-on", "warn"])
+    io.verdict = "WARN"
+    await run(["--escalate-on", "warn"])
+    await run(["--escalate-on", "warn"])
+    io.verdict = "CRIT"
+    await run(["--escalate-on", "warn"])
+    await run(["--escalate-on", "warn"])
+    expect(io.escalations).toEqual(["notify:brain", "notify:brain"])
+  })
+
+  it("default (crit): a WARN host never escalates", async () => {
+    io.verdict = "WARN"
+    await run()
+    expect(io.escalations).toEqual([])
+  })
+
+  it("escalates again once CRIT outlasts --renotify-after", async () => {
+    io.verdict = "CRIT"
+    await run()
+    // Pretend the escalation was sent 3 h ago.
+    const memory = await readGuardLevel(levelPath)
+    const old = new Date(Date.now() - 180 * MIN).toISOString()
+    await writeFile(levelPath, JSON.stringify({ ...memory, lastEscalatedAt: old }))
+    await run()
+    expect(io.escalations).toEqual(["notify:brain", "notify:brain"])
+    await run()
+    expect(io.escalations).toHaveLength(2)
+  })
+
+  it("--no-level-state keeps the previous behaviour: one escalation per CRIT run", async () => {
+    io.verdict = "CRIT"
+    await run(["--no-level-state"])
+    await run(["--no-level-state"])
+    expect(io.escalations).toEqual(["notify:brain", "notify:brain"])
+  })
+
+  it("a dry run neither escalates nor moves the memory", async () => {
+    io.verdict = "CRIT"
+    await run(["--dry-run"])
+    expect(io.escalations).toEqual([])
+    expect(await readGuardLevel(levelPath)).toBeNull()
+  })
+
+  it("with the default flags, a host that stays CRIT is escalated once, not on every run", async () => {
+    io.verdict = "CRIT"
+    const plain = () =>
+      runHostGuard(["--json", "--no-log", "--settle", "0", "--state", statePath, "--notify-session", "brain"])
+    for (let i = 0; i < 3; i++) expect(await plain()).toBe(0)
+    expect(io.escalations).toEqual(["notify:brain"])
+    expect(DEFAULT_GUARD_LEVEL_PATH.startsWith(fakeHome)).toBe(true)
+    await rm(DEFAULT_GUARD_LEVEL_PATH, { force: true })
+  })
+
+  it("rejects an unknown --escalate-on level", async () => {
+    expect(await run(["--escalate-on", "sometimes"])).toBe(64)
   })
 })
 
