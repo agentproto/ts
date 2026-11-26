@@ -10,10 +10,13 @@ const HANDSHAKE_VERSION = "2025-11-25"
 export class BridgeError extends Error {
   readonly code: number
   readonly data: unknown
-  constructor(code: number, message: string, data?: unknown) {
+  /** HTTP status to answer with, when the error must not take the default for its code. */
+  readonly httpStatus: number | undefined
+  constructor(code: number, message: string, data?: unknown, httpStatus?: number) {
     super(message)
     this.code = code
     this.data = data
+    this.httpStatus = httpStatus
   }
 }
 

@@ -1388,6 +1388,31 @@ export interface EnqueuePromptResult {
 export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn" | "duplicate"
 
 /**
+ * Lifecycle of one prompt ticket (`enqueuePrompt`'s `opts.promptId`), the stable
+ * handle a caller reserves for a prompt before it is accepted. Tickets are
+ * observed through {@link SessionsRegistry.onPromptTicket}; an id that was
+ * never passed as a ticket produces no event.
+ *
+ *  - `started`: the ticket's turn began (it left the queue, or was delivered at once).
+ *  - `steered`: the ticket was injected into the turn already running; it ends with that turn.
+ *  - `ended`: the turn the ticket belonged to ended (`interrupted` when it was cancelled).
+ *  - `dropped`: the ticket left the queue, or was cancelled, without ever starting a turn.
+ */
+export type PromptTicketEvent =
+  | { type: "started"; sessionId: string; promptId: string }
+  | { type: "steered"; sessionId: string; promptId: string }
+  | { type: "ended"; sessionId: string; promptId: string; interrupted: boolean; reason?: string }
+  | {
+      type: "dropped"
+      sessionId: string
+      promptId: string
+      cause: "removed" | "cancelled" | "answered-question" | "dispatch-failed"
+    }
+
+/** Where a prompt ticket stands right now. `unknown` = never seen, already ended or dropped. */
+export type PromptTicketState = "queued" | "in-flight" | "unknown"
+
+/**
  * Short text preview of a queued `QueuedPrompt.message` (raw string OR an
  * ACP content block / array — the same shape `runAgentTurn`'s `message`
  * accepts). Flattens text out of content-block arrays and truncates to a
@@ -3689,6 +3714,14 @@ interface SessionRuntime {
   /** Queue id → ISO time for prompts steered into the running turn, read once
    *  by the `enqueuePrompt` call that queued them. Bounded. In-memory only. */
   steeredPromptAt?: Map<string, string>
+  /** Prompt ticket of the turn now running (`enqueuePrompt`'s `promptId`). In-memory only. */
+  activePromptId?: string
+  /** Tickets steered into the running turn: they end with it. In-memory only. */
+  steeredTickets?: Set<string>
+  /** Ticket sliced off the queue whose turn has not started yet (the async admission window). In-memory only. */
+  dispatchingTicket?: string
+  /** Set by `cancelPromptTicket` while the ticket sits in that window: the dispatch then drops it. In-memory only. */
+  cancelledDispatch?: string
   /** Messages this session received that have since left its inbox (acked
    *  by a wait, a turn, `inbox_ack`, or steered in), newest last, bounded
    *  by `INBOX_CAP`. `findReceivedMessage` reads this before the transcript:
@@ -5059,6 +5092,12 @@ export interface SessionsRegistry {
       queue?: boolean
       force?: boolean
       queueId?: string
+      /** Caller-reserved prompt ticket. It becomes the queue item id when the
+       *  prompt is parked, and tags the turn the prompt starts, so
+       *  {@link SessionsRegistry.onPromptTicket} / `promptTicketState` /
+       *  `cancelPromptTicket` can follow this exact prompt whatever happens to
+       *  the queue around it. Wins over `queueId`. */
+      promptId?: string
       /** A typed inter-session message (see `QueuedPrompt.envelope`). When
        *  set, the turn is built from the envelope and `message` is ignored:
        *  rendered as an `<agentproto-message>` tag, recorded as
@@ -5119,6 +5158,26 @@ export interface SessionsRegistry {
    *  throwing, same shape as `interruptSession`'s no-op-is-not-an-error
    *  contract. */
   removeQueuedPrompt(id: string, queueId: string): { removed: boolean }
+  /** Subscribe to the lifecycle of prompt tickets (see {@link PromptTicketEvent}). Returns an unsubscribe. */
+  onPromptTicket(listener: (ev: PromptTicketEvent) => void): () => void
+  /**
+   * Reserve the prompt ticket of a session's FIRST turn before the session exists (`agent_start` with a prompt, whose
+   * session id the caller chose up front): the first turn that session runs is tagged with `promptId`. Call
+   * `releaseFirstTurnTicket` if the spawn fails, so the entry never lingers.
+   */
+  expectFirstTurnTicket(id: string, promptId: string): void
+  releaseFirstTurnTicket(id: string): void
+  /** Where the ticket stands: waiting in the queue, in flight (its turn is running or about to), or unknown. */
+  promptTicketState(id: string, promptId: string): PromptTicketState
+  /**
+   * Cancel ONE prompt ticket and nothing else, atomically on the session (no await between reading the ticket's
+   * state and acting on it, so a cancel racing the queue-to-turn move either drops the ticket or interrupts its turn):
+   *  - queued: removed from the queue (`dropped`);
+   *  - in flight: the turn is interrupted as `interruptSession` does (`interrupted`); rejects when the harness
+   *    cannot cancel a turn;
+   *  - anything else (ended, dropped, never known, another turn is running): `noop`, no effect on the session.
+   */
+  cancelPromptTicket(id: string, promptId: string): Promise<{ outcome: "dropped" | "interrupted" | "noop" }>
   /** Deliver a daemon-attested typed message (`msg.to` is the recipient;
    *  `from` must already be computed from the verified caller), routed by
    *  `msg.urgency` (AIP-46 §Delivery tiers):
@@ -8175,6 +8234,20 @@ export function createSessionsRegistry(opts?: {
 
   const retiredListeners = new Set<(ev: SessionRetiredEvent) => void>()
 
+  const ticketListeners = new Set<(ev: PromptTicketEvent) => void>()
+  /** Session id -> ticket of the first turn it will run (see `expectFirstTurnTicket`). */
+  const firstTurnTickets = new Map<string, string>()
+  /** Tell the ticket observers; a listener must never break the session it observes. */
+  const emitTicket = (ev: PromptTicketEvent): void => {
+    for (const listener of ticketListeners) {
+      try {
+        listener(ev)
+      } catch {
+        // an observer failing never disturbs the turn
+      }
+    }
+  }
+
   /** Stamp a row retired (see `isRetired`) and tell the cleanup listeners.
    *  `killed` also stamps `retiredAt` (the only retirement signal a row that
    *  had already ended can carry); archive/forget/continue are already carried
@@ -9627,10 +9700,20 @@ export function createSessionsRegistry(opts?: {
       }
     }
     rt.desc.promptQueue = queue.filter(p => !batch.includes(p))
+    // The ticket is off the queue but its turn has not started: it is "in flight" from now on, so a
+    // cancel that lands in this window finds it (and drops it below) instead of finding nothing.
+    if (!next.envelope) rt.dispatchingTicket = next.id
     schedulePersist()
     void (async () => {
       try {
         await maybeResumeAgent(rt, "daemon-restart", next.source ? { source: next.source } : {})
+        if (!next.envelope && rt.cancelledDispatch === next.id) {
+          rt.cancelledDispatch = undefined
+          rt.dispatchingTicket = undefined
+          emitTicket({ type: "dropped", sessionId: rt.desc.id, promptId: next.id, cause: "cancelled" })
+          dispatchQueuedPrompt(rt)
+          return
+        }
         const liveRt = validateAgentTurn(rt.desc.id, "queue-drain", { compaction: isCompactPrompt(next.message) })
         if (next.envelope) {
           await runMessageTurn(
@@ -9645,15 +9728,23 @@ export function createSessionsRegistry(opts?: {
           ? undefined
           : matchStructuredQuestionAnswer(liveRt, next.message)
         if (answer) {
+          if (rt.dispatchingTicket === next.id) rt.dispatchingTicket = undefined
+          emitTicket({ type: "dropped", sessionId: rt.desc.id, promptId: next.id, cause: "answered-question" })
           await answerStructuredQuestion(liveRt, answer)
           return
         }
-        await runAgentTurn(
-          liveRt,
-          next.message,
-          next.source ? { promptSource: next.source } : undefined
-        )
+        await runAgentTurn(liveRt, next.message, {
+          ...(next.source ? { promptSource: next.source } : {}),
+          promptId: next.id,
+        })
       } catch (err) {
+        if (!next.envelope) {
+          // Still "dispatching" = the turn never started (a started turn clears it and reports its own end).
+          if (rt.dispatchingTicket === next.id) {
+            rt.dispatchingTicket = undefined
+            emitTicket({ type: "dropped", sessionId: rt.desc.id, promptId: next.id, cause: "dispatch-failed" })
+          }
+        }
         appendLine(
           rt,
           `[error] queued prompt dropped — ${err instanceof Error ? err.message : String(err)}`,
@@ -11499,6 +11590,9 @@ export function createSessionsRegistry(opts?: {
     appendLine(rt, `[prompt] ${item.id} from ${promptOriginLabel(item)} steered into the running turn`, "stdout")
     const seen = (rt.steeredPromptAt ??= new Map())
     seen.set(item.id, at)
+    // The prompt now rides the running turn: its ticket ends with it.
+    ;(rt.steeredTickets ??= new Set()).add(item.id)
+    emitTicket({ type: "steered", sessionId: rt.desc.id, promptId: item.id })
     if (seen.size > 100) seen.delete(seen.keys().next().value as string)
     return true
   }
@@ -11699,6 +11793,8 @@ export function createSessionsRegistry(opts?: {
       system?: string
       messages?: readonly SessionMessage[]
       reattach?: boolean
+      /** Prompt ticket this turn serves (`enqueuePrompt`'s `promptId`). */
+      promptId?: string
     }
   ): Promise<void> => {
     if (!rt.agentSession) {
@@ -11830,6 +11926,14 @@ export function createSessionsRegistry(opts?: {
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.emitter.emit("busy", true)
+    const turnTicket =
+      turnOpts?.promptId ?? ((rt.desc.turnsCompleted ?? 0) === 0 ? firstTurnTickets.get(rt.desc.id) : undefined)
+    firstTurnTickets.delete(rt.desc.id)
+    if (turnTicket) {
+      rt.activePromptId = turnTicket
+      if (rt.dispatchingTicket === turnTicket) rt.dispatchingTicket = undefined
+      emitTicket({ type: "started", sessionId: rt.desc.id, promptId: turnTicket })
+    }
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
     releaseBlockedOn(rt.desc)      // clear stale blocked-on from prior turn
@@ -12104,6 +12208,11 @@ export function createSessionsRegistry(opts?: {
       // someone else's.
       const interruptedBy = rt.interruptRequested
       rt.interruptRequested = undefined
+      // Same reason for the prompt tickets of this turn: a prompt admitted while
+      // the awaits below run owns the NEXT turn's slot, never this one's.
+      const endedTickets = [...(rt.activePromptId ? [rt.activePromptId] : []), ...(rt.steeredTickets ?? [])]
+      rt.activePromptId = undefined
+      rt.steeredTickets = undefined
       closeTurnStats(rt)
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
@@ -12514,6 +12623,17 @@ export function createSessionsRegistry(opts?: {
       // items drain after the next turn that ends naturally. The one
       // exception is deliver-now, which interrupted precisely to run its
       // item.
+      // The ticket observers hear the end of the turn BEFORE the queue drains, so a
+      // ticket's terminal record always precedes the start of the next one.
+      for (const promptId of endedTickets) {
+        emitTicket({
+          type: "ended",
+          sessionId: rt.desc.id,
+          promptId,
+          interrupted: interruptedBy !== undefined || turnEndReason === "cancelled" || turnEndReason === "aborted",
+          ...(turnEndReason ? { reason: turnEndReason } : {}),
+        })
+      }
       if (!interruptedBy) dispatchQueuedPrompt(rt)
       else if (interruptedBy.deliverQueueId) {
         dispatchQueuedPrompt(rt, interruptedBy.deliverQueueId)
@@ -14300,6 +14420,11 @@ export function createSessionsRegistry(opts?: {
       if (dedupeKey !== undefined && (dedupeKey.length < 1 || dedupeKey.length > 200)) {
         throw new Error("enqueuePrompt: dedupeKey must be 1 to 200 characters")
       }
+      // Caller-reserved ticket: the queue item id and the tag of the turn this prompt starts.
+      const ticket = opts?.promptId
+      if (ticket !== undefined && opts?.envelope) {
+        throw new Error("enqueuePrompt: promptId is not supported with a typed envelope message")
+      }
       // A typed envelope message already has its own daemon-minted id, and it
       // records a sender trace on acceptance that a duplicate answer could
       // not take back. Refuse the combination instead of leaking the trace.
@@ -14423,7 +14548,7 @@ export function createSessionsRegistry(opts?: {
         }
         const steerable = opts.steer === true && !envelope && !isChildPromptSource(opts.source)
         const item: QueuedPrompt = {
-          id: opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
+          id: ticket ?? opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
           message: envelope ? envelope.text : message,
           queuedAt: new Date().toISOString(),
           ...(opts.source ? { source: opts.source } : {}),
@@ -14498,6 +14623,8 @@ export function createSessionsRegistry(opts?: {
         ? undefined
         : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
+        // The prompt answered a parked question: no turn starts, so its ticket (if any) never runs.
+        if (ticket) emitTicket({ type: "dropped", sessionId: id, promptId: ticket, cause: "answered-question" })
         await answerStructuredQuestion(rt, structuredAnswer)
         return deliveredNow()
       }
@@ -14506,7 +14633,10 @@ export function createSessionsRegistry(opts?: {
       // the ring buffer as `[error]` lines so the SSE consumer sees
       // them; admission already succeeded so there's nothing else to
       // report back to the original caller.
-      void runAgentTurn(rt, message, opts?.source ? { promptSource: opts.source } : undefined).catch(err => {
+      void runAgentTurn(rt, message, {
+        ...(opts?.source ? { promptSource: opts.source } : {}),
+        ...(ticket ? { promptId: ticket } : {}),
+      }).catch(err => {
         appendLine(
           rtPre,
           `[error] ${err instanceof Error ? err.message : String(err)}`,
@@ -14793,8 +14923,50 @@ export function createSessionsRegistry(opts?: {
       if (removed) {
         rt.desc.promptQueue = next
         schedulePersist()
+        emitTicket({ type: "dropped", sessionId: id, promptId: queueId, cause: "removed" })
       }
       return { removed }
+    },
+    expectFirstTurnTicket(id, promptId) {
+      firstTurnTickets.set(id, promptId)
+    },
+    releaseFirstTurnTicket(id) {
+      firstTurnTickets.delete(id)
+    },
+    onPromptTicket(listener) {
+      ticketListeners.add(listener)
+      return () => {
+        ticketListeners.delete(listener)
+      }
+    },
+    promptTicketState(id, promptId) {
+      const rt = sessions.get(id)
+      if (!rt) return "unknown"
+      if (rt.activePromptId === promptId || rt.steeredTickets?.has(promptId) || rt.dispatchingTicket === promptId) {
+        return "in-flight"
+      }
+      return rt.desc.promptQueue?.some(p => p.id === promptId) ? "queued" : "unknown"
+    },
+    async cancelPromptTicket(id, promptId) {
+      const rt = sessions.get(id)
+      if (!rt) return { outcome: "noop" }
+      // Everything from here to the action is synchronous: the ticket cannot move between the check and the act.
+      if (rt.desc.promptQueue?.some(p => p.id === promptId)) {
+        registry.removeQueuedPrompt(id, promptId)
+        return { outcome: "dropped" }
+      }
+      if (rt.dispatchingTicket === promptId) {
+        // Sliced off the queue, turn not started: it never starts.
+        rt.cancelledDispatch = promptId
+        return { outcome: "dropped" }
+      }
+      if (rt.steeredTickets?.has(promptId) || rt.activePromptId === promptId) {
+        const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
+        if (!isAlive || !rt.busy) return { outcome: "noop" }
+        await interruptInFlightTurn(rt, id, "interruptSession")
+        return { outcome: "interrupted" }
+      }
+      return { outcome: "noop" }
     },
     listQueuedPrompts(id) {
       const rt = sessions.get(id)

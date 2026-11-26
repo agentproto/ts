@@ -197,15 +197,24 @@ import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
-import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveHumanGateSurfaces } from "./mcp-config.js"
-import { createHumanGate, createMrtrStateStore, defaultMrtrStateDir } from "./mcp-modern/index.js"
+import { valueScanRedactor } from "@agentproto/processor"
+import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveHumanGateSurfaces, resolveTaskSettings } from "./mcp-config.js"
+import {
+  createHumanGate,
+  createMrtrStateStore,
+  createTaskProjector,
+  createTurnTaskLedger,
+  defaultMrtrStateDir,
+  defaultTurnTaskLedgerDir,
+} from "./mcp-modern/index.js"
 import { registerServedSkills } from "./mcp-modern/skills.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
 import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { spawningCallerContext } from "./spawning-caller-context.js"
 import type { AnonymousMessageApprovalDetail } from "./message-tools.js"
 import { resolveTaskDefaults } from "./task-defaults.js"
-import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
+import { defaultTranscriptBaseDir, sessionEventsPath, setDefaultSessionsBaseDir } from "./transcript-writer.js"
+import { readLastAssistantTextSync } from "./session-outcome.js"
 import { backfillSessionIndexesAsync } from "./session-index.js"
 import {
   DEFAULT_SESSION_RETENTION_BOOT_DELAY_MS,
@@ -5508,6 +5517,42 @@ export async function createGateway(
     surfaces: () => resolveHumanGateSurfaces(),
   })
 
+  const taskRedactor = valueScanRedactor()
+  const mcpTaskProjector = createTaskProjector({
+    sessions,
+    ledger: createTurnTaskLedger({
+      dir: persist ? defaultTurnTaskLedgerDir() : join(mkdtempSync(join(tmpdir(), "agentproto-mcp-tasks-")), "tasks"),
+    }),
+    humanGate: mcpHumanGate,
+    readFinalText: id => readLastAssistantTextSync(sessionEventsPath(id, sessions.transcriptBaseDir)),
+    // A stored result never carries a secret shape (AIP-19): scanned as a string value, every known shape masked.
+    redact: text => {
+      try {
+        const out = taskRedactor.redact(text, { field: "output" })
+        return typeof out === "string" ? out : text
+      } catch {
+        return text
+      }
+    },
+  })
+  // What the registry cannot say through ticket events: a session ending, and a permission asked or answered.
+  sessionEvents.on("session:exited", ev => {
+    try {
+      mcpTaskProjector.observeSessionEnded(ev.sessionId)
+    } catch {
+      // the projection must never disturb the session bus
+    }
+  })
+  for (const type of ["session:permission-request", "session:permission-resolved", "session:awaiting-input"] as const) {
+    sessionEvents.on(type, ev => {
+      try {
+        mcpTaskProjector.observeInputChanged(ev.sessionId)
+      } catch {
+        // the projection must never disturb the session bus
+      }
+    })
+  }
+
   const http = await startHttpServer({
     port,
     bind: opts.bind,
@@ -5531,6 +5576,18 @@ export async function createGateway(
       humanGate: async () => ((await resolveHumanGate()) ? mcpHumanGate : undefined),
       decorateServer: async server => {
         if (await resolveSkillsExtension()) registerServedSkills(server)
+      },
+      tasks: async () => {
+        const task = await resolveTaskSettings()
+        if (!task.enabled) return undefined
+        mcpTaskProjector.configure({
+          tools: task.tools,
+          ...(task.ttlMs !== undefined ? { ttlMs: task.ttlMs } : {}),
+          ...(task.maxTtlMs !== undefined ? { maxTtlMs: task.maxTtlMs } : {}),
+          ...(task.maxPerPrincipal !== undefined ? { maxActivePerPrincipal: task.maxPerPrincipal } : {}),
+          ...(task.resultMaxChars !== undefined ? { resultMaxChars: task.resultMaxChars } : {}),
+        })
+        return mcpTaskProjector
       },
     },
     orchestratorMcpServerFactory,
