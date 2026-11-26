@@ -28,8 +28,32 @@ const GIT_TIMEOUT_MS = 5 * 60_000
 
 const dataDirField = z.string().optional()
 
+/** A catalog entry's `source` carries descriptors (`kind`, `version`, `size`)
+ *  next to the install fields, and a store panel forwards it as is. The
+ *  `app_install` schema is strict, so a panel call keeps only the fields the
+ *  schema knows for a `{url}` install; the descriptors are dropped before the
+ *  confirmation guard and the dispatch. Other shapes pass through untouched. */
+const APP_INSTALL_URL_FIELDS = [
+  "url",
+  "ref",
+  "subdir",
+  "sha",
+  "sha256",
+  "allowBuild",
+  "catalogUrl",
+  "dataDir",
+  "confirm",
+] as const
+
+export function pickAppInstallSourceFields(args: Record<string, unknown>): Record<string, unknown> {
+  if (typeof args.url !== "string" || args.dir !== undefined || args.file !== undefined) return args
+  return Object.fromEntries(APP_INSTALL_URL_FIELDS.filter(k => args[k] !== undefined).map(k => [k, args[k]]))
+}
+
 /** `app_install` input: exactly one of `{dir}` | `{url, ref?, subdir?, sha?, sha256?, allowBuild?}` | `{file, sha256?}`. */
-export const appInstallInputSchema = z.union([
+export const appInstallInputSchema = z.preprocess(
+  v => (v !== null && typeof v === "object" && !Array.isArray(v) ? pickAppInstallSourceFields(v as Record<string, unknown>) : v),
+  z.union([
   z.object({ dir: z.string(), dataDir: dataDirField, repoint: z.boolean().optional() }).strict(),
   z
     .object({
@@ -44,7 +68,8 @@ export const appInstallInputSchema = z.union([
     })
     .strict(),
   z.object({ file: z.string(), sha256: z.string().optional(), catalogUrl: z.string().optional(), dataDir: dataDirField }).strict(),
-])
+  ]),
+)
 export type AppInstallInput = z.infer<typeof appInstallInputSchema>
 
 export const APP_INSTALL_EXCLUSIVE_ERROR =
