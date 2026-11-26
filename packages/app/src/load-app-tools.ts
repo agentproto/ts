@@ -95,10 +95,9 @@ function requiredSecretNames(fm: DriverManifest["frontmatter"]): readonly string
  * Wrap every execute body so a declared-but-unresolved secret fails the
  * STEP with a clear `driver-error` naming the secret — never at app
  * install (secrets are resolved lazily, only when the tool actually
- * dispatches). Resolved values are merged into `driverCtx.secrets` ahead of
- * whatever the caller already put there (a workflow tool step's compiled
- * `secrets` is empty today — see BRIEF-D — so this is the only source for
- * an app-bundled driver), letting `${secrets.X}` templating in
+ * dispatches). Caller-provided `driverCtx.secrets` take precedence, with
+ * `process.env` as the fallback for any declared secret not supplied by
+ * the caller, letting `${secrets.X}` templating in
  * `defineCliDriver`/`defineHttpDriver` resolve as authors expect.
  */
 function wrapExecuteWithSecretCheck(
@@ -110,9 +109,10 @@ function wrapExecuteWithSecretCheck(
   const wrapped: Record<string, ExecuteFn> = {}
   for (const [toolId, fn] of Object.entries(execute)) {
     wrapped[toolId] = async (args) => {
+      const priorSecrets = (args.driverCtx as { secrets?: Record<string, string> }).secrets ?? {}
       const resolved: Record<string, string> = {}
       for (const name of secretNames) {
-        const value = process.env[name]
+        const value = priorSecrets[name] ?? process.env[name]
         if (!value) {
           throw new Error(
             `driver '${driverId}': missing required secret '${name}' (declared in DRIVER.md 'auth.state.env').`,
@@ -120,8 +120,7 @@ function wrapExecuteWithSecretCheck(
         }
         resolved[name] = value
       }
-      const priorSecrets = (args.driverCtx as { secrets?: Record<string, string> }).secrets ?? {}
-      return fn({ ...args, driverCtx: { ...args.driverCtx, secrets: { ...resolved, ...priorSecrets } } })
+      return fn({ ...args, driverCtx: { ...args.driverCtx, secrets: { ...priorSecrets, ...resolved } } })
     }
   }
   return wrapped
@@ -181,15 +180,20 @@ function driverHandleFromManifest(manifest: DriverManifest, appRoot: string): Dr
   }
 
   if (fm.kind === "http") {
-    const httpMeta = (fm.metadata?.http ?? {}) as Partial<HttpDriverDefinition>
-    if (typeof httpMeta.baseUrl !== "string" || httpMeta.baseUrl.trim() === "") {
+    const httpMeta = (fm.metadata?.http ?? {}) as Partial<HttpDriverDefinition> & {
+      base_url?: string
+      default_headers?: Record<string, string>
+      default_method?: HttpDriverDefinition["defaultMethod"]
+    }
+    const baseUrl = httpMeta.baseUrl ?? httpMeta.base_url
+    if (typeof baseUrl !== "string" || baseUrl.trim() === "") {
       throw new Error("kind:http DRIVER.md requires a non-empty 'metadata.http.baseUrl' frontmatter field.")
     }
     const handle = defineHttpDriver({
       ...driverDefinitionFromManifest(manifest),
-      baseUrl: httpMeta.baseUrl,
-      defaultHeaders: httpMeta.defaultHeaders,
-      defaultMethod: httpMeta.defaultMethod,
+      baseUrl,
+      defaultHeaders: httpMeta.defaultHeaders ?? httpMeta.default_headers,
+      defaultMethod: httpMeta.defaultMethod ?? httpMeta.default_method,
       streaming: httpMeta.streaming,
     })
     return { ...handle, execute: wrapExecuteWithSecretCheck(fm.id, handle.execute, secretNames) }

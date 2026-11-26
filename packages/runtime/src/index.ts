@@ -3497,6 +3497,10 @@ export async function createGateway(
   // dispatchable tool ids, not a dispatcher. Wired to the real internal
   // McpServer's `_registeredTools` keys alongside `dispatchToolBox.fn` below.
   const listToolIdsBox: { fn?: () => Promise<string[]> } = {}
+  const invalidateInternalToolServerBox: { fn?: () => void } = {}
+  const invalidateInternalToolServer = (): void => {
+    invalidateInternalToolServerBox.fn?.()
+  }
   const listRegisteredToolIds = async (): Promise<string[]> => {
     if (!listToolIdsBox.fn) {
       throw new Error("app_install: tool registry not ready yet (daemon still booting)")
@@ -3544,6 +3548,7 @@ export async function createGateway(
     cronScheduler,
     dispatchTool,
     onReconciled: async () => {
+      invalidateInternalToolServer()
       await agentOnScanner.rescan()
       return reactionWiring.refresh()
     },
@@ -4894,6 +4899,7 @@ export async function createGateway(
       registry: sessions,
       listRegisteredToolIds,
       appRegistry,
+      onAppsChanged: invalidateInternalToolServer,
       dispatchTool,
       callImportedTool: (alias, tool, args) => callImportedAppTool(alias, tool, args, callerSessionId),
       daemonWorkspace: workspace,
@@ -5277,6 +5283,9 @@ export async function createGateway(
   // here) so a daemon that never fires a `kind:"tool"` cron/routine job
   // pays nothing extra at boot — see `dispatchToolBox`'s declaration above.
   let internalToolServerPromise: ReturnType<typeof mcpServerFactory> | undefined
+  invalidateInternalToolServerBox.fn = () => {
+    internalToolServerPromise = undefined
+  }
   dispatchToolBox.fn = async (name, inputs) => {
     if (!internalToolServerPromise) internalToolServerPromise = mcpServerFactory()
     const internalServer = await internalToolServerPromise

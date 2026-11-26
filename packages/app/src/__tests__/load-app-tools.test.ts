@@ -331,6 +331,72 @@ describe("loadAppBundledTools", () => {
     }
   })
 
+  it("caller-provided driverCtx.secrets satisfies auth.state.env without process.env and takes precedence over it", async () => {
+    await writeManifest(join(dir, ".agentproto", "tools", "greet", "TOOL.md"), toolManifest())
+    await writeManifest(join(dir, ".agentproto", "drivers", "greet-http", "DRIVER.md"), {
+      schema: "agentproto/driver/v1",
+      id: "greet-http",
+      name: "Greet HTTP Driver",
+      description: "Greets via HTTP with scoped secret.",
+      version: "1.0.0",
+      kind: "http",
+      auth: { state: { env: ["SCOPED_ONLY_SECRET"] } },
+      implements: [
+        {
+          tool: "greet",
+          version: "*",
+          metadata: { http: { endpoint: "/greet", method: "POST" } },
+        },
+      ],
+      metadata: {
+        http: {
+          base_url: "https://example.invalid",
+          default_headers: { Authorization: "Bearer ${secrets.SCOPED_ONLY_SECRET}" },
+        },
+      },
+    })
+    delete process.env.SCOPED_ONLY_SECRET
+
+    const originalFetch = globalThis.fetch
+    const seenAuth: string[] = []
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      seenAuth.push(headers.Authorization ?? "")
+      return new Response(JSON.stringify({ greeting: "ok" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }) as typeof globalThis.fetch
+
+    try {
+      const { drivers } = await loadAppBundledTools(dir)
+      const driver = drivers[0]!
+
+      // 1. Works when secret is ONLY in driverCtx.secrets (not in process.env)
+      const out1 = await driver.execute.greet!({
+        input: { name: "World" },
+        context: {},
+        driverCtx: { secrets: { SCOPED_ONLY_SECRET: "from-caller" }, authState: "authed" },
+        signal: new AbortController().signal,
+      })
+      expect(out1).toEqual({ greeting: "ok" })
+      expect(seenAuth[0]).toBe("Bearer from-caller")
+
+      // 2. Caller secret wins over ambient process.env
+      process.env.SCOPED_ONLY_SECRET = "from-env"
+      await driver.execute.greet!({
+        input: { name: "World" },
+        context: {},
+        driverCtx: { secrets: { SCOPED_ONLY_SECRET: "caller-wins" }, authState: "authed" },
+        signal: new AbortController().signal,
+      })
+      expect(seenAuth[1]).toBe("Bearer caller-wins")
+    } finally {
+      delete process.env.SCOPED_ONLY_SECRET
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it("a kind:cli DRIVER.md without 'metadata.cli.bin' fails the whole app load naming the file", async () => {
     await writeManifest(join(dir, ".agentproto", "tools", "greet", "TOOL.md"), toolManifest())
     const { metadata: _metadata, ...withoutBin } = cliDriverManifest()
