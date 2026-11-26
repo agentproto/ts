@@ -47,6 +47,8 @@ export function usageProblems(manifest: Pick<BillingHandle, "anchor" | "fx">, us
   if (d?.margin !== undefined && !(Number.isFinite(d.margin) && d.margin > 0)) out.push("defaults.margin must be a finite number above 0")
   if (d?.floorMinor !== undefined && (!Number.isInteger(d.floorMinor) || d.floorMinor < 0)) out.push("defaults.floorMinor must be a non-negative integer")
   for (const c of usage.categories) {
+    // A category never carries a rate: the anchor is the only place a rate is written (AIP-74 rules 26, 27 and 30).
+    for (const k of ["rate", "ratio", "creditsPerUnit", "creditsPerUsd"]) if (k in (c as object) || k in ((c as { cost?: object }).cost ?? {})) out.push(`category '${c.id}': a category cannot write its own rate ('${k}'); the rate comes from the anchor`)
     if (seen.has(c.id)) out.push(`duplicate category '${c.id}'`)
     seen.add(c.id)
     if (c.margin === "at-cost" && c.marginFloor !== undefined && c.marginFloor > 1) out.push(`category '${c.id}': at-cost cannot have a marginFloor above 1`)
