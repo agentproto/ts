@@ -101,6 +101,8 @@ function frInteger(value: number): string {
   let n = Math.floor(Math.abs(value))
   if (n === 0) return negative ? "moins zéro" : "zéro"
 
+  // Beyond the largest named scale there are no words: keep the digits.
+  if (n >= 1e12) return String(value)
   const scales = ["", "mille", "million", "milliard"]
   const groups: number[] = []
   while (n > 0) {
@@ -181,6 +183,7 @@ function enInteger(value: number): string {
   let n = Math.floor(Math.abs(value))
   if (n === 0) return negative ? "minus zero" : "zero"
 
+  if (n >= 1e12) return String(value)
   const scales = ["", "thousand", "million", "billion"]
   const groups: number[] = []
   while (n > 0) {
@@ -400,7 +403,8 @@ const EN_MONTHS = [
 ]
 
 function frTime(hour: number, minute?: number): string {
-  const hours = `${frInteger(hour)} ${hour === 1 ? "heure" : "heures"}`
+  const hours =
+    hour === 1 ? "une heure" : `${frInteger(hour)} heures`
   if (minute === undefined || minute === 0) return hours
   return `${hours} ${frInteger(minute)}`
 }

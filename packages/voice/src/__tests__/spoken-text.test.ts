@@ -250,3 +250,17 @@ describe("splitSpokenText", () => {
     expect(splitSpokenText(sentence, 40)).toBeNull()
   })
 })
+
+describe("review fixes", () => {
+  it("says 'une heure' (feminine) for one o'clock", () => {
+    expect(toSpokenText("RDV à 1h", "fr")).toBe("RDV à une heure")
+    expect(toSpokenText("RDV à 1h30", "fr")).toBe("RDV à une heure trente")
+  })
+
+  it("never prints 'undefined' for numbers beyond the named scales", () => {
+    expect(toSpokenText("Total 5 000 000 000 000", "fr")).not.toContain("undefined")
+    expect(toSpokenText("Total 1,000,000,000,000,000", "en")).not.toContain(
+      "undefined"
+    )
+  })
+})
