@@ -51,6 +51,9 @@ export function makeOpenAIStt(cfg: OpenAISttConfig = {}): SttProvider {
 
   return {
     slug: "openai",
+    get models() {
+      return { file: model() }
+    },
     capabilities: {
       streaming: false,
       file: true,

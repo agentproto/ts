@@ -71,6 +71,13 @@ export interface SttResult {
 
 export interface SttProvider {
   readonly slug: string
+  /**
+   * The vendor models the provider transcribes with, when it knows them: the
+   * realtime stream and file transcription usually run different models. The
+   * cascade copies the one that produced each utterance onto the STT usage
+   * entry so a host can price the seconds against the model that ran.
+   */
+  readonly models?: { readonly stream?: string; readonly file?: string }
   readonly capabilities: SttCapabilities
   openStream(opts: SttStreamOptions): Promise<SttStream>
   transcribe(

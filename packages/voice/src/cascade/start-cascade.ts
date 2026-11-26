@@ -377,8 +377,10 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     ...(sttSession ? { sttStream: sttSession, sttFinalTimeoutMs: finalTimeoutMs } : {}),
     sttStreamLabel: stt.slug,
     sttFileLabel: stt.slug,
+    ...(stt.models?.stream ? { sttStreamModel: stt.models.stream } : {}),
+    ...(stt.models?.file ? { sttFileModel: stt.models.file } : {}),
     transcribe: makeTranscribe(stt, opts.language, finalTimeoutMs),
-    onSttUsage: u => meter.addSttSeconds(u.provider, u.seconds),
+    onSttUsage: u => meter.addSttSeconds(u.provider, u.seconds, u.model),
     onTranscript: (text, role) => {
       if (role === "user") emit.userTranscript(text, true)
       else emit.assistantTranscript(text, true)

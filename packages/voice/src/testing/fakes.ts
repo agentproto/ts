@@ -34,6 +34,8 @@ export interface FakeSttOptions {
   slug?: string
   streaming?: boolean
   file?: boolean
+  /** Reported as `models` on the provider (and so on the STT usage entry). */
+  models?: { stream?: string; file?: string }
   /** Texts returned by successive finals (stream) and successive `transcribe` calls. */
   finals?: string[]
   /** `commit()` produces no final: simulates a vendor that goes silent. */
@@ -55,6 +57,7 @@ export function makeFakeStt(opts: FakeSttOptions = {}): FakeStt {
   const nextText = () => (finals.length > 1 ? finals.shift()! : (finals[0] ?? ""))
   return {
     slug: opts.slug ?? "fakestt",
+    ...(opts.models ? { models: opts.models } : {}),
     capabilities: {
       streaming: opts.streaming ?? true,
       file: opts.file ?? true,

@@ -61,6 +61,10 @@ export function makeAssemblyAIStt(cfg: AssemblyAISttConfig = {}): SttProvider {
 
   return {
     slug: "assemblyai",
+    get models() {
+      const stream = cfg.speechModel ?? D.sttSpeechModel.value
+      return stream ? { stream } : {}
+    },
     capabilities: {
       streaming: true,
       file: true,
