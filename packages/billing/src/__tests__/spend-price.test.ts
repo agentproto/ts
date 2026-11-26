@@ -157,6 +157,13 @@ describe("price: a bad cost never becomes a charge", () => {
       }
     }
   })
+  it("refuses a defaults margin or floor that would price an event at zero or less, and a non-finite margin", () => {
+    expect(usageProblems(manifest, { defaults: { margin: 0 }, categories: [] }).join("|")).toMatch(/defaults\.margin/)
+    expect(usageProblems(manifest, { defaults: { margin: -1 }, categories: [] })).toHaveLength(1)
+    expect(usageProblems(manifest, { defaults: { floorMinor: 1.5 }, categories: [] })).toHaveLength(1)
+    expect(usageProblems(manifest, { categories: [{ id: "a", cost: { source: "measured" }, margin: Number.NaN }] })).toHaveLength(1)
+    expect(usageProblems(manifest, { categories: [{ id: "a", cost: { source: "measured" }, margin: Number.POSITIVE_INFINITY }] })).toHaveLength(1)
+  })
   it("refuses a negative fixed cost in the config", () => {
     expect(usageProblems(manifest, { categories: [{ id: "f", cost: { source: "fixed", amount: -1, currency: "USD" } }] })).toHaveLength(1)
   })

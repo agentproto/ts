@@ -9,7 +9,8 @@
  * What is deliberately NOT a rule here: a bonus on a pack and an expiry are
  * data in `BILLING.md` (`conversions[].bonus`, `expires`), executed by the
  * kit's payment path, and the draw order is the kit's default.
- * `README.md` ("Writing an overlay") explains the shape; `overlay-example.test.ts` runs it.
+ * Order matters: `per-call-max` lowers the amount and hands it on, a later
+ * refusal would see the lowered amount. `README.md` ("Writing an overlay") explains the shape; `overlay-example.test.ts` runs it.
  */
 import type { ClockPort, StoragePort } from "@agentproto/wallet/ports"
 import type { BillingHandle } from "../define-billing-manifest.js"

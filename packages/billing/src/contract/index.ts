@@ -110,7 +110,24 @@ export function spendContractCases(ctx: SpendContractContext): ConformanceCase[]
     const r = await w.debit.debit({ accountId: "acct", key: "a", amount: 100, shortfall: "refuse" })
     check(r.ok && r.charged === 40 && r.decidedBy === "cap", "charged 40, decided by cap")
   })
-  add("rules run in order, the first to decide wins, the trace shows who passed", async () => {
+  add("a rule that lowers the amount hands it to the next rule, so order does not hide a refusal", async () => {
+    const w = await world(1_000, {}, [
+      { name: "max-50", decide: c => (c.requested > 50 ? { amount: 50 } : undefined) },
+      { name: "no-over-30", decide: c => (c.requested > 30 ? { refuse: "over 30" } : undefined) },
+    ])
+    const r = await w.debit.debit({ accountId: "acct", key: "a", amount: 100, shortfall: "refuse" })
+    check(!r.ok && r.reason === "refused_by_rule" && r.rule === "no-over-30", "the second rule saw 50 and refused")
+    eq((await w.burns()).length, 0, "burn events")
+  })
+  add("a rule that answers something else than undefined, { refuse } or { amount } refuses the spend", async () => {
+    for (const bad of [null, 0, false, "", { foo: 1 }]) {
+      const w = await world(1_000, {}, [{ name: "odd", decide: () => bad as never }])
+      const r = await w.debit.debit({ accountId: "acct", key: "a", amount: 100, shortfall: "refuse" })
+      check(!r.ok && r.reason === "invalid_decision", `${JSON.stringify(bad)} is refused`)
+      eq((await w.burns()).length, 0, "burn events")
+    }
+  })
+  add("rules run in order, a refusal stops the run, the trace shows who passed", async () => {
     const w = await world(1_000, {}, [
       { name: "first", decide: () => undefined },
       { name: "second", decide: () => ({ refuse: "no" }) },
@@ -133,12 +150,13 @@ export function spendContractCases(ctx: SpendContractContext): ConformanceCase[]
       name: "meddler",
       decide: ctx2 => {
         try { (ctx2.history as WalletEvent[]).push({} as WalletEvent); attempt = "pushed" } catch { attempt = "blocked" }
+        try { (ctx2.history[0]!.restriction as string[]).push("x"); attempt += "+nested" } catch { attempt += "+nested-blocked" }
         try { (ctx2 as { requested: number }).requested = 1; attempt += "+mutated" } catch { attempt += "+blocked" }
         return undefined
       },
     }])
     await w.debit.debit({ accountId: "acct", key: "a", amount: 100, shortfall: "refuse" })
-    eq(attempt, "blocked+blocked", "mutation attempts")
+    eq(attempt, "blocked+nested-blocked+blocked", "mutation attempts")
     eq((await w.storage.loadEvents("acct")).length, 2, "journal: one mint, one burn")
   })
 

@@ -7,7 +7,9 @@
  *
  * Invariants no rule can lift:
  *  - one key charges once: a replay writes nothing and returns the first charge;
- *  - a rule can only LOWER the requested amount (never raise it);
+ *  - a rule can only LOWER the requested amount (never raise it); a rule that
+ *    lowers it hands the lower amount to the next rule, a refusal stops the run
+ *    (so a lowering rule placed first does not hide a cap placed after it);
  *  - a lot is never drawn below its `floor` (0 for a prepaid lot; a postpaid
  *    account holds a lot with a negative floor);
  *  - a rule that throws or answers badly refuses the spend.
@@ -16,7 +18,8 @@
  * the account cannot cover the amount; `absorb` charges what the account has
  * and reports the rest as `shortfall`. A debit that charges nothing writes
  * nothing, so it leaves no trace to replay. A replay of a key that charged
- * ignores the new amount. Lots are chosen by asset and the optional
+ * ignores the new amount and reports the charge with `shortfall: 0` and no rule
+ * (the first outcome is not stored). The amount must be an integer. Lots are chosen by asset and the optional
  * `lotFilter` (restrictions and policies are the host's to apply there).
  */
 import { fold, floorOf, type Lot, type WalletEvent } from "@agentproto/wallet"
@@ -78,6 +81,17 @@ export interface DebitEngine {
   debit(req: DebitRequest): Promise<DebitResult>
 }
 
+function deepFreeze<T>(o: T): T {
+  if (o && typeof o === "object" && !Object.isFrozen(o)) {
+    Object.freeze(o)
+    for (const v of Object.values(o as Record<string, unknown>)) deepFreeze(v)
+  }
+  return o
+}
+
+const isDecision = (d: unknown): d is DebitDecision =>
+  typeof d === "object" && d !== null && (("refuse" in d && typeof (d as { refuse: unknown }).refuse === "string") || ("amount" in d && typeof (d as { amount: unknown }).amount === "number"))
+
 const burnId = (key: string, lotId: string) => `${key}:burn:${lotId}`
 const drawOrder = (a: Lot, b: Lot): number => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt
 
@@ -94,15 +108,15 @@ export function createDebit(deps: DebitDeps, opts: DebitOptions): DebitEngine {
   return {
     async debit({ accountId, key, amount, shortfall, cause }) {
       if (typeof key !== "string" || key.length === 0) return { ok: false, reason: "invalid_key", trace: [] }
-      if (!Number.isFinite(amount) || amount <= 0) return { ok: false, reason: "invalid_amount", trace: [] }
-      const want = Math.floor(amount)
-      if (want <= 0) return { ok: false, reason: "invalid_amount", trace: [] }
+      if (!Number.isInteger(amount) || amount <= 0) return { ok: false, reason: "invalid_amount", trace: [] }
+      const want = amount
       return serial(`spend:${accountId}`, async () => {
         const events = await deps.storage.loadEvents(accountId)
         const done = events.filter(e => e.kind === "burn" && e.correlationId === key && e.id.startsWith(`${key}:burn:`))
         if (done.length > 0) {
+          // The first outcome is not stored: a replay reports the charge, no shortfall and no rule.
           const charged = done.reduce((s, e) => s + e.amount, 0)
-          return { ok: true as const, charged, shortfall: Math.max(0, want - charged), replayed: true, trace: [] }
+          return { ok: true as const, charged, shortfall: 0, replayed: true, trace: [] }
         }
         const now = deps.clock.nowMs()
         const lots = fold(events, now)
@@ -114,16 +128,18 @@ export function createDebit(deps: DebitDeps, opts: DebitOptions): DebitEngine {
         let decidedBy: string | undefined
         let trace: RuleTrace[] = []
         if (rules.length > 0) {
-          const ctx: DebitContext = Object.freeze({ accountId, key, asset: opts.asset, requested: want, spendable, now, history: Object.freeze(events.map(e => Object.freeze({ ...e }))) })
-          const run = runRules(rules, ctx)
+          const ctx: DebitContext = Object.freeze({ accountId, key, asset: opts.asset, requested: want, spendable, now, history: deepFreeze(structuredClone(events)) })
+          // A rule that lowers the amount passes the lowered amount to the next rule; a refusal stops the run.
+          const run = runRules(rules, ctx, (c, d) => (isDecision(d) && "amount" in d && Number.isInteger(d.amount) && d.amount >= 1 && d.amount <= c.requested ? { ctx: Object.freeze({ ...c, requested: d.amount }), stop: false } : { ctx: c, stop: true }))
           trace = run.trace
           if (run.error) return { ok: false as const, reason: "rule_error" as const, rule: run.error.rule, detail: run.error.message, trace }
-          if (run.decision) {
+          if (run.decision !== undefined) {
+            const d = run.decision
+            if (!isDecision(d)) return { ok: false as const, reason: "invalid_decision" as const, rule: run.decidedBy!, detail: "a rule answers undefined, { refuse } or { amount }", trace }
+            if ("refuse" in d) return { ok: false as const, reason: "refused_by_rule" as const, rule: run.decidedBy!, detail: d.refuse, trace }
+            if (!Number.isInteger(d.amount) || d.amount < 1 || d.amount > run.ctx.requested) return { ok: false as const, reason: "invalid_decision" as const, rule: run.decidedBy!, detail: `a rule may only lower the amount to an integer between 1 and ${run.ctx.requested}, got ${d.amount}`, trace }
             decidedBy = run.decidedBy
-            if ("refuse" in run.decision) return { ok: false as const, reason: "refused_by_rule" as const, rule: run.decidedBy!, detail: run.decision.refuse, trace }
-            const a = run.decision.amount
-            if (!Number.isInteger(a) || a < 1 || a > want) return { ok: false as const, reason: "invalid_decision" as const, rule: run.decidedBy!, detail: `a rule may only lower the amount to an integer between 1 and ${want}, got ${a}`, trace }
-            target = a
+            target = run.ctx.requested
           }
         }
 

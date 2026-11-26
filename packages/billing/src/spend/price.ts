@@ -43,11 +43,14 @@ function matches(c: UsageCategory, e: UsageEvent): boolean {
 export function usageProblems(manifest: Pick<BillingHandle, "anchor" | "fx">, usage: UsageConfig): string[] {
   const out: string[] = []
   const seen = new Set<string>()
+  const d = usage.defaults
+  if (d?.margin !== undefined && !(Number.isFinite(d.margin) && d.margin > 0)) out.push("defaults.margin must be a finite number above 0")
+  if (d?.floorMinor !== undefined && (!Number.isInteger(d.floorMinor) || d.floorMinor < 0)) out.push("defaults.floorMinor must be a non-negative integer")
   for (const c of usage.categories) {
     if (seen.has(c.id)) out.push(`duplicate category '${c.id}'`)
     seen.add(c.id)
     if (c.margin === "at-cost" && c.marginFloor !== undefined && c.marginFloor > 1) out.push(`category '${c.id}': at-cost cannot have a marginFloor above 1`)
-    if (typeof c.margin === "number" && c.margin <= 0) out.push(`category '${c.id}': margin must be positive`)
+    if (typeof c.margin === "number" && !(Number.isFinite(c.margin) && c.margin > 0)) out.push(`category '${c.id}': margin must be a finite number above 0`)
     if (c.floorMinor !== undefined && (!Number.isInteger(c.floorMinor) || c.floorMinor < 0)) out.push(`category '${c.id}': floorMinor must be a non-negative integer`)
     if (c.cost.source === "fixed") {
       if (!(Number.isFinite(c.cost.amount) && c.cost.amount >= 0)) out.push(`category '${c.id}': a fixed cost must be a non-negative number`)

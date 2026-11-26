@@ -85,7 +85,7 @@ describe("debit: inputs", () => {
   it("refuses a missing key and a non-positive or non-finite amount", async () => {
     const s = await setup([mint("l1", 100)])
     expect(await s.debit.debit({ accountId: "acct", key: "", amount: 10, shortfall: "absorb" })).toMatchObject({ ok: false, reason: "invalid_key" })
-    for (const amount of [0, -5, Number.NaN, 0.4]) expect(await s.debit.debit({ accountId: "acct", key: "k", amount, shortfall: "absorb" })).toMatchObject({ ok: false, reason: "invalid_amount" })
+    for (const amount of [0, -5, Number.NaN, 0.4, 1.9, 99.99]) expect(await s.debit.debit({ accountId: "acct", key: "k", amount, shortfall: "absorb" })).toMatchObject({ ok: false, reason: "invalid_amount" })
     expect(await bal(s)).toBe(100)
   })
   it("writes the cause on the burn events", async () => {
@@ -111,7 +111,7 @@ describe("debit: replay and foreign burns", () => {
   it("a replay with another amount returns the first charge", async () => {
     const s = await setup([mint("l1", 1_000)])
     await s.debit.debit({ accountId: "acct", key: "k", amount: 100, shortfall: "absorb" })
-    expect(await s.debit.debit({ accountId: "acct", key: "k", amount: 900, shortfall: "absorb" })).toMatchObject({ charged: 100, replayed: true })
+    expect(await s.debit.debit({ accountId: "acct", key: "k", amount: 900, shortfall: "absorb" })).toMatchObject({ charged: 100, shortfall: 0, replayed: true })
     expect(await bal(s)).toBe(900)
   })
   it("only the lots the filter allows are drawn", async () => {
@@ -136,5 +136,35 @@ describe("debit: rules decide, the core executes", () => {
     const storage = new InMemoryStorage(clock)
     const r = { name: "a", decide: () => undefined }
     expect(() => createDebit({ storage, clock }, { asset: ASSET, rules: [r, r] })).toThrowError(/duplicate rule name 'a'/)
+  })
+})
+
+describe("debit: rule composition", () => {
+  const setup2 = async (rules: Parameters<typeof createDebit>[1]["rules"]) => {
+    const clock = new ManualClock(T0)
+    const storage = new InMemoryStorage(clock)
+    await storage.commit("acct", [mint("l", 1_000)])
+    return { storage, d: createDebit({ storage, clock }, { asset: ASSET, rules }) }
+  }
+  it("a refusal placed after a lowering rule still sees the lowered amount", async () => {
+    const s = await setup2([{ name: "max-50", decide: c => (c.requested > 50 ? { amount: 50 } : undefined) }, { name: "no-over-30", decide: c => (c.requested > 30 ? { refuse: "over 30" } : undefined) }])
+    expect(await s.d.debit({ accountId: "acct", key: "k", amount: 100, shortfall: "refuse" })).toMatchObject({ ok: false, rule: "no-over-30" })
+  })
+  it("two lowering rules compose to the lowest, and the last to lower is named", async () => {
+    const s = await setup2([{ name: "a", decide: c => (c.requested > 80 ? { amount: 80 } : undefined) }, { name: "b", decide: c => (c.requested > 40 ? { amount: 40 } : undefined) }])
+    const r = await s.d.debit({ accountId: "acct", key: "k", amount: 100, shortfall: "refuse" })
+    expect(r).toMatchObject({ ok: true, charged: 40, decidedBy: "b" })
+    expect(r.trace.map(t => t.outcome)).toEqual(["decided", "decided"])
+  })
+  it("an answer that is not a decision refuses, whatever its truthiness", async () => {
+    for (const bad of [null, 0, false, ""]) {
+      const s = await setup2([{ name: "odd", decide: () => bad as never }])
+      expect(await s.d.debit({ accountId: "acct", key: "k", amount: 10, shortfall: "refuse" })).toMatchObject({ ok: false, reason: "invalid_decision", rule: "odd" })
+    }
+  })
+  it("a rule cannot change the stored journal through the snapshot", async () => {
+    const s = await setup2([{ name: "meddler", decide: c => { try { (c.history[0]!.restriction as string[]).push("x") } catch { /* frozen */ } return undefined } }])
+    await s.d.debit({ accountId: "acct", key: "k", amount: 10, shortfall: "refuse" })
+    expect((await s.storage.loadEvents("acct"))[0]!.restriction).toEqual([])
   })
 })

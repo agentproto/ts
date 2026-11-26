@@ -18,9 +18,12 @@ export interface Rule<Ctx, Decision> {
 
 export type RuleTrace = { rule: string; outcome: "pass" | "decided" | "error" }
 
-export interface RuleRun<Decision> {
+export interface RuleRun<Decision, Ctx = unknown> {
+  /** The last rule that decided (the one that stopped the run, or the last to lower the amount). */
   decision?: Decision
   decidedBy?: string
+  /** What the later rules saw. */
+  ctx: Readonly<Ctx>
   trace: RuleTrace[]
   /** Set when a rule threw: the caller must refuse. */
   error?: { rule: string; message: string }
@@ -38,23 +41,37 @@ export function ruleProblems(rules: readonly Rule<never, unknown>[]): string[] {
   return out
 }
 
-/** Run the rules in order; stop at the first that decides. A throwing rule stops the run with `error`. */
-export function runRules<Ctx, Decision>(rules: readonly Rule<Ctx, Decision>[], ctx: Readonly<Ctx>): RuleRun<Decision> {
+/**
+ * Run the rules in order. A rule passes with `undefined` and anything else is a
+ * decision. After a decision, `next` says whether the run stops and which
+ * context the later rules see (default: stop at the first decision). A throwing
+ * rule stops the run with `error`.
+ */
+export function runRules<Ctx, Decision>(
+  rules: readonly Rule<Ctx, Decision>[],
+  ctx: Readonly<Ctx>,
+  next: (ctx: Readonly<Ctx>, d: Decision) => { ctx: Readonly<Ctx>; stop: boolean } = c => ({ ctx: c, stop: true }),
+): RuleRun<Decision, Ctx> {
   const trace: RuleTrace[] = []
+  let cur = ctx
+  let last: { d: Decision; by: string } | undefined
   for (const r of rules) {
     let d: Decision | undefined
     try {
-      d = r.decide(ctx)
+      d = r.decide(cur)
     } catch (e) {
       trace.push({ rule: r.name, outcome: "error" })
-      return { trace, error: { rule: r.name, message: e instanceof Error ? e.message : String(e) } }
+      return { ctx: cur, trace, error: { rule: r.name, message: e instanceof Error ? e.message : String(e) } }
     }
     if (d === undefined) {
       trace.push({ rule: r.name, outcome: "pass" })
       continue
     }
     trace.push({ rule: r.name, outcome: "decided" })
-    return { decision: d, decidedBy: r.name, trace }
+    last = { d, by: r.name }
+    const n = next(cur, d)
+    cur = n.ctx
+    if (n.stop) break
   }
-  return { trace }
+  return { ...(last ? { decision: last.d, decidedBy: last.by } : {}), ctx: cur, trace }
 }

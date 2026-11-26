@@ -22,7 +22,7 @@ rail event  ->  SettlementProvider.verifyWebhook  ->  handleRailFact  ->  AIP-49
 | `settlement.ts` | `SettlementProvider`: the AIP-49 `SettlementPort` plus `verifyWebhook`, optional `refund` and `syncCatalog`. No second settlement interface. |
 | `registry.ts` | The provider registry, mounted with `makeProviderFamily()` of `@agentproto/provider-kit`. |
 | `rails.ts` | Rail variable names, the start-up guard (rule 24), `test` / `live` mode. |
-| `spend/` | The spend primitives: `createPricer` (`price`), `createDebit` (`debit`), `createShadow` (`shadow`), and the holds (`hold`, `settle`, `release`) from their own PR. Mechanisms only, with neutral defaults. |
+| `spend/` | The spend primitives: `createPricer` (`price`), `createDebit` (`debit`), `createShadow` (`shadow`). Mechanisms only, with neutral defaults. |
 | `testing/` | In-memory stores, `FakeSettlementProvider`, a reference manifest and the framework-free BILL-* cases. |
 
 No payment provider lives here (Stripe, Autumn and Lemon Squeezy arrive as `@agentproto/billing-<slug>`, step 4a).
@@ -57,7 +57,7 @@ The kit knows how to price an event from a cost and one anchor rate, how to spen
 The shape of an overlay:
 
 1. **Configuration, not code.** Put every value in one object: category margins and floors (`UsageConfig`), caps, limits, what a shortfall does (`shortfall`, no default). The kit has no value of its own for any of them (floor 0, margin 1).
-2. **Rules are named and ordered.** `rules: [{ name, decide }]` on `createDebit`: the first rule that decides wins and the result names it (`decidedBy`, `trace`).
+2. **Rules are named and ordered.** `rules: [{ name, decide }]` on `createDebit`. A rule passes with `undefined`, refuses with `{ refuse }` (stops the run) or lowers the amount with `{ amount }` (the next rule sees the lowered amount). The result names the deciding rule (`decidedBy`) and lists the others (`trace`). Order matters and is yours to choose.
 3. **Data stays data.** A bonus on a pack and an expiry are declared in `BILLING.md` (`conversions[].bonus`, `expires`) and executed by the payment path; a fee at cost is a category with `margin: at-cost` whose measured cost your code computes; a price book plugs in as `priceBook`. None of these needs a hook.
 4. **Keep every write keyed** by the action's key, so a replay writes once.
 5. **Stay on the journal.** Prepaid or postpaid is the `floor` of the lots you mint, not a mode of a spend.
