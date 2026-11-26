@@ -1,6 +1,6 @@
 export { createPricer, usageProblems, assertMarginFloors } from "./price.js"
 export type { PricerDeps, Pricer } from "./price.js"
-export { createDebit, defaultLotOrder } from "./debit.js"
+export { createDebit, defaultDebitOrder } from "./debit.js"
 export type { DebitDeps, DebitOptions, DebitRequest, DebitResult, DebitEngine } from "./debit.js"
 export { createShadow } from "./shadow.js"
 export type { ShadowDeps, ShadowEngine, ShadowEntry, ShadowSink } from "./shadow.js"

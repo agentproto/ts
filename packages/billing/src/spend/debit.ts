@@ -29,14 +29,14 @@ export interface DebitOptions {
   asset: string
   /** Narrows which lots may be drawn (e.g. by partition or restriction). */
   lotFilter?: (lot: Lot) => boolean
-  /** The order lots are drawn in. Default `defaultLotOrder` (expiring first, then oldest); a host injects its own. */
+  /** The order lots are drawn in. Default `defaultDebitOrder` (expiring first, then oldest); a host injects its own. */
   order?: (a: Lot, b: Lot) => number
   /** The intent written on the burn events. Default `passive`. */
   intent?: WalletEvent["intent"]
 }
 
 /** Expiring first, then oldest. The default draw order; replaceable through `DebitOptions.order`. */
-export const defaultLotOrder = (a: Lot, b: Lot): number => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt
+export const defaultDebitOrder = (a: Lot, b: Lot): number => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt
 
 export interface DebitRequest {
   accountId: string
@@ -83,7 +83,7 @@ export function createDebit(deps: DebitDeps, opts: DebitOptions): DebitEngine {
         const now = deps.clock.nowMs()
         const lots = fold(events, now)
           .filter(l => l.asset === opts.asset && available(l, now) > 0 && (opts.lotFilter?.(l) ?? true))
-          .sort(opts.order ?? defaultLotOrder)
+          .sort(opts.order ?? defaultDebitOrder)
         const spendable = lots.reduce((s, l) => s + available(l, now), 0)
         if (shortfall === "refuse" && spendable < want) return { ok: false as const, reason: "insufficient_funds" as const }
         const take = Math.min(want, spendable)
