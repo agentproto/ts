@@ -37,18 +37,8 @@ describe("price: one rate, derived from the anchor", () => {
     expect(pricer({ categories: [{ id: "llm", cost: { source: "measured" }, margin: 2, floorMinor: 5 }] }).price(ev({ providerCost: cost })).minor).toBe(5)
     expect(pricer({ defaults: { floorMinor: 1 }, categories: [{ id: "llm", cost: { source: "measured" }, margin: 2 }] }).price(ev({ providerCost: cost })).minor).toBe(1)
   })
-  it("rounding is the host's: Math.ceil by default, replaceable", () => {
-    const usage: UsageConfig = { categories: [{ id: "llm", cost: { source: "measured" }, margin: 2 }] }
-    const cost = { amount: 0.000123, currency: "USD" } // 2.46 minor
-    expect(pricer(usage).price(ev({ providerCost: cost })).minor).toBe(3)
-    expect(pricer(usage, { round: Math.round }).price(ev({ providerCost: cost })).minor).toBe(2)
-    expect(pricer(usage, { round: Math.floor }).price(ev({ providerCost: cost })).minor).toBe(2)
-  })
-  it("the kit has no margin of its own: 1 unless the config sets one, and no mode unless declared", () => {
-    const r = pricer({ categories: [{ id: "llm", cost: { source: "measured" } }] }).price(ev({ providerCost: { amount: 1, currency: "USD" } }))
-    expect(r.margin).toBe(1)
-    expect(r.mode).toBeUndefined()
-    expect(pricer({ categories: [{ id: "llm", cost: { source: "measured" }, mode: "hold" }] }).price(ev({ providerCost: { amount: 1, currency: "USD" } })).mode).toBe("hold")
+  it("the kit has no margin of its own: 1 unless the config sets one", () => {
+    expect(pricer({ categories: [{ id: "llm", cost: { source: "measured" } }] }).price(ev({ providerCost: { amount: 1, currency: "USD" } })).margin).toBe(1)
   })
   it("a fixed cost scales with units", () => {
     const p = pricer({ categories: [{ id: "search", match: { kind: "search" }, cost: { source: "fixed", amount: 0.0015, currency: "USD" }, margin: 2, floorMinor: 1 }] })
@@ -60,26 +50,26 @@ describe("price: at-cost cannot be overridden", () => {
   const usage: UsageConfig = {
     defaults: { margin: 3 },
     categories: [
-      { id: "fee", match: { kind: "messaging-fee" }, cost: { source: "resolver", resolver: "fee-grid" }, margin: "at-cost", floorMinor: 0 },
+      { id: "fee", match: { kind: "messaging-fee" }, cost: { source: "measured" }, margin: "at-cost", floorMinor: 0 },
       { id: "llm", match: { kind: "llm" }, cost: { source: "measured" } },
     ],
   }
-  const resolvers = { "fee-grid": () => ({ amount: 0.02, currency: "EUR" }) }
+  const fee = { providerCost: { amount: 0.02, currency: "EUR" } }
   it("at-cost sells at 1.0 even when defaults say 3", () => {
-    const r = pricer(usage, { resolvers }).price(ev({ kind: "messaging-fee" }))
+    const r = pricer(usage).price(ev({ kind: "messaging-fee", ...fee }))
     expect(r.atCost).toBe(true)
     expect(r.margin).toBe(1)
     expect(r.minor).toBe(236) // 0.02 EUR x 118 credits x 100
     expect(r.realMargin).toBeCloseTo(1, 6)
   })
   it("a category without a margin takes the default", () => {
-    expect(pricer(usage, { resolvers }).price(ev({ providerCost: { amount: 1, currency: "USD" } })).minor).toBe(30_000)
+    expect(pricer(usage).price(ev({ providerCost: { amount: 1, currency: "USD" } })).minor).toBe(30_000)
   })
   it("at-cost is refused with a marginFloor above 1", () => {
     expect(usageProblems(manifest, { categories: [{ id: "x", cost: { source: "measured" }, margin: "at-cost", marginFloor: 1.1 }] })).toHaveLength(1)
   })
   it("at-cost passes the margin floor check at exactly 1", () => {
-    expect(() => assertMarginFloors(pricer(usage, { resolvers }), [ev({ kind: "messaging-fee" })])).not.toThrow()
+    expect(() => assertMarginFloors(pricer(usage), [ev({ kind: "messaging-fee", ...fee })])).not.toThrow()
   })
 })
 
@@ -133,34 +123,21 @@ describe("price: category matching", () => {
 })
 
 describe("price: config validation and margin floors", () => {
-  it("rejects duplicates, a floored flat price with no reference cost, and an unknown currency", () => {
+  it("rejects duplicates and an unknown currency", () => {
     const problems = usageProblems(manifest, {
       categories: [
         { id: "a", cost: { source: "measured" } },
         { id: "a", cost: { source: "measured" } },
-        { id: "flat2", cost: { source: "flatCredits", credits: 90 }, marginFloor: 1.1 },
         { id: "jpy", cost: { source: "fixed", amount: 1, currency: "JPY" } },
       ],
     })
     expect(problems.join("|")).toMatch(/duplicate category 'a'/)
-    expect(problems.join("|")).toMatch(/needs a referenceCost/)
     expect(problems.join("|")).toMatch(/currency 'JPY'/)
     expect(() => pricer({ categories: [{ id: "a", cost: { source: "measured" } }, { id: "a", cost: { source: "measured" } }] })).toThrowError(/invalid usage config/)
   })
-  it("a flat price needs neither a marginFloor nor a reference cost: those are the host's to ask", () => {
-    const p = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "flatCredits", credits: 100 } }] })
-    expect(p.price(ev({ kind: "run" })).minor).toBe(10_000)
-  })
-  it("a flat price keeps its credits and reports its real margin against the reference cost", () => {
-    const p = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "flatCredits", credits: 100, referenceCost: { amount: 0.9, currency: "USD" } }, marginFloor: 1.1 }] })
-    const r = p.price(ev({ kind: "run" }))
-    expect(r.minor).toBe(10_000)
-    expect(r.realMargin).toBeCloseTo(100 / 90, 6)
-    expect(() => assertMarginFloors(p, [ev({ kind: "run" })])).not.toThrow()
-  })
   it("assertMarginFloors fails when a category sells under its floor", () => {
-    const p = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "flatCredits", credits: 100, referenceCost: { amount: 0.99, currency: "USD" } }, marginFloor: 1.1 }] })
-    expect(() => assertMarginFloors(p, [ev({ kind: "run" })])).toThrowError(/'run' sells at 1\.010 x cost, under its floor 1\.1/)
+    const p = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "measured" }, margin: 1.05, marginFloor: 1.1 }] })
+    expect(() => assertMarginFloors(p, [ev({ kind: "run", providerCost: { amount: 0.99, currency: "USD" } })])).toThrowError(/'run' sells at 1\.050 x cost, under its floor 1\.1/)
   })
   it("a margin of 1.5 on a metered category meets a 1.1 floor", () => {
     const p = pricer({ categories: [{ id: "img", match: { kind: "image" }, cost: { source: "measured" }, margin: 1.5, marginFloor: 1.1 }] })
@@ -180,12 +157,10 @@ describe("price: a bad cost never becomes a charge", () => {
       }
     }
   })
-  it("refuses a negative fixed cost or flat price in the config", () => {
+  it("refuses a negative fixed cost in the config", () => {
     expect(usageProblems(manifest, { categories: [{ id: "f", cost: { source: "fixed", amount: -1, currency: "USD" } }] })).toHaveLength(1)
-    expect(usageProblems(manifest, { categories: [{ id: "g", cost: { source: "flatCredits", credits: Number.NaN, referenceCost: { amount: 1, currency: "USD" } }, marginFloor: 1.1 }] }).join("|")).toMatch(/flat credits must be a non-negative number/)
   })
-  it("a lowercase reference currency is still checked against the margin floor", () => {
-    const q = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "flatCredits", credits: 100, referenceCost: { amount: 0.99, currency: "usd" } }, marginFloor: 1.1 }] })
-    expect(() => assertMarginFloors(q, [ev({ kind: "run" })])).toThrowError(/under its floor/)
+  it("a lowercase currency is normalised", () => {
+    expect(p.price(ev({ providerCost: { amount: 1, currency: "usd" } })).minor).toBe(20_000)
   })
 })

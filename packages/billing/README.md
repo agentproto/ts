@@ -52,23 +52,31 @@ No payment provider lives here (Stripe, Autumn and Lemon Squeezy arrive as `@age
 
 The kit knows how to price an event from a cost and one anchor rate, how to spend on the journal, and how to record an event without spending it. It does not know your packs, bonuses, expiries, caps, overdraft policy, fees or per-product prices. Those are **your rules**, and they live in one **overlay**: a package of yours that sits on the kit's primitives and is shared by every app of yours. Do not copy a rule app by app, and do not ask the kit to carry it.
 
+**Money is not pluggable like the rest.** The core keeps invariants nobody can bypass: a key charges once (idempotence), an amount a rule returns can only be lower than the one requested, a lot is never drawn below its `floor` (0 for a prepaid lot), and a rule that throws or answers badly refuses the spend. Your rules are **pure functions that decide** an amount or a refusal; the core **executes** the decision. A rule receives a frozen snapshot (`DebitContext`: the request, what the account can pay, the journal so far) and never a handle that can write.
+
 The shape of an overlay:
 
-1. **Configuration, not code.** Put every value in one object: category margins and floors (`UsageConfig`), the rounding (`round`), the draw order (`order`), what a shortfall does (`shortfall`), caps, bonus percents. The kit has no value of its own for any of them (floor 0, margin 1, no default shortfall).
-2. **Call the primitives, add your rule around them.** A rule is a function that runs before or after `price`, `hold`, `debit` or `shadow`: a cap reads the journal before it debits; a pack bonus mints its own lot; a refusal passes `shortfall: "refuse"`; a cost that comes from a grid is a `resolver` you register in `createPricer`.
-3. **Keep every write keyed.** Give each write a deterministic key (`bonus:<pack>`, the action's key for a charge) so a replay writes once.
-4. **Stay on the journal.** The balance is whatever the AIP-49 journal says. Prepaid or postpaid is the `floor` of the lots you mint, not a mode of a spend.
-5. **Test the rule, not the kit.** Run it against `InMemoryStorage` and `ManualClock` from `@agentproto/billing/testing`.
-
-A complete, tested example (a fictional daily cap, a pack bonus and a refuse-when-short charge) is in `src/__tests__/overlay-example.ts`, run by `overlay-example.test.ts`. Its core:
+1. **Configuration, not code.** Put every value in one object: category margins and floors (`UsageConfig`), caps, limits, what a shortfall does (`shortfall`, no default). The kit has no value of its own for any of them (floor 0, margin 1).
+2. **Rules are named and ordered.** `rules: [{ name, decide }]` on `createDebit`: the first rule that decides wins and the result names it (`decidedBy`, `trace`).
+3. **Data stays data.** A bonus on a pack and an expiry are declared in `BILLING.md` (`conversions[].bonus`, `expires`) and executed by the payment path; a fee at cost is a category with `margin: at-cost` whose measured cost your code computes; a price book plugs in as `priceBook`. None of these needs a hook.
+4. **Keep every write keyed** by the action's key, so a replay writes once.
+5. **Stay on the journal.** Prepaid or postpaid is the `floor` of the lots you mint, not a mode of a spend.
+6. **Run the contract tests in your CI** and again at every bump of the kit version:
 
 ```ts
-const pricer = createPricer({ manifest, usage })          // your categories and margins
-const debit = createDebit({ storage, clock }, { asset })
-
-async function charge(event: UsageEvent) {
-  const price = pricer.price(event).minor                  // the kit: one rate, fail closed
-  if ((await spentToday(event.accountId)) + price > policy.dailyCapMinor) return { ok: false, reason: "capped" } // your rule
-  return debit.debit({ accountId: event.accountId, key: event.key, amount: price, shortfall: policy.onShortfall })  // the kit
-}
+import { spendContractCases } from "@agentproto/billing/contract-tests"
+for (const c of spendContractCases({ stores, clock, manifest })) it(c.name, c.run)
 ```
+
+A complete, tested example (a rolling-day cap and a per-call maximum as two named rules) is in `src/__tests__/overlay-example.ts`, run by `overlay-example.test.ts`. Its core:
+
+```ts
+const dailyCap: DebitRule = {
+  name: "daily-cap",
+  decide: ctx => (spentInLastDay(ctx.history) + ctx.requested > cap ? { refuse: "daily cap reached" } : undefined),
+}
+const debit = createDebit({ storage, clock }, { asset, rules: [dailyCap, perCallMax] })
+await debit.debit({ accountId, key, amount: pricer.price(event).minor, shortfall: "refuse" })
+```
+
+The hooks the kit offers are only those two or more real products need: `priceBook` (a catalogue of model prices), `rules` on `debit`, `lotFilter` (which lots may pay), the `sink` and `alert` of `shadow`. Everything else is configuration.

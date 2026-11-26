@@ -19,14 +19,14 @@ const bal = (s: { storage: InMemoryStorage }) => s.storage.spendableBalance("acc
 describe("debit: a direct spend on the journal's burn verb", () => {
   it("burns the amount and lowers the balance", async () => {
     const s = await setup([mint("l1", 1_000)])
-    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })).toEqual({ ok: true, charged: 300, shortfall: 0, replayed: false })
+    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })).toMatchObject({ ok: true, charged: 300, shortfall: 0, replayed: false })
     expect(await bal(s)).toBe(700)
   })
   it("is idempotent by key: a replay writes nothing and reports the same charge", async () => {
     const s = await setup([mint("l1", 1_000)])
     await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })
     const again = await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })
-    expect(again).toEqual({ ok: true, charged: 300, shortfall: 0, replayed: true })
+    expect(again).toMatchObject({ ok: true, charged: 300, shortfall: 0, replayed: true })
     expect(await bal(s)).toBe(700)
     expect((await s.storage.loadEvents("acct")).filter(e => e.kind === "burn")).toHaveLength(1)
   })
@@ -49,25 +49,25 @@ describe("debit: a direct spend on the journal's burn verb", () => {
   })
   it("skips an expired lot", async () => {
     const s = await setup([mint("old", 500, { expiresAt: T0 - 1 }), mint("ok", 100)])
-    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "refuse" })).toEqual({ ok: false, reason: "insufficient_funds" })
+    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "refuse" })).toMatchObject({ ok: false, reason: "insufficient_funds" })
   })
 })
 
 describe("debit: shortfall is the caller's named choice", () => {
   it("refuse writes nothing when the account cannot cover the amount", async () => {
     const s = await setup([mint("l1", 200)])
-    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "refuse" })).toEqual({ ok: false, reason: "insufficient_funds" })
+    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "refuse" })).toMatchObject({ ok: false, reason: "insufficient_funds" })
     expect(await bal(s)).toBe(200)
     expect((await s.storage.loadEvents("acct")).filter(e => e.kind === "burn")).toHaveLength(0)
   })
   it("absorb charges what is there and reports the unrecovered rest", async () => {
     const s = await setup([mint("l1", 200)])
-    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })).toEqual({ ok: true, charged: 200, shortfall: 100, replayed: false })
+    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })).toMatchObject({ ok: true, charged: 200, shortfall: 100, replayed: false })
     expect(await bal(s)).toBe(0)
   })
   it("absorb on an empty account charges nothing and writes nothing", async () => {
     const s = await setup([])
-    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })).toEqual({ ok: true, charged: 0, shortfall: 300, replayed: false })
+    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300, shortfall: "absorb" })).toMatchObject({ ok: true, charged: 0, shortfall: 300, replayed: false })
     expect(await s.storage.loadEvents("acct")).toHaveLength(0)
   })
   it("a prepaid lot never goes negative; a postpaid lot (negative floor) goes down to its floor, no further", async () => {
@@ -76,7 +76,7 @@ describe("debit: shortfall is the caller's named choice", () => {
     expect(await bal(pre)).toBe(0)
     const post = await setup([mint("l1", 0, { floor: -500 })])
     expect(await post.debit.debit({ accountId: "acct", key: "a1", amount: 400, shortfall: "refuse" })).toMatchObject({ ok: true, charged: 400 })
-    expect(await post.debit.debit({ accountId: "acct", key: "a2", amount: 400, shortfall: "refuse" })).toEqual({ ok: false, reason: "insufficient_funds" })
+    expect(await post.debit.debit({ accountId: "acct", key: "a2", amount: 400, shortfall: "refuse" })).toMatchObject({ ok: false, reason: "insufficient_funds" })
     expect(await post.debit.debit({ accountId: "acct", key: "a3", amount: 400, shortfall: "absorb" })).toMatchObject({ ok: true, charged: 100, shortfall: 300 })
   })
 })
@@ -84,8 +84,8 @@ describe("debit: shortfall is the caller's named choice", () => {
 describe("debit: inputs", () => {
   it("refuses a missing key and a non-positive or non-finite amount", async () => {
     const s = await setup([mint("l1", 100)])
-    expect(await s.debit.debit({ accountId: "acct", key: "", amount: 10, shortfall: "absorb" })).toEqual({ ok: false, reason: "invalid_key" })
-    for (const amount of [0, -5, Number.NaN, 0.4]) expect(await s.debit.debit({ accountId: "acct", key: "k", amount, shortfall: "absorb" })).toEqual({ ok: false, reason: "invalid_amount" })
+    expect(await s.debit.debit({ accountId: "acct", key: "", amount: 10, shortfall: "absorb" })).toMatchObject({ ok: false, reason: "invalid_key" })
+    for (const amount of [0, -5, Number.NaN, 0.4]) expect(await s.debit.debit({ accountId: "acct", key: "k", amount, shortfall: "absorb" })).toMatchObject({ ok: false, reason: "invalid_amount" })
     expect(await bal(s)).toBe(100)
   })
   it("writes the cause on the burn events", async () => {
@@ -99,7 +99,7 @@ describe("debit: replay and foreign burns", () => {
   it("a burn written by another flow under the same correlation id is not taken for a replay", async () => {
     const s = await setup([mint("l1", 1_000)])
     await s.storage.commit("acct", [{ id: "other:burn", accountId: "acct", kind: "burn", asset: ASSET, partitionId: "main", restriction: [], amount: 50, lotId: "l1", correlationId: "turn-42", occurredAt: T0 }])
-    expect(await s.debit.debit({ accountId: "acct", key: "turn-42", amount: 500, shortfall: "absorb" })).toEqual({ ok: true, charged: 500, shortfall: 0, replayed: false })
+    expect(await s.debit.debit({ accountId: "acct", key: "turn-42", amount: 500, shortfall: "absorb" })).toMatchObject({ ok: true, charged: 500, shortfall: 0, replayed: false })
     expect(await bal(s)).toBe(450)
   })
   it("a debit that charged nothing leaves no trace: the same key can charge after a top-up", async () => {
@@ -123,20 +123,18 @@ describe("debit: replay and foreign burns", () => {
   })
 })
 
-describe("debit: policy is injected, with neutral defaults", () => {
-  it("the draw order is the host's to replace", async () => {
+describe("debit: rules decide, the core executes", () => {
+  it("a named rule that lowers the amount is executed and reported", async () => {
     const clock = new ManualClock(T0)
     const storage = new InMemoryStorage(clock)
-    await storage.commit("acct", [mint("soon", 500, { expiresAt: T0 + 1_000 }), mint("late", 500, { expiresAt: T0 + 9_000 })])
-    const d = createDebit({ storage, clock }, { asset: ASSET, order: (a, b) => (b.expiresAt ?? 0) - (a.expiresAt ?? 0) })
-    await d.debit({ accountId: "acct", key: "k", amount: 100, shortfall: "refuse" })
-    expect((await storage.loadEvents("acct")).filter(e => e.kind === "burn").map(b => b.lotId)).toEqual(["late"])
+    await storage.commit("acct", [mint("l", 1_000)])
+    const d = createDebit({ storage, clock }, { asset: ASSET, rules: [{ name: "per-call-max", decide: c => (c.requested > 50 ? { amount: 50 } : undefined) }] })
+    expect(await d.debit({ accountId: "acct", key: "k", amount: 80, shortfall: "refuse" })).toMatchObject({ ok: true, charged: 50, decidedBy: "per-call-max" })
   })
-  it("the intent written on the burn is configurable", async () => {
+  it("duplicate or unnamed rules are refused at construction", () => {
     const clock = new ManualClock(T0)
     const storage = new InMemoryStorage(clock)
-    await storage.commit("acct", [mint("l", 500)])
-    await createDebit({ storage, clock }, { asset: ASSET, intent: "active" }).debit({ accountId: "acct", key: "k", amount: 10, shortfall: "refuse" })
-    expect((await storage.loadEvents("acct")).find(e => e.kind === "burn")?.intent).toBe("active")
+    const r = { name: "a", decide: () => undefined }
+    expect(() => createDebit({ storage, clock }, { asset: ASSET, rules: [r, r] })).toThrowError(/duplicate rule name 'a'/)
   })
 })

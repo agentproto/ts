@@ -34,12 +34,6 @@ export type CostSpec =
   | { source: "fixed"; amount: number; currency: string }
   /** The host's price book answers per event (`PriceBook`). */
   | { source: "catalog" }
-  /** A named host resolver answers per event (e.g. a dated per-country fee grid). */
-  | { source: "resolver"; resolver: string }
-  /** A fixed price in credits (major units) regardless of the cost. `referenceCost` lets `assertMarginFloors` check it. */
-  | { source: "flatCredits"; credits: number; referenceCost?: ProviderCost }
-
-export type UsageMode = "hold" | "direct" | "shadow"
 
 export interface UsageCategory {
   id: string
@@ -52,12 +46,11 @@ export interface UsageCategory {
   marginFloor?: number
   /** Smallest charge per action in minor units. Default: `defaults.floorMinor`, else 0 (no floor). */
   floorMinor?: number
-  mode?: UsageMode
 }
 
 export interface UsageConfig {
   categories: readonly UsageCategory[]
-  defaults?: { margin?: number; floorMinor?: number; mode?: UsageMode }
+  defaults?: { margin?: number; floorMinor?: number }
 }
 
 /** The host's price book: cost of one event, or null when it has no price for it. */
@@ -69,14 +62,12 @@ export interface PriceResult {
   /** What to charge, in minor units of the primary asset. */
   minor: number
   categoryId: string
-  /** The category's `mode` as declared; the kit never picks one. */
-  mode?: UsageMode
   /** The margin applied (1 for `at-cost`). */
   margin: number
-  /** Provider cost in minor units of the primary asset, before margin (exact, not rounded). `undefined` for a flat price with no reference cost. */
-  costMinor?: number
+  /** Provider cost in minor units of the primary asset, before margin (exact, not rounded). */
+  costMinor: number
   /** minor / costMinor, when the cost is known. */
-  realMargin?: number
+  realMargin: number | undefined
   atCost: boolean
 }
 
