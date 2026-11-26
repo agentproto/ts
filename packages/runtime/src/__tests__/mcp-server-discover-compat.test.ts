@@ -82,14 +82,28 @@ async function withDaemon(fn: (port: number) => Promise<void>): Promise<void> {
 }
 
 async function postRpc(port: number, protocolVersion: string, method: string): Promise<Record<string, any>> {
+  const isModern = protocolVersion === "2026-07-28"
   const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
       "mcp-protocol-version": protocolVersion,
+      ...(isModern ? { "mcp-method": method } : {}),
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: {} }),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method,
+      params: isModern
+        ? {
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": protocolVersion,
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          }
+        : {},
+    }),
   })
   const body = await res.text()
   const dataLine = body.split("\n").find(line => line.startsWith("data:"))

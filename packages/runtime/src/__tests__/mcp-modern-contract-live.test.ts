@@ -8,10 +8,15 @@
 import { describe, expect, it } from "vitest"
 import { readFileSync } from "node:fs"
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import { McpError, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { createMcpServer, registerEventsMethods } from "@agentproto/mcp-server"
 
-import { handleModernRequest, type ModernDeps } from "../mcp-modern/index.js"
+import {
+  ERR_MISSING_CLIENT_CAPABILITY,
+  GATEWAY_ADVERTISED_VERSIONS,
+  handleModernRequest,
+  type ModernDeps,
+} from "../mcp-modern/index.js"
 
 type Json = Record<string, any>
 type Headers = Record<string, string | string[] | undefined>
@@ -112,6 +117,59 @@ describe("modern contract (live)", () => {
       expect(body.result?._meta?.["io.modelcontextprotocol/serverInfo"]).toEqual({ name: "main", version: "1.2.3" })
       const fixtureKeys = Object.keys(DISCOVER_RESPONSE.body.result)
       for (const key of Object.keys(body.result ?? {})) expect(fixtureKeys).toContain(key)
+    })
+
+    it("dual-era /mcp discover advertises [2026-07-28, 2025-11-25] while modern-only /mcp/events advertises [2026-07-28]", async () => {
+      const eventsDiscover = json(await call("server/discover")).result
+      expect(eventsDiscover?.supportedVersions).toEqual([VERSION])
+
+      const gatewayDeps: ModernDeps = {
+        ...DEPS,
+        protocolVersions: [VERSION],
+        advertisedVersions: GATEWAY_ADVERTISED_VERSIONS,
+        extensions: {},
+      }
+      const gatewayDiscover = json(await call("server/discover", {}, { deps: gatewayDeps })).result
+      expect(gatewayDiscover?.supportedVersions).toEqual(["2026-07-28", "2025-11-25"])
+      expect(gatewayDiscover?.capabilities?.extensions).toEqual({})
+      expect(gatewayDiscover?._meta?.["io.modelcontextprotocol/serverInfo"]).toEqual({ name: "main", version: "1.2.3" })
+
+      // Advertised 2025-11-25 must NOT be accepted by the modern validator.
+      const rejected = await call(
+        "server/discover",
+        {},
+        {
+          deps: gatewayDeps,
+          meta: { ...META, [META_KEY]: "2025-11-25" },
+          headers: { "mcp-protocol-version": "2025-11-25" },
+        },
+      )
+      expectError(rejected, 400, -32022)
+      expect(json(rejected).error?.data).toEqual({
+        supported: ["2026-07-28", "2025-11-25"],
+        requested: "2025-11-25",
+      })
+    })
+
+    it("maps -32021 MissingRequiredClientCapability to HTTP 400", async () => {
+      const deps: ModernDeps = {
+        createServer: async () => {
+          const { server } = await createMcpServer({ specs: [], name: "main", version: "1.2.3" })
+          registerEventsMethods(server, {
+            list: async () => {
+              throw new McpError(ERR_MISSING_CLIENT_CAPABILITY, "Missing required client capability", {
+                requiredCapabilities: { elicitation: {} },
+              })
+            },
+            subscribe: async () => ({}),
+            unsubscribe: async () => ({}),
+          })
+          return server
+        },
+      }
+      const r = await call("events/list", {}, { deps })
+      expectError(r, 400, ERR_MISSING_CLIENT_CAPABILITY)
+      expect(json(r).error?.data).toEqual({ requiredCapabilities: { elicitation: {} } })
     })
 
     it("`events` is declared top-level in discover `capabilities` (capabilities.events, not capabilities.extensions)", async () => {

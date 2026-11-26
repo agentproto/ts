@@ -1,10 +1,11 @@
 import { describe, it } from "vitest"
 import { createHolds } from "../spend/index.js"
-import { holdsConformanceCases, InMemoryStorage, ManualClock } from "../testing/index.js"
+import { holdsContractCases } from "../contract/index.js"
+import { InMemoryStorage, ManualClock } from "../testing/index.js"
 
-describe("holds conformance (the kit's own engine)", () => {
+describe("holds contract (the kit's own engine)", () => {
   const clock = new ManualClock(Date.UTC(2026, 10, 20, 12, 0, 0))
-  const cases = holdsConformanceCases({
+  const cases = holdsContractCases({
     storage: () => new InMemoryStorage(clock),
     clock,
     engine: storage => createHolds({ storage, clock }, { asset: "credits" }),

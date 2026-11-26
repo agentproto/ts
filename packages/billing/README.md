@@ -22,6 +22,7 @@ rail event  ->  SettlementProvider.verifyWebhook  ->  handleRailFact  ->  AIP-49
 | `settlement.ts` | `SettlementProvider`: the AIP-49 `SettlementPort` plus `verifyWebhook`, optional `refund` and `syncCatalog`. No second settlement interface. |
 | `registry.ts` | The provider registry, mounted with `makeProviderFamily()` of `@agentproto/provider-kit`. |
 | `rails.ts` | Rail variable names, the start-up guard (rule 24), `test` / `live` mode. |
+| `spend/` | The spend primitives: `createPricer` (`price`), `createDebit` (`debit`), `createShadow` (`shadow`). Mechanisms only, with neutral defaults. |
 | `testing/` | In-memory stores, `FakeSettlementProvider`, a reference manifest and the framework-free BILL-* cases. |
 
 No payment provider lives here (Stripe, Autumn and Lemon Squeezy arrive as `@agentproto/billing-<slug>`, step 4a).
@@ -46,3 +47,36 @@ No payment provider lives here (Stripe, Autumn and Lemon Squeezy arrive as `@age
 - Tax in the paid amount is burned with the effect (the fiat lot closes); with `taxBasis: net` the conversion input is the net amount.
 - `affordability: balance` counts holds as owned, `spendable` removes them.
 - An oracle rate with no value passed to `defineBillingManifest` is skipped by the arbitrage check.
+
+## Writing an overlay
+
+The kit knows how to price an event from a cost and one anchor rate, how to spend on the journal, and how to record an event without spending it. It does not know your packs, bonuses, expiries, caps, overdraft policy, fees or per-product prices. Those are **your rules**, and they live in one **overlay**: a package of yours that sits on the kit's primitives and is shared by every app of yours. Do not copy a rule app by app, and do not ask the kit to carry it.
+
+**Money is not pluggable like the rest.** The core keeps invariants nobody can bypass: a key charges once (idempotence), an amount a rule returns can only be lower than the one requested, a lot is never drawn below its `floor` (0 for a prepaid lot), and a rule that throws or answers badly refuses the spend. Your rules are **pure functions that decide** an amount or a refusal; the core **executes** the decision. A rule receives a frozen snapshot (`DebitContext`: the request, what the account can pay, the journal so far) and never a handle that can write.
+
+The shape of an overlay:
+
+1. **Configuration, not code.** Put every value in one object: category margins and floors (`UsageConfig`), caps, limits, what a shortfall does (`shortfall`, no default). The kit has no value of its own for any of them (floor 0, margin 1).
+2. **Rules are named and ordered.** `rules: [{ name, decide }]` on `createDebit`. A rule passes with `undefined`, refuses with `{ refuse }` (stops the run) or lowers the amount with `{ amount }` (the next rule sees the lowered amount). The result names the deciding rule (`decidedBy`) and lists the others (`trace`). Order matters and is yours to choose.
+3. **Data stays data.** A bonus on a pack and an expiry are declared in `BILLING.md` (`conversions[].bonus`, `expires`) and executed by the payment path; a fee at cost is a category with `margin: at-cost` whose measured cost your code computes; a price book plugs in as `priceBook`. None of these needs a hook.
+4. **Keep every write keyed** by the action's key, so a replay writes once.
+5. **Stay on the journal.** Prepaid or postpaid is the `floor` of the lots you mint, not a mode of a spend.
+6. **Run the contract tests in your CI** and again at every bump of the kit version:
+
+```ts
+import { spendContractCases } from "@agentproto/billing/contract-tests"
+for (const c of spendContractCases({ stores, clock, manifest })) it(c.name, c.run)
+```
+
+A complete, tested example (a rolling-day cap and a per-call maximum as two named rules) is in `src/__tests__/overlay-example.ts`, run by `overlay-example.test.ts`. Its core:
+
+```ts
+const dailyCap: DebitRule = {
+  name: "daily-cap",
+  decide: ctx => (spentInLastDay(ctx.history) + ctx.requested > cap ? { refuse: "daily cap reached" } : undefined),
+}
+const debit = createDebit({ storage, clock }, { asset, rules: [dailyCap, perCallMax] })
+await debit.debit({ accountId, key, amount: pricer.price(event).minor, shortfall: "refuse" })
+```
+
+The hooks the kit offers are only those two or more real products need: `priceBook` (a catalogue of model prices), `rules` on `debit`, `lotFilter` (which lots may pay), the `sink` and `alert` of `shadow`. Everything else is configuration.

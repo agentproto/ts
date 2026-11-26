@@ -197,7 +197,7 @@ import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
-import { resolveNoCallerIdentity } from "./mcp-config.js"
+import { resolveModernEra, resolveNoCallerIdentity } from "./mcp-config.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
 import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { spawningCallerContext } from "./spawning-caller-context.js"
@@ -5494,6 +5494,10 @@ export async function createGateway(
       return opts.auth ?? { mode: "none" }
     },
     mcpServerFactory,
+    mcpModern: {
+      enabled: () => resolveModernEra(),
+      extensions: {},
+    },
     orchestratorMcpServerFactory,
     loadCommandAllowlist: () => loadAllowlistEntries(workspace),
     ...(eventsMcp ? { eventsMcp } : {}),

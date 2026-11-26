@@ -1,0 +1,5 @@
+---
+"@agentproto/billing": minor
+---
+
+Add `price`, `debit` and `shadow` to `@agentproto/billing/spend`, and the contract tests at `@agentproto/billing/contract-tests`. `createPricer` turns a metered event into minor units of the primary asset from a usage category (measured, fixed or catalog cost) with one rate derived from the manifest anchor and an unpriced event that fails closed (margins and floors come from the host's configuration; the kit has no value of its own). `createDebit` spends on the journal's `burn` verb, idempotent by key, with a shortfall behaviour the caller names (`refuse` or `absorb`, no default) and named, ordered, pure `rules` that decide an amount or a refusal, which the core executes (a rule can only lower the amount, never write the journal; the result names the rule that decided). `createShadow` prices and records an event outside the journal and refuses to start without a pricer or a sink. `spendContractCases` is an exported suite of the invariants no rule can lift, to run in a host's CI at every kit bump.

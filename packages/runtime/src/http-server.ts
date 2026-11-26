@@ -29,7 +29,15 @@ import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto"
-import { handleModernRequest } from "./mcp-modern/index.js"
+import {
+  GATEWAY_ADVERTISED_VERSIONS,
+  META_PROTOCOL_VERSION,
+  MODERN_ONLY_METHODS,
+  MODERN_PROTOCOL_VERSION,
+  handleModernRequest,
+  isJsonContentType as isModernJsonContentType,
+  type CacheHints,
+} from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { homedir } from "node:os"
 import { Readable, type Duplex } from "node:stream"
@@ -1242,6 +1250,16 @@ export interface RuntimeHttpServerOptions {
    */
   orchestratorMcpServerFactory?: OrchestratorMcpServerFactory
   /**
+   * Controls modern-era (2026-07-28) routing on the root `/mcp` endpoint.
+   * Enabled by default; set `enabled: false` (or a getter returning `false`)
+   * to route all `/mcp` traffic to the legacy 2025-11-25 transport.
+   */
+  mcpModern?: {
+    enabled?: boolean | (() => boolean | Promise<boolean>)
+    extensions?: Record<string, Record<string, unknown>>
+    cachePolicy?: (method: string) => CacheHints
+  }
+  /**
    * Public events origin (`POST /mcp/events/<secret>`), MCP 2026-07-28 only. Absent = route not mounted. Own auth: the
    * path secret. The daemon bearer and the loopback bypass of `authorizeMcp` do NOT apply here. The ingress in front of
    * a tunnel MUST forward only `^/mcp/events/` (a tunnel connects from loopback, so any other forwarded route would
@@ -2353,6 +2371,7 @@ export async function startHttpServer(
     res: ServerResponse,
     server: McpServer,
     observedSessionId?: string,
+    parsedBody?: unknown,
   ): Promise<void> {
     // Read BEFORE the coercion below rewrites it: the observer reports the era
     // the client actually asked for.
@@ -2400,7 +2419,9 @@ export async function startHttpServer(
           innerOnMessage?.(message, extra)
         }
       }
-      await transport.handleRequest(req, res)
+      await (parsedBody !== undefined
+        ? transport.handleRequest(req, res, parsedBody)
+        : transport.handleRequest(req, res))
       if (observations && observedSessionId && !sawMessage && req.method === "POST" && res.statusCode >= 400) {
         observations.recordHttpError(observedSessionId, res.statusCode)
       }
@@ -2796,18 +2817,195 @@ export async function startHttpServer(
       )
       return
     }
-    const server = await opts.mcpServerFactory(
-      denyTools,
-      callerSessionId,
-      origin,
-      deferred,
-      allowTools,
-      surface,
-      credentialSessionOf(req),
-      profile,
-      requestHttpBaseUrl(req),
-    )
-    await serveMcp(req, res, server, callerSessionId)
+    const buildServer = () =>
+      opts.mcpServerFactory(
+        denyTools,
+        callerSessionId,
+        origin,
+        deferred,
+        allowTools,
+        surface,
+        credentialSessionOf(req),
+        profile,
+        requestHttpBaseUrl(req),
+      )
+
+    const modernEnabled =
+      opts.mcpModern?.enabled === undefined
+        ? true
+        : typeof opts.mcpModern.enabled === "function"
+          ? await opts.mcpModern.enabled()
+          : opts.mcpModern.enabled
+
+    if (!modernEnabled) {
+      await serveMcp(req, res, await buildServer(), callerSessionId)
+      return
+    }
+
+    const rawVersionHeader = req.headers["mcp-protocol-version"]
+    const headerVersion =
+      rawVersionHeader === undefined
+        ? undefined
+        : (Array.isArray(rawVersionHeader) ? rawVersionHeader.join(", ") : rawVersionHeader).trim()
+    const isModernHeader = headerVersion === MODERN_PROTOCOL_VERSION
+
+    const sendModernJson = (status: number, headers: Record<string, string>, body?: string): void => {
+      if (callerSessionId && opts.mcpObservations && status >= 400) {
+        opts.mcpObservations.recordHttpError(callerSessionId, status)
+      }
+      if (res.writableEnded || res.destroyed) return
+      res.writeHead(status, { "cache-control": "no-store", ...headers })
+      res.end(body)
+    }
+
+    const serveModern = async (rawBody: string, observedVersion?: string): Promise<void> => {
+      const controller = new AbortController()
+      res.on("close", () => {
+        if (!res.writableEnded) controller.abort()
+      })
+      let observedRpc = false
+      const versionForObserver = observedVersion ?? headerVersion
+      const out = await handleModernRequest(
+        {
+          method: req.method ?? "GET",
+          headers: req.headers as Record<string, string | string[] | undefined>,
+          body: rawBody,
+        },
+        {
+          createServer: buildServer,
+          protocolVersions: [MODERN_PROTOCOL_VERSION],
+          advertisedVersions: GATEWAY_ADVERTISED_VERSIONS,
+          extensions: opts.mcpModern?.extensions ?? {},
+          ...(opts.mcpModern?.cachePolicy ? { cachePolicy: opts.mcpModern.cachePolicy } : {}),
+          ...(callerSessionId && opts.mcpObservations
+            ? {
+                onObserved: (method, response) => {
+                  observedRpc = true
+                  opts.mcpObservations!.recordResult(
+                    callerSessionId,
+                    method,
+                    response as { result?: unknown; error?: { code?: unknown; message?: unknown } },
+                    versionForObserver,
+                  )
+                },
+              }
+            : {}),
+          signal: controller.signal,
+        },
+      )
+      if (callerSessionId && opts.mcpObservations && !observedRpc && out.status >= 400) {
+        opts.mcpObservations.recordHttpError(callerSessionId, out.status)
+      }
+      if (res.writableEnded || res.destroyed) return
+      res.writeHead(out.status, { "cache-control": "no-store", ...out.headers })
+      res.end(out.body)
+    }
+
+    // Non-POST verbs (GET, DELETE, ...) take the modern path only when the header names a modern version.
+    if (req.method !== "POST") {
+      if (isModernHeader) {
+        await serveModern("")
+        return
+      }
+      await serveMcp(req, res, await buildServer(), callerSessionId)
+      return
+    }
+
+    const readCappedBody = async (
+      cap: number,
+    ): Promise<{ ok: true; text: string; size: number } | { ok: false }> => {
+      const chunks: Buffer[] = []
+      let size = 0
+      for await (const chunk of req) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        size += buf.length
+        if (size > cap) return { ok: false }
+        chunks.push(buf)
+      }
+      return { ok: true, text: Buffer.concat(chunks).toString("utf8"), size }
+    }
+
+    // Header-first dispatch without inspecting the body.
+    if (isModernHeader) {
+      const bodyResult = await readCappedBody(MODERN_MCP_BODY_CAP)
+      if (!bodyResult.ok) {
+        sendModernJson(413, { "content-type": "application/json" }, JSON.stringify({ error: "body_too_large" }))
+        return
+      }
+      await serveModern(bodyResult.text)
+      return
+    }
+
+    // Non-JSON content types cannot be a modern JSON-RPC request; delegate directly to legacy without draining.
+    const rawContentType = req.headers["content-type"]
+    const contentType = Array.isArray(rawContentType) ? rawContentType.join(", ") : rawContentType
+    if (!isModernJsonContentType(contentType)) {
+      await serveMcp(req, res, await buildServer(), callerSessionId)
+      return
+    }
+
+    // Single-read body buffer: decide era once and hand parsedBody to legacy when falling back.
+    const LEGACY_MCP_BODY_CAP = 4 * 1024 * 1024
+    const bodyResult = await readCappedBody(LEGACY_MCP_BODY_CAP)
+    if (!bodyResult.ok) {
+      sendModernJson(
+        413,
+        { "content-type": "application/json" },
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: `Request body must not exceed ${LEGACY_MCP_BODY_CAP} bytes` },
+          id: null,
+        }),
+      )
+      return
+    }
+
+    let parsedBody: unknown
+    try {
+      parsedBody = JSON.parse(bodyResult.text)
+    } catch {
+      const line = mcpErrorLogGate.onFailure(
+        "mcp:transport.onerror",
+        "[mcp transport.onerror] Parse error: Invalid JSON",
+      )
+      if (line) console.error(line)
+      sendModernJson(
+        400,
+        { "content-type": "application/json" },
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32700, message: "Parse error: Invalid JSON" },
+          id: null,
+        }),
+      )
+      return
+    }
+
+    const isPlainObj = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v)
+    let routeModern = false
+    let metaVersion: string | undefined
+    if (isPlainObj(parsedBody)) {
+      const rpcMethod = typeof parsedBody.method === "string" ? parsedBody.method : undefined
+      const params = isPlainObj(parsedBody.params) ? parsedBody.params : undefined
+      const meta = params && isPlainObj(params._meta) ? params._meta : undefined
+      metaVersion =
+        meta && typeof meta[META_PROTOCOL_VERSION] === "string" ? (meta[META_PROTOCOL_VERSION] as string) : undefined
+      if ((rpcMethod !== undefined && MODERN_ONLY_METHODS.has(rpcMethod) && meta !== undefined) || metaVersion !== undefined) {
+        routeModern = true
+      }
+    }
+
+    if (routeModern) {
+      if (bodyResult.size > MODERN_MCP_BODY_CAP) {
+        sendModernJson(413, { "content-type": "application/json" }, JSON.stringify({ error: "body_too_large" }))
+        return
+      }
+      await serveModern(bodyResult.text, headerVersion ?? metaVersion)
+      return
+    }
+
+    await serveMcp(req, res, await buildServer(), callerSessionId, parsedBody)
   }
 
   /**
@@ -2865,6 +3063,8 @@ export async function startHttpServer(
     await serveMcp(req, res, server)
   }
 
+  /** Deliberate 1 MiB ceiling on modern-era `/mcp` requests (matches the modern events origin). */
+  const MODERN_MCP_BODY_CAP = 1024 * 1024
   const EVENTS_BODY_CAP = 1024 * 1024
 
   async function handleEventsMcp(req: IncomingMessage, res: ServerResponse, presented: string): Promise<void> {

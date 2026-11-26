@@ -1,7 +1,7 @@
 /**
  * Contract tests for a hold engine, framework-free like the BILL-* cases:
  *
- *   for (const c of holdsConformanceCases(ctx)) it(c.name, c.run)
+ *   for (const c of holdsContractCases(ctx)) it(c.name, c.run)
  *
  * A host overlay that wraps `createHolds` (its own rules decide amounts) runs
  * these on every upgrade of the kit to prove the invariants still hold: no
@@ -9,11 +9,11 @@
  */
 import type { WalletEvent } from "@agentproto/wallet"
 import type { StoragePort } from "@agentproto/wallet/ports"
-import type { HoldEngine } from "../spend/holds.js"
-import type { ConformanceCase } from "./conformance.js"
-import type { ManualClock } from "./fakes.js"
+import type { HoldEngine } from "../spend/index.js"
+import type { ConformanceCase } from "../testing/conformance.js"
+import type { ManualClock } from "../testing/fakes.js"
 
-export interface HoldsConformanceContext {
+export interface HoldsContractContext {
   /** Fresh, empty journal for one case. */
   storage: () => StoragePort
   clock: ManualClock
@@ -22,12 +22,12 @@ export interface HoldsConformanceContext {
   asset: string
 }
 
-class HoldsConformanceError extends Error {}
+class HoldsContractError extends Error {}
 const check = (c: unknown, msg: string): void => {
-  if (!c) throw new HoldsConformanceError(msg)
+  if (!c) throw new HoldsContractError(msg)
 }
 
-export function holdsConformanceCases(ctx: HoldsConformanceContext): ConformanceCase[] {
+export function holdsContractCases(ctx: HoldsContractContext): ConformanceCase[] {
   const T = () => ctx.clock.nowMs()
   async function fresh(balance: number) {
     const storage = ctx.storage()
