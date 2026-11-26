@@ -33,3 +33,5 @@ export {
 export { Pcm16ChunkAligner, isEvenPcm16 } from "./pcm16.js"
 export { makeUsageMeter, type UsageMeter } from "./usage.js"
 export { VOICE_DEFAULTS, VOICE_ENV } from "./defaults.js"
+export { guardVoiceCall, DEFAULT_POLL_INTERVAL_MS } from "./billing-gate.js"
+export type { VoiceBillingGate, VoiceBalanceDirective, VoiceAuthDecision, VoiceFarewell, VoiceEndReason, VoiceCallProgress, GuardedVoiceCall, GuardOptions, GuardResult } from "./billing-gate.js"
