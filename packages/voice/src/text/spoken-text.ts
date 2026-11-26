@@ -27,13 +27,35 @@ export interface ToSpokenTextOptions {
   /**
    * Whole-segment labels to drop from the text, for example delivery-channel
    * words a model writes into its own reply ("Voice sent", "In writing").
-   * Matched case-insensitively, as a whole word at the start of the text or
-   * after a sentence boundary, together with their trailing terminator.
-   * Nothing is stripped by default: the label list is host policy and the
-   * host must not declare a label that can open genuine content. Longer
-   * labels should come first.
+   * Matched case-insensitively and only as a WHOLE segment: alone between
+   * arrow or bullet glyphs, or at the start of the text or after a sentence
+   * boundary, as a whole word ended by a terminator or the end of the text.
+   * A label that merely heads a longer phrase is kept. Nothing is stripped by
+   * default: the label list is host policy.
    */
   stripLabels?: readonly string[]
+}
+
+const SEGMENT_GLYPHS = /[→←►▶◀•▪◦‣·]/
+
+/**
+ * Drop the segments of one line (split on arrow / bullet glyphs) that consist
+ * of nothing but a declared label, ignoring markdown, emojis and edge
+ * punctuation: "→ **Voice sent** → **hello**" keeps only "hello".
+ */
+function dropLabelSegments(line: string, labels: ReadonlySet<string>): string {
+  return line
+    .split(SEGMENT_GLYPHS)
+    .filter(segment => {
+      const bare = segment
+        .replace(/\*\*|__|[*_~`#|]/g, " ")
+        .replace(/\p{Extended_Pictographic}|[️‍]/gu, "")
+        .replace(/[\s.!?…:,;-]+/gu, " ")
+        .trim()
+        .toLowerCase()
+      return !labels.has(bare)
+    })
+    .join(" → ")
 }
 
 function escapeRegExp(value: string): string {
@@ -642,8 +664,11 @@ export function toSpokenText(
   locale: SpokenLocale = "fr",
   options: ToSpokenTextOptions = {}
 ): string {
+  const labels = (options.stripLabels ?? []).filter(l => l.length > 0)
+  const labelSet = new Set(labels.map(l => l.toLowerCase()))
   const lines = text
     .split("\n")
+    .map(line => (labelSet.size > 0 ? dropLabelSegments(line, labelSet) : line))
     .map(line =>
       line
         .replace(/https?:\/\/\S+/gi, " ") // URLs - never read a link aloud
@@ -663,19 +688,18 @@ export function toSpokenText(
     .join(" ")
     .replace(/[^\S\u00A0\u202F]+/g, " ")
     .trim()
-  // Drop host-declared labels at the START of a segment: anchored at string
-  // start or a sentence boundary (zero-width lookbehind, so adjacent labels
-  // each match independently), as a whole word (never the head of a longer
-  // word), eating the trailing terminator and spacing. The host curates the
-  // list: a label that can open genuine content must not be declared.
-  const labels = (options.stripLabels ?? []).filter(l => l.length > 0)
+  // Drop host-declared labels that stand as a WHOLE segment of the flattened
+  // text: anchored at string start or a sentence boundary (zero-width
+  // lookbehind, so adjacent labels each match independently), a whole word,
+  // and ended by a terminator or the end of the text. A label that merely
+  // heads a longer phrase ("In writing this down...") is never touched.
   const withoutScaffold =
     labels.length === 0
       ? joined
       : joined
           .replace(
             new RegExp(
-              `(?<=^|[.!?…\\n]\\s?)(?:${labels.map(escapeRegExp).join("|")})(?![\\p{L}\\p{N}])\\s*[.!?…]?\\s*`,
+              `(?<=^|[.!?…\\n]\\s?)(?:${labels.map(escapeRegExp).join("|")})(?![\\p{L}\\p{N}])(?:\\s*[.!?…]+\\s*|\\s*$)`,
               "giu"
             ),
             ""

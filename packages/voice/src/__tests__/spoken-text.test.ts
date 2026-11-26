@@ -59,6 +59,28 @@ describe("toSpokenText", () => {
     ).toBe("Voice sentence by sentence works.")
   })
 
+  it("keeps a declared label that heads a longer phrase (review regression)", () => {
+    expect(
+      toSpokenText("In writing this down, I noticed a pattern.", "en", {
+        stripLabels: ["In writing"],
+      })
+    ).toBe("In writing this down, I noticed a pattern.")
+  })
+
+  it("never leaves punctuation residue when a label heads a sentence", () => {
+    expect(
+      toSpokenText("Note, hello there.", "en", { stripLabels: ["Note"] })
+    ).toBe("Note, hello there.")
+  })
+
+  it("drops a label standing alone between arrow glyphs", () => {
+    expect(
+      toSpokenText("→ **Voice sent** → **hello** 🎙️\n---\nBye !", "en", {
+        stripLabels: ["Voice sent"],
+      })
+    ).toBe("hello. Bye !")
+  })
+
   it("strips URLs - never read a link aloud", () => {
     expect(toSpokenText("Regarde https://example.com/recette ça aide")).toBe(
       "Regarde ça aide"
