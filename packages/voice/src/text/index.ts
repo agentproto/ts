@@ -6,3 +6,5 @@ export {
   toSpokenText,
 } from "./spoken-text"
 export type { SpokenLocale, ToSpokenTextOptions } from "./spoken-text"
+export { spokenTextProcessor } from "./spoken-text-processor.js"
+export type { SpokenTextProcessorOptions } from "./spoken-text-processor.js"
