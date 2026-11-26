@@ -32,6 +32,30 @@ export {
 } from "./cascade/stt-dedup.js"
 export { Pcm16ChunkAligner, isEvenPcm16 } from "./pcm16.js"
 export { makeUsageMeter, type UsageMeter } from "./usage.js"
+export {
+  createProcessorRuntime,
+  defineObserver,
+  defineTransformer,
+  validateProcessors,
+  ProcessorConfigError,
+  type BrainEvent,
+  type CallContext,
+  type HookItems,
+  type Observer,
+  type ProcessorConfigErrorCode,
+  type ProcessorEvent,
+  type ProcessorOutput,
+  type ProcessorRuntime,
+  type ProcessorRuntimeOptions,
+  type ProcessorStats,
+  type TextChunk,
+  type TranscriptItem,
+  type Transformer,
+  type TransformResult,
+  type VoiceHook,
+  type VoiceProcessor,
+  type VoiceProcessors,
+} from "./processors.js"
 export { VOICE_DEFAULTS, VOICE_ENV } from "./defaults.js"
 export { guardVoiceCall, DEFAULT_POLL_INTERVAL_MS } from "./billing-gate.js"
 export type { VoiceBillingGate, VoiceBalanceDirective, VoiceAuthDecision, VoiceFarewell, VoiceEndReason, VoiceCallProgress, GuardedVoiceCall, GuardOptions, GuardResult } from "./billing-gate.js"
