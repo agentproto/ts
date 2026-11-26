@@ -115,7 +115,7 @@ Usage:
   agentproto sessions  export <id-or-name> [--json] [-o <file>]
   agentproto sessions  story  <id-or-name> [--json] [--no-color]
                                            readable per-session timeline
-  agentproto sessions  stop <id-or-name>
+  agentproto sessions  stop <id-or-name>   (alias: kill)
   agentproto conversation locate <sessionId | native-jsonl-path> [--json]
                                            session ↔ native transcript, either direction
   agentproto host     load [--full] [--json] [--watch <s>] [--budget <ms>]   host load report + warnings

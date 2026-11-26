@@ -204,7 +204,7 @@ Usage:
                               (one session's detail: status, lineage, and —
                                once it has ended — its derived outcome: last
                                message, opened PRs, cost, run/parent links.)
-  agentproto sessions stop <id-or-name> [--completed] [--outcome <verdict>]
+  agentproto sessions stop|kill <id-or-name> [--completed] [--outcome <verdict>]
                               [--reason <text>] [--error-kind <kind>]
                               [--next-step <text>] [--question <text>]
                               [--note <text>] [--json]
@@ -517,59 +517,76 @@ While attached:
 // Keeping a local re-declaration here in the past drifted out of
 // sync with the runtime, breaking type-check on every field added.
 
-export async function runSessions(args: readonly string[]): Promise<number> {
-  if (args.includes("--help") || args.includes("-h")) {
-    process.stdout.write(args[0] === "checkpoint" ? CHECKPOINT_USAGE : args[0] === "handoff" ? HANDOFF_USAGE : args[0] === "migrate" ? MIGRATE_USAGE : USAGE)
-    return 0
-  }
+/** Every word `runSessions` routes before the list-view flag parser. */
+export const SESSIONS_SUBCOMMANDS: readonly string[] = [
+  "list", "start", "prompt", "show", "stop", "kill", "pin", "unpin", "gc",
+  "continue-interrupted", "terminal", "export", "story", "find", "recap",
+  "report", "mirror", "restart", "switch-profile", "wait", "queue", "inbox",
+  "message", "checkpoint", "handoff", "migrate", "board",
+]
 
-  // Route `start` / `stop` / `terminal` subverbs before the flag
-  // parser — they take positionals the flag parser would reject.
-  if (args[0] === "list") return runSessions(args.slice(1))
-  const sub = args[0]
-  if (sub === "start") return runStart(args.slice(1))
-  if (sub === "prompt") return runPrompt(args.slice(1))
-  if (sub === "show") return runShow(args.slice(1))
-  if (sub === "stop") return runStop(args.slice(1))
-  if (sub === "pin") return runPin(args.slice(1), true)
-  if (sub === "unpin") return runPin(args.slice(1), false)
-  if (sub === "gc") return runGc(args.slice(1))
-  if (sub === "continue-interrupted") return runContinueInterrupted(args.slice(1))
-  if (sub === "terminal") return runTerminal(args.slice(1))
-  if (sub === "export") return runExport(args.slice(1))
-  if (sub === "story") return runStory(args.slice(1))
-  if (sub === "find") return runFind(args.slice(1))
-  if (sub === "recap") return runRecap(args.slice(1))
-  if (sub === "report") return runReport(args.slice(1))
-  if (sub === "mirror") return runMirror(args.slice(1))
-  if (sub === "restart") return runRestart(args.slice(1))
-  if (sub === "switch-profile") return runSwitchProfile(args.slice(1))
-  if (sub === "wait") return runWait(args.slice(1))
-  if (sub === "queue") return runQueue(args.slice(1))
-  if (sub === "inbox") return runInbox(args.slice(1))
-  if (sub === "message") return runMessage(args.slice(1))
-  if (sub === "checkpoint") return runCheckpoint(args.slice(1))
-  if (sub === "handoff") return runHandoff(args.slice(1))
-  if (sub === "migrate") return runMigrate(args.slice(1))
-  if (sub === "board") {
-    const { runBoard } = await import("./sessions-board.js")
-    return runBoard(args.slice(1))
-  }
+/** Common synonyms that are too far from the real word for edit distance. */
+const SESSIONS_SUBCOMMAND_SYNONYMS: Readonly<Record<string, string>> = {
+  ls: "list",
+  rm: "stop",
+  delete: "stop",
+  close: "stop",
+  end: "stop",
+  terminate: "stop",
+  resume: "restart",
+  send: "prompt",
+  run: "start",
+  new: "start",
+  create: "start",
+}
 
-  let statsMode: StatsMode | undefined
-  let listArgs: readonly string[] = args
-  try {
-    const extracted = extractStatsFlag(args)
-    statsMode = extracted.stats
-    listArgs = extracted.rest
-  } catch (err) {
-    if (!(err instanceof StatsFlagError)) throw err
-    process.stderr.write(`agentproto sessions: ${err.message}\n`)
-    return 2
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(
+        prev[j]! + 1,
+        cur[j - 1]! + 1,
+        prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+    prev = cur
   }
+  return prev[b.length]!
+}
 
-  const { values } = parseArgs({
-    args: [...listArgs],
+/** Closest valid subcommand to a mistyped one, or undefined if nothing is near. */
+export function suggestSessionsSubcommand(sub: string): string | undefined {
+  const word = sub.toLowerCase()
+  const synonym = SESSIONS_SUBCOMMAND_SYNONYMS[word]
+  if (synonym) return synonym
+  let best: string | undefined
+  let bestDist = Infinity
+  for (const cand of SESSIONS_SUBCOMMANDS) {
+    // Transposition ("stpo") costs 2 under plain edit distance; allow up to 2
+    // on words of 4+ chars, 1 on shorter ones.
+    const d = editDistance(word, cand)
+    if (d < bestDist) {
+      best = cand
+      bestDist = d
+    }
+  }
+  const limit = word.length >= 4 ? 2 : 1
+  return bestDist <= limit ? best : undefined
+}
+
+export function unknownSessionsSubcommandMessage(sub: string): string {
+  const hint = suggestSessionsSubcommand(sub)
+  const tail = hint
+    ? `did you mean ${hint}?\n`
+    : `valid subcommands: ${SESSIONS_SUBCOMMANDS.join(", ")}\n`
+  return `agentproto sessions: unknown subcommand ${sub}, ${tail}  Run \`agentproto sessions --help\` for usage.\n`
+}
+
+function parseListArgs(args: readonly string[]) {
+  return parseArgs({
+    args: [...args],
     allowPositionals: false,
     strict: true,
     options: {
@@ -595,6 +612,80 @@ export async function runSessions(args: readonly string[]): Promise<number> {
       fields: { type: "string" },
     },
   })
+}
+
+export async function runSessions(args: readonly string[]): Promise<number> {
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(args[0] === "checkpoint" ? CHECKPOINT_USAGE : args[0] === "handoff" ? HANDOFF_USAGE : args[0] === "migrate" ? MIGRATE_USAGE : USAGE)
+    return 0
+  }
+
+  // Route `start` / `stop` / `terminal` subverbs before the flag
+  // parser — they take positionals the flag parser would reject.
+  if (args[0] === "list") return runSessions(args.slice(1))
+  const sub = args[0]
+  if (sub === "start") return runStart(args.slice(1))
+  if (sub === "prompt") return runPrompt(args.slice(1))
+  if (sub === "show") return runShow(args.slice(1))
+  if (sub === "stop" || sub === "kill") return runStop(args.slice(1))
+  if (sub === "pin") return runPin(args.slice(1), true)
+  if (sub === "unpin") return runPin(args.slice(1), false)
+  if (sub === "gc") return runGc(args.slice(1))
+  if (sub === "continue-interrupted") return runContinueInterrupted(args.slice(1))
+  if (sub === "terminal") return runTerminal(args.slice(1))
+  if (sub === "export") return runExport(args.slice(1))
+  if (sub === "story") return runStory(args.slice(1))
+  if (sub === "find") return runFind(args.slice(1))
+  if (sub === "recap") return runRecap(args.slice(1))
+  if (sub === "report") return runReport(args.slice(1))
+  if (sub === "mirror") return runMirror(args.slice(1))
+  if (sub === "restart") return runRestart(args.slice(1))
+  if (sub === "switch-profile") return runSwitchProfile(args.slice(1))
+  if (sub === "wait") return runWait(args.slice(1))
+  if (sub === "queue") return runQueue(args.slice(1))
+  if (sub === "inbox") return runInbox(args.slice(1))
+  if (sub === "message") return runMessage(args.slice(1))
+  if (sub === "checkpoint") return runCheckpoint(args.slice(1))
+  if (sub === "handoff") return runHandoff(args.slice(1))
+  if (sub === "migrate") return runMigrate(args.slice(1))
+  if (sub === "board") {
+    const { runBoard } = await import("./sessions-board.js")
+    return runBoard(args.slice(1))
+  }
+
+  // The list view takes no positionals, so a bare word here is a mistyped
+  // subcommand. Say so instead of letting parseArgs throw a stack trace.
+  if (sub !== undefined && !sub.startsWith("-")) {
+    process.stderr.write(unknownSessionsSubcommandMessage(sub))
+    return 2
+  }
+
+  let statsMode: StatsMode | undefined
+  let listArgs: readonly string[] = args
+  try {
+    const extracted = extractStatsFlag(args)
+    statsMode = extracted.stats
+    listArgs = extracted.rest
+  } catch (err) {
+    if (!(err instanceof StatsFlagError)) throw err
+    process.stderr.write(`agentproto sessions: ${err.message}\n`)
+    return 2
+  }
+
+  let values: ReturnType<typeof parseListArgs>["values"]
+  try {
+    values = parseListArgs(listArgs).values
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code
+    if (typeof code !== "string" || !code.startsWith("ERR_PARSE_ARGS")) throw err
+    const bare = listArgs.find((a) => !a.startsWith("-"))
+    process.stderr.write(
+      bare !== undefined
+        ? unknownSessionsSubcommandMessage(bare)
+        : `agentproto sessions: ${(err as Error).message}\n  Run \`agentproto sessions --help\` for usage.\n`
+    )
+    return 2
+  }
   const listQuery = buildSessionListQuery(values)
   if (listQuery && values.watch) {
     process.stderr.write("agentproto sessions: list filters can't be combined with --watch\n")
