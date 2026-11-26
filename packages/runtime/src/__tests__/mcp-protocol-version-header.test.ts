@@ -102,7 +102,9 @@ describe("/mcp — mcp-protocol-version header tolerance", () => {
       meta: { workspace: process.cwd(), registered: [] },
     })
     try {
-      const res = await postToolsList(port, "2026-07-28")
+      // `2026-07-28` is now natively served by the modern era on `/mcp`; a newer
+      // unknown version without modern `_meta` is still coerced down on legacy.
+      const res = await postToolsList(port, "2099-01-01")
       const body = await res.text()
       expect(res.status).toBe(200)
       expect(parseSingleSseMessage(body)).toMatchObject({

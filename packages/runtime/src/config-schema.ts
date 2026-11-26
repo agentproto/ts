@@ -414,6 +414,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
 const mcpConfigSchema: z.ZodType<McpConfig> = z
   .object({
     noCallerIdentity: z.enum(["block", "ask", "accept"]).optional(),
+    modernEra: z.boolean().optional(),
   })
   .passthrough()
 
@@ -1052,6 +1053,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "MCP calls without a caller identity",
     help: "How the MCP gateway handles a tool call that carries no caller identity (Claude Code / Claude Desktop connecting directly). block (default) refuses with no_caller_identity. accept lets an identity-less message_send go out as the anonymous sender claude-code, with no ACL elevation and never as any session. ask parks such a send on a human approval before it is delivered.",
     default: "block",
+  },
+  {
+    path: "mcp.modernEra",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP 2026-07-28 modern era on /mcp",
+    help: "When true (default), the root /mcp gateway serves MCP 2026-07-28 (server/discover and modern requests) alongside 2025-11-25. Set to false to route all /mcp traffic to the legacy 2025-11-25 transport.",
+    default: true,
   },
   // ── daemon ──
   {

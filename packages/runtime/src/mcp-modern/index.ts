@@ -7,6 +7,8 @@ import {
   ERR_INTERNAL,
   ERR_INVALID_REQUEST,
   ERR_METHOD_NOT_FOUND,
+  ERR_MISSING_CLIENT_CAPABILITY,
+  META_CLIENT_CAPABILITIES,
   META_SERVER_INFO,
 } from "./constants.js"
 import {
@@ -22,7 +24,14 @@ import {
 
 export * from "./constants.js"
 export { forwardParams } from "./bridge.js"
-export { decodeHeaderValue, normalizeHeaders } from "./validate.js"
+export { decodeHeaderValue, isJsonContentType, normalizeHeaders, type ParsedRequest } from "./validate.js"
+
+export function extractClientCapabilities(req: ParsedRequest): Record<string, unknown> | undefined {
+  const meta = req.params._meta
+  if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return undefined
+  const caps = (meta as Record<string, unknown>)[META_CLIENT_CAPABILITIES]
+  return typeof caps === "object" && caps !== null && !Array.isArray(caps) ? (caps as Record<string, unknown>) : undefined
+}
 
 export interface ModernRequestInput {
   /** HTTP verb. */
@@ -46,10 +55,25 @@ export interface CacheHints {
 export interface ModernDeps {
   /** Build a FRESH legacy server for this one request (same factory, same query scoping as the legacy path). */
   createServer: () => Promise<McpServer>
+  /**
+   * Protocol versions ACCEPTED by the modern request validator.
+   * Defaults to `supportedVersions` or `["2026-07-28"]`.
+   */
+  protocolVersions?: readonly string[]
+  /**
+   * Protocol versions ADVERTISED in `server/discover` (`result.supportedVersions`)
+   * and `-32022` (`error.data.supported`). Defaults to `protocolVersions`.
+   */
+  advertisedVersions?: readonly string[]
+  /** Shorthand for setting both `protocolVersions` and `advertisedVersions`. */
   supportedVersions?: readonly string[]
   /** Hints for the six cacheable operations. Default: `{ ttlMs: 0, cacheScope: "private" }` (never cached). */
   cachePolicy?: (method: string) => CacheHints
-  /** Called for `server/discover` and `tools/list` with the JSON-RPC response sent back (lane B feeds the observer). */
+  /** Entries merged into `capabilities.extensions` in `server/discover`. */
+  extensions?: Record<string, Record<string, unknown>>
+  /** Extract client capabilities from a parsed modern request. */
+  clientCapabilitiesOf?: (req: ParsedRequest) => Record<string, unknown> | undefined
+  /** Called for `server/discover` and `tools/list` with the JSON-RPC response sent back (feeds the observer). */
   onObserved?: (method: "server/discover" | "tools/list", response: Record<string, unknown>) => void
   /** Aborted when the HTTP client disconnects; the in-process request is cancelled. */
   signal?: AbortSignal
@@ -103,9 +127,14 @@ function fromThrown(error: unknown, id: string | number): ModernResponse {
   if (error instanceof BridgeError) {
     // `McpError` serializes its message with an "MCP error <code>: " prefix; strip it (possibly repeated).
     const message = error.message.replace(/^(?:MCP error -?\d+: )+/, "")
-    // An unknown method is a protocol error (404). Any other JSON-RPC error raised by a handler keeps HTTP 200,
-    // exactly as the legacy transport answers it (events adapter codes -32011..-32016 included).
-    const status = error.code === ERR_METHOD_NOT_FOUND ? 404 : 200
+    // An unknown method is 404, a missing required client capability (-32021) is 400 (spec basic/index).
+    // Any other JSON-RPC error raised by a handler keeps HTTP 200, as the legacy transport answers it.
+    const status =
+      error.code === ERR_METHOD_NOT_FOUND
+        ? 404
+        : error.code === ERR_MISSING_CLIENT_CAPABILITY
+          ? 400
+          : 200
     return errorResponse({ status, code: error.code, message, id, ...(error.data !== undefined ? { data: error.data } : {}) })
   }
   return errorResponse({ status: 500, code: ERR_INTERNAL, message: "Internal error", id })
@@ -114,17 +143,27 @@ function fromThrown(error: unknown, id: string | number): ModernResponse {
 async function answer(
   request: ParsedRequest & { id: string | number },
   bridge: Bridge,
-  supported: readonly string[],
+  advertised: readonly string[],
+  extensions: Record<string, Record<string, unknown>> | undefined,
   hints: CacheHints,
   signal: AbortSignal | undefined,
 ): Promise<Record<string, unknown>> {
   if (request.method === "server/discover") {
-    const capabilities = { ...bridge.capabilities }
+    const capabilities: Record<string, unknown> = { ...bridge.capabilities }
     delete capabilities.logging // removed in the modern era
+    if (extensions !== undefined) {
+      const existing =
+        typeof capabilities.extensions === "object" &&
+        capabilities.extensions !== null &&
+        !Array.isArray(capabilities.extensions)
+          ? (capabilities.extensions as Record<string, unknown>)
+          : {}
+      capabilities.extensions = { ...existing, ...extensions }
+    }
     return decorate(
       "server/discover",
       {
-        supportedVersions: [...supported],
+        supportedVersions: [...advertised],
         capabilities,
         ...(bridge.instructions ? { instructions: bridge.instructions } : {}),
       },
@@ -140,7 +179,8 @@ async function answer(
  * notification (202), request validation, in-process bridge. Never throws.
  */
 export async function handleModernRequest(input: ModernRequestInput, deps: ModernDeps): Promise<ModernResponse> {
-  const supported = deps.supportedVersions ?? DEFAULT_SUPPORTED_VERSIONS
+  const accepted = deps.protocolVersions ?? deps.supportedVersions ?? DEFAULT_SUPPORTED_VERSIONS
+  const advertised = deps.advertisedVersions ?? accepted
   const cachePolicy = deps.cachePolicy ?? DEFAULT_CACHE_POLICY
   const headers = normalizeHeaders(input.headers)
 
@@ -158,14 +198,21 @@ export async function handleModernRequest(input: ModernRequestInput, deps: Moder
   const request = parsed.request
   // No client-to-server notification exists in the modern core: accept and ignore (202, no body).
   if (request.id === undefined) return { status: 202, headers: {} }
-  const invalid = validateRequest(request, headers, supported, ALLOWED_METHODS)
+  const invalid = validateRequest(request, headers, accepted, ALLOWED_METHODS, advertised)
   if (invalid) return errorResponse(invalid)
 
   const id = request.id
   let bridge: Bridge | undefined
   try {
     bridge = await openBridge(await deps.createServer())
-    const result = await answer({ ...request, id }, bridge, supported, cachePolicy(request.method), deps.signal)
+    const result = await answer(
+      { ...request, id },
+      bridge,
+      advertised,
+      deps.extensions,
+      cachePolicy(request.method),
+      deps.signal,
+    )
     if (deps.signal?.aborted) return { status: 499, headers: {} }
     const response = okResponse(id, result)
     if ((request.method === "server/discover" || request.method === "tools/list") && deps.onObserved) {

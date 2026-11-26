@@ -667,6 +667,13 @@ export interface McpConfig {
    *  session, never an ACL elevation); `ask` parks the send on a human
    *  approval before delivering it. */
   noCallerIdentity?: "block" | "ask" | "accept"
+  /**
+   * Whether the root `/mcp` endpoint serves the stateless 2026-07-28 modern
+   * era (`server/discover` and modern requests) alongside 2025-11-25.
+   * Defaults to `true`. Set to `false` to route all `/mcp` traffic to the
+   * legacy 2025-11-25 transport.
+   */
+  modernEra?: boolean
 }
 
 /**
