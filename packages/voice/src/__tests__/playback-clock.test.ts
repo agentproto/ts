@@ -26,6 +26,7 @@ describe("createPlaybackClock", () => {
     c.sent(0)
     c.sent(-5)
     c.sent(Number.NaN)
+    c.sent(Number.POSITIVE_INFINITY)
     expect(c.queuedMs()).toBe(0)
     c.sent(800)
     c.reset()

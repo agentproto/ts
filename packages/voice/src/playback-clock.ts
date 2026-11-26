@@ -28,7 +28,7 @@ export function createPlaybackClock(now: () => number = Date.now): PlaybackClock
   return {
     queuedMs,
     sent(ms) {
-      if (!(ms > 0)) return
+      if (!(ms > 0) || !Number.isFinite(ms)) return
       endAt = Math.max(endAt, now()) + ms
     },
     reset() {
