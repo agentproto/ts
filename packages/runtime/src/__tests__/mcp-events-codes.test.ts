@@ -38,7 +38,7 @@ function pollCtx(over: { maxLeases?: number; resolve?: () => Promise<unknown> } 
 }
 
 describe("official error codes", () => {
-  it("-32023 NotFound: unknown event (poll and subscribe)", async () => {
+  it("-32023 NotFound: unknown event (poll)", async () => {
     const { ctx } = pollCtx()
     await expect(eventsPoll({ name: "nope", arguments: {}, cursor: null }, ctx)).rejects.toMatchObject({
       code: -32023,
