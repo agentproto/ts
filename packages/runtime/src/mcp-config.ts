@@ -12,6 +12,7 @@ export type NoCallerIdentityPolicy = "block" | "ask" | "accept"
 
 export const DEFAULT_NO_CALLER_IDENTITY: NoCallerIdentityPolicy = "block"
 export const DEFAULT_MODERN_ERA = true
+export const DEFAULT_HUMAN_GATE = true
 
 export async function resolveMcpConfig(
   loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
@@ -35,4 +36,11 @@ export async function resolveModernEra(
 ): Promise<boolean> {
   const value = (await resolveMcpConfig(loadCfg)).modernEra
   return typeof value === "boolean" ? value : DEFAULT_MODERN_ERA
+}
+
+export async function resolveHumanGate(
+  loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
+): Promise<boolean> {
+  const value = (await resolveMcpConfig(loadCfg)).humanGate
+  return typeof value === "boolean" ? value : DEFAULT_HUMAN_GATE
 }

@@ -27,9 +27,9 @@ export interface Bridge {
   close(): Promise<void>
 }
 
-/** Remove the three per-request handshake keys from `params._meta`; keep every other `_meta` key (progressToken, traceparent...). */
+/** Remove the three per-request handshake keys from `params._meta` and MRTR replay envelopes (`requestState`, `inputResponses`); keep every other `_meta` key (progressToken, traceparent...). */
 export function forwardParams(params: Record<string, unknown>): Record<string, unknown> {
-  const { _meta, ...rest } = params
+  const { _meta, requestState: _rs, inputResponses: _ir, ...rest } = params
   if (typeof _meta !== "object" || _meta === null || Array.isArray(_meta)) return rest
   const handshake = new Set([META_PROTOCOL_VERSION, META_CLIENT_INFO, META_CLIENT_CAPABILITIES])
   const kept = Object.fromEntries(Object.entries(_meta).filter(([key]) => !handshake.has(key)))

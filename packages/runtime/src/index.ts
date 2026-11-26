@@ -197,7 +197,8 @@ import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
-import { resolveModernEra, resolveNoCallerIdentity } from "./mcp-config.js"
+import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity } from "./mcp-config.js"
+import { createHumanGate, createMrtrStateStore, defaultMrtrStateDir } from "./mcp-modern/index.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
 import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { spawningCallerContext } from "./spawning-caller-context.js"
@@ -5477,6 +5478,14 @@ export async function createGateway(
     },
   })
 
+  const mrtrStateStore = createMrtrStateStore({
+    dir: persist ? defaultMrtrStateDir() : join(mkdtempSync(join(tmpdir(), "agentproto-mrtr-")), "mrtr"),
+  })
+  const mcpHumanGate = createHumanGate({
+    sessions,
+    stateStore: mrtrStateStore,
+  })
+
   const http = await startHttpServer({
     port,
     bind: opts.bind,
@@ -5497,6 +5506,7 @@ export async function createGateway(
     mcpModern: {
       enabled: () => resolveModernEra(),
       extensions: {},
+      humanGate: async () => ((await resolveHumanGate()) ? mcpHumanGate : undefined),
     },
     orchestratorMcpServerFactory,
     loadCommandAllowlist: () => loadAllowlistEntries(workspace),

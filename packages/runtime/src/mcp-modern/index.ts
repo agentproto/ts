@@ -23,8 +23,11 @@ import {
 } from "./validate.js"
 
 export * from "./constants.js"
+export * from "./mrtr-state.js"
+export * from "./human-gate.js"
 export { forwardParams } from "./bridge.js"
 export { decodeHeaderValue, isJsonContentType, normalizeHeaders, type ParsedRequest } from "./validate.js"
+import type { HumanGate } from "./human-gate.js"
 
 export function extractClientCapabilities(req: ParsedRequest): Record<string, unknown> | undefined {
   const meta = req.params._meta
@@ -73,6 +76,10 @@ export interface ModernDeps {
   extensions?: Record<string, Record<string, unknown>>
   /** Extract client capabilities from a parsed modern request. */
   clientCapabilitiesOf?: (req: ParsedRequest) => Record<string, unknown> | undefined
+  /** Optional MRTR elicitation gate for parked permissions and session questions. */
+  humanGate?: HumanGate
+  /** Resolved caller session id (absent for the operator), passed to `humanGate`. */
+  callerSessionId?: string
   /** Called for `server/discover` and `tools/list` with the JSON-RPC response sent back (feeds the observer). */
   onObserved?: (method: "server/discover" | "tools/list", response: Record<string, unknown>) => void
   /** Aborted when the HTTP client disconnects; the in-process request is cancelled. */
@@ -144,21 +151,20 @@ async function answer(
   request: ParsedRequest & { id: string | number },
   bridge: Bridge,
   advertised: readonly string[],
-  extensions: Record<string, Record<string, unknown>> | undefined,
+  deps: ModernDeps,
   hints: CacheHints,
-  signal: AbortSignal | undefined,
 ): Promise<Record<string, unknown>> {
   if (request.method === "server/discover") {
     const capabilities: Record<string, unknown> = { ...bridge.capabilities }
     delete capabilities.logging // removed in the modern era
-    if (extensions !== undefined) {
+    if (deps.extensions !== undefined) {
       const existing =
         typeof capabilities.extensions === "object" &&
         capabilities.extensions !== null &&
         !Array.isArray(capabilities.extensions)
           ? (capabilities.extensions as Record<string, unknown>)
           : {}
-      capabilities.extensions = { ...existing, ...extensions }
+      capabilities.extensions = { ...existing, ...deps.extensions }
     }
     return decorate(
       "server/discover",
@@ -171,7 +177,25 @@ async function answer(
       hints,
     )
   }
-  return decorate(request.method, await bridge.request(request.method, forwardParams(request.params), signal), bridge.serverInfo, hints)
+
+  const forward = () => bridge.request(request.method, forwardParams(request.params), deps.signal)
+
+  if (request.method === "tools/call" && deps.humanGate) {
+    const tool = typeof request.params.name === "string" ? request.params.name : ""
+    const clientCapabilities = (deps.clientCapabilitiesOf ?? extractClientCapabilities)(request)
+    const rawResult = await deps.humanGate.handleToolCall(
+      {
+        tool,
+        params: request.params,
+        ...(deps.callerSessionId !== undefined ? { callerSessionId: deps.callerSessionId } : {}),
+        ...(clientCapabilities !== undefined ? { clientCapabilities } : {}),
+      },
+      forward,
+    )
+    return decorate(request.method, rawResult, bridge.serverInfo, hints)
+  }
+
+  return decorate(request.method, await forward(), bridge.serverInfo, hints)
 }
 
 /**
@@ -209,9 +233,8 @@ export async function handleModernRequest(input: ModernRequestInput, deps: Moder
       { ...request, id },
       bridge,
       advertised,
-      deps.extensions,
+      deps,
       cachePolicy(request.method),
-      deps.signal,
     )
     if (deps.signal?.aborted) return { status: 499, headers: {} }
     const response = okResponse(id, result)
