@@ -79,6 +79,9 @@ const port = Number(process.env.PORT ?? "18790")
 const supervise = (process.env.SUPERVISOR ?? "").trim() === "true"
 /** Set once the idle supervisor is spawned; retired on every exit path. */
 let supervisorToRetire
+/** Every session id this run's steps attached, and the MCP client that can retire them. */
+const runSessionIds = new Set()
+let runClient
 // What this run's failure said, for run-with-rotation.mjs: the run and step
 // errors, each session's last turn error, and the adapter's `[error]` lines.
 // Read only through DRIVER_RESULT_FILE; never printed as a whole.
@@ -276,6 +279,7 @@ async function buildProgressContext(client, run) {
     for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
       if (!step?.sessionId) continue
       sessionIds.add(step.sessionId)
+      runSessionIds.add(step.sessionId)
       // First session to attach a sessionId, in stage/step order — this
       // driver's own lane (pr-review, pr, fix) always drives a single agent
       // session per run, so "first" is unambiguously "the" reviewer session.
@@ -355,6 +359,7 @@ async function main() {
     { capabilities: {} },
   )
   await client.connect(transport)
+  runClient = client
 
   // Supervising session (see `supervise` above). Best-effort: a spawn failure
   // must NOT cost the review its run - log it and start the run unparented
@@ -547,7 +552,10 @@ async function main() {
   const stepErrors = []
   for (const stage of Array.isArray(run.stages) ? run.stages : []) {
     for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
-      if (typeof step?.sessionId === "string" && step.sessionId) sessionIds.add(step.sessionId)
+      if (typeof step?.sessionId === "string" && step.sessionId) {
+        sessionIds.add(step.sessionId)
+        runSessionIds.add(step.sessionId)
+      }
       if (typeof step?.error === "string" && step.error) stepErrors.push(step.error)
       if (step?.status === "done") failureEvidence.stepsDone += 1
     }
@@ -608,6 +616,10 @@ async function main() {
       sessionIds.add(s.id)
     }
   }
+  // Same id set the provenance footer reports (run.result.sessionIds, ids
+  // recovered from error text, the session_list sweep), so a step that failed
+  // before any heartbeat saw its sessionId is retired too.
+  for (const id of sessionIds) runSessionIds.add(id)
   console.log(
     `driver: run produced sessionIds=${JSON.stringify([...sessionIds])}` +
       (structuredIdCount === 0 && sessionIds.size > 0 ? " (recovered via agent_sessions_list)" : ""),
@@ -872,6 +884,25 @@ try {
     } catch (err) {
       console.error(`driver: supervisor cleanup failed: ${err.message}`)
     }
+  }
+  // Retire the run's own sessions BEFORE the daemon goes away. A session that
+  // is still attached keeps its sandbox: `agentproto serve` does not tear down
+  // live sessions on SIGTERM, so a computer-provider box would stay attached
+  // (and its fleet host awake) once this runner disappears. `agent_kill` runs
+  // the normal teardown (detach, then remove the box). Best-effort, bounded.
+  if (runClient && runSessionIds.size > 0) {
+    await Promise.all(
+      [...runSessionIds].map(async (sessionId) => {
+        try {
+          await Promise.race([
+            runClient.callTool({ name: "agent_kill", arguments: { sessionId } }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 60_000).unref?.()),
+          ])
+        } catch (err) {
+          console.error(`driver: retiring session ${sessionId} failed: ${err.message}`)
+        }
+      }),
+    )
   }
   killDaemon()
   // SIGTERM makes the daemon say goodbye to the home daemon it joined
