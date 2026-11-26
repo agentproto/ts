@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -119,12 +119,14 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!()
 })
 
-async function startRig(opts: { tasks?: boolean; dir?: string } = {}) {
+async function startRig(opts: { tasks?: boolean; dir?: string; persistPath?: string } = {}) {
   const dir = opts.dir ?? mkdtempSync(join(tmpdir(), "agentproto-mcp-tasks-e2e-"))
   if (!opts.dir) cleanups.push(async () => rmSync(dir, { recursive: true, force: true }))
   const sessionEvents = createSessionEventBus()
   const eventRing = createEventRing()
-  const registry: SessionsRegistry = createSessionsRegistry({ persist: false, sessionEvents })
+  const registry: SessionsRegistry = createSessionsRegistry(
+    opts.persistPath ? { persistPath: opts.persistPath, sessionEvents } : { persist: false, sessionEvents },
+  )
   const humanGate = createHumanGate({
     sessions: registry,
     stateStore: createMrtrStateStore({ dir: join(dir, "mrtr") }),
@@ -440,5 +442,55 @@ describe("MCP Tasks extension e2e over /mcp (one turn = one task)", () => {
     const second = await startRig({ dir })
     const gone = await getTask(second.baseUrl, taskId)
     expect(gone.json.error.code).toBe(-32602)
+  })
+
+  it("a daemon restart between create and read gives failed (daemon-restart); the task still resolves from the reloaded ledger", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentproto-mcp-tasks-restart-"))
+    cleanups.push(async () => rmSync(dir, { recursive: true, force: true }))
+    const first = await startRig({ dir })
+    const s = spawnControllable(first.registry)
+    const { taskId } = (await prompt(first.baseUrl, s.id, "work")).json.result
+    await waitFor(() => first.registry.get(s.id)?.busy === true)
+    expect((await getTask(first.baseUrl, taskId)).json.result.status).toBe("working")
+
+    // "Restart": the persisted snapshot still shows the session mid-turn; a fresh registry reloads it as
+    // killed / daemon-restart, and a fresh projector reloads the ledger from the same directory.
+    const persistPath = join(dir, "sessions.json")
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        sessions: [
+          {
+            id: s.id,
+            kind: "agent-cli",
+            workspaceSlug: "default",
+            command: "fake (agent)",
+            pid: null,
+            status: "running",
+            startedAt: new Date().toISOString(),
+            busy: true,
+            turnsCompleted: 0,
+            adapterSlug: "fake",
+            adapterSessionId: `acp-${s.id}`,
+            cwd: process.cwd(),
+          },
+        ],
+      }),
+    )
+    const second = await startRig({ dir, persistPath })
+    const reloaded = second.registry.get(s.id)
+    expect(reloaded?.status).toBe("killed")
+    expect(reloaded?.endedReason).toBe("daemon-restart")
+
+    const res = await getTask(second.baseUrl, taskId)
+    expect(res.status).toBe(200)
+    expect(res.json.result.resultType).toBe("complete")
+    expect(res.json.result.taskId).toBe(taskId)
+    expect(res.json.result.status).toBe("failed")
+    expect(res.json.result.error.code).toBe(-32603)
+    expect(res.json.result.error.data).toMatchObject({ sessionId: s.id, endedReason: "daemon-restart" })
+    // not cancelled, and stable on a second read
+    expect((await getTask(second.baseUrl, taskId)).json.result.status).toBe("failed")
   })
 })
