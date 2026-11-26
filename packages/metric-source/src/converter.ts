@@ -13,6 +13,7 @@ import { parseRoutineManifest } from "@agentproto/routine"
 import { parseToolManifest, toolSpec } from "@agentproto/tool"
 import {
   MetricSourceSpec,
+  WindowKind,
   type MetricDescriptor,
   type MetricSourceSpecInput,
   type MetricTransportSpec,
@@ -109,6 +110,7 @@ function stripUndefinedDeep(value: unknown): unknown {
 function driverKindForTransport(kind: MetricTransportSpec["kind"]): "http" | "mcp" | "sdk" {
   if (kind === "http") return "http"
   if (kind === "mcp-imported") return "mcp"
+  // AIP-30 DRIVER_KIND has no dedicated "sql" literal; read-only SQL clients run via an SDK driver.
   return "sdk"
 }
 
@@ -466,6 +468,9 @@ export function manifestsToSource(bundle: SourceManifestBundle): ManifestsToSour
     throw new Error(`manifestsToSource: ROUTINE.md '${rfm.id}' must use a cron schedule.`)
   }
 
+  const parsedWindowKind =
+    targetInputs.windowKind !== undefined ? WindowKind.parse(targetInputs.windowKind) : undefined
+
   const rawSpec: MetricSourceSpecInput = {
     schema: "metric-source/v1",
     id: sourceId,
@@ -480,9 +485,7 @@ export function manifestsToSource(bundle: SourceManifestBundle): ManifestsToSour
       kind: "cron",
       cron: sched.cron,
       ...(typeof sched.timezone === "string" ? { timezone: sched.timezone } : {}),
-      ...(typeof targetInputs.windowKind === "string"
-        ? { windowKind: targetInputs.windowKind as "point" | "day" | "week" | "month" }
-        : {}),
+      ...(parsedWindowKind !== undefined ? { windowKind: parsedWindowKind } : {}),
       ...(typeof targetInputs.windowAnchor === "string"
         ? { windowAnchor: targetInputs.windowAnchor }
         : {}),

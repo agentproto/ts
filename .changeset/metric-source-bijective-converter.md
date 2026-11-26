@@ -1,6 +1,6 @@
 ---
 "@agentproto/collection": minor
-"@agentproto/tool": patch
+"@agentproto/tool": minor
 "@agentproto/metric-source": minor
 ---
 
