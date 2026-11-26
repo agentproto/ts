@@ -51,7 +51,7 @@ export function catalogModelId(
 }
 
 const tag = (e: { credentialSource?: CredentialSource }) =>
-  e.credentialSource ? { credentialSource: e.credentialSource } : {}
+  e.credentialSource !== undefined ? { credentialSource: e.credentialSource } : {}
 
 export function usageToCatalogEvents(
   usage: VoiceUsage,

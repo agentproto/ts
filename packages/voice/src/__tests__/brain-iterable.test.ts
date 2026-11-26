@@ -40,6 +40,32 @@ describe("deltasToIterable", () => {
     expect(got).toEqual(["x"])
   })
 
+  it("an empty delta does not count as streamed, so the final text is still spoken", async () => {
+    const out = await collect(
+      deltasToIterable(async on => {
+        on("")
+        return "the reply"
+      }),
+    )
+    expect(out).toEqual(["the reply"])
+  })
+
+  it("return() ends the iteration and ignores later deltas", async () => {
+    let push!: (d: string) => void
+    const it = deltasToIterable(
+      on =>
+        new Promise<void>(() => {
+          push = on
+        }),
+    )[Symbol.asyncIterator]()
+    const first = it.next()
+    push("a")
+    expect(await first).toEqual({ value: "a", done: false })
+    await it.return!()
+    push("b")
+    expect(await it.next()).toEqual({ value: undefined, done: true })
+  })
+
   it("does not start before iteration", () => {
     let started = false
     deltasToIterable(async () => {

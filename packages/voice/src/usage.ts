@@ -1,6 +1,7 @@
 /**
  * Usage meter: the cumulative, monotonic record a session reports (AIP-VOICE,
- * Usage record). Numbers only; no price, no content.
+ * Usage record). Numbers and model names only, plus one optional opaque
+ * label the host sets (`credentialSource`); no price, no content.
  */
 import type { CredentialSource, VoiceEngineId, VoiceTokenBuckets, VoiceUsage, VoiceUsageEntry } from "./types.js"
 
@@ -12,7 +13,12 @@ export interface UsageMeter {
     delta: { audioSeconds?: number; tokens?: Partial<VoiceTokenBuckets>; reportedCostUsd?: number },
     model?: string,
   ): void
-  /** Tag every entry of this session with an opaque label for whose key paid for it (see `VoiceUsageEntry.credentialSource`). */
+  /**
+   * Tag every entry of this session with an opaque label for whose key paid for
+   * it (see `VoiceUsageEntry.credentialSource`). Session-wide: set it before the
+   * first unit is counted; a later call re-labels the whole record. Ignored
+   * after `seal()`.
+   */
   setCredentialSource(source: CredentialSource | undefined): void
   /** A snapshot; entries are copied. */
   snapshot(): VoiceUsage
@@ -78,6 +84,7 @@ export function makeUsageMeter(engine: VoiceEngineId, now: () => number = Date.n
       if (ok(delta.reportedCostUsd)) e.reportedCostUsd = (e.reportedCostUsd ?? 0) + delta.reportedCostUsd
     },
     setCredentialSource(source) {
+      if (sealedWall !== undefined) return
       credentialSource = source
     },
     snapshot() {
@@ -86,7 +93,7 @@ export function makeUsageMeter(engine: VoiceEngineId, now: () => number = Date.n
         wallSeconds: ((sealedWall ?? now()) - startedAt) / 1000,
         entries: [...entries.values()].map(e => ({
           ...structuredClone(e),
-          ...(credentialSource ? { credentialSource } : {}),
+          ...(credentialSource !== undefined ? { credentialSource } : {}),
         })),
       }
     },

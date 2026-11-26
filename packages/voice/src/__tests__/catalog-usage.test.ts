@@ -28,6 +28,16 @@ describe("credentialSource", () => {
     expect(events.map(e => e.credentialSource)).toEqual(["tag-a", "tag-a"])
   })
 
+  it("ignores a label set after the session is sealed, and keeps an empty-string label", () => {
+    const meter = makeUsageMeter("cascade")
+    meter.addTtsCharacters("acme", 10, "m_1")
+    meter.setCredentialSource("")
+    expect(meter.snapshot().entries[0]).toHaveProperty("credentialSource", "")
+    meter.seal()
+    meter.setCredentialSource("later")
+    expect(meter.snapshot().entries[0]!.credentialSource).toBe("")
+  })
+
   it("leaves the field out when the host never said", () => {
     const { events } = usageToCatalogEvents(
       usage([{ stage: "tts", provider: "acme", model: "m_1", characters: 3 }]),
