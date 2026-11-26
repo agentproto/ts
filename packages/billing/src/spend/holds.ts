@@ -26,13 +26,20 @@ export interface HoldOptions {
   asset: string
   /** Narrows which lots may be held (e.g. by partition). Default: every live lot of the asset. */
   lotFilter?: (lot: Lot) => boolean
-  /** Share of the reserve spent from which `checkpoint` answers `warn`. Default 0.8. */
+  /** Share of the reserve spent from which `checkpoint` answers `warn`. Default: never warns (the policy is the host's). */
   warnAt?: number
-  /** Share of the reserve spent from which `checkpoint` answers `cutoff`. Default 0.95. */
+  /** Share of the reserve spent from which `checkpoint` answers `cutoff`. Default 1: the reserve is spent. */
   cutoffAt?: number
   /** When the account cannot cover the whole amount, hold what it has if that is at least this much. Default: all or nothing. */
   minToStart?: number
+  /** Which lots are drawn first. Default: soonest to expire, then oldest. */
+  lotOrder?: (a: Lot, b: Lot) => number
+  /** Agency recorded on the journal events. Default `passive`. */
+  intent?: "passive" | "active"
 }
+
+/** The default draw order: soonest to expire first, then oldest. */
+export const defaultLotOrder = (a: Lot, b: Lot): number => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt
 
 export interface HoldDraw {
   lotId: string
@@ -93,8 +100,10 @@ function drawsOf(events: WalletEvent[], key: string): HoldDraw[] {
 }
 
 export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
-  const warnAt = opts.warnAt ?? 0.8
-  const cutoffAt = opts.cutoffAt ?? 0.95
+  const warnAt = opts.warnAt
+  const cutoffAt = opts.cutoffAt ?? 1
+  const order = opts.lotOrder ?? defaultLotOrder
+  const intent = opts.intent ?? "passive"
   const lane = (accountId: string) => `spend:${accountId}`
 
   async function close(hold: HoldRef, actual: number): Promise<SettleResult> {
@@ -117,7 +126,7 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
         const cap = Math.min(toCapture, d.amount)
         toCapture -= cap
         const rel = d.amount - cap
-        const base = { accountId: hold.accountId, asset: hold.asset, partitionId: d.partitionId, restriction: d.restriction, lotId: d.lotId, correlationId: hold.holdId, intent: "passive" as const, occurredAt: now }
+        const base = { accountId: hold.accountId, asset: hold.asset, partitionId: d.partitionId, restriction: d.restriction, lotId: d.lotId, correlationId: hold.holdId, intent, occurredAt: now }
         if (cap > 0) out.push({ ...base, id: captureId(hold.holdId, d.lotId), kind: "capture", amount: cap })
         if (rel > 0) out.push({ ...base, id: releaseId(hold.holdId, d.lotId), kind: "release", amount: rel })
       }
@@ -143,7 +152,7 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
         const now = deps.clock.nowMs()
         const lots = fold(events, now)
           .filter(l => l.asset === opts.asset && available(l, now) > 0 && (opts.lotFilter?.(l) ?? true))
-          .sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt)
+          .sort(order)
         const spendable = lots.reduce((s, l) => s + available(l, now), 0)
         const take = spendable >= want ? want : opts.minToStart !== undefined && spendable >= opts.minToStart && spendable > 0 ? spendable : 0
         if (take === 0) return { ok: false as const, reason: "insufficient_funds" as const }
@@ -152,7 +161,7 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
         for (const l of lots) {
           if (need <= 0) break
           const part = Math.min(need, available(l, now))
-          out.push({ id: reserveId(key, l.id), accountId, kind: "reserve", asset: l.asset, partitionId: l.partitionId, restriction: l.restriction, amount: part, lotId: l.id, correlationId: key, intent: "passive", occurredAt: now })
+          out.push({ id: reserveId(key, l.id), accountId, kind: "reserve", asset: l.asset, partitionId: l.partitionId, restriction: l.restriction, amount: part, lotId: l.id, correlationId: key, intent, occurredAt: now })
           need -= part
         }
         await deps.storage.commit(accountId, out)
@@ -165,7 +174,7 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
       const reserved = hold.reserved
       if (reserved <= 0) return { action: "continue", spent, reserved }
       if (spent >= reserved * cutoffAt) return { action: "cutoff", spent, reserved }
-      if (spent >= reserved * warnAt) return { action: "warn", spent, reserved }
+      if (warnAt !== undefined && spent >= reserved * warnAt) return { action: "warn", spent, reserved }
       return { action: "continue", spent, reserved }
     },
 

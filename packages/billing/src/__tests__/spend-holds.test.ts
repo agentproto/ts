@@ -160,20 +160,28 @@ describe("holds: release on failure or crash", () => {
 })
 
 describe("checkpoint", () => {
-  it("continues, warns at 80 %, cuts off at 95 %", async () => {
+  it("by default never warns and cuts off only when the reserve is spent", async () => {
     const s = await setup(1_000)
     const r = await s.holds.hold({ accountId: "acct", key: "c", amount: 1_000 })
     if (!r.ok) throw new Error("hold")
-    expect(s.holds.checkpoint(r.hold, 500).action).toBe("continue")
-    expect(s.holds.checkpoint(r.hold, 800).action).toBe("warn")
-    expect(s.holds.checkpoint(r.hold, 950).action).toBe("cutoff")
+    expect(s.holds.checkpoint(r.hold, 999).action).toBe("continue")
+    expect(s.holds.checkpoint(r.hold, 1_000).action).toBe("cutoff")
   })
-  it("thresholds are options", async () => {
+  it("warns and cuts off at the thresholds the host sets", async () => {
     const s = await setup(1_000)
-    const holds = createHolds({ storage: s.storage, clock: s.clock }, { asset: ASSET, warnAt: 0.5, cutoffAt: 0.9 })
-    const r = await holds.hold({ accountId: "acct", key: "c", amount: 1_000 })
+    const holds = createHolds({ storage: s.storage, clock: s.clock }, { asset: ASSET, warnAt: 0.8, cutoffAt: 0.95 })
+    const r = await s.holds.hold({ accountId: "acct", key: "c", amount: 1_000 })
     if (!r.ok) throw new Error("hold")
-    expect(holds.checkpoint(r.hold, 500).action).toBe("warn")
-    expect(holds.checkpoint(r.hold, 900).action).toBe("cutoff")
+    expect(holds.checkpoint(r.hold, 500).action).toBe("continue")
+    expect(holds.checkpoint(r.hold, 800).action).toBe("warn")
+    expect(holds.checkpoint(r.hold, 950).action).toBe("cutoff")
+  })
+  it("the draw order and the intent are injectable", async () => {
+    const s = await setup(1_000)
+    await s.storage.commit("acct", [s.mint("soon", 200, { expiresAt: T0 + 1_000 })])
+    const holds = createHolds({ storage: s.storage, clock: s.clock }, { asset: ASSET, intent: "active", lotOrder: (a, b) => (a.id === "lot1" ? -1 : b.id === "lot1" ? 1 : 0) })
+    const r = await holds.hold({ accountId: "acct", key: "c", amount: 100 })
+    expect(r.ok && r.hold.draws.map(d => d.lotId)).toEqual(["lot1"])
+    expect((await s.storage.loadEvents("acct")).find(e => e.kind === "reserve")?.intent).toBe("active")
   })
 })

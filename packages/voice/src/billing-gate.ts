@@ -40,11 +40,12 @@ export interface VoiceBillingGate<Hold = unknown, Ctx = unknown> {
   onAuthorize(ctx: Ctx): Promise<VoiceAuthDecision<Hold>>
   onCheckpoint(ctx: Ctx, hold: Hold, progress: VoiceCallProgress): Promise<VoiceBalanceDirective>
   onSettle(ctx: Ctx, hold: Hold, end: VoiceCallProgress & { reason: VoiceEndReason }): Promise<void>
-  /** Default 15 000. */
+  /** How often `onCheckpoint` runs (ms). Default `DEFAULT_POLL_INTERVAL_MS`. */
   pollIntervalMs?: number
   /**
-   * What an error thrown by `onAuthorize` means. `closed` (default): no
-   * reservation, no call. `open`: the call goes on without a hold.
+   * What an error thrown by `onAuthorize` means. `closed` (default, the safe
+   * choice for a metered call): no reservation, no call. `open`: the call goes
+   * on without a hold. The host decides; the kit has no opinion on its money.
    */
   onGateError?: "closed" | "open"
 }
@@ -73,6 +74,9 @@ export interface GuardOptions {
 }
 
 export type GuardResult = { started: false; reason: string } | { started: true; endReason: VoiceEndReason; seconds: number }
+
+/** Default checkpoint cadence when the host sets none. */
+export const DEFAULT_POLL_INTERVAL_MS = 15_000
 
 export async function guardVoiceCall<Hold, Ctx>(
   gate: VoiceBillingGate<Hold, Ctx>,
@@ -124,13 +128,13 @@ export async function guardVoiceCall<Hold, Ctx>(
         // A failing checkpoint never kills a live call: the next poll retries.
         log("checkpoint failed", { error: err instanceof Error ? err.message : String(err) })
       }
-      if (!stopped) timer = setT(poll, gate.pollIntervalMs ?? 15_000)
+      if (!stopped) timer = setT(poll, gate.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS)
     })()
   }
 
   try {
     await call.start()
-    timer = setT(poll, gate.pollIntervalMs ?? 15_000)
+    timer = setT(poll, gate.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS)
     const selfEnded = call.ended ? call.ended.then(r => ({ r })) : new Promise<never>(() => undefined)
     const winner = await Promise.race([cutoffRequested.then(() => ({ r: "cutoff" as VoiceEndReason })), selfEnded])
     reason = winner.r
