@@ -34,6 +34,11 @@
       "import": "./dist/manifest/index.mjs",
       "default": "./dist/manifest/index.mjs"
     },
+    "./spend": {
+      "types": "./dist/spend/index.d.ts",
+      "import": "./dist/spend/index.mjs",
+      "default": "./dist/spend/index.mjs"
+    },
     "./package.json": "./package.json",
     "./testing": {
       "types": "./dist/testing.d.ts",

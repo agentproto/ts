@@ -8,6 +8,7 @@ export default createTsupConfig({
   entry: {
     index: "src/index.ts",
     "manifest/index": "src/manifest/index.ts",
+    "spend/index": "src/spend/index.ts",
     testing: "src/testing/index.ts",
   },
   format: ["esm"],
