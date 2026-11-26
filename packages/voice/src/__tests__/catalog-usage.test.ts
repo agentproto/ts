@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { catalogModelId, normalizeModelId, usageToCatalogEvents } from "../catalog-usage.js"
+import { makeUsageMeter } from "../usage.js"
 import type { VoiceUsage } from "../types.js"
 
 const usage = (entries: VoiceUsage["entries"]): VoiceUsage => ({ engine: "cascade", wallSeconds: 1, entries })
@@ -13,6 +14,26 @@ describe("normalizeModelId", () => {
     expect(normalizeModelId("acme_fast_2_5", "acme_")).toBe("fast-2.5")
     expect(normalizeModelId("acme_fast_2_5")).toBe("acme-fast-2.5")
     expect(normalizeModelId("plain-1")).toBe("plain-1")
+  })
+})
+
+describe("credentialSource", () => {
+  it("is stamped by the meter on every entry and copied onto the billable events", () => {
+    const meter = makeUsageMeter("cascade")
+    meter.addTtsCharacters("acme", 10, "m_1")
+    meter.addSttSeconds("acme", 2, "m_2")
+    expect(meter.snapshot().entries.every(e => e.credentialSource === undefined)).toBe(true)
+    meter.setCredentialSource("byok")
+    const { events } = usageToCatalogEvents(meter.snapshot(), { providers: { acme: {} } })
+    expect(events.map(e => e.credentialSource)).toEqual(["byok", "byok"])
+  })
+
+  it("leaves the field out when the host never said", () => {
+    const { events } = usageToCatalogEvents(
+      usage([{ stage: "tts", provider: "acme", model: "m_1", characters: 3 }]),
+      { providers },
+    )
+    expect(events[0]).not.toHaveProperty("credentialSource")
   })
 })
 

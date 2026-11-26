@@ -5,7 +5,7 @@
  * prices them needs a catalog id per entry; this is the generic mapping, with
  * no vendor knowledge built in: a host describes each provider once.
  */
-import type { VoiceUsage } from "./types.js"
+import type { CredentialSource, VoiceUsage } from "./types.js"
 
 export interface CatalogProviderMapping {
   /** Catalog namespace for this provider. Default: the provider slug. */
@@ -29,6 +29,8 @@ export interface CatalogUsageEvent {
   characters?: number
   /** STT, rounded to 0.1 s. */
   seconds?: number
+  /** Copied from the usage entry: whose key paid. Absent when the entry carries none. */
+  credentialSource?: CredentialSource
 }
 
 /** `acme_fast_2_5` -> `fast-2.5` (with `stripModelPrefix: "acme_"`). */
@@ -48,6 +50,9 @@ export function catalogModelId(
   return `${mapping.prefix ?? provider}/${normalizeModelId(m, mapping.stripModelPrefix)}`
 }
 
+const tag = (e: { credentialSource?: CredentialSource }) =>
+  e.credentialSource ? { credentialSource: e.credentialSource } : {}
+
 export function usageToCatalogEvents(
   usage: VoiceUsage,
   opts: CatalogUsageOptions,
@@ -63,7 +68,7 @@ export function usageToCatalogEvents(
     const modelId = catalogModelId(e.provider, mapping, e.stage, e.model)
     if (e.stage === "tts" && (e.characters ?? 0) > 0) {
       if (!modelId) unbilled.push(`tts:${e.provider}`)
-      else events.push({ kind: "tts", provider: e.provider, modelId, characters: e.characters as number })
+      else events.push({ kind: "tts", provider: e.provider, modelId, characters: e.characters as number, ...tag(e) })
     } else if (e.stage === "stt" && (e.audioSeconds ?? 0) > 0) {
       if (!modelId) unbilled.push(`stt:${e.provider}`)
       else {
@@ -72,6 +77,7 @@ export function usageToCatalogEvents(
           provider: e.provider,
           modelId,
           seconds: Math.round((e.audioSeconds as number) * 10) / 10,
+          ...tag(e),
         })
       }
     }

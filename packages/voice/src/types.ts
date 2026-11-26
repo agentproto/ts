@@ -277,7 +277,15 @@ export interface VoiceUsageEntry {
   tokens?: VoiceTokenBuckets
   /** Only when the vendor itself reports a cost; never computed here. */
   reportedCostUsd?: number
+  /**
+   * Whose key paid for the stage: `platform` (the host's own) or `byok` (a key
+   * the end customer supplied). Absent when the host did not say. The kit only
+   * carries the tag; what to do with it (bill, store, skip) is the host's.
+   */
+  credentialSource?: CredentialSource
 }
+
+export type CredentialSource = "platform" | "byok"
 
 /** Cumulative and monotonic; final after `close()`. No price, no content. */
 export interface VoiceUsage {

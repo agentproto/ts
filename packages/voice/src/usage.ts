@@ -2,7 +2,7 @@
  * Usage meter: the cumulative, monotonic record a session reports (AIP-VOICE,
  * Usage record). Numbers only; no price, no content.
  */
-import type { VoiceEngineId, VoiceTokenBuckets, VoiceUsage, VoiceUsageEntry } from "./types.js"
+import type { CredentialSource, VoiceEngineId, VoiceTokenBuckets, VoiceUsage, VoiceUsageEntry } from "./types.js"
 
 export interface UsageMeter {
   addSttSeconds(provider: string, seconds: number, model?: string): void
@@ -12,6 +12,8 @@ export interface UsageMeter {
     delta: { audioSeconds?: number; tokens?: Partial<VoiceTokenBuckets>; reportedCostUsd?: number },
     model?: string,
   ): void
+  /** Tag every entry of this session with whose key paid for it (see `VoiceUsageEntry.credentialSource`). */
+  setCredentialSource(source: CredentialSource | undefined): void
   /** A snapshot; entries are copied. */
   snapshot(): VoiceUsage
   /** Freeze: later adds are ignored (call on close). */
@@ -34,6 +36,7 @@ export async function deliverUsage(
 export function makeUsageMeter(engine: VoiceEngineId, now: () => number = Date.now): UsageMeter {
   const startedAt = now()
   let sealedWall: number | undefined
+  let credentialSource: CredentialSource | undefined
   const entries = new Map<string, VoiceUsageEntry>()
 
   const entry = (stage: VoiceUsageEntry["stage"], provider: string, model?: string) => {
@@ -74,11 +77,17 @@ export function makeUsageMeter(engine: VoiceEngineId, now: () => number = Date.n
       }
       if (ok(delta.reportedCostUsd)) e.reportedCostUsd = (e.reportedCostUsd ?? 0) + delta.reportedCostUsd
     },
+    setCredentialSource(source) {
+      credentialSource = source
+    },
     snapshot() {
       return {
         engine,
         wallSeconds: ((sealedWall ?? now()) - startedAt) / 1000,
-        entries: [...entries.values()].map(e => structuredClone(e)),
+        entries: [...entries.values()].map(e => ({
+          ...structuredClone(e),
+          ...(credentialSource ? { credentialSource } : {}),
+        })),
       }
     },
     seal() {

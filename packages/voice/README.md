@@ -119,7 +119,7 @@ into `{ kind, modelId, characters | seconds }` events keyed by a catalog id
 (`<prefix>/<normalised model>`). Each provider is described by the host
 (catalog prefix, vendor model prefix to strip, optional fallback model per
 stage); entries with no mapping or no model are listed in `unbilled`, never
-guessed. Pricing stays with the host.
+guessed. Pricing stays with the host. `meter.setCredentialSource("platform" | "byok")` tags every usage entry with whose key paid; the tag is copied onto each event and the kit does nothing else with it.
 
 ## Spec number
 
