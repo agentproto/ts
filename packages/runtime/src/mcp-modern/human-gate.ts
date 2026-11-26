@@ -510,29 +510,78 @@ export interface CreateHumanGateOptions {
   approvals?: ApprovalLookup
   workflowRunner?: RunSuspendLookup
   surfaces?: () => HumanGateSurfaces | Promise<HumanGateSurfaces>
+  /**
+   * Operator log line sink. Called once per configured console URL that is refused, with the
+   * reason only (never the URL, which may hold a credential).
+   */
+  log?: (line: string) => void
 }
 
-const URL_SECRET_KEY_RE = /token|secret|key|sig|auth|pass|code|session/i
+/** Words that mark a query key as credential-like. */
+const URL_SECRET_WORDS = ["token", "secret", "key", "sig", "auth", "pass", "code", "session"] as const
 
 /**
- * Build the human approval page link: the configured console URL plus the approval id.
- * Returns undefined (no elicitation is produced) when the base is not a plain http(s) URL
- * or when it could carry a credential (userinfo, fragment, credential-like query key).
+ * Split a query key into lower-cased words on `_`, `-`, `.` and camelCase boundaries
+ * (`accessToken` -> `access`, `token`; `APIKey` -> `api`, `key`).
+ */
+function queryKeyWords(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[\s_.-]+/)
+    .map(w => w.toLowerCase())
+    .filter(w => w.length > 0)
+}
+
+/**
+ * True when one word of the key is, starts with, or ends with a listed word
+ * (`token`, `password`, `apikey`, `sessionid`), so `designer` or `insight` pass.
+ */
+export function isSecretQueryKey(key: string): boolean {
+  return queryKeyWords(key).some(word =>
+    URL_SECRET_WORDS.some(secret => word === secret || word.startsWith(secret) || word.endsWith(secret)),
+  )
+}
+
+/** Why a console base URL produced no approval link. */
+export type ApprovalUrlRefusal =
+  | "missing_base"
+  | "invalid_url"
+  | "unsupported_scheme"
+  | "credential_in_url"
+  | "secret_query_key"
+
+export type ApprovalUrlCheck = { ok: true; url: string } | { ok: false; reason: ApprovalUrlRefusal }
+
+/**
+ * Build the human approval page link (the configured console URL plus the approval id), or say
+ * why none is produced: no base, not a plain http(s) URL, userinfo or fragment, credential-like
+ * query key. The reason never carries the base itself.
+ */
+export function checkApprovalUrl(base: string | undefined, approvalId: string): ApprovalUrlCheck {
+  if (!base) return { ok: false, reason: "missing_base" }
+  let url: URL
+  try {
+    url = new URL(base)
+  } catch {
+    return { ok: false, reason: "invalid_url" }
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return { ok: false, reason: "unsupported_scheme" }
+  if (url.username || url.password || url.hash) return { ok: false, reason: "credential_in_url" }
+  for (const key of url.searchParams.keys()) {
+    if (isSecretQueryKey(key)) return { ok: false, reason: "secret_query_key" }
+  }
+  url.searchParams.set("approval", approvalId)
+  return { ok: true, url: url.toString() }
+}
+
+/**
+ * Build the human approval page link, or undefined (no elicitation is produced) when
+ * `checkApprovalUrl` refuses the base.
  */
 export function buildApprovalUrl(base: string | undefined, approvalId: string): string | undefined {
-  if (!base) return undefined
-  try {
-    const url = new URL(base)
-    if (url.protocol !== "https:" && url.protocol !== "http:") return undefined
-    if (url.username || url.password || url.hash) return undefined
-    for (const key of url.searchParams.keys()) {
-      if (URL_SECRET_KEY_RE.test(key)) return undefined
-    }
-    url.searchParams.set("approval", approvalId)
-    return url.toString()
-  } catch {
-    return undefined
-  }
+  const checked = checkApprovalUrl(base, approvalId)
+  return checked.ok ? checked.url : undefined
 }
 
 /**
@@ -592,6 +641,24 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
 
   const resolveSurfaces = async (): Promise<HumanGateSurfaces> =>
     opts.surfaces ? await opts.surfaces() : { approvals: false, runs: workflowRunner !== undefined }
+
+  // The base last reported as refused, so a bad config is logged once and not on every request.
+  let reportedRefusedBase: string | undefined
+  const approvalUrl = (base: string | undefined, approvalId: string): string | undefined => {
+    const checked = checkApprovalUrl(base, approvalId)
+    if (checked.ok) return checked.url
+    if (base !== undefined && checked.reason !== "missing_base" && base !== reportedRefusedBase) {
+      reportedRefusedBase = base
+      try {
+        opts.log?.(
+          `[mcp-human-gate] approvals.uiBaseUrl refused (${checked.reason}): no approval elicitation is produced until it is fixed`,
+        )
+      } catch {
+        // Logging must never break request handling.
+      }
+    }
+    return undefined
+  }
 
   const audit = (entry: HumanGateAuditEntry): void => {
     try {
@@ -787,7 +854,7 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
       applied: false,
       detail: "display_ack",
     })
-    const url = buildApprovalUrl(surfaces.approvalsUiBaseUrl, approvalId)
+    const url = approvalUrl(surfaces.approvalsUiBaseUrl, approvalId)
     const retry = response === null || response.action === "accept"
     if (surfaces.approvals && record?.status === "pending" && retry && url && clientSupportsElicitation(clientCapabilities, "url")) {
       return mintApprovalInputRequired(record, url, tool, argsHash, callerSessionId) as unknown as Record<string, unknown>
@@ -912,7 +979,7 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
       if (tool === "approval_get" || tool === "approval_wait") {
         const surfaces = await resolveSurfaces()
         const id = typeof args.id === "string" ? args.id : ""
-        const url = buildApprovalUrl(surfaces.approvalsUiBaseUrl, id)
+        const url = approvalUrl(surfaces.approvalsUiBaseUrl, id)
         const record = surfaces.approvals && supportsUrl && url ? approvals?.get(id) : undefined
         if (record?.status === "pending" && url) {
           return mintApprovalInputRequired(record, url, tool, argsHash, callerSessionId) as unknown as Record<string, unknown>

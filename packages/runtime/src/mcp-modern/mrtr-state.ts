@@ -16,6 +16,9 @@ import { join } from "node:path"
 
 export type MrtrEntityKind = "permission" | "approval" | "question" | "run-input"
 
+/** Every kind a token may carry; a signed token naming another kind is refused by the store. */
+export const KNOWN_MRTR_KINDS: ReadonlySet<MrtrEntityKind> = new Set(["permission", "approval", "question", "run-input"])
+
 export const DURABLE_MRTR_KINDS: ReadonlySet<MrtrEntityKind> = new Set(["approval", "run-input"])
 export const DEFAULT_MRTR_TTL_MS = 10 * 60 * 1000 // 10 minutes
 export const MAX_CONSUMED_NONCES = 4096
@@ -68,6 +71,7 @@ export type MrtrVerifyFailureReason =
   | "replayed"
   | "mismatch"
   | "input_unavailable"
+  | "unsupported_kind"
 
 export type MrtrVerifyResult =
   | { ok: true; state: MrtrState }
@@ -297,6 +301,10 @@ export function createMrtrStateStore(opts: MrtrStateStoreOptions = {}): MrtrStat
         state = parsed as MrtrState
       } catch {
         return { ok: false, reason: "malformed", message: "Unparsable requestState payload" }
+      }
+      // Defence in depth: the gate refuses an unknown kind too, but the store must not hand one out.
+      if (!KNOWN_MRTR_KINDS.has(state.kind)) {
+        return { ok: false, reason: "unsupported_kind", message: "requestState names an unsupported kind" }
       }
 
       const nowMs = now()

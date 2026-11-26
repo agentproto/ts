@@ -1086,7 +1086,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "advanced",
     label: "MCP 2026-07-28 MRTR elicitation gate",
-    help: "When true (default), modern 2026-07-28 MCP clients declaring elicitation receive InputRequiredResult for held permissions and session questions. Set to false to return standard tool results without MRTR.",
+    help: "When true (default), modern 2026-07-28 MCP clients declaring elicitation receive InputRequiredResult for four surfaces: held permissions, session questions, pending approvals (url, with approvals.uiBaseUrl; see mcp.humanGateApprovals) and runs parked for human input, observed by the operator on workflow_status (see mcp.humanGateRuns). Set to false to turn every surface off and return standard tool results without MRTR.",
     default: true,
   },
   {
