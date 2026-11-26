@@ -52,14 +52,14 @@ describe("filters-applied-server-side", () => {
   it("the wire EventDefinition carries the official shape and NO internal replayable field", () => {
     for (const event of GITHUB_SCHEME.events) {
       const def = event.definition
-      expect(def.delivery).toEqual(["webhook"])
+      expect(def.delivery).toEqual(["poll", "webhook"])
       expect(typeof def.name).toBe("string")
       expect(typeof def.description).toBe("string")
       expect(typeof def.inputSchema).toBe("object")
       expect(typeof def.payloadSchema).toBe("object")
       expect(Object.keys(def).sort()).toEqual(["delivery", "description", "inputSchema", "name", "payloadSchema"])
       // internal only
-      expect(event.meta.replayable).toBe(false)
+      expect(event.meta.replayable).toBe(true)
     }
   })
 })

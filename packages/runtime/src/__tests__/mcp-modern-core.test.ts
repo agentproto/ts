@@ -140,11 +140,11 @@ describe("forwarded methods and result decoration", () => {
     expect(Array.isArray(list?.events)).toBe(true)
     expect(list?.ttlMs).toBeUndefined()
     expect(list?.cacheScope).toBeUndefined()
-    const sub = json(await call("events/subscribe", { name: "x", arguments: {}, delivery: {} })).result
+    const sub = json(await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, { headers: { "mcp-name": "x" } })).result
     expect(sub?.id).toBe("sub_1")
     expect(sub?.ttlMs).toBeUndefined()
     expect(sub?.cacheScope).toBeUndefined()
-    const unsub = json(await call("events/unsubscribe")).result
+    const unsub = json(await call("events/unsubscribe", { name: "x" }, { headers: { "mcp-name": "x" } })).result
     expect(Object.keys(unsub ?? {}).sort()).toEqual(["_meta", "resultType"])
   })
 
@@ -178,7 +178,7 @@ describe("forwarded methods and result decoration", () => {
 
   it("a handler error keeps HTTP 200 and loses the SDK prefix", async () => {
     const { deps } = rig({}, new McpError(-32015, "callback unreachable", { reason: "x" }))
-    const r = await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, {}, deps)
+    const r = await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, { headers: { "mcp-name": "x" } }, deps)
     expect(r.status).toBe(200)
     const err = json(r).error
     expect(err?.code).toBe(-32015)
@@ -393,7 +393,7 @@ describe("lifecycle", () => {
         return server
       },
     }
-    const r = await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, {}, deps)
+    const r = await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, { headers: { "mcp-name": "x" } }, deps)
     expect(r.status).toBe(499)
     expect(r.body).toBeUndefined()
     expect(closes.count).toBe(1)

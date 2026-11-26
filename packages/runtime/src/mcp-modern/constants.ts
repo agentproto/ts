@@ -34,6 +34,7 @@ export const FORWARDED_METHODS: ReadonlySet<string> = new Set([
   "events/list",
   "events/subscribe",
   "events/unsubscribe",
+  "events/poll",
   "resources/list",
   "resources/templates/list",
   "resources/read",
@@ -62,6 +63,10 @@ export const CACHE_HINT_METHODS: ReadonlySet<string> = new Set([
 /** Methods whose request must carry an `Mcp-Name` header, and the `params` member that holds the value. */
 export const NAME_HEADER_SOURCE: ReadonlyMap<string, "name" | "uri"> = new Map([
   ["tools/call", "name"],
+  // SEP-3415: every events method but `events/list` names its event type in `Mcp-Name`.
+  ["events/poll", "name"],
+  ["events/subscribe", "name"],
+  ["events/unsubscribe", "name"],
   ["prompts/get", "name"],
   ["resources/read", "uri"],
 ])

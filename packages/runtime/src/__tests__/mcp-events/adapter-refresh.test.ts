@@ -82,7 +82,7 @@ describe("events/subscribe refresh renews the backing subscription first", () =>
 
     await expect(
       eventsSubscribe({ ...SUB, delivery: { ...SUB.delivery, secret: SECRET_2 } }, ctx(NOW + 5_000)),
-    ).rejects.toMatchObject({ code: -32016, data: { reason: "backing_renew_failed", subscriptionId: first.id } })
+    ).rejects.toMatchObject({ code: -32603, data: { kind: "backing_subscription", legacyCode: -32016, reason: "backing_renew_failed", subscriptionId: first.id } })
 
     expect(store.get(first.id)!.spec.until).toEqual(beforeUntil)
     expect(store.getSentinelSecret(ref)?.secret).toBe(SECRET)
@@ -94,7 +94,7 @@ describe("events/subscribe refresh renews the backing subscription first", () =>
     expect(store.getSentinelSecret(ref)?.secret).toBe(SECRET_2)
   })
 
-  it("an expired/deleted backing subscription is a typed -32016 backing_subscription_expired; local state intact and no second remote is provisioned", async () => {
+  it("an expired/deleted backing subscription is a typed -32603 (kind backing_subscription) backing_subscription_expired; local state intact and no second remote is provisioned", async () => {
     const { store, provider, ctx } = setup(() => {
       throw new SentinelBackingExpiredError("the agentpush subscription sub_1 was deleted", "sub_1")
     })
@@ -106,8 +106,8 @@ describe("events/subscribe refresh renews the backing subscription first", () =>
     const err = await eventsSubscribe({ ...SUB, delivery: { ...SUB.delivery, secret: SECRET_2 } }, ctx(NOW + 5_000)).catch(e => e)
 
     expect(err).toMatchObject({
-      code: -32016,
-      data: { reason: "backing_subscription_expired", subscriptionId: first.id },
+      code: -32603,
+      data: { kind: "backing_subscription", legacyCode: -32016, reason: "backing_subscription_expired", subscriptionId: first.id },
     })
     expect(String(err.message)).toMatch(/unsubscribe and subscribe again/)
     expect(provider.attachCalls.length).toBe(createsBefore) // nothing silently re-created

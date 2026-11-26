@@ -46,6 +46,14 @@ export const EventsUnsubscribeRequestSchema = z.object({
   params: LooseParams.optional(),
 })
 
+export const EventsPollRequestSchema = z.object({
+  method: z.literal("events/poll"),
+  params: LooseParams.optional(),
+})
+
+/** Extension identifier of MCP Events (SEP-3415), declared under `capabilities.extensions`. */
+export const MCP_EVENTS_EXTENSION_ID = "io.modelcontextprotocol/events"
+
 export interface ServerDiscoverResult {
   resultType: "complete"
   supportedVersions: string[]
@@ -59,6 +67,12 @@ export interface EventsMethodsHandlers {
   list(params: Record<string, unknown>): Promise<unknown>
   subscribe(params: Record<string, unknown>): Promise<unknown>
   unsubscribe(params: Record<string, unknown>): Promise<unknown>
+  /**
+   * `events/poll`. Optional: when absent the method is not registered and the
+   * `io.modelcontextprotocol/events` extension is not declared (the switch that
+   * turns the extension off while list/subscribe/unsubscribe keep working).
+   */
+  poll?(params: Record<string, unknown>): Promise<unknown>
 }
 
 /**
@@ -69,7 +83,12 @@ export interface EventsMethodsHandlers {
 export function registerEventsMethods(server: McpServer, handlers: EventsMethodsHandlers): void {
   // Advertise `events` alongside `tools` at initialize too, not only in
   // `server/discover` — a spec-compliant host may read either.
-  server.server.registerCapabilities({ events: {} } as unknown as ServerCapabilities)
+  // The extension is declared ALONGSIDE `events:{}` (the AIP-76 / OpenAI contract
+  // is kept): same methods and shapes, two ways for a client to find them.
+  server.server.registerCapabilities({
+    events: {},
+    ...(handlers.poll ? { extensions: { [MCP_EVENTS_EXTENSION_ID]: { listChanged: false } } } : {}),
+  } as unknown as ServerCapabilities)
 
   // `server/discover` is deliberately NOT registered (the SDK answers -32601).
   // Advertising MCP_EVENTS_PROTOCOL_VERSION there made Claude Code switch to
@@ -90,4 +109,10 @@ export function registerEventsMethods(server: McpServer, handlers: EventsMethods
   server.server.setRequestHandler(EventsUnsubscribeRequestSchema, async (request) =>
     (await handlers.unsubscribe((request.params ?? {}) as Record<string, unknown>)) as Record<string, unknown>,
   )
+  const poll = handlers.poll
+  if (poll) {
+    server.server.setRequestHandler(EventsPollRequestSchema, async (request) =>
+      (await poll((request.params ?? {}) as Record<string, unknown>)) as Record<string, unknown>,
+    )
+  }
 }

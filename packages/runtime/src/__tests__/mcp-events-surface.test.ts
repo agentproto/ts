@@ -13,6 +13,7 @@ function stubs() {
     list: vi.fn(async () => ({ events: [] })),
     subscribe: vi.fn(async () => ({ id: "sub_1", refreshBefore: null, cursor: null })),
     unsubscribe: vi.fn(async () => ({})),
+    poll: vi.fn(async () => ({ events: [], cursor: "c", truncated: false, hasMore: false, nextPollMs: 1000 })),
   }
 }
 
@@ -23,6 +24,8 @@ async function call(
   params: Record<string, unknown> = {},
   extraHeaders: Record<string, string> = {},
 ) {
+  // SEP-3415: every events method but events/list names its event in `Mcp-Name`.
+  const named = method.startsWith("events/") && method !== "events/list" && typeof params.name === "string" ? { "mcp-name": params.name } : {}
   const out = await handleModernRequest(
     {
       method: "POST",
@@ -31,6 +34,7 @@ async function call(
         accept: "application/json",
         "mcp-protocol-version": "2026-07-28",
         "mcp-method": method,
+        ...named,
         ...extraHeaders,
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: META } }),
@@ -82,7 +86,7 @@ describe("events surface: subscription allowlist", () => {
   it("refuses a repo outside the allowlist without calling the handler", async () => {
     const h = stubs()
     const body = await call(h, ["acme/ok"], "events/subscribe", { name: "n", arguments: { repo: "acme/other" } })
-    expect(body.error?.code).toBe(-32602)
+    expect(body.error?.code).toBe(-32024)
     expect(body.error?.message).toContain("subscription not permitted")
     expect(h.subscribe).not.toHaveBeenCalled()
   })
@@ -98,7 +102,7 @@ describe("events surface: subscription allowlist", () => {
   it("refuses every subscribe when the allowlist is empty", async () => {
     const h = stubs()
     const body = await call(h, [], "events/subscribe", { name: "n", arguments: { repo: "acme/ok" } })
-    expect(body.error?.code).toBe(-32602)
+    expect(body.error?.code).toBe(-32024)
     expect(h.subscribe).not.toHaveBeenCalled()
   })
 
@@ -106,15 +110,45 @@ describe("events surface: subscription allowlist", () => {
     const h = stubs()
     for (const params of [{ name: "n" }, { name: "n", arguments: "acme/ok" }, { name: "n", arguments: ["acme/ok"] }]) {
       const body = await call(h, ["acme/ok"], "events/subscribe", params)
-      expect(body.error?.code).toBe(-32602)
+      expect(body.error?.code).toBe(-32024)
     }
     expect(h.subscribe).not.toHaveBeenCalled()
+  })
+
+  it("applies the same allowlist to events/poll (-32024) and passes an allowed repo through", async () => {
+    const h = stubs()
+    const refused = await call(h, ["acme/ok"], "events/poll", { name: "n", arguments: { repo: "acme/other" }, cursor: null })
+    expect(refused.error?.code).toBe(-32024)
+    const none = await call(h, [], "events/poll", { name: "n", arguments: { repo: "acme/ok" }, cursor: null })
+    expect(none.error?.code).toBe(-32024)
+    const malformed = await call(h, ["acme/ok"], "events/poll", { name: "n", cursor: null })
+    expect(malformed.error?.code).toBe(-32024)
+    expect(h.poll).not.toHaveBeenCalled()
+    const ok = await call(h, ["acme/ok"], "events/poll", { name: "n", arguments: { repo: "acme/ok" }, cursor: null })
+    expect(ok.error).toBeUndefined()
+    expect(h.poll).toHaveBeenCalledTimes(1)
+  })
+
+  it("poll is absent (method not found) when the handlers carry no poll, and discover omits the extension", async () => {
+    const { poll: _poll, ...noPoll } = stubs()
+    const h = noPoll as unknown as ReturnType<typeof stubs>
+    const r = await call(h, ["acme/ok"], "events/poll", { name: "n", arguments: { repo: "acme/ok" }, cursor: null })
+    expect(r.error?.code).toBe(-32601)
+    const caps = (await call(h, [], "server/discover")).result?.capabilities as Record<string, any>
+    expect(caps.events).toBeDefined()
+    expect(caps.extensions?.["io.modelcontextprotocol/events"]).toBeUndefined()
+  })
+
+  it("declares both `events` and the events extension on discover when poll is served", async () => {
+    const caps = (await call(stubs(), [], "server/discover")).result?.capabilities as Record<string, any>
+    expect(caps.events).toBeDefined()
+    expect(caps.extensions?.["io.modelcontextprotocol/events"]).toEqual({ listChanged: false })
   })
 
   it("leaves events/list and events/unsubscribe unrestricted", async () => {
     const h = stubs()
     const list = await call(h, [], "events/list")
-    const unsub = await call(h, [], "events/unsubscribe", { id: "sub_1" })
+    const unsub = await call(h, [], "events/unsubscribe", { name: "n" })
     expect(list.error).toBeUndefined()
     expect(unsub.error).toBeUndefined()
     expect(h.list).toHaveBeenCalledTimes(1)

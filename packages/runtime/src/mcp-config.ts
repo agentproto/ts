@@ -14,6 +14,7 @@ export const DEFAULT_NO_CALLER_IDENTITY: NoCallerIdentityPolicy = "block"
 export const DEFAULT_MODERN_ERA = true
 export const DEFAULT_HUMAN_GATE = true
 export const DEFAULT_SKILLS_EXTENSION = true
+export const DEFAULT_EVENTS_EXTENSION = true
 
 export async function resolveMcpConfig(
   loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
@@ -51,4 +52,11 @@ export async function resolveSkillsExtension(
 ): Promise<boolean> {
   const value = (await resolveMcpConfig(loadCfg)).extensions?.skills
   return typeof value === "boolean" ? value : DEFAULT_SKILLS_EXTENSION
+}
+
+export async function resolveEventsExtension(
+  loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
+): Promise<boolean> {
+  const value = (await resolveMcpConfig(loadCfg)).eventsExtension
+  return typeof value === "boolean" ? value : DEFAULT_EVENTS_EXTENSION
 }

@@ -197,7 +197,7 @@ import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
-import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension } from "./mcp-config.js"
+import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension } from "./mcp-config.js"
 import { createHumanGate, createMrtrStateStore, defaultMrtrStateDir } from "./mcp-modern/index.js"
 import { registerServedSkills } from "./mcp-modern/skills.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
@@ -248,12 +248,18 @@ import {
 import { registerSessionFollowTools } from "./session-follow-tools.js"
 import {
   eventsList,
+  eventsPoll,
   eventsSubscribe,
   eventsUnsubscribe,
+  toJournalEvent,
   type EventsListRequest,
+  type EventsPollInput,
   type EventsSubscribeInput,
   type EventsUnsubscribeInput,
 } from "./mcp-events/adapter.js"
+import { createPollJournal } from "./mcp-events/poll-journal.js"
+import { createPollLeaseManager } from "./mcp-events/poll-lease.js"
+import type { Principal } from "./mcp-events/events-registry.js"
 import { daemonBearerPrincipal, sessionPrincipal } from "./mcp-events/events-registry.js"
 import { createSentinelAutoLinker } from "@agentproto/sentinel"
 import { createEventsSurfaceServer } from "./mcp-events-surface.js"
@@ -2807,6 +2813,43 @@ export async function createGateway(
   // reads it is wired below, once `sessions` exists.
   const sessionFollowStore = createSessionFollowStore({ persist })
   const sentinelCredsStore = makeSentinelCredsStore()
+  // `events/poll`: a durable journal fed by shared, idle-released provider watches (never the webhook outbox).
+  const pollJournal = createPollJournal({
+    dir: join(process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto"), "mcp-events", "poll"),
+  })
+  const pollLeases = createPollLeaseManager({
+    journal: pollJournal,
+    resolveProvider: slug => resolveSentinelProviderResolved(slug),
+    toEvent: toJournalEvent,
+  })
+  try {
+    pollJournal.purge(key => pollLeases.isActive(key))
+  } catch {
+    // A purge failure must never block boot; the next read trims on demand.
+  }
+  const eventsHandlersFor = (principal: Principal, pollEnabled: boolean) => ({
+    list: (params: Record<string, unknown>) =>
+      eventsList(params as EventsListRequest, { principal, pollEnabled }),
+    subscribe: (params: Record<string, unknown>) =>
+      eventsSubscribe(params as unknown as EventsSubscribeInput, {
+        principal,
+        store: sentinelStore,
+        resolveProvider: resolveSentinelProviderResolved,
+      }),
+    unsubscribe: (params: Record<string, unknown>) =>
+      eventsUnsubscribe(params as unknown as EventsUnsubscribeInput, {
+        principal,
+        store: sentinelStore,
+        resolveProvider: resolveSentinelProviderResolved,
+        tombstones: sentinelRuntime.cancelTombstones,
+      }),
+    ...(pollEnabled
+      ? {
+          poll: (params: Record<string, unknown>) =>
+            eventsPoll(params as unknown as EventsPollInput, { principal, journal: pollJournal, leases: pollLeases }),
+        }
+      : {}),
+  })
   const resolveSentinelProviderResolved = async (slug: string) =>
     resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) })
 
@@ -5221,22 +5264,7 @@ export async function createGateway(
     // `?callerSessionId=` names a session caller, otherwise the single
     // operator bearer (plan §1 — no per-caller auth-profile principal in v1).
     const eventsPrincipal = callerSessionId ? sessionPrincipal(callerSessionId) : daemonBearerPrincipal()
-    registerEventsMethods(server, {
-      list: (params) => eventsList(params as EventsListRequest, { principal: eventsPrincipal }),
-      subscribe: (params) =>
-        eventsSubscribe(params as unknown as EventsSubscribeInput, {
-          principal: eventsPrincipal,
-          store: sentinelStore,
-          resolveProvider: resolveSentinelProviderResolved,
-        }),
-      unsubscribe: (params) =>
-        eventsUnsubscribe(params as unknown as EventsUnsubscribeInput, {
-          principal: eventsPrincipal,
-          store: sentinelStore,
-          resolveProvider: resolveSentinelProviderResolved,
-          tombstones: sentinelRuntime.cancelTombstones,
-        }),
-    })
+    registerEventsMethods(server, eventsHandlersFor(eventsPrincipal, await resolveEventsExtension()))
     return server
   }
 
@@ -5259,22 +5287,7 @@ export async function createGateway(
             return createEventsSurfaceServer({
               version: opts.version ?? "0.1.0-alpha",
               repoAllowlist: eventsRepos,
-              handlers: {
-                list: params => eventsList(params as EventsListRequest, { principal }),
-                subscribe: params =>
-                  eventsSubscribe(params as unknown as EventsSubscribeInput, {
-                    principal,
-                    store: sentinelStore,
-                    resolveProvider: resolveSentinelProviderResolved,
-                  }),
-                unsubscribe: params =>
-                  eventsUnsubscribe(params as unknown as EventsUnsubscribeInput, {
-                    principal,
-                    store: sentinelStore,
-                    resolveProvider: resolveSentinelProviderResolved,
-                    tombstones: sentinelRuntime.cancelTombstones,
-                  }),
-              },
+              handlers: eventsHandlersFor(principal, await resolveEventsExtension()),
             })
           },
         }
@@ -6201,6 +6214,7 @@ export async function createGateway(
       // down — same ordering reason as inboundWatcher above (delivery reads
       // `sessions`).
       sentinelRuntime.stop()
+      void pollLeases.stop()
       sentinelStore.flushSync()
       // Stop the reaction runner and persist its receipts; a `running` row
       // lost in the debounce window is a re-drive the target dedupes anyway.

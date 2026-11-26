@@ -417,6 +417,7 @@ const mcpConfigSchema: z.ZodType<McpConfig> = z
     modernEra: z.boolean().optional(),
     humanGate: z.boolean().optional(),
     extensions: z.object({ skills: z.boolean().optional() }).passthrough().optional(),
+    eventsExtension: z.boolean().optional(),
   })
   .passthrough()
 
@@ -1084,6 +1085,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "advanced",
     label: "MCP Skills extension on /mcp",
     help: "When true (default), the 2026-07-28 era of the root /mcp gateway serves the beta Skills extension (skills/list, skills/get, skill:// resources) for the imported-skills registry. Set to false to stop announcing it and serving it. Skills delivered at spawn are unaffected.",
+    default: true,
+  },
+  {
+    path: "mcp.eventsExtension",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Events extension (events/poll)",
+    help: "When true (default), events/poll and the io.modelcontextprotocol/events extension are served and declared in server/discover. Set to false to keep only events/list, events/subscribe and events/unsubscribe (webhook delivery).",
     default: true,
   },
   // ── daemon ──

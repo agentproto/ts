@@ -48,14 +48,17 @@ async function legacyServer(): Promise<McpServer> {
   }))
   server.prompt("pr", async () => ({ messages: [{ role: "user", content: { type: "text", text: "hi" } }] }))
   registerEventsMethods(server, {
-    list: async () => ({ events: [], nextCursor: null }),
+    list: async () => ({ events: [] }),
     subscribe: async () => ({ id: "sub_1", refreshBefore: null, cursor: null }),
     unsubscribe: async () => ({}),
+    poll: async () => ({ events: [], cursor: "c", truncated: false, hasMore: false, nextPollMs: 1000 }),
   })
   return server
 }
 
 const DEPS: ModernDeps = { createServer: legacyServer }
+/** SEP-3415: events/subscribe, unsubscribe and poll carry `Mcp-Name` = `params.name`. */
+const NAMED_X: CallOpts = { headers: { "mcp-name": "x" } }
 
 function headersFor(method: string, over: Headers = {}): Headers {
   const out: Headers = { "content-type": "application/json", accept: ACCEPT, "mcp-protocol-version": VERSION, "mcp-method": method }
@@ -131,7 +134,7 @@ describe("modern contract (live)", () => {
       }
       const gatewayDiscover = json(await call("server/discover", {}, { deps: gatewayDeps })).result
       expect(gatewayDiscover?.supportedVersions).toEqual(["2026-07-28", "2025-11-25"])
-      expect(gatewayDiscover?.capabilities?.extensions).toEqual({})
+      expect(gatewayDiscover?.capabilities?.extensions).toEqual({ "io.modelcontextprotocol/events": { listChanged: false } })
       expect(gatewayDiscover?._meta?.["io.modelcontextprotocol/serverInfo"]).toEqual({ name: "main", version: "1.2.3" })
 
       // Advertised 2025-11-25 must NOT be accepted by the modern validator.
@@ -172,10 +175,10 @@ describe("modern contract (live)", () => {
       expect(json(r).error?.data).toEqual({ requiredCapabilities: { elicitation: {} } })
     })
 
-    it("`events` is declared top-level in discover `capabilities` (capabilities.events, not capabilities.extensions)", async () => {
+    it("`events` AND the `io.modelcontextprotocol/events` extension are both declared in discover `capabilities`", async () => {
       const capabilities = json(await call("server/discover")).result?.capabilities
       expect(capabilities?.events).toBeDefined()
-      expect(capabilities?.extensions?.["io.modelcontextprotocol/events"]).toBeUndefined()
+      expect(capabilities?.extensions?.["io.modelcontextprotocol/events"]).toEqual({ listChanged: false })
     })
 
     it("tools/list carries resultType+ttlMs+cacheScope", async () => {
@@ -205,8 +208,9 @@ describe("modern contract (live)", () => {
     it('events/list|subscribe|unsubscribe carry resultType "complete" and no ttlMs or cacheScope', async () => {
       const calls = [
         await call("events/list"),
-        await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }),
-        await call("events/unsubscribe", { name: "x", arguments: {}, delivery: {} }),
+        await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, NAMED_X),
+        await call("events/unsubscribe", { name: "x", arguments: {}, delivery: {} }, NAMED_X),
+        await call("events/poll", { name: "x", arguments: {}, cursor: null }, NAMED_X),
       ]
       for (const r of calls) {
         expect(r.status).toBe(200)
@@ -218,7 +222,7 @@ describe("modern contract (live)", () => {
     })
 
     it("events/unsubscribe returns `{}` plus resultType (not `{ ok: true }`)", async () => {
-      const result = json(await call("events/unsubscribe", { name: "x", arguments: {}, delivery: {} })).result
+      const result = json(await call("events/unsubscribe", { name: "x", arguments: {}, delivery: {} }, NAMED_X)).result
       expect(result).not.toHaveProperty("ok")
       const { _meta, ...rest } = result ?? {}
       expect(rest).toEqual({ resultType: "complete" })
@@ -236,8 +240,8 @@ describe("modern contract (live)", () => {
         ["prompts/list", {}, {}],
         ["prompts/get", { name: "pr" }, { "mcp-name": "pr" }],
         ["events/list", {}, {}],
-        ["events/subscribe", { name: "x", arguments: {}, delivery: {} }, {}],
-        ["events/unsubscribe", { name: "x", arguments: {}, delivery: {} }, {}],
+        ["events/subscribe", { name: "x", arguments: {}, delivery: {} }, { "mcp-name": "x" }],
+        ["events/unsubscribe", { name: "x", arguments: {}, delivery: {} }, { "mcp-name": "x" }],
       ]
       for (const [method, params, headers] of probes) {
         const r = await call(method, params, { headers })
@@ -450,8 +454,9 @@ describe("modern contract (live)", () => {
         await callTool(),
         await call("prompts/get", { name: "pr" }, { headers: { "mcp-name": "pr" } }),
         await call("events/list"),
-        await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }),
-        await call("events/unsubscribe", { name: "x", arguments: {}, delivery: {} }),
+        await call("events/subscribe", { name: "x", arguments: {}, delivery: {} }, NAMED_X),
+        await call("events/unsubscribe", { name: "x", arguments: {}, delivery: {} }, NAMED_X),
+        await call("events/poll", { name: "x", arguments: {}, cursor: null }, NAMED_X),
       ]
       for (const r of replies) {
         expect(r.status).toBe(200)
