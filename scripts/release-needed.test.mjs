@@ -42,7 +42,10 @@ test('no .changeset directory means nothing pending, not a crash', () => {
 test('the Release workflow runs its job only behind the gate, and skips only on an explicit no', async () => {
   const { readFileSync } = await import('node:fs')
   const wf = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
-  assert.match(wf, /\n  release:\n    name: Version or publish\n    needs: gate\n    if: \$\{\{ needs\.gate\.outputs\.run == 'true' \}\}\n/)
+  // The release job skips only when the gate succeeded AND said no; a failed gate still releases.
+  assert.match(wf, /\n  release:\n    name: Version or publish\n    needs: gate\n(    #.*\n)*    if: \$\{\{ !cancelled\(\) && \(needs\.gate\.result != 'success' \|\| needs\.gate\.outputs\.run == 'true'\) \}\}\n/)
+  // The gate runs plain node (no pnpm): the package-manager cache must stay off.
+  assert.match(wf, /gate:[\s\S]*?actions\/setup-node@v5\n        with:\n          node-version: 22\n(          #.*\n)*          package-manager-cache: false\n/)
   assert.match(wf, /\[ "\$EVENT" != "workflow_dispatch" \] && \[ "\$CHANGESETS" = "false" \] && \[ "\$UNPUBLISHED" = "false" \]/)
 })
 

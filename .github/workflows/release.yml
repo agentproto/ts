@@ -56,6 +56,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          # Plain node, no pnpm on this job: without this, setup-node v5 reads
+          # packageManager (pnpm) and fails looking for the pnpm executable.
+          package-manager-cache: false
       - name: Is a changeset pending?
         id: changesets
         continue-on-error: true
@@ -85,7 +88,9 @@ jobs:
   release:
     name: Version or publish
     needs: gate
-    if: ${{ needs.gate.outputs.run == 'true' }}
+    # Skip only when the gate explicitly said "nothing to release". If the gate
+    # itself failed (runner, setup step), release anyway: never skip when unsure.
+    if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
     runs-on: ubuntu-latest
     # Must cover the worst case of BOTH LLM ladders running every lane to its
     # own ceiling. Notes: cloud-primary 45 + free 20 + free-fallback 20 +
