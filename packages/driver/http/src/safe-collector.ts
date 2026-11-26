@@ -389,13 +389,17 @@ function pinnedNodeGet(
     const client = url.protocol === "https:" ? https : http
     const pinnedLookup = createPinnedLookup(addresses)
 
+    const bareHost = url.hostname.replace(/^\[|\]$/g, "")
+    const hasAcceptEncoding = Object.keys(headers).some((k) => k.toLowerCase() === "accept-encoding")
+    const reqHeaders = hasAcceptEncoding ? headers : { ...headers, "accept-encoding": "identity" }
+
     const req = client.request(
       url,
       {
         method: "GET",
-        headers,
+        headers: reqHeaders,
         lookup: pinnedLookup,
-        ...(url.protocol === "https:" ? { servername: url.hostname } : {}),
+        ...(url.protocol === "https:" && isIP(bareHost) === 0 ? { servername: bareHost } : {}),
         signal,
       },
       (res) => {
