@@ -454,6 +454,7 @@ import type { MemoryScope, MemoryStore } from "@agentproto/memory"
 import type { Grant } from "@agentproto/policy"
 import {
   memoryProjectionEnabled,
+  shouldDisableNativeMemory,
   memoryStoreAt as defaultMemoryStoreAt,
   resolveMemoryStoreRoot,
   type AgentMemoryBinding,
@@ -6182,6 +6183,9 @@ async function spawnAgentSessionOnce(
           : {}),
         // AIP-72 native-dir inject (decision above), the driver's channel.
         ...(memoryProjection ? { memoryProjection } : {}),
+        ...((await shouldDisableNativeMemory(memoryProjection !== undefined))
+          ? { disableNativeMemory: true }
+          : {}),
         onActivity,
       }
     }

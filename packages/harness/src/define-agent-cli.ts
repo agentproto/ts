@@ -789,6 +789,11 @@ export function createAgentCliRuntime(
         if (nativeMemoryDir) {
           isolatedSettings.autoMemoryDirectory = nativeMemoryDir
           nativeMemoryWritePath = nativeMemoryDir
+        } else if (opts?.disableNativeMemory === true && !memoryProjection) {
+          // Unbound session, operator asked for no private notes: a lesson the
+          // harness would file in a dir that dies with the session goes
+          // through the shared memory tools instead.
+          isolatedSettings.autoMemoryEnabled = false
         }
         writeFileSync(
           join(claudeConfigDir, "settings.json"),

@@ -10,6 +10,7 @@
  * names a files root.
  */
 
+import { loadConfig } from "./config.js"
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import type { MemoryConfig } from "@agentproto/agent"
@@ -126,4 +127,19 @@ export function memoryStoreAt(root: string): MemoryStore {
     stores.set(key, store)
   }
   return store
+}
+
+/**
+ * True when the harness's own auto memory must be switched off for a session:
+ * the operator set `memory.harnessAutoMemory` to `"off"` and the session
+ * carries no native-dir projection (a projected session already has its
+ * native dir captured back as proposals). One decision for spawn and respawn.
+ */
+export async function shouldDisableNativeMemory(projected: boolean): Promise<boolean> {
+  if (projected) return false
+  try {
+    return (await loadConfig()).memory?.harnessAutoMemory === "off"
+  } catch {
+    return false
+  }
 }

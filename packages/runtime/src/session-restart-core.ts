@@ -52,7 +52,7 @@ import { adapterProviderField, effectiveAdapterProvider } from "./model-wire.js"
 import { resolveContextContinuityPolicy, type ContextContinuityPolicy } from "./context-continuity.js"
 import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
 import { carryAgentIdentityMeta, stageSpawningCaller } from "./spawning-caller-context.js"
-import { memoryStoreAt as defaultMemoryStoreAt } from "./memory-stores.js"
+import { memoryStoreAt as defaultMemoryStoreAt, shouldDisableNativeMemory } from "./memory-stores.js"
 import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
 import {
   adapterConfigDirFor,
@@ -1691,6 +1691,9 @@ async function restartAgentSessionOnce(
       ...(prev.permissionHold ? { permissionHold: true } : {}),
       // AIP-72 native-dir inject, recomputed for the restarted id.
       ...(memoryProjection ? { memoryProjection } : {}),
+      ...((await shouldDisableNativeMemory(memoryProjection !== undefined))
+        ? { disableNativeMemory: true }
+        : {}),
       env: {
         ...cloudRestartEnv,
         [SESSION_ID_ENV]: restartedSessionId,

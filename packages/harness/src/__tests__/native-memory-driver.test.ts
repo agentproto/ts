@@ -151,6 +151,29 @@ describe("claude-code native memory projection (driver)", () => {
     expect(readFileSync(join(configDir, ".agentproto-memory.json"), "utf8")).toBe(snap)
   })
 
+  it("switches auto memory off for an unbound session when asked", async () => {
+    const runtime = createAgentCliRuntime(defineHarness(claudeCode()))
+    await runtime.start({ cwd: repo, configDir, disableNativeMemory: true })
+    const settings = JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8"))
+    expect(settings.autoMemoryEnabled).toBe(false)
+    expect(settings.autoMemoryDirectory).toBeUndefined()
+  })
+
+  it("leaves auto memory alone by default, and never switches it off under a projection", async () => {
+    const runtime = createAgentCliRuntime(defineHarness(claudeCode()))
+    await runtime.start({ cwd: repo, configDir })
+    expect(JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8")).autoMemoryEnabled).toBeUndefined()
+    await runtime.start({
+      cwd: repo,
+      configDir,
+      disableNativeMemory: true,
+      memoryProjection: { items, digest: DIGEST },
+    })
+    const settings = JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8"))
+    expect(settings.autoMemoryEnabled).toBeUndefined()
+    expect(settings.autoMemoryDirectory).toBe(join(configDir, "memory"))
+  })
+
   it("falls back to the system prompt with CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", async () => {
     const runtime = createAgentCliRuntime(defineHarness(claudeCode()))
     await runtime.start({
