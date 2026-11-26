@@ -45,6 +45,7 @@ const DRAWING = [
   `${ESC}]8;;https://example.com${ST}link${ESC}]8;;${ST}`,
   `${ESC}_Ga=T,f=100,t=f,i=7,c=10,r=4;L3RtcC9hLnBuZw==${ST}`, // image transmit
   "plain text, café ✓",
+  `${ESC}[0n`, // status reply ("ready"), not a request: kept on purpose
 ]
 
 describe("stripTerminalQueries", () => {
