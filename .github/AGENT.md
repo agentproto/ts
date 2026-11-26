@@ -167,9 +167,12 @@ from a flow.
   secrets; no code change.
 - `secrets.OPENCODE_GO_API_KEY_HODL` (optional): Go workspace key, read before
   `OPENCODE_GO_API_KEY` when a lane's model is `opencode-go/*`.
-- `secrets.OPENCODE_GO_API_KEY`: Go subscription key used by the other agent
-  workflows (release notes, docs check, manual review). Not read by pr-review
-  or pr-fix. The `opencode-developerws003` (ws03) profile is not used by CI.
+- `secrets.OPENCODE_GO_API_KEY`: Go subscription key. It is the FIRST rung of
+  the review credential ladders (`credential-ladder` in ci.yml and
+  agentic-review-manual.yml, as `OPENCODE_GO_API_KEY_DEFAULT`), ahead of the Zen
+  keys, because the free Zen ids answer FreeUsageLimitError on every Zen key
+  (2026-11-26). Also used by the other agent workflows (release notes, docs
+  check). Not read by pr-fix.
 - `secrets.ANTHROPIC_API_KEY`: legacy; no longer used by pr-review / pr-fix.
 - `vars.BOT_APP_ID` + `secrets.BOT_APP_PRIVATE_KEY` — GitHub App; mints a token
   so the bot acts under its own identity with `contents`/`pull-requests` write.

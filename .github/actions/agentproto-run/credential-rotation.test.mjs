@@ -383,7 +383,7 @@ test("action.yml runs the driver through run-with-rotation.mjs with the ladder",
   assert.match(action, /LANE_MODEL: \$\{\{ inputs\.model \}\}/)
 })
 
-test("ci.yml and the manual review rotate Zen keys, then Go flash on a Go key", () => {
+test("ci.yml and the manual review try the default Go key first, then Zen keys, then the other Go keys", () => {
   const lanes = [
     [read(".github/workflows/ci.yml"), "reviewer-agentproto"],
     [read(".github/workflows/ci.yml"), "reviewer-agentproto-opencode"],
@@ -396,11 +396,15 @@ test("ci.yml and the manual review rotate Zen keys, then Go flash on a Go key", 
     const go = ladder.filter(e => e.route === "opencode-go")
     assert.ok(zen.length >= 2, `${id}: at least two Zen keys`)
     assert.ok(go.length >= 1, `${id}: a Go key`)
-    assert.ok(ladder.indexOf(zen.at(-1)) < ladder.indexOf(go[0]), `${id}: Zen keys before the Go keys`)
-    // ws01 hodl, then ws01 agentik, then the legacy key whose org is unknown.
+    // The free Zen ids hit FreeUsageLimitError on every Zen key (2026-11-26), so
+    // the default Go key leads; the Zen keys and the other Go keys follow.
+    assert.equal(ladder[0].keyEnv, "OPENCODE_GO_API_KEY_DEFAULT", `${id}: the default Go key comes first`)
+    const restGo = go.slice(1)
+    assert.ok(restGo.length >= 1, `${id}: other Go keys after the Zen keys`)
+    assert.ok(ladder.indexOf(zen.at(-1)) < ladder.indexOf(restGo[0]), `${id}: Zen keys before the other Go keys`)
     assert.deepEqual(
       go.map(g => g.keyEnv),
-      ["OPENCODE_GO_API_KEY_HODL", "OPENCODE_GO_API_KEY_WS01", "OPENCODE_GO_API_KEY_DEFAULT"],
+      ["OPENCODE_GO_API_KEY_DEFAULT", "OPENCODE_GO_API_KEY_HODL", "OPENCODE_GO_API_KEY_WS01"],
       `${id}: Go key order`,
     )
     for (const g of go) {

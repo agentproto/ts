@@ -94,12 +94,12 @@ jobs:
         with:
           adapter: ${{ steps.review.outputs.adapter }}
           credential-ladder: |
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_HODL opencode
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
-            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           auth-mode: ${{ steps.review.outputs.auth-mode }}
           # Credential chosen by the resolved model's route, same rule as ci.yml.
           # NB this dispatch path does NOT run the metered-model guard (it is an

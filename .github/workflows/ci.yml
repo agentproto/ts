@@ -1407,16 +1407,19 @@ jobs:
           # Zen keys fund the lane's free model; Go keys run Go flash (a metered
           # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
           # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
-          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
-          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, _DEFAULT =
+          # OPENCODE_GO_API_KEY. _DEFAULT goes FIRST: on 2026-11-26 the free Zen ids
+          # answered FreeUsageLimitError on every Zen key (even a new one), so a
+          # review spent ~50 s on dead Zen rungs before reaching a Go key. The
+          # Zen and other Go keys stay behind it, in their old order.
           # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
           credential-ladder: |
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_HODL opencode
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
-            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           # The key authenticates OpenCode. It is selected by the resolved
           # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a
           # Zen key). The resolver step above fails closed unless the model is
@@ -1872,16 +1875,19 @@ jobs:
           # Zen keys fund the lane's free model; Go keys run Go flash (a metered
           # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
           # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
-          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
-          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, _DEFAULT =
+          # OPENCODE_GO_API_KEY. _DEFAULT goes FIRST: on 2026-11-26 the free Zen ids
+          # answered FreeUsageLimitError on every Zen key (even a new one), so a
+          # review spent ~50 s on dead Zen rungs before reaching a Go key. The
+          # Zen and other Go keys stay behind it, in their old order.
           # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
           credential-ladder: |
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_HODL opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
-            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
