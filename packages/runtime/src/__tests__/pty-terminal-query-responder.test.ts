@@ -30,7 +30,7 @@ const size = { cols: 120, rows: 40 }
 describe("TerminalQueryScanner", () => {
   it("reports each query and removes it from the stripped output", () => {
     const scanner = new TerminalQueryScanner()
-    const { queries, stripped } = scanner.feed(
+    const { queries, withoutQueries: stripped } = scanner.feed(
       Buffer.from(`hi${ESC}[1mbold${STARTUP_PROBE}${ESC}[0m`, "latin1"),
     )
     expect(queries).toEqual([`${ESC}[>0q`, `${ESC}[?u`, `${ESC}]7501;?\x07`, `${ESC}[c`])
@@ -46,7 +46,7 @@ describe("TerminalQueryScanner", () => {
       const second = scanner.feed(Buffer.from(whole.slice(cut), "latin1"))
       expect([...first.queries, ...second.queries]).toEqual([probe, `${ESC}[c`])
       expect(
-        Buffer.concat([first.stripped, second.stripped]).toString("latin1"),
+        Buffer.concat([first.withoutQueries, second.withoutQueries]).toString("latin1"),
       ).toBe("a b")
     }
   })
@@ -61,7 +61,7 @@ describe("TerminalQueryScanner", () => {
       const a = scanner.feed(bytes.subarray(0, cut))
       const b = scanner.feed(bytes.subarray(cut))
       expect(a.queries.length + b.queries.length).toBe(0)
-      expect(Buffer.concat([a.stripped, b.stripped]).equals(bytes)).toBe(true)
+      expect(Buffer.concat([a.withoutQueries, b.withoutQueries]).equals(bytes)).toBe(true)
     }
   })
 
@@ -70,22 +70,40 @@ describe("TerminalQueryScanner", () => {
     const payload = "A".repeat(4096)
     const head = scanner.feed(Buffer.from(`${ESC}_Ga=T,f=100;${payload}`, "latin1"))
     // Everything past the hold limit is already out, before the sequence ends.
-    expect(head.stripped.length).toBe(`${ESC}_Ga=T,f=100;${payload}`.length)
+    expect(head.withoutQueries.length).toBe(`${ESC}_Ga=T,f=100;${payload}`.length)
     const tail = scanner.feed(Buffer.from(`${ST}x`, "latin1"))
-    expect(tail.stripped.toString("latin1")).toBe(`${ST}x`)
+    expect(tail.withoutQueries.toString("latin1")).toBe(`${ST}x`)
   })
 
   it("lets an ESC end an unfinished sequence", () => {
     const scanner = new TerminalQueryScanner()
-    const { queries, stripped } = scanner.feed(Buffer.from(`${ESC}]0;tit${ESC}[c!`, "latin1"))
+    const { queries, withoutQueries: stripped } = scanner.feed(Buffer.from(`${ESC}]0;tit${ESC}[c!`, "latin1"))
     expect(queries).toEqual([`${ESC}[c`])
     expect(stripped.toString("latin1")).toBe(`${ESC}]0;tit!`)
+  })
+
+  it("holds back the same bytes in both streams", () => {
+    const scanner = new TerminalQueryScanner()
+    const a = scanner.feed(Buffer.from(`x${ESC}[3`, "latin1"))
+    expect(a.withQueries.toString("latin1")).toBe("x")
+    expect(a.withoutQueries.toString("latin1")).toBe("x")
+    const b = scanner.feed(Buffer.from(`1mred${ESC}[c`, "latin1"))
+    expect(b.withQueries.toString("latin1")).toBe(`${ESC}[31mred${ESC}[c`)
+    expect(b.withoutQueries.toString("latin1")).toBe(`${ESC}[31mred`)
+  })
+
+  it("releases a held sequence on flush", () => {
+    const scanner = new TerminalQueryScanner()
+    scanner.feed(Buffer.from(`${ESC}]0;title${ESC}`, "latin1"))
+    expect(scanner.flush().toString("latin1")).toBe(`${ESC}]0;title${ESC}`)
+    expect(scanner.flush().byteLength).toBe(0)
+    expect(scanner.feed(Buffer.from("ok")).withoutQueries.toString()).toBe("ok")
   })
 
   it("returns the input buffer when there is nothing to remove", () => {
     const scanner = new TerminalQueryScanner()
     const input = Buffer.from(`plain ${ESC}[31mred`)
-    expect(scanner.feed(input).stripped).toBe(input)
+    expect(scanner.feed(input).withoutQueries).toBe(input)
   })
 })
 
@@ -161,7 +179,7 @@ describe("resolveTerminalQueryOptions", () => {
   it("ignores unreadable values", () => {
     expect(
       resolveTerminalQueryOptions(
-        { terminalCellSize: "big", terminalName: "bad\x1bname" },
+        { terminalCellSize: "0x20", terminalName: "bad\x1bname" },
         { AGENTPROTO_PTY_QUERIES: "sometimes", AGENTPROTO_PTY_GRAPHICS: "maybe" },
       ),
     ).toEqual({ mode: "auto", profile: DEFAULT_TERMINAL_PROFILE })
@@ -171,6 +189,7 @@ describe("resolveTerminalQueryOptions", () => {
 describe("PTY sessions answer terminal queries", () => {
   function setup(terminalQueries?: TerminalQueryOptions) {
     let emit: (data: string) => void = () => {}
+    let exit: (evt: { exitCode: number }) => void = () => {}
     const written: string[] = []
     const resizes: unknown[][] = []
     const factory: PtyFactory = (): PtyProcess => ({
@@ -185,7 +204,9 @@ describe("PTY sessions answer terminal queries", () => {
       onData: handler => {
         emit = handler
       },
-      onExit: () => {},
+      onExit: handler => {
+        exit = handler
+      },
     })
     const registry = createSessionsRegistry({
       persist: false,
@@ -201,17 +222,21 @@ describe("PTY sessions answer terminal queries", () => {
     })
     const attach = (answersQueries?: boolean) => {
       const received: Buffer[] = []
+      const flagged: string[] = []
       const handle = registry.attachPty(
         desc.id,
         { cols: 120, rows: 40 },
-        c => received.push(c),
+        (c, info) => {
+          received.push(c)
+          if (info?.carriesQueries) flagged.push(c.toString("latin1"))
+        },
         () => {},
         answersQueries === undefined ? undefined : { answersQueries },
       )
       expect(handle).not.toBeNull()
-      return { handle: handle!, text: () => Buffer.concat(received).toString("latin1") }
+      return { handle: handle!, flagged, text: () => Buffer.concat(received).toString("latin1") }
     }
-    return { emit: (s: string) => emit(s), written, resizes, attach }
+    return { emit: (s: string) => emit(s), exit: () => exit({ exitCode: 0 }), written, resizes, attach }
   }
 
   it("answers the startup probe when no terminal is attached", () => {
@@ -247,6 +272,42 @@ describe("PTY sessions answer terminal queries", () => {
     older.handle.detach()
     emit(`${ESC}[c`)
     expect(written).toEqual([`${ESC}[?62;22c`])
+  })
+
+  it("keeps every client's stream whole when the answering client changes mid-sequence", () => {
+    const { emit, attach } = setup()
+    const older = attach()
+    const latest = attach()
+    emit(`a${ESC}[3`)
+    latest.handle.detach() // `older` answers from now on
+    emit(`1mb`)
+    expect(older.text()).toBe(`a${ESC}[31mb`)
+    expect(latest.text()).toBe("a")
+    const newest = attach()
+    emit(`c${ESC}[`)
+    attach().handle.detach() // a client comes and goes mid-sequence
+    emit(`0m`)
+    expect(older.text()).toBe(`a${ESC}[31mbc${ESC}[0m`)
+    expect(newest.text().endsWith(`c${ESC}[0m`)).toBe(true)
+  })
+
+  it("tells the transport which chunks carry queries for its client", () => {
+    const { emit, attach } = setup()
+    const older = attach()
+    const latest = attach()
+    emit(`draw`)
+    emit(`x${ESC}[c`)
+    expect(latest.flagged).toEqual([`x${ESC}[c`])
+    expect(older.flagged).toEqual([])
+  })
+
+  it("delivers held bytes before the exit", () => {
+    const { emit, exit, attach } = setup()
+    const viewer = attach(false)
+    emit(`bye${ESC}]0;tit`)
+    expect(viewer.text()).toBe("bye")
+    exit()
+    expect(viewer.text()).toBe(`bye${ESC}]0;tit`)
   })
 
   it("answers itself when the attached clients do not answer queries", () => {

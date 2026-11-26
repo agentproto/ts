@@ -55,6 +55,7 @@ import {
   pixelSizeOf,
   DEFAULT_TERMINAL_PROFILE,
   TerminalQueryScanner,
+  type ScannedChunk,
   type TerminalQueryOptions,
 } from "./terminal-query-responder.js"
 import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
@@ -5782,7 +5783,10 @@ export interface SessionsRegistry {
   attachPty(
     id: string,
     initial: { cols: number; rows: number },
-    onData: (chunk: Buffer) => void,
+    /** `carriesQueries`: the chunk holds terminal queries this subscriber
+     *  is the one expected to answer; a transport must not drop it (the
+     *  child would wait for a reply that never comes). */
+    onData: (chunk: Buffer, info?: { carriesQueries: boolean }) => void,
     onExit: (event: { exitCode: number; signal?: number }) => void,
     /** `answersQueries` (default true): this client is a terminal that
      *  replies to the queries the child sends. The most recently attached
@@ -8945,9 +8949,11 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
-  /** `forOthers` is `chunk` without its terminal queries: what every
-   *  subscriber except the query-answering one receives. */
-  const appendBytes = (rt: SessionRuntime, chunk: Buffer, forOthers?: Buffer): void => {
+  /** `scanned` is what the query scanner released for `chunk` (see
+   *  `TerminalQueryScanner`): the query-answering subscriber receives its
+   *  `withQueries` stream, every other subscriber `withoutQueries`. The
+   *  ring buffer and the transcript always keep the raw chunk. */
+  const appendBytes = (rt: SessionRuntime, chunk: Buffer, scanned?: ScannedChunk): void => {
     // Durable copy BEFORE the RAM ring drops anything — same ordering
     // rule transcript-writer.ts follows for agent-cli StreamEvents.
     terminalTranscriptWriter.appendChunk(rt.desc.id, chunk)
@@ -8962,7 +8968,11 @@ export function createSessionsRegistry(opts?: {
     }
     rt.desc.lastOutputAt = new Date().toISOString()
     if (rt.conversationTerminal === true) sniffConversationTerminalChunk(rt, chunk)
-    rt.emitter.emit("data", chunk, forOthers ?? chunk)
+    if (scanned) {
+      rt.emitter.emit("data", scanned.withQueries, scanned.withoutQueries, scanned.queries.length > 0)
+    } else {
+      rt.emitter.emit("data", chunk, chunk, false)
+    }
   }
 
   /**
@@ -14119,13 +14129,11 @@ export function createSessionsRegistry(opts?: {
           rt.bracketedPaste ?? { mode: "unknown", carry: "" },
           buf
         )
-        let forOthers: Buffer | undefined
-        if (rt.queryScanner) {
-          const { queries, stripped } = rt.queryScanner.feed(buf)
-          forOthers = stripped
-          if (queries.length > 0) answerQueriesWithoutTerminal(rt, queries)
+        const scanned = rt.queryScanner?.feed(buf)
+        if (scanned && scanned.queries.length > 0) {
+          answerQueriesWithoutTerminal(rt, scanned.queries)
         }
-        appendBytes(rt, buf, forOthers)
+        appendBytes(rt, buf, scanned)
         notePtyPaint(rt, chunk)
       })
       pty.onExit(evt => {
@@ -14157,6 +14165,10 @@ export function createSessionsRegistry(opts?: {
               `(code=${evt.exitCode}${signalPart}): ${rt.desc.lastError}`,
           )
         }
+        // Bytes the query scanner still holds (an unfinished sequence at
+        // the very end of the output) go to the clients before the exit.
+        const held = rt.queryScanner?.flush()
+        if (held && held.byteLength > 0) rt.emitter.emit("data", held, held, false)
         rt.emitter.emit("exit", evt)
         rt.emitter.emit("status", rt.desc.status)
         void terminalTranscriptWriter.close(rt.desc.id)
@@ -15641,8 +15653,10 @@ export function createSessionsRegistry(opts?: {
       const answersQueries = options?.answersQueries ?? true
       rt.ptySubscribers.set(subId, { cols: initial.cols, rows: initial.rows, answersQueries })
       reconcilePtySize(rt)
-      const dataHandler = (chunk: Buffer, withoutQueries: Buffer): void =>
-        onData(queryAnsweringSubscriber(rt) === subId ? chunk : withoutQueries)
+      const dataHandler = (withQueries: Buffer, withoutQueries: Buffer, hasQueries: boolean): void => {
+        if (queryAnsweringSubscriber(rt) === subId) onData(withQueries, { carriesQueries: hasQueries })
+        else onData(withoutQueries, { carriesQueries: false })
+      }
       const exitHandler = (evt: {
         exitCode: number
         signal?: number

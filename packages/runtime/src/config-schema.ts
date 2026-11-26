@@ -80,6 +80,7 @@ import { DEFAULT_SPAWN_DEDUPE, SPAWN_DEDUPE_ENV } from "./spawn-dedupe.js"
 import { DEFAULT_ATTENTION_DELAY_SEC, ATTENTION_DELAY_ENV } from "./session-presence.js"
 import {
   TERMINAL_CELL_SIZE_ENV,
+  TERMINAL_CELL_SIZE_PATTERN,
   TERMINAL_GRAPHICS_ENV,
   TERMINAL_NAME_ENV,
   TERMINAL_NAME_PATTERN,
@@ -607,7 +608,7 @@ const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
     eventsDir: z.string().optional(),
     terminalQueries: z.enum(["auto", "off"]).optional(),
     terminalGraphics: z.boolean().optional(),
-    terminalCellSize: z.string().regex(/^\d{1,3}x\d{1,3}$/).optional(),
+    terminalCellSize: z.string().regex(TERMINAL_CELL_SIZE_PATTERN).optional(),
     terminalName: z.string().regex(TERMINAL_NAME_PATTERN).optional(),
   })
   .passthrough()
@@ -1628,7 +1629,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   },
   {
     path: "sessions.terminalCellSize",
-    schema: z.string().regex(/^\d{1,3}x\d{1,3}$/),
+    schema: z.string().regex(TERMINAL_CELL_SIZE_PATTERN),
     apply: "restart",
     env: TERMINAL_CELL_SIZE_ENV,
     writable: true,

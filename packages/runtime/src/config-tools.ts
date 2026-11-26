@@ -58,6 +58,16 @@ import {
 import { loadSpawnAttach, SPAWN_ATTACH_ENV, parseSpawnAttachMode } from "./spawn-attach.js"
 import { loadSpawnDedupe, SPAWN_DEDUPE_ENV, parseSpawnDedupeMode } from "./spawn-dedupe.js"
 import { resolveAttentionDelaySec, ATTENTION_DELAY_ENV } from "./session-presence.js"
+import {
+  parseBool,
+  parseCellSize,
+  parseName,
+  parseQueryMode,
+  TERMINAL_CELL_SIZE_ENV,
+  TERMINAL_GRAPHICS_ENV,
+  TERMINAL_NAME_ENV,
+  TERMINAL_QUERIES_ENV,
+} from "./terminal-query-responder.js"
 import { loadProvenanceWrapGh, PROVENANCE_WRAP_GH_ENV, parseWrapGh } from "./gh-provenance-shim.js"
 import { loadAgentsMdInlineMaxKb } from "./agents-md.js"
 import type { RuntimeEvents } from "./events.js"
@@ -294,6 +304,14 @@ const ENV_PARSERS: Record<string, (raw: string) => unknown> = {
     const n = Number(raw)
     return Number.isFinite(n) && n >= 0 ? n : undefined
   },
+  [TERMINAL_QUERIES_ENV]: parseQueryMode,
+  [TERMINAL_GRAPHICS_ENV]: parseBool,
+  // Same "<w>x<h>" string form as the config value, once validated.
+  [TERMINAL_CELL_SIZE_ENV]: raw => {
+    const cell = parseCellSize(raw)
+    return cell ? `${cell.width}x${cell.height}` : undefined
+  },
+  [TERMINAL_NAME_ENV]: parseName,
   AGENTPROTO_TOKEN: parseNonEmptyString,
   AGENTPROTO_WORKTREES_ROOT: parseNonEmptyString,
   AGENTPROTO_IDLE_REAP_AFTER_MS: parsePositiveInt,

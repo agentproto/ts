@@ -6664,9 +6664,12 @@ function handlePtyWebSocket(
   const handle = registry.attachPty(
     sessionId,
     { cols, rows },
-    chunk => {
+    (chunk, info) => {
       if (ws.readyState !== ws.OPEN) return
-      if (ws.bufferedAmount > BACKPRESSURE_BYTES) return // drop
+      // Drop under backpressure, except a chunk carrying terminal queries
+      // for this client to answer: it is the only one that receives them,
+      // and the child waits for the reply.
+      if (ws.bufferedAmount > BACKPRESSURE_BYTES && !info?.carriesQueries) return // drop
       ws.send(
         JSON.stringify({ kind: "data", b64: chunk.toString("base64") }),
       )

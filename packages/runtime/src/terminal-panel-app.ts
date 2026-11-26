@@ -134,7 +134,9 @@ export function makeTerminalPanelApp(
       const rows = input.rows ?? 24
       return {
         sessionId,
-        wsUrl: `${ops.wsBaseUrl}/sessions/${encodeURIComponent(sessionId)}/pty?cols=${cols}&rows=${rows}`,
+        // The panel renders text without a terminal emulator, so it never
+        // answers the child's terminal queries (`answers=0`, see attachPty).
+        wsUrl: `${ops.wsBaseUrl}/sessions/${encodeURIComponent(sessionId)}/pty?cols=${cols}&rows=${rows}&answers=0`,
         token: ops.token ?? "",
         cols,
         rows,

@@ -78,25 +78,32 @@ export interface TerminalQueryConfig {
 /** Printable ASCII only: the name is written inside a DCS string. */
 export const TERMINAL_NAME_PATTERN = /^[\x20-\x7e]{1,64}$/
 
-function parseName(raw: string | undefined): string | undefined {
+export function parseName(raw: string | undefined): string | undefined {
   const v = raw?.trim()
   return v && TERMINAL_NAME_PATTERN.test(v) ? v : undefined
 }
 
-function parseCellSize(raw: string | undefined): { width: number; height: number } | undefined {
-  const m = raw ? /^\s*(\d{1,3})\s*x\s*(\d{1,3})\s*$/i.exec(raw) : null
-  if (!m) return undefined
-  const width = Number(m[1])
-  const height = Number(m[2])
-  return width > 0 && height > 0 ? { width, height } : undefined
+/** `<width>x<height>` in pixels, each 1 to 999. */
+export const TERMINAL_CELL_SIZE_PATTERN = /^[1-9]\d{0,2}x[1-9]\d{0,2}$/
+
+export function parseCellSize(raw: string | undefined): { width: number; height: number } | undefined {
+  const v = raw?.trim().toLowerCase()
+  if (!v || !TERMINAL_CELL_SIZE_PATTERN.test(v)) return undefined
+  const [width, height] = v.split("x").map(Number) as [number, number]
+  return { width, height }
 }
 
-function parseBool(raw: string | undefined): boolean | undefined {
+export function parseBool(raw: string | undefined): boolean | undefined {
   const v = raw?.trim().toLowerCase()
   if (!v) return undefined
   if (["1", "true", "yes", "on"].includes(v)) return true
   if (["0", "false", "no", "off"].includes(v)) return false
   return undefined
+}
+
+export function parseQueryMode(raw: string | undefined): TerminalQueryMode | undefined {
+  const v = raw?.trim().toLowerCase()
+  return v === "auto" || v === "off" ? v : undefined
 }
 
 /** Environment variable > config field > default, per field. Unreadable
@@ -105,11 +112,7 @@ export function resolveTerminalQueryOptions(
   config: TerminalQueryConfig | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): TerminalQueryOptions {
-  const modeOf = (raw: string | undefined): TerminalQueryMode | undefined => {
-    const v = raw?.trim().toLowerCase()
-    return v === "auto" || v === "off" ? v : undefined
-  }
-  const mode = modeOf(env[TERMINAL_QUERIES_ENV]) ?? modeOf(config?.terminalQueries) ?? "auto"
+  const mode = parseQueryMode(env[TERMINAL_QUERIES_ENV]) ?? parseQueryMode(config?.terminalQueries) ?? "auto"
   const graphics =
     parseBool(env[TERMINAL_GRAPHICS_ENV]) ??
     config?.terminalGraphics ??
@@ -187,28 +190,45 @@ const MAX_HELD = 512
 
 type State = "ground" | "esc" | "escInt" | "csi" | "osc" | "str" | "oscEsc" | "strEsc"
 
+/** What {@link TerminalQueryScanner.feed} returns for one chunk. */
+export interface ScannedChunk {
+  /** Complete queries ended by this chunk, in order. */
+  queries: string[]
+  /** The bytes released by this chunk, queries included: what the client
+   *  answering the queries receives. */
+  withQueries: Buffer
+  /** The same bytes without the queries: what every other client receives. */
+  withoutQueries: Buffer
+}
+
 /**
  * Splits a PTY output stream into escape sequences, keeping its state
  * between chunks, so a query cut in two by the PTY read is still found.
  *
- * `feed` returns the complete queries ended by this chunk and `stripped`,
- * the chunk without those queries. Bytes of a sequence still incomplete at
- * the end of a chunk are held until it completes (or grows past
- * `MAX_HELD`, then they are passed on as they come): they belong in
- * `stripped` only if the sequence turns out not to be a query.
+ * Bytes of a sequence still incomplete at the end of a chunk are held
+ * until it completes (or grows past `MAX_HELD`, then they are passed on as
+ * they come). Both output streams hold back exactly the same bytes, so a
+ * client that moves from one stream to the other (the answering client
+ * detaches, a newer one attaches) never misses nor repeats a byte.
+ * `flush` releases what is held, for when the stream ends.
  */
 export class TerminalQueryScanner {
   private state: State = "ground"
   private seq = ""
   private overflow = false
 
-  feed(chunk: Buffer): { queries: string[]; stripped: Buffer } {
+  feed(chunk: Buffer): ScannedChunk {
     const text = chunk.toString("latin1")
     if (this.state === "ground" && !text.includes(ESC)) {
-      return { queries: [], stripped: chunk }
+      return { queries: [], withQueries: chunk, withoutQueries: chunk }
     }
     const queries: string[] = []
+    let full = ""
     let out = ""
+    const emit = (bytes: string): void => {
+      full += bytes
+      out += bytes
+    }
     let i = 0
     const startSequence = (): void => {
       this.seq = ESC
@@ -218,8 +238,9 @@ export class TerminalQueryScanner {
     const finish = (): void => {
       if (!this.overflow && isTerminalQuery(this.seq)) {
         queries.push(this.seq)
+        full += this.seq
       } else if (!this.overflow) {
-        out += this.seq
+        emit(this.seq)
       }
       this.seq = ""
       this.overflow = false
@@ -227,18 +248,18 @@ export class TerminalQueryScanner {
     }
     // An ESC inside a sequence ends it unfinished: pass it on as is.
     const abandon = (): void => {
-      if (!this.overflow) out += this.seq
+      if (!this.overflow) emit(this.seq)
       this.seq = ""
       this.overflow = false
     }
     const append = (c: string): void => {
       if (this.overflow) {
-        out += c
+        emit(c)
         return
       }
       this.seq += c
       if (this.seq.length > MAX_HELD) {
-        out += this.seq
+        emit(this.seq)
         this.seq = ""
         this.overflow = true
       }
@@ -248,11 +269,11 @@ export class TerminalQueryScanner {
       if (this.state === "ground") {
         const next = text.indexOf(ESC, i)
         if (next === -1) {
-          out += text.slice(i)
+          emit(text.slice(i))
           i = text.length
           break
         }
-        out += text.slice(i, next)
+        emit(text.slice(i, next))
         startSequence()
         i = next + 1
         continue
@@ -322,7 +343,20 @@ export class TerminalQueryScanner {
           break
       }
     }
-    if (out === text) return { queries, stripped: chunk }
-    return { queries, stripped: Buffer.from(out, "latin1") }
+    const toBuffer = (bytes: string): Buffer =>
+      bytes === text ? chunk : Buffer.from(bytes, "latin1")
+    return { queries, withQueries: toBuffer(full), withoutQueries: toBuffer(out) }
+  }
+
+  /** Releases the bytes held for an unfinished sequence (none when the
+   *  stream is between sequences) and resets the scanner. They are never a
+   *  query: a query is only recognised once complete. */
+  flush(): Buffer {
+    let held = this.overflow ? "" : this.seq
+    if (this.state === "oscEsc" || this.state === "strEsc") held += ESC
+    this.state = "ground"
+    this.seq = ""
+    this.overflow = false
+    return Buffer.from(held, "latin1")
   }
 }
