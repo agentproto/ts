@@ -7,6 +7,7 @@ import {
   expandEndpoint,
   extractResponse,
   safeHttpCollector,
+  createPinnedLookup,
   isPrivateOrReservedIp,
   redactSecrets,
 } from "../index.js"
@@ -140,9 +141,28 @@ describe("safeHttpCollector — guarded execution through the real driver", () =
     expect(isPrivateOrReservedIp("100.64.0.1")).toBe(true)
     expect(isPrivateOrReservedIp("::1")).toBe(true)
     expect(isPrivateOrReservedIp("::ffff:169.254.169.254")).toBe(true)
+    expect(isPrivateOrReservedIp("0:0:0:0:0:ffff:a9fe:a9fe")).toBe(true)
+    expect(isPrivateOrReservedIp("::169.254.169.254")).toBe(true)
+    expect(isPrivateOrReservedIp("::a9fe:a9fe")).toBe(true)
+    expect(isPrivateOrReservedIp("2002:a9fe:a9fe::1")).toBe(true)
+    expect(isPrivateOrReservedIp("64:ff9b::7f00:1")).toBe(true)
+    expect(isPrivateOrReservedIp("64:ff9b::a9fe:a9fe")).toBe(true)
+    expect(isPrivateOrReservedIp("64:ff9b:1::10.0.0.1")).toBe(true)
     expect(isPrivateOrReservedIp("fc00::1")).toBe(true)
     expect(isPrivateOrReservedIp("fe80::1")).toBe(true)
     expect(isPrivateOrReservedIp("93.184.216.34")).toBe(false)
+    expect(isPrivateOrReservedIp("2606:2800:220:1:248:1893:25c8:1946")).toBe(false)
+
+    // Pinned lookup returns the exact pre-validated IP and refuses private IPs
+    const pinned = createPinnedLookup([{ address: "93.184.216.34", family: 4 }])
+    const resolved = await new Promise<{ address: unknown; family?: number }>((resolve, reject) => {
+      pinned("rebinding.example.com", {}, (err, address, family) => {
+        if (err) reject(err)
+        else resolve({ address, family })
+      })
+    })
+    expect(resolved).toEqual({ address: "93.184.216.34", family: 4 })
+    expect(() => createPinnedLookup([{ address: "169.254.169.254", family: 4 }])).toThrow(/No safe pre-validated IP/)
 
     const fetchMock = vi.fn()
     const driver = defineHttpDriver({
@@ -291,7 +311,10 @@ describe("safeHttpCollector — guarded execution through the real driver", () =
       runTool({ tool: readTool, candidates: [wrapped], input: {}, secrets: {} }),
     ).rejects.toThrow(/missing required secret 'API_KEY'/)
 
-    // Secret echoed in 401 body must be scrubbed
+    // Secret echoed in 401 body must be scrubbed in both message and stack
+    // Short secrets (<6 chars) must not mangle unrelated text
+    expect(redactSecrets("status 401 ok", { SHORT: "ok" })).toBe("status 401 ok")
+
     try {
       await runTool({
         tool: readTool,
@@ -302,8 +325,22 @@ describe("safeHttpCollector — guarded execution through the real driver", () =
       expect.unreachable("should have thrown")
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      const stack = err instanceof Error ? err.stack ?? "" : ""
       expect(msg).not.toContain(secretVal)
+      expect(stack).not.toContain(secretVal)
       expect(msg).toContain("[REDACTED]")
     }
+  })
+
+  it("refuses streaming HTTP drivers at wrap time", () => {
+    const streamingDriver = defineHttpDriver({
+      id: "stream-http",
+      name: "Stream",
+      description: "SSE driver.",
+      baseUrl: "https://api.example.com",
+      streaming: { transport: "sse" },
+      implements: [{ tool: "metrics.read", version: "1.0.0", metadata: { http: { endpoint: "/events", method: "GET" } } }],
+    })
+    expect(() => safeHttpCollector(streamingDriver)).toThrow(/not streaming transports/)
   })
 })

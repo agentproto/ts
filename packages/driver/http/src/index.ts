@@ -495,13 +495,16 @@ export { HttpDriverError }
 export {
   safeHttpCollector,
   createSafeCollectorFetch,
+  createPinnedLookup,
   assertSafeUrl,
   isPrivateOrReservedIp,
   redactSecrets,
   SafeHttpCollectorError,
   DEFAULT_MAX_RESPONSE_BYTES,
   DEFAULT_TIMEOUT_MS,
+  DEFAULT_MIN_REDACT_LENGTH,
   type SafeHttpCollectorOptions,
+  type ValidatedSafeUrl,
   type DnsAddressRecord,
   type DnsLookupFn,
 } from "./safe-collector.js"
