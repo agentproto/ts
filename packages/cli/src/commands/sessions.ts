@@ -6429,6 +6429,7 @@ async function runPtyAttach(
       stdoutTty && process.stdout.columns ? process.stdout.columns : 80
     const initialRows =
       stdoutTty && process.stdout.rows ? process.stdout.rows : 24
+    // No `answers=0` here, unlike `sessions mirror`: the real terminal answers the child's queries through the forwarded stdin.
     const wsUrl = `${endpoint.url.replace(/^http/, "ws")}/sessions/${desc.id}/pty?cols=${initialCols}&rows=${initialRows}`
 
     // Reconnect policy. close 1006 ("abnormal closure" — the daemon

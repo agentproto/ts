@@ -857,7 +857,12 @@ export interface SessionsConfig {
   /**
    * Cell size in pixels, `<width>x<height>`, that the daemon reports
    * (`CSI 14 t`, `CSI 16 t`) and writes in the PTY window size. Env var
-   * `AGENTPROTO_PTY_CELL_SIZE` > this field > `10x20`.
+   * `AGENTPROTO_PTY_CELL_SIZE` > this field > `10x20`. An approximation:
+   * the daemon does not know the real cell size of the clients. It only
+   * matters when the daemon answers (no terminal attached); an attached
+   * terminal answers these queries with its own size. The window pixel
+   * size is `cols x width` by `rows x height` of this value, whatever the
+   * clients really display.
    */
   terminalCellSize?: string
   /**

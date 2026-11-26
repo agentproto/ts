@@ -1635,7 +1635,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "daemon",
     label: "PTY cell size (px)",
-    help: "Cell size in pixels, <width>x<height>, reported to PTY children (CSI 14 t, CSI 16 t) and written in the PTY window size.",
+    help: "Cell size in pixels, <width>x<height>, reported to PTY children (CSI 14 t, CSI 16 t) and written in the PTY window size. An approximation: the daemon does not know the clients' real cell size, so it only matters when no terminal is attached (an attached terminal answers with its own size); the window pixel size is derived from it, not measured.",
     default: "10x20",
   },
   {
