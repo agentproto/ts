@@ -10,3 +10,8 @@ the AIP-74 schema vendored from the canonical registry at commit
 The schema is a draft: when the draft moves, these files move with it, in the same
 change as the parser. When `specs/canonical.lock.json` is bumped, re-copy the schema
 from `specs/resources/aip-74/draft/`.
+
+Update (usage section): `BILLING.schema.json` carries the `usage` field added by
+agentproto/agentproto#181 (draft, companion of #178). Until that pull request is
+merged the file is a copy of its branch `feat/aip-74-usage-schema`; re-copy from
+`specs/resources/aip-74/draft/` once it lands and bump the pin.

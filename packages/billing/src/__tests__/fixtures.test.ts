@@ -68,6 +68,15 @@ describe("the zod schema and BILLING.schema.json give the same verdict (no silen
     "subscription block on a pack": d => { d.offers.find((o: any) => o.price.model === "prepaid-pool").subscription = { anchor: "payment", onUpgrade: "none" } },
     "cap of zero": d => { d.conversions[0].capMinor = { amount: 0, windowSec: 60 } },
     "tax basis other": d => { d.taxBasis = "both" },
+    "usage: a category writes its own rate": d => { d.usage.categories[0].rate = 3 },
+    "usage: a category writes creditsPerUnit": d => { d.usage.categories[0].creditsPerUnit = 3 },
+    "usage: a bad margin": d => { d.usage.categories[0].margin = "free" },
+    "usage: a margin of zero": d => { d.usage.categories[0].margin = 0 },
+    "usage: a fixed cost without a currency": d => { delete d.usage.categories[2].cost.currency },
+    "usage: an unknown cost source": d => { d.usage.categories[0].cost = { source: "guess" } },
+    "usage: an empty list of categories": d => { d.usage.categories = [] },
+    "usage: an unknown key": d => { d.usage.enforcement = "shadow" },
+    "usage: a fractional floorMinor": d => { d.usage.defaults.floorMinor = 1.5 },
   }
   for (const name of FILES) {
     for (const [label, mutate] of Object.entries(mutations)) {
