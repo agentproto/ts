@@ -56,6 +56,26 @@ export const VOICE_DEFAULTS = {
     ),
   },
 
+  /**
+   * Processor pipeline (AIP-75, Processors). Budgets are measured per item on
+   * a monotonic clock and are starting points to calibrate against real
+   * traffic before they are frozen; a transformer's own `budgetMs` wins.
+   */
+  processors: {
+    budgetMs: {
+      audioIn: d(20, "one 20 ms frame must not be held longer than its own duration; to calibrate on measured traffic"),
+      audioOut: d(20, "same bound as audioIn for one 20 ms frame (50 ms for longer frames); to calibrate"),
+      transcript: d(500, "a transcript correction must finish well inside one VAD silence (700 ms); to calibrate"),
+      textOut: d(200, "reply text is chunked per brain delta; the first sentence waits on it, so it stays far below the first-audio latency; to calibrate"),
+    },
+    /** A processor is told to stop; past this it is reported `abandoned` and its result ignored. */
+    stopDeadlineMs: d(100, "bounded stop after an abort: the kit never waits longer, neither to interrupt nor to close"),
+    /** Consecutive failures or overruns after which a transformer is bypassed for the rest of the call. 0 disables. */
+    circuitBreaker: d(5, "a transformer that fails five items in a row is more likely broken than unlucky"),
+    /** Max queued items per observer; the oldest are dropped past it. */
+    observerQueueMax: d(64, "bounded read-only side channel: it must never grow with a slow observer"),
+  },
+
   cascade: {
     vad: {
       silenceEndMs: d(

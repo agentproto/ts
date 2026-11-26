@@ -7,6 +7,8 @@
  * No agent framework is imported here or anywhere in this package.
  */
 
+import type { ProcessorEvent, ProcessorStats, VoiceProcessors } from "./processors.js"
+
 /** Audio on every boundary: PCM16 little-endian, mono. */
 export interface AudioFrame {
   pcm16: ArrayBuffer
@@ -177,6 +179,11 @@ export interface VoiceHooks {
    * disabled (`idleMicMs: 0`).
    */
   onMicIdle?(info: { idleMs: number }): void | Promise<void>
+  /**
+   * Something happened to a processor (error, budget overrun, abandoned,
+   * dropped, bypassed, published). Called without waiting; a throw is ignored.
+   */
+  onProcessorEvent?(event: ProcessorEvent): void
 }
 
 export interface VoiceEmit {
@@ -201,6 +208,13 @@ export interface VoiceStartOptions {
    * swallowed: it never interrupts audio or fails the close.
    */
   onUsage?(usage: VoiceUsage): void | Promise<void>
+  /**
+   * Processors, in execution order (AIP-75, Processors). Validated when the
+   * session starts: a `ProcessorConfigError` is thrown before any socket
+   * opens. The cascade engine runs the `textOut` point; the realtime engine
+   * ignores them.
+   */
+  processors?: VoiceProcessors
   language?: string
   voiceId?: string
   /** Opaque, product-owned, documented by the provider package. */
@@ -229,6 +243,8 @@ export interface VoiceSession {
   refreshTools?(): Promise<void>
   say?(directive: string): Promise<void>
   getUsage?(): VoiceUsage | undefined
+  /** Measured time per processor (cascade engine with processors). */
+  getProcessorStats?(): Record<string, ProcessorStats>
   close(): Promise<void>
 }
 
