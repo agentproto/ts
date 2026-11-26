@@ -197,8 +197,9 @@ import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
-import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity } from "./mcp-config.js"
+import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension } from "./mcp-config.js"
 import { createHumanGate, createMrtrStateStore, defaultMrtrStateDir } from "./mcp-modern/index.js"
+import { registerServedSkills } from "./mcp-modern/skills.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
 import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { spawningCallerContext } from "./spawning-caller-context.js"
@@ -5507,6 +5508,9 @@ export async function createGateway(
       enabled: () => resolveModernEra(),
       extensions: {},
       humanGate: async () => ((await resolveHumanGate()) ? mcpHumanGate : undefined),
+      decorateServer: async server => {
+        if (await resolveSkillsExtension()) registerServedSkills(server)
+      },
     },
     orchestratorMcpServerFactory,
     loadCommandAllowlist: () => loadAllowlistEntries(workspace),

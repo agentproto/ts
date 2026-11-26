@@ -158,6 +158,15 @@ export {
   type EventsMethodsHandlers,
   type ServerDiscoverResult,
 } from "./events-methods.js"
+export {
+  registerSkillsMethods,
+  MCP_SKILLS_EXTENSION,
+  SKILL_URI_TEMPLATE,
+  SkillsListRequestSchema,
+  SkillsGetRequestSchema,
+  type SkillsMethodsHandlers,
+  type SkillFileContent,
+} from "./skills-methods.js"
 
 // ── verb registration ───────────────────────────────────────────────
 

@@ -39,12 +39,14 @@ export const FORWARDED_METHODS: ReadonlySet<string> = new Set([
   "resources/read",
   "prompts/list",
   "prompts/get",
+  "skills/list",
+  "skills/get",
 ])
 
 /** Every method this core answers: the forwarded ones plus `server/discover`, which it builds itself. */
 export const ALLOWED_METHODS: ReadonlySet<string> = new Set([...FORWARDED_METHODS, "server/discover"])
 
-/** The only results that must carry `ttlMs` + `cacheScope` (spec: server/utilities/caching). */
+/** The results that must carry `ttlMs` + `cacheScope` (spec: server/utilities/caching). */
 export const CACHE_HINT_METHODS: ReadonlySet<string> = new Set([
   "server/discover",
   "tools/list",
@@ -52,6 +54,9 @@ export const CACHE_HINT_METHODS: ReadonlySet<string> = new Set([
   "resources/list",
   "resources/templates/list",
   "resources/read",
+  // Skills extension (beta): `skills/get` has no `Mcp-Name` header, only `resources/read` does.
+  "skills/list",
+  "skills/get",
 ])
 
 /** Methods whose request must carry an `Mcp-Name` header, and the `params` member that holds the value. */
