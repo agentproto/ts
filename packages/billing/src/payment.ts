@@ -3,7 +3,8 @@
  *
  *   rail event -> verifyWebhook -> PaymentFact
  *   1. CHECK   offer, rail, currency, amount against the price (net of an
- *              exclusive tax, plus an allowed discount; zero only for a trial)
+ *              exclusive tax, plus an allowed discount; zero only for a trial);
+ *              a fact the rail marks `unsupported` is refused with its reason
  *   2. FACT    mint the fiat amount, cause = movement
  *   3. EFFECT  by price.model: prepaid-pool converts (plus bonus lot),
  *              one-time burns the fiat and gives `includes` once,
@@ -57,6 +58,8 @@ export function accountIdFor(manifest: BillingHandle, owner: Record<string, stri
 
 /** Step 1. Pure. */
 export function checkPayment(manifest: BillingHandle, fact: PaymentFact): CheckResult {
+  // The rail could not tie this money to one offer and one payer: owed, never credited.
+  if (typeof fact.unsupported === "string") return { ok: false, reason: `the rail cannot apply this payment: ${fact.unsupported || "unsupported"}` }
   const offer = manifest.derived.offers.get(fact.offerId)
   if (!offer) return { ok: false, reason: `unknown offer '${fact.offerId}'` }
   if (!manifest.rails.some(r => r.id === fact.rail)) return { ok: false, reason: `rail '${fact.rail}' is not declared` }

@@ -6,6 +6,7 @@
 import type { WalletEvent } from "@agentproto/wallet"
 import type { ClockPort, StoragePort } from "@agentproto/wallet/ports"
 import type { BillingHandle } from "./define-billing-manifest.js"
+import type { DisputeFact, RefundFact, RefundReversedFact } from "./settlement.js"
 
 /**
  * A journal event with the optional AIP-49 amendment fields. `cause` is the
@@ -36,7 +37,7 @@ export interface PeriodRecord {
   trial?: boolean
   graceEndsAt?: number
   closedAt?: number
-  closedReason?: "refunded" | "disputed" | "grace_expired" | "no_grace" | "renewed"
+  closedReason?: "refunded" | "disputed" | "grace_expired" | "no_grace" | "renewed" | "canceled" | "unpaid"
 }
 
 /** A one-time purchase that opens boolean features. */
@@ -58,7 +59,18 @@ export interface BillingStateStore {
   putAccess(a: AccessRecord): Promise<void>
   getAccess(id: string): Promise<AccessRecord | null>
   listAccess(accountId: string): Promise<AccessRecord[]>
+  /**
+   * Optional. Keep a refund, a refund reversal or a dispute that names a
+   * payment the store does not know yet (webhooks out of order). Idempotent by
+   * the fact's identity: the same fact twice is kept once.
+   */
+  deferFact?(paymentMovement: string, fact: DeferredFact): Promise<void>
+  /** Optional. Remove and return the facts kept for a payment, in any order. */
+  takeDeferred?(paymentMovement: string): Promise<DeferredFact[]>
 }
+
+/** A fact that names a payment: what `deferFact` keeps. */
+export type DeferredFact = RefundFact | RefundReversedFact | DisputeFact
 
 export interface BillingDeps {
   manifest: BillingHandle

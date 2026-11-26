@@ -139,6 +139,30 @@ export async function failRenewal(
   return next
 }
 
+/**
+ * A subscription that ended at the rail (canceled, or ended unpaid): its open
+ * period (`active` or `past_due`) closes at `at` with that reason. The
+ * includes already given stay; no other is given, and no renewal is awaited.
+ * Null when the offer has no open period for the account.
+ */
+export async function endSubscription(
+  deps: BillingDeps,
+  input: { accountId: string; offerId: string; reason: "canceled" | "unpaid"; at?: number },
+): Promise<PeriodRecord | null> {
+  const at = input.at ?? deps.clock.nowMs()
+  const open = (await deps.state.listPeriods({ accountId: input.accountId, offerId: input.offerId }))
+    .filter(p => p.status === "active" || p.status === "past_due")
+    .sort((a, b) => b.endAt - a.endAt)
+  if (open.length === 0) return null
+  let last: PeriodRecord | null = null
+  for (const p of open) {
+    const next: PeriodRecord = { ...p, status: "closed", closedAt: at, closedReason: input.reason }
+    await deps.state.putPeriod(next)
+    last ??= next
+  }
+  return last
+}
+
 /** Close every `past_due` period whose grace is over (rule 17). */
 export async function sweepGrace(deps: BillingDeps, now = deps.clock.nowMs()): Promise<PeriodRecord[]> {
   const closed: PeriodRecord[] = []
