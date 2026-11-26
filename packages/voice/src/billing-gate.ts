@@ -57,7 +57,11 @@ export interface GuardedVoiceCall {
   getUsage?(): VoiceUsage | undefined
   /** Called on `warn` and on `cutoff` (before the grace delay). */
   onFarewell?(directive: VoiceBalanceDirective): void | Promise<void>
-  /** Resolves when the call ended by itself (hang-up, mic idle), with the reason. */
+  /**
+   * Resolves when the call ended by itself (hang-up, mic idle), with the reason.
+   * Pass it: without it `guardVoiceCall` only returns on a cutoff, so a call
+   * that never reaches its cutoff would never return.
+   */
   ended?: Promise<VoiceEndReason>
 }
 

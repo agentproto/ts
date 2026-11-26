@@ -51,7 +51,7 @@ export interface HoldRef {
   createdAt: number
 }
 
-export type HoldResult = { ok: true; hold: HoldRef; replayed: boolean } | { ok: false; reason: "insufficient_funds" | "invalid_amount" }
+export type HoldResult = { ok: true; hold: HoldRef; replayed: boolean } | { ok: false; reason: "insufficient_funds" | "invalid_amount" | "key_conflict" }
 
 export interface SettleResult {
   /** Captured: min(actual, reserved). */
@@ -66,6 +66,7 @@ export interface SettleResult {
 export type CheckpointAction = "continue" | "warn" | "cutoff"
 
 export interface HoldEngine {
+  /** `key` must be unique per hold (it is the idempotency key): the same key again replays the first hold, on another asset it is refused with `key_conflict`. */
   hold(req: { accountId: string; key: string; amount: number }): Promise<HoldResult>
   /** Pure: where `spent` stands against what is reserved. A hold of 0 never warns or cuts. */
   checkpoint(hold: HoldRef, spent: number): { action: CheckpointAction; spent: number; reserved: number }
@@ -134,6 +135,8 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
         const events = await deps.storage.loadEvents(accountId)
         const have = events.filter(e => e.kind === "reserve" && e.correlationId === key)
         if (have.length > 0) {
+          // One key, one hold: a key already used for another asset is a caller bug, never a replay.
+          if (have.some(e => e.asset !== opts.asset)) return { ok: false as const, reason: "key_conflict" as const }
           const draws = drawsOf(have, key)
           return { ok: true as const, replayed: true, hold: { holdId: key, accountId, asset: opts.asset, reserved: draws.reduce((s, d) => s + d.amount, 0), draws, createdAt: have[0]!.occurredAt } }
         }
@@ -182,8 +185,9 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
       for (const [key, evs] of open) {
         if (now - evs[0]!.occurredAt < olderThanMs) continue
         const draws = drawsOf(evs, key)
-        await close({ holdId: key, accountId, asset: evs[0]!.asset, reserved: draws.reduce((s, d) => s + d.amount, 0), draws, createdAt: evs[0]!.occurredAt }, 0)
-        swept.push(key)
+        const r = await close({ holdId: key, accountId, asset: evs[0]!.asset, reserved: draws.reduce((s, d) => s + d.amount, 0), draws, createdAt: evs[0]!.occurredAt }, 0)
+        // A hold its owner settled between our read and the close is not ours to report.
+        if (!r.replayed) swept.push(key)
       }
       return swept
     },

@@ -53,6 +53,12 @@ describe("holds: reserve before the call", () => {
     expect(again.ok && again.replayed).toBe(true)
     expect(await spendable(s)).toBe(600)
   })
+  it("refuses a key already used for another asset instead of replaying it", async () => {
+    const s = await setup(1_000)
+    await s.holds.hold({ accountId: "acct", key: "k", amount: 100 })
+    const other = createHolds({ storage: s.storage, clock: s.clock }, { asset: "other" })
+    expect(await other.hold({ accountId: "acct", key: "k", amount: 100 })).toEqual({ ok: false, reason: "key_conflict" })
+  })
   it("two concurrent holds cannot both take the same money", async () => {
     const s = await setup(500)
     const [a, b] = await Promise.all([
@@ -120,6 +126,27 @@ describe("holds: release on failure or crash", () => {
     expect(await s.holds.sweep("acct", { olderThanMs: 30 * 60_000 })).toEqual(["old"])
     expect(await spendable(s)).toBe(800)
     expect(await s.holds.sweep("acct", { olderThanMs: 30 * 60_000 })).toEqual([])
+  })
+  it("sweep does not report a hold its owner settled in the meantime", async () => {
+    const s = await setup(1_000)
+    const r = await s.holds.hold({ accountId: "acct", key: "c", amount: 400 })
+    if (!r.ok) throw new Error("hold")
+    s.clock.advance(3_600_000)
+    // The owner settles after the sweep read the journal and before it closes the hold.
+    const realLoad = s.storage.loadEvents.bind(s.storage)
+    let first = true
+    s.storage.loadEvents = async (id: string) => {
+      const ev = await realLoad(id)
+      if (first) {
+        first = false
+        queueMicrotask(() => void s.holds.settle(r.hold, 100))
+      }
+      return ev
+    }
+    const swept = await s.holds.sweep("acct", { olderThanMs: 1 })
+    await new Promise(res => setTimeout(res, 5))
+    expect(swept).toEqual([])
+    expect(await spendable(s)).toBe(900)
   })
   it("sweep never touches a settled hold", async () => {
     const s = await setup(1_000)
