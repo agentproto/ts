@@ -72,15 +72,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["categories"],
-      "description": "Metered usage as data (rules 29 to 32 and 35). A category never carries a rate: the anchor is the only place a rate is written, so a category with `rate`, `ratio` or `creditsPerUnit` is refused by this schema (rule 30). Values of `margin`, `marginFloor` and `floorMinor` are the host's, the AIP sets none. Cross-references (a fixed cost in a currency that is neither the anchor currency nor an fx key; `at-cost` with a marginFloor above 1; duplicate ids) belong to the parser.",
+      "description": "Metered usage as data (rules 29 to 32 and 35). Which primitive a host calls (hold, debit, shadow) is the host's choice, not a field. A category never carries a rate: the anchor is the only place a rate is written, so a category with `rate`, `ratio` or `creditsPerUnit` is refused by this schema (rule 30). Values of `margin`, `marginFloor` and `floorMinor` are the host's, the AIP sets none. Cross-references (a fixed cost in a currency that is neither the anchor currency nor an fx key; `at-cost` with a marginFloor above 1; duplicate ids) belong to the parser.",
       "properties": {
         "defaults": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "margin": { "type": "number", "exclusiveMinimum": 0 },
-            "floorMinor": { "type": "integer", "minimum": 0 },
-            "mode": { "enum": ["hold", "direct", "shadow"] }
+            "floorMinor": { "type": "integer", "minimum": 0 }
           }
         },
         "categories": {
@@ -254,8 +253,7 @@
           "description": "A multiplier on the cost, or `at-cost` (margin 1.0, nothing overrides it, rule 31)."
         },
         "marginFloor": { "type": "number", "exclusiveMinimum": 0, "description": "The lowest real margin (price / cost) the category may sell at (rule 35)." },
-        "floorMinor": { "type": "integer", "minimum": 0, "description": "Smallest charge per action, minor units of primaryAsset." },
-        "mode": { "enum": ["hold", "direct", "shadow"] }
+        "floorMinor": { "type": "integer", "minimum": 0, "description": "Smallest charge per action, minor units of primaryAsset." }
       }
     },
     "featureId": {

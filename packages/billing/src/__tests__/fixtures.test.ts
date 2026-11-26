@@ -76,6 +76,7 @@ describe("the zod schema and BILLING.schema.json give the same verdict (no silen
     "usage: an unknown cost source": d => { d.usage.categories[0].cost = { source: "guess" } },
     "usage: an empty list of categories": d => { d.usage.categories = [] },
     "usage: an unknown key": d => { d.usage.enforcement = "shadow" },
+    "usage: a mode on a category (the host picks the primitive)": d => { d.usage.categories[0].mode = "hold" },
     "usage: a fractional floorMinor": d => { d.usage.defaults.floorMinor = 1.5 },
   }
   for (const name of FILES) {

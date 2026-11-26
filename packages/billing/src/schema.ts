@@ -231,14 +231,13 @@ const usageCategory = z
     margin: z.union([z.number().gt(0), z.literal("at-cost")]).optional(),
     marginFloor: z.number().gt(0).optional(),
     floorMinor: z.number().int().min(0).optional(),
-    mode: z.enum(["hold", "direct", "shadow"]).optional(),
   })
   .strict()
 
 const usage = z
   .object({
     defaults: z
-      .object({ margin: z.number().gt(0), floorMinor: z.number().int().min(0), mode: z.enum(["hold", "direct", "shadow"]) })
+      .object({ margin: z.number().gt(0), floorMinor: z.number().int().min(0) })
       .partial()
       .strict()
       .optional(),
