@@ -110,6 +110,20 @@ export async function sweepWiringLifecycle(
           s.spec.match.some(m => subjects.includes(m.subject)),
       )
 
+  // A watched (selected) session that was superseded: carry the follow onto
+  // its live successor so a restart never silently orphans it.
+  for (const follow of deps.followStore.list()) {
+    for (const watched of follow.selector.sessionIds ?? []) {
+      const wdesc = deps.registry.get(watched)
+      if (!wdesc || !isRetired(wdesc)) continue
+      const successor = liveSuccessor(watched)
+      if (!successor) continue
+      deps.followStore.retargetSelectedSession(watched, successor)
+      result.followsRelinked++
+      log(`[retirement-cleanup] follow ${follow.id} now watches ${successor} (was ${watched})`)
+    }
+  }
+
   for (const follow of deps.followStore.list()) {
     const expired = isExpiresAtReached(follow.expiresAt, now)
     if (!expired) {
@@ -192,6 +206,7 @@ export function wireRetirementCleanup(deps: RetirementCleanupDeps): () => void {
     // archived/stopped row's wiring.
     const hopeless = !successor && ev.cause === "forgotten"
     if (!successor && !hopeless) return
+    if (successor) deps.followStore.retargetSelectedSession(ev.sessionId, successor)
     for (const follow of deps.followStore.list({ follower: ev.sessionId })) {
       if (successor) deps.followStore.setFollower(follow.id, successor)
       else deps.followStore.remove(follow.id)
