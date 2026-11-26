@@ -2798,6 +2798,7 @@ export function registerAppTools(
               catalogRef.url,
             )
             if (!updated.ok) return errorResult(`app_resync: ${updated.error}`)
+            opts.onAppsChanged?.()
             const nextPin = updated.record.source
             return textResult({
               appId: updated.record.appId,
@@ -2840,6 +2841,7 @@ export function registerAppTools(
           source.catalogId?.url,
         )
         if (!result.ok) return errorResult(`app_resync: ${result.error}`)
+        opts.onAppsChanged?.()
         const next = result.record.source
         const to = next?.kind === "git" ? next.sha : next?.kind === "agentapp" ? next.sha256 : from
         return textResult({ appId: result.record.appId, changed: true, from, to })

@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import matter from "gray-matter"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -170,7 +171,7 @@ describe("performExposedToolCall secret forwarding", () => {
   })
 })
 
-describe("internalToolServerPromise invalidation on app_install / routine_reconcile", () => {
+describe("internalToolServerPromise invalidation on app_install / app_resync / routine_reconcile", () => {
   let root: string
   let workspace: string
   let gateway: GatewayHandle
@@ -314,6 +315,198 @@ describe("internalToolServerPromise invalidation on app_install / routine_reconc
       const parsedAfter = JSON.parse(afterText) as { ok?: boolean; summary?: string }
       expect(parsedAfter.ok).toBe(true)
       expect(parsedAfter.summary).toContain('"echoed":"hello"')
+    } finally {
+      await client.close()
+    }
+  })
+
+  it("invalidates internalToolServerPromise when app_resync updates an app's exposed tools", async () => {
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", args, {
+        cwd,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Test",
+          GIT_AUTHOR_EMAIL: "test@example.com",
+          GIT_COMMITTER_NAME: "Test",
+          GIT_COMMITTER_EMAIL: "test@example.com",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+        .toString("utf8")
+        .trim()
+
+    const work = join(root, "resync-work")
+    const bare = join(root, "resync-app.git")
+    await mkdir(work, { recursive: true })
+    git(work, "init", "-q", "-b", "main")
+
+    await defineApp({
+      id: "@test/resync-app",
+      name: "Resync App",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "Worker.",
+            model: "claude-sonnet-5",
+            workflows: [{ ref: "resync-flow" }],
+          }),
+          body: "Work.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "resync-flow",
+          name: "Resync",
+          description: "Resync workflow.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [{ id: "s", kind: "tool", tool: "resync.ping" }],
+        }),
+      ],
+    }).emit(work)
+
+    await writeManifest(work, "tools", "resync.ping", "TOOL.md", {
+      schema: "agentproto/tool/v1",
+      id: "resync.ping",
+      name: "resync.ping",
+      description: "Ping.",
+      version: "1.0.0",
+      inputs: { type: "object", properties: {} },
+      outputs: { type: "object", properties: { ok: { type: "boolean" } } },
+    })
+    await writeManifest(work, "drivers", "resync.ping-cli", "DRIVER.md", {
+      schema: "agentproto/driver/v1",
+      id: "resync.ping-cli",
+      name: "resync.ping cli",
+      description: "CLI ping.",
+      version: "1.0.0",
+      kind: "cli",
+      implements: [
+        {
+          tool: "resync.ping",
+          version: "*",
+          metadata: { cli: { argv: ["-e", "console.log(JSON.stringify({ ok: true }))"], outputFormat: "json" } },
+        },
+      ],
+      metadata: { cli: { bin: process.execPath } },
+    })
+
+    const appMd = join(work, ".agentproto", "APP.md")
+    const baseAppMd = await readFile(appMd, "utf8")
+    await writeFile(
+      appMd,
+      baseAppMd.replace(
+        /^---\n/,
+        `---\nexposes:\n  prefix: resync\n  tools:\n    - { id: resync.ping, access: read, description: "Ping." }\n`,
+      ),
+      "utf8",
+    )
+
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "v1")
+    git(root, "init", "-q", "--bare", "-b", "main", bare)
+    git(work, "remote", "add", "origin", pathToFileURL(bare).href)
+    git(work, "push", "-q", "origin", "main")
+
+    const routineDir = join(workspace, ".routines", "run-resync-echo")
+    await mkdir(routineDir, { recursive: true })
+    await writeFile(
+      join(routineDir, "ROUTINE.md"),
+      matter.stringify("# run-resync-echo\n", {
+        schema: "routine/v1",
+        id: "run-resync-echo",
+        description: "Trigger resync_echo.",
+        version: "1.0.0",
+        schedule: { kind: "cron", cron: "0 1 * * *" },
+        target: { tool: "resync_echo", inputs: { msg: "resynced" } },
+        enabled: true,
+      }),
+      "utf8",
+    )
+
+    const client = new Client({ name: "test", version: "0" }, { capabilities: {} })
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${gateway.url}/mcp`)))
+    try {
+      const installed = await client.callTool({
+        name: "app_install",
+        arguments: { url: pathToFileURL(bare).href },
+      })
+      expect(installed.isError).not.toBe(true)
+
+      // 1. Warm internalToolServerPromise before v2 exposes resync_echo
+      const before = await client.callTool({
+        name: "routine_trigger",
+        arguments: { routineId: "run-resync-echo" },
+      })
+      const beforeText = (before.content as Array<{ text?: string }>)[0]?.text ?? ""
+      expect((JSON.parse(beforeText) as { error?: string }).error).toContain('unknown daemon tool "resync_echo"')
+
+      // 2. Push v2 that adds resync.echo to the git remote
+      await writeManifest(work, "tools", "resync.echo", "TOOL.md", {
+        schema: "agentproto/tool/v1",
+        id: "resync.echo",
+        name: "resync.echo",
+        description: "Echo.",
+        version: "1.0.0",
+        inputs: { type: "object", properties: { msg: { type: "string" } } },
+        outputs: { type: "object", properties: { echoed: { type: "string" } } },
+      })
+      await writeManifest(work, "drivers", "resync.echo-cli", "DRIVER.md", {
+        schema: "agentproto/driver/v1",
+        id: "resync.echo-cli",
+        name: "resync.echo cli",
+        description: "CLI echo.",
+        version: "1.0.0",
+        kind: "cli",
+        implements: [
+          {
+            tool: "resync.echo",
+            version: "*",
+            metadata: {
+              cli: {
+                argv: ["-e", "console.log(JSON.stringify({ echoed: process.argv[1] }))", "${input.msg}"],
+                outputFormat: "json",
+              },
+            },
+          },
+        ],
+        metadata: { cli: { bin: process.execPath } },
+      })
+      await writeFile(
+        appMd,
+        baseAppMd.replace(
+          /^---\n/,
+          `---\nexposes:\n  prefix: resync\n  tools:\n    - { id: resync.ping, access: read, description: "Ping." }\n    - { id: resync.echo, access: read, description: "Echo." }\n`,
+        ),
+        "utf8",
+      )
+      git(work, "add", "-A")
+      git(work, "commit", "-q", "-m", "v2")
+      git(work, "push", "-q", "origin", "main")
+
+      // 3. Call app_resync — must invalidate internalToolServerPromise without routine_reconcile
+      const resynced = await client.callTool({
+        name: "app_resync",
+        arguments: { appId: "@test/resync-app" },
+      })
+      expect(resynced.isError).not.toBe(true)
+      const resyncedText = (resynced.content as Array<{ text?: string }>)[0]?.text ?? ""
+      expect((JSON.parse(resyncedText) as { changed?: boolean }).changed).toBe(true)
+
+      // 4. Trigger the routine directly — resync_echo must dispatch immediately
+      const after = await client.callTool({
+        name: "routine_trigger",
+        arguments: { routineId: "run-resync-echo" },
+      })
+      expect(after.isError).not.toBe(true)
+      const afterText = (after.content as Array<{ text?: string }>)[0]?.text ?? ""
+      const parsedAfter = JSON.parse(afterText) as { ok?: boolean; summary?: string }
+      expect(parsedAfter.ok).toBe(true)
+      expect(parsedAfter.summary).toContain('"echoed":"resynced"')
     } finally {
       await client.close()
     }

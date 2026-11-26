@@ -95,10 +95,9 @@ function requiredSecretNames(fm: DriverManifest["frontmatter"]): readonly string
  * Wrap every execute body so a declared-but-unresolved secret fails the
  * STEP with a clear `driver-error` naming the secret — never at app
  * install (secrets are resolved lazily, only when the tool actually
- * dispatches). Resolved values are merged into `driverCtx.secrets` ahead of
- * whatever the caller already put there (a workflow tool step's compiled
- * `secrets` is empty today — see BRIEF-D — so this is the only source for
- * an app-bundled driver), letting `${secrets.X}` templating in
+ * dispatches). Caller-provided `driverCtx.secrets` take precedence, with
+ * `process.env` as the fallback for any declared secret not supplied by
+ * the caller, letting `${secrets.X}` templating in
  * `defineCliDriver`/`defineHttpDriver` resolve as authors expect.
  */
 function wrapExecuteWithSecretCheck(
