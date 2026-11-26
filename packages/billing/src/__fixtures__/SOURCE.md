@@ -12,6 +12,6 @@ change as the parser. When `specs/canonical.lock.json` is bumped, re-copy the sc
 from `specs/resources/aip-74/draft/`.
 
 Update (usage section): `BILLING.schema.json` carries the `usage` field added by
-agentproto/agentproto#181 (draft, companion of #178). Until that pull request is
-merged the file is a copy of its branch `feat/aip-74-usage-schema`; re-copy from
-`specs/resources/aip-74/draft/` once it lands and bump the pin.
+agentproto/agentproto#181 (companion of #178). It is a byte copy of
+`specs/resources/aip-74/draft/BILLING.schema.json` at agentproto/agentproto commit
+`516205e3167c08b41aed646bda3957480ea30395` (main, after #181 merged).
