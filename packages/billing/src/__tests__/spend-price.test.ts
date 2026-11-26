@@ -23,14 +23,32 @@ describe("price: one rate, derived from the anchor", () => {
     })
     expect(half.price(ev({ providerCost: { amount: 1, currency: "USD" } })).minor).toBe(10_000)
   })
-  it("rounds a fraction of a minor unit up, never down", () => {
+  it("rounds a fraction of a minor unit up by default", () => {
     const p = pricer({ categories: [{ id: "llm", cost: { source: "measured" }, margin: 2 }] })
     // 0.000123 USD x 100 x 2 x 100 = 2.46 -> 3
     expect(p.price(ev({ providerCost: { amount: 0.000123, currency: "USD" } })).minor).toBe(3)
   })
-  it("never charges under the per-action floor (default 1 minor)", () => {
+  it("has no floor of its own: 0 unless the config sets one", () => {
     const p = pricer({ categories: [{ id: "llm", cost: { source: "measured" }, margin: 2 }] })
-    expect(p.price(ev({ providerCost: { amount: 0.0000001, currency: "USD" } })).minor).toBe(1)
+    expect(p.price(ev({ providerCost: { amount: 0, currency: "USD" } })).minor).toBe(0)
+  })
+  it("a configured per-action floor applies, from the category or from defaults", () => {
+    const cost = { amount: 0.0000001, currency: "USD" }
+    expect(pricer({ categories: [{ id: "llm", cost: { source: "measured" }, margin: 2, floorMinor: 5 }] }).price(ev({ providerCost: cost })).minor).toBe(5)
+    expect(pricer({ defaults: { floorMinor: 1 }, categories: [{ id: "llm", cost: { source: "measured" }, margin: 2 }] }).price(ev({ providerCost: cost })).minor).toBe(1)
+  })
+  it("rounding is the host's: Math.ceil by default, replaceable", () => {
+    const usage: UsageConfig = { categories: [{ id: "llm", cost: { source: "measured" }, margin: 2 }] }
+    const cost = { amount: 0.000123, currency: "USD" } // 2.46 minor
+    expect(pricer(usage).price(ev({ providerCost: cost })).minor).toBe(3)
+    expect(pricer(usage, { round: Math.round }).price(ev({ providerCost: cost })).minor).toBe(2)
+    expect(pricer(usage, { round: Math.floor }).price(ev({ providerCost: cost })).minor).toBe(2)
+  })
+  it("the kit has no margin of its own: 1 unless the config sets one, and no mode unless declared", () => {
+    const r = pricer({ categories: [{ id: "llm", cost: { source: "measured" } }] }).price(ev({ providerCost: { amount: 1, currency: "USD" } }))
+    expect(r.margin).toBe(1)
+    expect(r.mode).toBeUndefined()
+    expect(pricer({ categories: [{ id: "llm", cost: { source: "measured" }, mode: "hold" }] }).price(ev({ providerCost: { amount: 1, currency: "USD" } })).mode).toBe("hold")
   })
   it("a fixed cost scales with units", () => {
     const p = pricer({ categories: [{ id: "search", match: { kind: "search" }, cost: { source: "fixed", amount: 0.0015, currency: "USD" }, margin: 2, floorMinor: 1 }] })
@@ -115,21 +133,23 @@ describe("price: category matching", () => {
 })
 
 describe("price: config validation and margin floors", () => {
-  it("rejects duplicates, a flat price with no floor or no reference cost, and an unknown currency", () => {
+  it("rejects duplicates, a floored flat price with no reference cost, and an unknown currency", () => {
     const problems = usageProblems(manifest, {
       categories: [
         { id: "a", cost: { source: "measured" } },
         { id: "a", cost: { source: "measured" } },
-        { id: "flat", cost: { source: "flatCredits", credits: 90 } },
         { id: "flat2", cost: { source: "flatCredits", credits: 90 }, marginFloor: 1.1 },
         { id: "jpy", cost: { source: "fixed", amount: 1, currency: "JPY" } },
       ],
     })
     expect(problems.join("|")).toMatch(/duplicate category 'a'/)
-    expect(problems.join("|")).toMatch(/flat price needs a marginFloor/)
     expect(problems.join("|")).toMatch(/needs a referenceCost/)
     expect(problems.join("|")).toMatch(/currency 'JPY'/)
     expect(() => pricer({ categories: [{ id: "a", cost: { source: "measured" } }, { id: "a", cost: { source: "measured" } }] })).toThrowError(/invalid usage config/)
+  })
+  it("a flat price needs neither a marginFloor nor a reference cost: those are the host's to ask", () => {
+    const p = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "flatCredits", credits: 100 } }] })
+    expect(p.price(ev({ kind: "run" })).minor).toBe(10_000)
   })
   it("a flat price keeps its credits and reports its real margin against the reference cost", () => {
     const p = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "flatCredits", credits: 100, referenceCost: { amount: 0.9, currency: "USD" } }, marginFloor: 1.1 }] })

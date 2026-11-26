@@ -5,8 +5,10 @@
  *
  * The rate is never written in a category: `entryRatio` derives credits per
  * unit of any currency from the manifest's `anchor` (and `fx`), so one field
- * moves every category. `at-cost` is margin 1 and nothing overrides it, not
- * `defaults.margin`, not an event. An event with no price fails closed
+ * moves every category. A category that says `at-cost` is margin 1 and
+ * `defaults.margin` never overrides it (an event cannot carry a margin at all).
+ * Margins, floors, rounding and modes are the host's configuration: the kit
+ * has no value of its own for any of them (floor 0, margin 1, `Math.ceil`). An event with no price fails closed
  * (`UnpricedUsageError`); it is never free by accident.
  */
 import type { BillingHandle } from "../define-billing-manifest.js"
@@ -29,6 +31,12 @@ export interface PricerDeps {
   priceBook?: PriceBook
   /** Named resolvers for `cost.source: resolver`. */
   resolvers?: Readonly<Record<string, (event: UsageEvent) => ProviderCost | null>>
+  /**
+   * How a fractional minor amount becomes an integer. Default `Math.ceil`
+   * (never undercharge a fraction); a host passes `Math.round` or its own.
+   * Receives the amount with the float epsilon already removed.
+   */
+  round?: (minor: number) => number
 }
 
 export interface Pricer {
@@ -60,8 +68,7 @@ export function usageProblems(manifest: Pick<BillingHandle, "anchor" | "fx">, us
     if (c.floorMinor !== undefined && (!Number.isInteger(c.floorMinor) || c.floorMinor < 0)) out.push(`category '${c.id}': floorMinor must be a non-negative integer`)
     if (c.cost.source === "fixed" && !(Number.isFinite(c.cost.amount) && c.cost.amount >= 0)) out.push(`category '${c.id}': a fixed cost must be a non-negative number`)
     if (c.cost.source === "flatCredits" && !(Number.isFinite(c.cost.credits) && c.cost.credits >= 0)) out.push(`category '${c.id}': flat credits must be a non-negative number`)
-    if (c.cost.source === "flatCredits" && c.marginFloor === undefined) out.push(`category '${c.id}': a flat price needs a marginFloor`)
-    if (c.cost.source === "flatCredits" && c.marginFloor !== undefined && !c.cost.referenceCost) out.push(`category '${c.id}': a flat price needs a referenceCost to check its marginFloor`)
+    if (c.cost.source === "flatCredits" && c.marginFloor !== undefined && !c.cost.referenceCost) out.push(`category '${c.id}': a marginFloor on a flat price needs a referenceCost to be checked`)
     const cur = c.cost.source === "fixed" ? c.cost.currency : c.cost.source === "flatCredits" ? c.cost.referenceCost?.currency : undefined
     if (cur !== undefined && !currencyOk(cur)) out.push(`category '${c.id}': currency '${cur}' is neither the anchor currency nor in fx`)
   }
@@ -76,6 +83,7 @@ export function createPricer(deps: PricerDeps): Pricer {
   const scale = 10 ** decimals
   const ordered = [...deps.usage.categories].sort((a, b) => specificity(b) - specificity(a))
   const defaults = deps.usage.defaults ?? {}
+  const round = deps.round ?? Math.ceil
 
   const categoryOf = (event: UsageEvent): UsageCategory | null => ordered.find(c => matches(c, event)) ?? null
 
@@ -104,15 +112,15 @@ export function createPricer(deps: PricerDeps): Pricer {
       if (!c) throw new UnpricedUsageError("no-category", `no usage category matches kind '${event.kind}'`)
       const atCost = c.margin === "at-cost"
       const margin: number = c.margin === "at-cost" ? 1 : (c.margin ?? defaults.margin ?? 1)
-      const floor = c.floorMinor ?? defaults.floorMinor ?? 1
-      const mode: UsageMode = c.mode ?? defaults.mode ?? "direct"
+      const floor = c.floorMinor ?? defaults.floorMinor ?? 0
+      const mode: UsageMode | undefined = c.mode ?? defaults.mode
       const cost = costOf(c, event, units)
 
       if (c.cost.source === "flatCredits") {
-        const minor = Math.max(floor, Math.ceil(c.cost.credits * units * scale - EPS))
+        const minor = Math.max(floor, round(c.cost.credits * units * scale - EPS))
         const ratio = cost ? entryRatio(deps.manifest, cost.currency) : null
         const costMinor = cost && ratio !== null ? cost.amount * units * ratio * scale : undefined
-        return { minor, categoryId: c.id, mode, margin, atCost, ...(costMinor !== undefined ? { costMinor, realMargin: costMinor > 0 ? minor / costMinor : undefined } : {}) }
+        return { minor, categoryId: c.id, ...(mode ? { mode } : {}), margin, atCost, ...(costMinor !== undefined ? { costMinor, realMargin: costMinor > 0 ? minor / costMinor : undefined } : {}) }
       }
 
       if (!cost) throw new UnpricedUsageError("no-cost", `category '${c.id}' has no cost for this event (${c.cost.source})`)
@@ -120,9 +128,9 @@ export function createPricer(deps: PricerDeps): Pricer {
       const ratio = entryRatio(deps.manifest, normalizeCurrency(cost.currency))
       if (ratio === null) throw new UnpricedUsageError("unknown-currency", `currency '${cost.currency}' is neither the anchor currency nor in fx`)
       const costMinor = cost.amount * ratio * scale
-      const minor = Math.max(floor, Math.ceil(costMinor * margin - EPS))
+      const minor = Math.max(floor, round(costMinor * margin - EPS))
       if (!Number.isFinite(minor)) throw new UnpricedUsageError("invalid-cost", `category '${c.id}': the price is not a finite number`)
-      return { minor, categoryId: c.id, mode, margin, atCost, costMinor, realMargin: costMinor > 0 ? minor / costMinor : undefined }
+      return { minor, categoryId: c.id, ...(mode ? { mode } : {}), margin, atCost, costMinor, realMargin: costMinor > 0 ? minor / costMinor : undefined }
     },
   }
 }

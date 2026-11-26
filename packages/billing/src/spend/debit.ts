@@ -4,7 +4,7 @@
  * first then oldest, and every event id derives from the caller's `key`, so a
  * replay writes nothing twice.
  *
- * A shortfall is a choice the caller names: `refuse` writes nothing when the
+ * A shortfall is a choice the caller names (there is no default): `refuse` writes nothing when the
  * account cannot cover the whole amount; `absorb` charges what the account has
  * and reports the rest as `shortfall` (the unrecovered part). A debit that
  * charges nothing writes nothing, so it leaves no trace to replay: the same key
@@ -27,9 +27,16 @@ export interface DebitDeps {
 
 export interface DebitOptions {
   asset: string
-  /** Narrows which lots may be drawn (e.g. by partition). */
+  /** Narrows which lots may be drawn (e.g. by partition or restriction). */
   lotFilter?: (lot: Lot) => boolean
+  /** The order lots are drawn in. Default `defaultLotOrder` (expiring first, then oldest); a host injects its own. */
+  order?: (a: Lot, b: Lot) => number
+  /** The intent written on the burn events. Default `passive`. */
+  intent?: WalletEvent["intent"]
 }
+
+/** Expiring first, then oldest. The default draw order; replaceable through `DebitOptions.order`. */
+export const defaultLotOrder = (a: Lot, b: Lot): number => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt
 
 export interface DebitRequest {
   accountId: string
@@ -37,8 +44,8 @@ export interface DebitRequest {
   key: string
   /** Minor units of the asset. */
   amount: number
-  /** `absorb` (default): charge what is there. `refuse`: all or nothing. */
-  shortfall?: "absorb" | "refuse"
+  /** What to do when the account cannot cover the amount. No default: the caller names it. `refuse`: write nothing. `absorb`: charge what is there and report the rest. */
+  shortfall: "absorb" | "refuse"
   /** The movement or action that caused this debit (journal `cause`). */
   cause?: string
 }
@@ -61,7 +68,7 @@ function available(lot: Lot, now: number): number {
 
 export function createDebit(deps: DebitDeps, opts: DebitOptions): DebitEngine {
   return {
-    async debit({ accountId, key, amount, shortfall = "absorb", cause }) {
+    async debit({ accountId, key, amount, shortfall, cause }) {
       if (typeof key !== "string" || key.length === 0) return { ok: false, reason: "invalid_key" }
       if (!Number.isFinite(amount) || amount <= 0) return { ok: false, reason: "invalid_amount" }
       const want = Math.floor(amount)
@@ -76,7 +83,7 @@ export function createDebit(deps: DebitDeps, opts: DebitOptions): DebitEngine {
         const now = deps.clock.nowMs()
         const lots = fold(events, now)
           .filter(l => l.asset === opts.asset && available(l, now) > 0 && (opts.lotFilter?.(l) ?? true))
-          .sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt)
+          .sort(opts.order ?? defaultLotOrder)
         const spendable = lots.reduce((s, l) => s + available(l, now), 0)
         if (shortfall === "refuse" && spendable < want) return { ok: false as const, reason: "insufficient_funds" as const }
         const take = Math.min(want, spendable)
@@ -88,7 +95,7 @@ export function createDebit(deps: DebitDeps, opts: DebitOptions): DebitEngine {
           const part = Math.min(need, available(l, now))
           out.push({
             id: burnId(key, l.id), accountId, kind: "burn", asset: l.asset, partitionId: l.partitionId, restriction: l.restriction,
-            amount: part, lotId: l.id, correlationId: key, intent: "passive", occurredAt: now, ...(cause ? { cause } : {}),
+            amount: part, lotId: l.id, correlationId: key, intent: opts.intent ?? "passive", occurredAt: now, ...(cause ? { cause } : {}),
           } as WalletEvent & { cause?: string })
           need -= part
         }
