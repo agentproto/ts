@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { toolSpec } from "../spec.js"
+import { z } from "zod"
+import { toolSpec, toolVerbs } from "../spec.js"
+import { parseToolManifest } from "../manifest/index.js"
 import type { ToolDefinition } from "../types.js"
 
 // `createVerbs.load` flows a parsed manifest through `toolSpec.parse` →
@@ -94,5 +96,88 @@ describe("toolSpec.parse → define round-trip", () => {
     expect(handle.riskLevel).toBe(0)
     expect(handle.costClass).toBe("trivial")
     expect(handle.timeoutMs).toBe(30_000)
+  })
+})
+
+describe("toolSpec.toFrontmatter / toolVerbs round-trip", () => {
+  it("writes snake_case keys so riskLevel, costClass and timeoutMs survive create -> parse -> define", async () => {
+    const created = await toolVerbs.create(
+      {
+        id: "metrics.fetch",
+        name: "Metrics Fetch",
+        description: "Reads raw metric entries from a remote source.",
+        version: "1.2.0",
+        riskLevel: 2,
+        costClass: "metered",
+        timeoutMs: 12_000,
+        mutates: [],
+        approval: "auto",
+        idempotent: true,
+        requires: { network: ["api.example.com"], secrets: ["API_KEY"] },
+        tags: ["metrics", "read"],
+        metadata: { category: "analytics" },
+        inputs: {
+          type: "object",
+          required: ["start"],
+          properties: { start: { type: "integer" } },
+        },
+        outputs: {
+          type: "array",
+          items: { type: "object", properties: { amount: { type: "number" } } },
+        },
+      },
+      { dir: ".", dryRun: true },
+    )
+
+    expect(created.rendered).toContain("risk_level: 2")
+    expect(created.rendered).toContain("cost_class: metered")
+    expect(created.rendered).toContain("timeout_ms: 12000")
+    expect(created.rendered).not.toContain("riskLevel:")
+    expect(created.rendered).not.toContain("costClass:")
+    expect(created.rendered).not.toContain("timeoutMs:")
+
+    const parsed = parseToolManifest(created.rendered)
+    expect(parsed.frontmatter.risk_level).toBe(2)
+    expect(parsed.frontmatter.cost_class).toBe("metered")
+    expect(parsed.frontmatter.timeout_ms).toBe(12_000)
+
+    const reloaded = defineFromSource(created.rendered)
+    expect(reloaded.riskLevel).toBe(2)
+    expect(reloaded.costClass).toBe("metered")
+    expect(reloaded.timeoutMs).toBe(12_000)
+    expect(reloaded.requires).toEqual({
+      network: ["api.example.com"],
+      secrets: ["API_KEY"],
+      tools: [],
+    })
+    expect(reloaded.inputs).toEqual({
+      type: "object",
+      required: ["start"],
+      properties: { start: { type: "integer" } },
+    })
+  })
+
+  it("serializes Zod inputSchema/outputSchema to inline JSON Schema when raw inputs/outputs are omitted", async () => {
+    const created = await toolVerbs.create(
+      {
+        id: "zod.roundtrip",
+        name: "Zod Roundtrip",
+        description: "Preserves Zod IO schemas into TOOL.md JSON Schema.",
+        version: "1.0.0",
+        inputSchema: z.object({ since: z.number().int() }),
+        outputSchema: z.object({ total: z.number() }),
+      },
+      { dir: ".", dryRun: true },
+    )
+
+    const parsed = parseToolManifest(created.rendered)
+    expect(parsed.frontmatter.inputs).toMatchObject({
+      type: "object",
+      required: ["since"],
+    })
+    expect(parsed.frontmatter.outputs).toMatchObject({
+      type: "object",
+      required: ["total"],
+    })
   })
 })

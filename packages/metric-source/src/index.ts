@@ -1,0 +1,48 @@
+export {
+  PeriodKind,
+  WindowKind,
+  Unit,
+  PaginationSpec,
+  MetricDescriptor,
+  MetricSample,
+  MetricTarget,
+  HttpAuthSpec,
+  HttpRequestSpec,
+  HttpTransportSpec,
+  McpImportedTransportSpec,
+  SqlRoTransportSpec,
+  MetricTransportSpec,
+  MetricSourceSchedule,
+  MetricSourceDestination,
+  MetricSourceSpec,
+  defineMetricSource,
+  type MetricDescriptorInput,
+  type MetricSourceSpecInput,
+  type MetricSourceHandle,
+} from "./schema.js"
+
+export {
+  computeIdempotencyKey,
+  resolveClosedUtcWindow,
+  zodToInlineJsonSchema,
+  jsonSchemaToZod,
+  type IdempotencyKeyParts,
+  type ResolvedUtcWindow,
+} from "./windows.js"
+
+export {
+  METRIC_SAMPLE_COLLECTION,
+  driverIdForSource,
+  defaultToolIdForSource,
+  defaultRoutineIdForSource,
+  sourceToManifests,
+  manifestsToSource,
+  renderSourceTs,
+  sourceBundlePaths,
+  writeSourceBundle,
+  loadSource,
+  type SourceManifestBundle,
+  type SourceToManifestsOptions,
+  type ManifestsToSourceResult,
+  type SourceBundlePaths,
+} from "./converter.js"
