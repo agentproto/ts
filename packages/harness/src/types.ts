@@ -1594,6 +1594,15 @@ export interface AgentCliStartOptions {
    */
   memoryProjection?: AgentCliMemoryProjection
   /**
+   * Switch the harness's own auto memory off for this session (claude-code:
+   * `autoMemoryEnabled: false` in the isolated settings). The runtime sets it
+   * only for a session that binds no AIP-72 memory, when the operator's
+   * `memory.harnessAutoMemory` is `"off"`. Ignored when `memoryProjection` is
+   * set (that session already has a captured native dir) and by drivers
+   * without an auto memory.
+   */
+  disableNativeMemory?: boolean
+  /**
    * Skill folders to deliver into this session's isolated config dir before
    * the child starts. Each `path` folder is copied to
    * `<adapterConfigDir>/<dir>/<alias>/`, where `dir` (and optional `env` naming

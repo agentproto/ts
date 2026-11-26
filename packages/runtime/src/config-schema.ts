@@ -594,7 +594,10 @@ const agentsMdConfigSchema: z.ZodType<AgentsMdConfig> = z
   .passthrough()
 
 const memoryConfigSchema: z.ZodType<MemoryStoreConfig> = z
-  .object({ root: z.string().optional() })
+  .object({
+    root: z.string().optional(),
+    harnessAutoMemory: z.enum(["keep", "off"]).optional(),
+  })
   .passthrough()
 
 /** `pairing.pairPage`: a plain http(s) URL, or a template with `{fp}` in the
@@ -1468,6 +1471,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Memory store root",
     help: "Root directory of the default AIP-72 memory store (items/<type>/<id>.md, proposals/<id>.md), read by the memory_* tools and the spawn digest. An agent's AIP-42 memory.store wins when it names a files root.",
     default: "~/.agentproto/memory",
+  },
+  {
+    path: "memory.harnessAutoMemory",
+    schema: z.enum(["keep", "off"]),
+    apply: "hot",
+    writable: true,
+    section: "daemon",
+    label: "Harness auto memory (sessions without bound memory)",
+    help: "What a harness's own auto memory does in a session that binds no AIP-72 memory. keep: the harness keeps writing private notes that die with the session. off: auto memory is switched off for those sessions so a lesson goes through memory_write. claude-code only. Read at each spawn.",
+    default: "keep",
   },
   {
     path: "delivery.apply.types",

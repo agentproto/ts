@@ -796,6 +796,16 @@ export interface MemoryStoreConfig {
    * directory. Read at boot; unset means `~/.agentproto/memory`.
    */
   root?: string
+  /**
+   * What the harness's own auto memory does in a session that binds no
+   * AIP-72 memory (so nothing is projected into, or captured back from, its
+   * native dir). `"keep"` (default): the harness keeps writing its private
+   * notes, which die with the session's config dir. `"off"`: the harness's
+   * auto memory is switched off for those sessions, so a lesson goes through
+   * the shared `memory_write` tool instead of a file nobody reads again.
+   * Only claude-code has an auto memory to switch off today. Read at spawn.
+   */
+  harnessAutoMemory?: "keep" | "off"
 }
 
 /**
