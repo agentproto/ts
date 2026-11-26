@@ -7,9 +7,16 @@
  */
 
 import { createVerbs, type DoctypeSpec } from "@agentproto/manifest"
+import { z, type ZodType } from "zod"
 import { defineTool } from "./define-tool.js"
 import { parseToolManifest } from "./manifest/index.js"
 import type { ToolDefinition, ToolHandle } from "./types.js"
+
+function zodToPlainJsonSchema(schema: ZodType<unknown>): Record<string, unknown> {
+  const raw = z.toJSONSchema(schema) as Record<string, unknown>
+  const { $schema: _ignored, ...rest } = raw
+  return rest
+}
 
 export const toolSpec: DoctypeSpec<
   ToolDefinition<unknown, unknown>,
@@ -49,6 +56,47 @@ export const toolSpec: DoctypeSpec<
       ...(fm.outputs !== undefined && { outputs: fm.outputs }),
     }
     return { frontmatter, body: m.body }
+  },
+  toFrontmatter: (params) => {
+    const fm: Record<string, unknown> = {
+      schema: "agentproto/tool/v1",
+      id: params.id,
+      name: params.name ?? params.id,
+      description: params.description,
+      version: params.version ?? "1.0.0",
+    }
+    const inputs =
+      params.inputs !== undefined
+        ? params.inputs
+        : params.inputSchema !== undefined
+          ? zodToPlainJsonSchema(params.inputSchema)
+          : undefined
+    const outputs =
+      params.outputs !== undefined
+        ? params.outputs
+        : params.outputSchema !== undefined
+          ? zodToPlainJsonSchema(params.outputSchema)
+          : undefined
+    if (inputs !== undefined) fm.inputs = inputs
+    if (outputs !== undefined) fm.outputs = outputs
+    if (params.mutates !== undefined) fm.mutates = [...params.mutates]
+    if (params.requires !== undefined) {
+      const req: Record<string, unknown> = {}
+      if (params.requires.network !== undefined) req.network = [...params.requires.network]
+      if (params.requires.secrets !== undefined) req.secrets = [...params.requires.secrets]
+      if (params.requires.tools !== undefined) req.tools = [...params.requires.tools]
+      if (Object.keys(req).length > 0) fm.requires = req
+    }
+    if (params.approval !== undefined) fm.approval = params.approval
+    if (params.riskLevel !== undefined) fm.risk_level = params.riskLevel
+    if (params.costClass !== undefined) fm.cost_class = params.costClass
+    if (params.timeoutMs !== undefined) fm.timeout_ms = params.timeoutMs
+    if (params.idempotent !== undefined) fm.idempotent = params.idempotent
+    if (params.tags !== undefined) fm.tags = [...params.tags]
+    if (params.metadata !== undefined && Object.keys(params.metadata).length > 0) {
+      fm.metadata = { ...params.metadata }
+    }
+    return fm
   },
 }
 
