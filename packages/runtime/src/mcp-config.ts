@@ -15,6 +15,7 @@ export const DEFAULT_MODERN_ERA = true
 export const DEFAULT_HUMAN_GATE = true
 export const DEFAULT_SKILLS_EXTENSION = true
 export const DEFAULT_EVENTS_EXTENSION = true
+export const DEFAULT_TASKS = true
 
 export async function resolveMcpConfig(
   loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
@@ -80,4 +81,12 @@ export async function resolveHumanGateSurfaces(
     runs: flag(mcp.humanGateRuns),
     ...(cfg.approvals?.uiBaseUrl ? { approvalsUiBaseUrl: cfg.approvals.uiBaseUrl } : {}),
   }
+}
+
+/** Whether the modern gateway offers the MCP Tasks extension. */
+export async function resolveTasks(
+  loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
+): Promise<boolean> {
+  const value = (await resolveMcpConfig(loadCfg)).tasks
+  return typeof value === "boolean" ? value : DEFAULT_TASKS
 }

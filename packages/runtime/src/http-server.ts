@@ -38,6 +38,7 @@ import {
   isJsonContentType as isModernJsonContentType,
   type CacheHints,
   type HumanGate,
+  type TaskProjector,
 } from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { homedir } from "node:os"
@@ -1266,6 +1267,8 @@ export interface RuntimeHttpServerOptions {
      * to mount beta extensions that must be switchable per request.
      */
     decorateServer?: (server: McpServer) => void | Promise<void>
+    /** Tasks extension projector (absent or resolving to undefined = extension off). */
+    tasks?: TaskProjector | (() => TaskProjector | undefined | Promise<TaskProjector | undefined>)
   }
   /**
    * Public events origin (`POST /mcp/events/<secret>`), MCP 2026-07-28 only. Absent = route not mounted. Own auth: the
@@ -2877,6 +2880,8 @@ export async function startHttpServer(
         typeof opts.mcpModern?.humanGate === "function"
           ? await opts.mcpModern.humanGate()
           : opts.mcpModern?.humanGate
+      const tasks =
+        typeof opts.mcpModern?.tasks === "function" ? await opts.mcpModern.tasks() : opts.mcpModern?.tasks
       const out = await handleModernRequest(
         {
           method: req.method ?? "GET",
@@ -2892,6 +2897,7 @@ export async function startHttpServer(
           protocolVersions: [MODERN_PROTOCOL_VERSION],
           advertisedVersions: GATEWAY_ADVERTISED_VERSIONS,
           extensions: opts.mcpModern?.extensions ?? {},
+          ...(tasks ? { tasks } : {}),
           ...(opts.mcpModern?.cachePolicy ? { cachePolicy: opts.mcpModern.cachePolicy } : {}),
           ...(humanGate ? { humanGate } : {}),
           ...(callerSessionId !== undefined ? { callerSessionId } : {}),

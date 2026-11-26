@@ -712,6 +712,13 @@ export interface McpConfig {
    * only read when `humanGate` is on.
    */
   humanGateRuns?: boolean
+  /**
+   * Whether the modern `/mcp` gateway offers the MCP Tasks extension: a
+   * session turn started by `agent_start` / `agent_prompt` is answered with a
+   * task handle for clients that declare the extension. Defaults to `true`.
+   * Set to `false` to stop announcing it and answer those tools as before.
+   */
+  tasks?: boolean
 }
 
 /**

@@ -420,6 +420,7 @@ const mcpConfigSchema: z.ZodType<McpConfig> = z
     eventsExtension: z.boolean().optional(),
     humanGateApprovals: z.boolean().optional(),
     humanGateRuns: z.boolean().optional(),
+    tasks: z.boolean().optional(),
   })
   .passthrough()
 
@@ -1121,6 +1122,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "advanced",
     label: "MCP elicitation for parked runs",
     help: "When true (default), an operator calling workflow_status on a run parked for human input (with a flat non-secret schema) receives an input_required form; the reply resumes the run through its own resolver. Set to false to turn this surface off alone.",
+    default: true,
+  },
+  {
+    path: "mcp.tasks",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Tasks extension on /mcp",
+    help: "When true (default), modern 2026-07-28 MCP clients that declare the Tasks extension receive a task handle for the turn started by agent_start / agent_prompt (tasks/get, tasks/update, tasks/cancel). Set to false to stop announcing the extension and answer those tools as before.",
     default: true,
   },
   // ── daemon ──

@@ -61,7 +61,7 @@ export const CACHE_HINT_METHODS: ReadonlySet<string> = new Set([
 ])
 
 /** Methods whose request must carry an `Mcp-Name` header, and the `params` member that holds the value. */
-export const NAME_HEADER_SOURCE: ReadonlyMap<string, "name" | "uri"> = new Map([
+export const NAME_HEADER_SOURCE: ReadonlyMap<string, "name" | "uri" | "taskId"> = new Map([
   ["tools/call", "name"],
   // SEP-3415: every events method but `events/list` names its event type in `Mcp-Name`.
   ["events/poll", "name"],
@@ -69,4 +69,10 @@ export const NAME_HEADER_SOURCE: ReadonlyMap<string, "name" | "uri"> = new Map([
   ["events/unsubscribe", "name"],
   ["prompts/get", "name"],
   ["resources/read", "uri"],
+  ["tasks/get", "taskId"],
+  ["tasks/update", "taskId"],
+  ["tasks/cancel", "taskId"],
 ])
+
+/** Methods of the Tasks extension: answered by the modern core itself, only while the extension is enabled. */
+export const TASK_EXTENSION_METHODS: readonly string[] = ["tasks/get", "tasks/update", "tasks/cancel"]

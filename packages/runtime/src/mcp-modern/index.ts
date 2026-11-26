@@ -9,6 +9,7 @@ import {
   ERR_METHOD_NOT_FOUND,
   ERR_MISSING_CLIENT_CAPABILITY,
   META_CLIENT_CAPABILITIES,
+  TASK_EXTENSION_METHODS,
   META_SERVER_INFO,
 } from "./constants.js"
 import {
@@ -25,9 +26,11 @@ import {
 export * from "./constants.js"
 export * from "./mrtr-state.js"
 export * from "./human-gate.js"
+export * from "./tasks.js"
 export { forwardParams } from "./bridge.js"
 export { decodeHeaderValue, isJsonContentType, normalizeHeaders, type ParsedRequest } from "./validate.js"
 import type { HumanGate } from "./human-gate.js"
+import { TASKS_EXTENSION, clientDeclaresTasks, handleTaskRequest, type TaskProjector } from "./tasks.js"
 
 export function extractClientCapabilities(req: ParsedRequest): Record<string, unknown> | undefined {
   const meta = req.params._meta
@@ -78,6 +81,11 @@ export interface ModernDeps {
   clientCapabilitiesOf?: (req: ParsedRequest) => Record<string, unknown> | undefined
   /** Optional MRTR elicitation gate for parked permissions and session questions. */
   humanGate?: HumanGate
+  /**
+   * Tasks extension (one session turn projected as a task). Absent = disabled: `server/discover` does not announce it,
+   * `tasks/*` answer `-32601` and `agent_start` / `agent_prompt` answer as before.
+   */
+  tasks?: TaskProjector
   /** Resolved caller session id (absent for the operator), passed to `humanGate`. */
   callerSessionId?: string
   /** Called for `server/discover` and `tools/list` with the JSON-RPC response sent back (feeds the observer). */
@@ -157,14 +165,18 @@ async function answer(
   if (request.method === "server/discover") {
     const capabilities: Record<string, unknown> = { ...bridge.capabilities }
     delete capabilities.logging // removed in the modern era
-    if (deps.extensions !== undefined) {
+    if (deps.extensions !== undefined || deps.tasks !== undefined) {
       const existing =
         typeof capabilities.extensions === "object" &&
         capabilities.extensions !== null &&
         !Array.isArray(capabilities.extensions)
           ? (capabilities.extensions as Record<string, unknown>)
           : {}
-      capabilities.extensions = { ...existing, ...deps.extensions }
+      capabilities.extensions = {
+        ...existing,
+        ...(deps.extensions ?? {}),
+        ...(deps.tasks ? { [TASKS_EXTENSION]: {} } : {}),
+      }
     }
     return decorate(
       "server/discover",
@@ -179,20 +191,37 @@ async function answer(
   }
 
   const forward = () => bridge.request(request.method, forwardParams(request.params), deps.signal)
+  const clientCapabilities = (deps.clientCapabilitiesOf ?? extractClientCapabilities)(request)
 
-  if (request.method === "tools/call" && deps.humanGate) {
+  if (deps.tasks && TASK_EXTENSION_METHODS.includes(request.method)) {
+    const result = await handleTaskRequest(deps.tasks, {
+      method: request.method,
+      params: request.params,
+      ...(deps.callerSessionId !== undefined ? { callerSessionId: deps.callerSessionId } : {}),
+      ...(clientCapabilities !== undefined ? { clientCapabilities } : {}),
+    })
+    return decorate(request.method, result, bridge.serverInfo, hints)
+  }
+
+  if (request.method === "tools/call" && (deps.humanGate || deps.tasks)) {
     const tool = typeof request.params.name === "string" ? request.params.name : ""
-    const clientCapabilities = (deps.clientCapabilitiesOf ?? extractClientCapabilities)(request)
-    const rawResult = await deps.humanGate.handleToolCall(
-      {
-        tool,
-        params: request.params,
-        ...(deps.callerSessionId !== undefined ? { callerSessionId: deps.callerSessionId } : {}),
-        ...(clientCapabilities !== undefined ? { clientCapabilities } : {}),
-      },
-      forward,
-    )
-    return decorate(request.method, rawResult, bridge.serverInfo, hints)
+    const gated = deps.humanGate
+      ? () =>
+          deps.humanGate!.handleToolCall(
+            {
+              tool,
+              params: request.params,
+              ...(deps.callerSessionId !== undefined ? { callerSessionId: deps.callerSessionId } : {}),
+              ...(clientCapabilities !== undefined ? { clientCapabilities } : {}),
+            },
+            forward,
+          )
+      : forward
+    // The server decides to create a task, never the client: only for a client that declared the extension.
+    const plan = deps.tasks && clientDeclaresTasks(clientCapabilities) ? deps.tasks.plan(tool, request.params) : undefined
+    const rawResult = await gated()
+    const answer = plan && deps.tasks ? deps.tasks.finalize(plan, rawResult, deps.callerSessionId) : rawResult
+    return decorate(request.method, answer, bridge.serverInfo, hints)
   }
 
   return decorate(request.method, await forward(), bridge.serverInfo, hints)
@@ -222,7 +251,8 @@ export async function handleModernRequest(input: ModernRequestInput, deps: Moder
   const request = parsed.request
   // No client-to-server notification exists in the modern core: accept and ignore (202, no body).
   if (request.id === undefined) return { status: 202, headers: {} }
-  const invalid = validateRequest(request, headers, accepted, ALLOWED_METHODS, advertised)
+  const allowed = deps.tasks ? new Set([...ALLOWED_METHODS, ...TASK_EXTENSION_METHODS]) : ALLOWED_METHODS
+  const invalid = validateRequest(request, headers, accepted, allowed, advertised)
   if (invalid) return errorResponse(invalid)
 
   const id = request.id

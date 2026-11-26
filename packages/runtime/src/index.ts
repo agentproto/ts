@@ -197,15 +197,23 @@ import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
-import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveHumanGateSurfaces } from "./mcp-config.js"
-import { createHumanGate, createMrtrStateStore, defaultMrtrStateDir } from "./mcp-modern/index.js"
+import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveHumanGateSurfaces, resolveTasks } from "./mcp-config.js"
+import {
+  createHumanGate,
+  createMrtrStateStore,
+  createTaskProjector,
+  createTurnTaskLedger,
+  defaultMrtrStateDir,
+  defaultTurnTaskLedgerDir,
+} from "./mcp-modern/index.js"
 import { registerServedSkills } from "./mcp-modern/skills.js"
 import { registerExposedAppTools } from "./app-exposed-tools.js"
 import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { spawningCallerContext } from "./spawning-caller-context.js"
 import type { AnonymousMessageApprovalDetail } from "./message-tools.js"
 import { resolveTaskDefaults } from "./task-defaults.js"
-import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
+import { defaultTranscriptBaseDir, sessionEventsPath, setDefaultSessionsBaseDir } from "./transcript-writer.js"
+import { readLastAssistantTextSync } from "./session-outcome.js"
 import { backfillSessionIndexesAsync } from "./session-index.js"
 import {
   DEFAULT_SESSION_RETENTION_BOOT_DELAY_MS,
@@ -5503,6 +5511,22 @@ export async function createGateway(
     surfaces: () => resolveHumanGateSurfaces(),
   })
 
+  const mcpTaskProjector = createTaskProjector({
+    sessions,
+    ledger: createTurnTaskLedger({
+      dir: persist ? defaultTurnTaskLedgerDir() : join(mkdtempSync(join(tmpdir(), "agentproto-mcp-tasks-")), "tasks"),
+    }),
+    humanGate: mcpHumanGate,
+    readFinalText: id => readLastAssistantTextSync(sessionEventsPath(id, sessions.transcriptBaseDir)),
+  })
+  sessionEvents.on("session:turn-end", ev => {
+    try {
+      mcpTaskProjector.observeTurnEnd(ev.sessionId, ev.reason)
+    } catch {
+      // the projection must never disturb the session bus
+    }
+  })
+
   const http = await startHttpServer({
     port,
     bind: opts.bind,
@@ -5527,6 +5551,7 @@ export async function createGateway(
       decorateServer: async server => {
         if (await resolveSkillsExtension()) registerServedSkills(server)
       },
+      tasks: async () => ((await resolveTasks()) ? mcpTaskProjector : undefined),
     },
     orchestratorMcpServerFactory,
     loadCommandAllowlist: () => loadAllowlistEntries(workspace),
