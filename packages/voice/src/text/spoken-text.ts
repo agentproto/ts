@@ -43,18 +43,19 @@ const SEGMENT_GLYPHS = /[→←►▶◀•▪◦‣·]/
  * of nothing but a declared label, ignoring markdown, emojis and edge
  * punctuation: "→ **Voice sent** → **hello**" keeps only "hello".
  */
+function bareSegment(segment: string): string {
+  return segment
+    .replace(/\*\*|__|[*_~`#|]/g, " ")
+    .replace(/\p{Extended_Pictographic}|[️‍]/gu, "")
+    .replace(/[\s.!?…:,;-]+/gu, " ")
+    .trim()
+    .toLowerCase()
+}
+
 function dropLabelSegments(line: string, labels: ReadonlySet<string>): string {
   return line
     .split(SEGMENT_GLYPHS)
-    .filter(segment => {
-      const bare = segment
-        .replace(/\*\*|__|[*_~`#|]/g, " ")
-        .replace(/\p{Extended_Pictographic}|[️‍]/gu, "")
-        .replace(/[\s.!?…:,;-]+/gu, " ")
-        .trim()
-        .toLowerCase()
-      return !labels.has(bare)
-    })
+    .filter(segment => !labels.has(bareSegment(segment)))
     .join(" → ")
 }
 
@@ -665,7 +666,7 @@ export function toSpokenText(
   options: ToSpokenTextOptions = {}
 ): string {
   const labels = (options.stripLabels ?? []).filter(l => l.length > 0)
-  const labelSet = new Set(labels.map(l => l.toLowerCase()))
+  const labelSet = new Set(labels.map(bareSegment))
   const lines = text
     .split("\n")
     .map(line => (labelSet.size > 0 ? dropLabelSegments(line, labelSet) : line))

@@ -81,6 +81,12 @@ describe("toSpokenText", () => {
     ).toBe("hello. Bye !")
   })
 
+  it("matches a label declared with trailing punctuation between glyphs", () => {
+    expect(
+      toSpokenText("→ **Voice sent** → hello", "en", { stripLabels: ["Voice sent!"] })
+    ).toBe("hello")
+  })
+
   it("strips URLs - never read a link aloud", () => {
     expect(toSpokenText("Regarde https://example.com/recette ça aide")).toBe(
       "Regarde ça aide"
