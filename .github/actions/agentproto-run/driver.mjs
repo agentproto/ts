@@ -616,6 +616,10 @@ async function main() {
       sessionIds.add(s.id)
     }
   }
+  // Same id set the provenance footer reports (run.result.sessionIds, ids
+  // recovered from error text, the session_list sweep), so a step that failed
+  // before any heartbeat saw its sessionId is retired too.
+  for (const id of sessionIds) runSessionIds.add(id)
   console.log(
     `driver: run produced sessionIds=${JSON.stringify([...sessionIds])}` +
       (structuredIdCount === 0 && sessionIds.size > 0 ? " (recovered via agent_sessions_list)" : ""),
