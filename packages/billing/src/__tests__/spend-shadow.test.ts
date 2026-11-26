@@ -56,3 +56,17 @@ describe("shadow: a failing alert never loses the record", () => {
     expect(await shadow.record(ev({ providerCost: { amount: Number.NaN, currency: "USD" } }))).toMatchObject({ status: "unpriced", reason: "invalid-cost" })
   })
 })
+
+describe("credentialSource: an opaque tag, passed through and never interpreted", () => {
+  it("is copied to the price result and the shadow entry, whatever its value, and does not change the price", async () => {
+    const got: ShadowEntry[] = []
+    const shadow = createShadow({ pricer, sink: { write: e => void got.push(e) } })
+    const plain = await shadow.record(ev())
+    for (const tag of ["customer", "platform", "anything-at-all", ""]) {
+      const r = await shadow.record(ev({ credentialSource: tag }))
+      expect(r).toMatchObject({ status: "priced", event: { credentialSource: tag }, price: { credentialSource: tag } })
+      expect(r.status === "priced" && plain.status === "priced" && r.price.minor === plain.price.minor).toBe(true)
+    }
+    expect(plain.status === "priced" && "credentialSource" in plain.price).toBe(false)
+  })
+})

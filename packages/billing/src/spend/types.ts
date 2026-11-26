@@ -22,6 +22,8 @@ export interface UsageEvent {
   units?: number
   /** The cost the provider reported or the host measured, in major units. */
   providerCost?: ProviderCost
+  /** Who supplied the credential for the call (e.g. the platform or the customer). An opaque tag: the kit copies it to the result and the shadow entry and never reads it. */
+  credentialSource?: string
   /** Idempotency key of this action: a replay writes nothing twice. */
   key: string
   accountId: string
@@ -69,6 +71,8 @@ export interface PriceResult {
   /** minor / costMinor, when the cost is known. */
   realMargin: number | undefined
   atCost: boolean
+  /** Copied from the event, unread. */
+  credentialSource?: string
 }
 
 export class UnpricedUsageError extends Error {

@@ -98,7 +98,7 @@ export function createPricer(deps: PricerDeps): Pricer {
       const costMinor = cost.amount * ratio * scale
       const minor = Math.max(floor, Math.ceil(costMinor * margin - EPS))
       if (!Number.isFinite(minor)) throw new UnpricedUsageError("invalid-cost", `category '${c.id}': the price is not a finite number`)
-      return { minor, categoryId: c.id, margin, atCost, costMinor, realMargin: costMinor > 0 ? minor / costMinor : undefined }
+      return { minor, categoryId: c.id, margin, atCost, costMinor, realMargin: costMinor > 0 ? minor / costMinor : undefined, ...(event.credentialSource !== undefined ? { credentialSource: event.credentialSource } : {}) }
     },
   }
 }
