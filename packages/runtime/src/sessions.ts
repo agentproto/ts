@@ -15394,7 +15394,9 @@ export function createSessionsRegistry(opts?: {
       // long after the child stopped waiting, and the reply would land
       // in the child's input. The buffer is joined first so a query
       // split across two chunks is still recognised.
-      const replay = stripTerminalQueries(Buffer.concat(rt.recentBytes))
+      const replay = stripTerminalQueries(
+        Buffer.concat(rt.recentBytes, rt.recentBytesSize),
+      )
       if (replay.byteLength > 0) onData(replay)
       // Subscriber registration: a monotonically-growing key so the
       // size map can hold the per-subscriber dims and detach is O(1).

@@ -23,7 +23,12 @@
  */
 
 /** One alternation per query family. Matched on a latin1 string so every
- *  byte maps to exactly one character and nothing else is altered. */
+ *  byte maps to exactly one character and nothing else is altered.
+ *
+ *  The `g` flag makes this regex stateful: use it only with
+ *  `String.prototype.replace`, which resets `lastIndex` when it finishes.
+ *  `CSI 0 n` is not listed on purpose: it is the "terminal ready" reply to a
+ *  status request, not a request. */
 const QUERY_SEQUENCES = new RegExp(
   [
     "\\x1b\\[[>=]?0?c", // device attributes
