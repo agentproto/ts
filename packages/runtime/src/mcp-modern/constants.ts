@@ -1,10 +1,14 @@
 /**
- * Constants of the stateless "modern" MCP era (protocol 2026-07-28). One list of supported versions feeds BOTH
- * `server/discover` and the `-32022` error, so they cannot drift (the conformance suite requires
- * `error.data.supported` to be a subset of discover's `supportedVersions`).
+ * Constants of the stateless "modern" MCP era (protocol 2026-07-28). Accepted
+ * modern versions (`DEFAULT_SUPPORTED_VERSIONS`) are kept distinct from
+ * dual-era advertised versions (`GATEWAY_ADVERTISED_VERSIONS`) so a dual-era
+ * gateway can advertise `2025-11-25` in `server/discover` and `-32022` without
+ * accepting `2025-11-25` on the modern path.
  */
 export const MODERN_PROTOCOL_VERSION = "2026-07-28"
+export const LEGACY_PROTOCOL_VERSION = "2025-11-25"
 export const DEFAULT_SUPPORTED_VERSIONS: readonly string[] = [MODERN_PROTOCOL_VERSION]
+export const GATEWAY_ADVERTISED_VERSIONS: readonly string[] = [MODERN_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION]
 
 export const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
 export const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
@@ -17,7 +21,11 @@ export const ERR_METHOD_NOT_FOUND = -32601
 export const ERR_INVALID_PARAMS = -32602
 export const ERR_INTERNAL = -32603
 export const ERR_HEADER_MISMATCH = -32020
+export const ERR_MISSING_CLIENT_CAPABILITY = -32021
 export const ERR_UNSUPPORTED_VERSION = -32022
+
+/** Methods that exist only in the modern era and therefore dispatch to the modern handler on `/mcp`. */
+export const MODERN_ONLY_METHODS: ReadonlySet<string> = new Set(["server/discover"])
 
 /** Methods forwarded to the in-process server. Everything else is 404 `-32601` (initialize is answered separately). */
 export const FORWARDED_METHODS: ReadonlySet<string> = new Set([

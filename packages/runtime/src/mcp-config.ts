@@ -11,6 +11,7 @@ import type { McpConfig } from "./config.js"
 export type NoCallerIdentityPolicy = "block" | "ask" | "accept"
 
 export const DEFAULT_NO_CALLER_IDENTITY: NoCallerIdentityPolicy = "block"
+export const DEFAULT_MODERN_ERA = true
 
 export async function resolveMcpConfig(
   loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
@@ -27,4 +28,11 @@ export async function resolveNoCallerIdentity(
 ): Promise<NoCallerIdentityPolicy> {
   const value = (await resolveMcpConfig(loadCfg)).noCallerIdentity
   return value === "accept" || value === "ask" ? value : DEFAULT_NO_CALLER_IDENTITY
+}
+
+export async function resolveModernEra(
+  loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
+): Promise<boolean> {
+  const value = (await resolveMcpConfig(loadCfg)).modernEra
+  return typeof value === "boolean" ? value : DEFAULT_MODERN_ERA
 }

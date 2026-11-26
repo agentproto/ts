@@ -212,18 +212,41 @@ describe("/mcp observer (end to end over the real HTTP transport)", () => {
     })
   })
 
-  it("records the header era (pre-coercion) on tools/list", async () => {
+  it("records the header era (pre-coercion) on legacy tools/list and the modern era on 2026-07-28 tools/list", async () => {
     await withDaemon("eager", async ({ port, store }) => {
-      const res = await fetch(`http://127.0.0.1:${port}/mcp?callerSessionId=sess_modern`, {
+      const legacyCoerced = await fetch(`http://127.0.0.1:${port}/mcp?callerSessionId=sess_coerced`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2099-01-01",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+      })
+      expect(legacyCoerced.status).toBe(200)
+      expect(store.get("sess_coerced")?.toolsList?.protocolVersion).toBe("2099-01-01")
+
+      const modern = await fetch(`http://127.0.0.1:${port}/mcp?callerSessionId=sess_modern`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
           "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "tools/list",
         },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+          params: {
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          },
+        }),
       })
-      expect(res.status).toBe(200)
+      expect(modern.status).toBe(200)
       expect(store.get("sess_modern")?.toolsList?.protocolVersion).toBe("2026-07-28")
     })
   })

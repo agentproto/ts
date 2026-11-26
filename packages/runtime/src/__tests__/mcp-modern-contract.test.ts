@@ -1,9 +1,9 @@
 /**
- * Pins the MCP 2026-07-28 HTTP contract for the daemon's `/mcp` endpoint.
+ * Pins the legacy 2025-11-25 HTTP characterization for the daemon's `/mcp` endpoint
+ * alongside the `mcpModern.enabled = false` rollback path.
  *
- * This file keeps the `current behaviour (characterization)` tests: real tests that record what root `/mcp` answers
- * TODAY (2025-11-25 SDK transport, `2026-07-28` header coerced down), so the modern adapter work cannot change root
- * `/mcp` by accident. The 2026-07-28 contract itself is pinned in `mcp-modern-contract-live.test.ts`.
+ * The 2026-07-28 contract itself is pinned in `mcp-modern-contract-live.test.ts` and
+ * `mcp-modern-gateway.test.ts`.
  *
  * Spec fixtures live in `./fixtures/mcp-2026-07-28/` (see its README).
  */
@@ -43,6 +43,7 @@ const ERROR_32020 = fixture("error-32020-header-mismatch")
 const ERROR_32022 = fixture("error-32022-unsupported-protocol-version")
 
 const MODERN_VERSION = "2026-07-28"
+const LEGACY_VERSION = "2025-11-25"
 const MODERN_META = {
   "io.modelcontextprotocol/protocolVersion": MODERN_VERSION,
   "io.modelcontextprotocol/clientInfo": { name: "contract-test", version: "0.0.1" },
@@ -143,16 +144,16 @@ function postHeaders(extra: Record<string, string> = {}): Record<string, string>
   return { "content-type": "application/json", accept: ACCEPT, ...extra }
 }
 
-/** A well-formed modern POST: spec headers + `_meta` in the body. */
-function modernPost(
+/** A legacy 2025-11-25 POST (no modern `_meta` handshake keys). */
+function legacyPost(
   method: string,
   params: Json = {},
-  headers: Record<string, string> = { "mcp-protocol-version": MODERN_VERSION, "mcp-method": method },
+  headers: Record<string, string> = { "mcp-protocol-version": LEGACY_VERSION },
 ): Promise<Reply> {
   return send({
     method: "POST",
     headers: postHeaders(headers),
-    body: rpc(method, { ...params, _meta: MODERN_META }),
+    body: rpc(method, params),
   })
 }
 
@@ -205,14 +206,13 @@ describe("fixtures are spec-shaped (sanity)", () => {
   })
 })
 
-describe("current behaviour (characterization)", () => {
-  // These record what the daemon does on `/mcp` today, which is NOT the 2026-07-28
-  // contract. The wrong-per-spec answers are deliberate: P1 must not change root
-  // `/mcp` (the adapter is mounted on a new route), so a diff here means root moved.
+describe("legacy 2025-11-25 behaviour (characterization)", () => {
+  // These record what the daemon answers to legacy 2025-11-25 clients on `/mcp`
+  // when dual-era routing is active: existing 2025-11-25 clients must remain intact.
 
-  describe("modern-era header on a legacy-shaped transport", () => {
-    it("tools/list under `MCP-Protocol-Version: 2026-07-28` is coerced and answered in the legacy shape", async () => {
-      const r = await modernPost("tools/list")
+  describe("legacy 2025-11-25 transport", () => {
+    it("tools/list under `MCP-Protocol-Version: 2025-11-25` answers in the legacy SSE shape", async () => {
+      const r = await legacyPost("tools/list")
       expect(r.status).toBe(200)
       expect(r.headers.get("content-type")).toBe("text/event-stream")
       expect(r.json).toMatchObject({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "probe" }] } })
@@ -221,42 +221,33 @@ describe("current behaviour (characterization)", () => {
       expect(r.json?.result).not.toHaveProperty("cacheScope")
     })
 
-    it("tools/call (spec fixture headers + `_meta`) executes and answers without `resultType`", async () => {
-      const fx = TOOLS_CALL_REQUEST
-      const r = await send({
-        method: "POST",
-        headers: { ...fx.headers, accept: ACCEPT },
-        body: JSON.stringify({
-          ...fx.body,
-          params: { ...fx.body.params, name: "probe", arguments: {} },
-        }),
-      })
-      // `Mcp-Name: get_weather` does not match the body name `probe`: ignored today.
+    it("tools/call executes and answers without `resultType`", async () => {
+      const r = await legacyPost("tools/call", { name: "probe", arguments: {} })
       expect(r.status).toBe(200)
       expect(r.json).toMatchObject({ id: 1, result: { content: [{ type: "text", text: "probe" }] } })
       expect(r.json?.result).not.toHaveProperty("resultType")
     })
 
     it("events/list answers its payload without `resultType`", async () => {
-      const r = await modernPost("events/list")
+      const r = await legacyPost("events/list")
       expect(r.status).toBe(200)
       expect(r.json?.result).toEqual({ events: [], nextCursor: null })
     })
 
-    it("every POST answer is an SSE stream, never `application/json`", async () => {
-      const r = await modernPost("tools/list")
+    it("every legacy POST answer is an SSE stream when Accept includes text/event-stream", async () => {
+      const r = await legacyPost("tools/list")
       expect(r.headers.get("content-type")).toBe("text/event-stream")
       expect(r.text).toMatch(/^event: message\ndata: /)
     })
 
-    it("a newer unknown version (2099-01-01) is also coerced down and served", async () => {
-      const r = await modernPost("tools/list", {}, { "mcp-protocol-version": "2099-01-01" })
+    it("a newer unknown version without modern `_meta` (2099-01-01) is coerced down and served on legacy", async () => {
+      const r = await legacyPost("tools/list", {}, { "mcp-protocol-version": "2099-01-01" })
       expect(r.status).toBe(200)
       expect(r.json?.result?.tools).toHaveLength(1)
     })
 
     it("an unsupported version that is not newer (1900-01-01) is a 400 with legacy `-32000`, `id: null`, no `data`", async () => {
-      const r = await modernPost("tools/list", {}, { "mcp-protocol-version": "1900-01-01" })
+      const r = await legacyPost("tools/list", {}, { "mcp-protocol-version": "1900-01-01" })
       expect(r.status).toBe(400)
       expect(r.json?.id).toBeNull()
       expect(r.json?.error.code).toBe(-32000)
@@ -265,83 +256,90 @@ describe("current behaviour (characterization)", () => {
     })
   })
 
-  describe("server/discover", () => {
-    it("the spec discover request fixture is answered `-32601` inside an HTTP 200 (not a 404)", async () => {
-      const r = await send({
-        method: "POST",
-        headers: postHeaders({ "mcp-protocol-version": MODERN_VERSION, "mcp-method": "server/discover" }),
-        body: JSON.stringify(DISCOVER_REQUEST.body),
+  describe("server/discover rollback (mcpModern.enabled = false)", () => {
+    it("when mcpModern is disabled, discover is answered `-32601` inside an HTTP 200 (legacy coercion)", async () => {
+      const rollbackPort = await freePort()
+      const rollbackHttp = await startHttpServer({
+        port: rollbackPort,
+        auth: { mode: "none" },
+        mcpServerFactory,
+        mcpModern: { enabled: false },
+        conversations: noopConversations(),
+        events: createRuntimeEvents(),
+        heartbeat: noopHeartbeat(),
+        meta: { workspace: process.cwd(), registered: [] },
       })
-      expect(r.status).toBe(200)
-      expect(r.json).toEqual({ jsonrpc: "2.0", id: "discover-1", error: { code: -32601, message: "Method not found" } })
-    })
-
-    it("discover is never answered with a result that advertises `supportedVersions`", async () => {
-      const r = await modernPost("server/discover")
-      expect(r.json?.result).toBeUndefined()
+      try {
+        const res = await fetch(`http://127.0.0.1:${rollbackPort}/mcp`, {
+          method: "POST",
+          headers: postHeaders({ "mcp-protocol-version": MODERN_VERSION, "mcp-method": "server/discover" }),
+          body: JSON.stringify(DISCOVER_REQUEST.body),
+        })
+        const text = await res.text()
+        expect(res.status).toBe(200)
+        expect(parseBody(text)).toEqual({
+          jsonrpc: "2.0",
+          id: "discover-1",
+          error: { code: -32601, message: "Method not found" },
+        })
+      } finally {
+        await rollbackHttp.stop()
+      }
     })
   })
 
-  describe("headers the 2026-07-28 spec validates are ignored today", () => {
-    // Safety net for P1: a missing or mismatched MCP-Protocol-Version, Mcp-Method or Mcp-Name is served with 200
-    // on root `/mcp`. The events-only route will reject them (-32020); these tests must keep passing on `/mcp`.
-    it("a request without `MCP-Protocol-Version` is served (legacy behaviour), not a 400", async () => {
-      const r = await send({ method: "POST", headers: postHeaders(), body: rpc("tools/list", { _meta: MODERN_META }) })
+  describe("headers ignored on legacy 2025-11-25 requests", () => {
+    it("a legacy request without `MCP-Protocol-Version` is served, not a 400", async () => {
+      const r = await send({ method: "POST", headers: postHeaders(), body: rpc("tools/list", {}) })
       expect(r.status).toBe(200)
       expect(r.json?.result?.tools).toHaveLength(1)
     })
 
-    it("`MCP-Protocol-Version` that differs from the `_meta` version is served", async () => {
-      const r = await modernPost("tools/list", {}, { "mcp-protocol-version": "2025-11-25", "mcp-method": "tools/list" })
+    it("`Mcp-Method` that differs from the body `method` is ignored on legacy", async () => {
+      const r = await legacyPost("tools/list", {}, { "mcp-protocol-version": LEGACY_VERSION, "mcp-method": "tools/call" })
       expect(r.status).toBe(200)
       expect(r.json?.result?.tools).toHaveLength(1)
     })
 
-    it("`Mcp-Method` that differs from the body `method` is served", async () => {
-      const r = await modernPost("tools/list", {}, { "mcp-protocol-version": MODERN_VERSION, "mcp-method": "tools/call" })
-      expect(r.status).toBe(200)
-      expect(r.json?.result?.tools).toHaveLength(1)
-    })
-
-    it("a tools/call with a missing or different `Mcp-Name` is executed", async () => {
-      const base = { "mcp-protocol-version": MODERN_VERSION, "mcp-method": "tools/call" }
-      const missing = await modernPost("tools/call", { name: "probe", arguments: {} }, base)
-      const different = await modernPost("tools/call", { name: "probe", arguments: {} }, { ...base, "mcp-name": "other" })
+    it("a legacy tools/call with a missing or different `Mcp-Name` is executed", async () => {
+      const base = { "mcp-protocol-version": LEGACY_VERSION, "mcp-method": "tools/call" }
+      const missing = await legacyPost("tools/call", { name: "probe", arguments: {} }, base)
+      const different = await legacyPost("tools/call", { name: "probe", arguments: {} }, { ...base, "mcp-name": "other" })
       for (const r of [missing, different]) {
         expect(r.status).toBe(200)
         expect(r.json?.result?.content).toEqual([{ type: "text", text: "probe" }])
       }
     })
 
-    it("an unknown method is an HTTP 200 carrying `-32601` (the spec asks for HTTP 404)", async () => {
-      const r = await modernPost("nope/nothing")
+    it("an unknown method on legacy is an HTTP 200 carrying `-32601`", async () => {
+      const r = await legacyPost("nope/nothing")
       expect(r.status).toBe(200)
       expect(r.json?.error?.code).toBe(-32601)
     })
 
-    it("header names are matched case-insensitively", async () => {
+    it("header names are matched case-insensitively on legacy", async () => {
       const r = await send({
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: ACCEPT, "MCP-Protocol-Version": MODERN_VERSION, "MCP-METHOD": "tools/list" },
-        body: rpc("tools/list", { _meta: MODERN_META }),
+        headers: { "Content-Type": "application/json", Accept: ACCEPT, "MCP-Protocol-Version": LEGACY_VERSION },
+        body: rpc("tools/list", {}),
       })
       expect(r.status).toBe(200)
       expect(r.json?.result?.tools).toHaveLength(1)
     })
 
-    it("a duplicated `MCP-Protocol-Version` is joined by the HTTP stack and coerced, not rejected", async () => {
+    it("a duplicated `MCP-Protocol-Version` without modern `_meta` is coerced on legacy", async () => {
       const headers = new Headers(postHeaders())
       headers.append("mcp-protocol-version", MODERN_VERSION)
-      headers.append("mcp-protocol-version", "2025-11-25")
-      const r = await send({ method: "POST", headers, body: rpc("tools/list", { _meta: MODERN_META }) })
+      headers.append("mcp-protocol-version", LEGACY_VERSION)
+      const r = await send({ method: "POST", headers, body: rpc("tools/list", {}) })
       expect(r.status).toBe(200)
       expect(r.json?.result?.tools).toHaveLength(1)
     })
   })
 
   describe("verbs and session headers", () => {
-    it("GET with `Accept: text/event-stream` opens an idle 200 SSE stream (the spec asks for 405)", async () => {
-      const r = await headersOnly("GET", { accept: "text/event-stream", "mcp-protocol-version": MODERN_VERSION })
+    it("GET with `Accept: text/event-stream` on legacy opens an idle 200 SSE stream", async () => {
+      const r = await headersOnly("GET", { accept: "text/event-stream", "mcp-protocol-version": LEGACY_VERSION })
       expect(r.status).toBe(200)
       expect(r.headers["content-type"]).toBe("text/event-stream")
     })
@@ -351,14 +349,14 @@ describe("current behaviour (characterization)", () => {
       expect(r.status).toBe(406)
     })
 
-    it("DELETE is a 200 with an empty body (the spec asks for 405)", async () => {
-      const r = await send({ method: "DELETE", headers: { "mcp-protocol-version": MODERN_VERSION } })
+    it("DELETE on legacy is a 200 with an empty body", async () => {
+      const r = await send({ method: "DELETE", headers: { "mcp-protocol-version": LEGACY_VERSION } })
       expect(r.status).toBe(200)
       expect(r.text).toBe("")
     })
 
-    it("DELETE with an `Mcp-Session-Id` is still a 200", async () => {
-      const r = await send({ method: "DELETE", headers: { "mcp-protocol-version": MODERN_VERSION, "mcp-session-id": "abc" } })
+    it("DELETE with an `Mcp-Session-Id` on legacy is still a 200", async () => {
+      const r = await send({ method: "DELETE", headers: { "mcp-protocol-version": LEGACY_VERSION, "mcp-session-id": "abc" } })
       expect(r.status).toBe(200)
     })
 
@@ -375,7 +373,7 @@ describe("current behaviour (characterization)", () => {
     })
 
     it("a request `Mcp-Session-Id` is ignored and no session id is minted or echoed", async () => {
-      const r = await modernPost("tools/list", {}, { "mcp-protocol-version": MODERN_VERSION, "mcp-method": "tools/list", "mcp-session-id": "abc" })
+      const r = await legacyPost("tools/list", {}, { "mcp-protocol-version": LEGACY_VERSION, "mcp-session-id": "abc" })
       expect(r.status).toBe(200)
       expect(r.headers.get("mcp-session-id")).toBeNull()
     })
@@ -383,21 +381,21 @@ describe("current behaviour (characterization)", () => {
     it("a legacy `initialize` is answered at 2025-11-25 without minting an `Mcp-Session-Id`", async () => {
       const r = await send({
         method: "POST",
-        headers: postHeaders({ "mcp-protocol-version": "2025-11-25" }),
+        headers: postHeaders({ "mcp-protocol-version": LEGACY_VERSION }),
         body: rpc("initialize", {
-          protocolVersion: "2025-11-25",
+          protocolVersion: LEGACY_VERSION,
           capabilities: {},
           clientInfo: { name: "contract-test", version: "0.0.1" },
         }),
       })
       expect(r.status).toBe(200)
-      expect(r.json?.result).toMatchObject({ protocolVersion: "2025-11-25", serverInfo: { name: "main" } })
+      expect(r.json?.result).toMatchObject({ protocolVersion: LEGACY_VERSION, serverInfo: { name: "main" } })
       expect(r.json?.result.capabilities).toHaveProperty("events")
       expect(r.headers.get("mcp-session-id")).toBeNull()
     })
 
     it("a request `Last-Event-ID` is ignored", async () => {
-      const r = await modernPost("tools/list", {}, { "mcp-protocol-version": MODERN_VERSION, "last-event-id": "5" })
+      const r = await legacyPost("tools/list", {}, { "mcp-protocol-version": LEGACY_VERSION, "last-event-id": "5" })
       expect(r.status).toBe(200)
       expect(r.json?.result?.tools).toHaveLength(1)
     })
@@ -405,7 +403,7 @@ describe("current behaviour (characterization)", () => {
 
   describe("body and content handling", () => {
     it("an untrusted `Origin` is a 403 `mcp_forbidden_origin` (a non-JSON-RPC body), on POST and GET", async () => {
-      const post = await modernPost("tools/list", {}, { "mcp-protocol-version": MODERN_VERSION, origin: "https://evil.example" })
+      const post = await legacyPost("tools/list", {}, { "mcp-protocol-version": LEGACY_VERSION, origin: "https://evil.example" })
       expect(post.status).toBe(403)
       expect(post.json).toMatchObject({ error: "mcp_forbidden_origin" })
       const get = await send({ method: "GET", headers: { origin: "https://evil.example" } })
@@ -413,14 +411,14 @@ describe("current behaviour (characterization)", () => {
     })
 
     it("malformed JSON is a 400 with `-32700` and `id: null`", async () => {
-      const r = await send({ method: "POST", headers: postHeaders({ "mcp-protocol-version": MODERN_VERSION }), body: "{not json" })
+      const r = await send({ method: "POST", headers: postHeaders({ "mcp-protocol-version": LEGACY_VERSION }), body: "{not json" })
       expect(r.status).toBe(400)
       expect(r.json).toEqual({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error: Invalid JSON" }, id: null })
     })
 
-    it("a body over 4194304 bytes is a 413 with `-32000`", async () => {
+    it("a body over 4194304 bytes on legacy is a 413 with `-32000`", async () => {
       const big = rpc("tools/call", { name: "probe", arguments: { filler: "a".repeat(4_194_304 + 1024) } })
-      const r = await send({ method: "POST", headers: postHeaders({ "mcp-protocol-version": MODERN_VERSION }), body: big })
+      const r = await send({ method: "POST", headers: postHeaders({ "mcp-protocol-version": LEGACY_VERSION }), body: big })
       expect(r.status).toBe(413)
       expect(r.json?.error).toMatchObject({ code: -32000 })
       expect(r.json?.error.message).toMatch(/must not exceed 4194304 bytes/)
@@ -429,33 +427,33 @@ describe("current behaviour (characterization)", () => {
     it("a notification (no `id`) is a 202 with an empty body", async () => {
       const r = await send({
         method: "POST",
-        headers: postHeaders({ "mcp-protocol-version": MODERN_VERSION }),
+        headers: postHeaders({ "mcp-protocol-version": LEGACY_VERSION }),
         body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
       })
       expect(r.status).toBe(202)
       expect(r.text).toBe("")
     })
 
-    it("an absent `Accept` is a 406 with `-32000`", async () => {
-      const headers: Record<string, string> = { "content-type": "application/json", "mcp-protocol-version": MODERN_VERSION }
-      const r = await send({ method: "POST", headers, body: rpc("tools/list", { _meta: MODERN_META }) })
+    it("an absent `Accept` on legacy is a 406 with `-32000`", async () => {
+      const headers: Record<string, string> = { "content-type": "application/json", "mcp-protocol-version": LEGACY_VERSION }
+      const r = await send({ method: "POST", headers, body: rpc("tools/list", {}) })
       expect(r.status).toBe(406)
       expect(r.json?.error.code).toBe(-32000)
     })
 
-    it("a JSON-only `Accept` is served as a 200 JSON body (MCP Apps hosts without SSE)", async () => {
-      const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json", "mcp-protocol-version": MODERN_VERSION }
-      const r = await send({ method: "POST", headers, body: rpc("tools/list", { _meta: MODERN_META }) })
+    it("a JSON-only `Accept` on legacy is served as a 200 JSON body (MCP Apps hosts without SSE)", async () => {
+      const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json", "mcp-protocol-version": LEGACY_VERSION }
+      const r = await send({ method: "POST", headers, body: rpc("tools/list", {}) })
       expect(r.status).toBe(200)
       expect(r.headers.get("content-type")).toContain("application/json")
       expect(r.json?.result?.tools).toHaveLength(1)
     })
 
-    it("a `Content-Type` other than `application/json` is a 415 with `-32000`", async () => {
+    it("a `Content-Type` other than `application/json` on legacy is a 415 with `-32000`", async () => {
       const r = await send({
         method: "POST",
-        headers: { "content-type": "text/plain", accept: ACCEPT, "mcp-protocol-version": MODERN_VERSION },
-        body: rpc("tools/list", { _meta: MODERN_META }),
+        headers: { "content-type": "text/plain", accept: ACCEPT, "mcp-protocol-version": LEGACY_VERSION },
+        body: rpc("tools/list", {}),
       })
       expect(r.status).toBe(415)
       expect(r.json?.error.code).toBe(-32000)

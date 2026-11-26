@@ -104,8 +104,9 @@ export function parseBody(body: string): BodyResult {
 export function validateRequest(
   request: ParsedRequest,
   headers: Headers,
-  supported: readonly string[],
+  accepted: readonly string[],
   allowed: ReadonlySet<string>,
+  advertised: readonly string[] = accepted,
 ): ModernError | null {
   const id = request.id ?? null
   const err = (status: number, code: number, message: string, data?: unknown): ModernError => ({
@@ -122,7 +123,7 @@ export function validateRequest(
     // Removed in the modern era: 404 -32601 like any removed method (conformance `server-stateless`), with the supported
     // versions named in `data` because a modern-only server SHOULD name them in any error answering `initialize`.
     return err(404, ERR_METHOD_NOT_FOUND, "Method not found: initialize (this endpoint is stateless, send server/discover)", {
-      supported: [...supported],
+      supported: [...advertised],
       requested,
     })
   }
@@ -134,8 +135,8 @@ export function validateRequest(
   if (!isRecord(meta) || missing.length > 0) return err(400, ERR_INVALID_PARAMS, `Missing required _meta field(s): ${missing.join(", ")}`)
 
   const version = String(meta[META_PROTOCOL_VERSION])
-  if (!supported.includes(version)) {
-    return err(400, ERR_UNSUPPORTED_VERSION, "Unsupported protocol version", { supported: [...supported], requested: version })
+  if (!accepted.includes(version)) {
+    return err(400, ERR_UNSUPPORTED_VERSION, "Unsupported protocol version", { supported: [...advertised], requested: version })
   }
 
   const headerVersion = headers["mcp-protocol-version"]
