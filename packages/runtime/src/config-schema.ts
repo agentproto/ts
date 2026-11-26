@@ -415,6 +415,7 @@ const mcpConfigSchema: z.ZodType<McpConfig> = z
   .object({
     noCallerIdentity: z.enum(["block", "ask", "accept"]).optional(),
     modernEra: z.boolean().optional(),
+    humanGate: z.boolean().optional(),
   })
   .passthrough()
 
@@ -1062,6 +1063,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "advanced",
     label: "MCP 2026-07-28 modern era on /mcp",
     help: "When true (default), the root /mcp gateway serves MCP 2026-07-28 (server/discover and modern requests) alongside 2025-11-25. Set to false to route all /mcp traffic to the legacy 2025-11-25 transport.",
+    default: true,
+  },
+  {
+    path: "mcp.humanGate",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP 2026-07-28 MRTR elicitation gate",
+    help: "When true (default), modern 2026-07-28 MCP clients declaring elicitation receive InputRequiredResult for held permissions and session questions. Set to false to return standard tool results without MRTR.",
     default: true,
   },
   // ── daemon ──

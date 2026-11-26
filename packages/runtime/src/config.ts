@@ -674,6 +674,12 @@ export interface McpConfig {
    * legacy 2025-11-25 transport.
    */
   modernEra?: boolean
+  /**
+   * Whether the modern `/mcp` gateway projects held permissions and session
+   * questions as MCP 2026-07-28 `input_required` elicitations (MRTR).
+   * Defaults to `true`. Set to `false` to disable MRTR interception cleanly.
+   */
+  humanGate?: boolean
 }
 
 /**

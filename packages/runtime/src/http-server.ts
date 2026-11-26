@@ -37,6 +37,7 @@ import {
   handleModernRequest,
   isJsonContentType as isModernJsonContentType,
   type CacheHints,
+  type HumanGate,
 } from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { homedir } from "node:os"
@@ -1258,6 +1259,7 @@ export interface RuntimeHttpServerOptions {
     enabled?: boolean | (() => boolean | Promise<boolean>)
     extensions?: Record<string, Record<string, unknown>>
     cachePolicy?: (method: string) => CacheHints
+    humanGate?: HumanGate | (() => HumanGate | undefined | Promise<HumanGate | undefined>)
   }
   /**
    * Public events origin (`POST /mcp/events/<secret>`), MCP 2026-07-28 only. Absent = route not mounted. Own auth: the
@@ -2865,6 +2867,10 @@ export async function startHttpServer(
       })
       let observedRpc = false
       const versionForObserver = observedVersion ?? headerVersion
+      const humanGate =
+        typeof opts.mcpModern?.humanGate === "function"
+          ? await opts.mcpModern.humanGate()
+          : opts.mcpModern?.humanGate
       const out = await handleModernRequest(
         {
           method: req.method ?? "GET",
@@ -2877,6 +2883,8 @@ export async function startHttpServer(
           advertisedVersions: GATEWAY_ADVERTISED_VERSIONS,
           extensions: opts.mcpModern?.extensions ?? {},
           ...(opts.mcpModern?.cachePolicy ? { cachePolicy: opts.mcpModern.cachePolicy } : {}),
+          ...(humanGate ? { humanGate } : {}),
+          ...(callerSessionId !== undefined ? { callerSessionId } : {}),
           ...(callerSessionId && opts.mcpObservations
             ? {
                 onObserved: (method, response) => {
