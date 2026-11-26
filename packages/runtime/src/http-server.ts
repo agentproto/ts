@@ -1260,6 +1260,12 @@ export interface RuntimeHttpServerOptions {
     extensions?: Record<string, Record<string, unknown>>
     cachePolicy?: (method: string) => CacheHints
     humanGate?: HumanGate | (() => HumanGate | undefined | Promise<HumanGate | undefined>)
+    /**
+     * Called with the fresh per-request server of a MODERN-era request only,
+     * before it is connected (the legacy 2025-11-25 path never sees it). Used
+     * to mount beta extensions that must be switchable per request.
+     */
+    decorateServer?: (server: McpServer) => void | Promise<void>
   }
   /**
    * Public events origin (`POST /mcp/events/<secret>`), MCP 2026-07-28 only. Absent = route not mounted. Own auth: the
@@ -2878,7 +2884,11 @@ export async function startHttpServer(
           body: rawBody,
         },
         {
-          createServer: buildServer,
+          createServer: async () => {
+            const server = await buildServer()
+            await opts.mcpModern?.decorateServer?.(server)
+            return server
+          },
           protocolVersions: [MODERN_PROTOCOL_VERSION],
           advertisedVersions: GATEWAY_ADVERTISED_VERSIONS,
           extensions: opts.mcpModern?.extensions ?? {},

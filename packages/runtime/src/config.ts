@@ -680,6 +680,14 @@ export interface McpConfig {
    * Defaults to `true`. Set to `false` to disable MRTR interception cleanly.
    */
   humanGate?: boolean
+  /**
+   * Beta MCP extensions served by the 2026-07-28 era of `/mcp`. Each defaults
+   * to `true`; set one to `false` to stop announcing and serving it.
+   */
+  extensions?: {
+    /** `io.modelcontextprotocol/skills`: `skills/list`, `skills/get`, `skill://` resources. */
+    skills?: boolean
+  }
 }
 
 /**

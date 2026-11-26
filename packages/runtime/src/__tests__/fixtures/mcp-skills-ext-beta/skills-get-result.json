@@ -1,0 +1,15 @@
+{
+  "_version": "beta-1",
+  "result": {
+    "resultType": "complete",
+    "skill": {
+      "uri": "skill://example/SKILL.md",
+      "frontmatter": { "name": "example", "description": "An example skill" },
+      "resources": [
+        { "uri": "skill://example/SKILL.md", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "size": 120 }
+      ]
+    },
+    "ttlMs": 0,
+    "cacheScope": "private"
+  }
+}

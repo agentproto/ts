@@ -416,6 +416,7 @@ const mcpConfigSchema: z.ZodType<McpConfig> = z
     noCallerIdentity: z.enum(["block", "ask", "accept"]).optional(),
     modernEra: z.boolean().optional(),
     humanGate: z.boolean().optional(),
+    extensions: z.object({ skills: z.boolean().optional() }).passthrough().optional(),
   })
   .passthrough()
 
@@ -1073,6 +1074,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "advanced",
     label: "MCP 2026-07-28 MRTR elicitation gate",
     help: "When true (default), modern 2026-07-28 MCP clients declaring elicitation receive InputRequiredResult for held permissions and session questions. Set to false to return standard tool results without MRTR.",
+    default: true,
+  },
+  {
+    path: "mcp.extensions.skills",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Skills extension on /mcp",
+    help: "When true (default), the 2026-07-28 era of the root /mcp gateway serves the beta Skills extension (skills/list, skills/get, skill:// resources) for the imported-skills registry. Set to false to stop announcing it and serving it. Skills delivered at spawn are unaffected.",
     default: true,
   },
   // ── daemon ──
