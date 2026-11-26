@@ -69,7 +69,7 @@ describe("events-list-tenant-scoped", () => {
     expect(session.events.map((e) => e.name)).toEqual(expected)
     for (const def of daemon.events) {
       expect(def).not.toHaveProperty("replayable")
-      expect(def.delivery).toEqual(["webhook"])
+      expect(def.delivery).toEqual(["poll", "webhook"])
     }
   })
 })
@@ -78,10 +78,10 @@ describe("events-list-pagination", () => {
   it("walks the catalog with an opaque nextCursor and terminates", async () => {
     const first = await eventsList({ pageSize: 2 }, { principal: PRINCIPAL })
     expect(first.events).toHaveLength(2)
-    expect(first.nextCursor).not.toBeNull()
+    expect(first.nextCursor).toBeTypeOf("string")
     const second = await eventsList({ pageSize: 2, cursor: first.nextCursor! }, { principal: PRINCIPAL })
     expect(second.events).toHaveLength(2)
-    expect(second.nextCursor).toBeNull()
+    expect(second).not.toHaveProperty("nextCursor")
     const names = [...first.events, ...second.events].map((e) => e.name)
     expect(new Set(names).size).toBe(GITHUB_SCHEME.events.length)
   })
@@ -104,7 +104,7 @@ describe("events/subscribe", () => {
     expect(store.get(first.id)?.spec.target.kind).toBe("webhook")
   })
 
-  it("unreplayable-cursor-null: cursor is always null, subscribe results carry truncated:false", async () => {
+  it("webhook subscribe validates `cursor`/`maxAgeMs` but never replays: cursor null, truncated:false", async () => {
     const store = makeStore()
     const provider = createFakeSentinelProvider({ slug: "local-gh" })
     const created = await eventsSubscribe({ ...SUB, cursor: "provider-cursor-abc" }, subscribeCtx(store, provider))
@@ -176,11 +176,11 @@ describe("events/subscribe", () => {
     expect(typeof row?.rotatedAt).toBe("number")
   })
 
-  it("errors: unknown event / bad args / bad secret are -32602", async () => {
+  it("errors: unknown event is -32023, bad args / bad secret are -32602, a non-webhook mode is -32026", async () => {
     const store = makeStore()
     const provider = createFakeSentinelProvider({ slug: "local-gh" })
     await expect(eventsSubscribe({ ...SUB, name: "nope" }, subscribeCtx(store, provider))).rejects.toMatchObject({
-      code: -32602,
+      code: -32023,
       data: { reason: "unknown_event" },
     })
     await expect(
@@ -189,10 +189,19 @@ describe("events/subscribe", () => {
     await expect(
       eventsSubscribe({ ...SUB, delivery: { ...SUB.delivery, secret: "garbage" } }, subscribeCtx(store, provider)),
     ).rejects.toMatchObject({ code: -32602, data: { reason: "invalid_secret" } })
+    await expect(
+      eventsSubscribe({ ...SUB, delivery: { ...SUB.delivery, mode: "poll" as never } }, subscribeCtx(store, provider)),
+    ).rejects.toMatchObject({ code: -32026, data: { reason: "unsupported_delivery_mode" } })
+    await expect(
+      eventsSubscribe({ ...SUB, cursor: 5 as never }, subscribeCtx(store, provider)),
+    ).rejects.toMatchObject({ code: -32602, data: { reason: "invalid_cursor" } })
+    await expect(
+      eventsSubscribe({ ...SUB, maxAgeMs: -1 }, subscribeCtx(store, provider)),
+    ).rejects.toMatchObject({ code: -32602, data: { reason: "invalid_max_age" } })
     expect(store.list()).toHaveLength(0)
   })
 
-  it("callback-fail-reason-categorized: every ChallengeFailureReason → -32015 data.reason", async () => {
+  it("callback-fail-reason-categorized: every ChallengeFailureReason → -32027 data.reason (legacyCode -32015)", async () => {
     const reasons: ChallengeFailureReason[] = [
       "challenge_failed",
       "timeout",
@@ -205,8 +214,8 @@ describe("events/subscribe", () => {
       const provider = createFakeSentinelProvider({ slug: "local-gh" })
       const verify = async (): Promise<ChallengeOutcome> => ({ ok: false, reason, detail: `simulated ${reason}` })
       await expect(eventsSubscribe(SUB, subscribeCtx(store, provider, { verify }))).rejects.toMatchObject({
-        code: -32015,
-        data: { reason },
+        code: -32027,
+        data: { reason, legacyCode: -32015 },
       })
       // verification failed BEFORE any store mutation
       expect(store.list()).toHaveLength(0)

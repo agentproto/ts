@@ -688,6 +688,12 @@ export interface McpConfig {
     /** `io.modelcontextprotocol/skills`: `skills/list`, `skills/get`, `skill://` resources. */
     skills?: boolean
   }
+  /**
+   * Whether the `io.modelcontextprotocol/events` extension (`events/poll`) is
+   * declared and served. Defaults to `true`. Set to `false` to fall back to
+   * the three webhook methods (`events/list|subscribe|unsubscribe`) only.
+   */
+  eventsExtension?: boolean
 }
 
 /**

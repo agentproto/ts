@@ -155,6 +155,8 @@ export {
   EventsListRequestSchema,
   EventsSubscribeRequestSchema,
   EventsUnsubscribeRequestSchema,
+  EventsPollRequestSchema,
+  MCP_EVENTS_EXTENSION_ID,
   type EventsMethodsHandlers,
   type ServerDiscoverResult,
 } from "./events-methods.js"

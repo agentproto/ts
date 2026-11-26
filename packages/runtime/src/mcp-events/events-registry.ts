@@ -2,14 +2,14 @@
  * MCP Events registry (W-C of `.plans/sentinel-mcp-events/PLAN.md`, §2/§3).
  *
  * One object per provider scheme. Every registration carries the WIRE
- * `EventDefinition` (name / description / `delivery:["webhook"]` /
+ * `EventDefinition` (name / description / `delivery` modes /
  * `inputSchema` / `payloadSchema` — official doc verbatim, no extra fields)
  * PLUS the internal `InternalEventMeta`. Two fields on the meta are
  * MANDATORY by type: `argumentsToMatch` (the missing link between
  * `document_id`-style subscription args and `SentinelSpec.match`) and
  * `authorize`. A registration that omits either does not compile.
  *
- * `replayable` is INTERNAL only (it drives `cursor:null` for v1) and must
+ * `replayable` is INTERNAL only (it gates `events/poll`) and must
  * never appear on the wire — the §3 `EventDefinition` has no such field.
  *
  * Day-1 scheme: `github`. The definitions are derived from the ACTUAL event
@@ -43,10 +43,14 @@ export function sessionPrincipal(sessionId: string): Principal {
 
 // ── Types (§3 frozen) ────────────────────────────────────────────────────
 
+/** Delivery modes of the MCP Events extension. */
+export type EventDeliveryMode = "poll" | "push" | "webhook"
+
 export interface EventDefinition {
   name: string
   description: string
-  delivery: ["webhook"]
+  /** The modes actually offered for THIS event type. */
+  delivery: EventDeliveryMode[]
   inputSchema: object
   payloadSchema: object
 }
@@ -59,7 +63,7 @@ export type ArgumentsResult =
   | { ok: false; reason: string }
 
 export interface InternalEventMeta {
-  /** INTERNAL: drives `cursor:null` vs a provider cursor. v1 is all-false. */
+  /** INTERNAL: true when the poll journal can replay this type (`events/poll` cursor is non-null). */
   replayable: boolean
   /** Map `inputSchema`-validated args to explicit match clauses (pure). */
   argumentsToMatch: (args: Record<string, unknown>) => ArgumentsResult
@@ -255,14 +259,14 @@ function githubEvent(input: {
     definition: {
       name: input.name,
       description: input.description,
-      delivery: ["webhook"],
+      delivery: ["poll", "webhook"],
       inputSchema: PR_ARGS_INPUT_SCHEMA as unknown as object,
       payloadSchema: input.payloadSchema,
     },
     meta: {
-      // v1 REALITY: no provider has historical replay (plan §2) — every
-      // definition is non-replayable and always returns `cursor: null`.
-      replayable: false,
+      // Replayable through the poll journal (`poll-journal.ts`), which the
+      // poll lease feeds from `local-gh`; the webhook path still never replays.
+      replayable: true,
       argumentsToMatch: githubPrArgumentsToMatch(input.name),
       authorize: githubAuthorize,
     },

@@ -441,7 +441,7 @@ describe("mcp-events e2e — full user story", () => {
   it("events/list over the real transport", async () => {
     const list = (await callClient(h!.client, "events/list")) as {
       events: Array<{ name: string }>
-      nextCursor: string | null
+      nextCursor?: string
     }
     expect(list.events.map((e) => e.name)).toEqual([
       "github.pull_request.closed",
@@ -449,27 +449,27 @@ describe("mcp-events e2e — full user story", () => {
       "github.pull_request_review.submitted",
       "github.check_suite.completed",
     ])
-    expect(list.nextCursor).toBeNull()
+    expect(list).not.toHaveProperty("nextCursor")
   })
 })
 
 describe("mcp-events e2e — failure paths", () => {
-  it("wrong secret: challenge not echoed → -32015 challenge_failed, no store row", async () => {
+  it("wrong secret: challenge not echoed → -32027 challenge_failed, no store row", async () => {
     await expect(
       callClient(h!.client, "events/subscribe", {
         ...SUB_PARAMS,
         delivery: { mode: "webhook", url: CALLBACK_URL, secret: SECRET_WRONG },
       }),
-    ).rejects.toMatchObject({ code: -32015, data: { reason: "challenge_failed" } })
+    ).rejects.toMatchObject({ code: -32027, data: { reason: "challenge_failed" } })
     expect(h!.fake.challenges).toHaveLength(1)
     expect(h!.fake.challenges[0]!.signatureOk).toBe(false)
     expect(h!.store.list()).toHaveLength(0)
   })
 
-  it("non-2xx challenge: -32015 non_2xx, no store row", async () => {
+  it("non-2xx challenge: -32027 non_2xx, no store row", async () => {
     h!.fake.setChallengeStatus(500)
     await expect(callClient(h!.client, "events/subscribe", SUB_PARAMS)).rejects.toMatchObject({
-      code: -32015,
+      code: -32027,
       data: { reason: "non_2xx" },
     })
     expect(h!.store.list()).toHaveLength(0)
@@ -481,7 +481,7 @@ describe("mcp-events e2e — failure paths", () => {
         ...SUB_PARAMS,
         delivery: { mode: "webhook", url: "https://192.168.1.10/hook", secret: SECRET },
       }),
-    ).rejects.toMatchObject({ code: -32015, data: { reason: "ssrf_blocked" } })
+    ).rejects.toMatchObject({ code: -32027, data: { reason: "ssrf_blocked" } })
     expect(h!.fake.challenges).toHaveLength(0)
   })
 

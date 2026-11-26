@@ -7,10 +7,11 @@
  * `server/discover`) lives in `@agentproto/mcp-server` and is wired in
  * `runtime/index.ts`.
  *
- * INVARIANTS v1 (plan §2, code-verified):
- *   - every event is NON-REPLAYABLE → `cursor` is always `null`; subscribe
- *     results carry `truncated: false`, events never set `truncated`;
- *   - no `read` tool, no separate package, no batching.
+ * Poll and replay: `events/poll` is served by a durable journal fed by a shared
+ * provider watch (`poll-lease.ts`, `poll-journal.ts`), independent of the
+ * webhook outbox. Webhook subscribe results keep `cursor: null` /
+ * `truncated: false`: past events are not replayed over a webhook, poll is the
+ * replay path.
  *
  * Subscription ids are deterministic (`subscription-id.ts`): subscribe upserts
  * on identity, unsubscribe RECOMPUTES the id (never an id-lookup). The store
@@ -33,12 +34,16 @@ import {
 import type { CancelTombstoneStore } from "@agentproto/sentinel"
 import type { SentinelStore } from "@agentproto/sentinel"
 import type { McpEventEnvelope } from "../webhook-egress/delivery.js"
+import { createHash } from "node:crypto"
 import { subscriptionId } from "./subscription-id.js"
+import { journalKey, type JournalEvent, type PollJournal } from "./poll-journal.js"
+import { PollLeaseError, type PollLeaseManager } from "./poll-lease.js"
 import {
   findEventDefinition,
   tenantScope,
   validateAgainstInputSchema,
   type EventDefinition,
+  type EventDeliveryMode,
   type EventRegistration,
   type Principal,
 } from "./events-registry.js"
@@ -90,24 +95,57 @@ export class McpEventsError extends Error {
   }
 }
 
-/** `-32602 Invalid params` — unknown event, bad args vs `inputSchema`, … */
+/** Official MCP Events error codes (SEP-3415). */
+export const EVENTS_ERR = {
+  invalidParams: -32602,
+  internal: -32603,
+  notFound: -32023,
+  forbidden: -32024,
+  resourceExhausted: -32025,
+  unsupported: -32026,
+  callbackEndpoint: -32027,
+} as const
+
+/** `-32602 Invalid params` — bad args vs `inputSchema`, bad cursor, … */
 export function invalidParams(reason: string, detail: string): McpEventsError {
-  return new McpEventsError(-32602, `Invalid params: ${detail}`, { reason })
+  return new McpEventsError(EVENTS_ERR.invalidParams, `Invalid params: ${detail}`, { reason })
+}
+
+/** `-32023 NotFound` — unknown event type. */
+export function eventNotFound(reason: string, detail: string): McpEventsError {
+  return new McpEventsError(EVENTS_ERR.notFound, `NotFound: ${detail}`, { reason })
+}
+
+/** `-32024 Forbidden` — the caller may not use this event with these arguments. */
+export function forbidden(reason: string, detail: string): McpEventsError {
+  return new McpEventsError(EVENTS_ERR.forbidden, `Forbidden: ${detail}`, { reason })
+}
+
+/** `-32025 ResourceExhausted` — a server-side quota is spent. */
+export function resourceExhausted(reason: string, detail: string): McpEventsError {
+  return new McpEventsError(EVENTS_ERR.resourceExhausted, `ResourceExhausted: ${detail}`, { reason })
+}
+
+/** `-32026 Unsupported` — the delivery mode or provider is not offered for this event. */
+export function unsupported(reason: string, detail: string): McpEventsError {
+  return new McpEventsError(EVENTS_ERR.unsupported, `Unsupported: ${detail}`, { reason })
 }
 
 /**
- * `-32015 CallbackEndpointError` with `data.reason` from the §3 challenge
- * table (SsrfFetchReason → ChallengeFailureReason → RPC reason). The
- * challenge outcome's reason is already the RPC value, so it is passed
- * through as-is.
+ * `-32027 CallbackEndpointError` with `data.reason` from the challenge table
+ * (SsrfFetchReason → ChallengeFailureReason → RPC reason). The challenge
+ * outcome's reason is already the RPC value, so it is passed through as-is.
+ * `data.legacyCode` carries the pre-standard `-32015` for one release.
  */
 export function callbackEndpointError(reason: ChallengeFailureReason, detail: string): McpEventsError {
-  return new McpEventsError(-32015, `CallbackEndpointError: ${detail}`, { reason })
+  return new McpEventsError(EVENTS_ERR.callbackEndpoint, `CallbackEndpointError: ${detail}`, { reason, legacyCode: -32015 })
 }
 
 /**
- * `-32016 BackingSubscriptionError` — the remote subscription behind a
- * refresh could not be renewed. `data.reason`:
+ * The remote subscription behind a refresh could not be renewed. The spec has
+ * no dedicated code, so this is `-32603` with `data.kind:"backing_subscription"`
+ * (`data.legacyCode` carries the pre-standard `-32016` for one release).
+ * `data.reason`:
  *   - `backing_subscription_expired`: the remote is already expired/deleted;
  *     the caller must unsubscribe and subscribe again (a refresh never
  *     silently provisions a second remote). Local state is untouched.
@@ -119,7 +157,12 @@ export function backingSubscriptionError(
   detail: string,
   subscriptionId: string,
 ): McpEventsError {
-  return new McpEventsError(-32016, `BackingSubscriptionError: ${detail}`, { reason, subscriptionId })
+  return new McpEventsError(EVENTS_ERR.internal, `BackingSubscriptionError: ${detail}`, {
+    kind: "backing_subscription",
+    reason,
+    subscriptionId,
+    legacyCode: -32016,
+  })
 }
 
 // ── Serialize subscribe/unsubscribe mutations ────────────────────────────
@@ -144,11 +187,14 @@ export interface EventsListRequest {
 
 export interface EventsListContext {
   principal: Principal
+  /** When false, `poll` is not advertised in `delivery` (the extension is switched off). Default true. */
+  pollEnabled?: boolean
 }
 
 export interface EventsListResult {
   events: EventDefinition[]
-  nextCursor: string | null
+  /** Omitted on the last page (never `null`). */
+  nextCursor?: string
 }
 
 export interface EventsSubscribeInput {
@@ -156,9 +202,9 @@ export interface EventsSubscribeInput {
   arguments: Record<string, unknown>
   delivery: { mode: "webhook"; url: string; secret: string }
   ttlMs?: number | null
-  /** Refresh/replay handle (null on first subscribe). v1 ignores it: all
-   *  events are non-replayable, so it never changes the returned cursor. */
+  /** Validated, but webhook delivery never replays past events: poll is the replay path. */
   cursor?: string | null
+  maxAgeMs?: number
 }
 
 export interface EventsSubscribeContext {
@@ -181,7 +227,8 @@ export interface EventsSubscribeResult {
 export interface EventsUnsubscribeInput {
   name: string
   arguments: Record<string, unknown>
-  delivery: { mode: "webhook"; url: string }
+  /** `mode` is optional and defaults to `webhook`. */
+  delivery: { mode?: "webhook"; url: string }
 }
 
 export interface EventsUnsubscribeContext {
@@ -221,9 +268,14 @@ function decodeListCursor(cursor: string | undefined): number {
   }
 }
 
-function requireWebhookDelivery(delivery: unknown): { mode: "webhook"; url: string; secret?: string } {
-  if (!isRecord(delivery) || delivery.mode !== "webhook") {
-    throw invalidParams("unsupported_delivery_mode", 'delivery.mode must be "webhook"')
+function requireWebhookDelivery(
+  delivery: unknown,
+  opts: { modeOptional?: boolean } = {},
+): { mode: "webhook"; url: string; secret?: string } {
+  if (!isRecord(delivery)) throw invalidParams("invalid_delivery", "`delivery` must be an object")
+  const mode = delivery.mode
+  if (mode === undefined ? !opts.modeOptional : mode !== "webhook") {
+    throw unsupported("unsupported_delivery_mode", 'delivery.mode must be "webhook" (use events/poll for pull delivery)')
   }
   if (typeof delivery.url !== "string" || delivery.url.length === 0) {
     throw invalidParams("invalid_callback_url", "delivery.url is required")
@@ -244,14 +296,20 @@ function validateArgsOrThrow(name: string, registration: EventRegistration, args
 
 export async function eventsList(r: EventsListRequest, ctx: EventsListContext): Promise<EventsListResult> {
   const schemes = tenantScope(ctx.principal)
-  const definitions = schemes.flatMap((scheme) => scheme.events.map((event) => event.definition))
+  const pollEnabled = ctx.pollEnabled !== false
+  const definitions = schemes.flatMap((scheme) =>
+    scheme.events.map((event): EventDefinition => ({
+      ...event.definition,
+      delivery: event.definition.delivery.filter((mode): mode is EventDeliveryMode => pollEnabled || mode !== "poll"),
+    })),
+  )
   const requested = r.pageSize ?? LIST_PAGE_DEFAULT
   const pageSize = Math.max(1, Math.min(Number.isFinite(requested) ? Math.floor(requested) : LIST_PAGE_DEFAULT, LIST_PAGE_MAX))
   const offset = decodeListCursor(r.cursor)
   const page = definitions.slice(offset, offset + pageSize)
   const next = offset + page.length
   const scheme = schemes[0]?.scheme ?? "*"
-  return { events: page, nextCursor: next < definitions.length ? encodeListCursor(next, scheme) : null }
+  return { events: page, ...(next < definitions.length ? { nextCursor: encodeListCursor(next, scheme) } : {}) }
 }
 
 // ── events/subscribe ─────────────────────────────────────────────────────
@@ -263,10 +321,10 @@ export async function eventsSubscribe(
   const now = ctx.nowMs ?? Date.now
 
   const registration = findEventDefinition(input.name)
-  if (!registration) throw invalidParams("unknown_event", `unknown event "${input.name}"`)
+  if (!registration) throw eventNotFound("unknown_event", `unknown event "${input.name}"`)
   const args = validateArgsOrThrow(input.name, registration, input.arguments)
   if (!registration.meta.authorize(args, ctx.principal)) {
-    throw invalidParams("unauthorized", `not authorized to subscribe to "${input.name}" with the given arguments`)
+    throw forbidden("unauthorized", `not authorized to subscribe to "${input.name}" with the given arguments`)
   }
   const mapped = registration.meta.argumentsToMatch(args)
   if (!mapped.ok) throw invalidParams("invalid_arguments", `arguments for "${input.name}": ${mapped.reason}`)
@@ -282,6 +340,10 @@ export async function eventsSubscribe(
   if (input.ttlMs !== undefined && input.ttlMs !== null && (typeof input.ttlMs !== "number" || !Number.isFinite(input.ttlMs))) {
     throw invalidParams("invalid_ttl", "`ttlMs` must be a finite number or null")
   }
+  if (input.cursor !== undefined && input.cursor !== null && typeof input.cursor !== "string") {
+    throw invalidParams("invalid_cursor", "`cursor` must be a string or null")
+  }
+  validateMaxAgeMs(input.maxAgeMs)
 
   const id = subscriptionId({
     principal: ctx.principal,
@@ -306,7 +368,7 @@ export async function eventsSubscribe(
       // REFRESH: same deterministic identity. Rotate the signing secret when
       // the submitted one differs (`putSentinelSecret` records
       // `prevSecret` + `rotatedAt`; delivery dual-signs during the window).
-      // A submitted cursor is IGNORED — v1 events are non-replayable.
+      // A submitted cursor is validated but not replayed over the webhook.
       const target = existing.spec.target
       if (target.kind !== "webhook") {
         throw invalidParams("identity_conflict", `subscription ${id} exists with a non-webhook target`)
@@ -343,7 +405,7 @@ export async function eventsSubscribe(
     // CREATE
     const provider = await ctx.resolveProvider(mapped.providerSlug)
     if (!provider) {
-      throw invalidParams("provider_unavailable", `sentinel provider "${mapped.providerSlug}" is not available`)
+      throw unsupported("provider_unavailable", `sentinel provider "${mapped.providerSlug}" is not available`)
     }
     const spec: SentinelSpec = {
       match: mapped.matchClauses,
@@ -366,12 +428,12 @@ export async function eventsUnsubscribe(
   ctx: EventsUnsubscribeContext,
 ): Promise<{}> {
   const registration = findEventDefinition(input.name)
-  if (!registration) throw invalidParams("unknown_event", `unknown event "${input.name}"`)
+  if (!registration) throw eventNotFound("unknown_event", `unknown event "${input.name}"`)
   const args = validateArgsOrThrow(input.name, registration, input.arguments)
   if (!registration.meta.authorize(args, ctx.principal)) {
-    throw invalidParams("unauthorized", `not authorized to unsubscribe from "${input.name}" with the given arguments`)
+    throw forbidden("unauthorized", `not authorized to unsubscribe from "${input.name}" with the given arguments`)
   }
-  const delivery = requireWebhookDelivery(input.delivery)
+  const delivery = requireWebhookDelivery(input.delivery, { modeOptional: true })
 
   // RECOMPUTE the deterministic id (never an id-lookup): unsubscribe identity
   // is the SAME identity subscribe used, minus the secret.
@@ -425,5 +487,136 @@ export function toMcpEvent(event: SentinelEvent): McpEventEnvelope {
     timestamp: event.time,
     data: { ...event.data, subject: event.subject, summary: event.summary },
     cursor: null,
+  }
+}
+
+/** The journal/poll event shape: the webhook envelope without its `cursor` member. */
+export function toJournalEvent(event: SentinelEvent): JournalEvent {
+  const { eventId, name, timestamp, data } = toMcpEvent(event)
+  return { eventId, name, timestamp, data }
+}
+
+function validateMaxAgeMs(value: unknown): void {
+  if (value === undefined) return
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw invalidParams("invalid_max_age", "`maxAgeMs` must be a positive number")
+  }
+}
+
+// ── events/poll ──────────────────────────────────────────────────────────
+
+export const POLL_DEFAULT_MAX_EVENTS = 100
+export const POLL_MAX_EVENTS = 1000
+
+export interface EventsPollInput {
+  name: string
+  arguments: Record<string, unknown>
+  /** `null` / omitted = from now. */
+  cursor?: string | null
+  maxAgeMs?: number
+  maxEvents?: number
+}
+
+export interface EventsPollContext {
+  principal: Principal
+  journal: PollJournal
+  leases: PollLeaseManager
+}
+
+export interface EventsPollResult {
+  events: JournalEvent[]
+  cursor: string
+  truncated: boolean
+  hasMore: boolean
+  nextPollMs: number
+}
+
+function principalTag(principal: Principal): string {
+  return createHash("sha256").update(principal).digest("base64url").slice(0, 12)
+}
+
+function encodePollCursor(journalId: string, seq: number, principal: Principal): string {
+  return Buffer.from(JSON.stringify({ v: 1, j: journalId, s: seq, p: principalTag(principal) }), "utf8").toString("base64url")
+}
+
+function decodePollCursor(cursor: string, principal: Principal): { journalId: string; seq: number } {
+  let parsed: { v?: unknown; j?: unknown; s?: unknown; p?: unknown }
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"))
+  } catch {
+    throw invalidParams("invalid_cursor", "`cursor` is not a cursor issued by a previous events/poll response")
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    parsed.v !== 1 ||
+    typeof parsed.j !== "string" ||
+    typeof parsed.s !== "number" ||
+    !Number.isInteger(parsed.s) ||
+    parsed.s < 0 ||
+    typeof parsed.p !== "string"
+  ) {
+    throw invalidParams("invalid_cursor", "`cursor` is not a cursor issued by a previous events/poll response")
+  }
+  if (parsed.p !== principalTag(principal)) {
+    throw forbidden("cursor_principal_mismatch", "`cursor` was issued to a different caller")
+  }
+  return { journalId: parsed.j, seq: parsed.s }
+}
+
+/**
+ * `events/poll`: pull the events of `(name, arguments)` after `cursor`. Needs no
+ * prior subscribe; the cursor is the client's only state. `cursor: null` starts
+ * from now; a cursor older than the journal (or the retention, or a watch gap)
+ * answers `truncated: true` with the events that remain, never an error.
+ */
+export async function eventsPoll(input: EventsPollInput, ctx: EventsPollContext): Promise<EventsPollResult> {
+  const registration = findEventDefinition(input.name)
+  if (!registration) throw eventNotFound("unknown_event", `unknown event "${input.name}"`)
+  const args = validateArgsOrThrow(input.name, registration, input.arguments)
+  if (!registration.meta.authorize(args, ctx.principal)) {
+    throw forbidden("unauthorized", `not authorized to poll "${input.name}" with the given arguments`)
+  }
+  if (!registration.definition.delivery.includes("poll") || !registration.meta.replayable) {
+    throw unsupported("unsupported_delivery_mode", `"${input.name}" is not offered for poll delivery`)
+  }
+  const mapped = registration.meta.argumentsToMatch(args)
+  if (!mapped.ok) throw invalidParams("invalid_arguments", `arguments for "${input.name}": ${mapped.reason}`)
+
+  if (input.cursor !== undefined && input.cursor !== null && typeof input.cursor !== "string") {
+    throw invalidParams("invalid_cursor", "`cursor` must be a string or null")
+  }
+  validateMaxAgeMs(input.maxAgeMs)
+  let maxEvents = POLL_DEFAULT_MAX_EVENTS
+  if (input.maxEvents !== undefined) {
+    if (typeof input.maxEvents !== "number" || !Number.isInteger(input.maxEvents) || input.maxEvents < 1) {
+      throw invalidParams("invalid_max_events", "`maxEvents` must be a positive integer")
+    }
+    maxEvents = Math.min(input.maxEvents, POLL_MAX_EVENTS)
+  }
+  const after = typeof input.cursor === "string" ? decodePollCursor(input.cursor, ctx.principal) : null
+
+  const key = journalKey(input.name, args)
+  try {
+    await ctx.leases.acquire({ key, name: input.name, mapped })
+  } catch (err) {
+    if (err instanceof PollLeaseError) {
+      if (err.kind === "exhausted") throw resourceExhausted("poll_watch_quota", err.message)
+      if (err.kind === "unsupported") throw unsupported("provider_unavailable", err.message)
+      throw new McpEventsError(EVENTS_ERR.internal, `BackingSubscriptionError: ${err.message}`, {
+        kind: "backing_subscription",
+        reason: "backing_create_failed",
+      })
+    }
+    throw err
+  }
+
+  const read = ctx.journal.read(key, { after, ...(input.maxAgeMs !== undefined ? { maxAgeMs: input.maxAgeMs } : {}), maxEvents })
+  return {
+    events: read.events.map(e => e.event),
+    cursor: encodePollCursor(read.journalId, read.lastReturnedSeq, ctx.principal),
+    truncated: read.truncated,
+    hasMore: read.hasMore,
+    nextPollMs: read.hasMore ? 0 : ctx.leases.nextPollMs,
   }
 }
