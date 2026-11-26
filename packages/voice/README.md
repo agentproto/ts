@@ -19,6 +19,14 @@ that provider packages such as `@agentproto/voice-openai` depend on.
 - The `VOICE_PROVIDER` / `VOICE_STT_PROVIDER` / `VOICE_TTS_PROVIDER` /
   `VOICE_ID` priority rule (`src/selection.ts`).
 - One defaults file, `src/defaults.ts`, every value with its origin.
+- `@agentproto/voice/text`: pure spoken-text normalization for any TTS path
+  (`src/text/`). `toSpokenText(text, locale?, { stripLabels? })` strips
+  markdown, arrows, emojis and URLs and rewrites numbers, dates, times, money,
+  percentages, ordinals, abbreviations and units to words (French and
+  English); `normalizeWrittenForms`, `splitSpokenText` (sentence-boundary
+  split, never mid-sentence), `hasWrittenOnlyContent` (code fences, tables),
+  `SPEECH_CHARS_PER_SECOND`. No I/O and no limit policy: label stripping and
+  length caps belong to the host.
 - `@agentproto/voice/testing`: fake providers and AIP-VOICE conformance cases.
 
 No provider lives here (they are `@agentproto/voice-<slug>` packages) and no
