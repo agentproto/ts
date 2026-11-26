@@ -7,12 +7,12 @@
  *
  *     startCascade(opts: VoiceStartOptions & CascadeOptions): Promise<VoiceSession>
  *
- * `emit`, `hooks`, `language` and `voiceId` come from `VoiceStartOptions`.
+ * `emit`, `hooks`, `onUsage`, `language` and `voiceId` come from `VoiceStartOptions`.
  * `brain` yields reply TEXT; this engine owns synthesis, so the brain never
  * returns audio and the TTS provider is replaceable by configuration.
  */
 import { VOICE_DEFAULTS } from "../defaults.js"
-import { makeUsageMeter } from "../usage.js"
+import { deliverUsage, makeUsageMeter } from "../usage.js"
 import { Pcm16ChunkAligner } from "../pcm16.js"
 import type {
   AudioFrame,
@@ -341,6 +341,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     pipeline.close()
     closed = true
     meter.seal()
+    await deliverUsage(opts.onUsage, meter.snapshot())
   }
   const deps: CallPipelineDeps = {
     transport: {

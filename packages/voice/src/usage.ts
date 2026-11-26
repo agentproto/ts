@@ -18,6 +18,19 @@ export interface UsageMeter {
   seal(): void
 }
 
+/** Hand a final record to the host's `onUsage`; never throws, never rejects. */
+export async function deliverUsage(
+  onUsage: ((usage: VoiceUsage) => void | Promise<void>) | undefined,
+  usage: VoiceUsage | undefined,
+): Promise<void> {
+  if (!onUsage || !usage) return
+  try {
+    await onUsage(usage)
+  } catch {
+    // a host's usage sink never affects the session
+  }
+}
+
 export function makeUsageMeter(engine: VoiceEngineId, now: () => number = Date.now): UsageMeter {
   const startedAt = now()
   let sealedWall: number | undefined

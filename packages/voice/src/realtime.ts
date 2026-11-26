@@ -10,6 +10,7 @@ import type {
   VoiceStartOptions,
   VoiceUsage,
 } from "./types.js"
+import { deliverUsage } from "./usage.js"
 
 export async function startRealtime(
   provider: RealtimeProvider,
@@ -22,6 +23,7 @@ export async function startRealtime(
     )
   }
   let finalUsage: VoiceUsage | undefined
+  let delivered = false
   return {
     ...session,
     pushAudio: frame => session.pushAudio(frame),
@@ -39,6 +41,10 @@ export async function startRealtime(
       }
       await session.close()
       finalUsage = session.getUsage?.() ?? finalUsage
+      if (!delivered) {
+        delivered = true
+        await deliverUsage(opts.onUsage, finalUsage)
+      }
     },
   }
 }
