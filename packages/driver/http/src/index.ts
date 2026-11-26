@@ -15,6 +15,11 @@ import {
   type DriverDefinition,
   type DriverHandle,
 } from "@agentproto/driver"
+import {
+  redactSecrets,
+  SAFE_HTTP_EXTRA_HEADERS_KEY,
+  SAFE_HTTP_FETCH_KEY,
+} from "./safe-collector.js"
 
 /** AIP-70 registry spec id for this package (`http/v1`, AIP-31). */
 export const SPEC_NAME = "http/v1" as const
@@ -74,7 +79,14 @@ export type HttpParseResult =
 export function defineHttpDriver(
   definition: HttpDriverDefinition
 ): DriverHandle {
-  const { baseUrl, defaultHeaders = {}, defaultMethod = "POST" } = definition
+  const raw = definition as HttpDriverDefinition & {
+    base_url?: string
+    default_headers?: Record<string, string>
+    default_method?: HttpDriverDefinition["defaultMethod"]
+  }
+  const baseUrl = raw.baseUrl ?? raw.base_url
+  const defaultHeaders = raw.defaultHeaders ?? raw.default_headers ?? {}
+  const defaultMethod = raw.defaultMethod ?? raw.default_method ?? "POST"
   const execute: Record<string, ExecuteFn> = {}
 
   for (const entry of definition.implements) {
@@ -101,6 +113,20 @@ export function defineHttpDriver(
   })
 }
 
+function normalizePerToolHttp(raw: PerToolHttp | undefined): PerToolHttp {
+  if (!raw) return {}
+  return {
+    endpoint: raw.endpoint,
+    method: raw.method,
+    headers: raw.headers,
+    bodyTemplate: raw.bodyTemplate ?? raw.body_template,
+    queryTemplate: raw.queryTemplate ?? raw.query_template,
+    responseExtract: raw.responseExtract ?? raw.response_extract,
+    streaming: raw.streaming,
+    idempotencyKeyHeader: raw.idempotencyKeyHeader ?? raw.idempotency_key_header,
+  }
+}
+
 function createExecuteFn(args: {
   toolId: string
   entry: ImplementsEntry
@@ -111,12 +137,20 @@ function createExecuteFn(args: {
   parseResponse?: HttpDriverDefinition["parseResponse"]
 }): ExecuteFn {
   const meta = (args.entry.metadata ?? {}) as { http?: PerToolHttp }
-  const httpMeta = meta.http ?? {}
+  const httpMeta = normalizePerToolHttp(meta.http)
 
   return async ({ input, context, driverCtx, signal }) => {
     const inputObj = (input ?? {}) as Record<string, unknown>
     const ctxObj = context as Record<string, unknown>
-    const provCtx = driverCtx as { secrets: Record<string, string>; [k: string]: unknown }
+    const provCtx = driverCtx as {
+      secrets: Record<string, string>
+      [SAFE_HTTP_FETCH_KEY]?: typeof globalThis.fetch
+      [SAFE_HTTP_EXTRA_HEADERS_KEY]?: Record<string, string>
+      [k: string]: unknown
+    }
+    const secrets = provCtx.secrets ?? {}
+    const fetchFn = provCtx[SAFE_HTTP_FETCH_KEY] ?? fetch
+    const extraHeaders = provCtx[SAFE_HTTP_EXTRA_HEADERS_KEY] ?? {}
 
     let request: HttpRequest
     if (args.buildRequest) {
@@ -127,18 +161,35 @@ function createExecuteFn(args: {
         driverCtx: { ...provCtx, baseUrl: args.baseUrl },
         signal,
       })
+      if (Object.keys(extraHeaders).length > 0) {
+        request = { ...request, headers: { ...request.headers, ...extraHeaders } }
+      }
     } else {
-      const endpoint = httpMeta.endpoint ?? "/"
+      const rawEndpoint = httpMeta.endpoint ?? "/"
+      const endpoint = expandEndpoint(rawEndpoint, {
+        input: inputObj,
+        secrets,
+        context: ctxObj,
+      })
       const method = httpMeta.method ?? args.defaultMethod
-      const url = new URL(endpoint, args.baseUrl).toString()
+      const baseParsed = new URL(args.baseUrl)
+      const resolvedUrl = new URL(endpoint, args.baseUrl)
+      if (resolvedUrl.origin !== baseParsed.origin) {
+        throw new HttpDriverError(
+          "invalid_endpoint",
+          `Endpoint '${rawEndpoint}' resolved to origin '${resolvedUrl.origin}', outside baseUrl origin '${baseParsed.origin}'.`,
+          false,
+        )
+      }
+      const url = resolvedUrl.toString()
       const headers = expandHeaders(
-        { ...args.defaultHeaders, ...(httpMeta.headers ?? {}) },
-        { input: inputObj, secrets: provCtx.secrets ?? {}, context: ctxObj }
+        { ...args.defaultHeaders, ...(httpMeta.headers ?? {}), ...extraHeaders },
+        { input: inputObj, secrets, context: ctxObj }
       )
       const body = httpMeta.bodyTemplate
         ? expandTemplate(httpMeta.bodyTemplate, {
             input: inputObj,
-            secrets: provCtx.secrets ?? {},
+            secrets,
             context: ctxObj,
           })
         : inputObj
@@ -147,7 +198,7 @@ function createExecuteFn(args: {
             Object.entries(
               expandTemplate(httpMeta.queryTemplate, {
                 input: inputObj,
-                secrets: provCtx.secrets ?? {},
+                secrets,
                 context: ctxObj,
               }) as Record<string, unknown>
             ).map(([k, v]) => [k, String(v)])
@@ -156,7 +207,7 @@ function createExecuteFn(args: {
       request = { url: appendQuery(url, query), method, headers, body }
     }
 
-    const response = await fetch(request.url, {
+    const response = await fetchFn(request.url, {
       method: request.method,
       headers: request.headers,
       body:
@@ -179,26 +230,30 @@ function createExecuteFn(args: {
         headers: responseHeaders,
       })
       if (parsed.ok) return parsed.value
-      throw new HttpDriverError(parsed.error.code, parsed.error.message, parsed.error.retryable)
+      throw new HttpDriverError(
+        parsed.error.code,
+        redactSecrets(parsed.error.message, secrets),
+        parsed.error.retryable,
+      )
     }
 
     if (response.status === 401 || response.status === 403) {
-      throw new HttpDriverError("auth_required", `HTTP ${response.status}${bodyExcerpt(responseBody)}`, false)
+      throw new HttpDriverError("auth_required", `HTTP ${response.status}${bodyExcerpt(responseBody, secrets)}`, false)
     }
     if (response.status === 429) {
-      throw new HttpDriverError("rate_limited", `HTTP 429${bodyExcerpt(responseBody)}`, true)
+      throw new HttpDriverError("rate_limited", `HTTP 429${bodyExcerpt(responseBody, secrets)}`, true)
     }
     if (response.status >= 500) {
       throw new HttpDriverError(
         "upstream_error",
-        `HTTP ${response.status}${bodyExcerpt(responseBody)}`,
+        `HTTP ${response.status}${bodyExcerpt(responseBody, secrets)}`,
         true,
       )
     }
     if (response.status >= 400) {
       throw new HttpDriverError(
         "upstream_error",
-        `HTTP ${response.status}${bodyExcerpt(responseBody)}`,
+        `HTTP ${response.status}${bodyExcerpt(responseBody, secrets)}`,
         false,
       )
     }
@@ -213,10 +268,14 @@ interface PerToolHttp {
   method?: string
   headers?: Record<string, string>
   bodyTemplate?: unknown
+  body_template?: unknown
   queryTemplate?: Record<string, string>
+  query_template?: Record<string, string>
   responseExtract?: string
+  response_extract?: string
   streaming?: { transport: string; eventField?: string; terminator?: string }
   idempotencyKeyHeader?: string
+  idempotency_key_header?: string
 }
 
 class HttpDriverError extends Error {
@@ -286,9 +345,49 @@ function substituteString(
   })
 }
 
+const FORBIDDEN_PATH_KEYS = new Set(["__proto__", "constructor", "prototype"])
+
+/**
+ * Interpolate `${input.X}` / `${secrets.X}` / `${context.X}` in a URL endpoint
+ * path, URI-encoding each substituted segment and rejecting path-traversal or
+ * scheme-override injections.
+ */
+export function expandEndpoint(
+  endpoint: string,
+  vars: { input: Record<string, unknown>; secrets: Record<string, string>; context: Record<string, unknown> },
+): string {
+  return endpoint.replace(TEMPLATE_RE, (_match, scope: string, path: string, fallbackRaw?: string) => {
+    const resolved = resolvePath(vars[scope as "input" | "secrets" | "context"], path)
+    let raw: string
+    if (resolved === undefined || resolved === null) {
+      if (fallbackRaw !== undefined) {
+        const trimmed = fallbackRaw.trim()
+        raw = trimmed.startsWith("'") || trimmed.startsWith('"')
+          ? trimmed.slice(1, -1)
+          : trimmed
+      } else {
+        raw = ""
+      }
+    } else {
+      raw = typeof resolved === "string" ? resolved : String(resolved)
+    }
+    if (raw === ".." || raw.includes("..") || raw.includes("\\") || /[\r\n]/.test(raw)) {
+      throw new HttpDriverError(
+        "invalid_endpoint",
+        `Refused unsafe path segment substituted into endpoint '${endpoint}'.`,
+        false,
+      )
+    }
+    return encodeURIComponent(raw)
+  })
+}
+
 function resolvePath(obj: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, key) => {
-    if (acc && typeof acc === "object") return (acc as Record<string, unknown>)[key]
+    if (FORBIDDEN_PATH_KEYS.has(key)) return undefined
+    if (acc && typeof acc === "object" && Object.hasOwn(acc, key)) {
+      return (acc as Record<string, unknown>)[key]
+    }
     return undefined
   }, obj)
 }
@@ -301,7 +400,10 @@ export function extractResponse(body: unknown, path: string): unknown {
   for (const token of tokens) {
     if (current == null) return undefined
     if (token.kind === "key") {
-      current = (current as Record<string, unknown>)[token.value as string]
+      const key = token.value as string
+      if (FORBIDDEN_PATH_KEYS.has(key)) return undefined
+      if (typeof current !== "object" || !Object.hasOwn(current, key)) return undefined
+      current = (current as Record<string, unknown>)[key]
     } else if (token.kind === "index") {
       current = (current as unknown[])[token.value as number]
     } else if (token.kind === "wildcard") {
@@ -319,7 +421,10 @@ function applyTokens(value: unknown, tokens: Array<{ kind: string; value: string
   for (const token of tokens) {
     if (current == null) return undefined
     if (token.kind === "key") {
-      current = (current as Record<string, unknown>)[token.value as string]
+      const key = token.value as string
+      if (FORBIDDEN_PATH_KEYS.has(key)) return undefined
+      if (typeof current !== "object" || !Object.hasOwn(current, key)) return undefined
+      current = (current as Record<string, unknown>)[key]
     } else if (token.kind === "index") {
       current = (current as unknown[])[token.value as number]
     }
@@ -353,11 +458,12 @@ async function parseResponseBody(response: Response): Promise<unknown> {
  *  page/payload doesn't blow up the step error. Empty body → no suffix. */
 const BODY_EXCERPT_MAX_CHARS = 500
 
-function bodyExcerpt(body: unknown): string {
+function bodyExcerpt(body: unknown, secrets?: Record<string, string>): string {
   if (body == null || body === "") return ""
   const text = typeof body === "string" ? body : JSON.stringify(body)
   if (!text) return ""
-  const truncated = text.length > BODY_EXCERPT_MAX_CHARS ? `${text.slice(0, BODY_EXCERPT_MAX_CHARS)}…` : text
+  const scrubbed = redactSecrets(text, secrets)
+  const truncated = scrubbed.length > BODY_EXCERPT_MAX_CHARS ? `${scrubbed.slice(0, BODY_EXCERPT_MAX_CHARS)}…` : scrubbed
   return ` — ${truncated}`
 }
 
@@ -386,3 +492,16 @@ function normalizeToolId(ref: string): string {
 }
 
 export { HttpDriverError }
+export {
+  safeHttpCollector,
+  createSafeCollectorFetch,
+  assertSafeUrl,
+  isPrivateOrReservedIp,
+  redactSecrets,
+  SafeHttpCollectorError,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  DEFAULT_TIMEOUT_MS,
+  type SafeHttpCollectorOptions,
+  type DnsAddressRecord,
+  type DnsLookupFn,
+} from "./safe-collector.js"
