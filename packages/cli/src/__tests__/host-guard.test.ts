@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, it, expect, vi } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from "vitest"
 import {
   DEFAULT_GUARD_LEVEL_PATH,
   decideEscalation,
@@ -30,18 +30,30 @@ import type { HealthVerdict } from "../commands/host-health.js"
 // The default memory/marker paths live under the home directory, resolved
 // when the module loads: point HOME at a throwaway directory first so no
 // test ever touches the real ~/.agentproto.
-const fakeHome = await vi.hoisted(async () => {
+const { fakeHome, realHome } = await vi.hoisted(async () => {
   const { mkdtempSync } = await import("node:fs")
   const { tmpdir: tmp } = await import("node:os")
   const { join: joinPath } = await import("node:path")
+  const previous = process.env.HOME
   const home = mkdtempSync(joinPath(tmp(), "host-guard-home-"))
   process.env.HOME = home
-  return home
+  return { fakeHome: home, realHome: previous }
+})
+
+afterAll(async () => {
+  if (realHome === undefined) delete process.env.HOME
+  else process.env.HOME = realHome
+  await rm(fakeHome, { recursive: true, force: true })
 })
 
 // ── I/O mocks for the runner tests ──────────────────────────────────
 const io = vi.hoisted(() => ({
   verdict: "OK" as "OK" | "WARN" | "CRIT",
+  /** Verdict of the post-cleanup re-check, when it differs. A test using it
+   *  runs the guard once: odd samples are the first check, even ones the
+   *  re-check. */
+  verdictAfter: undefined as undefined | "OK" | "WARN" | "CRIT",
+  healthSamples: 0,
   sessions: [] as unknown[],
   /** Called before each reap so a test can mutate the live list. */
   onBeforeReap: undefined as undefined | ((id: string) => void),
@@ -91,12 +103,16 @@ vi.mock("../commands/host-health.js", async importOriginal => {
   const orig = await importOriginal<typeof import("../commands/host-health.js")>()
   return {
     ...orig,
-    computeHostHealth: () => ({
-      verdict: io.verdict,
-      reasons: io.verdict === "OK" ? [] : ["load high"],
+    computeHostHealth: () => {
+      io.healthSamples++
+      const verdict = io.healthSamples % 2 === 0 ? (io.verdictAfter ?? io.verdict) : io.verdict
+      return {
+      verdict,
+      reasons: verdict === "OK" ? [] : ["load high"],
       checks: [{ id: "sessions", status: "OK", value: 5 }],
       thresholds: { warnSessions: 30 },
-    }),
+      }
+    },
   }
 })
 
@@ -633,18 +649,43 @@ describe("decideEscalation", () => {
     expect(decide("CRIT", sent, { nowMs: T0 + 600 * MIN, renotifyAfterMs: 0 }).escalate).toBe(false)
   })
 
-  it("counts a climb back up after a drop as a new crossing", () => {
+  it("counts a climb back up after a drop as a new crossing, once the delay has passed", () => {
     const sent = decide("CRIT", memo()).memoryIfSent
     const dropped = decide("WARN", sent, { nowMs: T0 + 5 * MIN })
     expect(dropped.escalate).toBe(false)
     expect(dropped.memory.escalatedLevel).toBe("WARN")
-    expect(decide("CRIT", dropped.memory, { nowMs: T0 + 10 * MIN }).reason).toBe("crossed")
+    expect(decide("CRIT", dropped.memory, { nowMs: T0 + 10 * MIN }).reason).toBe("cooldown")
+    expect(decide("CRIT", dropped.memory, { nowMs: T0 + 130 * MIN }).reason).toBe("crossed")
   })
 
   it("keeps the start of a level across runs, and resets it on change", () => {
     const sent = decide("CRIT", memo({ level: "CRIT", since: "2026-11-26T10:00:00.000Z" })).memoryIfSent
     expect(sent.since).toBe("2026-11-26T10:00:00.000Z")
     expect(decide("OK", sent).memory.since).toBe(new Date(T0).toISOString())
+  })
+
+  it("does not re-escalate a host flapping around the threshold before the delay", () => {
+    let m: GuardLevelMemory | null = memo()
+    const sent: number[] = []
+    // CRIT, WARN, CRIT, WARN, ... every 5 min for 2 h.
+    for (let i = 0; i < 24; i++) {
+      const d = decide(i % 2 === 0 ? "CRIT" : "WARN", m, { nowMs: T0 + i * 5 * MIN })
+      if (d.escalate) sent.push(i)
+      m = d.escalate ? d.memoryIfSent : d.memory
+    }
+    expect(sent).toEqual([0])
+    const later = decide("CRIT", m, { nowMs: T0 + 125 * MIN })
+    expect(later.escalate).toBe(true)
+  })
+
+  it("treats a last escalation dated in the future as old", () => {
+    const future = memo({
+      level: "CRIT",
+      escalatedLevel: "CRIT",
+      lastEscalatedLevel: "CRIT",
+      lastEscalatedAt: new Date(T0 + 24 * 60 * MIN).toISOString(),
+    })
+    expect(decide("CRIT", future)).toMatchObject({ escalate: true, reason: "still-crit" })
   })
 
   it("without memory, escalates at or above the level (previous behaviour)", () => {
@@ -669,6 +710,9 @@ describe("runHostGuard — escalation on level change", () => {
     io.kills = []
     io.reapFails = new Set()
     io.escalations = []
+    io.verdictAfter = undefined
+    io.healthSamples = 0
+    await rm(DEFAULT_GUARD_LEVEL_PATH, { force: true })
     vi.spyOn(process.stdout, "write").mockImplementation((() => true) as typeof process.stdout.write)
     vi.spyOn(process.stderr, "write").mockImplementation((() => true) as typeof process.stderr.write)
   })
@@ -742,7 +786,22 @@ describe("runHostGuard — escalation on level change", () => {
     for (let i = 0; i < 3; i++) expect(await plain()).toBe(0)
     expect(io.escalations).toEqual(["notify:brain"])
     expect(DEFAULT_GUARD_LEVEL_PATH.startsWith(fakeHome)).toBe(true)
-    await rm(DEFAULT_GUARD_LEVEL_PATH, { force: true })
+  })
+
+  it("--escalate-on warn: a WARN host found CRIT on the re-check arms the workflow block", async () => {
+    io.verdict = "WARN"
+    io.verdictAfter = "CRIT"
+    await run(["--escalate-on", "warn"])
+    expect(io.escalations).toEqual(["notify:brain"])
+    expect((await readGuardState(statePath))?.verdict).toBe("CRIT")
+  })
+
+  it("--no-escalate skips the WARN re-check and reports no escalation", async () => {
+    io.verdict = "WARN"
+    io.verdictAfter = "CRIT"
+    await run(["--escalate-on", "warn", "--no-escalate"])
+    expect(io.healthSamples).toBe(1)
+    expect(io.escalations).toEqual([])
   })
 
   it("rejects an unknown --escalate-on level", async () => {

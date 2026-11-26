@@ -63,7 +63,7 @@
  * or health sample is unavailable, 64 on bad usage.
  */
 import { execFile } from "node:child_process"
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs, promisify } from "node:util"
@@ -509,14 +509,18 @@ export interface GuardLevelMemory {
   escalatedLevel: HealthVerdict
   /** When the last escalation was sent, if any. */
   lastEscalatedAt?: string
+  /** Level of the last escalation sent. */
+  lastEscalatedLevel?: HealthVerdict
 }
 
 export interface EscalationDecision {
   escalate: boolean
   /** `crossed`: the host reached a level not yet escalated in this episode.
    *  `still-crit`: the host stays CRIT past the renotify delay.
-   *  `below-threshold` / `already-escalated`: no escalation. */
-  reason: "crossed" | "still-crit" | "below-threshold" | "already-escalated"
+   *  `below-threshold` / `already-escalated`: no escalation.
+   *  `cooldown`: the host climbed back to a level escalated less than the
+   *  renotify delay ago (a host flapping around a threshold). */
+  reason: "crossed" | "still-crit" | "below-threshold" | "already-escalated" | "cooldown"
   /** Memory to persist when the escalation is NOT sent (or fails). */
   memory: GuardLevelMemory
   /** Memory to persist once the escalation has been sent. */
@@ -528,7 +532,12 @@ export interface EscalationDecision {
  * cleanup pass; `previous` is the remembered memory, or null when there is
  * none (first run, unreadable file, or `--no-level-state`), in which case
  * any level at or above the threshold escalates, as before this memory
- * existed. `renotifyAfterMs` <= 0 disables the CRIT renotification.
+ * existed. `renotifyAfterMs` is also the cooldown of a re-crossing: a host
+ * that drops below a level and climbs back to it is not escalated again
+ * before that delay has passed since the last escalation at that level or
+ * above. `renotifyAfterMs` <= 0 disables both the CRIT renotification and
+ * the cooldown. A last escalation dated in the future (clock moved back) is
+ * treated as old.
  */
 export function decideEscalation(input: {
   escalateOn: EscalateOn
@@ -548,17 +557,31 @@ export function decideEscalation(input: {
     since,
     escalatedLevel: RANK_LEVEL[announced]!,
     ...(previous?.lastEscalatedAt ? { lastEscalatedAt: previous.lastEscalatedAt } : {}),
+    ...(previous?.lastEscalatedLevel ? { lastEscalatedLevel: previous.lastEscalatedLevel } : {}),
   }
-  const memoryIfSent: GuardLevelMemory = { level, since, escalatedLevel: level, lastEscalatedAt: now }
+  const memoryIfSent: GuardLevelMemory = {
+    level,
+    since,
+    escalatedLevel: level,
+    lastEscalatedAt: now,
+    lastEscalatedLevel: level,
+  }
   if (rank < threshold) return { escalate: false, reason: "below-threshold", memory, memoryIfSent: memory }
-  if (rank > announced) return { escalate: true, reason: "crossed", memory, memoryIfSent }
-  const last = previous?.lastEscalatedAt ? Date.parse(previous.lastEscalatedAt) : Number.NaN
-  if (
-    level === "CRIT" &&
+  const lastAt = previous?.lastEscalatedAt ? Date.parse(previous.lastEscalatedAt) : Number.NaN
+  // Unknown or future (clock moved back): as if long ago.
+  const lastRecent =
     input.renotifyAfterMs > 0 &&
-    Number.isFinite(last) &&
-    nowMs - last >= input.renotifyAfterMs
-  ) {
+    Number.isFinite(lastAt) &&
+    lastAt <= nowMs &&
+    nowMs - lastAt < input.renotifyAfterMs
+  if (rank > announced) {
+    const lastLevelRank = previous?.lastEscalatedLevel ? LEVEL_RANK[previous.lastEscalatedLevel] : -1
+    if (lastRecent && lastLevelRank >= rank) {
+      return { escalate: false, reason: "cooldown", memory, memoryIfSent: memory }
+    }
+    return { escalate: true, reason: "crossed", memory, memoryIfSent }
+  }
+  if (level === "CRIT" && input.renotifyAfterMs > 0 && !lastRecent) {
     return { escalate: true, reason: "still-crit", memory, memoryIfSent }
   }
   return { escalate: false, reason: "already-escalated", memory, memoryIfSent: memory }
@@ -569,21 +592,27 @@ export async function readGuardLevel(path: string = DEFAULT_GUARD_LEVEL_PATH): P
   try {
     const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<GuardLevelMemory>
     const isLevel = (v: unknown): v is HealthVerdict => v === "OK" || v === "WARN" || v === "CRIT"
-    if (!isLevel(parsed.level) || typeof parsed.since !== "string") return null
+    const isDate = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v))
+    if (!isLevel(parsed.level) || !isDate(parsed.since)) return null
     return {
       level: parsed.level,
       since: parsed.since,
       escalatedLevel: isLevel(parsed.escalatedLevel) ? parsed.escalatedLevel : "OK",
-      ...(typeof parsed.lastEscalatedAt === "string" ? { lastEscalatedAt: parsed.lastEscalatedAt } : {}),
+      ...(isDate(parsed.lastEscalatedAt) ? { lastEscalatedAt: parsed.lastEscalatedAt } : {}),
+      ...(isLevel(parsed.lastEscalatedLevel) ? { lastEscalatedLevel: parsed.lastEscalatedLevel } : {}),
     }
   } catch {
     return null
   }
 }
 
+/** Written to a temporary file then renamed, so a run killed mid-write
+ *  never leaves a truncated memory (which would read as "no memory"). */
 async function writeGuardLevel(path: string, memory: GuardLevelMemory): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(memory, null, 2) + "\n", "utf8")
+  const tmp = `${path}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(memory, null, 2) + "\n", "utf8")
+  await rename(tmp, path)
 }
 
 /** The CRIT marker consumed by the workflow launch gate. */
@@ -701,8 +730,11 @@ own session. Nothing is spawned before cleanup.
   --escalate-on <level>  lowest level that escalates: crit (default) or warn
   --level-state <path>   last-level memory (default ~/.agentproto/host-guard/level.json)
   --no-level-state       no memory: escalate on every run at or above the level
-  --renotify-after <min> escalate again while CRIT lasts, every <min> minutes
-                         (default 120; 0 = never)
+                         (runs with different targets should use distinct
+                         --level-state files: one run's escalation counts for all)
+  --renotify-after <min> escalate again while CRIT lasts, every <min> minutes;
+                         also the cooldown before a level escalated recently is
+                         escalated again after a drop (default 120; 0 = never)
   --settle <ms>          wait after closing before re-checking (default 3000)
   --budget <ms>          host sample budget (same as host health --budget)
 `
@@ -1085,7 +1117,8 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
   // Re-check after cleanup whenever the result may escalate: a CRIT host
   // (as before), or a WARN host when escalation starts at WARN.
   const mayEscalate =
-    health.verdict === "CRIT" || (health.verdict === "WARN" && flags.escalateOn === "warn")
+    health.verdict === "CRIT" ||
+    (health.verdict === "WARN" && flags.escalateOn === "warn" && flags.escalate)
   if (!flags.dryRun && mayEscalate) {
     if (flags.settleMs > 0) await new Promise(r => setTimeout(r, flags.settleMs))
     try {
@@ -1098,6 +1131,17 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
       sessions = await fetchSessions(found.url)
       remaining = summarizeRemaining(sessions)
       if (post.verdict !== "CRIT" && flags.state) await clearGuardState(flags.state)
+      // A WARN host found CRIT on the re-check arms the workflow block too.
+      if (post.verdict === "CRIT" && health.verdict !== "CRIT" && flags.state) {
+        await writeGuardState(flags.state, {
+          verdict: "CRIT",
+          reasons: post.reasons,
+          at: startedAt,
+          expiresAt: new Date(Date.now() + GUARD_STATE_TTL_MS).toISOString(),
+          closed,
+          remaining,
+        })
+      }
     } catch (err) {
       after = { verdict: health.verdict, reasons: [`re-check failed: ${errText(err)}`] }
     }
@@ -1177,7 +1221,11 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
     failed,
     after,
     level,
-    escalationDecision: { escalateOn: flags.escalateOn, reason: decision.reason, escalate: decision.escalate },
+    escalationDecision: {
+      escalateOn: flags.escalateOn,
+      reason: decision.reason,
+      escalate: decision.escalate && flags.escalate,
+    },
     escalation,
   }
   if (flags.log) {
