@@ -150,6 +150,11 @@ describe("appInstallInputSchema with a catalog source (no local state)", () => {
     expect(parsed.data).toEqual({ url: "https://x.test/app-1.0.0.agentapp", sha256: "abc123x" })
   })
 
+  it("still refuses a misspelled pin or a dir-only key next to a url", () => {
+    expect(appInstallInputSchema.safeParse({ url: "https://x.test/a.git", shaa: "deadbeef" }).success).toBe(false)
+    expect(appInstallInputSchema.safeParse({ url: "https://x.test/a.git", repoint: true }).success).toBe(false)
+  })
+
   it("still refuses a mixed source (dir + url)", () => {
     expect(appInstallInputSchema.safeParse({ dir: "/a", url: "https://x.test/a.agentapp" }).success).toBe(false)
   })

@@ -28,26 +28,19 @@ const GIT_TIMEOUT_MS = 5 * 60_000
 
 const dataDirField = z.string().optional()
 
-/** A catalog entry's `source` carries descriptors (`kind`, `version`, `size`)
- *  next to the install fields, and a store panel forwards it as is. The
- *  `app_install` schema is strict, so a panel call keeps only the fields the
- *  schema knows for a `{url}` install; the descriptors are dropped before the
- *  confirmation guard and the dispatch. Other shapes pass through untouched. */
-const APP_INSTALL_URL_FIELDS = [
-  "url",
-  "ref",
-  "subdir",
-  "sha",
-  "sha256",
-  "allowBuild",
-  "catalogUrl",
-  "dataDir",
-  "confirm",
-] as const
+/** Descriptors a catalog entry's `source` carries next to the install fields. */
+const CATALOG_SOURCE_DESCRIPTORS = ["kind", "version", "size"] as const
 
+/** A catalog entry's `source` is forwarded as is by a store client. The
+ *  `app_install` schema is strict, so for a `{url}` install exactly the
+ *  catalog descriptors (`kind`, `version`, `size`) are dropped; any other key
+ *  (a misspelled `sha`, a dir-only `repoint`) still fails loudly. A `{dir}` or
+ *  `{file}` payload passes through untouched: catalog sources are URL based. */
 export function pickAppInstallSourceFields(args: Record<string, unknown>): Record<string, unknown> {
   if (typeof args.url !== "string" || args.dir !== undefined || args.file !== undefined) return args
-  return Object.fromEntries(APP_INSTALL_URL_FIELDS.filter(k => args[k] !== undefined).map(k => [k, args[k]]))
+  return Object.fromEntries(
+    Object.entries(args).filter(([k]) => !(CATALOG_SOURCE_DESCRIPTORS as readonly string[]).includes(k)),
+  )
 }
 
 /** `app_install` input: exactly one of `{dir}` | `{url, ref?, subdir?, sha?, sha256?, allowBuild?}` | `{file, sha256?}`. */
