@@ -25,7 +25,7 @@ that provider packages such as `@agentproto/voice-openai` depend on.
   percentages, ordinals, abbreviations and units to words (French and
   English); `normalizeWrittenForms`, `splitSpokenText` (sentence-boundary
   split, never mid-sentence), `hasWrittenOnlyContent` (code fences, tables),
-  `SPEECH_CHARS_PER_SECOND`. No I/O and no limit policy: label stripping and
+  `SPEECH_CHARS_PER_SECOND`, and `spokenTextProcessor({ locale, stripLabels })`, the reference `textOut` transformer named `spoken-text` (holds text to a sentence boundary so a number is never cut between two chunks, passes brain events through). No I/O and no limit policy: label stripping and
   length caps belong to the host.
 - `@agentproto/voice/testing`: fake providers and AIP-VOICE conformance cases.
 
