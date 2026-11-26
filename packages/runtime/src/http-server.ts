@@ -2927,7 +2927,7 @@ export async function startHttpServer(
 
     // Header-first dispatch without inspecting the body.
     if (isModernHeader) {
-      const bodyResult = await readCappedBody(EVENTS_BODY_CAP)
+      const bodyResult = await readCappedBody(MODERN_MCP_BODY_CAP)
       if (!bodyResult.ok) {
         sendModernJson(413, { "content-type": "application/json" }, JSON.stringify({ error: "body_too_large" }))
         return
@@ -2997,7 +2997,7 @@ export async function startHttpServer(
     }
 
     if (routeModern) {
-      if (bodyResult.size > EVENTS_BODY_CAP) {
+      if (bodyResult.size > MODERN_MCP_BODY_CAP) {
         sendModernJson(413, { "content-type": "application/json" }, JSON.stringify({ error: "body_too_large" }))
         return
       }
@@ -3063,6 +3063,8 @@ export async function startHttpServer(
     await serveMcp(req, res, server)
   }
 
+  /** Deliberate 1 MiB ceiling on modern-era `/mcp` requests (matches the modern events origin). */
+  const MODERN_MCP_BODY_CAP = 1024 * 1024
   const EVENTS_BODY_CAP = 1024 * 1024
 
   async function handleEventsMcp(req: IncomingMessage, res: ServerResponse, presented: string): Promise<void> {

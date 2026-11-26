@@ -364,6 +364,30 @@ describe("modern MCP 2026-07-28 gateway on /mcp", () => {
       expect(r.json?.error?.code).toBe(-32020)
     })
 
+    it("rejects modern requests exceeding the 1 MiB MODERN_MCP_BODY_CAP with 413 body_too_large", async () => {
+      const oversized = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 14,
+        method: "tools/call",
+        params: {
+          name: "probe",
+          arguments: { filler: "x".repeat(1024 * 1024 + 64) },
+          _meta: MODERN_META,
+        },
+      })
+      const headerRouted = await postJson(url(), oversized, {
+        "mcp-protocol-version": MODERN_PROTOCOL_VERSION,
+        "mcp-method": "tools/call",
+        "mcp-name": "probe",
+      })
+      expect(headerRouted.status).toBe(413)
+      expect(headerRouted.json).toEqual({ error: "body_too_large" })
+
+      const bodyRouted = await postJson(url(), oversized)
+      expect(bodyRouted.status).toBe(413)
+      expect(bodyRouted.json).toEqual({ error: "body_too_large" })
+    })
+
     it("GET and DELETE with modern header return 405 Allow: POST; legacy GET/DELETE stay intact", async () => {
       const modernGet = await headersOnly(port, "/mcp", "GET", {
         accept: "text/event-stream",
