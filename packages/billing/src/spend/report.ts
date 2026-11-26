@@ -16,9 +16,9 @@ export interface UsageReportLine {
   units: number
   /** Sum of what was charged, minor units of the primary asset. */
   chargedMinor: number
-  /** Sum of the provider cost in the same minor units (exact, before margin). Events with no known cost are not in it. */
+  /** Sum of the provider cost in the same minor units (exact, before margin). */
   costMinor: number
-  /** chargedMinor / costMinor over the events that have a cost; undefined when there is none. */
+  /** chargedMinor / costMinor; undefined when the cost is 0. */
   realMargin?: number
   atCost: boolean
 }
@@ -39,7 +39,7 @@ const EPS = 1e-9
 export function usageReport(entries: readonly ShadowEntry[], usage?: UsageConfig): UsageReport {
   const last = new Map<string, ShadowEntry>()
   for (const e of entries) last.set(e.event.key, e)
-  const lines = new Map<string, UsageReportLine & { costed: number; costedCharged: number }>()
+  const lines = new Map<string, UsageReportLine>()
   const unpriced: UsageReport["unpriced"] = { events: 0, byReason: {} }
   const bySource: UsageReport["byCredentialSource"] = {}
   let totalCharged = 0
@@ -51,15 +51,12 @@ export function usageReport(entries: readonly ShadowEntry[], usage?: UsageConfig
       continue
     }
     const p = e.price
-    const l = lines.get(p.categoryId) ?? { categoryId: p.categoryId, events: 0, units: 0, chargedMinor: 0, costMinor: 0, atCost: p.atCost, costed: 0, costedCharged: 0 }
+    const l = lines.get(p.categoryId) ?? { categoryId: p.categoryId, events: 0, units: 0, chargedMinor: 0, costMinor: 0, atCost: p.atCost }
     l.events++
     l.units += e.event.units ?? 1
     l.chargedMinor += p.minor
-    if (p.costMinor !== undefined) {
-      l.costMinor += p.costMinor
-      l.costedCharged += p.minor
-      totalCost += p.costMinor
-    }
+    l.costMinor += p.costMinor
+    totalCost += p.costMinor
     totalCharged += p.minor
     lines.set(p.categoryId, l)
     const src = p.credentialSource ?? ""
@@ -68,10 +65,7 @@ export function usageReport(entries: readonly ShadowEntry[], usage?: UsageConfig
     s.chargedMinor += p.minor
     bySource[src] = s
   }
-  const out: UsageReportLine[] = [...lines.values()].map(({ costed: _c, costedCharged, ...l }) => ({
-    ...l,
-    ...(l.costMinor > 0 ? { realMargin: costedCharged / l.costMinor } : {}),
-  }))
+  const out: UsageReportLine[] = [...lines.values()].map(l => ({ ...l, ...(l.costMinor > 0 ? { realMargin: l.chargedMinor / l.costMinor } : {}) }))
   const belowFloor: UsageReport["belowFloor"] = []
   for (const l of out) {
     const c = usage?.categories.find(x => x.id === l.categoryId)
