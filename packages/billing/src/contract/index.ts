@@ -20,6 +20,7 @@ import type { ConformanceCase } from "../testing/conformance.js"
 import type { ManualClock } from "../testing/fakes.js"
 
 export type { ConformanceCase }
+export { holdsContractCases, type HoldsContractContext } from "./holds.js"
 
 export interface SpendContractContext {
   /** A fresh, empty journal for one case. */

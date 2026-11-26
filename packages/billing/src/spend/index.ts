@@ -1,3 +1,5 @@
+export { createHolds } from "./holds.js"
+export type { HoldDeps, HoldOptions, HoldDraw, HoldRef, HoldResult, SettleResult, CheckpointAction, HoldEngine } from "./holds.js"
 export { createPricer, usageProblems, assertMarginFloors } from "./price.js"
 export type { PricerDeps, Pricer } from "./price.js"
 export { createDebit } from "./debit.js"
