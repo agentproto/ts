@@ -278,14 +278,16 @@ export interface VoiceUsageEntry {
   /** Only when the vendor itself reports a cost; never computed here. */
   reportedCostUsd?: number
   /**
-   * Whose key paid for the stage: `platform` (the host's own) or `byok` (a key
-   * the end customer supplied). Absent when the host did not say. The kit only
-   * carries the tag; what to do with it (bill, store, skip) is the host's.
+   * Opaque tag the host attaches to say whose key paid for the stage (for
+   * example the host's own key or one its customer supplied). The kit never
+   * interprets it: it carries it from the host to the host's billing. Absent
+   * when the host did not set one. Not normative in the spec.
    */
   credentialSource?: CredentialSource
 }
 
-export type CredentialSource = "platform" | "byok"
+/** An opaque, host-defined label. */
+export type CredentialSource = string
 
 /** Cumulative and monotonic; final after `close()`. No price, no content. */
 export interface VoiceUsage {

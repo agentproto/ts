@@ -23,9 +23,9 @@ describe("credentialSource", () => {
     meter.addTtsCharacters("acme", 10, "m_1")
     meter.addSttSeconds("acme", 2, "m_2")
     expect(meter.snapshot().entries.every(e => e.credentialSource === undefined)).toBe(true)
-    meter.setCredentialSource("byok")
+    meter.setCredentialSource("tag-a")
     const { events } = usageToCatalogEvents(meter.snapshot(), { providers: { acme: {} } })
-    expect(events.map(e => e.credentialSource)).toEqual(["byok", "byok"])
+    expect(events.map(e => e.credentialSource)).toEqual(["tag-a", "tag-a"])
   })
 
   it("leaves the field out when the host never said", () => {

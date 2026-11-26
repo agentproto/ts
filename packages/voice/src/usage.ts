@@ -12,7 +12,7 @@ export interface UsageMeter {
     delta: { audioSeconds?: number; tokens?: Partial<VoiceTokenBuckets>; reportedCostUsd?: number },
     model?: string,
   ): void
-  /** Tag every entry of this session with whose key paid for it (see `VoiceUsageEntry.credentialSource`). */
+  /** Tag every entry of this session with an opaque label for whose key paid for it (see `VoiceUsageEntry.credentialSource`). */
   setCredentialSource(source: CredentialSource | undefined): void
   /** A snapshot; entries are copied. */
   snapshot(): VoiceUsage
