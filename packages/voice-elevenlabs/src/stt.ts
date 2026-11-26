@@ -30,6 +30,10 @@ export function makeElevenLabsStt(cfg: ElevenLabsSttConfig = {}): SttProvider {
   const filter = cfg.filterHallucinations ?? true
   return {
     slug: "elevenlabs",
+    models: {
+      stream: cfg.streamModel ?? D.sttModel.value,
+      file: cfg.fileModel ?? D.sttFileModel.value,
+    },
     capabilities: {
       streaming: true,
       file: true,

@@ -126,6 +126,28 @@ describe("startCascade", () => {
     await session.close()
   })
 
+  it("puts the STT model that transcribed the utterance on the STT usage entry (stream vs file)", async () => {
+    const models = {
+      stream: VOICE_DEFAULTS.providers.elevenlabs.sttModel.value,
+      file: VOICE_DEFAULTS.providers.elevenlabs.sttFileModel.value,
+    }
+    for (const mode of ["stream", "file"] as const) {
+      const { emit } = recorder([])
+      const session = await startCascade({
+        emit,
+        hooks: {},
+        stt: makeFakeStt({ slug: "sttvendor", streaming: mode === "stream", models }),
+        tts: makeFakeTts({ slug: "ttsvendor" }),
+        vad: { silenceEndMs: SILENCE },
+        brain: () => words("Une phrase à dire. "),
+      })
+      await speak(session)
+      const stt = session.getUsage!()!.entries.find(e => e.stage === "stt")
+      expect(stt?.model).toBe(models[mode])
+      await session.close()
+    }
+  })
+
   it("reports usage: STT seconds and TTS characters, cumulative, final after close", async () => {
     const { emit } = recorder([])
     const stt = makeFakeStt({ slug: "sttvendor" })

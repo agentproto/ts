@@ -145,7 +145,7 @@ export interface CallPipelineDeps {
    * Seconds of caller audio transcribed for one utterance, with the provider
    * that produced the text, reported once per utterance for per-call billing.
    */
-  onSttUsage?: (usage: { provider: string; seconds: number }) => void
+  onSttUsage?: (usage: { provider: string; seconds: number; model?: string }) => void
   /**
    * Added by the kit (not in the studio pipeline): fired once per processed
    * utterance when its turn ends. `completed` is true when the reply was
@@ -158,6 +158,10 @@ export interface CallPipelineDeps {
   sttStreamLabel?: string
   /** Label of the file STT fallback in logs and usage. Default `file`. */
   sttFileLabel?: string
+  /** Vendor model of the streaming STT, reported on the usage of an utterance it transcribed. */
+  sttStreamModel?: string
+  /** Vendor model of the file STT, reported on the usage of an utterance it transcribed. */
+  sttFileModel?: string
   logPrefix?: string
 }
 
@@ -524,7 +528,12 @@ export function createCallPipeline(deps: CallPipelineDeps): CallPipeline {
         )
         if (text) {
           try {
-            deps.onSttUsage?.({ provider, seconds: wavMs / 1000 })
+            const model = usedStream ? deps.sttStreamModel : deps.sttFileModel
+            deps.onSttUsage?.({
+              provider,
+              seconds: wavMs / 1000,
+              ...(model ? { model } : {}),
+            })
           } catch {
             // usage metering never affects the turn
           }
