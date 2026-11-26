@@ -175,6 +175,21 @@ describe("modern contract (live)", () => {
       expect(json(r).error?.data).toEqual({ requiredCapabilities: { elicitation: {} } })
     })
 
+    it("no discover capability advertises listChanged:true while subscriptions/listen is not served", async () => {
+      const capabilities = json(await call("server/discover")).result?.capabilities as Json
+      const offenders: string[] = []
+      const walk = (value: unknown, path: string): void => {
+        if (typeof value !== "object" || value === null) return
+        for (const [key, inner] of Object.entries(value)) {
+          if (key === "listChanged" && inner === true) offenders.push(path)
+          walk(inner, path ? `${path}.${key}` : key)
+        }
+      }
+      walk(capabilities, "")
+      expect(offenders).toEqual([])
+      expect(capabilities?.tools).toBeDefined()
+    })
+
     it("`events` AND the `io.modelcontextprotocol/events` extension are both declared in discover `capabilities`", async () => {
       const capabilities = json(await call("server/discover")).result?.capabilities
       expect(capabilities?.events).toBeDefined()
