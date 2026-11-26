@@ -6652,6 +6652,9 @@ function handlePtyWebSocket(
   )
   const cols = clampPositiveInt(query.get("cols"), 80)
   const rows = clampPositiveInt(query.get("rows"), 24)
+  // `answers=0`: this client does not reply to terminal queries (see
+  // attachPty's `answersQueries`). Any other value, or none, means it does.
+  const answersQueries = query.get("answers") !== "0"
 
   // Backpressure threshold — when the socket has more than 256 KiB
   // queued, drop the next data frame for THIS subscriber rather than
@@ -6685,6 +6688,7 @@ function handlePtyWebSocket(
         // ignore
       }
     },
+    { answersQueries },
   )
 
   if (!handle) {

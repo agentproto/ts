@@ -837,6 +837,37 @@ export interface SessionsConfig {
    * transcripts do NOT move).
    */
   eventsDir?: string
+  /**
+   * Who answers the terminal queries a PTY child sends at startup (device
+   * attributes, XTVERSION, cell size, graphics probe, ...). `auto`: the most
+   * recently attached terminal answers; with none attached, the daemon
+   * answers a minimal set itself. `off`: queries reach the clients untouched
+   * and nobody answers when none is attached. Env var
+   * `AGENTPROTO_PTY_QUERIES` > this field > `auto`. Applies to PTYs spawned
+   * after a daemon restart.
+   */
+  terminalQueries?: "auto" | "off"
+  /**
+   * Whether the daemon, answering for a PTY with no attached terminal,
+   * reports graphics support ("OK" to the graphics probe). Only turn it on
+   * when the terminals that attach really display that image protocol. Env
+   * var `AGENTPROTO_PTY_GRAPHICS` > this field > `false`.
+   */
+  terminalGraphics?: boolean
+  /**
+   * Cell size in pixels, `<width>x<height>`, that the daemon reports
+   * (`CSI 14 t`, `CSI 16 t`) and writes in the PTY window size. Env var
+   * `AGENTPROTO_PTY_CELL_SIZE` > this field > `10x20`.
+   */
+  terminalCellSize?: string
+  /**
+   * Name the daemon gives for XTVERSION when it answers for a PTY with no
+   * attached terminal. Some programs enable a feature only for terminals
+   * they know by name (Claude Code draws images only for kitty, Ghostty or
+   * iTerm2, on top of `terminalGraphics`). Env var
+   * `AGENTPROTO_PTY_TERMINAL_NAME` > this field > `agentproto`.
+   */
+  terminalName?: string
 }
 
 /**

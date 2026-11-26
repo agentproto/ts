@@ -22,27 +22,34 @@
  *   - graphics support probes `APC G … a=q … ST`
  */
 
-/** One alternation per query family. Matched on a latin1 string so every
+/** One pattern per query family, written against a latin1 string so every
  *  byte maps to exactly one character and nothing else is altered.
- *
- *  The `g` flag makes this regex stateful: use it only with
- *  `String.prototype.replace`, which resets `lastIndex` when it finishes.
  *  `CSI 0 n` is not listed on purpose: it is the "terminal ready" reply to a
  *  status request, not a request. */
-const QUERY_SEQUENCES = new RegExp(
-  [
-    "\\x1b\\[[>=]?0?c", // device attributes
-    "\\x1b\\[>0?q", // terminal identity
-    "\\x1b\\[\\?u", // keyboard protocol flags
-    "\\x1b\\[(?:[56]|\\?[0-9]+)n", // status reports
-    "\\x1b\\[\\??[0-9]+\\$p", // mode state
-    "\\x1b\\[(?:11|1[3-6]|1[89]|2[01])(?:;[0-9]+)*t", // window and cell size
-    "\\x1bP[+$]q[^\\x1b]*\\x1b\\\\", // string requests
-    "\\x1b\\][0-9]+(?:;[0-9]+)*;\\?(?:\\x07|\\x1b\\\\)", // colour requests
-    "\\x1b_G(?:[a-zA-Z]=[^,;\\x1b]*,)*a=q(?:,[a-zA-Z]=[^,;\\x1b]*)*(?:;[^\\x1b]*)?\\x1b\\\\", // graphics probe
-  ].join("|"),
-  "g",
-)
+const QUERY_PATTERNS = [
+  "\\x1b\\[[>=]?0?c", // device attributes
+  "\\x1b\\[>0?q", // terminal identity
+  "\\x1b\\[\\?u", // keyboard protocol flags
+  "\\x1b\\[(?:[56]|\\?[0-9]+)n", // status reports
+  "\\x1b\\[\\??[0-9]+\\$p", // mode state
+  "\\x1b\\[(?:11|1[3-6]|1[89]|2[01])(?:;[0-9]+)*t", // window and cell size
+  "\\x1bP[+$]q[^\\x1b]*\\x1b\\\\", // string requests
+  "\\x1b\\][0-9]+(?:;[0-9]+)*;\\?(?:\\x07|\\x1b\\\\)", // colour requests
+  "\\x1b_G(?:[a-zA-Z]=[^,;\\x1b]*,)*a=q(?:,[a-zA-Z]=[^,;\\x1b]*)*(?:;[^\\x1b]*)?\\x1b\\\\", // graphics probe
+]
+
+/** The `g` flag makes this regex stateful: use it only with
+ *  `String.prototype.replace`, which resets `lastIndex` when it finishes. */
+const QUERY_SEQUENCES = new RegExp(QUERY_PATTERNS.join("|"), "g")
+
+/** Same families, anchored: matches one whole escape sequence. */
+const WHOLE_QUERY = new RegExp(`^(?:${QUERY_PATTERNS.join("|")})$`)
+
+/** True when `sequence` (one complete escape sequence, latin1) is a
+ *  terminal query, i.e. a request whose answer goes to the child's stdin. */
+export function isTerminalQuery(sequence: string): boolean {
+  return WHOLE_QUERY.test(sequence)
+}
 
 /** Returns `bytes` without terminal queries. The input is not modified. */
 export function stripTerminalQueries(bytes: Buffer): Buffer {
