@@ -6,11 +6,11 @@ describe("codex spawn version", () => {
     expect(codex.bin).toBe("npx")
     expect(codex.bin_args).toEqual([
       "-y",
-      "@agentclientprotocol/codex-acp@2.10.0",
+      "@agentclientprotocol/codex-acp@2.12.0",
     ])
     expect(codex.install).toContainEqual({
       method: "npm",
-      package: "@agentclientprotocol/codex-acp@2.10.0",
+      package: "@agentclientprotocol/codex-acp@2.12.0",
       global: true,
     })
   })
@@ -27,5 +27,25 @@ describe("codex state home", () => {
       share: ["auth.json"],
       seed: { "config.toml": "project_root_markers = []\n" },
     })
+  })
+})
+
+describe("codex model menu", () => {
+  it.each([
+    "gpt-6.1-sol",
+    "gpt-6.1-sol-pro",
+    "gpt-6.1-terra",
+    "gpt-6.1-terra-pro",
+    "gpt-6.2-sol",
+    "gpt-6.2-sol-pro",
+    "gpt-6.2-astra",
+    "gpt-6.2-astra-pro",
+  ])("lists %s", (id) => {
+    expect(codex.models?.allowed).toContain(id)
+  })
+
+  it("does not list ids that do not exist upstream", () => {
+    expect(codex.models?.allowed).not.toContain("gpt-6-terra")
+    expect(codex.models?.allowed).not.toContain("gpt-6-codex")
   })
 })
