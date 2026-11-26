@@ -93,6 +93,21 @@ Pass `onUsage(usage)` in the start options to receive the final `VoiceUsage`
 once when the session closes (cascade or realtime). A sink that throws or
 rejects is ignored; it never interrupts audio or fails the close.
 
+## Playback clock
+
+When the host sends reply audio faster than the client plays it, give the
+cascade a view of the client's queue so barge-in and turn settling follow what
+the caller actually hears:
+
+```ts
+import { createPlaybackClock, startCascade } from "@agentproto/voice"
+
+const playback = createPlaybackClock()
+// startCascade({ ..., playback })
+// after each audio chunk written to the client:  playback.sent(chunkMs)
+// when the client flushes its queue (interrupt):  playback.reset()
+```
+
 ## Spec number
 
 The spec is referred to as AIP-VOICE in this package until it has a number in
