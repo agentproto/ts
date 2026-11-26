@@ -108,6 +108,19 @@ const playback = createPlaybackClock()
 // when the client flushes its queue (interrupt):  playback.reset()
 ```
 
+## Brain callbacks and billing events
+
+`deltasToIterable(run)` adapts a callback-style brain (`run(onDelta)`) to the
+`AsyncIterable<string>` the cascade expects; a one-block answer with no delta
+is still yielded.
+
+`usageToCatalogEvents(session.getUsage(), { providers })` turns the usage record
+into `{ kind, modelId, characters | seconds }` events keyed by a catalog id
+(`<prefix>/<normalised model>`). Each provider is described by the host
+(catalog prefix, vendor model prefix to strip, optional fallback model per
+stage); entries with no mapping or no model are listed in `unbilled`, never
+guessed. Pricing stays with the host. `meter.setCredentialSource(label)` tags every usage entry with an opaque host-defined label (for example whose key paid); the label is copied onto each event and the kit never interprets it.
+
 ## Spec number
 
 The spec is referred to as AIP-VOICE in this package until it has a number in

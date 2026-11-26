@@ -37,3 +37,12 @@ export { guardVoiceCall, DEFAULT_POLL_INTERVAL_MS } from "./billing-gate.js"
 export type { VoiceBillingGate, VoiceBalanceDirective, VoiceAuthDecision, VoiceFarewell, VoiceEndReason, VoiceCallProgress, GuardedVoiceCall, GuardOptions, GuardResult } from "./billing-gate.js"
 export { createPlaybackClock, type PlaybackClock, type PlaybackView } from "./playback-clock.js"
 export type { CallPlayback, PlaybackWaitResult } from "./cascade/pipeline.js"
+export { deltasToIterable } from "./brain-iterable.js"
+export {
+  usageToCatalogEvents,
+  catalogModelId,
+  normalizeModelId,
+  type CatalogProviderMapping,
+  type CatalogUsageOptions,
+  type CatalogUsageEvent,
+} from "./catalog-usage.js"
