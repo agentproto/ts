@@ -49,6 +49,7 @@ import { readSandboxLedger } from "./sandbox-ledger.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
 import { readUsageSnapshots as readUsageSnapshotLines } from "./usage-snapshot-log.js"
 import { paidCostFor } from "./terminal-usage.js"
+import { stripTerminalQueries } from "./terminal-query-filter.js"
 import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import { runShellGate } from "./supervisor.js"
@@ -15560,8 +15561,15 @@ export function createSessionsRegistry(opts?: {
       if (!rt || !rt.pty || !rt.ptySubscribers) return null
       // Backfill: flush the byte ring buffer so a fresh attach lands
       // on the recent screenful. Alt-screen apps repaint on next
-      // input but a snapshot is still better than blank.
-      for (const chunk of rt.recentBytes) onData(chunk)
+      // input but a snapshot is still better than blank. Terminal
+      // queries are left out: the attaching terminal would answer them
+      // long after the child stopped waiting, and the reply would land
+      // in the child's input. The buffer is joined first so a query
+      // split across two chunks is still recognised.
+      const replay = stripTerminalQueries(
+        Buffer.concat(rt.recentBytes, rt.recentBytesSize),
+      )
+      if (replay.byteLength > 0) onData(replay)
       // Subscriber registration: a monotonically-growing key so the
       // size map can hold the per-subscriber dims and detach is O(1).
       const subId = nextSubId++
