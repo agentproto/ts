@@ -1,7 +1,7 @@
 /**
  * A small manifest the BILL-* cases run on: anchor USD at 100 credits, EUR at
  * fx 1.18, a pack with a bonus tier, a buyer-chosen top-up, a monthly and a
- * yearly plan, a one-time bundle, points, free grants and a two-level hierarchy.
+ * yearly plan, a plan with a trial, a pack that accepts discounts, a one-time bundle, points, free grants and a two-level hierarchy.
  * Prices and rates are test data, not any product's.
  */
 export const REFERENCE_MANIFEST = `---
@@ -81,6 +81,11 @@ offers:
     price: { model: subscription, amountMinor: 900, currency: EUR, interval: month }
     includes: [ { feature: credits, amountMinor: 10000, partition: "REF_CREDITS:subscription", rollover: unbounded } ]
     subscription: { anchor: payment, onUpgrade: none }
+  - { id: pack-promo, price: { model: prepaid-pool, amountMinor: 2000, currency: EUR }, convert: eur-to-credits, discounts: allow }
+  - id: plan-trial
+    price: { model: subscription, amountMinor: 500, currency: EUR, interval: month }
+    includes: [ { feature: credits, amountMinor: 60000, partition: "REF_CREDITS:subscription", rollover: none }, { feature: pro } ]
+    subscription: { anchor: payment, grace: P7D, onUpgrade: none, trial: P14D }
   - id: bundle
     price: { model: one-time, amountMinor: 9900, currency: USD }
     includes: [ { feature: credits, amountMinor: 15000, partition: "REF_CREDITS:purchased" }, { feature: pro } ]
