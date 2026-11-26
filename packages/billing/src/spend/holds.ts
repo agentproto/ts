@@ -8,6 +8,12 @@
  *   release     -> `release` everything that is still held
  *   sweep       -> release the holds a crash left open
  *
+ * Invariants the host's rules cannot bypass (the host decides amounts, this executes):
+ *   - a hold never takes more than the account can spend (no negative balance);
+ *   - settle never captures more than was reserved, whatever the caller passes;
+ *     the reserved amounts are read from the journal, not from the `HoldRef`;
+ *   - one key, one effect: replaying hold, settle or release writes nothing twice.
+ *
  * Every event id derives from the caller's `key`, so a replay of any step
  * writes nothing twice. Nothing here prices anything: the caller converts
  * usage into minor units of the asset.
@@ -34,8 +40,6 @@ export interface HoldOptions {
   minToStart?: number
   /** Which lots are drawn first. Default: soonest to expire, then oldest. */
   lotOrder?: (a: Lot, b: Lot) => number
-  /** Agency recorded on the journal events. Default `passive`. */
-  intent?: "passive" | "active"
 }
 
 /** The default draw order: soonest to expire first, then oldest. */
@@ -103,10 +107,13 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
   const warnAt = opts.warnAt
   const cutoffAt = opts.cutoffAt ?? 1
   const order = opts.lotOrder ?? defaultLotOrder
-  const intent = opts.intent ?? "passive"
+  // A metered action is the cost of the agent existing, never a chosen payment: always passive.
+  const intent = "passive" as const
   const lane = (accountId: string) => `spend:${accountId}`
 
   async function close(hold: HoldRef, actual: number): Promise<SettleResult> {
+    // Invariant: never guess an amount. A non-number would capture 0 or everything.
+    if (typeof actual !== "number" || Number.isNaN(actual)) throw new RangeError("settle: actual must be a number")
     return serial(lane(hold.accountId), async () => {
       const events = await deps.storage.loadEvents(hold.accountId)
       const mine = events.filter(e => e.correlationId === hold.holdId)

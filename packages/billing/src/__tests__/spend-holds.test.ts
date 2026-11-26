@@ -176,12 +176,11 @@ describe("checkpoint", () => {
     expect(holds.checkpoint(r.hold, 800).action).toBe("warn")
     expect(holds.checkpoint(r.hold, 950).action).toBe("cutoff")
   })
-  it("the draw order and the intent are injectable", async () => {
+  it("the draw order is injectable", async () => {
     const s = await setup(1_000)
     await s.storage.commit("acct", [s.mint("soon", 200, { expiresAt: T0 + 1_000 })])
-    const holds = createHolds({ storage: s.storage, clock: s.clock }, { asset: ASSET, intent: "active", lotOrder: (a, b) => (a.id === "lot1" ? -1 : b.id === "lot1" ? 1 : 0) })
+    const holds = createHolds({ storage: s.storage, clock: s.clock }, { asset: ASSET, lotOrder: (a, b) => (a.id === "lot1" ? -1 : b.id === "lot1" ? 1 : 0) })
     const r = await holds.hold({ accountId: "acct", key: "c", amount: 100 })
     expect(r.ok && r.hold.draws.map(d => d.lotId)).toEqual(["lot1"])
-    expect((await s.storage.loadEvents("acct")).find(e => e.kind === "reserve")?.intent).toBe("active")
   })
 })
