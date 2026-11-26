@@ -113,6 +113,7 @@ import { createWorkspaceOfCwd } from "./workspace-binding.js"
 import { postParentRelayMessage, relayTokenForSession } from "./parent-relay.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 import { redactSessionMounts } from "./session-descriptor-public.js"
+import { currentTurnTaskReservation } from "./turn-task-context.js"
 import { registerDesktopConversationAskTool } from "./desktop-conversations.js"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
@@ -941,6 +942,22 @@ export function registerAgentTools(
         }
         succeedsFrom = from
       }
+      // MCP task projection: the host reserved the session id and the first turn's ticket before this call ran.
+      // Record the task durably, then spawn under exactly those ids; the ledger entry exists before the session.
+      const taskReservation = currentTurnTaskReservation()
+      if (taskReservation?.sessionId !== undefined) {
+        try {
+          taskReservation.commit(taskReservation.sessionId)
+        } catch (err) {
+          return {
+            content: [
+              { type: "text", text: `agent_start: could not record the task: ${err instanceof Error ? err.message : String(err)}` },
+            ],
+            isError: true,
+          }
+        }
+        registry.expectFirstTurnTicket(taskReservation.sessionId, taskReservation.promptId)
+      }
       const result = await spawnAgentSession(
         {
           registry,
@@ -970,6 +987,7 @@ export function registerAgentTools(
             ]
             return harnessWarnings.length > 0 ? { harnessWarnings } : {}
           })(),
+          ...(taskReservation?.sessionId !== undefined ? { reservedSessionId: taskReservation.sessionId } : {}),
           adapter: adapter ?? CLOUD_ADAPTER_PLACEHOLDER,
           // Both keys carry the ONE resolved slug, so the spawn core's
           // `harness ?? adapter` reads and its `adapter` reads agree.
@@ -1002,6 +1020,10 @@ export function registerAgentTools(
         },
       )
       if (result.ok) {
+        // A deduped spawn returned an EXISTING session: the reserved id never came to exist.
+        if (taskReservation?.sessionId !== undefined && result.descriptor.id !== taskReservation.sessionId) {
+          registry.releaseFirstTurnTicket(taskReservation.sessionId)
+        }
         // Best-effort post-spawn attaches: their failures must never sink an
         // otherwise-successful spawn; each pushes a non-fatal warning instead.
         //
@@ -1160,6 +1182,7 @@ export function registerAgentTools(
           content: [{ type: "text", text: JSON.stringify(body) }],
         }
       }
+      if (taskReservation?.sessionId !== undefined) registry.releaseFirstTurnTicket(taskReservation.sessionId)
       // The orchestrator guardrail errors + the role-spawn gate have
       // always been reported as a structured JSON blob (error/message/
       // +details); every other failure is a plain-text message.
@@ -1278,7 +1301,12 @@ export function registerAgentTools(
         // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
         // configurable daemon default.
         const effectiveInterrupt = input.interrupt ?? interruptDefault
+        // MCP task projection: record the task durably (ledger entry, reserved ticket) BEFORE the prompt
+        // reaches the session or its queue; the same ticket then tags the queue item and the turn.
+        const taskReservation = currentTurnTaskReservation()
+        if (taskReservation) taskReservation.commit(sessionId)
         const result = await registry.enqueuePrompt(sessionId, input.prompt, {
+          ...(taskReservation ? { promptId: taskReservation.promptId } : {}),
           interrupt: effectiveInterrupt,
           // Queue by default: a mid-turn session holds the prompt in its
           // FIFO queue and dispatches it at turn end, so callers never

@@ -83,6 +83,34 @@ export async function resolveHumanGateSurfaces(
   }
 }
 
+export interface TaskSettings {
+  enabled: boolean
+  tools: "both" | "agent_start" | "agent_prompt"
+  ttlMs?: number
+  maxTtlMs?: number
+  maxPerPrincipal?: number
+  resultMaxChars?: number
+}
+
+const positiveInt = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : undefined
+
+/** Every Tasks setting in one read (the projector asks per request, so a `config_set` applies at once). */
+export async function resolveTaskSettings(
+  loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
+): Promise<TaskSettings> {
+  const cfg = await resolveMcpConfig(loadCfg)
+  const tools = cfg.tasksTools === "agent_start" || cfg.tasksTools === "agent_prompt" ? cfg.tasksTools : "both"
+  return {
+    enabled: typeof cfg.tasks === "boolean" ? cfg.tasks : DEFAULT_TASKS,
+    tools,
+    ...(positiveInt(cfg.tasksTtlMs) !== undefined ? { ttlMs: positiveInt(cfg.tasksTtlMs)! } : {}),
+    ...(positiveInt(cfg.tasksMaxTtlMs) !== undefined ? { maxTtlMs: positiveInt(cfg.tasksMaxTtlMs)! } : {}),
+    ...(positiveInt(cfg.tasksMaxPerPrincipal) !== undefined ? { maxPerPrincipal: positiveInt(cfg.tasksMaxPerPrincipal)! } : {}),
+    ...(positiveInt(cfg.tasksResultMaxChars) !== undefined ? { resultMaxChars: positiveInt(cfg.tasksResultMaxChars)! } : {}),
+  }
+}
+
 /** Whether the modern gateway offers the MCP Tasks extension. */
 export async function resolveTasks(
   loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,

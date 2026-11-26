@@ -30,6 +30,7 @@ export * from "./tasks.js"
 export { forwardParams } from "./bridge.js"
 export { decodeHeaderValue, isJsonContentType, normalizeHeaders, type ParsedRequest } from "./validate.js"
 import type { HumanGate } from "./human-gate.js"
+import { runWithTurnTaskReservation } from "../turn-task-context.js"
 import { TASKS_EXTENSION, clientDeclaresTasks, handleTaskRequest, type TaskProjector } from "./tasks.js"
 
 export function extractClientCapabilities(req: ParsedRequest): Record<string, unknown> | undefined {
@@ -145,7 +146,9 @@ function fromThrown(error: unknown, id: string | number): ModernResponse {
     // An unknown method is 404, a missing required client capability (-32021) is 400 (spec basic/index).
     // Any other JSON-RPC error raised by a handler keeps HTTP 200, as the legacy transport answers it.
     const status =
-      error.code === ERR_METHOD_NOT_FOUND
+      error.httpStatus !== undefined
+        ? error.httpStatus
+        : error.code === ERR_METHOD_NOT_FOUND
         ? 404
         : error.code === ERR_MISSING_CLIENT_CAPABILITY
           ? 400
@@ -218,9 +221,15 @@ async function answer(
           )
       : forward
     // The server decides to create a task, never the client: only for a client that declared the extension.
-    const plan = deps.tasks && clientDeclaresTasks(clientCapabilities) ? deps.tasks.plan(tool, request.params) : undefined
-    const rawResult = await gated()
-    const answer = plan && deps.tasks ? deps.tasks.finalize(plan, rawResult, deps.callerSessionId) : rawResult
+    // The host reserves the ticket (and, for agent_start, the session id) BEFORE the tool runs and hands it over
+    // through a request-scoped context, so the task is recorded durably before the session hears of the prompt.
+    const plan =
+      deps.tasks && clientDeclaresTasks(clientCapabilities)
+        ? deps.tasks.plan(tool, request.params, deps.callerSessionId)
+        : undefined
+    if (plan?.kind === "refused") return decorate(request.method, plan.answer, bridge.serverInfo, hints)
+    const rawResult = plan ? await runWithTurnTaskReservation(plan.reservation, gated) : await gated()
+    const answer = plan && deps.tasks ? deps.tasks.finalize(plan, rawResult) : rawResult
     return decorate(request.method, answer, bridge.serverInfo, hints)
   }
 

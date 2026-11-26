@@ -197,7 +197,8 @@ import { harnessCacheRetentionDays, loadConfig } from "./config.js"
 import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
-import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveHumanGateSurfaces, resolveTasks } from "./mcp-config.js"
+import { valueScanRedactor } from "@agentproto/processor"
+import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveHumanGateSurfaces, resolveTaskSettings } from "./mcp-config.js"
 import {
   createHumanGate,
   createMrtrStateStore,
@@ -5511,6 +5512,7 @@ export async function createGateway(
     surfaces: () => resolveHumanGateSurfaces(),
   })
 
+  const taskRedactor = valueScanRedactor()
   const mcpTaskProjector = createTaskProjector({
     sessions,
     ledger: createTurnTaskLedger({
@@ -5518,14 +5520,33 @@ export async function createGateway(
     }),
     humanGate: mcpHumanGate,
     readFinalText: id => readLastAssistantTextSync(sessionEventsPath(id, sessions.transcriptBaseDir)),
+    // A stored result never carries a secret shape (AIP-19): scanned as a string value, every known shape masked.
+    redact: text => {
+      try {
+        const out = taskRedactor.redact(text, { field: "output" })
+        return typeof out === "string" ? out : text
+      } catch {
+        return text
+      }
+    },
   })
-  sessionEvents.on("session:turn-end", ev => {
+  // What the registry cannot say through ticket events: a session ending, and a permission asked or answered.
+  sessionEvents.on("session:exited", ev => {
     try {
-      mcpTaskProjector.observeTurnEnd(ev.sessionId, ev.reason)
+      mcpTaskProjector.observeSessionEnded(ev.sessionId)
     } catch {
       // the projection must never disturb the session bus
     }
   })
+  for (const type of ["session:permission-request", "session:permission-resolved", "session:awaiting-input"] as const) {
+    sessionEvents.on(type, ev => {
+      try {
+        mcpTaskProjector.observeInputChanged(ev.sessionId)
+      } catch {
+        // the projection must never disturb the session bus
+      }
+    })
+  }
 
   const http = await startHttpServer({
     port,
@@ -5551,7 +5572,18 @@ export async function createGateway(
       decorateServer: async server => {
         if (await resolveSkillsExtension()) registerServedSkills(server)
       },
-      tasks: async () => ((await resolveTasks()) ? mcpTaskProjector : undefined),
+      tasks: async () => {
+        const task = await resolveTaskSettings()
+        if (!task.enabled) return undefined
+        mcpTaskProjector.configure({
+          tools: task.tools,
+          ...(task.ttlMs !== undefined ? { ttlMs: task.ttlMs } : {}),
+          ...(task.maxTtlMs !== undefined ? { maxTtlMs: task.maxTtlMs } : {}),
+          ...(task.maxPerPrincipal !== undefined ? { maxActivePerPrincipal: task.maxPerPrincipal } : {}),
+          ...(task.resultMaxChars !== undefined ? { resultMaxChars: task.resultMaxChars } : {}),
+        })
+        return mcpTaskProjector
+      },
     },
     orchestratorMcpServerFactory,
     loadCommandAllowlist: () => loadAllowlistEntries(workspace),

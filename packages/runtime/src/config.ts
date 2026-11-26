@@ -719,6 +719,16 @@ export interface McpConfig {
    * Set to `false` to stop announcing it and answer those tools as before.
    */
   tasks?: boolean
+  /** Which tools answer with a task: `both` (default), `agent_start` only, or `agent_prompt` only. */
+  tasksTools?: "both" | "agent_start" | "agent_prompt"
+  /** Retention of a task after it reaches a terminal state, in ms (default 24 h, clamped to `tasksMaxTtlMs`). */
+  tasksTtlMs?: number
+  /** Upper bound of the retention, in ms (default 7 days). */
+  tasksMaxTtlMs?: number
+  /** Cap on the non-terminal tasks one principal may hold at once (default 32). */
+  tasksMaxPerPrincipal?: number
+  /** Bound on the final text stored in a task result, in characters (default 8192). */
+  tasksResultMaxChars?: number
 }
 
 /**

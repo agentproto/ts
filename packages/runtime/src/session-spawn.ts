@@ -2012,6 +2012,9 @@ export interface SpawnAgentSessionDeps {
 }
 
 export interface SpawnAgentSessionInput {
+  /** Host-reserved session id (MCP task projection): the spawn uses it instead of minting one, so the id can be
+   *  recorded durably before the session exists. Internal: not part of the `agent_start` tool schema. */
+  reservedSessionId?: string
   /** The session this spawn replaces (a continue-fresh): the new row takes over
    *  its slug and the replaced row gives it up. See `SpawnAgentInput.replaces`.
    *  Internal: not part of the `agent_start` tool schema. */
@@ -4444,7 +4447,7 @@ async function spawnAgentSessionOnce(
   // for anything embedded in the child's own callback URL. Handed to
   // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
   // this exact id rather than a second, different one (PR 7 / Gap 7).
-  const mintedSessionId = mintSessionId()
+  const mintedSessionId = input.reservedSessionId ?? mintSessionId()
   // A direct spawn that reattaches an adapter-native conversation
   // (`agent_start`/`POST /sessions { resumeSessionId }`) is a revival of
   // that conversation — record the lineage rather than forking silently.
