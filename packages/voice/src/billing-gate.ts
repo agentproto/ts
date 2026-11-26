@@ -97,6 +97,8 @@ export async function guardVoiceCall<Hold, Ctx>(
     if ((gate.onGateError ?? "closed") === "closed") return { started: false, reason: "gate_error" }
     decision = { ok: true }
   }
+  // A decision the type does not allow is a refusal: the guard never lets a call through on a malformed answer.
+  if (typeof decision !== "object" || decision === null || typeof decision.ok !== "boolean") return { started: false, reason: "invalid_decision" }
   if (!decision.ok) return { started: false, reason: decision.reason }
   const hold = decision.hold as Hold | undefined
 
@@ -115,8 +117,12 @@ export async function guardVoiceCall<Hold, Ctx>(
     if (stopped || hold === undefined) return
     void (async () => {
       try {
-        const d = await gate.onCheckpoint(ctx, hold, { elapsedSeconds: elapsed(), usage: call.getUsage?.() })
+        let d = await gate.onCheckpoint(ctx, hold, { elapsedSeconds: elapsed(), usage: call.getUsage?.() })
         if (stopped) return
+        // A directive outside the type cuts the call off (fail closed), it never lets it run on.
+        if (d?.action !== "continue" && d?.action !== "warn" && d?.action !== "cutoff") {
+          d = { action: "cutoff", farewell: { reason: "invalid_decision" } }
+        }
         if (d.action === "warn") await call.onFarewell?.(d)
         if (d.action === "cutoff") {
           reason = "cutoff"

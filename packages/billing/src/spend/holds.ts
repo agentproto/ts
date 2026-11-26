@@ -38,12 +38,10 @@ export interface HoldOptions {
   cutoffAt?: number
   /** When the account cannot cover the whole amount, hold what it has if that is at least this much. Default: all or nothing. */
   minToStart?: number
-  /** Which lots are drawn first. Default: soonest to expire, then oldest. */
-  lotOrder?: (a: Lot, b: Lot) => number
 }
 
-/** The default draw order: soonest to expire first, then oldest. */
-export const defaultLotOrder = (a: Lot, b: Lot): number => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt
+/** The draw order: soonest to expire first, then oldest. */
+const lotOrder = (a: Lot, b: Lot): number => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.createdAt - b.createdAt
 
 export interface HoldDraw {
   lotId: string
@@ -106,7 +104,6 @@ function drawsOf(events: WalletEvent[], key: string): HoldDraw[] {
 export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
   const warnAt = opts.warnAt
   const cutoffAt = opts.cutoffAt ?? 1
-  const order = opts.lotOrder ?? defaultLotOrder
   // A metered action is the cost of the agent existing, never a chosen payment: always passive.
   const intent = "passive" as const
   const lane = (accountId: string) => `spend:${accountId}`
@@ -159,7 +156,7 @@ export function createHolds(deps: HoldDeps, opts: HoldOptions): HoldEngine {
         const now = deps.clock.nowMs()
         const lots = fold(events, now)
           .filter(l => l.asset === opts.asset && available(l, now) > 0 && (opts.lotFilter?.(l) ?? true))
-          .sort(order)
+          .sort(lotOrder)
         const spendable = lots.reduce((s, l) => s + available(l, now), 0)
         const take = spendable >= want ? want : opts.minToStart !== undefined && spendable >= opts.minToStart && spendable > 0 ? spendable : 0
         if (take === 0) return { ok: false as const, reason: "insufficient_funds" as const }

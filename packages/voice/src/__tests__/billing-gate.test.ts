@@ -110,4 +110,13 @@ describe("guardVoiceCall", () => {
     const r = await guardVoiceCall(gate, { call: "c" }, { start: async () => undefined, close: async () => undefined, ended: Promise.resolve("mic-idle") })
     expect(r).toMatchObject({ started: true, endReason: "mic-idle" })
   })
+
+  it("fails closed on a decision outside the type: authorize refuses, a bad checkpoint cuts off", async () => {
+    const bad = harness({ onAuthorize: (async () => ({ nope: true })) as never })
+    expect(await guardVoiceCall(bad.gate, { call: "c" }, { start: async () => undefined, close: async () => undefined })).toEqual({ started: false, reason: "invalid_decision" })
+    const cut = harness({ onCheckpoint: (async () => ({ action: "maybe" })) as never })
+    const r = await guardVoiceCall(cut.gate, { call: "c" }, { start: async () => undefined, close: async () => undefined })
+    expect(r).toMatchObject({ started: true, endReason: "cutoff" })
+    expect(cut.settled.map(s => s.reason)).toEqual(["cutoff"])
+  })
 })
