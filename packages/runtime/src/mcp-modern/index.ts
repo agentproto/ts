@@ -168,6 +168,16 @@ async function answer(
   if (request.method === "server/discover") {
     const capabilities: Record<string, unknown> = { ...bridge.capabilities }
     delete capabilities.logging // removed in the modern era
+    // `listChanged` promises list-change notifications, which the modern era delivers over
+    // `subscriptions/listen`. That method is not served here (it answers 404), so the flag is withdrawn.
+    for (const key of ["tools", "resources", "prompts"] as const) {
+      const entry = capabilities[key]
+      if (typeof entry === "object" && entry !== null && !Array.isArray(entry) && "listChanged" in entry) {
+        const rest: Record<string, unknown> = { ...(entry as Record<string, unknown>) }
+        delete rest.listChanged
+        capabilities[key] = rest
+      }
+    }
     if (deps.extensions !== undefined || deps.tasks !== undefined) {
       const existing =
         typeof capabilities.extensions === "object" &&

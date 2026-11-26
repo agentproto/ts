@@ -29,7 +29,7 @@ Events envelope. The envelope fields are `eventId`, `name`, `data`,
 | `nextCursor` pagination | `cursor` query param on `events/list`, opaque token = offset+scheme checkpoint | `events-registry.ts` | merged into `events-list-pagination` |
 | deterministic subscription id (principal + callback URL + event name + args, canonical JSON) | `subscriptionId(subInput)` — sha256 over **RFC 8785 (JCS) canonical JSON** (full spec: recursive key sort, Unicode minimization, ECMAScript number serialization; args payload is trustless input, nested objects legal); same identity = **upsert**, never duplicate | `mcp-events/subscription-id.ts` | `sub-id-canonical-jcs`, `sub-id-no-duplicate` |
 | callback verification (challenge POST, signed, one-shot, short TTL) | `verifyCallback()` — 2xx required, constant-time compare, keyed cache per **(principal + normalized callback URL + sha256(secret)) — a NEW secret during rotation ALWAYS forces re-verification (the cache can never bless an unverified secret)**, bounded TTL 10 min | `webhook-egress/challenge.ts` | `challenge-success`, `challenge-fail-reason-categorized`, `challenge-cache-hit`, `challenge-new-secret-bypasses-cache` |
-| `CallbackEndpointError -32015` + `data.reason` | JSON-RPC error on subscribe; `reason ∈ {challenge_failed, timeout, non_https, ssrf_blocked, non_2xx}` | `webhook-egress/challenge.ts` | merged into `challenge-fail-reason-categorized` |
+| `CallbackEndpointError -32027` + `data.reason` | JSON-RPC error on subscribe; `reason ∈ {connection_refused, timeout, tls_error, http_4xx, http_5xx, challenge_failed}` (the spec's `lastError` categories), translated from `ChallengeFailureReason` at the MCP boundary; the old value rides in `data.legacyReason`, `-32015` in `data.legacyCode`, for one release; the message is a fixed sentence per category (no host, address, status or response text). A non-`https` or malformed `delivery.url` is `-32602` `invalid_callback_url`, before any network call | `mcp-events/adapter.ts` (`callbackEndpointError`) | `challenge-fail-reason-categorized`, `callback-fail-reason-categorized` |
 | SSRF (HTTPS only, validated addr connect w/ hostname verified, no private, no redirect) | `ssrfFetch()` under challenge AND delivery (I3) | `webhook-egress/ssrf-fetch.ts` | `ssrf-blocks-private`, `ssrf-no-redirect`, `ssrf-same-fn-both-paths` |
 | event envelope `eventId/name/data/timestamp/cursor` | CloudEvents `SentinelEvent` mapped: `id→eventId` (and into the `webhook-id` header), `type→name`, `data→data`, `time→timestamp`, plus top-level `cursor` per §3; top-level `type` = protocol control notifications only, never sent | `mcp-events/adapter.ts` (`toMcpEvent`) | `envelope-mapping` |
 | body serialized once + signed bytes (I2) | `signWebhook()` returns **ONLY headers**; the caller owns the bytes and `deliverEventEnvelope` PASSes/returns those same bytes so retry re-signs without re-serializing | `webhook-egress/{signing,delivery}.ts` | `sign-body-once`, `retry-keeps-bytes` |
@@ -89,13 +89,22 @@ they will not work and are not planned for this release.
 
 ### Challenge failure → JSON-RPC
 
-| `ChallengeFailureReason` | JSON-RPC `data.reason` |
+`ChallengeFailureReason` keeps its values (the sentinel webhook surface uses
+them); `callbackEndpointError` translates them for `-32027`, using the HTTP
+status and the `ssrfFetch` cause the challenge outcome carries. The old value
+is kept in `data.legacyReason` for one release.
+
+| `ChallengeFailureReason` (cause / status) | JSON-RPC `data.reason` |
 |---|---|
 | `challenge_failed` | `challenge_failed` |
-| `timeout` | `timeout` |
-| `non_https` | `non_https` |
-| `ssrf_blocked` | `ssrf_blocked` |
-| `non_2xx` | `non_2xx` |
+| `timeout` (`timeout`) | `timeout` |
+| `timeout` (`connect`) | `connection_refused` |
+| `ssrf_blocked` (`private_target`, `redirect`) | `connection_refused` |
+| `non_https` | `connection_refused` (unreachable on subscribe: `delivery.url` is checked first, `-32602`) |
+| `non_2xx` (5xx) | `http_5xx` |
+| `non_2xx` (any other status) | `http_4xx` |
+
+`tls_error` is never emitted: `ssrfFetch` reports a TLS failure as `connect`.
 
 ### JSON-RPC error codes
 

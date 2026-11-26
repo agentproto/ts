@@ -104,15 +104,20 @@ describe("events/subscribe", () => {
     expect(store.get(first.id)?.spec.target.kind).toBe("webhook")
   })
 
-  it("webhook subscribe validates `cursor`/`maxAgeMs` but never replays: cursor null, truncated:false", async () => {
+  it("webhook subscribe never replays: cursor null, truncated:false without a cursor; a cursor it cannot decode is -32602", async () => {
     const store = makeStore()
     const provider = createFakeSentinelProvider({ slug: "local-gh" })
-    const created = await eventsSubscribe({ ...SUB, cursor: "provider-cursor-abc" }, subscribeCtx(store, provider))
+    const created = await eventsSubscribe({ ...SUB, cursor: null }, subscribeCtx(store, provider))
     expect(created.cursor).toBeNull()
     expect(created.truncated).toBe(false)
-    const refreshed = await eventsSubscribe({ ...SUB, cursor: "provider-cursor-abc" }, subscribeCtx(store, provider))
+    const refreshed = await eventsSubscribe({ ...SUB, cursor: null }, subscribeCtx(store, provider))
     expect(refreshed.cursor).toBeNull()
     expect(refreshed.truncated).toBe(false)
+    // A cursor is decoded like a poll cursor (truncated:true for a valid one: mcp-events-codes.test.ts).
+    await expect(eventsSubscribe({ ...SUB, cursor: "provider-cursor-abc" }, subscribeCtx(store, provider))).rejects.toMatchObject({
+      code: -32602,
+      data: { reason: "invalid_cursor" },
+    })
   })
 
   it("ttl-clamp: default 7d, number capped at 30d, floored at 60s", async () => {
@@ -201,21 +206,27 @@ describe("events/subscribe", () => {
     expect(store.list()).toHaveLength(0)
   })
 
-  it("callback-fail-reason-categorized: every ChallengeFailureReason → -32027 data.reason (legacyCode -32015)", async () => {
-    const reasons: ChallengeFailureReason[] = [
-      "challenge_failed",
-      "timeout",
-      "non_https",
-      "ssrf_blocked",
-      "non_2xx",
+  it("callback-fail-reason-categorized: every ChallengeFailureReason → a -32027 lastError category (legacyReason, legacyCode -32015)", async () => {
+    const table: Array<[Extract<ChallengeOutcome, { ok: false }>, string]> = [
+      [{ ok: false, reason: "challenge_failed", detail: "x" }, "challenge_failed"],
+      [{ ok: false, reason: "timeout", detail: "x" }, "timeout"],
+      [{ ok: false, reason: "timeout", detail: "x", cause: "timeout" }, "timeout"],
+      [{ ok: false, reason: "timeout", detail: "x", cause: "connect" }, "connection_refused"],
+      [{ ok: false, reason: "non_https", detail: "x", cause: "non_https" }, "connection_refused"],
+      [{ ok: false, reason: "ssrf_blocked", detail: "x", cause: "private_target" }, "connection_refused"],
+      [{ ok: false, reason: "ssrf_blocked", detail: "x", cause: "redirect" }, "connection_refused"],
+      [{ ok: false, reason: "non_2xx", detail: "x", status: 404 }, "http_4xx"],
+      [{ ok: false, reason: "non_2xx", detail: "x", status: 302 }, "http_4xx"],
+      [{ ok: false, reason: "non_2xx", detail: "x", status: 503 }, "http_5xx"],
     ]
-    for (const reason of reasons) {
+    for (const [outcome, reason] of table) {
+      const legacyReason: ChallengeFailureReason = outcome.reason
       const store = makeStore()
       const provider = createFakeSentinelProvider({ slug: "local-gh" })
-      const verify = async (): Promise<ChallengeOutcome> => ({ ok: false, reason, detail: `simulated ${reason}` })
+      const verify = async (): Promise<ChallengeOutcome> => outcome
       await expect(eventsSubscribe(SUB, subscribeCtx(store, provider, { verify }))).rejects.toMatchObject({
         code: -32027,
-        data: { reason, legacyCode: -32015 },
+        data: { reason, legacyReason, legacyCode: -32015 },
       })
       // verification failed BEFORE any store mutation
       expect(store.list()).toHaveLength(0)

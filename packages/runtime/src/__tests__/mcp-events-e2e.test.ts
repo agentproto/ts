@@ -18,7 +18,7 @@
  *
  * Covered: full story (subscribe → signed delivery → 2xx → unsubscribe →
  * delivery stops), wrong secret, non-2xx challenge, private callback URL
- * (ssrf_blocked), 410 subscriber (terminal, no retry), restart persistence
+ * (connection_refused), 410 subscriber (terminal, no retry), restart persistence
  * (re-`attach()` over the same store files → delivery resumes, signed with
  * the persisted secret), TTL expiry (no delivery after `until.at`).
  */
@@ -466,22 +466,22 @@ describe("mcp-events e2e — failure paths", () => {
     expect(h!.store.list()).toHaveLength(0)
   })
 
-  it("non-2xx challenge: -32027 non_2xx, no store row", async () => {
+  it("5xx challenge: -32027 http_5xx (legacyReason non_2xx), no store row", async () => {
     h!.fake.setChallengeStatus(500)
     await expect(callClient(h!.client, "events/subscribe", SUB_PARAMS)).rejects.toMatchObject({
       code: -32027,
-      data: { reason: "non_2xx" },
+      data: { reason: "http_5xx", legacyReason: "non_2xx" },
     })
     expect(h!.store.list()).toHaveLength(0)
   })
 
-  it("private callback URL: ssrf_blocked before any HTTP leaves the process", async () => {
+  it("private callback URL: connection_refused (legacyReason ssrf_blocked) before any HTTP leaves the process", async () => {
     await expect(
       callClient(h!.client, "events/subscribe", {
         ...SUB_PARAMS,
         delivery: { mode: "webhook", url: "https://192.168.1.10/hook", secret: SECRET },
       }),
-    ).rejects.toMatchObject({ code: -32027, data: { reason: "ssrf_blocked" } })
+    ).rejects.toMatchObject({ code: -32027, data: { reason: "connection_refused", legacyReason: "ssrf_blocked" } })
     expect(h!.fake.challenges).toHaveLength(0)
   })
 

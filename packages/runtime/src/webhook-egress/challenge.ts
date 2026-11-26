@@ -20,7 +20,15 @@ import { ssrfFetch, SsrfFetchError, type SsrfFetchReason } from "./ssrf-fetch.js
 
 export type ChallengeOutcome =
   | { ok: true; verificationBytes: Uint8Array }
-  | { ok: false; reason: ChallengeFailureReason; detail: string }
+  | {
+      ok: false
+      reason: ChallengeFailureReason
+      detail: string
+      /** HTTP status the callback answered with (`non_2xx` only). */
+      status?: number
+      /** The `ssrfFetch` failure behind `timeout` / `ssrf_blocked` / `non_https`, when there was one. */
+      cause?: SsrfFetchReason
+    }
 
 export type ChallengeFailureReason =
   | "challenge_failed"
@@ -162,13 +170,13 @@ export async function verifyCallback(input: VerifyCallbackInput, deps: VerifyCal
     })
   } catch (err) {
     if (err instanceof SsrfFetchError) {
-      return { ok: false, reason: challengeReasonForSsrf(err.reason), detail: `${err.reason}: ${err.message}` }
+      return { ok: false, reason: challengeReasonForSsrf(err.reason), detail: `${err.reason}: ${err.message}`, cause: err.reason }
     }
     return { ok: false, reason: "timeout", detail: (err as Error).message }
   }
 
   if (response.status < 200 || response.status > 299) {
-    return { ok: false, reason: "non_2xx", detail: `callback responded with status ${response.status}` }
+    return { ok: false, reason: "non_2xx", detail: `callback responded with status ${response.status}`, status: response.status }
   }
   let parsedBody: unknown
   try {

@@ -103,7 +103,8 @@ describe("official error codes", () => {
         verify: async () => ({ ok: false, reason: "timeout", detail: "slow" }),
       },
     ).catch(e => e)
-    expect(err).toMatchObject({ code: -32027, data: { reason: "timeout", legacyCode: -32015 } })
+    expect(err).toMatchObject({ code: -32027, data: { reason: "timeout", legacyReason: "timeout", legacyCode: -32015 } })
+    expect(err.message).not.toContain("slow")
   })
 
   it("-32603 + data.kind backing_subscription (no bare -32016)", async () => {

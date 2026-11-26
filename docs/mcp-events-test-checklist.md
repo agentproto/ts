@@ -24,7 +24,7 @@
 ## Callback verification (challenge)
 
 - [ ] `challenge-success` — 2xx with matching challenge body → ok
-- [ ] `challenge-fail-reason-categorized` — each failure reason has a dedicated assertion: `challenge_failed`, `timeout`, `non_https`, `ssrf_blocked`, `non_2xx`
+- [ ] `challenge-fail-reason-categorized`: each failure reason has a dedicated assertion: `challenge_failed`, `timeout`, `non_https`, `ssrf_blocked`, `non_2xx` (the challenge's own reasons; on the MCP wire `-32027` carries `connection_refused`, `timeout`, `http_4xx`, `http_5xx` or `challenge_failed`, the old value in `data.legacyReason`, and a non-`https` `delivery.url` is `-32602` `invalid_callback_url`)
 - [ ] `challenge-cache-hit` — second verify with same (principal, url, secret) resolves from cache
 - [ ] `challenge-new-secret-bypasses-cache` — a new secret during rotation ALWAYS forces re-verification
 
