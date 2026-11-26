@@ -87,6 +87,12 @@ if (sel.engine === "cascade") {
 }
 ```
 
+## Usage sink
+
+Pass `onUsage(usage)` in the start options to receive the final `VoiceUsage`
+once when the session closes (cascade or realtime). A sink that throws or
+rejects is ignored; it never interrupts audio or fails the close.
+
 ## Spec number
 
 The spec is referred to as AIP-VOICE in this package until it has a number in

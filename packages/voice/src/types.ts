@@ -195,6 +195,12 @@ export interface VoiceEmit {
 export interface VoiceStartOptions {
   emit: VoiceEmit
   hooks: VoiceHooks
+  /**
+   * Receives the final usage record once, when the session closes (the same
+   * content `getUsage()` returns after `close()`). A throw or a rejection is
+   * swallowed: it never interrupts audio or fails the close.
+   */
+  onUsage?(usage: VoiceUsage): void | Promise<void>
   language?: string
   voiceId?: string
   /** Opaque, product-owned, documented by the provider package. */
