@@ -641,6 +641,13 @@ export interface ApprovalsConfig {
    * key (`writable: false`): an agent must not widen who can approve.
    */
   humanTelegramIds?: string[]
+  /**
+   * Base URL of the authenticated human approval page (an external console).
+   * The MCP `url` elicitation for a pending approval opens
+   * `<uiBaseUrl>?approval=<id>`; it never carries a credential. Absent = no
+   * approval elicitation is produced.
+   */
+  uiBaseUrl?: string
 }
 
 /**
@@ -694,6 +701,17 @@ export interface McpConfig {
    * the three webhook methods (`events/list|subscribe|unsubscribe`) only.
    */
   eventsExtension?: boolean
+  /**
+   * Whether pending approvals are projected as `url` elicitations (needs
+   * `approvals.uiBaseUrl`). Defaults to `true`; only read when `humanGate` is on.
+   */
+  humanGateApprovals?: boolean
+  /**
+   * Whether a run parked on a human question is projected as a `form`
+   * elicitation on the operator's next `workflow_status`. Defaults to `true`;
+   * only read when `humanGate` is on.
+   */
+  humanGateRuns?: boolean
 }
 
 /**

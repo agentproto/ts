@@ -418,6 +418,8 @@ const mcpConfigSchema: z.ZodType<McpConfig> = z
     humanGate: z.boolean().optional(),
     extensions: z.object({ skills: z.boolean().optional() }).passthrough().optional(),
     eventsExtension: z.boolean().optional(),
+    humanGateApprovals: z.boolean().optional(),
+    humanGateRuns: z.boolean().optional(),
   })
   .passthrough()
 
@@ -548,6 +550,7 @@ const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
     telegramApprovalCards: z.boolean().optional(),
     telegramAttachments: z.boolean().optional(),
     humanTelegramIds: z.array(telegramUserIdString).optional(),
+    uiBaseUrl: z.url({ protocol: /^https?$/ }).optional(),
   })
   .passthrough()
 
@@ -1097,6 +1100,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help: "When true (default), events/poll and the io.modelcontextprotocol/events extension are served and declared in server/discover. Set to false to keep only events/list, events/subscribe and events/unsubscribe (webhook delivery).",
     default: true,
   },
+  {
+    path: "mcp.humanGateApprovals",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP elicitation for pending approvals",
+    help: "When true (default) and approvals.uiBaseUrl is set, modern MCP clients declaring url elicitation are sent to the human approval page for a pending approval on approval_get / approval_wait. An accept never decides or consumes the approval. Set to false to turn this surface off alone.",
+    default: true,
+  },
+  {
+    path: "mcp.humanGateRuns",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP elicitation for parked runs",
+    help: "When true (default), an operator calling workflow_status on a run parked for human input (with a flat non-secret schema) receives an input_required form; the reply resumes the run through its own resolver. Set to false to turn this surface off alone.",
+    default: true,
+  },
   // ── daemon ──
   {
     path: "daemon.workspace",
@@ -1223,6 +1246,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Telegram approval files",
     help: "Send the files named in an approval's preview.attachments to the Telegram chat as documents and photos, before the card. Default false: the card is a short notification that only names the files, which stay on the approval page.",
     default: false,
+  },
+  {
+    path: "approvals.uiBaseUrl",
+    schema: z.url({ protocol: /^https?$/ }),
+    apply: "hot",
+    writable: false,
+    section: "daemon",
+    label: "Approval page base URL",
+    help: "Base URL of the authenticated human approval page (an external console). A pending approval is projected to MCP clients as a url elicitation to <uiBaseUrl>?approval=<id>, never with a credential in the link. Unset (default): no approval elicitation is produced. Owner-only: an agent must not point humans at another page.",
   },
   {
     path: "approvals.humanTelegramIds",
