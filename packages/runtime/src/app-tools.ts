@@ -93,6 +93,7 @@ import {
 } from "./exposed-tools-policy.js"
 import {
   APP_INSTALL_EXCLUSIVE_ERROR,
+  pickAppInstallSourceFields,
   appInstallInputSchema,
   isAgentappUrl,
   remoteGitSha,
@@ -956,6 +957,8 @@ async function dispatchAllowlistedAppTool(
   // handler, never this dispatcher, and are unaffected.
   let dispatchArgs = args
   if (input.tool === "app_install") {
+    args = pickAppInstallSourceFields(args)
+    dispatchArgs = args
     const cls = appInstallConfirmationClass(args)
     if (cls?.confirmed === false) return textResult(buildAppInstallPreview(args))
     if (cls?.confirmed === true) {
