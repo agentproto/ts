@@ -476,13 +476,105 @@ export interface HumanGate {
   ): Promise<void>
 }
 
+/** Read-only view of the approvals engine; the gate never decides or consumes an approval. */
+export interface ApprovalLookup {
+  get(id: string): { id: string; status: string; title?: string } | undefined
+}
+
+/** The slice of the workflow runner used to observe a suspended run and resume it through its own resolver. */
+export interface RunSuspendLookup {
+  status(runId: string): {
+    status: string
+    awaitingSuspend?: { stepId: string; reason?: string; prompt?: string; schema?: Record<string, unknown> }
+  } | undefined
+  resumeSuspend(
+    runId: string,
+    input: { stepId?: string; payload?: unknown },
+  ): { ok: true } | { ok: false; error: string; message: string }
+}
+
+/** Per-kind switches resolved on every request, so each surface can be turned off on its own. */
+export interface HumanGateSurfaces {
+  /** Project pending approvals as `url` elicitations (needs `approvalsUiBaseUrl`). */
+  approvals: boolean
+  /** Project runs parked on a human question as `form` elicitations. */
+  runs: boolean
+  /** Base URL of the authenticated human approval page (an external console). */
+  approvalsUiBaseUrl?: string
+}
+
 export interface CreateHumanGateOptions {
   sessions: Pick<SessionsRegistry, "get" | "listPendingPermissions" | "respondPermission">
   stateStore: MrtrStateStore
   onAudit?: (entry: HumanGateAuditEntry) => void
+  approvals?: ApprovalLookup
+  workflowRunner?: RunSuspendLookup
+  surfaces?: () => HumanGateSurfaces | Promise<HumanGateSurfaces>
 }
 
-function parseElicitResult(raw: unknown): ElicitResult | null {
+const URL_SECRET_KEY_RE = /token|secret|key|sig|auth|pass|code|session/i
+
+/**
+ * Build the human approval page link: the configured console URL plus the approval id.
+ * Returns undefined (no elicitation is produced) when the base is not a plain http(s) URL
+ * or when it could carry a credential (userinfo, fragment, credential-like query key).
+ */
+export function buildApprovalUrl(base: string | undefined, approvalId: string): string | undefined {
+  if (!base) return undefined
+  try {
+    const url = new URL(base)
+    if (url.protocol !== "https:" && url.protocol !== "http:") return undefined
+    if (url.username || url.password || url.hash) return undefined
+    for (const key of url.searchParams.keys()) {
+      if (URL_SECRET_KEY_RE.test(key)) return undefined
+    }
+    url.searchParams.set("approval", approvalId)
+    return url.toString()
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Validate `content` against a flat form schema and keep only declared properties.
+ * Returns `missing` for absent required fields or wrongly typed values.
+ */
+export function coerceFormContent(
+  schema: ElicitRequestedSchema,
+  content: Record<string, unknown>,
+): { ok: true; value: Record<string, unknown> } | { ok: false; missing: string[] } {
+  const value: Record<string, unknown> = {}
+  const missing: string[] = []
+  const required = new Set(schema.required ?? [])
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    const raw = content[key]
+    if (raw === undefined || raw === null || (typeof raw === "string" && raw.length === 0 && required.has(key))) {
+      if (required.has(key)) missing.push(key)
+      continue
+    }
+    const choices = [
+      ...(prop.enum ?? []),
+      ...(prop.oneOf ?? []).map(o => o.const),
+    ]
+    let valid = false
+    if (prop.type === "array") {
+      const itemChoices =
+        prop.items && "enum" in prop.items ? prop.items.enum : (prop.items?.anyOf ?? []).map(o => o.const)
+      valid = Array.isArray(raw) && raw.every(v => typeof v === "string" && itemChoices.includes(v))
+    } else if (prop.type === "boolean") {
+      valid = typeof raw === "boolean"
+    } else if (prop.type === "number" || prop.type === "integer") {
+      valid = typeof raw === "number" && Number.isFinite(raw) && (prop.type !== "integer" || Number.isInteger(raw))
+    } else {
+      valid = typeof raw === "string" && (choices.length === 0 || choices.includes(raw))
+    }
+    if (valid) value[key] = raw
+    else missing.push(key)
+  }
+  return missing.length > 0 ? { ok: false, missing } : { ok: true, value }
+}
+
+export function parseElicitResult(raw: unknown): ElicitResult | null {
   if (!isRecord(raw)) return null
   if (raw.action === "decline" || raw.action === "cancel") {
     return { action: raw.action }
@@ -496,7 +588,10 @@ function parseElicitResult(raw: unknown): ElicitResult | null {
 }
 
 export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
-  const { sessions, stateStore, onAudit } = opts
+  const { sessions, stateStore, onAudit, approvals, workflowRunner } = opts
+
+  const resolveSurfaces = async (): Promise<HumanGateSurfaces> =>
+    opts.surfaces ? await opts.surfaces() : { approvals: false, runs: workflowRunner !== undefined }
 
   const audit = (entry: HumanGateAuditEntry): void => {
     try {
@@ -581,6 +676,76 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
     }
   }
 
+  const mintApprovalInputRequired = (
+    approval: { id: string; title?: string },
+    url: string,
+    tool: string,
+    argsHash: string,
+    callerSessionId: string | undefined,
+  ): InputRequiredResult => {
+    const requestKey = `approval_${approval.id}`
+    const label = approval.title && !isSecretField("title", approval.title) ? `: ${approval.title}` : ""
+    const requestState = stateStore.mint({
+      kind: "approval",
+      entityId: approval.id,
+      requestKey,
+      ...(callerSessionId !== undefined ? { callerSessionId } : {}),
+      tool,
+      argsHash,
+    })
+    return {
+      resultType: "input_required",
+      inputRequests: {
+        [requestKey]: {
+          method: "elicitation/create",
+          params: {
+            mode: "url",
+            message: `An approval is pending${label}. Open the link to review it and decide there.`,
+            url,
+          },
+        },
+      },
+      requestState,
+    }
+  }
+
+  /** Form for a run parked on a human question; undefined when the schema is not in the flat non-secret subset. */
+  const buildRunElicitation = (
+    runId: string,
+    awaiting: { stepId: string; reason?: string; prompt?: string; schema?: Record<string, unknown> },
+  ): { requestKey: string; entityId: string; request: InputRequest; schema: ElicitRequestedSchema } | undefined => {
+    if (awaiting.reason !== "input-required" || !awaiting.prompt || !awaiting.schema) return undefined
+    if (isSecretField("prompt", awaiting.prompt)) return undefined
+    const validated = validateFlatFormSchema(awaiting.schema)
+    if (!validated.ok) return undefined
+    const requestKey = `run_${runId}`
+    return {
+      requestKey,
+      entityId: `${runId}:${awaiting.stepId}`,
+      schema: validated.schema,
+      request: {
+        method: "elicitation/create",
+        params: { mode: "form", message: awaiting.prompt, requestedSchema: validated.schema },
+      },
+    }
+  }
+
+  const mintRunInputRequired = (
+    built: { requestKey: string; entityId: string; request: InputRequest },
+    tool: string,
+    argsHash: string,
+  ): InputRequiredResult => ({
+    resultType: "input_required",
+    inputRequests: { [built.requestKey]: built.request },
+    requestState: stateStore.mint({
+      kind: "run-input",
+      entityId: built.entityId,
+      requestKey: built.requestKey,
+      tool,
+      argsHash,
+    }),
+  })
+
   const findEligiblePending = (
     callerSessionId: string | undefined,
     sessionFilter?: string | readonly string[],
@@ -599,6 +764,77 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
       if (built) return { pending, built }
     }
     return undefined
+  }
+
+  const replayApproval = async (
+    approvalId: string,
+    params: Record<string, unknown>,
+    tool: string,
+    argsHash: string,
+    callerSessionId: string | undefined,
+    clientCapabilities: Record<string, unknown> | undefined,
+    forward: () => Promise<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> => {
+    const surfaces = await resolveSurfaces()
+    const record = approvals?.get(approvalId)
+    const response = parseElicitResult(isRecord(params.inputResponses) ? params.inputResponses[`approval_${approvalId}`] : undefined)
+    // An accept only says the human opened the link: it is logged as a display acknowledgement and decides nothing.
+    audit({
+      principal: callerSessionId ?? "operator",
+      kind: "approval",
+      entityId: approvalId,
+      action: response?.action ?? "cancel",
+      applied: false,
+      detail: "display_ack",
+    })
+    const url = buildApprovalUrl(surfaces.approvalsUiBaseUrl, approvalId)
+    const retry = response === null || response.action === "accept"
+    if (surfaces.approvals && record?.status === "pending" && retry && url && clientSupportsElicitation(clientCapabilities, "url")) {
+      return mintApprovalInputRequired(record, url, tool, argsHash, callerSessionId) as unknown as Record<string, unknown>
+    }
+    return forward()
+  }
+
+  const replayRunInput = async (
+    entityId: string,
+    params: Record<string, unknown>,
+    tool: string,
+    argsHash: string,
+    callerSessionId: string | undefined,
+    forward: () => Promise<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> => {
+    if (callerSessionId !== undefined) {
+      throw new BridgeError(ERR_INVALID_PARAMS, "Caller is not permitted to resolve this input request", {
+        reason: "forbidden_scope",
+      })
+    }
+    const args = isRecord(params.arguments) ? params.arguments : {}
+    const runId = typeof args.runId === "string" ? args.runId : ""
+    const view = workflowRunner?.status(runId)
+    const awaiting = view?.status === "awaiting-input" ? view.awaitingSuspend : undefined
+    const built = awaiting ? buildRunElicitation(runId, awaiting) : undefined
+    // The run moved on (resumed, cancelled, or another step is parked): nothing to apply.
+    if (!workflowRunner || !built || built.entityId !== entityId) return forward()
+
+    const response = parseElicitResult(isRecord(params.inputResponses) ? params.inputResponses[built.requestKey] : undefined)
+    if (response && response.action !== "accept") {
+      audit({ principal: "operator", kind: "run-input", entityId, action: response.action, applied: false, detail: "not_resumed" })
+      return forward()
+    }
+    const coerced = response?.content ? coerceFormContent(built.schema, response.content) : undefined
+    if (!coerced?.ok) {
+      return mintRunInputRequired(built, tool, argsHash) as unknown as Record<string, unknown>
+    }
+    const res = workflowRunner.resumeSuspend(runId, { stepId: awaiting!.stepId, payload: coerced.value })
+    audit({
+      principal: "operator",
+      kind: "run-input",
+      entityId,
+      action: "accept",
+      applied: res.ok,
+      ...(res.ok ? {} : { detail: res.error }),
+    })
+    return forward()
   }
 
   return {
@@ -621,6 +857,12 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
         }
 
         const { state } = verified
+        if (state.kind === "approval") {
+          return replayApproval(state.entityId, params, tool, argsHash, callerSessionId, clientCapabilities, forward)
+        }
+        if (state.kind === "run-input") {
+          return replayRunInput(state.entityId, params, tool, argsHash, callerSessionId, forward)
+        }
         if (state.kind !== "permission" && state.kind !== "question") {
           throw new BridgeError(ERR_INVALID_PARAMS, "Unsupported requestState kind", { reason: "unsupported_kind" })
         }
@@ -659,12 +901,37 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
         return forward()
       }
 
-      // Initial call: only emit InputRequiredResult when the client declared elicitation.form.
-      if (!clientSupportsElicitation(clientCapabilities, "form")) {
+      const supportsForm = clientSupportsElicitation(clientCapabilities, "form")
+      const supportsUrl = clientSupportsElicitation(clientCapabilities, "url")
+      if (!supportsForm && !supportsUrl) {
         return forward()
       }
 
       const args = isRecord(params.arguments) ? params.arguments : {}
+
+      if (tool === "approval_get" || tool === "approval_wait") {
+        const surfaces = await resolveSurfaces()
+        const id = typeof args.id === "string" ? args.id : ""
+        const url = buildApprovalUrl(surfaces.approvalsUiBaseUrl, id)
+        const record = surfaces.approvals && supportsUrl && url ? approvals?.get(id) : undefined
+        if (record?.status === "pending" && url) {
+          return mintApprovalInputRequired(record, url, tool, argsHash, callerSessionId) as unknown as Record<string, unknown>
+        }
+        return forward()
+      }
+
+      if (tool === "workflow_status") {
+        // Only the operator observes a run; the parked step's own session is never asked.
+        const runId = typeof args.runId === "string" ? args.runId : ""
+        if (callerSessionId === undefined && supportsForm && workflowRunner && (await resolveSurfaces()).runs) {
+          const view = workflowRunner.status(runId)
+          const built = view?.status === "awaiting-input" && view.awaitingSuspend ? buildRunElicitation(runId, view.awaitingSuspend) : undefined
+          if (built) return mintRunInputRequired(built, tool, argsHash) as unknown as Record<string, unknown>
+        }
+        return forward()
+      }
+
+      if (!supportsForm) return forward()
 
       if (tool === "permissions_list") {
         const sessionId = typeof args.sessionId === "string" ? args.sessionId : undefined

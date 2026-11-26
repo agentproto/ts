@@ -60,3 +60,24 @@ export async function resolveEventsExtension(
   const value = (await resolveMcpConfig(loadCfg)).eventsExtension
   return typeof value === "boolean" ? value : DEFAULT_EVENTS_EXTENSION
 }
+
+export interface HumanGateSurfaceConfig {
+  approvals: boolean
+  runs: boolean
+  approvalsUiBaseUrl?: string
+}
+
+/** Per-kind switches for the modern human gate, read on each request. All off when `mcp.humanGate` is off. */
+export async function resolveHumanGateSurfaces(
+  loadCfg: () => Promise<{ mcp?: McpConfig; approvals?: { uiBaseUrl?: string } }> = loadConfig,
+): Promise<HumanGateSurfaceConfig> {
+  const cfg = await loadCfg()
+  const mcp = cfg.mcp ?? {}
+  const on = typeof mcp.humanGate === "boolean" ? mcp.humanGate : DEFAULT_HUMAN_GATE
+  const flag = (v: boolean | undefined): boolean => on && (typeof v === "boolean" ? v : true)
+  return {
+    approvals: flag(mcp.humanGateApprovals),
+    runs: flag(mcp.humanGateRuns),
+    ...(cfg.approvals?.uiBaseUrl ? { approvalsUiBaseUrl: cfg.approvals.uiBaseUrl } : {}),
+  }
+}
