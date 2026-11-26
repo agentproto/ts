@@ -428,7 +428,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
             const scope = { ...(utteranceId !== undefined ? { utteranceId } : {}), signal: s ?? new AbortController().signal }
             let tail: Promise<void> = Promise.resolve()
             const feed = (chunk: TextChunk) => {
-              tail = tail.then(async () => {
+              tail = tail.catch(() => undefined).then(async () => {
                 const outs = await runtime.process("textOut", chunk, scope)
                 for (const o of outs) {
                   if (!o.text) continue
@@ -437,22 +437,27 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
                 }
               })
             }
-            await consumeBrain(
-              brain,
-              d => {
-                rawText += d
-                feed({ text: d })
-              },
-              {
-                ...(opts.brainGuards ?? {}),
-                ...(s ? { signal: s } : {}),
-                onEvent: (event: BrainEvent) => feed({ text: "", event }),
-              },
-            )
-            // The brain is done: tell the chain, so a transformer that holds
-            // text back can release it with the chunk that carries `end`.
-            feed({ text: "", end: true })
-            await tail
+            try {
+              await consumeBrain(
+                brain,
+                d => {
+                  rawText += d
+                  feed({ text: d })
+                },
+                {
+                  ...(opts.brainGuards ?? {}),
+                  ...(s ? { signal: s } : {}),
+                  onEvent: (event: BrainEvent) => feed({ text: "", event }),
+                },
+              )
+              // The brain is done: tell the chain, so a transformer that holds
+              // text back can release it with the chunk that carries `end`.
+              feed({ text: "", end: true })
+            } finally {
+              // Whatever happened to the brain, what was already fed settles
+              // before the turn goes on (and a failed feed never poisons it).
+              await tail.catch(() => undefined)
+            }
           },
           tts: sentenceTts,
           ...(continuous ? { ttsStream: continuous } : {}),
