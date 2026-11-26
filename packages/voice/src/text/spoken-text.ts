@@ -27,10 +27,11 @@ export interface ToSpokenTextOptions {
   /**
    * Whole-segment labels to drop from the text, for example delivery-channel
    * words a model writes into its own reply ("Voice sent", "In writing").
-   * Matched case-insensitively, only as a complete segment at the start of
-   * the text or after a sentence boundary, together with their trailing
-   * terminator. Nothing is stripped by default: the label list is host
-   * policy. Longer labels should come first.
+   * Matched case-insensitively, as a whole word at the start of the text or
+   * after a sentence boundary, together with their trailing terminator.
+   * Nothing is stripped by default: the label list is host policy and the
+   * host must not declare a label that can open genuine content. Longer
+   * labels should come first.
    */
   stripLabels?: readonly string[]
 }
@@ -658,10 +659,11 @@ export function toSpokenText(
     .join(" ")
     .replace(/[^\S\u00A0\u202F]+/g, " ")
     .trim()
-  // Drop host-declared labels wherever they stand as a whole segment:
-  // anchored at string start or a sentence boundary (zero-width lookbehind,
-  // so adjacent labels each match independently), eating the trailing
-  // terminator and spacing. Only the declared labels are removed.
+  // Drop host-declared labels at the START of a segment: anchored at string
+  // start or a sentence boundary (zero-width lookbehind, so adjacent labels
+  // each match independently), as a whole word (never the head of a longer
+  // word), eating the trailing terminator and spacing. The host curates the
+  // list: a label that can open genuine content must not be declared.
   const labels = (options.stripLabels ?? []).filter(l => l.length > 0)
   const withoutScaffold =
     labels.length === 0
@@ -669,8 +671,8 @@ export function toSpokenText(
       : joined
           .replace(
             new RegExp(
-              `(?<=^|[.!?…\\n]\\s?)(?:${labels.map(escapeRegExp).join("|")})(?:\\s*[.!?…]+\\s*|\\s*$)`,
-              "gi"
+              `(?<=^|[.!?…\\n]\\s?)(?:${labels.map(escapeRegExp).join("|")})(?![\\p{L}\\p{N}])\\s*[.!?…]?\\s*`,
+              "giu"
             ),
             ""
           )

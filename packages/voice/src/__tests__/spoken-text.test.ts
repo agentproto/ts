@@ -53,10 +53,10 @@ describe("toSpokenText", () => {
       "Written in two thousand twenty-four, the report shows clear progress."
     )
     expect(
-      toSpokenText("In writing this down, I noticed a pattern.", "en", {
-        stripLabels: ["In writing"],
+      toSpokenText("Voice sentence by sentence works.", "en", {
+        stripLabels: ["Voice sent"],
       })
-    ).toBe("In writing this down, I noticed a pattern.")
+    ).toBe("Voice sentence by sentence works.")
   })
 
   it("strips URLs - never read a link aloud", () => {
