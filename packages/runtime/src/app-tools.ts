@@ -587,6 +587,15 @@ export interface AppToolCallDeps {
    *  used by `LINK_OWNERSHIP_CHECKS` to check a `permissions_respond` under a
    *  link token. Absent = that check fails closed. */
   findPendingPermission?: (id: string) => { sessionId: string } | undefined
+  /** Scoped secrets to forward to bundled app tools (`runTool({ secrets })`)
+   *  without exposing them in the daemon's global `process.env`. */
+  secrets?: Record<string, string>
+  /** Optional lazy secret resolver invoked per bundled tool dispatch. Takes
+   *  precedence over static `secrets` when provided. */
+  resolveSecrets?: (
+    toolId: string,
+    appId: string,
+  ) => Promise<Record<string, string> | undefined> | Record<string, string> | undefined
 }
 
 /**
@@ -845,6 +854,7 @@ async function runBundledAppTool(
   toolId: string,
   args: Record<string, unknown>,
   appDataDir?: string,
+  secrets?: Record<string, string>,
 ): Promise<{ found: false } | { found: true; output: unknown }> {
   const bundled = await loadAppBundledTools(appDir)
   const bundledTool = bundled.tools.find(t => t.id === toolId)
@@ -853,6 +863,7 @@ async function runBundledAppTool(
     tool: bundledTool,
     candidates: bundled.drivers,
     input: args,
+    ...(secrets !== undefined ? { secrets } : {}),
     ...(appDataDir !== undefined ? { hostEnv: { AGENTPROTO_APP_DATA_DIR: appDataDir } } : {}),
   })
   return { found: true, output }
@@ -976,7 +987,10 @@ async function dispatchAllowlistedAppTool(
     // Re-read from disk per call, like the workflow path: the compiled
     // handles are not persisted on the InstalledApp record.
     if (appDir !== undefined) {
-      const bundled = await runBundledAppTool(appDir, input.tool, args, appDataDir)
+      const resolvedSecrets = deps.resolveSecrets
+        ? await deps.resolveSecrets(input.tool, input.appId)
+        : deps.secrets
+      const bundled = await runBundledAppTool(appDir, input.tool, args, appDataDir, resolvedSecrets)
       if (bundled.found) return textResult(bundled.output)
     }
     if (!deps.dispatchTool) return notEnabled("app_tool_call")
@@ -1085,7 +1099,7 @@ function exposedCallRefusal(
 export async function performExposedToolCall(
   appRegistry: AppRegistry,
   input: { appId: string; id: string; args?: Record<string, unknown> },
-  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller">,
+  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller" | "secrets" | "resolveSecrets">,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult> | CallToolResult> {
   const out = await dispatchExposedEntry(appRegistry, input, deps)
   if (!("imported" in out)) return out.result
@@ -1116,7 +1130,7 @@ function argsDeclaredBy(
 async function dispatchExposedEntry(
   appRegistry: AppRegistry,
   input: { appId: string; id: string; args?: Record<string, unknown> },
-  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller">,
+  deps: Pick<AppToolCallDeps, "callImportedTool" | "caller" | "secrets" | "resolveSecrets">,
 ): Promise<{ result: ReturnType<typeof textResult> | ReturnType<typeof errorResult> } | { imported: unknown }> {
   const installed = appRegistry.getApp(input.appId)
   const entry = installed?.exposes?.tools?.find(t => t.id === input.id)
@@ -1138,7 +1152,10 @@ async function dispatchExposedEntry(
       )
       return { imported }
     }
-    const bundled = await runBundledAppTool(installed.dir, entry.id, args, installed.dataDir)
+    const resolvedSecrets = deps.resolveSecrets
+      ? await deps.resolveSecrets(entry.id, input.appId)
+      : deps.secrets
+    const bundled = await runBundledAppTool(installed.dir, entry.id, args, installed.dataDir, resolvedSecrets)
     if (!bundled.found) return { result: errorResult(`app "${input.appId}" bundles no TOOL.md "${entry.id}" any more.`) }
     return { result: textResult(bundled.output) }
   } catch (err) {
@@ -1537,6 +1554,10 @@ export interface RegisterAppToolsOptions {
    *  installed app (see `@agentproto/runtime`'s daemon composition root).
    *  Omitted ⇒ creates its own (this module's prior behaviour). */
   appRegistry?: AppRegistry
+  /** Invoked whenever the installed-app set changes (`app_install`,
+   *  `app_resync` with changes, `app_uninstall`) so the host can invalidate
+   *  cached internal tool servers. */
+  onAppsChanged?: () => void
   /** Dispatch a daemon tool call by name — same in-process caller
    *  `dispatchTool` in index.ts wires to routines/cron. Backs `app_tool_call`
    *  for every tool id NOT prefixed `imported:`. Omitted → `app_tool_call`
@@ -2685,6 +2706,7 @@ export function registerAppTools(
           ensureServices,
         })
         if (!result.ok) return errorResult(`app_install: ${result.error}`)
+        opts.onAppsChanged?.()
         return textResult(installPayload(result))
       }
       if ("url" in input && isAgentappUrl(input.url)) {
@@ -2718,6 +2740,7 @@ export function registerAppTools(
         input.catalogUrl,
       )
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
+      opts.onAppsChanged?.()
       return textResult(installPayload(result))
     },
   )
@@ -3881,6 +3904,7 @@ export function registerAppTools(
         ...(opts.serviceExposer ? { exposer: opts.serviceExposer } : {}),
       })
       await unregisterAppWorkspace(removed.appId, opts.workspacesConfigPath)
+      opts.onAppsChanged?.()
       return textResult({ appId: removed.appId, ...(killedServices.length > 0 ? { services: killedServices } : {}) })
     },
   )
