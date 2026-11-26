@@ -499,11 +499,18 @@ export function billingConformanceCases(ctx: BillingConformanceContext): Conform
     const viaHook = await handleRailFact(deps, { ...fact, movement: "fake:re_s", paymentMovement: s.movement, amountMinor: 500 })
     check(viaHook.type === "refund_reversed" && viaHook.outcome.status === "applied", "the reversal did not dispatch")
     eq((await state.getPeriod(s.movement))?.status, "active", "period after the reversal")
-    eq((await applyRefundReversal(deps, { ...fact, movement: "fake:re_none" }, { accountId: "acme" })).status, "unknown_refund", "reversal of an unknown refund")
+    // A reversal before its refund (reordered webhooks): the late refund takes nothing.
+    const early = pay()
+    await applyPayment(deps, early)
+    const credited = await credits(storage, "acme", m)
+    eq((await applyRefundReversal(deps, { ...fact, movement: "fake:re_early", paymentMovement: early.movement }, { accountId: "acme" })).status, "unknown_refund", "reversal of an unknown refund")
+    eq((await refund(deps, early.movement, "fake:re_early", 2000)).status, "replayed", "the refund after its reversal")
+    eq(await credits(storage, "acme", m), credited, "credits after a reversed-then-late refund")
   })
   add("BILL-REFUND-REF", "two refunds of the same amount on one payment are two refunds at the rail; the same reference is one", async () => {
     const p = ctx.provider
-    if (!p.refund) return
+    // Needs a provider that runs without a live account (fake or recorded), like the signed-event cases.
+    if (!p.refund || typeof (p as unknown as { signed?: unknown }).signed !== "function") return
     const a = await p.refund("fake:pi_ref", 500, "refund-1")
     const b = await p.refund("fake:pi_ref", 500, "refund-2")
     const again = await p.refund("fake:pi_ref", 500, "refund-1")

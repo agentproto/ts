@@ -196,7 +196,8 @@ export async function applyRefund(deps: BillingDeps, fact: RefundFact, target: R
  * A refund that had succeeded and then failed or was canceled: the money is
  * back with the merchant. Gives back what that refund took (same partitions,
  * restrictions and expiries) and reopens the period it closed. Once per refund;
- * a refund fails as a whole, so `amountMinor` is informative.
+ * a refund fails as a whole, so `amountMinor` is informative. A reversal that
+ * arrives before its refund is recorded, and the refund is then ignored.
  */
 export async function applyRefundReversal(
   deps: BillingDeps,
@@ -208,9 +209,13 @@ export async function applyRefundReversal(
     const events = (await deps.storage.loadEvents(target.accountId)) as CauseEvent[]
     const fiat = events.find(e => e.id === `${fact.paymentMovement}:fiat`)
     if (!fiat) return { status: "unknown_payment", restored: 0 } as const
-    const refunded = events.some(e => e.origin === ORIGIN_REFUND && e.correlationId === fact.paymentMovement && e.id.startsWith(`${fact.movement}:refund:`))
-    if (!refunded) return { status: "unknown_refund", restored: 0 } as const
     if (events.some(e => e.id === `${fact.movement}:reversed`)) return { status: "replayed", restored: 0 } as const
+    const refunded = events.some(e => e.origin === ORIGIN_REFUND && e.correlationId === fact.paymentMovement && e.id.startsWith(`${fact.movement}:refund:`))
+    if (!refunded) {
+      // Reordered webhooks: the reversal is recorded, so the refund fact that arrives after it is a replay and takes nothing.
+      await deps.storage.commit(target.accountId, [marker(fiat, `${fact.movement}:reversed`, fact.movement, fact.paymentMovement, ORIGIN_REFUND_REVERSED, now)])
+      return { status: "unknown_refund", restored: 0 } as const
+    }
     const out = giveBack(events, fact.movement, fact.paymentMovement, ORIGIN_REFUND_REVERSED, "reversed", now)
     const restored = out.reduce((s, e) => s + e.amount, 0)
     out.push(marker(fiat, `${fact.movement}:reversed`, fact.movement, fact.paymentMovement, ORIGIN_REFUND_REVERSED, now))
