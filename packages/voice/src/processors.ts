@@ -369,8 +369,9 @@ export function createProcessorRuntime(opts: ProcessorRuntimeOptions): Processor
         )
         return "aborted"
       }
-      record(t.name, elapsed)
-      if (raced.k === "budget" || (budget > 0 && elapsed > budget)) {
+      const overran = raced.k === "budget" || (budget > 0 && elapsed > budget)
+      record(t.name, overran ? Math.max(elapsed, budget) : elapsed)
+      if (overran) {
         itemCtl.abort()
         overruns.set(t.name, (overruns.get(t.name) ?? 0) + 1)
         // The timer that ended the wait fires at the budget; timer and monotonic clock can differ by a fraction of a ms.
