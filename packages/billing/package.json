@@ -34,7 +34,17 @@
       "import": "./dist/manifest/index.mjs",
       "default": "./dist/manifest/index.mjs"
     },
+    "./spend": {
+      "types": "./dist/spend/index.d.ts",
+      "import": "./dist/spend/index.mjs",
+      "default": "./dist/spend/index.mjs"
+    },
     "./package.json": "./package.json",
+    "./contract-tests": {
+      "types": "./dist/contract-tests.d.ts",
+      "import": "./dist/contract-tests.mjs",
+      "default": "./dist/contract-tests.mjs"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.mjs",
