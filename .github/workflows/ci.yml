@@ -247,7 +247,7 @@ jobs:
       # body) and the model-invented release date behind it, plus an agent lane
       # outliving its step (bounded-child: release run 44007187073).
       - name: Run release-tooling tests
-        run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/lib/bounded-child.test.mjs scripts/list-unpublished-packages.test.mjs scripts/reparent-onto-remote.test.mjs
+        run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/lib/bounded-child.test.mjs scripts/list-unpublished-packages.test.mjs scripts/release-needed.test.mjs scripts/reparent-onto-remote.test.mjs
 
       # The tier classification (scripts/gen-status.mjs) and the spec packages
       # doc generator (scripts/gen-spec-packages-doc.mjs) live outside
