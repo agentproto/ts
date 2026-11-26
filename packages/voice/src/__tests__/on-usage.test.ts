@@ -74,4 +74,26 @@ describe("onUsage", () => {
     expect(seen[0]!.engine).toBe("realtime")
     expect(seen[0]).toEqual(session.getUsage!())
   })
+
+  it("realtime: the provider is not handed the sink, and the record is still delivered when its close rejects", async () => {
+    const seen: VoiceUsage[] = []
+    const provider = makeFakeRealtime()
+    let providerSawSink = true
+    const start = provider.start.bind(provider)
+    provider.start = async o => {
+      providerSawSink = "onUsage" in o
+      const s = await start(o)
+      return {
+        ...s,
+        close: async () => {
+          await s.close()
+          throw new Error("vendor close failed")
+        },
+      }
+    }
+    const session = await startRealtime(provider, { emit, hooks: {}, onUsage: u => void seen.push(u) })
+    await expect(session.close()).rejects.toThrow("vendor close failed")
+    expect(providerSawSink).toBe(false)
+    expect(seen).toHaveLength(1)
+  })
 })

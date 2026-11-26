@@ -16,7 +16,10 @@ export async function startRealtime(
   provider: RealtimeProvider,
   opts: VoiceStartOptions,
 ): Promise<VoiceSession> {
-  const session = await provider.start(opts)
+  // The kit owns delivery of the final usage record: the provider is not given
+  // the sink, so it can never deliver it twice.
+  const { onUsage: _sink, ...providerOpts } = opts
+  const session = await provider.start(providerOpts)
   if (session.engine !== "realtime") {
     throw new Error(
       `realtime provider "${provider.slug}" returned a "${session.engine}" session`,
@@ -39,11 +42,14 @@ export async function startRealtime(
       } catch {
         // usage is best effort at close
       }
-      await session.close()
-      finalUsage = session.getUsage?.() ?? finalUsage
-      if (!delivered) {
-        delivered = true
-        await deliverUsage(opts.onUsage, finalUsage)
+      try {
+        await session.close()
+      } finally {
+        finalUsage = session.getUsage?.() ?? finalUsage
+        if (!delivered) {
+          delivered = true
+          await deliverUsage(opts.onUsage, finalUsage)
+        }
       }
     },
   }
