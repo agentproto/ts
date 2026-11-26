@@ -95,7 +95,7 @@ interface FakeRun {
   awaitingSuspend?: { stepId: string; on?: string[]; reason?: string; prompt?: string; schema?: Record<string, unknown> }
 }
 
-async function startRig(opts: { surfaces?: HumanGateSurfaces; mrtrDir?: string } = {}) {
+async function startRig(opts: { surfaces?: HumanGateSurfaces; mrtrDir?: string; log?: string[] } = {}) {
   const dir = opts.mrtrDir ?? mkdtempSync(join(tmpdir(), "agentproto-mrtr-appr-"))
   const home = mkdtempSync(join(tmpdir(), "agentproto-appr-home-"))
   cleanups.push(async () => {
@@ -127,6 +127,7 @@ async function startRig(opts: { surfaces?: HumanGateSurfaces; mrtrDir?: string }
     workflowRunner: runner,
     surfaces: () => surfaces,
     onAudit: e => audits.push(e),
+    ...(opts.log ? { log: (line: string) => opts.log!.push(line) } : {}),
   })
   const port = await freePort()
   const http = await startHttpServer({
@@ -254,6 +255,25 @@ describe("MCP 2026-07-28 elicitation: approvals (url) and runs observed by the o
     }
   })
 
+  it("writes one log line with the reason, never the URL, when the configured console URL is refused", async () => {
+    const log: string[] = []
+    const base = "https://console.example.test/a?api_key=hunter2"
+    const rig = await startRig({ surfaces: { approvals: true, runs: true, approvalsUiBaseUrl: base }, log })
+    const rec = newApproval(rig.engine)
+    await callTool(rig.baseUrl, "approval_get", { id: rec.id })
+    await callTool(rig.baseUrl, "approval_wait", { id: rec.id, timeoutMs: 0 }, { id: 2 })
+    expect(log).toHaveLength(1)
+    expect(log[0]).toContain("secret_query_key")
+    expect(log[0]).not.toContain("hunter2")
+    expect(log[0]).not.toContain("console.example.test")
+
+    // No base configured: nothing to report.
+    const quiet: string[] = []
+    const unset = await startRig({ surfaces: { approvals: true, runs: true }, log: quiet })
+    await callTool(unset.baseUrl, "approval_get", { id: newApproval(unset.engine).id })
+    expect(quiet).toEqual([])
+  })
+
   const schema = {
     type: "object",
     properties: { choice: { type: "string", enum: ["a", "b"] }, note: { type: "string" } },
@@ -343,5 +363,25 @@ describe("MCP 2026-07-28 elicitation: approvals (url) and runs observed by the o
     )
     expect(replay.json.error).toBeUndefined()
     expect(replay.status).toBe(200)
+  })
+
+  it("keeps a run-input token verifiable across a restart (durable kind)", async () => {
+    // A token test only: the fake runner stands in for the reloaded run, this does not prove a real run resumes.
+    const rig1 = await startRig()
+    rig1.runs.set("run3", parked())
+    const first = await callTool(rig1.baseUrl, "workflow_status", { runId: "run3" })
+    expect(first.json.result.resultType).toBe("input_required")
+    const key = Object.keys(first.json.result.inputRequests)[0]!
+
+    const rig2 = await startRig({ mrtrDir: rig1.dir })
+    rig2.runs.set("run3", parked())
+    const replay = await callTool(
+      rig2.baseUrl,
+      "workflow_status",
+      { runId: "run3" },
+      { requestState: first.json.result.requestState, inputResponses: { [key]: { action: "accept", content: { choice: "a" } } } },
+    )
+    expect(replay.json.error).toBeUndefined()
+    expect(rig2.resumed).toEqual([{ runId: "run3", payload: { choice: "a" } }])
   })
 })

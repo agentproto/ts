@@ -11,6 +11,7 @@ import {
   createMrtrStateStore,
   isSecretField,
   validateFlatFormSchema,
+  type MrtrEntityKind,
 } from "../mcp-modern/index.js"
 
 const tempDirs: string[] = []
@@ -62,6 +63,13 @@ describe("MRTR state store (signed tokens, HMAC persistence, durability)", () =>
       callerSessionId: "sess_parent",
     })
     expect(replay).toMatchObject({ ok: false, reason: "replayed" })
+  })
+
+  it("refuses a correctly signed token whose kind is not a known surface", () => {
+    const store = createMrtrStateStore({ dir: makeTempDir() })
+    const argsHash = canonicalArgsHash({ name: "approval_get", arguments: { id: "apr_1" } })
+    const forged = store.mint({ kind: "forged" as MrtrEntityKind, entityId: "apr_1", tool: "approval_get", argsHash })
+    expect(store.verifyAndConsume(forged, { tool: "approval_get", argsHash })).toMatchObject({ ok: false, reason: "unsupported_kind" })
   })
 
   it("supports HMAC key rotation while keeping tokens signed by the previous key valid", () => {
