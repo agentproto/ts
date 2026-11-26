@@ -147,3 +147,25 @@ describe("price: config validation and margin floors", () => {
     expect(() => assertMarginFloors(p, [ev({ kind: "image", providerCost: { amount: 0.167, currency: "USD" } })])).not.toThrow()
   })
 })
+
+describe("price: a bad cost never becomes a charge", () => {
+  const p = pricer({ categories: [{ id: "llm", cost: { source: "measured" }, margin: 2 }] })
+  it("refuses a NaN, infinite or negative provider cost", () => {
+    for (const amount of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      try {
+        p.price(ev({ providerCost: { amount, currency: "USD" } }))
+        throw new Error("did not throw")
+      } catch (e) {
+        expect((e as UnpricedUsageError).reason).toBe("invalid-cost")
+      }
+    }
+  })
+  it("refuses a negative fixed cost or flat price in the config", () => {
+    expect(usageProblems(manifest, { categories: [{ id: "f", cost: { source: "fixed", amount: -1, currency: "USD" } }] })).toHaveLength(1)
+    expect(usageProblems(manifest, { categories: [{ id: "g", cost: { source: "flatCredits", credits: Number.NaN, referenceCost: { amount: 1, currency: "USD" } }, marginFloor: 1.1 }] }).join("|")).toMatch(/flat credits must be a non-negative number/)
+  })
+  it("a lowercase reference currency is still checked against the margin floor", () => {
+    const q = pricer({ categories: [{ id: "run", match: { kind: "run" }, cost: { source: "flatCredits", credits: 100, referenceCost: { amount: 0.99, currency: "usd" } }, marginFloor: 1.1 }] })
+    expect(() => assertMarginFloors(q, [ev({ kind: "run" })])).toThrowError(/under its floor/)
+  })
+})

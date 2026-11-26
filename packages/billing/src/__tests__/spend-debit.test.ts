@@ -94,3 +94,31 @@ describe("debit: inputs", () => {
     expect(((await s.storage.loadEvents("acct")).find(e => e.kind === "burn") as WalletEvent & { cause?: string }).cause).toBe("turn:42")
   })
 })
+
+describe("debit: replay and foreign burns", () => {
+  it("a burn written by another flow under the same correlation id is not taken for a replay", async () => {
+    const s = await setup([mint("l1", 1_000)])
+    await s.storage.commit("acct", [{ id: "other:burn", accountId: "acct", kind: "burn", asset: ASSET, partitionId: "main", restriction: [], amount: 50, lotId: "l1", correlationId: "turn-42", occurredAt: T0 }])
+    expect(await s.debit.debit({ accountId: "acct", key: "turn-42", amount: 500 })).toEqual({ ok: true, charged: 500, shortfall: 0, replayed: false })
+    expect(await bal(s)).toBe(450)
+  })
+  it("a debit that charged nothing leaves no trace: the same key can charge after a top-up", async () => {
+    const s = await setup([])
+    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300 })).toMatchObject({ charged: 0, shortfall: 300 })
+    await s.storage.commit("acct", [mint("l1", 1_000)])
+    expect(await s.debit.debit({ accountId: "acct", key: "a1", amount: 300 })).toMatchObject({ charged: 300, replayed: false })
+  })
+  it("a replay with another amount returns the first charge", async () => {
+    const s = await setup([mint("l1", 1_000)])
+    await s.debit.debit({ accountId: "acct", key: "k", amount: 100 })
+    expect(await s.debit.debit({ accountId: "acct", key: "k", amount: 900 })).toMatchObject({ charged: 100, replayed: true })
+    expect(await bal(s)).toBe(900)
+  })
+  it("only the lots the filter allows are drawn", async () => {
+    const clock = new ManualClock(T0)
+    const storage = new InMemoryStorage(clock)
+    await storage.commit("acct", [mint("promo", 500, { expiresAt: T0 + 1_000, restriction: ["promo"] }), mint("plain", 100)])
+    const d = createDebit({ storage, clock }, { asset: ASSET, lotFilter: l => l.restriction.length === 0 })
+    expect(await d.debit({ accountId: "acct", key: "k", amount: 300 })).toMatchObject({ charged: 100, shortfall: 200 })
+  })
+})

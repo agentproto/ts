@@ -40,3 +40,19 @@ describe("shadow: price and record, never debit", () => {
     expect(() => createShadow({ pricer } as never)).toThrowError(/sink is required/)
   })
 })
+
+describe("shadow: a failing alert never loses the record", () => {
+  it("writes the unpriced entry first and survives an alert that throws or rejects", async () => {
+    for (const alert of [() => { throw new Error("slack down") }, () => Promise.reject(new Error("slack down"))]) {
+      const got: ShadowEntry[] = []
+      const shadow = createShadow({ pricer, sink: { write: e => void got.push(e) }, alert })
+      expect(await shadow.record(ev({ kind: "video" }))).toMatchObject({ status: "unpriced" })
+      expect(got).toHaveLength(1)
+    }
+  })
+  it("a NaN cost is recorded as unpriced, not as priced", async () => {
+    const got: ShadowEntry[] = []
+    const shadow = createShadow({ pricer, sink: { write: e => void got.push(e) } })
+    expect(await shadow.record(ev({ providerCost: { amount: Number.NaN, currency: "USD" } }))).toMatchObject({ status: "unpriced", reason: "invalid-cost" })
+  })
+})

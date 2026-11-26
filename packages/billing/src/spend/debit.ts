@@ -6,7 +6,12 @@
  *
  * A shortfall is a choice the caller names: `refuse` writes nothing when the
  * account cannot cover the whole amount; `absorb` charges what the account has
- * and reports the rest as `shortfall` (the unrecovered part). A postpaid
+ * and reports the rest as `shortfall` (the unrecovered part). A debit that
+ * charges nothing writes nothing, so it leaves no trace to replay: the same key
+ * retried later can charge. A replay of a key that charged returns the first
+ * charge and ignores the new amount. Lots are chosen by asset and by the
+ * optional `lotFilter`; restrictions and policies are the host's to apply
+ * there (as for `selectLotsForSpend`). A postpaid
  * account is not a third mode: it holds a lot with a negative `floor`, so its
  * headroom counts as available.
  */
@@ -63,7 +68,7 @@ export function createDebit(deps: DebitDeps, opts: DebitOptions): DebitEngine {
       if (want <= 0) return { ok: false, reason: "invalid_amount" }
       return serial(`spend:${accountId}`, async () => {
         const events = await deps.storage.loadEvents(accountId)
-        const done = events.filter(e => e.kind === "burn" && e.correlationId === key)
+        const done = events.filter(e => e.kind === "burn" && e.correlationId === key && e.id.startsWith(`${key}:burn:`))
         if (done.length > 0) {
           const charged = done.reduce((s, e) => s + e.amount, 0)
           return { ok: true as const, charged, shortfall: Math.max(0, want - charged), replayed: true }

@@ -81,7 +81,7 @@ export interface PriceResult {
 
 export class UnpricedUsageError extends Error {
   constructor(
-    readonly reason: "no-category" | "no-cost" | "unknown-currency" | "invalid-units",
+    readonly reason: "no-category" | "no-cost" | "unknown-currency" | "invalid-units" | "invalid-cost",
     message: string,
   ) {
     super(message)

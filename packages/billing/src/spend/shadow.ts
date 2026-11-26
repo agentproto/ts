@@ -23,7 +23,7 @@ export interface ShadowSink {
 export interface ShadowDeps {
   pricer: Pricer
   sink: ShadowSink
-  alert?: (entry: Extract<ShadowEntry, { status: "unpriced" }>) => void
+  alert?: (entry: Extract<ShadowEntry, { status: "unpriced" }>) => void | Promise<void>
 }
 
 export interface ShadowEngine {
@@ -44,9 +44,16 @@ export function createShadow(deps: ShadowDeps): ShadowEngine {
           reason: e instanceof UnpricedUsageError ? e.reason : "error",
           message: e instanceof Error ? e.message : String(e),
         }
-        deps.alert?.(entry)
       }
       await deps.sink.write(entry)
+      if (entry.status === "unpriced") {
+        // The record is written first; a failing alert never loses it nor fails the call.
+        try {
+          await deps.alert?.(entry)
+        } catch {
+          // alerting is best effort
+        }
+      }
       return entry
     },
   }

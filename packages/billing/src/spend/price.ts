@@ -58,6 +58,8 @@ export function usageProblems(manifest: Pick<BillingHandle, "anchor" | "fx">, us
     if (c.margin === "at-cost" && c.marginFloor !== undefined && c.marginFloor > 1) out.push(`category '${c.id}': at-cost cannot have a marginFloor above 1`)
     if (typeof c.margin === "number" && c.margin <= 0) out.push(`category '${c.id}': margin must be positive`)
     if (c.floorMinor !== undefined && (!Number.isInteger(c.floorMinor) || c.floorMinor < 0)) out.push(`category '${c.id}': floorMinor must be a non-negative integer`)
+    if (c.cost.source === "fixed" && !(Number.isFinite(c.cost.amount) && c.cost.amount >= 0)) out.push(`category '${c.id}': a fixed cost must be a non-negative number`)
+    if (c.cost.source === "flatCredits" && !(Number.isFinite(c.cost.credits) && c.cost.credits >= 0)) out.push(`category '${c.id}': flat credits must be a non-negative number`)
     if (c.cost.source === "flatCredits" && c.marginFloor === undefined) out.push(`category '${c.id}': a flat price needs a marginFloor`)
     if (c.cost.source === "flatCredits" && c.marginFloor !== undefined && !c.cost.referenceCost) out.push(`category '${c.id}': a flat price needs a referenceCost to check its marginFloor`)
     const cur = c.cost.source === "fixed" ? c.cost.currency : c.cost.source === "flatCredits" ? c.cost.referenceCost?.currency : undefined
@@ -114,10 +116,12 @@ export function createPricer(deps: PricerDeps): Pricer {
       }
 
       if (!cost) throw new UnpricedUsageError("no-cost", `category '${c.id}' has no cost for this event (${c.cost.source})`)
+      if (!Number.isFinite(cost.amount) || cost.amount < 0) throw new UnpricedUsageError("invalid-cost", `category '${c.id}': the cost must be a non-negative number, got ${cost.amount}`)
       const ratio = entryRatio(deps.manifest, normalizeCurrency(cost.currency))
       if (ratio === null) throw new UnpricedUsageError("unknown-currency", `currency '${cost.currency}' is neither the anchor currency nor in fx`)
       const costMinor = cost.amount * ratio * scale
       const minor = Math.max(floor, Math.ceil(costMinor * margin - EPS))
+      if (!Number.isFinite(minor)) throw new UnpricedUsageError("invalid-cost", `category '${c.id}': the price is not a finite number`)
       return { minor, categoryId: c.id, mode, margin, atCost, costMinor, realMargin: costMinor > 0 ? minor / costMinor : undefined }
     },
   }
