@@ -14,6 +14,7 @@
  * exactly the drift this script is meant to catch going forward.
  *
  * It reads the canonical AIP registry from `specs/meta.json`'s `pages` list
+ * plus the `specs/aip-<N>.mdx` file names, since the nav list can lag a merged AIP
  * (slugs + nav order only — still never the prose body) in the same
  * canonical checkout CI already stages for the schema-drift check
  * (`.canonical-specs`, pinned at `specs/canonical.lock.json`), then:
@@ -81,6 +82,13 @@ export function loadCanonicalAipNumbers(sourceRoot) {
   const numbers = new Set()
   for (const slug of meta.pages ?? []) {
     const m = /^aip-(\d+)$/.exec(slug)
+    if (m) numbers.add(Number(m[1]))
+  }
+  // meta.json's nav list can lag a merged AIP (AIP-77 and AIP-78 landed
+  // without a nav entry), so a spec file counts as registered too.
+  const specsDir = path.join(sourceRoot, "specs")
+  for (const name of readdirSync(specsDir)) {
+    const m = /^aip-(\d+)\.mdx$/.exec(name)
     if (m) numbers.add(Number(m[1]))
   }
   if (numbers.size === 0) throw new Error(`no AIP pages found in ${metaPath}`)
