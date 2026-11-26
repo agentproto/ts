@@ -4117,6 +4117,9 @@ importers:
       '@agentproto/auth':
         specifier: workspace:*
         version: link:../auth
+      '@agentproto/billing':
+        specifier: workspace:*
+        version: link:../billing
       '@agentproto/clerk':
         specifier: workspace:*
         version: link:../clerk
@@ -4234,6 +4237,9 @@ importers:
       '@agentproto/tool':
         specifier: workspace:*
         version: link:../tool
+      '@agentproto/voice':
+        specifier: workspace:*
+        version: link:../voice
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow

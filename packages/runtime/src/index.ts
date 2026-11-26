@@ -1224,6 +1224,7 @@ import {
   registerTunnelAdapterTools,
   makeTunnelCredsStore,
 } from "./tunnel-adapters.js"
+import { registerVoiceBillingTools } from "./voice-billing-adapters.js"
 import {
   registerSentinelAdapterTools,
   makeSentinelCredsStore,
@@ -5146,6 +5147,10 @@ export async function createGateway(
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
     await registerTunnelAdapterTools(server, {})
+    // Voice and billing provider families (list_voice_providers,
+    // setup_voice_provider, list_billing_providers, setup_billing_provider),
+    // built by the families' own registries on the same kit factory.
+    await registerVoiceBillingTools(server)
     // Sentinel adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_sentinel_adapters + setup_sentinel_provider) — same resolver
     // `sentinelRuntime` above resolves slugs through.
