@@ -8,8 +8,11 @@
  * behaviour (reap instead of kill, CRIT floor, work-in-flight/child-alive
  * refusals) stays in one tested place.
  *
- * Cron (every 20 min):
- *   0,20,40 * * * * node /path/to/agentproto/scripts/host-guard.mjs --agent claude-code >> ~/.agentproto/host-guard.cron.log 2>&1
+ * Cron (every 5 min, escalating from WARN): the guard remembers the last
+ * level, so a frequent schedule only escalates when the level changes (see
+ * `--escalate-on`, `--renotify-after` in `agentproto host guard --help`):
+ *   */5 * * * * node /path/to/agentproto/scripts/host-guard.mjs --escalate-on warn --agent claude-code >> ~/.agentproto/host-guard.cron.log 2>&1
+ * A slower `*/20` schedule with the default `--escalate-on crit` works too.
  *
  * Env:
  *   HOST_GUARD_BIN   agentproto binary (default: this checkout's built CLI if
