@@ -854,9 +854,12 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
       applied: false,
       detail: "display_ack",
     })
-    const url = approvalUrl(surfaces.approvalsUiBaseUrl, approvalId)
+    // Only a url-capable client can receive the link, so only then is a refused base worth a log line.
+    const url = clientSupportsElicitation(clientCapabilities, "url")
+      ? approvalUrl(surfaces.approvalsUiBaseUrl, approvalId)
+      : undefined
     const retry = response === null || response.action === "accept"
-    if (surfaces.approvals && record?.status === "pending" && retry && url && clientSupportsElicitation(clientCapabilities, "url")) {
+    if (surfaces.approvals && record?.status === "pending" && retry && url) {
       return mintApprovalInputRequired(record, url, tool, argsHash, callerSessionId) as unknown as Record<string, unknown>
     }
     return forward()
@@ -979,8 +982,8 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
       if (tool === "approval_get" || tool === "approval_wait") {
         const surfaces = await resolveSurfaces()
         const id = typeof args.id === "string" ? args.id : ""
-        const url = approvalUrl(surfaces.approvalsUiBaseUrl, id)
-        const record = surfaces.approvals && supportsUrl && url ? approvals?.get(id) : undefined
+        const url = supportsUrl ? approvalUrl(surfaces.approvalsUiBaseUrl, id) : undefined
+        const record = surfaces.approvals && url ? approvals?.get(id) : undefined
         if (record?.status === "pending" && url) {
           return mintApprovalInputRequired(record, url, tool, argsHash, callerSessionId) as unknown as Record<string, unknown>
         }

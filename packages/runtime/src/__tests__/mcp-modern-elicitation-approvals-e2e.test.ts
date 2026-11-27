@@ -267,6 +267,12 @@ describe("MCP 2026-07-28 elicitation: approvals (url) and runs observed by the o
     expect(log[0]).not.toContain("hunter2")
     expect(log[0]).not.toContain("console.example.test")
 
+    // A form-only client can never receive the link: no log line for it.
+    const formLog: string[] = []
+    const formRig = await startRig({ surfaces: { approvals: true, runs: true, approvalsUiBaseUrl: base }, log: formLog })
+    await callTool(formRig.baseUrl, "approval_get", { id: newApproval(formRig.engine).id }, { elicitation: { form: {} } })
+    expect(formLog).toEqual([])
+
     // No base configured: nothing to report.
     const quiet: string[] = []
     const unset = await startRig({ surfaces: { approvals: true, runs: true }, log: quiet })
