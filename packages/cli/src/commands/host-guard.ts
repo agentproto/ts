@@ -86,9 +86,10 @@ export const DEFAULT_GUARD_LEVEL_PATH = join(homedir(), ".agentproto", "host-gua
 /** Default delay before a host that stays CRIT is escalated again (2 h). */
 export const DEFAULT_RENOTIFY_AFTER_MIN = 120
 
-/** How long a CRIT marker blocks workflow starts. The guard runs
- *  every 20 min, so 25 min keeps a fresh CRIT verdict live across one missed
- *  tick without leaving the block armed after the guard stops running. */
+/** How long a CRIT marker blocks workflow starts. With the guard running
+ *  every 20 min (or more often), 25 min keeps a fresh CRIT verdict live
+ *  across one missed tick without leaving the block armed after the guard
+ *  stops running. */
 export const GUARD_STATE_TTL_MS = 25 * 60_000
 
 /** Absolute floor for the CRIT idle window (15 min). Even when
@@ -734,7 +735,11 @@ own session. Nothing is spawned before cleanup.
                          --level-state files: one run's escalation counts for all)
   --renotify-after <min> escalate again while CRIT lasts, every <min> minutes;
                          also the cooldown before a level escalated recently is
-                         escalated again after a drop (default 120; 0 = never)
+                         escalated again after a drop: a second CRIT episode
+                         within that delay of the last CRIT escalation is not
+                         reported (lower the delay to hear of it sooner).
+                         Default 120. 0 = never renotify, and no cooldown: every
+                         crossing escalates, even a host flapping around a level
   --settle <ms>          wait after closing before re-checking (default 3000)
   --budget <ms>          host sample budget (same as host health --budget)
 `

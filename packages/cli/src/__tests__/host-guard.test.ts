@@ -62,6 +62,8 @@ const io = vi.hoisted(() => ({
   reapFails: new Set<string>(),
   /** Escalations sent: prompts to an existing session, or agent spawns. */
   escalations: [] as string[],
+  /** When set, the next escalation request fails (then this is cleared). */
+  failNextEscalation: false,
 }))
 
 vi.mock("../commands/_daemon-helpers.js", () => ({
@@ -70,6 +72,10 @@ vi.mock("../commands/_daemon-helpers.js", () => ({
   httpGetJson: async () => ({ sessions: io.sessions }),
   httpPostJson: async (url: string) => {
     const prompt = /\/sessions\/([^/]+)\/prompt/.exec(url)
+    if (prompt && io.failNextEscalation) {
+      io.failNextEscalation = false
+      throw new Error("HTTP 503")
+    }
     if (prompt) {
       io.escalations.push(`notify:${decodeURIComponent(prompt[1] as string)}`)
       return {}
@@ -710,6 +716,7 @@ describe("runHostGuard — escalation on level change", () => {
     io.kills = []
     io.reapFails = new Set()
     io.escalations = []
+    io.failNextEscalation = false
     io.verdictAfter = undefined
     io.healthSamples = 0
     await rm(DEFAULT_GUARD_LEVEL_PATH, { force: true })
@@ -763,6 +770,18 @@ describe("runHostGuard — escalation on level change", () => {
     expect(io.escalations).toEqual(["notify:brain", "notify:brain"])
     await run()
     expect(io.escalations).toHaveLength(2)
+  })
+
+  it("retries a failed escalation on the next run, then stops", async () => {
+    io.verdict = "CRIT"
+    io.failNextEscalation = true
+    await run()
+    expect(io.escalations).toEqual([])
+    expect((await readGuardLevel(levelPath))?.escalatedLevel).toBe("OK")
+    await run()
+    expect(io.escalations).toEqual(["notify:brain"])
+    await run()
+    expect(io.escalations).toEqual(["notify:brain"])
   })
 
   it("--no-level-state keeps the previous behaviour: one escalation per CRIT run", async () => {
