@@ -155,6 +155,25 @@ afterEach(() => {
   openSockets = []
 })
 
+/**
+ * Pause/resume reading on the client's TCP socket, so the daemon's send
+ * queue fills up. `ws` exposes no public API for this: it relies on the
+ * internal `_socket` field of `ws`'s WebSocket. The guard turns a future
+ * `ws` change into a clear failure instead of a timeout.
+ */
+function clientSocketFlow(ws: WebSocket): { pause(): void; resume(): void } {
+  const socket = (ws as unknown as { _socket?: { pause?: unknown; resume?: unknown } })._socket
+  if (!socket || typeof socket.pause !== "function" || typeof socket.resume !== "function") {
+    throw new Error("ws internals changed: WebSocket._socket.pause/resume is gone; update clientSocketFlow")
+  }
+  return socket as { pause(): void; resume(): void }
+}
+
+/** Lets anything the daemon would write in reply settle before asserting
+ *  silence (its reply is synchronous today; this keeps the test meaning
+ *  "stays silent", not "has not answered yet"). */
+const settle = () => new Promise(r => setTimeout(r, 50))
+
 const spawn = (registry: SessionsRegistry) =>
   registry.spawnPty({ workspaceSlug: "default", cwd: process.cwd(), argv: ["claude"], cols: 80, rows: 24 })
 
@@ -185,6 +204,7 @@ describe("WS /sessions/:id/pty ?answers=", () => {
         const client = await connectPty(port, desc.id, params)
         emitOutput(`hi${DA1}`)
         await waitFor(() => client.received().includes(DA1), "the query on the client")
+        await settle()
         expect(writes).toEqual([])
       })
     })
@@ -206,7 +226,7 @@ describe("WS /sessions/:id/pty ?answers=", () => {
       const desc = spawn(registry)
       const client = await connectPty(port, desc.id)
       // Stop reading on the client so the daemon's send queue fills up.
-      const socket = (client.ws as unknown as { _socket: { pause(): void; resume(): void } })._socket
+      const socket = clientSocketFlow(client.ws)
       socket.pause()
       const filler = "x".repeat(256 * 1024)
       const fillerChunks = 64 // 16 MiB: far beyond the kernel buffers
@@ -216,6 +236,7 @@ describe("WS /sessions/:id/pty ?answers=", () => {
       await waitFor(() => client.received().includes(`ask${DA1}`), "the query chunk", 20_000)
       // Saturation was real: some filler was dropped, the query was not.
       expect(client.received().length).toBeLessThan(fillerChunks * filler.length)
+      await settle()
       expect(writes).toEqual([])
     })
   }, 30_000)
