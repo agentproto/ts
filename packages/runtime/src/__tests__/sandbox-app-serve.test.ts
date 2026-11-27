@@ -14,7 +14,9 @@ import {
   parseJsonRecordText,
   parseToolJson,
   pollServeReady,
+  buildEntryUrl,
   serveLogPath,
+  serveTokenPath,
   startSandboxAppServe,
   BOX_ALLOWLIST_REL,
   type BoxToolClient,
@@ -22,6 +24,12 @@ import {
   type ToolTextResult,
 } from "../sandbox-app-serve.js"
 import { buildSpawnSessionHttpArgs } from "../http-server.js"
+
+/** The `sh -c` script of a recorded command_execute call ("" for anything else). */
+function launchScript(call: { args: Record<string, string | number | string[]> }): string {
+  const argv = call.args.args
+  return Array.isArray(argv) ? String(argv[1] ?? "") : ""
+}
 
 function textResult(value: object): ToolTextResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }] }
@@ -55,6 +63,18 @@ describe("buildServeLaunchScript", () => {
     expect(script).toContain("--port 4321")
     // Backgrounded: the launcher must not block the command_execute RPC.
     expect(script).toContain("& echo $!")
+  })
+
+  it("gives the server an access token file (the URL is public), never the token itself", () => {
+    const script = buildServeLaunchScript("/home/user/apps/my-app", 4321)
+    expect(script).toContain("--access-token-file '/home/user/apps/my-app/.agentproto/app-serve.token'")
+    expect(script).not.toMatch(/--access-token(?!-file)/)
+    expect(serveTokenPath("/home/user/apps/my-app/")).toBe("/home/user/apps/my-app/.agentproto/app-serve.token")
+  })
+
+  it("buildEntryUrl puts the token in ?t= and keeps the path", () => {
+    expect(buildEntryUrl("https://3210-x.e2b.app", "tok")).toBe("https://3210-x.e2b.app/?t=tok")
+    expect(buildEntryUrl("https://h.example/apps/a/ui", "a b")).toBe("https://h.example/apps/a/ui?t=a+b")
   })
 
   it("refuses a dir containing a single quote (shell-quoting injection)", () => {
@@ -154,19 +174,26 @@ describe("startSandboxAppServe", () => {
   }
 
   function makeServingClient(): BoxToolClient & { calls: FakeCall[] } {
-    return makeFakeClient(name => {
+    return makeFakeClient((name, args) => {
       if (name === "app_install") return textResult({ appId: "acme/job-kit", dir: DIR })
       if (name === "command_execute") {
         return textResult({ exitCode: 0, signal: null, stdout: "1234\n", stderr: "" })
+      }
+      if (name === "file_read" && String(args.path).endsWith("app-serve.token")) {
+        return { content: [{ type: "text", text: "tok_secret\n" }] }
       }
       return textResult({ ok: true })
     })
   }
 
+  /** A gate probe for a server that refuses an unauthenticated tool call. */
+  const gated = async () => true as boolean | undefined
+
   it("installs the app, seeds the allowlist, launches the detached server, and returns the URL", async () => {
     const client = makeServingClient()
     const result = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
       probe: async () => true,
+      gateProbe: gated,
       connect: async () => client,
     })
     expect(result.ok).toBe(true)
@@ -176,6 +203,7 @@ describe("startSandboxAppServe", () => {
       dir: DIR,
       port: 3210,
       url: PUBLIC_URL,
+      entryUrl: `${PUBLIC_URL}/?t=tok_secret`,
       ready: true,
     })
 
@@ -190,12 +218,123 @@ describe("startSandboxAppServe", () => {
     expect(seeded.commands).toEqual(expect.arrayContaining(["sh", "agentproto"]))
 
     // 3. The server was launched detached via sh -c on the requested port.
-    const execute = client.calls.find(c => c.name === "command_execute")
+    const execute = client.calls.find(c => c.name === "command_execute" && launchScript(c).includes("nohup"))
     expect(execute?.args.command).toBe("sh")
     const argv = execute?.args.args
     const script = Array.isArray(argv) ? argv[1] : undefined
     expect(script).toEqual(expect.stringContaining("nohup agentproto app serve '/home/user/apps/job-kit'"))
     expect(script).toContain("--port 3210")
+    expect(script).toContain("--access-token-file")
+  })
+
+  it("refuses to launch anything when the box's agentproto has no --access-token-file (old CLI)", async () => {
+    const client = makeFakeClient((name, args) => {
+      if (name === "app_install") return textResult({ appId: "acme/job-kit", dir: DIR })
+      if (name === "command_execute") {
+        const script = String(Array.isArray(args.args) ? args.args[1] : "")
+        // The capability probe exits 42 on a CLI that runs but lacks the flag.
+        return textResult({ exitCode: script.includes("--help") ? 42 : 0, signal: null, stdout: "1234\n", stderr: "" })
+      }
+      return textResult({ ok: true })
+    })
+    const result = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => true,
+      gateProbe: gated,
+      connect: async () => client,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.message).toMatch(/does not support `app serve --access-token-file`/)
+    expect(client.calls.some(c => c.name === "command_execute" && launchScript(c).includes("nohup"))).toBe(false)
+  })
+
+  it("still launches when the capability probe cannot run at all (the later probes decide)", async () => {
+    const client = makeFakeClient((name, args) => {
+      if (name === "app_install") return textResult({ appId: "acme/job-kit", dir: DIR })
+      if (name === "command_execute") {
+        const script = String(Array.isArray(args.args) ? args.args[1] : "")
+        if (script.includes("--help")) throw new Error("transport down")
+        return textResult({ exitCode: 0, signal: null, stdout: "1234\n", stderr: "" })
+      }
+      return textResult({ ok: true })
+    })
+    const result = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => true,
+      gateProbe: async () => false,
+      connect: async () => client,
+    })
+    // Not launched blind: the gate probe still refuses an open server.
+    expect(result.ok).toBe(false)
+  })
+
+  it("refuses to hand out a URL whose server answers a tool call without a credential, and stops it", async () => {
+    const client = makeServingClient()
+    const result = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => true,
+      gateProbe: async () => false,
+      connect: async () => client,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.message).toMatch(/without any credential/)
+    // The launched pid (1234) was killed.
+    const kill = client.calls.filter(c => c.name === "command_execute").at(-1)
+    expect(kill?.args.args).toEqual(["-c", "kill 1234"])
+  })
+
+  it("fails closed too when the gate cannot be checked (no answer)", async () => {
+    const client = makeServingClient()
+    const result = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => true,
+      gateProbe: async () => undefined,
+      connect: async () => client,
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it("probes the gate even when readiness times out: an open answer stops the server, no answer does not", async () => {
+    const open = makeServingClient()
+    const refused = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => false,
+      gateProbe: async () => false,
+      timeoutMs: 10,
+      intervalMs: 1,
+      connect: async () => open,
+    })
+    expect(refused.ok).toBe(false)
+    expect(open.calls.filter(c => c.name === "command_execute").at(-1)?.args.args).toEqual(["-c", "kill 1234"])
+
+    const silent = makeServingClient()
+    const pending = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => false,
+      gateProbe: async () => undefined,
+      timeoutMs: 10,
+      intervalMs: 1,
+      connect: async () => silent,
+    })
+    expect(pending.ok).toBe(true)
+    if (pending.ok) {
+      expect(pending.appServe.ready).toBe(false)
+      expect(pending.appServe.entryUrl).toBeUndefined()
+    }
+  })
+
+  it("serves without an entryUrl when the token file cannot be read", async () => {
+    const client = makeFakeClient((name, args) => {
+      if (name === "app_install") return textResult({ appId: "acme/job-kit", dir: DIR })
+      if (name === "command_execute") return textResult({ exitCode: 0, signal: null, stdout: "1234\n", stderr: "" })
+      if (name === "file_read" && String(args.path).endsWith("app-serve.token")) throw new Error("ENOENT")
+      return textResult({ ok: true })
+    })
+    const result = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => true,
+      gateProbe: gated,
+      connect: async () => client,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.appServe.entryUrl).toBeUndefined()
+    expect(result.appServe.url).toBe(PUBLIC_URL)
   })
 
   it("falls back to expose(port) when the ports map has no entry", async () => {
@@ -210,6 +349,7 @@ describe("startSandboxAppServe", () => {
     })
     const result = await startSandboxAppServe(host, { dir: DIR, port: 4567 }, {
       probe: async () => true,
+      gateProbe: gated,
       connect: async () => client,
     })
     expect(result.ok).toBe(true)
