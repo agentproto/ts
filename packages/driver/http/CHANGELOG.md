@@ -1,5 +1,17 @@
 # @agentproto/driver-http
 
+## 0.3.0
+
+### Minor Changes
+
+- 8168760: Harden `@agentproto/driver-http` with endpoint path interpolation (with traversal/origin guards), snake_case fallback normalization for `metadata.http`, prototype-pollution guards in `extractResponse`, secret redaction in HTTP error excerpts, and a `safeHttpCollector` driver wrapper enforcing GET-only, lexical + DNS anti-SSRF checks, `redirect: "error"`, streaming response size cap, timeout, JSON content-type checks, and single-source auth header composition.
+
+### Patch Changes
+
+- Updated dependencies [da79225]
+  - @agentproto/tool@0.8.0
+  - @agentproto/driver@0.4.4
+
 ## 0.2.3
 
 ### Patch Changes

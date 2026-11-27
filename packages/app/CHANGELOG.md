@@ -1,5 +1,25 @@
 # @agentproto/app-kit
 
+## 2.7.0
+
+### Minor Changes
+
+- b693448: App sessions for an app installed inside a git repo can read that repo's root config again, read-only: `.git` (plus the git dirs a linked worktree's `.git` file points at), `.gitignore`, `.claude/`, `.codex/`, `.mcp.json`, `CLAUDE.md` and `AGENTS.md`. Fixes Claude Code steps starting with "Settings file could not be read: EPERM" and running without the project's hooks and permission rules, and `rg` / `git` failing on the hidden `.git` from the app dir.
+
+  New `boundaries.hostReads` in APP.md / `defineApp`: paths relative to the host repo root (a sibling package's built CLI, a shared folder) that the app's sessions may read. The loader rejects absolute and `..` entries; the daemon resolves symlinks, refuses entries outside the host repo or naming the whole repo, and masks secret files inside them. Nothing in the host repo becomes writable, and the rest of its working tree stays hidden. Because `.git` is readable, committed content of the host repo is reachable through git; `.git/config` is masked when it embeds credentials (URL userinfo or `extraheader`), with a warning. The loader also rejects `.` and whitespace-padded `hostReads` entries.
+
+### Patch Changes
+
+- fd9d763: Allow caller-provided `driverCtx.secrets` to satisfy `DRIVER.md` `auth.state.env` before falling back to `process.env` in `loadAppBundledTools` (with snake_case fallback for `metadata.http`), forward scoped `secrets` / `resolveSecrets` through `runBundledAppTool` and `performExposedToolCall`, and invalidate the cached `internalToolServerPromise` on `app_install`, `app_resync` (when changed), `app_uninstall`, and `routine_reconcile` so newly installed or updated apps' exposed tools are immediately dispatchable without a daemon restart.
+- 6b5a1a7: `boundaries.hostReads`: the loader and `defineApp` now refuse an entry holding a line terminator (`\n`, `\r`, U+2028, U+2029) anywhere, like the AIP-53 APP.schema.json pattern does. `HOST_READ_PATH_RE` is now the schema's own pattern, anchored at both ends.
+- Updated dependencies [8168760]
+- Updated dependencies [da79225]
+  - @agentproto/driver-http@0.3.0
+  - @agentproto/tool@0.8.0
+  - @agentproto/driver-cli@0.3.4
+  - @agentproto/driver@0.4.4
+  - @agentproto/bridge@0.3.4
+
 ## 2.6.2
 
 ### Patch Changes

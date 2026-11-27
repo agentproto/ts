@@ -1,5 +1,14 @@
 # @agentproto/worktree
 
+## 0.23.2
+
+### Patch Changes
+
+- Updated dependencies [da79225]
+  - @agentproto/tool@0.8.0
+  - @agentproto/driver@0.4.4
+  - @agentproto/workflow-runtime@0.21.4
+
 ## 0.23.1
 
 ### Patch Changes

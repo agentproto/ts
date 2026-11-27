@@ -1,5 +1,13 @@
 # @agentproto/adapter-browser-chrome
 
+## 0.8.5
+
+### Patch Changes
+
+- Updated dependencies [da79225]
+  - @agentproto/tool@0.8.0
+  - @agentproto/driver-browser@0.4.4
+
 ## 0.8.4
 
 ### Patch Changes

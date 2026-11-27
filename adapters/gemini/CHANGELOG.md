@@ -1,5 +1,13 @@
 # @agentproto/adapter-gemini
 
+## 0.3.6
+
+### Patch Changes
+
+- Updated dependencies [d33d2e4]
+- Updated dependencies [468cbc4]
+  - @agentproto/harness@4.2.0
+
 ## 0.3.5
 
 ### Patch Changes

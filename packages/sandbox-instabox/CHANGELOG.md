@@ -1,5 +1,11 @@
 # @agentproto/sandbox-instabox
 
+## 0.2.11
+
+### Patch Changes
+
+- @agentproto/sandbox@1.0.3
+
 ## 0.2.10
 
 ### Patch Changes

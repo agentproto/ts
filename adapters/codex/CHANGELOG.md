@@ -1,5 +1,14 @@
 # @agentproto/adapter-codex
 
+## 2.1.7
+
+### Patch Changes
+
+- 75e2644: Pin the codex-acp bridge to 2.12.0 and add the gpt-6.1 and gpt-6.2 model ids (sol, terra, astra, with their -pro variants) to the curated model menu.
+- Updated dependencies [d33d2e4]
+- Updated dependencies [468cbc4]
+  - @agentproto/harness@4.2.0
+
 ## 2.1.6
 
 ### Patch Changes

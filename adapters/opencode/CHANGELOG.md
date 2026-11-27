@@ -1,5 +1,15 @@
 # @agentproto/adapter-opencode
 
+## 1.11.2
+
+### Patch Changes
+
+- Updated dependencies [537e9ef]
+- Updated dependencies [d33d2e4]
+- Updated dependencies [468cbc4]
+  - @agentproto/model-catalog@0.16.2
+  - @agentproto/harness@4.2.0
+
 ## 1.11.1
 
 ### Patch Changes

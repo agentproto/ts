@@ -1,5 +1,11 @@
 # @agentproto/sandbox-e2b
 
+## 0.11.6
+
+### Patch Changes
+
+- @agentproto/sandbox@1.0.3
+
 ## 0.11.5
 
 ### Patch Changes

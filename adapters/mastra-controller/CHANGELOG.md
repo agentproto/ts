@@ -1,5 +1,13 @@
 # @agentproto/adapter-mastra-controller
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [d33d2e4]
+- Updated dependencies [468cbc4]
+  - @agentproto/harness@4.2.0
+
 ## 0.2.1
 
 ### Patch Changes
