@@ -699,3 +699,122 @@ describe("secret hints: compound terms with a space, hyphen, underscore or nothi
     expect(buildPermissionElicitation(noFieldsQuestion("Which one?", ["My refresh token", "Skip"]))).toBeNull()
   })
 })
+
+// AIP-45 "No secret in a form" / AIP-77 "Flat forms, no secrets": a plural ("Paste your API keys",
+// "passwords") asks for the same secret as the singular. The final word boundary used to stop a
+// trailing "s" from matching.
+describe("secret hints: plural forms", () => {
+  const SINGLE_PLURALS = ["passwords", "passwds", "passphrases", "secrets", "payments"] as const
+
+  // Not caught before the fix.
+  it.each(SINGLE_PLURALS)("%s is a secret hint", word => {
+    expect(isSecretField(word)).toBe(true)
+    expect(isSecretField("value", `Paste your ${word} here`)).toBe(true)
+    expect(isSecretField("value", word.toUpperCase())).toBe(true)
+  })
+
+  const COMPOUND_PLURALS: ReadonlyArray<readonly [string, string]> = [
+    ["api", "keys"],
+    ["access", "tokens"],
+    ["auth", "tokens"],
+    ["refresh", "tokens"],
+    ["private", "keys"],
+    ["credit", "cards"],
+    ["card", "numbers"],
+    ["bearer", "tokens"],
+  ]
+
+  // Not caught before the fix, in every separator form.
+  describe.each(COMPOUND_PLURALS)("%s %s", (a, b) => {
+    it("is a secret hint with a space", () => {
+      expect(isSecretField("value", `Paste your ${a} ${b} here`)).toBe(true)
+      expect(isSecretField("value", `${a.toUpperCase()} ${b.toUpperCase()}`)).toBe(true)
+    })
+    it.each([`${a}_${b}`, `${a}-${b}`, `${a}${b}`])("%s is a secret hint", form => {
+      expect(isSecretField(form)).toBe(true)
+      expect(isSecretField("value", `Paste your ${form}`)).toBe(true)
+    })
+  })
+
+  // Guard: "credentials" was already written out in the term list and stays caught.
+  it("credentials stays a secret hint", () => {
+    expect(isSecretField("credentials")).toBe(true)
+    expect(isSecretField("value", "Enter your credentials")).toBe(true)
+  })
+
+  // Guards: an optional trailing "s" must not reach into a longer word, and a plural of a single
+  // word from a compound term is not a secret ask.
+  it.each([
+    // the final boundary still applies after the "s": a longer word is not a term
+    "Hire a secretary",
+    "Plan a secretsanta",
+    "Enable passwordless login",
+    "Open the paymentsystem docs",
+    // plural of one word of a compound term, without the other word
+    "Iterate over the keys of the map",
+    "A few tokens of thanks",
+    "Pick card games for the party",
+    "Number of cards to draw",
+  ])("guard: %j is not a secret hint", text => {
+    expect(isSecretField("value", text)).toBe(false)
+  })
+
+  function fieldsQuestion(prompt: string, fieldPrompt: string): PendingPermission {
+    return {
+      id: "q-plural",
+      sessionId: "sess_child",
+      toolCallId: "q-plural",
+      text: "Setup",
+      options: [],
+      requestedAt: new Date().toISOString(),
+      request: "question",
+      question: {
+        prompt,
+        choices: [],
+        allowFreeText: false,
+        fields: [{ id: "value", input: "text", prompt: fieldPrompt, required: true }],
+      },
+    }
+  }
+
+  function noFieldsQuestion(prompt: string): PendingPermission {
+    const labels = ["Red", "Blue"]
+    return {
+      id: "q-plural-nofields",
+      sessionId: "sess_child",
+      toolCallId: "q-plural-nofields",
+      text: "Question",
+      options: [
+        ...labels.map((name, i) => ({ optionId: `answer:${i}`, name, kind: "allow_once" as const })),
+        { optionId: "decline", name: "Decline to answer", kind: "reject_once" as const },
+      ],
+      requestedAt: new Date().toISOString(),
+      request: "question",
+      question: {
+        prompt,
+        choices: labels.map((label, i) => ({ optionId: `answer:${i}`, label })),
+        allowFreeText: false,
+      },
+    }
+  }
+
+  it("does not project a question with fields whose prompt or field prompt says 'Paste your API keys'", () => {
+    expect(buildPermissionElicitation(fieldsQuestion("Finish setup", "Release note"))).not.toBeNull()
+    expect(buildPermissionElicitation(fieldsQuestion("Paste your API keys", "Value"))).toBeNull()
+    expect(buildPermissionElicitation(fieldsQuestion("Finish setup", "Paste your API keys"))).toBeNull()
+  })
+
+  it("does not project a question without fields whose prompt says 'Paste your API keys'", () => {
+    expect(buildPermissionElicitation(noFieldsQuestion("Which colour?"))?.kind).toBe("question")
+    expect(buildPermissionElicitation(noFieldsQuestion("Paste your API keys"))).toBeNull()
+  })
+
+  it("validateFlatFormSchema refuses a property whose description asks for passwords", () => {
+    expect(
+      validateFlatFormSchema({
+        type: "object",
+        properties: { value: { type: "string", description: "Your passwords, one per line" } },
+      }).ok,
+    ).toBe(false)
+  })
+})
