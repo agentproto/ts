@@ -41,7 +41,7 @@ Events envelope. The envelope fields are `eventId`, `name`, `data`,
 | TTL: `ttlMs` omitted → default 7d; `number` → grant `min(requested, 30d)` but never below 60s floor; `null` → `until:{kind:"never"}` → `refreshBefore: null` | `until: {kind:"at", ms}` in store; **`refreshBefore` = the GRANTED EXPIRATION itself (`until.ms` as ISO-8601), per the official doc — never a pre-expiry hint**; one function `computeRefreshBefore()` in §3, claused nowhere else | `mcp-events/adapter.ts` | `ttl-clamp`, `refresh-before-expires` |
 | `ttlMs: null` | unexpire sentinel (`until:{kind:"never"}`) returns `refreshBefore: null` | same | `ttl-null-no-refresh-needed` |
 | client refresh before expiry (same sub identity + last cursor) | upsert path reuses existing sub id; returns new `refreshBefore` = new `until.ms`; cursor is accepted but NOT replayed (v1 non-replayable — `cursor:null` back) | `mcp-events/adapter.ts` | merged into `refresh-before-expires` |
-| replay via `cursor`; `truncated` when history gone; un-replayable types → `cursor: null` | **v1 REALITY (verified in code): NO provider has historical replay** — `local-gh` polls by snapshot diffing, providers' `poll(handle, limit)` accepts a `SentinelHandle`, not a `(cursor, limit)` pair, and there is no `{truncated}` path. So v1 declares EVERY event definition non-replayable: subscribe/refresh always return `cursor: null`, `truncated: false` never set. Replayable cursor mechanics = explicit follow-up (a replay `ArgumentError`-free provider API + cursor validation) — DO NOT fake it on top of snapshot diffing (it would invent phantom cursors). | `mcp-events/adapter.ts` | `unreplayable-cursor-null` (replay suites are explicitly OUT of v1) |
+| replay via `cursor`; `truncated` when history gone; un-replayable types → `cursor: null` | **v1 REALITY (verified in code): NO provider has historical replay** — `local-gh` polls by snapshot diffing, providers' `poll(handle, limit)` accepts a `SentinelHandle`, not a `(cursor, limit)` pair, and there is no `{truncated}` path. So v1 declares EVERY event definition non-replayable: subscribe/refresh always return `cursor: null`; a supplied `cursor` is decoded like a poll cursor (`-32602` unreadable, `-32024` another caller's) and answers `truncated: true`, since nothing is replayed over the webhook (`events/poll` is the replay path). Replayable cursor mechanics = explicit follow-up (a replay `ArgumentError`-free provider API + cursor validation) — DO NOT fake it on top of snapshot diffing (it would invent phantom cursors). | `mcp-events/adapter.ts` | `unreplayable-cursor-null` (replay suites are explicitly OUT of v1) |
 | `events/unsubscribe` with same event name + args + URL; idempotent | remove-by-deterministic-id path; second call returns `{}` | `mcp-events/adapter.ts` | `unsubscribe-idempotent` |
 | delivery ordering non-guaranteed; consumer idempotence | I1 dedup + docs note (W-D) | docs | — |
 | bursts / batching, `read` retrieval of full record | **explicitly cut** (see §5) — ChatGPT treats 2xx accept async; we only promise body shape | — | — |
@@ -61,7 +61,7 @@ they will not work and are not planned for this release.
 | **Event batching** across subscribers | One event per POST. The client may group server-side. |
 | **ChatGPT plugin manifest** | Their side handles discovery; we only need the capability flag + methods. |
 | **`read` tool** for oversized payloads | The 256 KiB clamp reduces `data` to `{summary, subject}`. A full-read tool is a follow-up (W-F) only if real usage demands it. |
-| **Replay via cursor** | No provider has historical replay. All event definitions are non-replayable in v1: `cursor: null` always, `truncated` never set. |
+| **Replay via cursor** | No provider has historical replay over the webhook: subscribe/refresh return `cursor: null`, and answer `truncated: true` when the client supplied a cursor. |
 | **`sentinel` routine target** | Reserved for AIP-41 `schedule.kind: event` binding; not yet implemented. |
 | **Per-principal multi-tenant identity** | v1 principal is `"daemon-bearer"` or `session:<sessionId>`. Auth-profile plumbing is W-F. |
 
@@ -111,7 +111,7 @@ is kept in `data.legacyReason` for one release.
 | Code | Meaning |
 |---|---|
 | `-32602` | Invalid params (unknown event, bad args vs `inputSchema`) |
-| `-32015` | `CallbackEndpointError` — challenge verification failed |
+| `-32027` | `CallbackEndpointError`: challenge verification failed. `data.reason` is a `lastError` category; the pre-standard `-32015` rides in `data.legacyCode` for one release |
 | `-32016` | `BackingSubscriptionError` — a refresh could not renew the backing remote subscription. `data.reason`: `backing_subscription_expired` (remote already expired/deleted: unsubscribe and subscribe again; local state is untouched and no second remote is provisioned) or `backing_renew_failed` (transient: retry the refresh) |
 
 ## 6. Security invariants
