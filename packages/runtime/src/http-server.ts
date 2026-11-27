@@ -3124,9 +3124,7 @@ export async function startHttpServer(
         res.flushHeaders()
       }
     } catch {
-      const headFailed = new AbortController()
-      headFailed.abort()
-      signal = headFailed.signal
+      signal = AbortSignal.abort()
       res.destroy()
     }
     const send = (message: Record<string, unknown>): Promise<void> =>
