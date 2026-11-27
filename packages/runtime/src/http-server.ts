@@ -6279,7 +6279,7 @@ export async function startHttpServer(
         // entry's confirmation). Checked ahead of the `/apps/` block below so
         // it can never be swallowed by an appId's greedy match.
         if (path === "/store" && req.method === "GET") {
-          const target = normalizeStoreRedirectUrl(req.url ?? "/store")
+          const target = resolveStoreRedirectUrl(req.url ?? "/store", opts.appRegistry)
           res.writeHead(302, { location: target })
           res.end()
           return
@@ -14512,10 +14512,36 @@ const APP_UI_PAGE_RE = /^\/apps\/(.+)\/ui\/?$/
  *  either the literal-slash or the %2F-encoded spelling, and the literal one
  *  is what a browser's location bar shows for appStandaloneUrl links),
  *  preserving this request's query string verbatim. */
-export function normalizeStoreRedirectUrl(rawUrl: string): string {
+export function normalizeStoreRedirectUrl(rawUrl: string, appId: string = STORE_PANEL_APP_ID): string {
   const queryIndex = rawUrl.indexOf("?")
   const query = queryIndex >= 0 ? rawUrl.slice(queryIndex) : ""
-  return `/apps/${STORE_PANEL_APP_ID.split("/")[0]}/${STORE_PANEL_APP_ID.split("/")[1]}/ui${query}`
+  const [scope, name] = appId.split("/")
+  return `/apps/${scope}/${name}/ui${query}`
+}
+
+/** The first-party App Store app (published in the apps catalog). */
+export const INSTALLED_STORE_APP_ID = "@agentproto/app-store"
+
+/** `GET /store` target: the installed `@agentproto/app-store` app when it can
+ *  serve a page (record has a `ui`, its dir exists, and its `ui.path` bundle
+ *  exists or a `ui.build` can produce it), else the builtin panel. A record
+ *  whose bundle is gone with no way to rebuild it would only reach
+ *  `handleAppUiPage`'s error page, so the builtin panel serves instead.
+ *  The builtin stays the fallback so `/store` works on a fresh daemon, but an
+ *  installed storefront wins: otherwise a machine has two App Stores, the
+ *  builtin's plain list being the one the short url and the CLI opened. */
+export function resolveStoreRedirectUrl(
+  rawUrl: string,
+  registry: Pick<AppRegistry, "getApp"> | undefined,
+): string {
+  const installed = registry?.getApp(INSTALLED_STORE_APP_ID)
+  if (installed?.ui && existsSync(installed.dir)) {
+    const bundle = isAbsolute(installed.ui.path) ? installed.ui.path : join(installed.dir, installed.ui.path)
+    if (existsSync(bundle) || installed.ui.build !== undefined) {
+      return normalizeStoreRedirectUrl(rawUrl, INSTALLED_STORE_APP_ID)
+    }
+  }
+  return normalizeStoreRedirectUrl(rawUrl)
 }
 /** `GET /apps/:appId/ui/assets/:file` — `:file` is captured raw and
  *  validated by `isValidAppUiAssetName` (a bad name is a 404, never a path). */

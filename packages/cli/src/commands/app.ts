@@ -820,7 +820,9 @@ export async function runAppUpdate(args: readonly string[]): Promise<number> {
   return failed > 0 ? 1 : 0
 }
 
-/** `agentproto app store [--print]` — open the daemon's App Store panel. */
+/** `agentproto app store [--print]` — open the daemon's App Store: `/store`,
+ *  which lands on the installed `@agentproto/app-store` app when it can serve
+ *  a page, else on the builtin panel. */
 export async function runAppStore(args: readonly string[]): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
