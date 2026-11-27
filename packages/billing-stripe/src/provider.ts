@@ -9,8 +9,8 @@
  */
 import { assertKeyMatchesMode, railMode, type BillingHandle, type CreateProviderContext, type RailFact, type RailMode, type SettlementCapabilities, type SettlementProvider, type WebhookRequest } from "@agentproto/billing"
 import { STRIPE_API_VERSION } from "./api-version.js"
-import { accountProblem, createStripeCheckout, createStripePortalSession, refundStripePayment, type CallContext } from "./calls.js"
-import { applyStripeCatalog, toStripeCatalog, type StripeCatalog, type StripeTaxBehavior } from "./catalog.js"
+import { accountProblem, createStripeCheckout, createStripePortalSession, isStripeError, refundStripePayment, safeStripeError, type CallContext } from "./calls.js"
+import { applyStripeCatalog, stripeRailOf, toStripeCatalog, type StripeCatalog, type StripeTaxBehavior } from "./catalog.js"
 import type { StripeEventLike, StripeLike } from "./client.js"
 import { DEFAULT_TOLERANCE_SEC, signatureHeader, verifyStripeSignature } from "./signature.js"
 import { eventToFact } from "./translate.js"
@@ -132,6 +132,12 @@ export function createStripeProvider(cfg: StripeProviderConfig): SettlementProvi
   const client = cfg.client
   const onUnhandled = cfg.onUnhandled
   const expected = cfg.expectAccount?.[mode]
+  // The facts, movements and refunds of this version all name the rail 'stripe':
+  // a manifest rail of another id would sync its catalog, then refuse every payment.
+  const servedRail = stripeRailOf(cfg.manifest, cfg.rail)
+  if (servedRail !== STRIPE_RAIL) {
+    throw new Error(`billing-stripe: the manifest rail served by this provider must have the id '${STRIPE_RAIL}' (got '${servedRail}'); other rail ids are not supported yet`)
+  }
   // Pure, computed once; throws now when the manifest has no Stripe rail.
   const catalog: StripeCatalog = toStripeCatalog(cfg.manifest, {
     ...(cfg.rail !== undefined ? { rail: cfg.rail } : {}),
@@ -172,6 +178,16 @@ export function createStripeProvider(cfg: StripeProviderConfig): SettlementProvi
     return null
   }
 
+  // An error from Stripe itself may quote the key: it leaves as text without any
+  // credential (safeStripeError). A refusal made here, before any call, is kept as is.
+  const masked = async <T,>(op: string, run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run()
+    } catch (e) {
+      throw isStripeError(e) ? new Error(`stripe ${op}: ${safeStripeError(e, [secretKey, webhookSecret])}`) : e
+    }
+  }
+
   const provider: SettlementProvider = {
     id: STRIPE_RAIL,
     name: "Stripe",
@@ -208,8 +224,8 @@ export function createStripeProvider(cfg: StripeProviderConfig): SettlementProvi
       return eventToFact(event, translate)
     },
     refund: (movement, amountMinor, ref) => refundStripePayment(calls, movement, amountMinor, ref),
-    createCheckout: req => createStripeCheckout(calls, req),
-    createPortalSession: req => createStripePortalSession(calls, req),
+    createCheckout: req => masked("checkout", () => createStripeCheckout(calls, req)),
+    createPortalSession: req => masked("portal", () => createStripePortalSession(calls, req)),
     async syncCatalog(manifest, opts = {}) {
       const target =
         manifest === cfg.manifest
@@ -219,7 +235,7 @@ export function createStripeProvider(cfg: StripeProviderConfig): SettlementProvi
               ...(cfg.automaticTax ? { taxBehavior: cfg.automaticTax.taxBehavior } : {}),
               ...(cfg.offerNamespace !== undefined ? { offerNamespace: cfg.offerNamespace } : {}),
             })
-      return applyStripeCatalog(client, target, opts)
+      return masked("catalog sync", () => applyStripeCatalog(client, target, opts))
     },
   }
   return provider

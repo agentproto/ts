@@ -4,7 +4,7 @@ import { safeStripeError } from "../calls.js"
 import { applyStripeCatalog, toStripeCatalog, trialDaysOf } from "../catalog.js"
 import { createStripeProvider } from "../provider.js"
 import { CALL_RULES } from "./call-rules.js"
-import { SHOP_ORIGIN, makeKit } from "./kit.js"
+import { FakeStripeError, SHOP_ORIGIN, makeKit } from "./kit.js"
 import { STRIPE_REFERENCE_MANIFEST } from "./manifest.js"
 import { createNaiveCallsProvider } from "./naive-calls.js"
 
@@ -238,5 +238,48 @@ describe("construction", () => {
     const kit = makeKit()
     expect(await createStripeProvider(kit.config({ expectAccount: { live: "acct_1Ex0Live0001" } })).check!()).toEqual({ ok: true })
     expect(kit.client.log).toEqual([])
+  })
+})
+
+describe("review follow-ups", () => {
+  it("a manifest rail of another id than 'stripe' is refused at construction, not at the first payment", () => {
+    const kit = makeKit()
+    const eu = loadBillingManifest(STRIPE_REFERENCE_MANIFEST.replace("- { id: stripe, productTag: reference }", "- { id: stripe-eu, provider: stripe, productTag: reference }").replaceAll("rail: stripe", "rail: stripe-eu"), { strategies: [] })
+    expect(() => createStripeProvider({ ...kit.config(), manifest: eu })).toThrow(/must have the id 'stripe' \(got 'stripe-eu'\)/)
+  })
+  it("an error from Stripe in checkout, portal or catalog sync leaves without the key; a local refusal is kept as is", async () => {
+    const kit = makeKit()
+    const provider = createStripeProvider(kit.config())
+    await provider.syncCatalog!(kit.manifest)
+    const authError = () => new FakeStripeError(`Invalid API Key provided: ${kit.secretKey}`, "StripeAuthenticationError", undefined, 401, { message: kit.secretKey })
+    const c = kit.client as unknown as { checkout: { sessions: { create: unknown } }; billingPortal: { sessions: { create: unknown } }; products: { list: unknown } }
+    c.checkout.sessions.create = async () => { throw authError() }
+    c.billingPortal.sessions.create = async () => { throw authError() }
+    c.products.list = async () => { throw authError() }
+    const ok = `${SHOP_ORIGIN}/back`
+    const runs: [string, () => Promise<unknown>][] = [
+      ["checkout", () => provider.createCheckout!({ offerId: "pack-20", owner: { orgId: "acme" }, accountId: "acme", successUrl: ok, cancelUrl: ok })],
+      ["portal", () => provider.createPortalSession!({ owner: { orgId: "acme" }, accountId: "acme", returnUrl: ok, payer: { ref: "cus_1Ex0Customer0001" } })],
+      ["catalog sync", () => provider.syncCatalog!(kit.manifest)],
+    ]
+    for (const [op, run] of runs) {
+      const e = await run().then(() => null, (err: unknown) => err as Error)
+      expect(e, op).toBeInstanceOf(Error)
+      expect(e!.message).toMatch(new RegExp(`^stripe ${op}: StripeAuthenticationError: Invalid API Key provided: \\[redacted`))
+      expect(JSON.stringify({ message: e!.message, ...e })).not.toContain(kit.secretKey)
+    }
+    await expect(provider.createCheckout!({ offerId: "nope", owner: { orgId: "acme" }, accountId: "acme", successUrl: ok, cancelUrl: ok })).rejects.toThrow(/nope/)
+  })
+  it("a price whose metadata drifted from the projection is replaced, not reported unchanged", async () => {
+    const kit = makeKit()
+    const provider = createStripeProvider(kit.config())
+    await provider.syncCatalog!(kit.manifest)
+    const price = [...kit.client.pricesById.values()].find(p => p.lookup_key === "reference:pack-20")!
+    price.metadata = {}
+    const report = await provider.syncCatalog!(kit.manifest)
+    expect(report.updated).toEqual(["pack-20"])
+    const now = [...kit.client.pricesById.values()].find(p => p.lookup_key === "reference:pack-20")!
+    expect(now.id === price.id).toBe(false)
+    expect(now.metadata).toMatchObject({ agentproto_offer: "pack-20" })
   })
 })

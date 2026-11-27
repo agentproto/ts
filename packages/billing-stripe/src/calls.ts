@@ -29,6 +29,16 @@ export function safeStripeError(e: unknown, secrets: readonly string[]): string 
   return text.length > 300 ? `${text.slice(0, 300)}...` : text
 }
 
+/**
+ * An error raised by the Stripe SDK or the API (it carries a `statusCode`, a
+ * `raw` body or a `Stripe...` type), as opposed to a refusal made before any call.
+ */
+export function isStripeError(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false
+  const err = e as { statusCode?: unknown; raw?: unknown; type?: unknown }
+  return typeof err.statusCode === "number" || (typeof err.raw === "object" && err.raw !== null) || (typeof err.type === "string" && err.type.startsWith("Stripe"))
+}
+
 export interface CallContext {
   rail: string
   client: StripeLike

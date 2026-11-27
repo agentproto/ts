@@ -186,7 +186,8 @@ export function priceMatches(have: StripePriceLike, want: StripeCatalogPrice): b
   const r = have.recurring
   if (want.recurring === undefined ? r !== null && r !== undefined : !r || r.interval !== want.recurring.interval || r.interval_count !== want.recurring.interval_count) return false
   if (want.taxBehavior !== undefined && have.tax_behavior !== want.taxBehavior) return false
-  return true
+  // A price is immutable: metadata of an older projection is only refreshed by a new price.
+  return Object.entries(want.metadata).every(([k, v]) => have.metadata?.[k] === v)
 }
 
 function productMatches(have: StripeProductLike, want: StripeCatalogProduct): boolean {
