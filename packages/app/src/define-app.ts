@@ -40,6 +40,7 @@ import type {
   WorkspaceInput,
 } from "./types.js"
 import { refKey } from "./refs.js"
+import { boundariesError } from "./boundaries.js"
 import { emitApp } from "./emit.js"
 import { normalizeManifestFields } from "./manifest-fields.js"
 import { validateExposedToolsAgainstBundle } from "./exposed-tools.js"
@@ -259,7 +260,16 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     : undefined
   const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
   const data = def.data ? Object.freeze({ ...def.data }) : undefined
-  const boundaries = def.boundaries ? Object.freeze({ ...def.boundaries }) : undefined
+  if (def.boundaries !== undefined) {
+    const err = boundariesError(def.boundaries)
+    if (err !== undefined) throw new AppDefinitionError(err)
+  }
+  const boundaries = def.boundaries
+    ? Object.freeze({
+        ...def.boundaries,
+        ...(def.boundaries.hostReads ? { hostReads: Object.freeze([...def.boundaries.hostReads]) } : {}),
+      })
+    : undefined
   const category = def.category
 
   validateAttachment(agents, workflows)

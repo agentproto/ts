@@ -651,6 +651,15 @@ export interface AppAccepts {
  */
 export interface AppBoundariesDefinition {
   readonly enforce?: "required" | "best-effort"
+  /**
+   * Paths in the app's own host repo (the git repo whose working tree holds
+   * the app dir) that its sessions may READ: a sibling package's built CLI,
+   * a shared folder. Relative to the host repo root, no `..` segment. The
+   * daemon resolves symlinks and refuses any entry that lands outside the
+   * host repo; secret files inside an entry (`.env`, keys) stay masked.
+   * Never writable. Ignored when the app is not installed inside a git repo.
+   */
+  readonly hostReads?: readonly string[]
 }
 
 /**

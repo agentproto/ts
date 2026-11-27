@@ -433,7 +433,51 @@ For every such session the daemon builds one **boundary** with three zones:
 | --- | --- | --- |
 | read-only | the installed app dir (source, `.agentproto/`, `scripts/`) | read |
 | writable | the app's `data/` dir, and the workflow run's `$run.workspace` (`app_run` has no run workspace: writable is `data/` only) | read + write |
-| everything else | including the daemon's own workspace and any host monorepo the app happens to be installed inside | denied |
+| host repo config | when the app dir sits inside a git repo: that repo's root `.git`, `.gitignore`, `.claude/`, `.codex/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md` (so git, rg and the harness's own project settings and hooks work from the app dir) | read |
+| declared host reads | `boundaries.hostReads` (below) | read |
+| everything else | including the daemon's own workspace and the rest of the working tree of any host monorepo the app happens to be installed inside (committed content stays reachable through the readable `.git`, see below) | denied |
+
+Where an app puts its harness settings: Claude Code reads
+`.claude/settings.json` from the session's working directory only, so an
+app's own settings (hooks, permission rules) belong in
+`<app dir>/.claude/settings.json`; a step whose cwd is the app dir loads
+them. `.claude/settings.local.json` is read from the cwd and from the git
+root, so the host repo's local file applies too (read-only). A step whose cwd
+is `$run.workspace` sits outside any repo and loads no project settings.
+
+Secret files inside a readable host path (`.env`, `.env.local`, keys,
+`credentials.json`) stay masked from reads and writes.
+
+An app that calls code elsewhere in its own repo (a sibling package's built
+CLI, a shared folder) declares those paths, relative to the host repo root:
+
+```yaml
+# /repo/apps/my-app/APP.md
+boundaries:
+  enforce: best-effort
+  hostReads:
+    - packages/other-tool/packages/cli/dist
+    - apps/_shared
+```
+
+Each entry is read-only. The daemon resolves symlinks and refuses (with a
+logged warning) any entry that lands outside the host repo, that names the
+whole repo, or that does not exist; an absolute, `..`, `.` or
+whitespace-padded entry fails the manifest load. `hostReads` only ever opens
+paths in the repo that already contains the app, and is ignored when the app
+is not inside a git repo.
+
+**What stays hidden, precisely.** The `hidden` zone and `hostReads` gate the
+host repo's *working tree*. Because `.git` is readable (git and rg need it),
+a session can read everything **committed** to the host repo through git
+(`git show HEAD:<path>`, `git cat-file`), including paths no `hostReads`
+names. Uncommitted and git-ignored files stay hidden. Do not rely on the
+boundary to keep committed content of the host repo confidential from an
+app installed inside it. The host repo's `.git/config` is masked when it
+embeds credentials (an http(s) remote URL with userinfo, or an
+`extraheader`); git then cannot run in that repo from the session, and the
+daemon logs a warning. Keep credentials in a credential helper, not in the
+repo config.
 
 The boundary is enforced on two independent surfaces:
 

@@ -8,6 +8,17 @@
  *   hidden    host trees that must not be readable even though the OS
  *             sandbox alone would allow them (the daemon workspace, the host
  *             monorepo the app happens to be installed inside)
+ *   hostConfig  project config at the root of that host repo (`.git`,
+ *             `.gitignore`, `.claude/`, `.codex/`, `.mcp.json`, `CLAUDE.md`,
+ *             `AGENTS.md`),
+ *             re-opened READ-ONLY inside the hidden tree for every app: git,
+ *             rg and the harnesses walk up to the repo root to load it, and an
+ *             unreadable settings file makes a harness start without the
+ *             project's hooks and permission rules
+ *   hostReads paths the app declares in `boundaries.hostReads` (relative to
+ *             the host repo root: a sibling package's built CLI, a shared
+ *             folder), re-opened READ-ONLY; refused when they resolve outside
+ *             the host repo
  *   else      denied
  *
  * One `AppBoundary` value drives every enforcement surface:
@@ -20,10 +31,10 @@
  *     `callerSessionId`, and children/restarts inherit it.
  */
 
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { canonicalizePath, resolveCommandSandbox, type SandboxMode } from "@agentproto/command-sandbox"
-import { findSecretsInTree } from "./app-read-grants.js"
+import { findSecretsInTree, isSecretFileName } from "./app-read-grants.js"
 
 export const APP_BOUNDARY_META_KEY = "appBoundary"
 
@@ -43,6 +54,101 @@ export interface AppBoundary {
   /** Secret files/dirs inside a read grant, denied for read and write even
    *  though their parent is readable. Absent = none. */
   readonly unreadable?: readonly string[]
+  /** Project config files/dirs at the root of a hidden host repo, re-opened
+   *  read-only (a subset of `readOnly`, kept apart for audit). Absent = none.
+   *  See {@link HOST_REPO_CONFIG_ENTRIES}. */
+  readonly hostConfig?: readonly string[]
+  /** Paths the app declared in `boundaries.hostReads` that resolved inside
+   *  its host repo, re-opened read-only (a subset of `readOnly`, kept apart
+   *  for audit). Absent = none. */
+  readonly hostReads?: readonly string[]
+}
+
+/**
+ * Entries at the root of a hidden host repo that tools load as project
+ * config and that stay readable (never writable) for every app session:
+ *   - git and rg walk up to `.git` (and read `.gitignore`) from any subdir,
+ *     so `git status/log/ls-files` and `rg` work from the app dir;
+ *   - Claude Code (checked on 2.1.x, cwd = the app dir inside a repo) reads
+ *     `.claude/settings.json` from `cwd` only, but `.claude/settings.local.json`
+ *     from `cwd` AND the git root (an EPERM there is the "Settings file could
+ *     not be read" startup error), lists the root `.claude/commands/` and
+ *     `.claude/agents/`, reads the root `.mcp.json` (project MCP scope), and
+ *     probes `CLAUDE.md` / `AGENTS.md` in every ancestor;
+ *   - Codex reads the project `.codex/` and the `AGENTS.md` chain from the
+ *     git root down to `cwd`.
+ * Loading instructions into context is a separate switch
+ * (`isolateHostContext`): a readable `CLAUDE.md` is still excluded from the
+ * session's context when the harness supports that.
+ */
+export const HOST_REPO_CONFIG_ENTRIES: readonly string[] = [
+  ".git",
+  ".gitignore",
+  ".claude",
+  ".codex",
+  ".mcp.json",
+  "CLAUDE.md",
+  "AGENTS.md",
+]
+
+function realOrUndefined(p: string): string | undefined {
+  try {
+    return realpathSync(p)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * `<repo>/<rel>` when it exists and its real path stays strictly inside the
+ * repo (a symlink to elsewhere, `..`, or the repo root itself is refused), and
+ * its name is not a conventional secret. Returns the reason otherwise.
+ */
+function insideHostRepo(repoRoot: string, realRoot: string, rel: string): { path: string } | { reason: string } {
+  const p = resolve(repoRoot, rel)
+  const real = realOrUndefined(p)
+  if (real === undefined) return { reason: "path does not exist" }
+  if (!isPathWithin(real, realRoot)) return { reason: "resolves outside the host repo" }
+  if (real === realRoot) return { reason: "refusing the whole host repo; name the paths the app needs" }
+  if (relative(realRoot, real).split("/").some(part => isSecretFileName(part))) return { reason: "refusing a secrets file" }
+  return { path: p }
+}
+
+/**
+ * True when a git `config` file embeds credentials: an http(s) URL with
+ * userinfo (`https://user:token@host`, `https://token@host`) or an
+ * `extraheader` (typically `Authorization: ...`). `ssh://git@host` and
+ * scp-style `git@host:` carry no secret and do not match.
+ */
+export function gitConfigHasCredentials(configPath: string): boolean {
+  let text: string
+  try {
+    text = readFileSync(configPath, "utf8")
+  } catch {
+    return false
+  }
+  return /https?:\/\/[^\s/@]+@/i.test(text) || /^\s*extraheader\s*=/im.test(text)
+}
+
+/** The git dirs a linked worktree's `.git` file points at (gitdir + commondir). */
+function linkedGitDirs(repoRoot: string): string[] {
+  const dotGit = join(repoRoot, ".git")
+  try {
+    if (!statSync(dotGit).isFile()) return []
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))
+    if (!m) return []
+    const gitDir = realOrUndefined(resolve(repoRoot, m[1]!.trim()))
+    if (gitDir === undefined) return []
+    const out = [gitDir]
+    const commonFile = join(gitDir, "commondir")
+    if (existsSync(commonFile)) {
+      const common = realOrUndefined(resolve(gitDir, readFileSync(commonFile, "utf8").trim()))
+      if (common !== undefined && !out.includes(common)) out.push(common)
+    }
+    return out
+  } catch {
+    return []
+  }
 }
 
 export class FsZoneError extends Error {
@@ -73,7 +179,7 @@ export interface BuildAppBoundaryInput {
     readonly appId: string
     readonly dir: string
     readonly dataDir?: string
-    readonly boundaries?: { readonly enforce?: AppBoundaryEnforce }
+    readonly boundaries?: { readonly enforce?: AppBoundaryEnforce; readonly hostReads?: readonly string[] }
   }
   /** The workflow run workspace root (`~/.agentproto/runs/<runId>/`). */
   readonly runWorkspace?: string
@@ -84,6 +190,9 @@ export interface BuildAppBoundaryInput {
   readonly readGrants?: readonly string[]
   /** The daemon's own workspace root — hidden from the session. */
   readonly daemonWorkspace?: string
+  /** Where a refused `boundaries.hostReads` entry is reported. Defaults to
+   *  `console.warn`. */
+  readonly warn?: (line: string) => void
 }
 
 /**
@@ -108,14 +217,61 @@ export function buildAppBoundary(input: BuildAppBoundaryInput): AppBoundary {
     }
   }
   const canonDir = canonicalizePath(dir)
-  const candidates = [input.daemonWorkspace, findGitToplevel(dir)]
+  const gitRoot = findGitToplevel(dir)
+  const candidates = [input.daemonWorkspace, gitRoot]
   const hidden: string[] = []
+  const hostConfig: string[] = []
+  const hostReads: string[] = []
+  const openReadOnly = (p: string, audit: string[], scan: boolean): void => {
+    if (!readOnly.includes(p)) readOnly.push(p)
+    if (!audit.includes(p)) audit.push(p)
+    // Same secret filter as operator read grants: a `.env` or key file
+    // inside a re-opened dir stays masked.
+    if (scan) for (const secret of findSecretsInTree(p)) if (!unreadable.includes(secret)) unreadable.push(secret)
+  }
   for (const c of candidates) {
     if (!c) continue
     const abs = resolve(c)
     // A hidden tree at or inside the app dir would hide the app from itself.
     if (isPathWithin(canonicalizePath(abs), canonDir)) continue
     if (!hidden.includes(abs)) hidden.push(abs)
+    // Only the repo the app lives in: that is the root git, rg and the
+    // harnesses walk up to, and the only tree `hostReads` may name.
+    if (c !== gitRoot) continue
+    const realRoot = realOrUndefined(abs)
+    if (realRoot === undefined) continue
+    const gitDirs: string[] = []
+    for (const name of HOST_REPO_CONFIG_ENTRIES) {
+      const r = insideHostRepo(abs, realRoot, name)
+      if (!("path" in r)) continue
+      // `.git` holds no conventionally named secret files and is large: not
+      // scanned. Its `config` is checked below.
+      openReadOnly(r.path, hostConfig, name !== ".git")
+      if (name === ".git") gitDirs.push(r.path)
+    }
+    for (const g of linkedGitDirs(abs)) {
+      openReadOnly(g, hostConfig, false)
+      gitDirs.push(g)
+    }
+    // git cannot run without reading `config`, so it is masked only when it
+    // carries credentials (that repo's git then fails, loudly, in the session).
+    for (const g of gitDirs) {
+      const cfg = join(g, "config")
+      if (gitConfigHasCredentials(cfg) && !unreadable.includes(cfg)) {
+        unreadable.push(cfg)
+        ;(input.warn ?? console.warn)(
+          `[app-boundary] app '${input.app.appId}': ${cfg} holds credentials (URL userinfo or extraheader); masked, so git will not run in this host repo from the session`,
+        )
+      }
+    }
+    for (const rel of input.app.boundaries?.hostReads ?? []) {
+      const r =
+        typeof rel !== "string" || rel.trim() === "" || isAbsolute(rel)
+          ? { reason: "must be a non-empty path relative to the host repo root" }
+          : insideHostRepo(abs, realRoot, rel)
+      if ("path" in r) openReadOnly(r.path, hostReads, true)
+      else (input.warn ?? console.warn)(`[app-boundary] app '${input.app.appId}': boundaries.hostReads '${String(rel)}' refused: ${r.reason}`)
+    }
   }
   return {
     appId: input.app.appId,
@@ -126,6 +282,8 @@ export function buildAppBoundary(input: BuildAppBoundaryInput): AppBoundary {
     enforce: input.app.boundaries?.enforce ?? "best-effort",
     ...(grants.length > 0 ? { readGrants: grants } : {}),
     ...(unreadable.length > 0 ? { unreadable } : {}),
+    ...(hostConfig.length > 0 ? { hostConfig } : {}),
+    ...(hostReads.length > 0 ? { hostReads } : {}),
   }
 }
 
@@ -149,7 +307,9 @@ export function boundaryFromMeta(
       !strs(v.writable) ||
       !strs(v.hidden) ||
       (v.readGrants !== undefined && !strs(v.readGrants)) ||
-      (v.unreadable !== undefined && !strs(v.unreadable))
+      (v.unreadable !== undefined && !strs(v.unreadable)) ||
+      (v.hostConfig !== undefined && !strs(v.hostConfig)) ||
+      (v.hostReads !== undefined && !strs(v.hostReads))
     ) {
       return undefined
     }
@@ -162,6 +322,8 @@ export function boundaryFromMeta(
       enforce: v.enforce === "required" ? "required" : "best-effort",
       ...(v.readGrants !== undefined ? { readGrants: v.readGrants } : {}),
       ...(v.unreadable !== undefined ? { unreadable: v.unreadable } : {}),
+      ...(v.hostConfig !== undefined ? { hostConfig: v.hostConfig } : {}),
+      ...(v.hostReads !== undefined ? { hostReads: v.hostReads } : {}),
     }
   } catch {
     return undefined
@@ -177,7 +339,9 @@ export function describeBoundary(b: AppBoundary): string {
   const ro = b.readOnly.join(", ") || "(none)"
   const rw = b.writable.join(", ") || "(none)"
   const granted = b.readGrants?.length ? `; operator-granted read-only: ${b.readGrants.join(", ")}` : ""
-  return `read-only: ${ro}; writable: ${rw}${granted}`
+  const host = b.hostConfig?.length ? `; host repo config (read-only): ${b.hostConfig.join(", ")}` : ""
+  const deps = b.hostReads?.length ? `; declared host repo reads (read-only): ${b.hostReads.join(", ")}` : ""
+  return `read-only: ${ro}; writable: ${rw}${granted}${host}${deps}`
 }
 
 function inAny(canon: string, zones: readonly string[]): boolean {

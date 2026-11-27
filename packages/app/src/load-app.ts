@@ -54,6 +54,7 @@ import type {
   AppUiDefinition,
 } from "./types.js"
 import { defineApp } from "./define-app.js"
+import { boundariesError } from "./boundaries.js"
 import { AppLoadError } from "./errors.js"
 import { loadAppBundledTools } from "./load-app-tools.js"
 import { normalizeManifestFields } from "./manifest-fields.js"
@@ -306,17 +307,8 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
     }
   }
   if (data.boundaries !== undefined) {
-    const b = data.boundaries as { enforce?: unknown } | null
-    if (
-      typeof b !== "object" ||
-      b === null ||
-      Array.isArray(b) ||
-      (b.enforce !== undefined && b.enforce !== "required" && b.enforce !== "best-effort")
-    ) {
-      throw new AppLoadError(
-        `'${appPath}': frontmatter 'boundaries' must be an object whose optional 'enforce' is "required" or "best-effort".`,
-      )
-    }
+    const err = boundariesError(data.boundaries)
+    if (err !== undefined) throw new AppLoadError(`'${appPath}': frontmatter ${err}`)
   }
   if (data.category !== undefined && (typeof data.category !== "string" || data.category.trim() === "")) {
     throw new AppLoadError(`'${appPath}': frontmatter 'category' must be a non-empty string.`)
