@@ -73,6 +73,7 @@ import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-cl
 import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
 import { STAGEBOARD_JS_PATH, serveStageboard } from "./stageboard/serve.js"
+import { enforceAccess, isLoopbackHost as isLoopbackHostName, resolveAccessToken, type ResolvedAccessToken } from "./app-serve-auth.js"
 
 // ── installed-app registry (shared with daemon's ~/.agentproto/apps.json) ──
 
@@ -119,6 +120,7 @@ const USAGE = `agentproto app serve — serve an app's UI as a standalone webapp
 
 Usage:
   agentproto app serve [appDir] [--port <n>] [--host <addr>] [--app <appId>]
+                       [--access-token-file <path>] [--insecure-no-auth]
                        [--remote-mcp-url <url>] [--remote-mcp-auth <token>]
                        [--remote-app-id <appId>] [--json]
 
@@ -162,7 +164,21 @@ Remote mode (--remote-mcp-url set):
 --host <addr>:
   Address to bind (default: 127.0.0.1 — loopback only). Pass 0.0.0.0 to
   expose on all interfaces. This is an explicit opt-in: a warning is printed
-  to stderr when a non-default address is used.
+  to stderr when a non-default address is used. Beyond loopback, the static
+  page stays open but tool calls and uploads (/__agentproto/*) need an access
+  token, as "Authorization: Bearer <token>" or the cookie a first visit with
+  ?t=<token> sets. The token comes from --access-token-file, else the
+  AGENTPROTO_APP_SERVE_TOKEN env var, else it is generated into
+  <appDir>/.agentproto/app-serve.token (mode 0600).
+
+--access-token-file <path>:
+  Read the access token from this file (created with a fresh token when
+  missing). Never pass the token itself on the command line.
+
+--insecure-no-auth:
+  Skip the access token on a non-loopback bind (for a setup that already
+  authenticates in front of this server). Tool calls are then open to anyone
+  who can reach the address.
 
 The served UI gets a window.McpApp bridge whose callTool forwards to the
 daemon's /mcp endpoint (http://127.0.0.1:<daemon.port>/mcp) — or, in remote
@@ -486,6 +502,8 @@ export function createAppServeRequestHandler(opts: {
   bridgeScript: string
   allowedTools: string[] | undefined
   getClient: () => Promise<Client>
+  /** When set, `/__agentproto/*` needs this token (see app-serve-auth.ts). */
+  accessToken?: string
 }): (req: IncomingMessage, res: ServerResponse) => void {
   // Encoded html/asset bodies, stamped by mtime + size (app-ui-delivery.ts).
   const representations = createRepresentationCache(64)
@@ -501,6 +519,8 @@ export function createAppServeRequestHandler(opts: {
       res.end()
       return
     }
+
+    if (opts.accessToken !== undefined && enforceAccess(req, res, opts.accessToken)) return
 
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
     if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
@@ -966,6 +986,28 @@ export function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 }
 
+/** Tell the operator how a non-loopback serve is protected (never prints the token). */
+function reportAccess(access: ResolvedAccessToken, listenHost: string): void {
+  if (access.source === "none") {
+    if (!isLoopbackHostName(listenHost)) {
+      process.stderr.write(
+        `agentproto app serve: --insecure-no-auth: tool calls on ${listenHost} are open to anyone who can reach it.\n`,
+      )
+    }
+    return
+  }
+  if (access.source === "generated") {
+    process.stderr.write(
+      `agentproto app serve: tool calls and uploads need an access token; one was generated in ${access.file} ` +
+        `(mode 0600). Open the page once with ?t=<token>, or send it as "Authorization: Bearer <token>".\n`,
+    )
+  } else {
+    process.stderr.write(
+      `agentproto app serve: tool calls and uploads need an access token (from ${access.source === "env" ? "AGENTPROTO_APP_SERVE_TOKEN" : access.file}).\n`,
+    )
+  }
+}
+
 /** Parse `--port <n>`: a validated port number, `undefined` when absent, or a
  *  message when invalid (caller prints it). */
 function parsePortOpt(port: string | undefined): number | undefined | string {
@@ -999,6 +1041,8 @@ async function runAppServeRemote(
     "remote-mcp-url"?: string
     "remote-mcp-auth"?: string
     "remote-app-id"?: string
+    "access-token-file"?: string
+    "insecure-no-auth"?: boolean
   },
   remote: RemoteMcpTarget,
   positionals: readonly string[],
@@ -1030,6 +1074,14 @@ async function runAppServeRemote(
     process.stderr.write(`agentproto app serve: ${parsedPort}\n`)
     return 2
   }
+
+  const access = await resolveAccessToken({
+    host: listenHost,
+    ...(looseString(values["access-token-file"]) !== undefined ? { tokenFile: looseString(values["access-token-file"])! } : {}),
+    insecureNoAuth: values["insecure-no-auth"] === true,
+    defaultFile: join(process.cwd(), ".agentproto", "app-serve.token"),
+  })
+  reportAccess(access, listenHost)
 
   const getClient = createDaemonMcpClientGetter(remote.url, "agentproto-app-serve", {
     authToken: remote.authToken,
@@ -1071,6 +1123,8 @@ async function runAppServeRemote(
       res.end()
       return
     }
+
+    if (access.token !== undefined && enforceAccess(req, res, access.token)) return
 
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/"
     if (req.method === "POST" && urlPath === TOOL_CALL_PATH) {
@@ -1151,6 +1205,8 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
       "remote-mcp-url": { type: "string" },
       "remote-mcp-auth": { type: "string" },
       "remote-app-id": { type: "string" },
+      "access-token-file": { type: "string" },
+      "insecure-no-auth": { type: "boolean" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -1171,6 +1227,8 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
         "remote-mcp-url"?: string
         "remote-mcp-auth"?: string
         "remote-app-id"?: string
+        "access-token-file"?: string
+        "insecure-no-auth"?: boolean
       },
       remote,
       positionals,
@@ -1203,6 +1261,16 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
         `tool-call bridge beyond loopback. Make sure this is intentional.\n`,
     )
   }
+
+  // Beyond loopback, tool calls and uploads need an access token (the static
+  // shell stays open) — see app-serve-auth.ts.
+  const access = await resolveAccessToken({
+    host: listenHost,
+    ...(typeof values["access-token-file"] === "string" ? { tokenFile: resolve(process.cwd(), expandHome(values["access-token-file"])) } : {}),
+    insecureNoAuth: values["insecure-no-auth"] === true,
+    defaultFile: join(appDir, ".agentproto", "app-serve.token"),
+  })
+  reportAccess(access, listenHost)
 
   // 1. Require a valid .agentproto/APP.md, then resolve the UI root the same
   // way app_install does (APP.md frontmatter ui.path, falling back to the
@@ -1289,6 +1357,7 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
       bridgeScript,
       allowedTools,
       getClient,
+      ...(access.token !== undefined ? { accessToken: access.token } : {}),
     }),
   )
 
