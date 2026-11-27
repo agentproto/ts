@@ -2,7 +2,8 @@
  * The payment path of AIP-74: check, fact, effect, trace.
  *
  *   rail event -> verifyWebhook -> PaymentFact
- *   1. CHECK   offer, rail, currency, amount against the price
+ *   1. CHECK   offer, rail, currency, amount against the price (net of an
+ *              exclusive tax, plus an allowed discount; zero only for a trial)
  *   2. FACT    mint the fiat amount, cause = movement
  *   3. EFFECT  by price.model: prepaid-pool converts (plus bonus lot),
  *              one-time burns the fiat and gives `includes` once,
@@ -12,12 +13,18 @@
  * Steps 1 to 3 are ONE `StoragePort.commit` (rule 3). A failed check writes the
  * fiat mint alone: the money was received, so its lot stays open and is listed
  * as owed (rule 4), never dropped.
+ *
+ * A replay is decided on the EFFECT, not on the fiat mint: a payment listed as
+ * owed because its first fact was incomplete (no offer, say) is completed once
+ * by a valid fact of the same movement, same amount and same currency. A fact
+ * of the same movement with another amount or currency writes nothing and is
+ * returned as a `conflict`, for an alert.
  */
 import { fold, meet, type Lot, type Restriction } from "@agentproto/wallet"
 import type { StoragePort } from "@agentproto/wallet/ports"
 import type { BillingHandle } from "./define-billing-manifest.js"
 import type { Offer } from "./types.js"
-import { addDuration, convertMinor, fiatPartition, isFiatRef, normalizeCurrency } from "./model.js"
+import { addDuration, convertMinor, fiatPartition, isFiatRef, normalizeCurrency, normalizeRef } from "./model.js"
 import type { BillingDeps, CauseEvent, PeriodRecord } from "./ports.js"
 import { dropEvents, graceMsOf, periodBounds, dueDrops } from "./periods.js"
 import type { PaymentFact } from "./settlement.js"
@@ -26,8 +33,17 @@ export type PaymentOutcome =
   | { status: "applied"; movement: string; events: CauseEvent[] }
   | { status: "replayed"; movement: string }
   | { status: "refused"; movement: string; reason: string; owedMinor: number; currency: string }
+  | {
+      status: "conflict"
+      movement: string
+      /** What the journal holds for this movement. */
+      recorded: { amountMinor: number; currency: string }
+      /** What the new fact says. Nothing of it was written. */
+      received: { amountMinor: number; currency: string }
+    }
 
-export type CheckResult = { ok: true; offer: Offer } | { ok: false; reason: string }
+/** `trial`: a zero payment that opens the offer's trial period. */
+export type CheckResult = { ok: true; offer: Offer; trial?: true } | { ok: false; reason: string }
 
 /** The account a payment lands on: the values of `payer.owner`, in order (rule 20). */
 export function accountIdFor(manifest: BillingHandle, owner: Record<string, string>): string {
@@ -50,14 +66,24 @@ export function checkPayment(manifest: BillingHandle, fact: PaymentFact): CheckR
   if (normalizeCurrency(fact.currency) !== normalizeCurrency(price.currency)) {
     return { ok: false, reason: `currency ${fact.currency} differs from the price currency ${price.currency}` }
   }
-  if (!Number.isInteger(fact.amountMinor) || fact.amountMinor <= 0) return { ok: false, reason: "amount is not a positive integer" }
+  if (!Number.isInteger(fact.amountMinor) || fact.amountMinor < 0) return { ok: false, reason: "amount is not a non-negative integer" }
   if (!Number.isInteger(fact.taxMinor) || fact.taxMinor < 0 || fact.taxMinor > fact.amountMinor) return { ok: false, reason: "tax is out of range" }
+  const discount = fact.discountMinor ?? 0
+  if (!Number.isInteger(discount) || discount < 0) return { ok: false, reason: "discount is not a non-negative integer" }
+  if (discount > 0 && offer.discounts !== "allow") return { ok: false, reason: `offer '${offer.id}' does not accept a discount` }
+  if (fact.amountMinor === 0 && discount === 0) {
+    // A zero payment with no discount is a trial, or nothing.
+    if (price.model === "subscription" && offer.subscription?.trial !== undefined) return { ok: true, offer, trial: true }
+    return { ok: false, reason: "a zero payment is only accepted on an offer with a trial" }
+  }
+  // The price this payment stands for: the paid amount net of a tax added on top, plus the discount.
+  const listed = fact.amountMinor - (fact.taxBehavior === "exclusive" ? fact.taxMinor : 0) + discount
   if (price.amountMinor === "buyer") {
     const { minMinor, maxMinor } = price as { minMinor?: number; maxMinor?: number }
-    if (minMinor !== undefined && fact.amountMinor < minMinor) return { ok: false, reason: `amount ${fact.amountMinor} is under the minimum ${minMinor}` }
-    if (maxMinor !== undefined && fact.amountMinor > maxMinor) return { ok: false, reason: `amount ${fact.amountMinor} is over the maximum ${maxMinor}` }
-  } else if (fact.amountMinor !== price.amountMinor) {
-    return { ok: false, reason: `amount ${fact.amountMinor} differs from the price ${price.amountMinor}` }
+    if (minMinor !== undefined && listed < minMinor) return { ok: false, reason: `amount ${listed} is under the minimum ${minMinor}` }
+    if (maxMinor !== undefined && listed > maxMinor) return { ok: false, reason: `amount ${listed} is over the maximum ${maxMinor}` }
+  } else if (listed !== price.amountMinor) {
+    return { ok: false, reason: `amount ${listed} differs from the price ${price.amountMinor}` }
   }
   if (price.model === "prepaid-pool") {
     const c = offer.convert ? manifest.derived.conversions.get(offer.convert) : undefined
@@ -216,8 +242,10 @@ export function planPayment(
     return { check, events, access: { features } }
   }
 
-  // subscription
-  const { startAt, endAt } = periodBounds(offer, fact.paidAt, continuesAt)
+  // subscription. A trial period runs for the offer's `trial` from the payment, then the first paid period continues it.
+  const { startAt, endAt } = check.trial
+    ? { startAt: continuesAt ?? fact.paidAt, endAt: addDuration(continuesAt ?? fact.paidAt, offer.subscription!.trial!) }
+    : periodBounds(offer, fact.paidAt, continuesAt)
   const price = offer.price as Extract<Offer["price"], { model: "subscription" }>
   const period: PeriodRecord = {
     id: m,
@@ -230,6 +258,7 @@ export function planPayment(
     status: "active",
     given: [],
     features: (offer.includes ?? []).filter(i => !("amountMinor" in i)).map(i => i.feature),
+    ...(check.trial ? { trial: true } : {}),
   }
   const due = dueDrops(period, fact.paidAt)
   for (const d of due) events.push(...dropEvents(manifest, offer, period, d))
@@ -251,7 +280,10 @@ export function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next as Promise<T>
 }
 
-/** Apply a verified payment, once (rules 1 to 5). A replay writes nothing. */
+/**
+ * Apply a verified payment, once (rules 1 to 5). A replay writes nothing; a
+ * refused payment is completed by the first valid fact of the same movement.
+ */
 export async function applyPayment(deps: BillingDeps, fact: PaymentFact): Promise<PaymentOutcome> {
   const { manifest } = deps
   let accountId: string
@@ -261,14 +293,27 @@ export async function applyPayment(deps: BillingDeps, fact: PaymentFact): Promis
     return { status: "refused", movement: fact.movement, reason: (e as Error).message, owedMinor: fact.amountMinor, currency: fact.currency }
   }
   return serial(`payment:${fact.movement}`, async () => {
-    const journal = await deps.storage.loadEvents(accountId)
-    const replay = journal.some(e => e.id === `${fact.movement}:fiat`)
+    const m = fact.movement
+    const journal = (await deps.storage.loadEvents(accountId)) as CauseEvent[]
+    const fiat = journal.find(e => e.id === `${m}:fiat`)
+    if (fiat) {
+      const recorded = { amountMinor: fiat.amount, currency: normalizeRef(fiat.asset) }
+      const received = { amountMinor: fact.amountMinor, currency: normalizeCurrency(fact.currency) }
+      if (recorded.amountMinor !== received.amountMinor || recorded.currency !== received.currency) {
+        return { status: "conflict", movement: m, recorded, received } as PaymentOutcome
+      }
+    }
+    // The effect is every entry of the movement past its fiat mint (conversion, burn, includes).
+    const effectDone = journal.some(e => e.cause === m && e.id !== `${m}:fiat`)
     // A renewal continues the open period of the same offer, so the periods chain without a gap.
     const prior = (await deps.state.listPeriods({ accountId, offerId: fact.offerId }))
       .filter(p => p.status !== "closed" && p.id !== fact.movement)
       .sort((a, b) => b.endAt - a.endAt)[0]
     const plan = planPayment(manifest, fact, accountId, prior && prior.endAt + prior.graceMs > fact.paidAt ? prior.endAt : undefined)
-    if (!replay) await deps.storage.commit(accountId, plan.events)
+    // Nothing more to write once the effect is there, or while the facts stay incomplete.
+    const replay = effectDone || (fiat !== undefined && !plan.check.ok)
+    const toWrite = fiat ? plan.events.filter(e => e.id !== fiat.id) : plan.events
+    if (!replay) await deps.storage.commit(accountId, toWrite)
     // State follows the commit and is idempotent by id, so a crash between the two is repaired by a replay.
     await deps.state.putPayment(fact.movement, accountId)
     if (plan.check.ok) {
@@ -284,7 +329,7 @@ export async function applyPayment(deps: BillingDeps, fact: PaymentFact): Promis
     if (!plan.check.ok) {
       return { status: "refused", movement: fact.movement, reason: plan.check.reason, owedMinor: fact.amountMinor, currency: normalizeCurrency(fact.currency) } as PaymentOutcome
     }
-    return { status: "applied", movement: fact.movement, events: plan.events } as PaymentOutcome
+    return { status: "applied", movement: fact.movement, events: toWrite } as PaymentOutcome
   })
 }
 

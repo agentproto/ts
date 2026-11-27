@@ -171,9 +171,10 @@ const offer = z
     id: z.string().regex(/^[a-z][a-z0-9_-]*$/),
     price,
     convert: id.optional(),
+    discounts: z.enum(["allow", "refuse"]).optional(),
     includes: z.array(include).optional(),
     subscription: z
-      .object({ anchor: z.enum(["payment", "calendar"]), grace: duration.optional(), onUpgrade: z.enum(["none", "prorate"]) })
+      .object({ anchor: z.enum(["payment", "calendar"]), grace: duration.optional(), onUpgrade: z.enum(["none", "prorate"]), trial: duration.optional() })
       .strict()
       .optional(),
     rail: z

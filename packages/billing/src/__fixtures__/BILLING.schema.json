@@ -427,6 +427,10 @@
           "$ref": "#/$defs/id",
           "description": "prepaid-pool only: the conversion the payment runs."
         },
+        "discounts": {
+          "enum": ["allow", "refuse"],
+          "description": "Whether a payment may carry a discount (coupon, promotion code): amount plus discount then equals the price. Absent means refuse."
+        },
         "includes": {
           "type": "array",
           "items": { "$ref": "#/$defs/include" },
@@ -443,7 +447,11 @@
               "description": "When the period's includes are given: at the payment date, or at the calendar period boundary."
             },
             "grace": { "$ref": "#/$defs/duration" },
-            "onUpgrade": { "enum": ["none", "prorate"] }
+            "onUpgrade": { "enum": ["none", "prorate"] },
+            "trial": {
+              "$ref": "#/$defs/duration",
+              "description": "A free first period of this length: a zero payment opens it with the features and includes of the offer. Absent means a zero payment is refused."
+            }
           }
         },
         "rail": {
