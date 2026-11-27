@@ -187,7 +187,12 @@ export async function openEventsStream(input: EventsStreamInput, ctx: EventsStre
     } catch (err) {
       if (err instanceof PollLeaseError) {
         if (err.kind === "exhausted") {
-          throw new McpEventsError(EVENTS_ERR.resourceExhausted, `ResourceExhausted: ${err.message}`, { limit: "watches" })
+          // Same pool and same data as `events/poll` (`adapter.ts`): one name for the shared watch limit.
+          throw new McpEventsError(EVENTS_ERR.resourceExhausted, `ResourceExhausted: ${err.message}`, {
+            reason: "poll_watch_quota",
+            limit: "pollWatches",
+            ...(err.max !== undefined ? { max: err.max } : {}),
+          })
         }
         if (err.kind === "unsupported") {
           throw new McpEventsError(EVENTS_ERR.unsupported, `Unsupported: ${err.message}`, { feature: "provider", value: mapped.providerSlug })
