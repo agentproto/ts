@@ -127,6 +127,8 @@ interface AppFrontmatter {
   readonly externalReadRoots?: readonly string[]
   readonly boundaries?: AppBoundariesDefinition
   readonly category?: string
+  /** Raw `access`; validated by `defineApp`. */
+  readonly access?: { readonly [key: string]: unknown }
 }
 
 function resolveRef(dir: string, path: string): string {
@@ -476,6 +478,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.externalReadRoots !== undefined ? { externalReadRoots: fm.externalReadRoots } : {}),
     ...(fm.boundaries !== undefined ? { boundaries: fm.boundaries } : {}),
     ...(fm.category !== undefined ? { category: fm.category } : {}),
+    ...(fm.access !== undefined ? { access: fm.access as unknown as AppDefinition["access"] } : {}),
   })
 }
 

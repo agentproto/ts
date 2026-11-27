@@ -209,6 +209,13 @@ import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry, ForwardHttpResponse } from "./host-registry.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry, promptDeviceSession, type DevicePromptSessionsLike } from "./device-registry.js"
+import { getDeviceAccessStore, extractDeviceToken } from "./device-access.js"
+import {
+  deviceMaySessionRead,
+  deviceRoute,
+  deviceToolCallAuth,
+  handleDeviceRoute,
+} from "./device-access-http.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
@@ -218,6 +225,7 @@ import {
   appLinkSessionReadAuth,
   appLinkToolCallAuth,
   appLinkTunnelBypass,
+  SESSION_READ_RE,
   isSameOriginRequest,
   logAppLinkAccess,
 } from "./app-link-gate.js"
@@ -1620,6 +1628,8 @@ export interface RuntimeHttpServerOptions {
    *  `approvalsTelegramBotSecret`). HTTP callers are OPERATOR context,
    *  same as `/tasks` and `/policies`. Without it the routes 404. */
   approvals?: import("./approvals/engine.js").ApprovalsEngine
+  /** Where `/.well-known/assetlinks.json` is read from (default `~/.agentproto/assetlinks.json`). */
+  assetLinksPath?: string
   /** Origins allowed to decide through the `web_click` channel
    *  (`approvals.webOrigins` in config). Empty/absent ⇒ the channel is off
    *  — the decision route always 403s regardless of token. Only read when
@@ -2018,6 +2028,16 @@ export async function startHttpServer(
     if (/^\/inbound\/[^/]+$/.test(path)) return true
     if (isAppUiShellRequest(method, path)) return true
     if (method === "POST" && /^\/apps\/(.+)\/link-auth$/.test(path)) return true
+    // Device pairing (device-access-http.ts): the pairing routes authenticate
+    // themselves (an offer plus a human confirmation, or a device token).
+    if (deviceRoute(method, path) !== undefined) return true
+    // A device token reaches the tool-call route of an app (the route decides
+    // grant, revocation and origin and answers 401/403 itself), and the session
+    // reads when its grant says so.
+    if (extractDeviceToken(req) !== undefined) {
+      if (method === "POST" && /^\/apps\/(.+)\/tool-call$/.test(path)) return true
+      if (method === "GET" && SESSION_READ_RE.test(path) && deviceMaySessionRead(req)) return true
+    }
     // PARENT RELAY: the route authenticates itself with the per-session
     // relay token (short-lived, single-session-scoped, minted by this
     // daemon), exactly like `/inbound/:slug` authenticates with its own
@@ -3800,6 +3820,15 @@ export async function startHttpServer(
           return
         }
 
+        if (deviceRoute(req.method ?? "GET", path) !== undefined) {
+          await handleDeviceRoute(req, res, req.method ?? "GET", path, {
+            ...(opts.approvals ? { approvals: opts.approvals } : {}),
+            ...(opts.appRegistry ? { appRegistry: opts.appRegistry } : {}),
+            ...(opts.assetLinksPath ? { assetLinksPath: opts.assetLinksPath } : {}),
+          })
+          return
+        }
+
         if (path === "/health" && req.method === "GET") {
           handleHealth(req, res)
           return
@@ -4464,7 +4493,8 @@ export async function startHttpServer(
           // from refusing it a second time.
           const linkScreencast =
             isScreencastSessionsRoute(path) &&
-            appLinkSessionReadAuth(req, path, req.method ?? "GET", opts.appLinkKeyPath) !== undefined
+            (appLinkSessionReadAuth(req, path, req.method ?? "GET", opts.appLinkKeyPath) !== undefined ||
+              (req.method === "GET" && SESSION_READ_RE.test(path) && deviceMaySessionRead(req)))
           if (!linkScreencast && (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path))) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
@@ -6662,8 +6692,23 @@ export async function startHttpServer(
             // (app-tools.ts) is the actual enforcement; a bypass here only
             // decides whether the request reaches it at all.
             const linkAuth = appLinkToolCallAuth(req, routeAppId, opts.appLinkKeyPath)
+            // A paired device (device-access.ts): limited to the apps of its
+            // grant and, like the app's own local UI, to `ui.tools`.
+            const deviceAuth = linkAuth
+              ? ({ kind: "none" } as const)
+              : deviceToolCallAuth(req, routeAppId, {
+                  sameOrigin: isSameOriginRequest,
+                  remoteAllowed: id => opts.appRegistry!.getApp(id)?.access?.remote !== false,
+                })
+            if (deviceAuth.kind === "refused") {
+              res.writeHead(deviceAuth.status, { "content-type": "application/json", "cache-control": "no-store" })
+              res.end(JSON.stringify({ error: deviceAuth.error }))
+              return
+            }
             if (linkAuth) {
               logAppLinkAccess({ route: "tool-call", auth: linkAuth, ...(req.socket.remoteAddress ? { ip: req.socket.remoteAddress } : {}) })
+            } else if (deviceAuth.kind === "ok") {
+              // authenticated by the device token: no browser-origin or daemon-bearer gate
             } else {
               // The blob-frame widget path POSTs here from an opaque origin
               // (`Origin: null`) with `?et=` — guardBrowserOrigin itself
@@ -6675,7 +6720,7 @@ export async function startHttpServer(
             // reaches an imported tool, its AGENT.md opt-in and app grants
             // decide whether a write/approve exposed tool may run, and its
             // deny grants refuse one like the gateway does.
-            const toolCallerId = linkAuth ? undefined : resolveCallerSessionId(req)
+            const toolCallerId = linkAuth || deviceAuth.kind === "ok" ? undefined : resolveCallerSessionId(req)
             const toolCallerDesc = toolCallerId ? opts.sessions?.get(toolCallerId) : undefined
             await handleAppUiToolCall(
               req,
@@ -13761,7 +13806,7 @@ async function handleDevices(
     res.writeHead(status, { "content-type": "application/json" })
     res.end(JSON.stringify(body))
   }
-  const devices = createDeviceRegistry(registry, hostRegistry)
+  const devices = createDeviceRegistry(registry, hostRegistry, getDeviceAccessStore())
 
   if (path === "/devices" && req.method === "GET") {
     const qs = new URLSearchParams((req.url ?? "").split("?")[1] ?? "")

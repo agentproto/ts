@@ -93,7 +93,7 @@ export function appLinkToolCallAuth(
  *  prompt, the plain `/stream` line-tail, …) is deliberately excluded: the
  *  HTTP side of a link-session token reads one session, nothing else; its
  *  writes go only through the app's tool-call route and `ui.toolScope`. */
-const SESSION_READ_RE =
+export const SESSION_READ_RE =
   /^\/sessions\/([^/]+)(?:\/events\/stream|\/events|\/capabilities|\/screencast(?:\.jpg|\.mjpg)?|\/live\.mjpeg|\/live\/[^/]+\/replay\.mp4)?$/
 
 /** The three screencast spellings plus the two live relay routes
