@@ -3115,9 +3115,19 @@ export async function startHttpServer(
       return
     }
     const alive = (): boolean => !res.writableEnded && !res.destroyed
-    if (alive()) {
-      writeSseHead(res, out.headers)
-      res.flushHeaders()
+    // A head that cannot be written must not skip the stream: `open` already reserved a slot and a lease hold, and
+    // only running the stream releases them. It then runs with an aborted signal, writes nothing and releases.
+    let signal = clientGone
+    try {
+      if (alive()) {
+        writeSseHead(res, out.headers)
+        res.flushHeaders()
+      }
+    } catch {
+      const headFailed = new AbortController()
+      headFailed.abort()
+      signal = headFailed.signal
+      res.destroy()
     }
     const send = (message: Record<string, unknown>): Promise<void> =>
       new Promise<void>((resolve, reject) => {
@@ -3136,7 +3146,7 @@ export async function startHttpServer(
         res.once("close", onClose)
       })
     const stream = out.stream
-    const run = Promise.resolve().then(() => stream({ send, signal: clientGone, closing: streamsClosing.signal }))
+    const run = Promise.resolve().then(() => stream({ send, signal, closing: streamsClosing.signal }))
     openStreams.add(run)
     try {
       const outcome = await run
