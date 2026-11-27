@@ -1,0 +1,5 @@
+---
+"@agentproto/runtime": patch
+---
+
+`GET /store` (and so `agentproto app store` and the Session Chat install link) now redirects to the installed `@agentproto/app-store` app when it is installed and has a UI, instead of always opening the builtin `@agentproto/store` panel. A machine with the app installed no longer shows two different App Stores; the builtin panel stays the fallback on a fresh daemon.

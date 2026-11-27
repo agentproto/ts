@@ -8,10 +8,13 @@ surface over the same verbs the MCP tools expose, so installing an app
 agentproto serve   # then open http://127.0.0.1:<port>/store in a browser
 ```
 
-`/store` redirects to the panel's standalone UI
-(`/apps/@agentproto/store/ui`). The panel is a daemon builtin, like the
-sessions panel: nothing to install, and it always shows up under
-`app_catalog` (category `builtin`).
+`/store` redirects to the installed first-party App Store app
+(`/apps/@agentproto/app-store/ui`) when it is installed, and otherwise to the
+builtin panel's standalone UI (`/apps/@agentproto/store/ui`). The panel is a
+daemon builtin, like the sessions panel: nothing to install, the fallback on a
+fresh daemon, and it always shows up under `app_catalog` (category
+`builtin`). The builtin panel is the plain list described below; the installed
+app is the storefront.
 
 ## What the shelf shows
 
