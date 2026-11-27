@@ -340,6 +340,9 @@ export interface SpawnDefaultsConfig {
        *  agentproto provenance footer. Read per stamp, so a change takes
        *  effect without a daemon restart. Default []: stamp every repo. */
       skipRepos?: string[]
+      /** GitHub owners whose repos may carry the `gh` shim's footer (host,
+       *  cwd, session id). Any other owner's repo gets none. Default []. */
+      ownerOrgs?: string[]
     }
   }
   /** Task-ledger policy. */

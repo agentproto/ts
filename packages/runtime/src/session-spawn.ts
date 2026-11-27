@@ -435,7 +435,7 @@ import {
   ensureGhShimDir,
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
-import { loadFooterSkipRepos } from "./pr-provenance-skip.js"
+import { loadFooterOwnerOrgs, loadFooterSkipRepos } from "./pr-provenance-skip.js"
 import { prefixPrompt } from "./agent-projection.js"
 import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
@@ -1966,6 +1966,9 @@ export interface SpawnAgentSessionDeps {
    *  Defaults to `loadFooterSkipRepos` (reads the real config); tests inject
    *  a stub. */
   resolveFooterSkipRepos?: () => Promise<readonly string[]>
+  /** Resolves `defaults.prProvenance.footer.ownerOrgs`: the `gh` shim stamps
+   *  only repos under these owners. Defaults to `loadFooterOwnerOrgs`. */
+  resolveFooterOwnerOrgs?: () => Promise<readonly string[]>
   /** Resolves + shapes the AGENTS.md for a spawn's `cwd` (see
    *  `agents-md.ts`): inline / pointer / absent, plus the standing cd-contract
    *  line. Defaults to the real resolver over `loadAgentsMdInlineMaxKb`'s
@@ -3279,6 +3282,7 @@ async function spawnAgentSessionOnce(
     resolveSpawnDedupe,
     resolveProvenanceWrapGh,
     resolveFooterSkipRepos,
+    resolveFooterOwnerOrgs,
     resolveAgentsMd,
     resolveWorkspaceRules,
     listCatalogModels,
@@ -6082,6 +6086,7 @@ async function spawnAgentSessionOnce(
         if (wrapGh) {
           const shimDir = await ensureGhShimDir()
           const skipRepos = await (resolveFooterSkipRepos ?? loadFooterSkipRepos)()
+          const ownerOrgs = await (resolveFooterOwnerOrgs ?? loadFooterOwnerOrgs)()
           ghProvenanceEnv = buildGhShimEnv({
             shimDir,
             basePath: process.env.PATH ?? "",
@@ -6090,6 +6095,7 @@ async function spawnAgentSessionOnce(
               ? { model: input.model ?? resolved?.defaultModel }
               : {}),
             ...(skipRepos.length > 0 ? { skipRepos } : {}),
+            ...(ownerOrgs.length > 0 ? { ownerOrgs } : {}),
           })
         }
       } catch {
