@@ -134,6 +134,7 @@ describe("prompt tickets", () => {
     await until(() => types("prompt_own").includes("started"))
     expect(types(reserved)).toEqual(["dropped"])
     expect(ledger.get(plan.taskId)?.lastStatus).toBe("cancelled")
+    expect(ledger.get(plan.taskId)?.statusMessage).toBe("the first turn ran under a different prompt")
     agent.finish()
     await until(() => types("prompt_own").includes("ended"))
     expect(types(reserved)).toEqual(["dropped"])

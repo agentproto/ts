@@ -498,7 +498,12 @@ export function createTaskProjector(opts: TaskProjectorOptions): TaskProjector {
       }
       case "dropped":
         settle(entry, "cancelled", "dropped", {
-          statusMessage: ev.cause === "answered-question" ? "the prompt answered a pending question" : "removed from the queue",
+          statusMessage:
+            ev.cause === "answered-question"
+              ? "the prompt answered a pending question"
+              : ev.cause === "superseded"
+                ? "the first turn ran under a different prompt"
+                : "removed from the queue",
         })
         return
       case "ended": {
