@@ -77,10 +77,21 @@ list.
   daemon (one per view in `subdomain` mode), not by the view.
 - **`*.sandbox.localhost` must resolve to loopback** (Chrome and Firefox do).
   Elsewhere, configure `daemon.mcpAppSandbox.mode = "port"`.
-- **`port` and `publicOrigin` modes share one origin between views.** The
-  daemon wipes that origin's storage (and, for `publicOrigin`, cookies) on every
-  document load, but two views open at the same time still share it; only the
-  default `subdomain` mode isolates them.
+- **`port` and `publicOrigin` modes share one origin between views.** Views on
+  the same origin can script each other, so `mountMcpApp` mounts only ONE view
+  per shared origin at a time (the daemon flags it with `shared: true`); any
+  other view runs in restricted mode until the first is disposed. The daemon
+  also wipes that origin's storage (and, for `publicOrigin`, cookies) on every
+  document load. Only the default `subdomain` mode gives every view its own
+  origin.
+- **Cookies are keyed by host, not port.** In `port` mode the view shares its
+  cookie jar with other local web services on that hostname (the daemon uses
+  none); in `subdomain` mode a view can set a cookie for `sandbox.localhost`
+  that other views can read. Do not rely on cookies for isolation.
+- **A same-origin page loaded into the iframe keeps its real origin.** If the
+  host page is itself served by the daemon, a daemon page that sets no
+  framing restriction would be same-origin with the host. Daemon routes that
+  serve agent-authored HTML should carry a `sandbox` CSP.
 - **Sources that could reach local services are dropped from a view's CSP**:
   loopback and private-network hosts (any spelling, any port), the host page's
   own hostname, `*`, bare `http:`/`ws:`, and `data:`/`about:`/`javascript:`.

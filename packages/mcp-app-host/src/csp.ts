@@ -24,7 +24,8 @@ export type { McpAppUiCsp }
  * escaped.
  */
 // eslint-disable-next-line no-control-regex
-const SAFE_SOURCE = /^[^\s;,'"<>\u0000-\u001f\u007f]+$/
+const SAFE_SOURCE_CHARS = /^[\u0021-\u007e]+$/
+const SAFE_SOURCE = { test: (d: string) => SAFE_SOURCE_CHARS.test(d) && !/[;,'"<>]/.test(d) }
 
 function safeSources(domains: readonly string[] | undefined): string[] {
   return (domains ?? []).filter((d) => SAFE_SOURCE.test(d))
@@ -94,6 +95,8 @@ export function buildSandboxCspHeader(
     directive("connect-src", ["'self'"], sources(csp?.connectDomains)),
     directive("frame-src", [], orNone(sources(csp?.frameDomains))),
     "object-src 'none'",
+    // Forms would otherwise POST anywhere with `Origin: null` (the sandbox allows forms).
+    "form-action 'self'",
     directive("base-uri", [], sources(csp?.baseUriDomains).length > 0 ? sources(csp?.baseUriDomains) : ["'self'"]),
     `frame-ancestors ${ancestor ?? "'none'"}`,
   ].join("; ")

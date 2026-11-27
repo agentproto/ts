@@ -53,6 +53,10 @@ export interface McpAppSandboxView {
   url: string
   /** Its origin (`scheme://host[:port]`); must differ from the host's. */
   origin: string
+  /** The origin is shared with other views: only ONE view per such origin is
+   *  mounted at a time (same-origin views can script each other), the others
+   *  fall back to restricted mode. */
+  shared?: boolean
 }
 
 /** Registers a view with the server that owns the sandbox origin. Resolve
@@ -108,7 +112,8 @@ export function createDaemonSandboxResolver(opts: DaemonSandboxResolverOptions):
     if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.origin === hostOrigin) {
       return null
     }
-    return { url: parsed.toString(), origin: parsed.origin }
+    const shared = (body as { shared?: unknown }).shared === true
+    return { url: parsed.toString(), origin: parsed.origin, ...(shared ? { shared: true } : {}) }
   }
 }
 
@@ -120,6 +125,9 @@ function isHttpUrlOnOrigin(view: McpAppSandboxView): boolean {
     return false
   }
 }
+
+/** Shared sandbox origins that currently host a mounted view. */
+const sharedOriginsInUse = new Set<string>()
 
 /** Per-host-origin memo of "no sandbox origin here", so a daemon without the
  *  route is probed once a minute, not once per mounted view. */
@@ -273,6 +281,16 @@ export async function mountMcpApp(opts: MountMcpAppOptions): Promise<MountedMcpA
     console.warn("[mcp-app-host] refused a sandbox view on the host's own origin (or an invalid URL).")
     view = null
   }
+  let claimedSharedOrigin: string | undefined
+  if (view?.shared) {
+    if (sharedOriginsInUse.has(view.origin)) {
+      console.warn("[mcp-app-host] another view already uses this shared sandbox origin; mounting this one restricted.")
+      view = null
+    } else {
+      sharedOriginsInUse.add(view.origin)
+      claimedSharedOrigin = view.origin
+    }
+  }
   if (!view) {
     console.warn(
       "[mcp-app-host] view in restricted mode: no dedicated sandbox origin available " +
@@ -296,6 +314,7 @@ export async function mountMcpApp(opts: MountMcpAppOptions): Promise<MountedMcpA
   const viewWindow = iframe.contentWindow
   const hostWindow = doc.defaultView
   if (!viewWindow || !hostWindow) {
+    if (claimedSharedOrigin) sharedOriginsInUse.delete(claimedSharedOrigin)
     iframe.remove()
     throw new Error("mountMcpApp: container is not attached to a document with a browsing context")
   }
@@ -308,6 +327,7 @@ export async function mountMcpApp(opts: MountMcpAppOptions): Promise<MountedMcpA
   try {
     host = await createMcpAppHost(transport, hostOptions)
   } catch (err) {
+    if (claimedSharedOrigin) sharedOriginsInUse.delete(claimedSharedOrigin)
     iframe.remove()
     throw err
   }
@@ -318,7 +338,10 @@ export async function mountMcpApp(opts: MountMcpAppOptions): Promise<MountedMcpA
     iframe,
     host,
     dispose() {
-      disposed ??= host.teardown().finally(() => iframe.remove())
+      disposed ??= host.teardown().finally(() => {
+        if (claimedSharedOrigin) sharedOriginsInUse.delete(claimedSharedOrigin)
+        iframe.remove()
+      })
       return disposed
     },
   }

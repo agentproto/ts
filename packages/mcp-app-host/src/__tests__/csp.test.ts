@@ -101,7 +101,7 @@ describe("buildSandboxCspHeader", () => {
     expect(buildSandboxCspHeader(undefined, undefined)).toBe(
       "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
         "img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; " +
-        "connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        "connect-src 'self'; frame-src 'none'; object-src 'none'; form-action 'self'; base-uri 'self'; frame-ancestors 'none'",
     )
   })
 
@@ -197,5 +197,16 @@ describe("SAFE_SOURCE rejects control characters", () => {
     expect(h).toContain("connect-src 'self' https://a.example.com;")
     expect(h).not.toContain("\u0000")
     expect(h).not.toContain("b.example")
+  })
+})
+
+describe("sandbox header hardening", () => {
+  it("blocks form posts to anywhere but the view's own origin", () => {
+    expect(buildSandboxCspHeader(undefined, undefined)).toContain("form-action 'self'")
+  })
+  it("drops sources with non-ASCII characters (they would make the HTTP header invalid)", () => {
+    const h = buildSandboxCspHeader({ connectDomains: ["https://ok.example.com", "https://caf\u00e9.example.com", "https://x\u0142.example.com"] }, undefined)
+    expect(h).toContain("connect-src 'self' https://ok.example.com;")
+    expect(h).not.toContain("caf")
   })
 })

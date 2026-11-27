@@ -3867,7 +3867,7 @@ export async function startHttpServer(
             return
           }
           res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
-          res.end(JSON.stringify({ url: view.url, origin: view.origin, token: view.token, mode: view.mode }))
+          res.end(JSON.stringify({ url: view.url, origin: view.origin, token: view.token, mode: view.mode, shared: view.shared }))
           return
         }
 

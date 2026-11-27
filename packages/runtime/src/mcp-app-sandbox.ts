@@ -71,6 +71,9 @@ export interface RegisteredView {
   url: string
   origin: string
   mode: Exclude<McpAppSandboxMode, "off"> | "public"
+  /** True when every view shares this origin (`port` / `public`): a host must
+   *  then mount only ONE view on it at a time (same-origin views can script each other). */
+  shared: boolean
 }
 
 interface StoredView {
@@ -78,6 +81,8 @@ interface StoredView {
   bytes: number
   csp: McpAppUiCsp | undefined
   ancestor: string | undefined
+  /** Where this view lives; a document is served on that kind of host only. */
+  kind: "subdomain" | "port" | "public"
   /** Hostname the registering page was reached on (may differ from the Origin's). */
   pageHost: string | undefined
   expiresAt: number
@@ -228,9 +233,7 @@ export function createMcpAppSandbox(
     if (!u) return false
     const host = canonName(u.hostname)
     if (host === "sandbox.localhost" || host.endsWith(SANDBOX_SUFFIX)) return true
-    if (publicName && publicPort && host === publicName && (u.port || defaultPort(u.protocol)) === publicPort) {
-      return true
-    }
+    if (publicName && host === publicName) return true // any port: fail closed
     if (sandboxPort !== undefined && Number(u.port || defaultPort(u.protocol)) === sandboxPort) {
       // Any name pointing at the sandbox port is the sandbox origin.
       return true
@@ -297,7 +300,7 @@ export function createMcpAppSandbox(
     const hostName = splitHost(requestHost)?.name
     const remote = hostName !== undefined && !LOOPBACK_NAMES.has(canonName(hostName))
     if (publicOrigin && remote) {
-      return { token, url: `${publicOrigin}/v/${token}`, origin: publicOrigin, mode: "public" }
+      return { token, url: `${publicOrigin}/v/${token}`, origin: publicOrigin, mode: "public", shared: true }
     }
     if (remote) return null
     if (mode === "port" && sandboxPort !== undefined) {
@@ -305,10 +308,10 @@ export function createMcpAppSandbox(
       // name would put the view in the daemon page's cookie jar.
       const name = hostName !== undefined && canonName(hostName) === "127.0.0.1" ? "localhost" : "127.0.0.1"
       const origin = `http://${name}:${sandboxPort}`
-      return { token, url: `${origin}/v/${token}`, origin, mode: "port" }
+      return { token, url: `${origin}/v/${token}`, origin, mode: "port", shared: true }
     }
     const origin = `http://${token}${SANDBOX_SUFFIX}:${daemon.port}`
-    return { token, url: `${origin}/v/${token}`, origin, mode: "subdomain" }
+    return { token, url: `${origin}/v/${token}`, origin, mode: "subdomain", shared: false }
   }
 
   function notFound(res: ServerResponse): void {
@@ -341,7 +344,10 @@ export function createMcpAppSandbox(
     }
     sweep()
     const view = views.get(token)
-    if (!view) {
+    // A document is served only on the kind of host it was registered for: a
+    // `subdomain` token (it is also an origin label, so it travels in `Origin`
+    // headers) must not be loadable through the shared public hostname.
+    if (!view || view.kind !== kind.kind) {
       notFound(res)
       return
     }
@@ -410,6 +416,7 @@ export function createMcpAppSandbox(
         bytes: Buffer.byteLength(html, "utf8"),
         csp,
         ancestor: cleanAncestor && !isSandboxOrigin(cleanAncestor) ? cleanAncestor : undefined,
+        kind: url.mode === "public" ? "public" : url.mode === "port" ? "port" : "subdomain",
         pageHost: (() => {
           const n = splitHost(requestHost)?.name
           return n ? canonName(n) : undefined

@@ -323,6 +323,29 @@ describe("createMcpAppSandbox — serving", () => {
     expect(sb.isSandboxOrigin("https://app.example.com")).toBe(false)
   })
 
+  it("a document is served only on the kind of host it was registered for", () => {
+    const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
+    const local = reg(sb, { html: HTML, requestHost: "127.0.0.1:18790" })
+    const remote = reg(sb, { html: HTML, requestHost: "app.example.com" })
+    expect([local.shared, remote.shared]).toEqual([false, true])
+    // A subdomain token (it is an origin label, so it travels in Origin headers) must not load on the public host.
+    let r = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${local.token}`), r.res, { kind: "public" })
+    expect(r.out.status).toBe(404)
+    // And a public-registered view is not served on a subdomain host.
+    r = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${remote.token}`), r.res, { kind: "subdomain", label: remote.token })
+    expect(r.out.status).toBe(404)
+    r = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${remote.token}`), r.res, { kind: "public" })
+    expect(r.out.status).toBe(200)
+  })
+
+  it("the public origin is refused on any port (R1 fails closed)", () => {
+    const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
+    expect(sb.isSandboxOrigin("https://sbx.example.com:8443")).toBe(true)
+  })
+
   it("classifies a trailing-dot sandbox host, and *.sandbox.localhost origins with a trailing dot", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
     expect(sb.classifyHost("abc.sandbox.localhost.:18790")).toEqual({ kind: "subdomain", label: "abc" })
@@ -352,6 +375,7 @@ describe("createMcpAppSandbox — serving", () => {
   it("shared-origin modes wipe the origin's storage on each document load; subdomain does not need to (R7)", () => {
     const shared = createMcpAppSandbox({ mode: "port", port: 18791 }, { port: 18790 })
     const v = reg(shared, { html: HTML })
+    expect(v.shared).toBe(true)
     let r = fakeRes()
     shared.handle(fakeReq("GET", `/v/${v.token}`), r.res, { kind: "port" })
     expect(r.out.headers["clear-site-data"]).toBe('"cache", "storage"')

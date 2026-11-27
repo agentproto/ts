@@ -95,6 +95,35 @@ describe("mountMcpApp — sandbox-origin mode", () => {
   })
 })
 
+describe("mountMcpApp — shared sandbox origins host one view at a time", () => {
+  const SHARED = { url: "http://shared.example.com:18791/v/abc", origin: "http://shared.example.com:18791", shared: true }
+
+  it("the second view on a shared origin is restricted; disposing the first frees the origin", async () => {
+    const first = await mount(async () => SHARED)
+    expect(first.mode).toBe("sandbox-origin")
+    const second = await mount(async () => SHARED)
+    expect(second.mode).toBe("restricted")
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("shared sandbox origin"))
+    await first.dispose()
+    const third = await mount(async () => SHARED)
+    expect(third.mode).toBe("sandbox-origin")
+  })
+
+  it("non-shared (per-view) origins are not limited", async () => {
+    const a = await mount(async () => ({ ...VIEW, shared: false }))
+    const b = await mount(async () => ({ ...VIEW, shared: false }))
+    expect([a.mode, b.mode]).toEqual(["sandbox-origin", "sandbox-origin"])
+  })
+
+  it("the daemon resolver passes the `shared` flag through", async () => {
+    const r = createDaemonSandboxResolver({
+      baseUrl: "http://127.0.0.1:18790",
+      fetch: (async () => ({ ok: true, json: async () => ({ url: SHARED.url, shared: true }) })) as unknown as typeof fetch,
+    })
+    expect(await r({ html: "<p>x</p>", csp: undefined, permissions: undefined })).toEqual(SHARED)
+  })
+})
+
 describe("mountMcpApp — restricted fallback", () => {
   it("resolver says null: opaque srcdoc, no allow-same-origin, a clear log line", async () => {
     const m = await mount(async () => null)
