@@ -141,6 +141,18 @@ describe("stopSessionProcess", () => {
     expect(logs[0]).toMatchObject({ ok: false, code: "not-in-session", by: "sess_esc1" })
   })
 
+  it("reports a zombie (exited, not yet reaped) as stopped", async () => {
+    // Still answers kill(pid, 0), shows as "(bfs)" in ps, state Z.
+    let n = 0
+    const { d } = deps({
+      aliveAfter: 1000,
+      isZombie: async () => true,
+      table: async () => (n++ === 0 ? TABLE : TABLE.map(r => (r.pid === 500 ? { ...r, args: "(bfs)" } : r))),
+    })
+    const r = await stopSessionProcess({ pid: 500, reason: "scan", by: "operator", graceMs: 200 }, d)
+    expect(r).toMatchObject({ ok: true, signal: "SIGTERM", exited: true })
+  })
+
   it("requires a reason", async () => {
     const { d, signals } = deps()
     expect(await stopSessionProcess({ pid: 500, reason: "  ", by: "operator" }, d)).toMatchObject({
@@ -278,6 +290,59 @@ describe.skipIf(process.platform === "win32")("POST /host/processes/:pid/stop (r
         [false, "sess_escalation", "not-in-session"],
         [false, "operator", "daemon"],
       ])
+    } finally {
+      await http.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
+})
+
+describe.skipIf(process.platform === "win32")("POST /host/processes/:pid/stop (auth)", () => {
+  it("refuses a caller without the daemon token, and leaves the process running", async () => {
+    const adapter = spawn("sh", ["-c", "sleep 300 & echo $!; sleep 300"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      detached: true,
+    })
+    children.push(adapter)
+    const childPid = await new Promise<number>(resolve => {
+      adapter.stdout!.once("data", (b: Buffer) => resolve(Number(b.toString().trim())))
+    })
+    const registry = {
+      list: () => [{ id: "sess_test2", pid: adapter.pid, status: "running" }],
+      sendMessage: async () => ({ delivered: true }),
+    }
+    const dir = await mkdtemp(join(tmpdir(), "stop-process-auth-"))
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "bearer", token: "s3cret" },
+      token: "s3cret",
+      mcpServerFactory: async () => {
+        const { createMcpServer } = await import("@agentproto/mcp-server")
+        return (await createMcpServer({ specs: [], name: "main", version: "0" })).server
+      },
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      meta: { workspace: process.cwd(), registered: [] },
+      hostStopProcessLogPath: join(dir, "stop.log"),
+    } as unknown as RuntimeHttpServerOptions)
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/host/processes/${childPid}/stop`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://evil.example" },
+        body: JSON.stringify({ reason: "cross-origin attempt" }),
+      })
+      expect(res.status).toBe(401)
+      expect(isAlive(childPid)).toBe(true)
+      const ok = await fetch(`http://127.0.0.1:${port}/host/processes/${childPid}/stop`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer s3cret" },
+        body: JSON.stringify({ reason: "with the token", graceMs: 2000 }),
+      })
+      expect(ok.status).toBe(200)
+      await waitFor(() => !isAlive(childPid), "the child to exit")
     } finally {
       await http.stop()
       await rm(dir, { recursive: true, force: true })

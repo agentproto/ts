@@ -20,6 +20,7 @@
  * tool calls become a real use case.
  */
 
+import { execFile } from "node:child_process"
 import "./sentinel-platform.js"
 
 import { buildLabeledStatsReport, createProcessTableSource } from "./process-stats.js"
@@ -4057,6 +4058,13 @@ export async function startHttpServer(
         // session gets a system notice. 200 stopped, 403 refused, 400 bad input.
         const stopMatch = /^\/host\/processes\/(\d+)\/stop$/.exec(path)
         if (opts.sessions && stopMatch && req.method === "POST") {
+          // Destructive: same gate as every mutating sessions route (a web
+          // page must not be able to stop a session's process).
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           const json = (status: number, body: unknown): void => {
             res.writeHead(status, { "content-type": "application/json" })
             res.end(JSON.stringify(body))
@@ -4099,6 +4107,14 @@ export async function startHttpServer(
                 }
               },
               sleep: ms => new Promise(r => setTimeout(r, ms)),
+              // A zombie (exited, not yet reaped by its parent) still answers
+              // kill(pid, 0): read its state so it reports as stopped.
+              isZombie: pid =>
+                new Promise(resolve => {
+                  execFile("ps", ["-o", "stat=", "-p", String(pid)], { timeout: 2000 }, (err, stdout) => {
+                    resolve(!err && stdout.trim().startsWith("Z"))
+                  })
+                }),
               log: jsonlLogger(opts.hostStopProcessLogPath ?? defaultStopProcessLogPath()),
               notify: async (owner, text, data) => {
                 await registry.sendMessage(

@@ -163,6 +163,9 @@ export interface StopProcessDeps {
   kill: (pid: number, signal: "SIGTERM" | "SIGKILL") => void
   /** True while `pid` still exists. */
   alive: (pid: number) => boolean
+  /** True when `pid` has exited but its parent has not reaped it yet (it
+   *  still answers `alive`). Absent: no such check. */
+  isZombie?: (pid: number) => Promise<boolean>
   sleep: (ms: number) => Promise<void>
   /** Appends one record to the log; failures are swallowed by the runner. */
   log: (record: Record<string, unknown>) => Promise<void>
@@ -254,7 +257,7 @@ export async function stopSessionProcess(req: StopProcessRequest, deps: StopProc
       await deps.sleep(step)
     }
   }
-  const exited = !deps.alive(target.pid)
+  const exited = !deps.alive(target.pid) || (deps.isZombie ? await deps.isZombie(target.pid) : false)
   const who = owner.label ? `${owner.sessionId} (${owner.label})` : owner.sessionId
   const text =
     `The daemon stopped process ${target.pid} of this session (${signal}): \`${clip(target.args, 200)}\`. ` +

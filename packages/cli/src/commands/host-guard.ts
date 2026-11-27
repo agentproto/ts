@@ -512,8 +512,10 @@ export interface GuardLevelMemory {
   lastEscalatedAt?: string
   /** Level of the last escalation sent. */
   lastEscalatedLevel?: HealthVerdict
-  /** Whole-disk scans already escalated, by pid (kept only while they run). */
-  scanPids?: number[]
+  /** Whole-disk scans already escalated, as `<pid> <command line>`
+   *  (`scanKey`), kept only while they run, so a pid the OS hands to
+   *  another command counts as a new scan. */
+  scanKeys?: string[]
 }
 
 // ── whole-disk scans ────────────────────────────────────────────────
@@ -564,19 +566,26 @@ export function filesystemScansOf(report: ScanReport): GuardScan[] {
   return out.sort((a, b) => a.pid - b.pid)
 }
 
+/** Identity of a scan across runs: its pid AND its command line, so a pid
+ *  the OS recycles onto another command is a new scan. */
+export function scanKey(scan: Pick<GuardScan, "pid" | "args">): string {
+  return `${scan.pid} ${scan.args}`
+}
+
 /** Which scans to escalate now: the ones not already escalated. And the
- *  scan memory to keep, whether the escalation goes out or not (only pids
- *  still running are remembered, so a recycled pid counts as new). Pure. */
+ *  scan memory to keep, whether the escalation goes out or not: only scans
+ *  still running are remembered, keyed by pid and command line (`scanKey`),
+ *  so a recycled pid running another command counts as new. Pure. */
 export function freshScans(
   scans: readonly GuardScan[],
   previous: GuardLevelMemory | null,
-): { fresh: GuardScan[]; keepIfSent: number[]; keepIfNotSent: number[] } {
-  const announced = new Set(previous?.scanPids ?? [])
-  const current = scans.map(s => s.pid)
+): { fresh: GuardScan[]; keepIfSent: string[]; keepIfNotSent: string[] } {
+  const announced = new Set(previous?.scanKeys ?? [])
+  const current = scans.map(scanKey)
   return {
-    fresh: scans.filter(s => !announced.has(s.pid)),
+    fresh: scans.filter(s => !announced.has(scanKey(s))),
     keepIfSent: current,
-    keepIfNotSent: current.filter(pid => announced.has(pid)),
+    keepIfNotSent: current.filter(k => announced.has(k)),
   }
 }
 
@@ -673,8 +682,8 @@ export async function readGuardLevel(path: string = DEFAULT_GUARD_LEVEL_PATH): P
       escalatedLevel: isLevel(parsed.escalatedLevel) ? parsed.escalatedLevel : "OK",
       ...(isDate(parsed.lastEscalatedAt) ? { lastEscalatedAt: parsed.lastEscalatedAt } : {}),
       ...(isLevel(parsed.lastEscalatedLevel) ? { lastEscalatedLevel: parsed.lastEscalatedLevel } : {}),
-      ...(Array.isArray(parsed.scanPids)
-        ? { scanPids: parsed.scanPids.filter((p): p is number => Number.isInteger(p) && p > 1) }
+      ...(Array.isArray(parsed.scanKeys)
+        ? { scanKeys: parsed.scanKeys.filter((k): k is string => typeof k === "string" && /^\d+ /.test(k)) }
         : {}),
     }
   } catch {
@@ -1090,8 +1099,9 @@ function escalationPrompt(args: {
     "2. Find what is consuming the host (`agentproto host load --full`); report the top processes and their owning sessions.",
     "3. Only stop sessions that are genuinely idle. Never stop a busy/keepAlive session.",
     "   A single process of a session that saturates the host (a whole-disk scan above, a runaway build) is stopped with",
-    "   `agentproto host stop-process <pid> --reason \"...\"`, the one command you may run without a prompt. The daemon only",
-    "   accepts a process that descends from a live session, logs the request, and tells the owning session. Never use `kill`.",
+    "   `agentproto host stop-process <pid> --reason \"...\"`. The escalation session the guard spawns may run it without a",
+    "   prompt (defaults.permissionGrants); another session may be asked for permission. The daemon only accepts a process",
+    "   that descends from a live session, logs the request, and tells the owning session. Never use `kill`.",
     "4. Report back to the supervisor with what you freed and what remains.",
   ].join("\n")
 }
@@ -1261,10 +1271,10 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
   const scanMemory = freshScans(scans, previousLevel)
   const escalateNow = decision.escalate || scanMemory.fresh.length > 0
   const escalationReason = decision.escalate ? decision.reason : "fs-scan"
-  let memory: GuardLevelMemory = { ...decision.memory, scanPids: scanMemory.keepIfNotSent }
+  let memory: GuardLevelMemory = { ...decision.memory, scanKeys: scanMemory.keepIfNotSent }
   const memoryIfSent: GuardLevelMemory = {
     ...(decision.escalate ? decision.memoryIfSent : decision.memory),
-    scanPids: scanMemory.keepIfSent,
+    scanKeys: scanMemory.keepIfSent,
   }
 
   if (!flags.dryRun && flags.escalate && escalateNow) {

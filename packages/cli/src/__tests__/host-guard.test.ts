@@ -850,6 +850,7 @@ describe("runHostGuard — escalation on level change", () => {
     expect(io.prompts[0]).toContain("session sess_fig1 (fig-step)")
     expect(io.prompts[0]).toContain('agentproto host stop-process 4242 --reason "whole-disk scan rooted at / (host guard)"')
     expect(io.prompts[0]).toContain("Never use `kill`")
+    expect(io.prompts[0]).toContain("The escalation session the guard spawns may run it without a")
     // Same scan still running: not escalated again.
     await run()
     expect(io.escalations).toHaveLength(1)
@@ -857,7 +858,7 @@ describe("runHostGuard — escalation on level change", () => {
     io.report = scan(5151)
     await run()
     expect(io.escalations).toHaveLength(2)
-    expect((await readGuardLevel(levelPath))?.scanPids).toEqual([5151])
+    expect((await readGuardLevel(levelPath))?.scanKeys).toEqual(["5151 bfs -S dfs / -name x"])
   })
 
   it("rejects an unknown --escalate-on level", async () => {
@@ -899,13 +900,24 @@ describe("whole-disk scans", () => {
     expect(filesystemScansOf({ warnings: [] })).toEqual([])
   })
 
-  it("freshScans announces a pid once and forgets the ones that ended", () => {
+  it("freshScans announces a scan once and forgets the ones that ended", () => {
     const scans = filesystemScansOf(scanReport([10, 11]) as never)
-    const memo = { level: "OK" as const, since: "2026-11-27T00:00:00.000Z", escalatedLevel: "OK" as const, scanPids: [10, 99] }
+    const memo = {
+      level: "OK" as const,
+      since: "2026-11-27T00:00:00.000Z",
+      escalatedLevel: "OK" as const,
+      scanKeys: ["10 bfs -S dfs / -name x", "99 bfs / -name gone"],
+    }
     const r = freshScans(scans, memo)
     expect(r.fresh.map(s => s.pid)).toEqual([11])
-    expect(r.keepIfSent).toEqual([10, 11])
-    expect(r.keepIfNotSent).toEqual([10])
+    expect(r.keepIfSent).toEqual(["10 bfs -S dfs / -name x", "11 bfs -S dfs / -name x"])
+    expect(r.keepIfNotSent).toEqual(["10 bfs -S dfs / -name x"])
+  })
+
+  it("freshScans treats a recycled pid running another command as a new scan", () => {
+    const scans = filesystemScansOf(scanReport([10]) as never)
+    const memo = { level: "OK" as const, since: "2026-11-27T00:00:00.000Z", escalatedLevel: "OK" as const, scanKeys: ["10 find / -name old"] }
+    expect(freshScans(scans, memo).fresh.map(s => s.pid)).toEqual([10])
   })
 
   it("stopScanCommand is the granted command, for that pid only", () => {
