@@ -51,6 +51,8 @@ export function buildCspPolicy(csp: McpAppUiCsp | undefined): string {
     directive("connect-src", [], orNone(sources(csp?.connectDomains))),
     directive("frame-src", [], orNone(sources(csp?.frameDomains))),
     "object-src 'none'",
+    // The opaque origin sends `Origin: null`: forms must not post anywhere.
+    "form-action 'none'",
     directive("base-uri", [], orNone(sources(csp?.baseUriDomains))),
   ].join("; ")
 }

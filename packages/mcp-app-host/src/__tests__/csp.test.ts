@@ -9,7 +9,7 @@ import { buildSandboxCspHeader } from "../csp.js"
 const DEFAULT_POLICY =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
   "img-src data: blob:; font-src data:; media-src data: blob:; " +
-  "connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"
+  "connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"
 
 describe("buildCspPolicy", () => {
   it("defaults every network directive to 'none' when csp is absent", () => {
@@ -34,6 +34,7 @@ describe("buildCspPolicy", () => {
         "connect-src https://api.example.com wss://live.example.com; " +
         "frame-src https://www.youtube.com; " +
         "object-src 'none'; " +
+        "form-action 'none'; " +
         "base-uri https://base.example.com",
     )
   })
