@@ -19,6 +19,13 @@ assets:
 primaryAsset: USAGE_CREDITS
 anchor: { currency: USD, creditsPerUnit: 1000 }
 spendOrder: ["USAGE_CREDITS:monthly", "USAGE_CREDITS:topup"]
+# Metered usage as data (rules 29 to 32, 35). Example values: nothing here is a real price.
+usage:
+  defaults: { margin: 1.5, floorMinor: 0 }
+  categories:
+    - { id: llm, match: { kind: llm }, cost: { source: measured }, marginFloor: 1.1 }
+    - { id: messaging-fee, match: { kind: messaging-fee }, cost: { source: measured }, margin: at-cost }
+    - { id: search, match: { kind: search }, cost: { source: fixed, amount: 0.0015, currency: USD } }
 # No tax code was found for this product; Stripe behind Autumn sets what is added to the price. Credited whole: `gross`.
 taxBasis: gross
 

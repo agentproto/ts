@@ -216,6 +216,36 @@ const grant = z
   })
   .strict()
 
+const usageCategory = z
+  .object({
+    id,
+    match: z
+      .object({ kind: z.string().min(1), model: z.string().min(1), channel: z.string().min(1), op: z.string().min(1) })
+      .partial()
+      .strict()
+      .optional(),
+    cost: z.discriminatedUnion("source", [
+      z.object({ source: z.literal("measured") }).strict(),
+      z.object({ source: z.literal("catalog") }).strict(),
+      z.object({ source: z.literal("fixed"), amount: z.number().min(0), currency }).strict(),
+    ]),
+    margin: z.union([z.number().gt(0), z.literal("at-cost")]).optional(),
+    marginFloor: z.number().gt(0).optional(),
+    floorMinor: z.number().int().min(0).optional(),
+  })
+  .strict()
+
+const usage = z
+  .object({
+    defaults: z
+      .object({ margin: z.number().gt(0), floorMinor: z.number().int().min(0) })
+      .partial()
+      .strict()
+      .optional(),
+    categories: z.array(usageCategory).min(1),
+  })
+  .strict()
+
 export const billingFrontmatterSchema = z
   .object({
     schema: z.literal("billing/v1"),
@@ -227,6 +257,7 @@ export const billingFrontmatterSchema = z
     anchor: z.object({ currency, creditsPerUnit: z.number().gt(0) }).strict(),
     fx: z.record(currency, z.number().gt(0)).optional(),
     spendOrder: z.array(partitionId).optional(),
+    usage: usage.optional(),
     taxBasis: z.enum(["net", "gross"]).optional(),
     features: z.array(z.object({ id: featureId, type: z.enum(["boolean", "credits"]) }).strict()).optional(),
     accounts: z

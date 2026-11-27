@@ -18,6 +18,8 @@ import {
   normalizeRef,
 } from "./model.js"
 import { entryRatio } from "./rate.js"
+import { usageProblems } from "./spend/price.js"
+import type { UsageConfig } from "./spend/types.js"
 
 /** A conversion with its rate computed (rule 26) and its AIP-49 edge derived. */
 export interface DerivedConversion {
@@ -73,6 +75,14 @@ export function normalizeManifest(def: BillingDefinition): BillingDefinition {
     anchor: { ...def.anchor, currency: cur(def.anchor.currency) },
     ...(fx ? { fx } : {}),
     conversions: def.conversions?.map(c => ({ ...c, from: ref(c.from), to: ref(c.to) })),
+    ...(def.usage
+      ? {
+          usage: {
+            ...def.usage,
+            categories: def.usage.categories.map(c => (c.cost.source === "fixed" ? { ...c, cost: { ...c.cost, currency: cur(c.cost.currency) } } : c)),
+          },
+        }
+      : {}),
     offers: def.offers?.map(o => ({ ...o, price: { ...o.price, ...(typeof o.price.currency === "string" ? { currency: cur(o.price.currency) } : {}) } }) as Offer),
   }
 }
@@ -122,6 +132,8 @@ export function manifestProblems(input: BillingDefinition, opts: DefineBillingMa
     if (!declared.has(k) || !isFiatRef(k)) out.push(`fx: '${k}' is not a declared fiat asset`)
   }
   for (const p of def.spendOrder ?? []) partitionOk(p, "spendOrder")
+  // usage (rules 29 to 32, 35): the checks the JSON Schema cannot express (duplicate ids, at-cost with a floor above 1, a fixed cost in a currency the manifest has no rate for).
+  if (def.usage) out.push(...usageProblems(def, def.usage as unknown as UsageConfig).map(p => `usage: ${p}`))
   for (const p of def.transfers?.from ?? []) partitionOk(p, "transfers.from")
 
   const features = new Map((def.features ?? []).map(f => [f.id, f.type]))
