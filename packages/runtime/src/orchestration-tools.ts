@@ -1516,9 +1516,13 @@ export function registerOrchestrationTools(
           .optional()
           .describe("Approval form: who decided (recorded on the run + app ledger). Defaults to \"human\"."),
         note: z.string().optional().describe("Approval form: optional free-text note recorded with the decision."),
+        // Optional: the approval and escalate forms carry no payload. A
+        // required `z.any()` made the SDK reject them with "-32602 ...
+        // expected nonoptional at payload" before this handler ran.
         payload: z
           .any()
-          .describe("Suspend form: resume payload supplied to the parked `kind: \"suspend\"` step. Presence (not undefined) selects the suspend form."),
+          .optional()
+          .describe("Suspend form: resume payload supplied to the parked `kind: \"suspend\"` step. Presence (not undefined) selects the suspend form; omit it for the approval and escalate forms."),
       },
       async input => {
         const approvalForm =
@@ -1578,6 +1582,23 @@ export function registerOrchestrationTools(
           }
         }
         if (input.stageIndex === undefined || input.stepIndex === undefined || input.response === undefined) {
+          // A run parked at a `kind: "suspend"` step can only resume with a
+          // payload: say so instead of listing the escalate form's fields.
+          if (workflowRunner.status(input.runId)?.awaitingSuspend !== undefined) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "missing_payload",
+                    message:
+                      "this run is parked at a `kind: \"suspend\"` step: resume it with `payload` (from `workflow_status`'s `awaitingSuspend`); pass `payload: null` to resume with no data",
+                  }),
+                },
+              ],
+              isError: true,
+            }
+          }
           return {
             content: [
               {
@@ -1585,7 +1606,7 @@ export function registerOrchestrationTools(
                 text: JSON.stringify({
                   error: "missing_fields",
                   message:
-                    "escalate form requires `stageIndex` + `stepIndex` + `response`; approval form requires `approved` (+ `approvalId`)",
+                    "escalate form requires `stageIndex` + `stepIndex` + `response`; approval form requires `approved` (+ `approvalId`); suspend form requires `payload`",
                 }),
               },
             ],
