@@ -76,6 +76,62 @@ describe("createAcpClient — tool_call rendering fields", () => {
     })
   })
 
+  it("uses the canonical MCP name from `_meta.claudeCode.toolName` over the display title", async () => {
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "call-mcp",
+        title: "arcade: get_game_by_id",
+        _meta: { claudeCode: { toolName: "mcp__arcade__get_game_by_id" } },
+      },
+    })
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "call-mcp",
+        title: "arcade: get_game_by_id",
+        rawInput: { gameId: "msdos_DOOM_1993" },
+        _meta: { claudeCode: { toolName: "mcp__arcade__get_game_by_id" } },
+      },
+    })
+
+    expect((await iter.next()).value).toMatchObject({
+      kind: "tool-call",
+      toolName: "mcp__arcade__get_game_by_id",
+    })
+    expect((await iter.next()).value).toMatchObject({
+      kind: "tool-call",
+      isUpdate: true,
+      toolName: "mcp__arcade__get_game_by_id",
+      arguments: { gameId: "msdos_DOOM_1993" },
+    })
+  })
+
+  it("keeps the title for non-MCP tools even when the bridge names them", async () => {
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "call-read",
+        title: "Read File",
+        _meta: { claudeCode: { toolName: "Read" } },
+      },
+    })
+    expect((await iter.next()).value).toMatchObject({ toolName: "Read File" })
+  })
+
   it("falls back to `kind` when `title` is absent", async () => {
     const client = await createAcpClient({ ...fakeStreams() })
     const session = await client.newSession({ cwd: "/tmp" })
