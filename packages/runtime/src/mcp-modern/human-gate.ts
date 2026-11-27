@@ -98,8 +98,10 @@ export function clientSupportsElicitation(
 
 // ── Secret & flat schema guards ────────────────────────────────────────────
 
+// A compound term ("api key") matches with an underscore, a hyphen, nothing, or a run of whitespace
+// (spaces, a no-break space) between its words: "Paste your API key" is the same ask as "api_key".
 const SECRET_HINT_RE =
-  /(?:^|[^a-z0-9])(password|passwd|passphrase|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|credential|credentials|payment|credit[_-]?card|card[_-]?number|cvv|cvc|oauth|bearer[_-]?token|whsec)(?:$|[^a-z0-9])/i
+  /(?:^|[^a-z0-9])(password|passwd|passphrase|secret|api(?:[_-]|\s+)?key|access(?:[_-]|\s+)?token|auth(?:[_-]|\s+)?token|refresh(?:[_-]|\s+)?token|private(?:[_-]|\s+)?key|credential|credentials|payment|credit(?:[_-]|\s+)?card|card(?:[_-]|\s+)?number|cvv|cvc|oauth|bearer(?:[_-]|\s+)?token|whsec)(?:$|[^a-z0-9])/i
 
 /** True when a field key or prompt text indicates secret/payment/OAuth data forbidden in `form` mode. */
 export function isSecretField(key: string, description?: string): boolean {

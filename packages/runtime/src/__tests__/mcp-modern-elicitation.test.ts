@@ -571,3 +571,131 @@ describe("question without fields and plan approval (AIP-45 MCP transport of a q
     expect(g.responded).toEqual([{ decision: "approve", scope: "always" }])
   })
 })
+
+// AIP-45 "No secret in a form" / AIP-77 "Flat forms, no secrets": a compound secret term written
+// with a space ("API key", "access token") is the same ask as "api_key" or "apikey".
+describe("secret hints: compound terms with a space, hyphen, underscore or nothing between the words", () => {
+  const COMPOUND_TERMS: ReadonlyArray<readonly [string, string]> = [
+    ["api", "key"],
+    ["access", "token"],
+    ["auth", "token"],
+    ["refresh", "token"],
+    ["private", "key"],
+    ["credit", "card"],
+    ["card", "number"],
+    ["bearer", "token"],
+  ]
+
+  // Space forms: not caught before the fix (the separator was `[_-]?`).
+  describe.each(COMPOUND_TERMS)("%s %s (space)", (a, b) => {
+    it("is a secret hint in a prompt", () => {
+      expect(isSecretField("value", `Paste your ${a} ${b} here`)).toBe(true)
+      expect(isSecretField("value", `${a.toUpperCase()} ${b}`)).toBe(true)
+    })
+    it("is a secret hint with several spaces or a no-break space", () => {
+      expect(isSecretField("value", `Your ${a}  ${b}`)).toBe(true)
+      expect(isSecretField("value", `Your ${a}\u00a0${b}`)).toBe(true)
+    })
+    it("is a secret hint across a line break or a tab (whitespace run, fail-safe)", () => {
+      expect(isSecretField("value", `Paste your ${a}\n${b}`)).toBe(true)
+      expect(isSecretField("value", `Paste your ${a}\t${b}`)).toBe(true)
+    })
+  })
+
+  // Guards: hyphen, underscore and glued forms were already caught and must stay caught.
+  describe.each(COMPOUND_TERMS)("%s %s (guard: hyphen, underscore, glued)", (a, b) => {
+    it.each([`${a}-${b}`, `${a}_${b}`, `${a}${b}`])("%s stays a secret hint", form => {
+      expect(isSecretField(form)).toBe(true)
+      expect(isSecretField("value", `Paste your ${form}`)).toBe(true)
+    })
+  })
+
+  // Guards: ordinary text that shares a word with a compound term is not a secret ask.
+  it.each([
+    "What is the key point of this release?",
+    "Can you access the dashboard?",
+    "Join the private beta?",
+    "Pick a card game",
+    "A token of thanks",
+    "Should I refresh the page?",
+    "Which auth flow do you prefer?",
+    "Which access level should the bot get?",
+    "Number of cards to draw",
+    "Use the public API",
+    "Private repository or public?",
+    "Pass the api keyboard layout",
+  ])("guard: %j is not a secret hint", text => {
+    expect(isSecretField("value", text)).toBe(false)
+  })
+
+  it("validateFlatFormSchema refuses a property whose description or title asks for a token with a space", () => {
+    expect(
+      validateFlatFormSchema({
+        type: "object",
+        properties: { value: { type: "string", description: "Your access token" } },
+      }).ok,
+    ).toBe(false)
+    expect(
+      validateFlatFormSchema({
+        type: "object",
+        properties: { value: { type: "string", title: "Private key" } },
+      }).ok,
+    ).toBe(false)
+  })
+
+  function fieldsQuestion(prompt: string, fieldPrompt: string): PendingPermission {
+    return {
+      id: "q-space",
+      sessionId: "sess_child",
+      toolCallId: "q-space",
+      text: "Setup",
+      options: [],
+      requestedAt: new Date().toISOString(),
+      request: "question",
+      question: {
+        prompt,
+        choices: [],
+        allowFreeText: false,
+        fields: [{ id: "value", input: "text", prompt: fieldPrompt, required: true }],
+      },
+    }
+  }
+
+  it("does not project a question with fields whose field prompt says 'Paste your API key'", () => {
+    expect(buildPermissionElicitation(fieldsQuestion("Finish setup", "Release note"))).not.toBeNull()
+    expect(buildPermissionElicitation(fieldsQuestion("Finish setup", "Paste your API key"))).toBeNull()
+  })
+
+  it("does not project a question with fields whose prompt says 'Paste your API key'", () => {
+    expect(buildPermissionElicitation(fieldsQuestion("Paste your API key", "Value"))).toBeNull()
+  })
+
+  function noFieldsQuestion(prompt: string, labels: readonly string[] = ["Red", "Blue"]): PendingPermission {
+    return {
+      id: "q-nofields",
+      sessionId: "sess_child",
+      toolCallId: "q-nofields",
+      text: "Question",
+      options: [
+        ...labels.map((name, i) => ({ optionId: `answer:${i}`, name, kind: "allow_once" as const })),
+        { optionId: "decline", name: "Decline to answer", kind: "reject_once" as const },
+      ],
+      requestedAt: new Date().toISOString(),
+      request: "question",
+      question: {
+        prompt,
+        choices: labels.map((label, i) => ({ optionId: `answer:${i}`, label })),
+        allowFreeText: false,
+      },
+    }
+  }
+
+  it("does not project a question without fields whose prompt says 'Paste your API key'", () => {
+    expect(buildPermissionElicitation(noFieldsQuestion("Which colour?"))?.kind).toBe("question")
+    expect(buildPermissionElicitation(noFieldsQuestion("Paste your API key"))).toBeNull()
+  })
+
+  it("does not project a question without fields whose choice label names a refresh token", () => {
+    expect(buildPermissionElicitation(noFieldsQuestion("Which one?", ["My refresh token", "Skip"]))).toBeNull()
+  })
+})
