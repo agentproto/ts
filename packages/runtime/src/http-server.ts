@@ -3830,6 +3830,14 @@ export async function startHttpServer(
             rejectUnauthorizedSession(req, res, gate)
             return
           }
+          // A cross-origin page can send a `text/plain` POST without a
+          // preflight (no-cors "simple" request); requiring JSON forces the
+          // preflight, hence the CORS/Origin allowlist, before anything is stored.
+          if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] ?? ""))) {
+            res.writeHead(415, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "unsupported_media_type" }))
+            return
+          }
           let raw: unknown
           try {
             raw = await readBoundedJson(req, mcpSandbox.maxHtmlBytes + 64 * 1024)

@@ -162,6 +162,25 @@ describe("MCP App sandbox — registration route", () => {
     )
   })
 
+  it("refuses a simple cross-origin form POST (text/plain): JSON is required so a preflight happens", async () => {
+    await withDaemon(async (port) => {
+      const payload = JSON.stringify({ html: HTML })
+      const r = await raw(
+        port,
+        "POST",
+        "/mcp-app-sandbox/views",
+        {
+          host: `127.0.0.1:${port}`,
+          origin: `http://127.0.0.1:${port}`,
+          "content-type": "text/plain",
+          "content-length": String(Buffer.byteLength(payload)),
+        },
+        payload,
+      )
+      expect(r.status).toBe(415)
+    })
+  })
+
   it("mode off: 501, and hosts fall back to the opaque srcdoc", async () => {
     await withDaemon(
       async (port) => {
@@ -216,6 +235,30 @@ describe("MCP App sandbox — serving (R2)", () => {
       const onDaemon = await raw(port, "GET", `/v/${a.token}`, { host: `127.0.0.1:${port}` })
       expect(onDaemon.body).not.toContain("sandboxed-view")
     })
+  })
+})
+
+describe("MCP App sandbox — publicOrigin topology", () => {
+  it("a dedicated public hostname serves views only; the daemon API is unreachable on it", async () => {
+    await withDaemon(
+      async (port) => {
+        const j = JSON.parse((await register(port, undefined, { host: "app.example.com", origin: "https://app.example.com", "x-forwarded-for": "203.0.113.9" })).body) as {
+          token: string
+          origin: string
+          mode: string
+        }
+        expect(j.mode).toBe("public")
+        expect(j.origin).toBe("https://sbx.example.com")
+        const doc = await raw(port, "GET", `/v/${j.token}`, { host: "sbx.example.com" })
+        expect(doc.status).toBe(200)
+        expect(String(doc.headers["content-security-policy"])).toContain("frame-ancestors https://app.example.com")
+        for (const path of ["/health", "/sessions", "/mcp", "/events"]) {
+          const r = await raw(port, "GET", path, { host: "sbx.example.com" })
+          expect(r.status, path).toBe(404)
+        }
+      },
+      { mcpAppSandbox: { publicOrigin: "https://sbx.example.com" } },
+    )
   })
 })
 

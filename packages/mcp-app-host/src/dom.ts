@@ -112,6 +112,15 @@ export function createDaemonSandboxResolver(opts: DaemonSandboxResolverOptions):
   }
 }
 
+function isHttpUrlOnOrigin(view: McpAppSandboxView): boolean {
+  try {
+    const u = new URL(view.url)
+    return (u.protocol === "http:" || u.protocol === "https:") && u.origin === view.origin
+  } catch {
+    return false
+  }
+}
+
 /** Per-host-origin memo of "no sandbox origin here", so a daemon without the
  *  route is probed once a minute, not once per mounted view. */
 const unavailableUntil = new Map<string, number>()
@@ -256,6 +265,12 @@ export async function mountMcpApp(opts: MountMcpAppOptions): Promise<MountedMcpA
     } catch {
       view = null
     }
+  }
+  // Enforced here, for EVERY resolver, not just the daemon's: a view on the
+  // host's own origin with `allow-same-origin` would have the host page.
+  if (view && (view.origin === doc.defaultView?.location.origin || !isHttpUrlOnOrigin(view))) {
+    console.warn("[mcp-app-host] refused a sandbox view on the host's own origin (or an invalid URL).")
+    view = null
   }
   if (!view) {
     console.warn(

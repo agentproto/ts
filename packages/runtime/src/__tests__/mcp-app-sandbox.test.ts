@@ -52,10 +52,11 @@ describe("createMcpAppSandbox — URLs and origins", () => {
     expect(v.origin).toBe("http://127.0.0.1:18791")
   })
 
-  it("public origin is used only when the registering call came through that host", () => {
+  it("public origin is used when the registering page was reached through a non-loopback host", () => {
     const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
-    expect(sb.register({ html: HTML, requestHost: "sbx.example.com" }).origin).toBe("https://sbx.example.com")
+    expect(sb.register({ html: HTML, requestHost: "app.example.com" }).origin).toBe("https://sbx.example.com")
     expect(sb.register({ html: HTML, requestHost: "127.0.0.1:18790" }).mode).toBe("subdomain")
+    expect(sb.register({ html: HTML, requestHost: "localhost:18790" }).mode).toBe("subdomain")
   })
 
   it("off mode: not enabled, classifies nothing", () => {
@@ -161,6 +162,44 @@ describe("createMcpAppSandbox — serving", () => {
     sb.handle(fakeReq("GET", `/v/${v.token}`), res, { kind: "subdomain", label: v.token })
     const connect = (out.headers["content-security-policy"] ?? "").split("; ").find((d) => d.startsWith("connect-src"))
     expect(connect).toBe("connect-src 'self' https://ok.example.com")
+  })
+
+  it("drops broad and wildcard sources that could reach a plain-http loopback daemon (R3)", () => {
+    const sb = createMcpAppSandbox(undefined, { port: 18790 })
+    const v = sb.register({
+      html: HTML,
+      csp: {
+        connectDomains: [
+          "*",
+          "http:",
+          "ws:",
+          "*.localhost",
+          "http://127.0.0.1:*",
+          "http://localhost:*",
+          "http://[::1]:18790",
+          "http://0.0.0.0:18790",
+          "ws://localhost:18790",
+          "https://ok.example.com",
+          "wss://ok.example.com",
+          "https:",
+        ],
+      },
+    })
+    const { res, out } = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${v.token}`), res, { kind: "subdomain", label: v.token })
+    const connect = (out.headers["content-security-policy"] ?? "").split("; ").find((d) => d.startsWith("connect-src"))
+    expect(connect).toBe("connect-src 'self' https://ok.example.com wss://ok.example.com https:")
+  })
+
+  it("the store has a total byte budget: the oldest views are evicted (R4)", () => {
+    const sb = createMcpAppSandbox({ maxTotalBytes: 100 }, { port: 18790 })
+    const big = "x".repeat(60)
+    const first = sb.register({ html: big })
+    sb.register({ html: big })
+    expect(sb.size()).toBe(1)
+    const { res, out } = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${first.token}`), res, { kind: "subdomain", label: first.token })
+    expect(out.status).toBe(404)
   })
 
   it("subdomain mode refuses a document on any origin but its own (R7)", () => {

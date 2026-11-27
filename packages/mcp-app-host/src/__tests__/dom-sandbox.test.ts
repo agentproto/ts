@@ -104,6 +104,27 @@ describe("mountMcpApp — restricted fallback", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("restricted mode"))
   })
 
+  it("a custom resolver cannot hand the view the host's own origin (enforced at mount)", async () => {
+    const m = await mount(async () => ({
+      url: `${window.location.origin}/v/x`,
+      origin: window.location.origin,
+    }))
+    expect(m.mode).toBe("restricted")
+    expect(m.iframe.getAttribute("sandbox")).not.toContain("allow-same-origin")
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("host's own origin"))
+  })
+
+  it("a resolver whose url does not match its origin, or is not http(s), is refused", async () => {
+    for (const bad of [
+      { url: "http://a.example.com/v/x", origin: "http://b.example.com" },
+      { url: "javascript:alert(1)", origin: "null" },
+      { url: "not a url", origin: "http://a.example.com" },
+    ]) {
+      const m = await mount(async () => bad)
+      expect(m.mode, bad.url).toBe("restricted")
+    }
+  })
+
   it("resolver throws: same fallback", async () => {
     const m = await mount(async () => {
       throw new Error("boom")

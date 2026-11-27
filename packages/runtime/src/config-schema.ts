@@ -1305,7 +1305,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: false,
     section: "daemon",
     label: "MCP App sandbox public origin",
-    help: "One fixed public origin (for example a tunnel hostname such as https://sbx.example.com) that routes to this daemon and also serves MCP App views for pages reached through the tunnel. It serves documents only and is never trusted by the daemon's own routes.",
+    help: "One fixed public origin (for example a tunnel hostname such as https://sbx.example.com) that routes to this daemon and serves MCP App views for pages reached through the tunnel. It must be a hostname DEDICATED to this purpose, different from the one you use to reach the daemon: every request on it is served by the sandbox handler (documents only), so the daemon's own API is unreachable there, and its origin is never trusted by the daemon's routes.",
   },
   {
     path: "approvals.webOrigins",
