@@ -385,6 +385,27 @@ describe("events/stream engine", () => {
     expect(slots.size()).toBe(0)
   })
 
+  it("an exhausted watch pool is -32025 with the same data as events/poll (limit pollWatches, max)", async () => {
+    const full = createPollLeaseManager({
+      journal,
+      resolveProvider: async () => provider,
+      toEvent: toJournalEvent,
+      maxLeases: 1,
+      background: false,
+    })
+    await full.acquire({
+      key: journalKey(NAME, { repo: "agentproto/ts", number: 1 }),
+      name: NAME,
+      mapped: { ok: true, matchClauses: [{ subject: "github:agentproto/ts#1", types: [NAME] }], providerSlug: "local-gh" },
+    })
+    await expect(openEventsStream({ name: NAME, arguments: ARGS, cursor: null }, ctx({ leases: full }))).rejects.toMatchObject({
+      code: -32025,
+      data: { reason: "poll_watch_quota", limit: "pollWatches", max: 1 },
+    })
+    expect(slots.size()).toBe(0)
+    await full.stop()
+  })
+
   it("terminated: a type that leaves the registry ends the stream with notifications/events/terminated, then the final frame", async () => {
     let registered = true
     const real = findEventDefinition(NAME)!
