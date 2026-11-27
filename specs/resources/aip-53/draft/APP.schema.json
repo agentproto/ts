@@ -518,7 +518,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S"
+            "pattern": "^(?!/)(?!\\.?/*$)(?!\\s)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S$"
           },
           "description": "Paths in the app's own host repo (the git repo whose working tree holds the app dir) its sessions may READ, relative to the host repo root, no '..' segment, not '.' itself: a sibling package's built CLI, a shared folder. The host resolves symlinks and refuses an entry that lands outside the host repo or names the whole repo; secret files inside an entry (.env, keys) stay masked. Never writable. Ignored when the app is not inside a git repo."
         }
