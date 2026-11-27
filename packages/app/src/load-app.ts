@@ -80,6 +80,8 @@ interface AppFrontmatterUi {
     readonly frameDomains?: readonly string[]
   }
   readonly build?: AppUiBuildConfig
+  /** Raw `ui.install`; validated by `defineApp`. */
+  readonly install?: { readonly [key: string]: unknown }
   /**
    * Namespaced vendor extension metadata. Passed through to `defineApp`
    * UNFILTERED (not just `openai`) so its namespace check — `ui.extensions`
@@ -435,6 +437,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       ...(fm.ui.port !== undefined ? { port: fm.ui.port } : {}),
       ...(fm.ui.csp !== undefined ? { csp: fm.ui.csp } : {}),
       ...(build !== undefined ? { build } : {}),
+      ...(fm.ui.install !== undefined ? { install: fm.ui.install as unknown as AppUiDefinition["install"] } : {}),
       // Pass through UNFILTERED — `defineApp`'s
       // `validateOpenAIExtensionsNamespace` rejects any sibling vendor key
       // (a typo, a future vendor block, hand-authored drift) with the same

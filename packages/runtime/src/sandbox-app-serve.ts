@@ -90,8 +90,13 @@ export interface SessionAppServeInfo {
   dir: string
   /** Port the UI binds inside the box. */
   port: number
-  /** Provider-resolved public URL for the served UI. */
+  /** Provider-resolved public URL for the served UI (the static page only:
+   *  tool calls and uploads need the access token, see `entryUrl`). */
   url: string
+  /** `url` with the access token (`?t=`) that opens a session: the page
+   *  loads, and a first visit trades the token for a cookie. SECRET — treat
+   *  it like a password; it is absent when the token could not be read. */
+  entryUrl?: string
   /** True when a probe against `url` answered OK within the readiness
    *  window. False means the URL is the right address but the server had
    *  not answered yet — retry the fetch rather than re-spawning. */
@@ -216,7 +221,48 @@ export function buildServeLaunchScript(dir: string, port: number): string {
     )
   }
   const log = `${dir.replace(/\/+$/, "")}/.agentproto/app-serve.log`
-  return `nohup agentproto app serve '${dir}' --host 0.0.0.0 --port ${port} >> '${log}' 2>&1 & echo $!`
+  const token = serveTokenPath(dir)
+  // The server listens beyond loopback, so it gets an access token file (mode
+  // 0600, created by the server): tool calls and uploads need it, the static
+  // page does not.
+  return (
+    `nohup agentproto app serve '${dir}' --host 0.0.0.0 --port ${port} ` +
+    `--access-token-file '${token}' >> '${log}' 2>&1 & echo $!`
+  )
+}
+
+/** Where the in-box server keeps its access token (see `buildServeLaunchScript`). */
+export function serveTokenPath(dir: string): string {
+  return `${dir.replace(/\/+$/, "")}/.agentproto/app-serve.token`
+}
+
+/** The entry URL that carries the access token. */
+export function buildEntryUrl(url: string, token: string): string {
+  const u = new URL(url)
+  u.searchParams.set("t", token)
+  return u.toString()
+}
+
+/**
+ * Fail-closed check that the served UI is protected: a tool call with no
+ * credential must be refused with 401. A box whose `agentproto` predates the
+ * access token would answer something else (it serves tool calls to anyone),
+ * and must not be handed out. `undefined` = could not tell (no answer).
+ */
+export type ServeGateProbe = (url: string) => Promise<boolean | undefined>
+
+async function defaultGateProbe(url: string): Promise<boolean | undefined> {
+  try {
+    const res = await fetch(new URL("/__agentproto/tool-call", url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(5_000),
+    })
+    return res.status === 401
+  } catch {
+    return undefined
+  }
 }
 
 /** Merge the basenames the launcher needs into an allowlist file's text.
@@ -680,6 +726,61 @@ async function launchServeProcess(
   return typeof result?.stdout === "string" ? result.stdout.trim() : ""
 }
 
+const GATE_UNSUPPORTED_MESSAGE =
+  "sandbox app serve: the box's agentproto does not support `app serve --access-token-file`, so the public URL " +
+  "would let anyone run the app's tools. Update the box image (agentproto) and retry. Nothing was started."
+
+/** Exit code the capability probe uses for "runs, but has no `--access-token-file`". */
+const GATE_UNSUPPORTED_EXIT = 42
+
+/**
+ * Does the box's `agentproto app serve` know `--access-token-file`? Only a CLI
+ * that runs and answers without it counts as unsupported; one that cannot run
+ * at all cannot serve either (the readiness and gate probes then report it).
+ */
+async function serveSupportsAccessToken(client: BoxToolClient, dir: string): Promise<boolean> {
+  // Intent: only a definite "runs, but has no such flag" (exit 42) refuses the
+  // launch. A `--help` that fails or cannot be run is read as "supported" on
+  // purpose: such a CLI cannot serve either, and the readiness and gate probes
+  // that follow the launch decide whether anything is handed out.
+  const script =
+    'out=$(agentproto app serve --help 2>&1) || exit 0; ' +
+    `case "$out" in *--access-token-file*) exit 0;; *) exit ${GATE_UNSUPPORTED_EXIT};; esac`
+  try {
+    const res = await client.callTool("command_execute", {
+      command: "sh",
+      args: ["-c", script],
+      cwd: dir,
+      timeoutMs: 30_000,
+    })
+    const exitCode = parseToolJson(res)?.exitCode
+    return exitCode !== GATE_UNSUPPORTED_EXIT
+  } catch {
+    return true
+  }
+}
+
+/** Read the access token the server wrote and build the entry URL; undefined when unreadable. */
+async function readEntryUrl(client: BoxToolClient, dir: string, url: string): Promise<string | undefined> {
+  try {
+    const text = firstText(await client.callTool("file_read", { path: serveTokenPath(dir) }))
+    const token = text?.trim()
+    return token ? buildEntryUrl(url, token) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Best-effort stop of the launched server (the pid `launchServeProcess` echoed). */
+async function stopServeProcess(client: BoxToolClient, pid: string): Promise<void> {
+  if (!/^\d+$/.test(pid)) return
+  try {
+    await client.callTool("command_execute", { command: "sh", args: ["-c", `kill ${pid}`], timeoutMs: 10_000 })
+  } catch {
+    // best effort: the caller reports the failure either way
+  }
+}
+
 /**
  * Run the whole in-box bootstrap against a booted sandbox host: resolve the
  * public URL, connect to the box daemon, install the app, seed the
@@ -692,6 +793,9 @@ export async function startSandboxAppServe(
   req: SandboxAppServeSpec,
   opts?: {
     probe?: ServeReadinessProbe
+    /** Access-gate check, injectable for tests (default: unauthenticated POST
+     *  to the tool-call route must answer 401). */
+    gateProbe?: ServeGateProbe
     /** Readiness window forwarded to `pollServeReady`. Default 15s. */
     timeoutMs?: number
     intervalMs?: number
@@ -775,7 +879,12 @@ export async function startSandboxAppServe(
       }
     }
     await seedAllowlist(client)
-    await launchServeProcess(client, req.dir, port)
+    // Fail closed BEFORE anything listens: a box whose `agentproto` predates
+    // the access token would serve tool calls to anyone on the public URL.
+    if (!(await serveSupportsAccessToken(client, req.dir))) {
+      return { ok: false, message: GATE_UNSUPPORTED_MESSAGE }
+    }
+    const pid = await launchServeProcess(client, req.dir, port)
     const ready = await pollServeReady(url, {
       ...(opts?.probe ? { probe: opts.probe } : {}),
       ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
@@ -790,9 +899,36 @@ export async function startSandboxAppServe(
       // bare ready:false.
       message = await readServeError(client, req.dir)
     }
+    // The URL is public: never hand it out unless tool calls need the token.
+    let entryUrl: string | undefined
+    {
+      // Run whether or not the readiness probe passed: a definite answer
+      // other than 401 means the public URL is open. No answer while not
+      // ready means nothing is listening yet (the pre-launch check already
+      // guarantees the CLI enforces the token); that is not an open server.
+      const protectedGate = await (opts?.gateProbe ?? defaultGateProbe)(url)
+      if (protectedGate === false || (ready && protectedGate !== true)) {
+        await stopServeProcess(client, pid)
+        return {
+          ok: false,
+          message:
+            "sandbox app serve: the served UI answered a tool call without any credential, so its public URL " +
+            "would be open to anyone. The server was stopped.",
+        }
+      }
+      if (ready) entryUrl = await readEntryUrl(client, req.dir, url)
+    }
     return {
       ok: true,
-      appServe: { appId, dir: req.dir, port, url, ready, ...(message !== undefined ? { message } : {}) },
+      appServe: {
+        appId,
+        dir: req.dir,
+        port,
+        url,
+        ready,
+        ...(entryUrl !== undefined ? { entryUrl } : {}),
+        ...(message !== undefined ? { message } : {}),
+      },
       ...(githubWorkspace ? { githubWorkspace } : {}),
     }
   } catch (err) {

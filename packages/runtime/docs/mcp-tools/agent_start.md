@@ -1005,6 +1005,14 @@ appId, dir, port, url, ready }` — `url` is the provider-resolved public URL
 for the served UI (the port is also added to the spec's `extraPorts` and
 echoed in `sandboxPorts`).
 
+That URL is public, so the in-box server is started with an access token
+(`app serve --access-token-file`): the page loads without a credential, but tool
+calls and uploads need the token. `appServe.entryUrl` is `url` with the token
+(`?t=`), which a first visit trades for a cookie. It is a secret: share it like
+a password. The spawn fails closed, and stops the server, if the box's
+`agentproto` is too old to enforce the token (an unauthenticated tool call is
+probed and must answer 401).
+
 ## commandSandbox
 
 OS-level process confinement (macOS Seatbelt / Linux bubblewrap) for the

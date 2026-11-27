@@ -157,6 +157,12 @@ export interface AppUiDefinition {
    *  means today's behavior: the bundle must already exist on disk. */
   readonly build?: AppUiBuildConfig
   /**
+   * How the UI installs as a web app (AIP-53 "Installable UI"). Refines the
+   * web app manifest the host derives from APP.md; absent, the app is still
+   * installable with host defaults.
+   */
+  readonly install?: AppUiInstall
+  /**
    * Namespaced vendor metadata for this UI. Only `openai` exists today; an
    * app that omits the whole block emits, installs, serves, and renders
    * exactly as before (portable MCP Apps host).
@@ -164,6 +170,28 @@ export interface AppUiDefinition {
   readonly extensions?: {
     readonly openai?: OpenAIAppUiExtension
   }
+}
+
+/** `ui.install`: refinements of the derived web app manifest. */
+export interface AppUiInstall {
+  /** 1..12 characters, the label under an icon. Default: the name, cut. */
+  readonly shortName?: string
+  /** `#rgb` or `#rrggbb`. */
+  readonly themeColor?: string
+  /** `#rgb` or `#rrggbb`, the splash colour. */
+  readonly backgroundColor?: string
+  /** Default `standalone`. */
+  readonly display?: "standalone" | "minimal-ui" | "browser"
+  /** 1..8 icons, paths relative to the app dir. */
+  readonly icons?: readonly AppUiInstallIcon[]
+}
+
+export interface AppUiInstallIcon {
+  /** Relative to the app dir, no `..` segment, `.png` | `.svg` | `.webp`. */
+  readonly path: string
+  /** `any`, or space-separated `<w>x<h>` pairs. */
+  readonly sizes?: string
+  readonly purpose?: "any" | "maskable" | "monochrome"
 }
 
 /** One icon for the generated app UI tool (OpenAI extension surface). */

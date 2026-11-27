@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
@@ -89,6 +89,8 @@ describe("agent_start.sandbox + appServe — in-box install + serve (e2e)", () =
   let boxGateway: GatewayHandle
   let boxWorkspace: string
   let appDir: string
+  let fakeBin: string
+  let prevPath: string | undefined
   let probeServer: ReturnType<typeof createHttpServer>
   let probePort: number
   let registry: SessionsRegistry
@@ -97,12 +99,26 @@ describe("agent_start.sandbox + appServe — in-box install + serve (e2e)", () =
 
   beforeEach(async () => {
     receivedPrompts = []
+    // The box's `agentproto` is whatever is on PATH here: stand in a stub that
+    // advertises `--access-token-file` (like a current CLI) so the launch is
+    // not refused by the capability check, and serves nothing.
+    fakeBin = await mkdtemp(join(tmpdir(), "agentproto-appserve-bin-"))
+    await writeFile(join(fakeBin, "agentproto"), "#!/bin/sh\necho 'app serve [--access-token-file <path>]'\n")
+    await chmod(join(fakeBin, "agentproto"), 0o755)
+    prevPath = process.env.PATH
+    process.env.PATH = `${fakeBin}:${prevPath ?? ""}`
     boxWorkspace = await mkdtemp(join(tmpdir(), "agentproto-appserve-box-"))
     workspace = await mkdtemp(join(tmpdir(), "agentproto-appserve-host-"))
 
     // A real local HTTP server standing in for the provider's public port
     // URL — the readiness probe answers OK against it in milliseconds.
-    probeServer = createHttpServer((_req, res) => {
+    // Like a guarded `app serve`: the page is open, a tool call needs a token.
+    probeServer = createHttpServer((req, res) => {
+      if (req.method === "POST" && (req.url ?? "").startsWith("/__agentproto/")) {
+        res.writeHead(401)
+        res.end("unauthorized")
+        return
+      }
       res.writeHead(200)
       res.end("ok")
     })
@@ -199,6 +215,9 @@ describe("agent_start.sandbox + appServe — in-box install + serve (e2e)", () =
     registry.shutdown()
     await boxGateway.stop()
     probeServer.close()
+    if (prevPath === undefined) delete process.env.PATH
+    else process.env.PATH = prevPath
+    await rm(fakeBin, { recursive: true, force: true })
     await rm(workspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
     await rm(boxWorkspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
   })

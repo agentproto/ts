@@ -220,6 +220,20 @@ Start the daemon first (`agentproto serve`); the bridge proxies tool calls to
 body. Files land in `<appDir>/inbox/` with a sanitized, collision-avoided
 name, and the endpoint returns `{ path, bytes }`. Uploads are capped at 200 MB.
 
+**Beyond loopback, tool calls need a token.** With `--host` set to anything
+other than `127.0.0.1`, `::1` or `localhost`, the static page and its assets
+still load without a credential, but every `/__agentproto/*` route (tool calls,
+uploads) answers 401 unless the request carries the access token, either as
+`Authorization: Bearer <token>` or as the cookie that a first visit to
+`/?t=<token>` sets (HttpOnly, SameSite=Strict, Secure behind an https proxy; the
+token is then dropped from the address bar). The token is read from
+`--access-token-file <path>`, else from `AGENTPROTO_APP_SERVE_TOKEN`, else a
+fresh one is generated into `~/.agentproto/app-serve/` (mode 0600, outside the
+app folder) and reused on the next start. `app serve` never serves dotfiles or
+dot-directories from the UI root (only `.well-known`). It is never printed and never taken as a flag
+value. `--insecure-no-auth` turns the gate off, for a setup that already
+authenticates in front of the server.
+
 **Remote mode** (`--remote-mcp-url` set): instead of serving a local app dir
 and proxying tool calls to the local daemon, `app serve` connects its MCP
 client to a REMOTE MCP server and renders one of ITS MCP-Apps `ui://`

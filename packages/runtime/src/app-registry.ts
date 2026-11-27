@@ -108,6 +108,15 @@ export interface InstalledApp {
       readonly cwd?: string
       readonly sources?: readonly string[]
     }
+    /** `ui.install` (AIP-53 "Installable UI"), carried verbatim by
+     *  `performInstall`; read by app-ui-install.ts. Absent = host defaults. */
+    readonly install?: {
+      readonly shortName?: string
+      readonly themeColor?: string
+      readonly backgroundColor?: string
+      readonly display?: "standalone" | "minimal-ui" | "browser"
+      readonly icons?: readonly { readonly path: string; readonly sizes?: string; readonly purpose?: "any" | "maskable" | "monochrome" }[]
+    }
     /** Namespaced OpenAI MCP-extensions declaration (plan §3.1), carried
      *  structurally from the app's normalized `AppUiDefinition.extensions`
      *  by `performInstall` (app-tools.ts is the ONLY writer; every other

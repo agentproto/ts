@@ -171,6 +171,27 @@ your app tracks pipeline stages instead of a flat dataset.
 > covered the `app_data_*` calls the UI makes (section 4), not a browser
 > session against `app serve`.
 
+## Installable UI
+
+Every installed app with a `ui` can be installed as a desktop app from the browser: Chrome offers "Install", Safari "Add to Dock". You write no manifest. The daemon derives a web app manifest from `APP.md` and links it from the page it serves (`/apps/<id>/manifest.webmanifest`, icons under `/apps/<id>/icons/<n>`).
+
+The name is the app's `name`. To refine the rest, add an optional `ui.install` block:
+
+```yaml
+ui:
+  path: .agentproto/ui/index.html
+  install:
+    shortName: Sessions        # at most 12 characters
+    themeColor: "#111114"
+    backgroundColor: "#111114"
+    display: standalone        # standalone | minimal-ui | browser
+    icons:
+      - { path: store/icon-512.png, sizes: 512x512 }
+      - { path: store/icon.svg, sizes: any }
+```
+
+Icon paths are relative to the app and must stay inside it. Without `icons`, the daemon uses `store.icon` if you set one, and otherwise draws your app's initials on its colour. Safari ignores SVG for the Dock icon, so ship a PNG of at least 180x180 for the best result there. The installed window opens the daemon's page, so the daemon has to be running.
+
 ## 4. Durable data: `app_data_*`
 
 Generic `fs-*` tools are workspace-rooted — wrong tool for app storage. Use
