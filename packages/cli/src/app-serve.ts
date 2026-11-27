@@ -37,6 +37,7 @@
  * than failing; an explicit `--port` that's taken is a hard error.
  */
 
+import { createHash } from "node:crypto"
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
@@ -168,8 +169,8 @@ Remote mode (--remote-mcp-url set):
   page stays open but tool calls and uploads (/__agentproto/*) need an access
   token, as "Authorization: Bearer <token>" or the cookie a first visit with
   ?t=<token> sets. The token comes from --access-token-file, else the
-  AGENTPROTO_APP_SERVE_TOKEN env var, else it is generated into
-  <appDir>/.agentproto/app-serve.token (mode 0600).
+  AGENTPROTO_APP_SERVE_TOKEN env var, else it is generated into the daemon
+  state dir (~/.agentproto/app-serve/, mode 0600), outside the app folder.
 
 --access-token-file <path>:
   Read the access token from this file (created with a fresh token when
@@ -836,6 +837,12 @@ async function serveAppUiAsset(
 /** Serve one static file from the ui/ root, injecting the bridge on index.html.
  *  Html revalidates (`no-cache` + strong etag, 304 on a match); other files
  *  keep `no-store`. Both negotiate `accept-encoding`. */
+/** True when `target` (inside `uiRoot`) has a dot-prefixed path segment, other than `.well-known`. */
+export function isHiddenStaticPath(uiRoot: string, target: string): boolean {
+  const rel = target.slice(uiRoot.length).split(sep).filter(Boolean)
+  return rel.some(seg => seg.startsWith(".") && seg !== ".well-known")
+}
+
 async function serveStatic(
   uiRoot: string,
   urlPath: string,
@@ -852,6 +859,15 @@ async function serveStatic(
   if (target !== uiRoot && !target.startsWith(uiRoot + sep)) {
     res.writeHead(403, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: "forbidden", path: safeName }))
+    return
+  }
+
+  // Never serve dotfiles or dot-directories (`.agentproto/`, `.git`, `.env`,
+  // the access token file): when the UI root is the app dir itself (a
+  // single-file `ui.path: index.html`) they sit under it. `.well-known` stays.
+  if (isHiddenStaticPath(uiRoot, target)) {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "not_found", path: safeName }))
     return
   }
 
@@ -986,6 +1002,20 @@ export function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 }
 
+/** Where a generated access token lives by default: the daemon state dir, never the app dir (which can be a served docroot or a git checkout). */
+function defaultAccessTokenFile(key: string): string {
+  const home = process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+  return join(home, "app-serve", `${createHash("sha256").update(key).digest("hex").slice(0, 16)}.token`)
+}
+
+/** A token file that cannot be read or created is a clean exit, not a crash. */
+function accessTokenFailure(err: unknown): number {
+  process.stderr.write(
+    `agentproto app serve: cannot set up the access token: ${err instanceof Error ? err.message : String(err)}\n`,
+  )
+  return 1
+}
+
 /** Tell the operator how a non-loopback serve is protected (never prints the token). */
 function reportAccess(access: ResolvedAccessToken, listenHost: string): void {
   if (access.source === "none") {
@@ -1077,10 +1107,13 @@ async function runAppServeRemote(
 
   const access = await resolveAccessToken({
     host: listenHost,
-    ...(looseString(values["access-token-file"]) !== undefined ? { tokenFile: looseString(values["access-token-file"])! } : {}),
+    ...(looseString(values["access-token-file"]) !== undefined
+      ? { tokenFile: resolve(process.cwd(), expandHome(looseString(values["access-token-file"])!)) }
+      : {}),
     insecureNoAuth: values["insecure-no-auth"] === true,
-    defaultFile: join(process.cwd(), ".agentproto", "app-serve.token"),
-  })
+    defaultFile: defaultAccessTokenFile(`remote:${remote.url}`),
+  }).catch(accessTokenFailure)
+  if (typeof access === "number") return access
   reportAccess(access, listenHost)
 
   const getClient = createDaemonMcpClientGetter(remote.url, "agentproto-app-serve", {
@@ -1262,16 +1295,6 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
     )
   }
 
-  // Beyond loopback, tool calls and uploads need an access token (the static
-  // shell stays open) — see app-serve-auth.ts.
-  const access = await resolveAccessToken({
-    host: listenHost,
-    ...(typeof values["access-token-file"] === "string" ? { tokenFile: resolve(process.cwd(), expandHome(values["access-token-file"])) } : {}),
-    insecureNoAuth: values["insecure-no-auth"] === true,
-    defaultFile: join(appDir, ".agentproto", "app-serve.token"),
-  })
-  reportAccess(access, listenHost)
-
   // 1. Require a valid .agentproto/APP.md, then resolve the UI root the same
   // way app_install does (APP.md frontmatter ui.path, falling back to the
   // legacy .agentproto/ui/) — both code paths must agree, or an app whose
@@ -1313,6 +1336,20 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+
+  // Beyond loopback, tool calls and uploads need an access token (the static
+  // shell stays open) — see app-serve-auth.ts. Resolved after the app dir is
+  // validated, so an invalid dir never leaves a token file behind.
+  const access = await resolveAccessToken({
+    host: listenHost,
+    ...(typeof values["access-token-file"] === "string"
+      ? { tokenFile: resolve(process.cwd(), expandHome(values["access-token-file"])) }
+      : {}),
+    insecureNoAuth: values["insecure-no-auth"] === true,
+    defaultFile: defaultAccessTokenFile(appDir),
+  }).catch(accessTokenFailure)
+  if (typeof access === "number") return access
+  reportAccess(access, listenHost)
 
   // 2. Port resolution: explicit --port > PORT env > declared ui.port > auto-assign.
   let explicitPort: number | undefined

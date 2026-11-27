@@ -726,6 +726,36 @@ async function launchServeProcess(
   return typeof result?.stdout === "string" ? result.stdout.trim() : ""
 }
 
+const GATE_UNSUPPORTED_MESSAGE =
+  "sandbox app serve: the box's agentproto does not support `app serve --access-token-file`, so the public URL " +
+  "would let anyone run the app's tools. Update the box image (agentproto) and retry. Nothing was started."
+
+/** Exit code the capability probe uses for "runs, but has no `--access-token-file`". */
+const GATE_UNSUPPORTED_EXIT = 42
+
+/**
+ * Does the box's `agentproto app serve` know `--access-token-file`? Only a CLI
+ * that runs and answers without it counts as unsupported; one that cannot run
+ * at all cannot serve either (the readiness and gate probes then report it).
+ */
+async function serveSupportsAccessToken(client: BoxToolClient, dir: string): Promise<boolean> {
+  const script =
+    'out=$(agentproto app serve --help 2>&1) || exit 0; ' +
+    `case "$out" in *--access-token-file*) exit 0;; *) exit ${GATE_UNSUPPORTED_EXIT};; esac`
+  try {
+    const res = await client.callTool("command_execute", {
+      command: "sh",
+      args: ["-c", script],
+      cwd: dir,
+      timeoutMs: 30_000,
+    })
+    const exitCode = parseToolJson(res)?.exitCode
+    return exitCode !== GATE_UNSUPPORTED_EXIT
+  } catch {
+    return true
+  }
+}
+
 /** Read the access token the server wrote and build the entry URL; undefined when unreadable. */
 async function readEntryUrl(client: BoxToolClient, dir: string, url: string): Promise<string | undefined> {
   try {
@@ -845,6 +875,11 @@ export async function startSandboxAppServe(
       }
     }
     await seedAllowlist(client)
+    // Fail closed BEFORE anything listens: a box whose `agentproto` predates
+    // the access token would serve tool calls to anyone on the public URL.
+    if (!(await serveSupportsAccessToken(client, req.dir))) {
+      return { ok: false, message: GATE_UNSUPPORTED_MESSAGE }
+    }
     const pid = await launchServeProcess(client, req.dir, port)
     const ready = await pollServeReady(url, {
       ...(opts?.probe ? { probe: opts.probe } : {}),
@@ -870,8 +905,7 @@ export async function startSandboxAppServe(
           ok: false,
           message:
             "sandbox app serve: the served UI answered a tool call without any credential, so its public URL " +
-            "would be open to anyone. The box's agentproto is probably too old to protect it (`app serve " +
-            "--access-token-file`); update the box image and retry. The server was stopped.",
+            "would be open to anyone. The server was stopped.",
         }
       }
       entryUrl = await readEntryUrl(client, req.dir, url)

@@ -17,7 +17,7 @@ import {
   resolveAccessToken,
   tokensEqual,
 } from "../app-serve-auth.js"
-import { buildBridgeScript, createAppServeRequestHandler } from "../app-serve.js"
+import { buildBridgeScript, createAppServeRequestHandler, isHiddenStaticPath, runAppServe } from "../app-serve.js"
 
 describe("isLoopbackHost", () => {
   it.each(["127.0.0.1", "127.1.2.3", "localhost", "::1", "[::1]", "LOCALHOST"])("%s is loopback", h => {
@@ -226,6 +226,80 @@ describe("app serve request handler without an access token (loopback)", () => {
       expect(res.status).not.toBe(401)
       await new Promise<void>(r => server.close(() => r()))
     } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("static files that must never be served", () => {
+  it("isHiddenStaticPath flags dotfiles and dot-directories but not .well-known", () => {
+    expect(isHiddenStaticPath("/r", "/r/.agentproto/app-serve.token")).toBe(true)
+    expect(isHiddenStaticPath("/r", "/r/a/.env")).toBe(true)
+    expect(isHiddenStaticPath("/r", "/r/.git/config")).toBe(true)
+    expect(isHiddenStaticPath("/r", "/r/.well-known/assetlinks.json")).toBe(false)
+    expect(isHiddenStaticPath("/r", "/r/assets/app.js")).toBe(false)
+    expect(isHiddenStaticPath("/r", "/r")).toBe(false)
+  })
+
+  it("a UI root that is the app dir (ui.path: index.html) does not serve the token file, even with no gate", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "app-serve-docroot-"))
+    try {
+      await mkdir(join(dir, ".agentproto"), { recursive: true })
+      await mkdir(join(dir, ".well-known"), { recursive: true })
+      await writeFile(join(dir, "index.html"), "<html><body>root</body></html>")
+      await writeFile(join(dir, ".agentproto", "app-serve.token"), "SECRET-TOKEN-0123456789")
+      await writeFile(join(dir, ".well-known", "assetlinks.json"), "[]")
+      const server = createServer(
+        createAppServeRequestHandler({
+          uiRoot: dir,
+          appDir: dir,
+          bridgeScript: "",
+          allowedTools: undefined,
+          getClient: async () => {
+            throw new Error("no daemon")
+          },
+          accessToken: "t".repeat(43),
+        }),
+      )
+      await new Promise<void>(r => server.listen(0, "127.0.0.1", r))
+      const addr = server.address()
+      const base = `http://127.0.0.1:${addr && typeof addr === "object" ? addr.port : 0}`
+      for (const p of ["/.agentproto/app-serve.token", "/.agentproto/", "/%2eagentproto/app-serve.token", "/.agentproto/../.agentproto/app-serve.token"]) {
+        const res = await fetch(`${base}${p}`)
+        expect(res.status).not.toBe(200)
+        expect(await res.text()).not.toContain("SECRET-TOKEN")
+      }
+      expect((await fetch(`${base}/.well-known/assetlinks.json`)).status).toBe(200)
+      expect((await fetch(`${base}/`)).status).toBe(200)
+      await new Promise<void>(r => server.close(() => r()))
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("runAppServe beyond loopback", () => {
+  it("leaves no token file behind when the app dir is invalid, and a bad token path is a clean exit", async () => {
+    const home = await mkdtemp(join(tmpdir(), "app-serve-home-"))
+    const dir = await mkdtemp(join(tmpdir(), "app-serve-badapp-"))
+    const prev = process.env.AGENTPROTO_HOME
+    process.env.AGENTPROTO_HOME = home
+    const write = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (() => true) as typeof process.stderr.write
+    try {
+      expect(await runAppServe([dir, "--host", "0.0.0.0"])).toBe(2)
+      await expect(stat(join(home, "app-serve"))).rejects.toThrow()
+      // An unwritable token path (a file where a directory is needed) exits 1, not a crash.
+      await writeFile(join(home, "afile"), "x")
+      await mkdir(join(dir, ".agentproto", "ui"), { recursive: true })
+      await writeFile(join(dir, ".agentproto", "APP.md"), "---\nschema: app/v1\nui:\n  path: .agentproto/ui/index.html\n---\n")
+      await writeFile(join(dir, ".agentproto", "ui", "index.html"), "<html></html>")
+      expect(await runAppServe([dir, "--host", "0.0.0.0", "--access-token-file", join(home, "afile", "x.token")])).toBe(1)
+    } finally {
+      process.stderr.write = write
+      if (prev === undefined) delete process.env.AGENTPROTO_HOME
+      else process.env.AGENTPROTO_HOME = prev
+      await rm(home, { recursive: true, force: true })
       await rm(dir, { recursive: true, force: true })
     }
   })

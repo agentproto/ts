@@ -228,8 +228,9 @@ uploads) answers 401 unless the request carries the access token, either as
 `/?t=<token>` sets (HttpOnly, SameSite=Strict, Secure behind an https proxy; the
 token is then dropped from the address bar). The token is read from
 `--access-token-file <path>`, else from `AGENTPROTO_APP_SERVE_TOKEN`, else a
-fresh one is generated into `<appDir>/.agentproto/app-serve.token` (mode 0600)
-and reused on the next start. It is never printed and never taken as a flag
+fresh one is generated into `~/.agentproto/app-serve/` (mode 0600, outside the
+app folder) and reused on the next start. `app serve` never serves dotfiles or
+dot-directories from the UI root (only `.well-known`). It is never printed and never taken as a flag
 value. `--insecure-no-auth` turns the gate off, for a setup that already
 authenticates in front of the server.
 

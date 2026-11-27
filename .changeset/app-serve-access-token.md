@@ -1,6 +1,6 @@
 ---
-"@agentproto/cli": patch
-"@agentproto/runtime": patch
+"@agentproto/cli": minor
+"@agentproto/runtime": minor
 ---
 
 `agentproto app serve` no longer lets anyone call an app's tools when it listens beyond loopback. With `--host` set to a non-loopback address, the page still loads without a credential, but tool calls and uploads need an access token: `Authorization: Bearer <token>`, or the cookie a first visit to `/?t=<token>` sets. The token comes from `--access-token-file`, `AGENTPROTO_APP_SERVE_TOKEN`, or a generated file in the app folder (mode 0600); `--insecure-no-auth` opts out.
