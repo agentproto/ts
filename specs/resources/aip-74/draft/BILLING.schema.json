@@ -68,6 +68,27 @@
       "items": { "$ref": "#/$defs/partitionId" },
       "description": "Optional tie-break after the AIP-49 normative order."
     },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["categories"],
+      "description": "Metered usage as data (rules 29 to 32 and 35). Which primitive a host calls (hold, debit, shadow) is the host's choice, not a field. A category never carries a rate: the anchor is the only place a rate is written, so a category with `rate`, `ratio` or `creditsPerUnit` is refused by this schema (rule 30). Values of `margin`, `marginFloor` and `floorMinor` are the host's, the AIP sets none. Cross-references (a fixed cost in a currency that is neither the anchor currency nor an fx key; `at-cost` with a marginFloor above 1; duplicate ids) belong to the parser.",
+      "properties": {
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "margin": { "type": "number", "exclusiveMinimum": 0 },
+            "floorMinor": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "categories": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/usageCategory" }
+        }
+      }
+    },
     "taxBasis": {
       "enum": ["net", "gross"],
       "description": "Required by the parser when any conversion starts from fiat (rule 13)."
@@ -202,6 +223,39 @@
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "usageCategory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "cost"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "match": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Every given field must equal the event's. Of the categories that match, the one with the most fields wins (rule 29).",
+          "properties": {
+            "kind": { "type": "string", "minLength": 1 },
+            "model": { "type": "string", "minLength": 1 },
+            "channel": { "type": "string", "minLength": 1 },
+            "op": { "type": "string", "minLength": 1 }
+          }
+        },
+        "cost": {
+          "description": "Where the provider cost comes from (rule 29).",
+          "oneOf": [
+            { "type": "object", "additionalProperties": false, "required": ["source"], "properties": { "source": { "const": "measured" } } },
+            { "type": "object", "additionalProperties": false, "required": ["source"], "properties": { "source": { "const": "catalog" } } },
+            { "type": "object", "additionalProperties": false, "required": ["source", "amount", "currency"], "properties": { "source": { "const": "fixed" }, "amount": { "type": "number", "minimum": 0 }, "currency": { "$ref": "#/$defs/currency" } } }
+          ]
+        },
+        "margin": {
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "const": "at-cost" }],
+          "description": "A multiplier on the cost, or `at-cost` (margin 1.0, nothing overrides it, rule 31)."
+        },
+        "marginFloor": { "type": "number", "exclusiveMinimum": 0, "description": "The lowest real margin (price / cost) the category may sell at (rule 35)." },
+        "floorMinor": { "type": "integer", "minimum": 0, "description": "Smallest charge per action, minor units of primaryAsset." }
+      }
+    },
     "featureId": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_-]*$",
