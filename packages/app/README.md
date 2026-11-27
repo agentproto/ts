@@ -433,9 +433,17 @@ For every such session the daemon builds one **boundary** with three zones:
 | --- | --- | --- |
 | read-only | the installed app dir (source, `.agentproto/`, `scripts/`) | read |
 | writable | the app's `data/` dir, and the workflow run's `$run.workspace` (`app_run` has no run workspace: writable is `data/` only) | read + write |
-| host repo config | when the app dir sits inside a git repo: that repo's root `.git`, `.gitignore`, `.claude/`, `.codex/`, `CLAUDE.md`, `AGENTS.md` (so git, rg and the harness's own project settings and hooks work from the app dir) | read |
+| host repo config | when the app dir sits inside a git repo: that repo's root `.git`, `.gitignore`, `.claude/`, `.codex/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md` (so git, rg and the harness's own project settings and hooks work from the app dir) | read |
 | declared host reads | `boundaries.hostReads` (below) | read |
 | everything else | including the daemon's own workspace and the rest of any host monorepo the app happens to be installed inside | denied |
+
+Where an app puts its harness settings: Claude Code reads
+`.claude/settings.json` from the session's working directory only, so an
+app's own settings (hooks, permission rules) belong in
+`<app dir>/.claude/settings.json`; a step whose cwd is the app dir loads
+them. `.claude/settings.local.json` is read from the cwd and from the git
+root, so the host repo's local file applies too (read-only). A step whose cwd
+is `$run.workspace` sits outside any repo and loads no project settings.
 
 Secret files inside a readable host path (`.env`, `.env.local`, keys,
 `credentials.json`) stay masked from reads and writes.

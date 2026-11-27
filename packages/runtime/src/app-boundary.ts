@@ -9,7 +9,8 @@
  *             sandbox alone would allow them (the daemon workspace, the host
  *             monorepo the app happens to be installed inside)
  *   hostConfig  project config at the root of that host repo (`.git`,
- *             `.gitignore`, `.claude/`, `.codex/`, `CLAUDE.md`, `AGENTS.md`),
+ *             `.gitignore`, `.claude/`, `.codex/`, `.mcp.json`, `CLAUDE.md`,
+ *             `AGENTS.md`),
  *             re-opened READ-ONLY inside the hidden tree for every app: git,
  *             rg and the harnesses walk up to the repo root to load it, and an
  *             unreadable settings file makes a harness start without the
@@ -68,8 +69,12 @@ export interface AppBoundary {
  * config and that stay readable (never writable) for every app session:
  *   - git and rg walk up to `.git` (and read `.gitignore`) from any subdir,
  *     so `git status/log/ls-files` and `rg` work from the app dir;
- *   - Claude Code walks up to the git root for `.claude/settings.json`,
- *     `.claude/settings.local.json`, hooks, commands, and `CLAUDE.md`;
+ *   - Claude Code (checked on 2.1.x, cwd = the app dir inside a repo) reads
+ *     `.claude/settings.json` from `cwd` only, but `.claude/settings.local.json`
+ *     from `cwd` AND the git root (an EPERM there is the "Settings file could
+ *     not be read" startup error), lists the root `.claude/commands/` and
+ *     `.claude/agents/`, reads the root `.mcp.json` (project MCP scope), and
+ *     probes `CLAUDE.md` / `AGENTS.md` in every ancestor;
  *   - Codex reads the project `.codex/` and the `AGENTS.md` chain from the
  *     git root down to `cwd`.
  * Loading instructions into context is a separate switch
@@ -81,6 +86,7 @@ export const HOST_REPO_CONFIG_ENTRIES: readonly string[] = [
   ".gitignore",
   ".claude",
   ".codex",
+  ".mcp.json",
   "CLAUDE.md",
   "AGENTS.md",
 ]

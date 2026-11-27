@@ -60,6 +60,7 @@ beforeEach(() => {
   write(join(repo, ".claude", "settings.local.json"), '{"permissions":{"allow":["Bash(ls)"]}}')
   write(join(repo, ".claude", "hooks", "pre.sh"), "#!/bin/sh\nexit 0\n")
   write(join(repo, ".claude", ".env"), "API_KEY=secret")
+  write(join(repo, ".mcp.json"), '{"mcpServers":{}}')
   write(join(repo, "CLAUDE.md"), "host instructions")
   write(join(repo, "AGENTS.md"), "host agents")
   write(join(repo, "src", "private.ts"), "export const x = 1")
@@ -89,6 +90,7 @@ const ROOT_CONFIG = (): string[] => [
   join(repo, ".git"),
   join(repo, ".gitignore"),
   join(repo, ".claude"),
+  join(repo, ".mcp.json"),
   join(repo, "CLAUDE.md"),
   join(repo, "AGENTS.md"),
 ]
@@ -132,6 +134,7 @@ describe("buildAppBoundary: host repo config (every app)", () => {
       join(repo, ".gitignore"),
       join(repo, ".claude"),
       join(repo, ".codex"),
+      join(repo, ".mcp.json"),
       join(repo, "CLAUDE.md"),
     ])
     expect(() => resolveBoundaryPath(b, join(outside, "AGENTS.md"), "read")).toThrow(FsZoneError)
@@ -235,7 +238,7 @@ describe.skipIf(!sandboxRunnable())("seatbelt end-to-end: host repo", () => {
   }
   const run = (zones: ReturnType<typeof boundaryToSandboxZones>, ...argv: string[]): boolean => exec(zones, ...argv).ok
 
-  it("a step can read the host .claude settings, CLAUDE.md, AGENTS.md and .git/HEAD", () => {
+  it("a step can read what the harness and git read at the host repo root", () => {
     const zones = boundaryToSandboxZones(boundary())
     expect(run(zones, "/bin/cat", join(repo, ".claude", "settings.local.json"))).toBe(true)
     expect(run(zones, "/bin/cat", join(repo, ".claude", "settings.json"))).toBe(true)
@@ -243,6 +246,8 @@ describe.skipIf(!sandboxRunnable())("seatbelt end-to-end: host repo", () => {
     expect(run(zones, "/bin/cat", join(repo, "CLAUDE.md"))).toBe(true)
     expect(run(zones, "/bin/cat", join(repo, "AGENTS.md"))).toBe(true)
     expect(run(zones, "/bin/cat", join(repo, ".git", "HEAD"))).toBe(true)
+    expect(run(zones, "/bin/cat", join(repo, ".mcp.json"))).toBe(true)
+    expect(run(zones, "/bin/ls", join(repo, ".claude", "hooks"))).toBe(true)
     expect(run(zones, "/bin/cat", join(appDir, "APP.md"))).toBe(true)
   })
 
