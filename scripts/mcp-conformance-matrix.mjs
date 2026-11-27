@@ -70,7 +70,8 @@ export function renderMatrix(cases) {
     const pos = all.filter(c => c.case === "positive")
     const neg = all.filter(c => c.case === "negative")
     const era = uniq(all.map(c => c.era)).join(", ")
-    const caps = uniq(pos.map(c => c.capability)).join("; ") || "none (no positive case: the method is not served)"
+    // A method with no positive case is not served: name what its negative cases declare, and say so.
+    const caps = pos.length > 0 ? uniq(pos.map(c => c.capability)).join("; ") : `${uniq(neg.map(c => c.capability)).join("; ")} (negative cases only: the method is not served)`
     const codes = uniq(all.map(expected)).join("; ")
     lines.push(
       `| \`${method}\` | ${surface} | ${cell(era)} | ${cell(caps)} | ${pos.length} | ${neg.length} | ${cell(codes)} |`,

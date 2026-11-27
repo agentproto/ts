@@ -21,8 +21,8 @@ fixtures, and the two hand-written Skills result shapes). The page that explains
 | `tools/call` | elicitation | 2026-07-28 | client: elicitation.form; client: elicitation.url | 4 | 9 | HTTP 200, `input_required`; HTTP 200, `complete`; HTTP 400, `-32602` (known defect) |
 | `tasks/cancel` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks | 1 | 1 | HTTP 200, `complete`; HTTP 400, `-32602` |
 | `tasks/get` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks; client: extensions.io.modelcontextprotocol/tasks + elicitation.form | 5 | 5 | HTTP 400, `-32021`; HTTP 400, `-32602`; HTTP 200, `complete`; HTTP 400, `-32020` |
-| `tasks/list` | tasks | 2026-07-28 + Tasks extension | none (no positive case: the method is not served) | 0 | 1 | HTTP 404, `-32601` |
-| `tasks/result` | tasks | 2026-07-28 + Tasks extension | none (no positive case: the method is not served) | 0 | 1 | HTTP 404, `-32601` |
+| `tasks/list` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks (negative cases only: the method is not served) | 0 | 1 | HTTP 404, `-32601` |
+| `tasks/result` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks (negative cases only: the method is not served) | 0 | 1 | HTTP 404, `-32601` |
 | `tasks/update` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks + elicitation.form | 1 | 2 | HTTP 200, `complete`; HTTP 400, `-32021`; HTTP 400, `-32602` |
 | `tools/call` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks | 1 | 1 | HTTP 200, `task`; HTTP 200, `complete` |
 | `resources/read` | skills | 2026-07-28 + Skills extension (beta) | server: extensions.io.modelcontextprotocol/skills | 1 | 3 | HTTP 200, `complete`; HTTP 400, `-32602` (known defect) |

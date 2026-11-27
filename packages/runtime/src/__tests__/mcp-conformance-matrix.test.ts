@@ -29,7 +29,7 @@ describe("MCP conformance matrix (generated page)", () => {
     for (const row of rows) {
       const [, , , capability, positive, negative] = row.split(" | ")
       expect(Number(negative), row).toBeGreaterThan(0)
-      if (!capability!.startsWith("none (no positive case")) expect(Number(positive), row).toBeGreaterThan(0)
+      if (!capability!.endsWith("(negative cases only: the method is not served)")) expect(Number(positive), row).toBeGreaterThan(0)
     }
   })
 })
