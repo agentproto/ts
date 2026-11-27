@@ -93,6 +93,8 @@ jobs:
           OPENCODE_GO_API_KEY_DEFAULT: ${{ secrets.OPENCODE_GO_API_KEY }}
         with:
           adapter: ${{ steps.review.outputs.adapter }}
+          # Same order as the ci.yml review lanes: the Go key first (Go flash,
+          # metered), then the Zen keys, then the other Go keys.
           credential-ladder: |
             OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_HODL opencode

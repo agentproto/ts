@@ -1412,7 +1412,11 @@ jobs:
           # answered FreeUsageLimitError on every Zen key (even a new one), so a
           # review spent ~50 s on dead Zen rungs before reaching a Go key. The
           # Zen and other Go keys stay behind it, in their old order.
-          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys. A Zen lane
+          # model no longer starts free: the first attempt runs on the Go key
+          # with Go flash (metered, owner-allowlisted), and the free Zen keys are
+          # only tried once that key hits its cap. Deliberate while the free Zen
+          # ids are refused; move the Go rung back to the end to restore free-first.
           credential-ladder: |
             OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_HODL opencode
@@ -1880,7 +1884,11 @@ jobs:
           # answered FreeUsageLimitError on every Zen key (even a new one), so a
           # review spent ~50 s on dead Zen rungs before reaching a Go key. The
           # Zen and other Go keys stay behind it, in their old order.
-          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys. A Zen lane
+          # model no longer starts free: the first attempt runs on the Go key
+          # with Go flash (metered, owner-allowlisted), and the free Zen keys are
+          # only tried once that key hits its cap. Deliberate while the free Zen
+          # ids are refused; move the Go rung back to the end to restore free-first.
           credential-ladder: |
             OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_WS03 opencode

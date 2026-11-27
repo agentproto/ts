@@ -160,13 +160,16 @@ from a flow.
 
 ## Secrets / vars (configure these)
 - `secrets.OPENCODE_API_KEY_HODL`, `secrets.OPENCODE_API_KEY_WS03`,
-  `secrets.OPENCODE_API_KEY`: Zen keys for the review and auto-fix lanes. Each
-  lane takes the first key set: primary lanes read HODL, then WS03, then the
-  base key; fallback lanes start from WS03, so the two lanes do not share a
-  key. `OPENCODE_API_KEY_WS02` is no longer read. To change keys, update these
+  `secrets.OPENCODE_API_KEY`: Zen keys for the review and auto-fix lanes. The
+  auto-fix lane takes the first key set: HODL, then WS03, then the base key. The
+  review lanes rotate through a credential ladder that starts on the Go key
+  (`OPENCODE_GO_API_KEY`, see below) and only then tries these Zen keys (primary
+  lane: HODL, WS03, base; fallback lane: WS03, HODL, base). `OPENCODE_API_KEY_WS02` is no longer read. To change keys, update these
   secrets; no code change.
-- `secrets.OPENCODE_GO_API_KEY_HODL` (optional): Go workspace key, read before
-  `OPENCODE_GO_API_KEY` when a lane's model is `opencode-go/*`.
+- `secrets.OPENCODE_GO_API_KEY_HODL` (optional): Go workspace key. In the
+  review ladders it comes after `OPENCODE_GO_API_KEY` and the Zen keys; on the
+  single-key `api-key` input of an `opencode-go/*` lane it is still read before
+  `OPENCODE_GO_API_KEY`.
 - `secrets.OPENCODE_GO_API_KEY`: Go subscription key. It is the FIRST rung of
   the review credential ladders (`credential-ladder` in ci.yml and
   agentic-review-manual.yml, as `OPENCODE_GO_API_KEY_DEFAULT`), ahead of the Zen
