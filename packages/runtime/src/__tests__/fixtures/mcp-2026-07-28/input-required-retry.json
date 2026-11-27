@@ -57,8 +57,7 @@
       "expect": {
         "httpStatus": 400,
         "code": -32602
-      },
-      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+      }
     },
     {
       "case": "negative",
@@ -101,8 +100,7 @@
         "errorData": {
           "reason": "invalid_signature"
         }
-      },
-      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+      }
     },
     {
       "case": "negative",
@@ -145,8 +143,7 @@
         "errorData": {
           "reason": "expired"
         }
-      },
-      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+      }
     },
     {
       "case": "negative",
@@ -189,8 +186,7 @@
         "errorData": {
           "reason": "replayed"
         }
-      },
-      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+      }
     },
     {
       "case": "negative",
@@ -233,8 +229,7 @@
         "errorData": {
           "reason": "mismatch"
         }
-      },
-      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+      }
     }
   ],
   "body": {

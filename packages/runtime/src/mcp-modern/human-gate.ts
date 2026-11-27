@@ -13,6 +13,9 @@ import { BridgeError } from "./bridge.js"
 import { ERR_INVALID_PARAMS } from "./constants.js"
 import { canonicalArgsHash, type MrtrEntityKind, type MrtrStateStore } from "./mrtr-state.js"
 
+/** A refused MRTR retry is invalid params, answered with HTTP 400 on the modern era (AIP-77 "Error mapping"). */
+const refusedRetry = (message: string, data?: unknown): BridgeError => new BridgeError(ERR_INVALID_PARAMS, message, data, 400)
+
 // ── MCP 2026-07-28 MRTR & Elicitation wire shapes ──────────────────────────
 
 export interface ElicitFormPropertySchema {
@@ -956,7 +959,7 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
     forward: () => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> => {
     if (callerSessionId !== undefined) {
-      throw new BridgeError(ERR_INVALID_PARAMS, "Caller is not permitted to resolve this input request", {
+      throw refusedRetry("Caller is not permitted to resolve this input request", {
         reason: "forbidden_scope",
       })
     }
@@ -997,7 +1000,7 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
 
       if (hasReplay) {
         if (typeof params.requestState !== "string" || !isRecord(params.inputResponses)) {
-          throw new BridgeError(ERR_INVALID_PARAMS, "MRTR replay requires both string requestState and object inputResponses")
+          throw refusedRetry("MRTR replay requires both string requestState and object inputResponses")
         }
         const verified = stateStore.verifyAndConsume(params.requestState, {
           tool,
@@ -1005,7 +1008,7 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
           ...(callerSessionId !== undefined ? { callerSessionId } : {}),
         })
         if (!verified.ok) {
-          throw new BridgeError(ERR_INVALID_PARAMS, verified.message, { reason: verified.reason })
+          throw refusedRetry(verified.message, { reason: verified.reason })
         }
 
         const { state } = verified
@@ -1016,7 +1019,7 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
           return replayRunInput(state.entityId, params, tool, argsHash, callerSessionId, forward)
         }
         if (state.kind !== "permission" && state.kind !== "question") {
-          throw new BridgeError(ERR_INVALID_PARAMS, "Unsupported requestState kind", { reason: "unsupported_kind" })
+          throw refusedRetry("Unsupported requestState kind", { reason: "unsupported_kind" })
         }
 
         const pending = sessions.listPendingPermissions().find(p => p.id === state.entityId)
@@ -1025,7 +1028,7 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
           return forward()
         }
         if (!canCallerResolvePermission(sessions, callerSessionId, pending)) {
-          throw new BridgeError(ERR_INVALID_PARAMS, "Caller is not permitted to resolve this input request", {
+          throw refusedRetry("Caller is not permitted to resolve this input request", {
             reason: "forbidden_scope",
           })
         }

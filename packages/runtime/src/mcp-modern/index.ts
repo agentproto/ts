@@ -5,6 +5,7 @@ import {
   CACHE_HINT_METHODS,
   DEFAULT_SUPPORTED_VERSIONS,
   ERR_INTERNAL,
+  ERR_INVALID_PARAMS,
   ERR_INVALID_REQUEST,
   ERR_METHOD_NOT_FOUND,
   ERR_MISSING_CLIENT_CAPABILITY,
@@ -172,6 +173,24 @@ function decorate(
   return decorated
 }
 
+/** A Skills request (beta extension): `skills/list`, `skills/get`, or a `resources/read` of a `skill://` URI. */
+function isSkillsRequest(method: string, params: Record<string, unknown>): boolean {
+  if (method === "skills/list" || method === "skills/get") return true
+  // A URI scheme is case-insensitive (RFC 3986 3.1): `SKILL://` is a Skills read too.
+  return method === "resources/read" && typeof params.uri === "string" && /^skill:\/\//i.test(params.uri)
+}
+
+/**
+ * The Skills errors are `McpError`s raised inside the in-process server, so they cross the bridge without an HTTP
+ * status. Their invalid params (unknown skill or file, bad cursor, traversal) are answered with HTTP 400 (AIP-77
+ * "Error mapping"); any other code keeps its default.
+ */
+function asSkillsError(error: unknown): unknown {
+  return error instanceof BridgeError && error.code === ERR_INVALID_PARAMS && error.httpStatus === undefined
+    ? new BridgeError(error.code, error.message, error.data, 400)
+    : error
+}
+
 function fromThrown(error: unknown, id: string | number): ModernResponse {
   if (error instanceof BridgeError) {
     // `McpError` serializes its message with an "MCP error <code>: " prefix; strip it (possibly repeated).
@@ -274,6 +293,16 @@ async function answer(
     const rawResult = plan ? await runWithTurnTaskReservation(plan.reservation, gated) : await gated()
     const answer = plan && deps.tasks ? deps.tasks.finalize(plan, rawResult) : rawResult
     return decorate(request.method, answer, bridge.serverInfo, hints)
+  }
+
+  if (isSkillsRequest(request.method, request.params)) {
+    let result: Record<string, unknown>
+    try {
+      result = await forward()
+    } catch (error) {
+      throw asSkillsError(error)
+    }
+    return decorate(request.method, result, bridge.serverInfo, hints)
   }
 
   return decorate(request.method, await forward(), bridge.serverInfo, hints)

@@ -35,8 +35,7 @@
       "expect": {
         "httpStatus": 400,
         "code": -32602
-      },
-      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; the Skills methods and skill:// reads answer -32602 with HTTP 200 today (McpError forwarded through the bridge, mcp-modern/skills.ts)."
+      }
     }
   ],
   "request": {
