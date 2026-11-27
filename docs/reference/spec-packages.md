@@ -12,7 +12,7 @@ Packages in the `spec-reference` tier: reference implementations of AIP file for
 | @agentproto/assembly | `packages/assembly` | AIP-24 | 0.2.1 | @agentproto/assembly — AIP-24 ASSEMBLY.md reference implementation. |
 | @agentproto/canvakit | `packages/canvakit` | AIP-5 | 0.2.0 | @agentproto/canvakit — AIP-5 TEMPLATE.md reference implementation. |
 | @agentproto/code | `packages/code` | AIP-26 | 0.2.0 | @agentproto/code — AIP-26 CODE.md reference implementation. |
-| @agentproto/collection | `packages/collection` | AIP-18 | 0.2.0 | @agentproto/collection — AIP-18 COLLECTION.md reference implementation. |
+| @agentproto/collection | `packages/collection` | AIP-18 | 0.3.0 | @agentproto/collection — AIP-18 COLLECTION.md reference implementation. |
 | @agentproto/company | `packages/company` | AIP-6 | 0.3.0 | @agentproto/company — AIP-6 COMPANY.md reference implementation. |
 | @agentproto/design | `packages/design` | AIP-4 | 0.2.0 | @agentproto/design — AIP-4 DESIGN.md reference implementation. |
 | @agentproto/doctype | `packages/doctype` |  | 0.2.0 | agentproto/doctype - meta-factory for AIP `defineX(definition)` constructors. |
@@ -33,7 +33,7 @@ Packages in the `spec-reference` tier: reference implementations of AIP file for
 | @agentproto/runner | `packages/runner` | AIP-17 | 0.2.0 | @agentproto/runner — AIP-17 RUNNER.md reference implementation. |
 | @agentproto/skill | `packages/skill` | AIP-3 | 0.4.0 | @agentproto/skill — AIP-3 SKILL.md reference implementation. |
 | @agentproto/storage | `packages/storage` | AIP-35 | 0.4.2 | @agentproto/storage — AIP-35 STORAGE.md reference implementation. |
-| @agentproto/tool | `packages/tool` | AIP-14 | 0.7.0 | agentproto/tool-runtime — reference implementation of AIP-14 TOOL.md `defineTool` contract. |
+| @agentproto/tool | `packages/tool` | AIP-14 | 0.8.0 | agentproto/tool-runtime — reference implementation of AIP-14 TOOL.md `defineTool` contract. |
 | @agentproto/wallet | `packages/wallet` | AIP-49 | 0.3.1 | @agentproto/wallet — AIP-49 principal-owned multi-asset wallet primitive. |
 | @agentproto/work | `packages/work` | AIP-20 | 0.3.1 | @agentproto/work — AIP-20 WORK.md reference implementation. |
 | @agentproto/workflow | `packages/workflow` | AIP-15 | 0.8.0 | @agentproto/workflow — AIP-15 WORKFLOW.md reference implementation. |
