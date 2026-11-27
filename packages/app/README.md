@@ -435,7 +435,7 @@ For every such session the daemon builds one **boundary** with three zones:
 | writable | the app's `data/` dir, and the workflow run's `$run.workspace` (`app_run` has no run workspace: writable is `data/` only) | read + write |
 | host repo config | when the app dir sits inside a git repo: that repo's root `.git`, `.gitignore`, `.claude/`, `.codex/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md` (so git, rg and the harness's own project settings and hooks work from the app dir) | read |
 | declared host reads | `boundaries.hostReads` (below) | read |
-| everything else | including the daemon's own workspace and the rest of any host monorepo the app happens to be installed inside | denied |
+| everything else | including the daemon's own workspace and the rest of the working tree of any host monorepo the app happens to be installed inside (committed content stays reachable through the readable `.git`, see below) | denied |
 
 Where an app puts its harness settings: Claude Code reads
 `.claude/settings.json` from the session's working directory only, so an
@@ -462,9 +462,22 @@ boundaries:
 
 Each entry is read-only. The daemon resolves symlinks and refuses (with a
 logged warning) any entry that lands outside the host repo, that names the
-whole repo, or that does not exist; an absolute or `..` entry fails the
-manifest load. `hostReads` only ever opens paths in the repo that already
-contains the app, and is ignored when the app is not inside a git repo.
+whole repo, or that does not exist; an absolute, `..`, `.` or
+whitespace-padded entry fails the manifest load. `hostReads` only ever opens
+paths in the repo that already contains the app, and is ignored when the app
+is not inside a git repo.
+
+**What stays hidden, precisely.** The `hidden` zone and `hostReads` gate the
+host repo's *working tree*. Because `.git` is readable (git and rg need it),
+a session can read everything **committed** to the host repo through git
+(`git show HEAD:<path>`, `git cat-file`), including paths no `hostReads`
+names. Uncommitted and git-ignored files stay hidden. Do not rely on the
+boundary to keep committed content of the host repo confidential from an
+app installed inside it. The host repo's `.git/config` is masked when it
+embeds credentials (an http(s) remote URL with userinfo, or an
+`extraheader`); git then cannot run in that repo from the session, and the
+daemon logs a warning. Keep credentials in a credential helper, not in the
+repo config.
 
 The boundary is enforced on two independent surfaces:
 

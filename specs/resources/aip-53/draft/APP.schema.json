@@ -501,7 +501,7 @@
     "boundaries": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Filesystem boundary policy for sessions the app spawns (app_run, workflow agent steps). The host confines them to the app's zones: app dir read-only, run workspace and data dir writable, everything else denied, including the host repo the app is installed inside. The host repo's own config (.git, .gitignore, .claude/, .codex/, .mcp.json, CLAUDE.md, AGENTS.md at its root) stays readable, never writable.",
+      "description": "Filesystem boundary policy for sessions the app spawns (app_run, workflow agent steps). The host confines them to the app's zones: app dir read-only, run workspace and data dir writable, everything else denied, including the host repo the app is installed inside. The host repo's own config (.git, .gitignore, .claude/, .codex/, .mcp.json, CLAUDE.md, AGENTS.md at its root) stays readable, never writable. The hidden zone gates the working tree only: committed content is reachable through the readable .git.",
       "properties": {
         "enforce": {
           "type": "string",
@@ -520,7 +520,7 @@
             "type": "string",
             "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S"
           },
-          "description": "Paths in the app's own host repo (the git repo whose working tree holds the app dir) its sessions may READ, relative to the host repo root, no '..' segment: a sibling package's built CLI, a shared folder. The host resolves symlinks and refuses an entry that lands outside the host repo or names the whole repo; secret files inside an entry (.env, keys) stay masked. Never writable. Ignored when the app is not inside a git repo."
+          "description": "Paths in the app's own host repo (the git repo whose working tree holds the app dir) its sessions may READ, relative to the host repo root, no '..' segment, not '.' itself: a sibling package's built CLI, a shared folder. The host resolves symlinks and refuses an entry that lands outside the host repo or names the whole repo; secret files inside an entry (.env, keys) stay masked. Never writable. Ignored when the app is not inside a git repo."
         }
       }
     },

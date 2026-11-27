@@ -151,6 +151,32 @@ describe("buildAppBoundary: host repo config (every app)", () => {
     expect(() => resolveBoundaryPath(b, join(commonDir, "HEAD"), "write")).toThrow(FsZoneError)
   })
 
+  it("masks .git/config only when it carries credentials, and says so", () => {
+    expect(boundary().unreadable).toEqual([join(repo, ".claude", ".env")])
+    git("remote", "add", "origin", "git@example.com:org/repo.git")
+    git("remote", "add", "ssh", "ssh://git@example.com/org/repo.git")
+    expect(boundary().unreadable).toEqual([join(repo, ".claude", ".env")])
+    for (const [key, value] of [
+      ["remote.tok.url", "https://x-access-token:abc123@example.com/org/repo.git"],
+      ["http.https://example.com/.extraheader", "AUTHORIZATION: bearer abc123"],
+    ] as const) {
+      const fresh = realpathSync(mkdtempSync(join(userInfo().homedir, ".agentproto-hostcfg-cred-")))
+      try {
+        execFileSync("git", ["init", "-q", fresh])
+        execFileSync("git", ["-C", fresh, "config", key, value])
+        mkdirSync(join(fresh, "apps", "my-app"), { recursive: true })
+        const warnings: string[] = []
+        const b = buildAppBoundary({ app: { appId: "@test/my-app", dir: join(fresh, "apps", "my-app") }, warn: l => warnings.push(l) })
+        expect(b.unreadable).toContain(join(fresh, ".git", "config"))
+        expect(() => resolveBoundaryPath(b, join(fresh, ".git", "config"), "read")).toThrow(/protected secret/)
+        expect(resolveBoundaryPath(b, join(fresh, ".git", "HEAD"), "read")).toBe(join(fresh, ".git", "HEAD"))
+        expect(warnings.join("\n")).toMatch(/holds credentials/)
+      } finally {
+        rmSync(fresh, { recursive: true, force: true })
+      }
+    }
+  })
+
   it("adds nothing when the app is not inside a git repo", () => {
     rmSync(join(repo, ".git"), { recursive: true, force: true })
     const b = boundary(["packages/other-tool/packages/cli/dist"])

@@ -114,6 +114,22 @@ function insideHostRepo(repoRoot: string, realRoot: string, rel: string): { path
   return { path: p }
 }
 
+/**
+ * True when a git `config` file embeds credentials: an http(s) URL with
+ * userinfo (`https://user:token@host`, `https://token@host`) or an
+ * `extraheader` (typically `Authorization: ...`). `ssh://git@host` and
+ * scp-style `git@host:` carry no secret and do not match.
+ */
+export function gitConfigHasCredentials(configPath: string): boolean {
+  let text: string
+  try {
+    text = readFileSync(configPath, "utf8")
+  } catch {
+    return false
+  }
+  return /https?:\/\/[^\s/@]+@/i.test(text) || /^\s*extraheader\s*=/im.test(text)
+}
+
 /** The git dirs a linked worktree's `.git` file points at (gitdir + commondir). */
 function linkedGitDirs(repoRoot: string): string[] {
   const dotGit = join(repoRoot, ".git")
@@ -224,12 +240,30 @@ export function buildAppBoundary(input: BuildAppBoundaryInput): AppBoundary {
     if (c !== gitRoot) continue
     const realRoot = realOrUndefined(abs)
     if (realRoot === undefined) continue
+    const gitDirs: string[] = []
     for (const name of HOST_REPO_CONFIG_ENTRIES) {
       const r = insideHostRepo(abs, realRoot, name)
-      // `.git` holds no conventionally named secrets and is large: not scanned.
-      if ("path" in r) openReadOnly(r.path, hostConfig, name !== ".git")
+      if (!("path" in r)) continue
+      // `.git` holds no conventionally named secret files and is large: not
+      // scanned. Its `config` is checked below.
+      openReadOnly(r.path, hostConfig, name !== ".git")
+      if (name === ".git") gitDirs.push(r.path)
     }
-    for (const g of linkedGitDirs(abs)) openReadOnly(g, hostConfig, false)
+    for (const g of linkedGitDirs(abs)) {
+      openReadOnly(g, hostConfig, false)
+      gitDirs.push(g)
+    }
+    // git cannot run without reading `config`, so it is masked only when it
+    // carries credentials (that repo's git then fails, loudly, in the session).
+    for (const g of gitDirs) {
+      const cfg = join(g, "config")
+      if (gitConfigHasCredentials(cfg) && !unreadable.includes(cfg)) {
+        unreadable.push(cfg)
+        ;(input.warn ?? console.warn)(
+          `[app-boundary] app '${input.app.appId}': ${cfg} holds credentials (URL userinfo or extraheader); masked, so git will not run in this host repo from the session`,
+        )
+      }
+    }
     for (const rel of input.app.boundaries?.hostReads ?? []) {
       const r =
         typeof rel !== "string" || rel.trim() === "" || isAbsolute(rel)

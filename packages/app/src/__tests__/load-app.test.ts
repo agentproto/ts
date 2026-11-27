@@ -515,6 +515,9 @@ describe("loadAppHandle — boundaries", () => {
     ["a nested '..' segment", ["apps/../../outside"]],
     ["an empty entry", [""]],
     ["a non-string entry", [42]],
+    ["the repo root itself", ["."]],
+    ["the repo root as './'", ["./"]],
+    ["surrounding whitespace", [" apps/_shared"]],
   ])("throws AppLoadError on boundaries.hostReads with %s", async (_label, hostReads) => {
     const d = await mkdtemp(join(tmpdir(), "app-kit-load-badhostreads-"))
     try {
