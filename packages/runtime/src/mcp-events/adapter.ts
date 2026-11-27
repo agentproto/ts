@@ -177,6 +177,8 @@ export function callbackEndpointReason(outcome: Extract<ChallengeOutcome, { ok: 
     case "challenge_failed":
       return "challenge_failed"
     case "non_2xx":
+      // `verifyCallback` always sets `status` on `non_2xx`. An outcome without one
+      // (from another producer) is read as a rejection, `http_4xx`, not a server fault.
       return outcome.status !== undefined && outcome.status >= 500 && outcome.status <= 599 ? "http_5xx" : "http_4xx"
     case "timeout":
       return outcome.cause === "connect" ? "connection_refused" : "timeout"
