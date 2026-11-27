@@ -192,9 +192,62 @@ export function buildCspMeta(csp: McpAppUiCsp | undefined): string {
   return `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(buildCspPolicy(csp))}">`
 }
 
-const HEAD_OPEN = /<head(?:\s[^>]*)?>/i
-const HTML_OPEN = /<html(?:\s[^>]*)?>/i
 const DOCTYPE = /^\s*<!doctype[^>]*>/i
+const RAW_TEXT_ELEMENTS = new Set(["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes"])
+
+interface TagMatch {
+  index: number
+  end: number
+}
+
+/**
+ * First start tag named `name` that the HTML parser would really see: not
+ * inside a comment, and not inside a raw-text element (`<script>`, `<style>`,
+ * `<textarea>`, `<title>`, …). A regex over the raw bytes is fooled by
+ * `<!-- <head> -->` or a `<head>` inside a script string, which would put the
+ * CSP meta somewhere the parser ignores it.
+ */
+function findStartTag(html: string, name: string): TagMatch | null {
+  let i = 0
+  while (i < html.length) {
+    const lt = html.indexOf("<", i)
+    if (lt < 0) return null
+    if (html.startsWith("<!--", lt)) {
+      const close = html.indexOf("-->", lt + 4)
+      if (close < 0) return null
+      i = close + 3
+      continue
+    }
+    const m = /^<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)/.exec(html.slice(lt, lt + 64))
+    if (!m) {
+      i = lt + 1
+      continue
+    }
+    const tag = (m[2] ?? "").toLowerCase()
+    // End of the tag, honouring quoted attribute values.
+    let j = lt + m[0].length
+    let quote = ""
+    for (; j < html.length; j++) {
+      const c = html[j]
+      if (quote) {
+        if (c === quote) quote = ""
+      } else if (c === '"' || c === "'") quote = c
+      else if (c === ">") break
+    }
+    const end = Math.min(j + 1, html.length)
+    if (m[1] !== "/" && tag === name) return { index: lt, end }
+    if (m[1] !== "/" && RAW_TEXT_ELEMENTS.has(tag)) {
+      const closeRe = new RegExp(`</${tag}[\\s/>]`, "i")
+      const rest = html.slice(end)
+      const c = closeRe.exec(rest)
+      if (!c) return null
+      i = end + c.index
+      continue
+    }
+    i = end
+  }
+  return null
+}
 
 /**
  * Inject the CSP meta as the first child of `<head>`, creating `<head>` when
@@ -203,10 +256,10 @@ const DOCTYPE = /^\s*<!doctype[^>]*>/i
  */
 export function injectCsp(html: string, csp: McpAppUiCsp | undefined): string {
   const meta = buildCspMeta(csp)
-  const head = HEAD_OPEN.exec(html)
-  if (head) return insertAt(html, head.index + head[0].length, meta)
-  const htmlTag = HTML_OPEN.exec(html)
-  if (htmlTag) return insertAt(html, htmlTag.index + htmlTag[0].length, `<head>${meta}</head>`)
+  const head = findStartTag(html, "head")
+  if (head) return insertAt(html, head.end, meta)
+  const htmlTag = findStartTag(html, "html")
+  if (htmlTag) return insertAt(html, htmlTag.end, `<head>${meta}</head>`)
   const doctype = DOCTYPE.exec(html)
   const at = doctype ? doctype[0].length : 0
   return insertAt(html, at, `<head>${meta}</head>`)
@@ -281,6 +334,8 @@ export async function mountMcpApp(opts: MountMcpAppOptions): Promise<MountedMcpA
 
   const iframe = doc.createElement("iframe")
   iframe.setAttribute("sandbox", view ? MCP_APP_SANDBOX_ORIGIN : MCP_APP_SANDBOX)
+  // The view's URL is a capability: never let it ride in a Referer.
+  iframe.referrerPolicy = "no-referrer"
   const allow = buildAllowAttribute(toResourcePermissions(ui.permissions))
   if (allow) iframe.setAttribute("allow", allow)
   iframe.style.display = "block"

@@ -159,3 +159,41 @@ describe("buildSandboxCspHeader", () => {
     expect(h).not.toContain("127.0.0.1")
   })
 })
+
+describe("injectCsp — the meta lands where the HTML parser will see it", () => {
+  const META = buildCspMeta(undefined)
+  it("ignores <head> inside comments and script/style/textarea/title content", () => {
+    for (const html of [
+      "<!-- <head> --><html><head><title>t</title></head><body></body></html>",
+      '<html><script>var s = "<head>"</script><head></head></html>',
+      "<html><style>/* <head> */</style><head></head></html>",
+      "<html><textarea><head></textarea><head></head></html>",
+      "<html><title><head></title><head></head></html>",
+    ]) {
+      const out = injectCsp(html, undefined)
+      // Our meta must come right after the REAL <head>, never inside the decoy.
+      const real = out.lastIndexOf("<head>")
+      expect(out.slice(real, real + "<head>".length + META.length), html).toBe(`<head>${META}`)
+      expect(out.split(META).length, html).toBe(2)
+    }
+  })
+
+  it("an unterminated comment cannot swallow the injection", () => {
+    const out = injectCsp("<!-- <head>", undefined)
+    expect(out.startsWith(`<head>${META}</head>`)).toBe(true)
+  })
+
+  it("handles quoted > inside attributes of the head tag", () => {
+    const out = injectCsp('<html><head data-x="a>b"><title>t</title></head></html>', undefined)
+    expect(out).toContain(`<head data-x="a>b">${META}<title>`)
+  })
+})
+
+describe("SAFE_SOURCE rejects control characters", () => {
+  it("drops sources containing NUL / CR / LF (they would make writeHead throw or split headers)", () => {
+    const h = buildSandboxCspHeader({ connectDomains: ["https://a.example.com", "https://b\u0000.example.com", "https://c\r\nx.example.com"] }, undefined)
+    expect(h).toContain("connect-src 'self' https://a.example.com;")
+    expect(h).not.toContain("\u0000")
+    expect(h).not.toContain("b.example")
+  })
+})

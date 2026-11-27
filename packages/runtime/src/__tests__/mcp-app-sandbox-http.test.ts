@@ -181,6 +181,18 @@ describe("MCP App sandbox — registration route", () => {
     })
   })
 
+  it("a remote page (non-loopback host) without a public origin gets 501, so the host falls back to restricted mode", async () => {
+    await withDaemon(async (port) => {
+      const r = await register(port, undefined, {
+        host: "app.example.com",
+        origin: "https://app.example.com",
+        "x-forwarded-for": "203.0.113.9",
+      })
+      expect(r.status).toBe(501)
+      expect(r.body).toContain("sandbox_unavailable_for_remote_host")
+    })
+  })
+
   it("mode off: 501, and hosts fall back to the opaque srcdoc", async () => {
     await withDaemon(
       async (port) => {

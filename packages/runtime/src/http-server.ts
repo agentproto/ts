@@ -3859,6 +3859,11 @@ export async function startHttpServer(
             ...(typeof originHeader === "string" ? { ancestor: originHeader } : {}),
             ...(req.headers.host ? { requestHost: req.headers.host } : {}),
           })
+          if (!view) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sandbox_unavailable_for_remote_host" }))
+            return
+          }
           res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
           res.end(JSON.stringify({ url: view.url, origin: view.origin, token: view.token, mode: view.mode }))
           return

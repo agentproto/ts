@@ -55,7 +55,7 @@ export interface McpAppSandboxOptions {
   /** A fixed public origin (e.g. a tunnel hostname) that also serves views.
    *  `https://host[:port]`, no path. */
   publicOrigin?: string
-  /** View lifetime. Default 1 hour. */
+  /** View lifetime. Default 15 minutes (a view's URL is loaded once, at mount). */
   ttlMs?: number
   /** Max live views; the oldest is evicted. Default 256. */
   maxViews?: number
@@ -90,7 +90,7 @@ export type SandboxHostKind =
 const TOKEN = /^[0-9a-f]{32}$/
 const SANDBOX_SUFFIX = ".sandbox.localhost"
 const LOOPBACK_NAMES = new Set(["127.0.0.1", "localhost", "[::1]"])
-const DEFAULT_TTL_MS = 60 * 60 * 1000
+const DEFAULT_TTL_MS = 15 * 60 * 1000
 const DEFAULT_MAX_VIEWS = 256
 const DEFAULT_MAX_HTML = 5 * 1024 * 1024
 const DEFAULT_MAX_TOTAL = 64 * 1024 * 1024
@@ -121,13 +121,16 @@ export interface McpAppSandbox {
   isSandboxOrigin(origin: string | undefined): boolean
   /** R1: the request's `Origin` or `Referer` is a sandbox origin. */
   isSandboxRequest(req: IncomingMessage): boolean
-  /** Register a view; `requestHost` is the `Host` the registering call used. */
+  /** Register a view; `requestHost` is the `Host` the registering call used.
+   *  Returns `null` when the registering page was reached through a
+   *  non-loopback host and no `publicOrigin` is configured: a `*.localhost`
+   *  URL would resolve to the VIEWER's own machine, not this daemon. */
   register(input: {
     html: string
     csp?: McpAppUiCsp
     ancestor?: string
     requestHost?: string
-  }): RegisteredView
+  }): RegisteredView | null
   /** Serve a sandbox-side request (GET|HEAD /v/<token> only). */
   handle(req: IncomingMessage, res: ServerResponse, kind: SandboxHostKind): void
   /** `port` mode: start the dedicated listener. No-op for other modes. */
@@ -190,27 +193,45 @@ export function createMcpAppSandbox(
     return false
   }
 
-  /** CSP sources that name the daemon, or could reach it (R1/R3): every way
-   *  the daemon is reachable on loopback (any loopback name with the daemon's
-   *  port or a wildcard port), the registering page's origin, and the broad
-   *  forms that would cover a plain-http loopback server (`*`, bare `http:`,
-   *  `ws:`, `*.localhost`). */
+  /**
+   * CSP sources a sandbox view must not be granted (R1/R3). Dropped, not
+   * rewritten: every loopback / private-name host in ANY spelling (the URL
+   * parser canonicalises `127.1`, `2130706433`, `0x7f.1`, `[::ffff:7f00:1]`,
+   * trailing dots, …) on any port, `localhost` and `*.localhost`, `0.0.0.0`,
+   * the registering page's own origin, the broad forms that would cover a
+   * plain-http loopback server (`*`, bare `http:` / `ws:`), and `data:` /
+   * `about:` / `javascript:` (opaque-origin frames would send `Origin: null`,
+   * which no origin guard can attribute to a sandbox).
+   */
   function targetsDaemon(source: string, ancestor: string | undefined): boolean {
     const raw = source.toLowerCase()
-    if (raw === "*" || raw === "http:" || raw === "ws:" || raw === "*.localhost") return true
-    const s = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/\/.*$/, "")
-    const parts = splitHost(s)
-    if (!parts) return false
-    const loopback = LOOPBACK_NAMES.has(parts.name) || parts.name === "0.0.0.0" || parts.name === "*.localhost"
-    if (loopback && (parts.port === String(daemon.port) || parts.port === "*")) return true
+    if (raw === "*" || raw === "http:" || raw === "ws:" || raw === "data:" || raw === "about:" || raw === "javascript:") {
+      return true
+    }
+    const hostPart = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/[/?#].*$/, "")
+    // Wildcard hosts: `*.localhost`, `*.local`, anything wildcarding a loopback label.
+    if (hostPart.startsWith("*.") && /(^|\.)(localhost|local|internal|localdomain)(:\d+|:\*)?$/.test(hostPart)) return true
+    let host = ""
+    try {
+      // Use a scheme-qualified URL so the WHATWG parser canonicalises the host.
+      host = new URL(`http://${hostPart.replace(/:\*$/, "")}`).hostname
+    } catch {
+      return false
+    }
+    host = host.replace(/\.$/, "")
+    if (host === "localhost" || host.endsWith(".localhost")) return true
+    if (host === "[::1]" || host === "[::]" || host === "0.0.0.0") return true
+    if (/^\[(?:0{0,4}:){2,}(?:ffff:)?(?:7f[0-9a-f]{2}|0|0{1,4}):[0-9a-f]{1,4}\]$/.test(host)) return true
+    if (/^\[::ffff:/.test(host)) return true
+    if (/^127\./.test(host) || /^0\./.test(host)) return true
     if (ancestor) {
       const a = originOf(ancestor)
-      if (a && a.host.toLowerCase() === s) return true
+      if (a && a.host.toLowerCase() === hostPart) return true
     }
     return false
   }
 
-  function viewUrl(token: string, requestHost: string | undefined): RegisteredView {
+  function viewUrl(token: string, requestHost: string | undefined): RegisteredView | null {
     // The public (tunnel) sandbox hostname is used when the registering page
     // was reached through a non-loopback host (it is a different hostname from
     // the sandbox one: the sandbox hostname never serves the daemon API); a
@@ -220,6 +241,7 @@ export function createMcpAppSandbox(
     if (publicOrigin && publicHost && remote) {
       return { token, url: `${publicOrigin}/v/${token}`, origin: publicOrigin, mode: "public" }
     }
+    if (remote) return null
     if (mode === "port" && sandboxPort !== undefined) {
       const origin = `http://127.0.0.1:${sandboxPort}`
       return { token, url: `${origin}/v/${token}`, origin, mode: "port" }
@@ -265,12 +287,18 @@ export function createMcpAppSandbox(
     const csp = buildSandboxCspHeader(view.csp, view.ancestor, {
       dropSource: (s) => targetsDaemon(s, view.ancestor),
     })
+    // `port` / `public` give every view the SAME origin, so storage would be
+    // shared between views. Wiping the origin's storage on each document load
+    // stops one view reading what an earlier one left behind (concurrently
+    // open views still share it: only `subdomain` mode isolates those).
+    const sharedOrigin = kind.kind !== "subdomain"
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "content-security-policy": csp,
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
+      ...(sharedOrigin ? { "clear-site-data": '"cache", "storage"' } : {}),
     })
     res.end(method === "HEAD" ? undefined : view.html)
   }
@@ -309,6 +337,8 @@ export function createMcpAppSandbox(
     register({ html, csp, ancestor, requestHost }) {
       sweep()
       const token = randomBytes(16).toString("hex")
+      const url = viewUrl(token, requestHost)
+      if (!url) return null
       const cleanAncestor = toOrigin(ancestor)
       // A sandbox origin can never be the embedder (it would be R1 in reverse).
       views.set(token, {
@@ -319,7 +349,7 @@ export function createMcpAppSandbox(
         expiresAt: now() + ttlMs,
       })
       sweep()
-      return viewUrl(token, requestHost)
+      return url
     },
 
     handle,

@@ -7,7 +7,14 @@ import { EventEmitter } from "node:events"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { describe, expect, it } from "vitest"
 
-import { createMcpAppSandbox, parseRegistration } from "../mcp-app-sandbox.js"
+import { createMcpAppSandbox, parseRegistration, type McpAppSandbox } from "../mcp-app-sandbox.js"
+
+/** `register` is null only for a remote host without a public origin. */
+function reg(sb: McpAppSandbox, input: Parameters<McpAppSandbox["register"]>[0]) {
+  const v = sb.register(input)
+  if (!v) throw new Error("expected a registered view")
+  return v
+}
 
 function fakeRes() {
   const out: { status?: number; headers: Record<string, string>; body?: string } = { headers: {} }
@@ -33,8 +40,8 @@ const HTML = "<!doctype html><html><head></head><body>view</body></html>"
 describe("createMcpAppSandbox — URLs and origins", () => {
   it("subdomain mode: per-view origin that differs from the daemon's (R7)", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const a = sb.register({ html: HTML })
-    const b = sb.register({ html: HTML })
+    const a = reg(sb, { html: HTML })
+    const b = reg(sb, { html: HTML })
     expect(a.mode).toBe("subdomain")
     expect(a.origin).toBe(`http://${a.token}.sandbox.localhost:18790`)
     expect(a.url).toBe(`${a.origin}/v/${a.token}`)
@@ -47,16 +54,16 @@ describe("createMcpAppSandbox — URLs and origins", () => {
     expect(() => createMcpAppSandbox({ mode: "port" }, { port: 18790 })).toThrow()
     expect(() => createMcpAppSandbox({ mode: "port", port: 18790 }, { port: 18790 })).toThrow()
     const sb = createMcpAppSandbox({ mode: "port", port: 18791 }, { port: 18790 })
-    const v = sb.register({ html: HTML })
+    const v = reg(sb, { html: HTML })
     expect(v.mode).toBe("port")
     expect(v.origin).toBe("http://127.0.0.1:18791")
   })
 
   it("public origin is used when the registering page was reached through a non-loopback host", () => {
     const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
-    expect(sb.register({ html: HTML, requestHost: "app.example.com" }).origin).toBe("https://sbx.example.com")
-    expect(sb.register({ html: HTML, requestHost: "127.0.0.1:18790" }).mode).toBe("subdomain")
-    expect(sb.register({ html: HTML, requestHost: "localhost:18790" }).mode).toBe("subdomain")
+    expect(reg(sb, { html: HTML, requestHost: "app.example.com" }).origin).toBe("https://sbx.example.com")
+    expect(reg(sb, { html: HTML, requestHost: "127.0.0.1:18790" }).mode).toBe("subdomain")
+    expect(reg(sb, { html: HTML, requestHost: "localhost:18790" }).mode).toBe("subdomain")
   })
 
   it("off mode: not enabled, classifies nothing", () => {
@@ -101,7 +108,7 @@ describe("createMcpAppSandbox — URLs and origins", () => {
 describe("createMcpAppSandbox — serving", () => {
   it("serves the view with the CSP as an HTTP header (R3) and hardening headers", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const v = sb.register({
+    const v = reg(sb, {
       html: HTML,
       csp: { connectDomains: ["https://api.example.com"], baseUriDomains: ["https://archive.org"] },
       ancestor: "http://127.0.0.1:18790",
@@ -127,7 +134,7 @@ describe("createMcpAppSandbox — serving", () => {
 
   it("CSP defaults: base-uri 'self', frame-ancestors 'none' without an embedder (R6)", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const v = sb.register({ html: HTML })
+    const v = reg(sb, { html: HTML })
     const { res, out } = fakeRes()
     sb.handle(fakeReq("GET", `/v/${v.token}`), res, { kind: "subdomain", label: v.token })
     const csp = out.headers["content-security-policy"] ?? ""
@@ -137,7 +144,7 @@ describe("createMcpAppSandbox — serving", () => {
 
   it("a sandbox origin can never be recorded as the embedder", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const v = sb.register({ html: HTML, ancestor: "http://x.sandbox.localhost:18790" })
+    const v = reg(sb, { html: HTML, ancestor: "http://x.sandbox.localhost:18790" })
     const { res, out } = fakeRes()
     sb.handle(fakeReq("GET", `/v/${v.token}`), res, { kind: "subdomain", label: v.token })
     expect(out.headers["content-security-policy"]).toContain("frame-ancestors 'none'")
@@ -145,7 +152,7 @@ describe("createMcpAppSandbox — serving", () => {
 
   it("drops declared sources that target the daemon itself (R3)", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const v = sb.register({
+    const v = reg(sb, {
       html: HTML,
       ancestor: "https://host.example.com",
       csp: {
@@ -166,7 +173,7 @@ describe("createMcpAppSandbox — serving", () => {
 
   it("drops broad and wildcard sources that could reach a plain-http loopback daemon (R3)", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const v = sb.register({
+    const v = reg(sb, {
       html: HTML,
       csp: {
         connectDomains: [
@@ -194,18 +201,65 @@ describe("createMcpAppSandbox — serving", () => {
   it("the store has a total byte budget: the oldest views are evicted (R4)", () => {
     const sb = createMcpAppSandbox({ maxTotalBytes: 100 }, { port: 18790 })
     const big = "x".repeat(60)
-    const first = sb.register({ html: big })
-    sb.register({ html: big })
+    const first = reg(sb, { html: big })
+    reg(sb, { html: big })
     expect(sb.size()).toBe(1)
     const { res, out } = fakeRes()
     sb.handle(fakeReq("GET", `/v/${first.token}`), res, { kind: "subdomain", label: first.token })
     expect(out.status).toBe(404)
   })
 
+  it("drops every spelling of a loopback host, on any port, plus data: frames (R1/R3)", () => {
+    const sb = createMcpAppSandbox(undefined, { port: 18790 })
+    const v = reg(sb, {
+      html: HTML,
+      csp: {
+        connectDomains: [
+          "http://127.1:18790",
+          "http://2130706433:18790",
+          "http://0x7f.1",
+          "http://127.0.0.1:3000",
+          "http://localhost.:18790",
+          "http://foo.localhost:18790",
+          "http://[::ffff:127.0.0.1]:18790",
+          "http://[::ffff:7f00:1]:18790",
+          "http://[::1]:9",
+          "ws://127.0.0.2:18790",
+          "https://ok.example.com",
+        ],
+        frameDomains: ["data:", "about:", "blob:", "https://www.youtube.com"],
+      },
+    })
+    const { res, out } = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${v.token}`), res, { kind: "subdomain", label: v.token })
+    const directives = (out.headers["content-security-policy"] ?? "").split("; ")
+    expect(directives.find((d) => d.startsWith("connect-src"))).toBe("connect-src 'self' https://ok.example.com")
+    expect(directives.find((d) => d.startsWith("frame-src"))).toBe("frame-src blob: https://www.youtube.com")
+  })
+
+  it("a page reached through a non-loopback host gets no *.localhost URL unless a public origin exists", () => {
+    const sb = createMcpAppSandbox(undefined, { port: 18790 })
+    expect(sb.register({ html: HTML, requestHost: "app.example.com" })).toBeNull()
+    expect(sb.size()).toBe(0)
+  })
+
+  it("shared-origin modes wipe the origin's storage on each document load; subdomain does not need to (R7)", () => {
+    const shared = createMcpAppSandbox({ mode: "port", port: 18791 }, { port: 18790 })
+    const v = reg(shared, { html: HTML })
+    let r = fakeRes()
+    shared.handle(fakeReq("GET", `/v/${v.token}`), r.res, { kind: "port" })
+    expect(r.out.headers["clear-site-data"]).toBe('"cache", "storage"')
+    const iso = createMcpAppSandbox(undefined, { port: 18790 })
+    const w = reg(iso, { html: HTML })
+    r = fakeRes()
+    iso.handle(fakeReq("GET", `/v/${w.token}`), r.res, { kind: "subdomain", label: w.token })
+    expect(r.out.headers["clear-site-data"]).toBeUndefined()
+  })
+
   it("subdomain mode refuses a document on any origin but its own (R7)", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const a = sb.register({ html: HTML })
-    const b = sb.register({ html: HTML })
+    const a = reg(sb, { html: HTML })
+    const b = reg(sb, { html: HTML })
     const { res, out } = fakeRes()
     sb.handle(fakeReq("GET", `/v/${a.token}`), res, { kind: "subdomain", label: b.token })
     expect(out.status).toBe(404)
@@ -213,7 +267,7 @@ describe("createMcpAppSandbox — serving", () => {
 
   it("only GET|HEAD /v/<token>: other paths 404, other methods 405 (R2)", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
-    const v = sb.register({ html: HTML })
+    const v = reg(sb, { html: HTML })
     const kind = { kind: "subdomain", label: v.token } as const
     for (const path of ["/", "/health", "/mcp", "/sessions", `/v/${v.token}/x`, "/v/nothex", "/v/", "/apps/a/ui"]) {
       const { res, out } = fakeRes()
@@ -235,7 +289,7 @@ describe("createMcpAppSandbox — serving", () => {
   it("tokens expire (R4)", () => {
     let t = 1_000
     const sb = createMcpAppSandbox({ ttlMs: 500 }, { port: 18790, now: () => t })
-    const v = sb.register({ html: HTML })
+    const v = reg(sb, { html: HTML })
     const kind = { kind: "subdomain", label: v.token } as const
     let r = fakeRes()
     sb.handle(fakeReq("GET", `/v/${v.token}`), r.res, kind)
@@ -248,9 +302,9 @@ describe("createMcpAppSandbox — serving", () => {
 
   it("the store is bounded: the oldest view is evicted (R4)", () => {
     const sb = createMcpAppSandbox({ maxViews: 2 }, { port: 18790 })
-    const first = sb.register({ html: HTML })
-    sb.register({ html: HTML })
-    sb.register({ html: HTML })
+    const first = reg(sb, { html: HTML })
+    reg(sb, { html: HTML })
+    reg(sb, { html: HTML })
     expect(sb.size()).toBe(2)
     const { res, out } = fakeRes()
     sb.handle(fakeReq("GET", `/v/${first.token}`), res, { kind: "subdomain", label: first.token })

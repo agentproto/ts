@@ -23,7 +23,8 @@ export type { McpAppUiCsp }
  * directive or keyword into the policy, so it is dropped rather than
  * escaped.
  */
-const SAFE_SOURCE = /^[^\s;,'"<>]+$/
+// eslint-disable-next-line no-control-regex
+const SAFE_SOURCE = /^[^\s;,'"<>\u0000-\u001f\u007f]+$/
 
 function safeSources(domains: readonly string[] | undefined): string[] {
   return (domains ?? []).filter((d) => SAFE_SOURCE.test(d))

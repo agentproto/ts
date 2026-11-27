@@ -59,6 +59,7 @@ describe("mountMcpApp — sandbox-origin mode", () => {
     expect(m.iframe.hasAttribute("srcdoc")).toBe(false)
     expect(m.iframe.getAttribute("sandbox")).toBe(MCP_APP_SANDBOX_ORIGIN)
     expect(m.iframe.getAttribute("sandbox")).toContain("allow-same-origin")
+    expect(m.iframe.referrerPolicy).toBe("no-referrer")
     expect(resolver).toHaveBeenCalledWith(expect.objectContaining({ html: "<p>x</p>" }))
     expect(warn).not.toHaveBeenCalled()
   })
