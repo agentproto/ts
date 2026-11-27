@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
-import { boundariesError } from "../boundaries.js"
+import { boundariesError, HOST_READ_PATH_RE } from "../boundaries.js"
 import { parseServiceList } from "../manifest-fields.js"
 
 const schemaPath = fileURLToPath(
@@ -14,7 +14,10 @@ const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
 const pattern = new RegExp(schema.properties.boundaries.properties.hostReads.items.pattern)
 
 const VALID = ["packages/foo", ".claude-like/x", "a", "./packages/foo", "a/b/", "..foo", "foo..", "a/..b/c", ".hidden", "dir with space/x"]
-const INVALID = [".", "./", ".//", ".///", "/abs", "/", "..", "../x", "a/../b", "a/..", "./..", "", " ", " a", "a ", "a\t", "\ta"]
+const INVALID = [".", "./", ".//", ".///", "/abs", "/", "..", "../x", "a/../b", "a/..", "./..", "", " ", " a", "a ", "a\t", "\ta",
+  // Line terminators: JSON Schema `.` does not match them, so the anchored
+  // pattern refuses an entry holding one anywhere (AIP-53 rule 14).
+  "a\nb", "a\rb", "a\u2028b", "a\u2029b", "a\n", "\na"]
 
 describe("APP.schema.json boundaries.hostReads item pattern", () => {
   it.each(VALID)("accepts %j", p => {
@@ -22,6 +25,10 @@ describe("APP.schema.json boundaries.hostReads item pattern", () => {
   })
   it.each(INVALID)("refuses %j", p => {
     expect(pattern.test(p)).toBe(false)
+  })
+  it("is the loader's own pattern", () => {
+    expect(HOST_READ_PATH_RE.source).toBe(pattern.source)
+    expect(HOST_READ_PATH_RE.flags).toBe("")
   })
   it.each([...VALID, ...INVALID])("agrees with the loader on %j", p => {
     expect(pattern.test(p)).toBe(boundariesError({ hostReads: [p] }) === undefined)

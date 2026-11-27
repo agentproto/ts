@@ -501,7 +501,7 @@
     "boundaries": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Filesystem boundary policy for sessions the app spawns (app_run, workflow agent steps). The host confines them to the app's zones: app dir read-only, run workspace and data dir writable, everything else denied, including the host repo the app is installed inside. The host repo's own config (.git, .gitignore, .claude/, .codex/, .mcp.json, CLAUDE.md, AGENTS.md at its root) stays readable, never writable. The hidden zone gates the working tree only: committed content is reachable through the readable .git.",
+      "description": "Filesystem boundary policy for sessions the app spawns (app_run, workflow agent steps). The host confines them to the app's zones: app dir read-only, run workspace and data dir writable, everything else denied, including the host repo the app is installed inside. The host repo's own config (.git, .gitignore, .claude/, .codex/, .mcp.json, CLAUDE.md, AGENTS.md at its root) stays readable, never writable. The hidden zone gates the working tree only: committed content is reachable through the readable .git. See AIP-53 § Session boundaries.",
       "properties": {
         "enforce": {
           "type": "string",
