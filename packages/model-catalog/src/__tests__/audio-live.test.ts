@@ -10,31 +10,36 @@
  *   - the curation flag (`needsCuration` / `openaiLiveIdsNeedingCuration`)
  *     is a faithful function of the curated catalog — no more, no less.
  */
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 
-import {
+// The synced roster is replaced by a fixture so these tests assert the
+// roster/overlay contract, not which ids OpenAI serves this week. The one
+// check that IS about live drift lives in audio-live.drift.test.ts.
+vi.mock("../audio/openai-live.generated.js", () => {
+  const live = (id: string, needsCuration: boolean) => ({
+    providerId: id, modality: "audio", kind: "live", needsCuration, ownedBy: "system", createdAt: "2026-01-01",
+  })
+  return {
+    OPENAI_LIVE_MODELS: {
+      "gpt-live-1": live("gpt-live-1", false),
+      "gpt-live-1.1": live("gpt-live-1.1", false),
+      "gpt-realtime-fixture-uncurated": live("gpt-realtime-fixture-uncurated", true),
+    },
+  }
+})
+
+const {
   OPENAI_LIVE_MODELS,
   OPENAI_LIVE_MODEL_IDS,
   CURATED_OPENAI_AUDIO_PROVIDER_IDS,
   isCuratedOpenAIAudioModel,
   openaiLiveIdsNeedingCuration,
-} from "../audio/live.js"
-import { AUDIO_MODEL_CATALOG } from "../audio/catalog.js"
+} = await import("../audio/live.js")
+const { AUDIO_MODEL_CATALOG } = await import("../audio/catalog.js")
 
 describe("synced OpenAI live roster (openai-live.generated.ts)", () => {
-  it("carries the current live/realtime families", () => {
-    // Pinned 2026-11-22: the GPT-Live + Realtime families OpenAI serves on
-    // /v1/models. Drifting ids (rename, retirement) must land in a sync PR.
-    for (const id of [
-      "gpt-live-1",
-      "gpt-live-1.1",
-      "gpt-realtime-1.5",
-      "gpt-realtime-2.1",
-      "gpt-realtime-mini",
-    ]) {
-      expect(OPENAI_LIVE_MODEL_IDS, `missing synced id ${id}`).toContain(id)
-    }
-    // Date-pinned variants of rolling ids stay excluded.
+  it("exposes the roster ids and excludes date-pinned variants", () => {
+    expect(OPENAI_LIVE_MODEL_IDS).toEqual(Object.keys(OPENAI_LIVE_MODELS))
     expect(OPENAI_LIVE_MODEL_IDS).not.toContain("gpt-realtime-2025-08-28")
   })
 
@@ -54,22 +59,6 @@ describe("synced OpenAI live roster (openai-live.generated.ts)", () => {
 })
 
 describe("curated overlay ↔ synced roster covenant", () => {
-  it("curated OpenAI s2s engines exist on the synced provider roster", () => {
-    // Anti-drift: a hand-curated live engine must never reference an id
-    // OpenAI's own /v1/models no longer serves. When OpenAI retires one,
-    // the weekly sync drops it from the roster and this test goes red —
-    // forcing the curated overlay to move with the provider.
-    const curatedOpenAIS2S = Object.values(AUDIO_MODEL_CATALOG).filter(
-      m => m.provider === "openai" && m.capabilities.s2s,
-    )
-    expect(curatedOpenAIS2S.length).toBeGreaterThanOrEqual(6)
-    for (const m of curatedOpenAIS2S) {
-      expect(OPENAI_LIVE_MODEL_IDS, `curated id ${m.providerId} not on /v1/models`).toContain(
-        m.providerId,
-      )
-    }
-  })
-
   it("needsCuration is exactly the curated-overlay membership function", () => {
     for (const [id, entry] of Object.entries(OPENAI_LIVE_MODELS)) {
       expect(entry.needsCuration).toBe(!isCuratedOpenAIAudioModel(id))
