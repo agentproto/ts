@@ -589,7 +589,9 @@ export class TunnelRegistry {
   }
 
   /**
-   * Relaunch every `autostart` tunnel that isn't currently running. Called
+   * Relaunch every `autostart` tunnel that isn't currently running
+   * (`stopped`, or `error` from a failed earlier start such as the
+   * unprotected-gateway refusal, which a later boot may now satisfy). Called
    * once on daemon boot — `loadFromDisk` has already ghosted formerly-live
    * entries to `stopped` and given autostart ones a real provider. Quick
    * tunnels are skipped (a relaunch yields a fresh random URL, defeating
@@ -601,7 +603,9 @@ export class TunnelRegistry {
   async restoreOnBoot(): Promise<void> {
     if (this.closed) return
     const toStart = Array.from(this.tunnels.values()).filter(
-      e => e.desc.autostart === true && e.desc.status === "stopped",
+      e =>
+        e.desc.autostart === true &&
+        (e.desc.status === "stopped" || e.desc.status === "error"),
     )
     for (const entry of toStart) {
       // Autostart eligibility is data-driven: a provider whose public URL is

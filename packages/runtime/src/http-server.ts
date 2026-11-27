@@ -35,7 +35,7 @@ import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-p
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
-import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto"
+import { randomUUID, randomBytes, timingSafeEqual, createHash } from "node:crypto"
 import {
   GATEWAY_ADVERTISED_VERSIONS,
   META_PROTOCOL_VERSION,
@@ -1105,6 +1105,32 @@ function messageOutcome(result: { queued: boolean; delivered?: { via: string } |
 export interface AuthOptions {
   mode: "none" | "bearer"
   token?: string
+  /**
+   * sha256 (hex) of the bearer token, for a gate restored after a restart
+   * from persisted state that only keeps the hash. Used when `token` is unset.
+   */
+  tokenHash?: string
+}
+
+/**
+ * Whether `presented` (a raw token, no `Bearer ` prefix) satisfies a bearer
+ * `auth`: compares against `token`, or its sha256 against `tokenHash`.
+ */
+export function bearerTokenMatches(
+  auth: AuthOptions,
+  presented: string | undefined,
+): boolean {
+  if (auth.mode !== "bearer" || !presented) return false
+  if (auth.token !== undefined) return presented === auth.token
+  if (auth.tokenHash === undefined) return false
+  const got = Buffer.from(createHash("sha256").update(presented).digest("hex"))
+  const want = Buffer.from(auth.tokenHash)
+  return got.length === want.length && timingSafeEqual(got, want)
+}
+
+/** `Authorization` header value → raw bearer token, or undefined. */
+export function bearerFromHeader(header: string | undefined): string | undefined {
+  return header?.startsWith("Bearer ") ? header.slice(7) : undefined
 }
 
 /**
@@ -1881,9 +1907,7 @@ export async function startHttpServer(
     const auth = readAuth()
     if (auth.mode === "none") return true
     if (isLoopback(req)) return true
-    const header = req.headers.authorization
-    const expected = `Bearer ${auth.token}`
-    if (header !== expected) {
+    if (!bearerTokenMatches(auth, bearerFromHeader(req.headers.authorization))) {
       res.writeHead(401, { "content-type": "application/json" })
       res.end(JSON.stringify({ error: "unauthorized" }))
       return false
@@ -1987,13 +2011,13 @@ export async function startHttpServer(
     // answers for a profile the grant's allowlist names.
     if (method === "POST" && path === CREDENTIAL_RELAY_PATH) return true
     const header = req.headers.authorization
-    if (header === `Bearer ${auth.token}`) return true
+    if (bearerTokenMatches(auth, bearerFromHeader(header))) return true
     const urlStr = req.url ?? ""
     if (urlStr.includes("?")) {
       const qsToken = new URLSearchParams(
         urlStr.slice(urlStr.indexOf("?") + 1),
       ).get("token")
-      if (qsToken && qsToken === auth.token) return true
+      if (bearerTokenMatches(auth, qsToken ?? undefined)) return true
     }
     if (appLinkTunnelBypass(req, path, method, opts.appLinkKeyPath)) return true
     return false
@@ -2047,7 +2071,7 @@ export async function startHttpServer(
     ) {
       const auth = readAuth()
       const header = req.headers.authorization
-      if (auth.mode === "bearer" && header === `Bearer ${auth.token}`) {
+      if (bearerTokenMatches(auth, bearerFromHeader(header))) {
         return true
       }
       res.writeHead(403, { "content-type": "application/json" })
@@ -2793,9 +2817,9 @@ export async function startHttpServer(
     if (isLoopback(req)) return true
     const auth = readAuth()
     if (auth.mode !== "bearer") return false
-    if (req.headers.authorization === `Bearer ${auth.token}`) return true
+    if (bearerTokenMatches(auth, bearerFromHeader(req.headers.authorization))) return true
     const qsToken = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("token")
-    return !!qsToken && qsToken === auth.token
+    return bearerTokenMatches(auth, qsToken ?? undefined)
   }
 
   // console.error on purpose: stderr is the daemon.log file (see above).
@@ -3609,7 +3633,7 @@ export async function startHttpServer(
     ) {
       const auth = readAuth()
       const header = req.headers.authorization
-      if (auth.mode === "bearer" && header === `Bearer ${auth.token}`) {
+      if (bearerTokenMatches(auth, bearerFromHeader(header))) {
         return false
       }
       res.writeHead(403, { "content-type": "application/json" })
