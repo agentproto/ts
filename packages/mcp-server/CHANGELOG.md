@@ -1,5 +1,18 @@
 # @agentproto/mcp-server
 
+## 0.9.0
+
+### Minor Changes
+
+- fa8ac3a: Serve the MCP Events extension (`io.modelcontextprotocol/events`): add `events/poll` (pull delivery, no prior subscribe), backed by a durable per-`(name, arguments)` journal and a shared, idle-released provider watch, with an opaque cursor, `maxAgeMs`, `maxEvents`, `hasMore`, `nextPollMs` and `truncated` (a cursor older than the journal, the retention or a watch gap reads as truncated, never an error). `server/discover` now declares the extension next to `events:{}`; `events/list` reports the delivery modes really offered per type and omits `nextCursor` on the last page; `events/unsubscribe` accepts `delivery: { url }` without `mode`; `Mcp-Name` is now required on poll, subscribe and unsubscribe (breaking for existing webhook clients that omitted the header on subscribe/unsubscribe: send `Mcp-Name` with the event name); errors use the standard codes `-32023` to `-32027` (backing-subscription failures are `-32603` with `data.kind`), with the old `-32015`/`-32016` kept in `data.legacyCode` for one release. The public events origin applies its repo allowlist to `events/poll` (`-32024`). The extension can be switched off with `mcp.eventsExtension: false`, which keeps the three webhook methods.
+- b844aaf: Serve the beta MCP Skills extension (`io.modelcontextprotocol/skills`) on the 2026-07-28 era of the root `/mcp` gateway: `skills/list`, `skills/get` and `skill://<name>/<path>` reads through `resources/read`, backed by the imported-skills registry only (application skills are not served). Each skill carries its frontmatter verbatim and a manifest of files with `sha256` digests over raw bytes; a skill above 512 files / 16 MiB is not served and says why, and paths are confined to the skill folder. `server/discover` announces the extension and the `resources` capability. Switch it off with `mcp.extensions.skills=false`; the legacy 2025-11-25 path and the spawn-time skill delivery are unchanged. `@agentproto/mcp-server` exports `registerSkillsMethods`.
+
+### Patch Changes
+
+- Updated dependencies [da79225]
+  - @agentproto/tool@0.8.0
+  - @agentproto/driver@0.4.4
+
 ## 0.8.0
 
 ### Minor Changes

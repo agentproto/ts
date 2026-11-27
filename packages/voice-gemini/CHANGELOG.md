@@ -1,5 +1,19 @@
 # @agentproto/voice-gemini
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [bc39e63]
+- Updated dependencies [83b3c87]
+- Updated dependencies [0364992]
+- Updated dependencies [fa96d71]
+- Updated dependencies [797624c]
+- Updated dependencies [615cb30]
+- Updated dependencies [1601a5a]
+- Updated dependencies [f670111]
+  - @agentproto/voice@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes

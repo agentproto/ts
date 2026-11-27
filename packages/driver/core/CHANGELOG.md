@@ -1,5 +1,12 @@
 # @agentproto/driver
 
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [da79225]
+  - @agentproto/tool@0.8.0
+
 ## 0.4.3
 
 ### Patch Changes

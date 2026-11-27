@@ -1,5 +1,41 @@
 # @agentproto/cli
 
+## 1.38.0
+
+### Minor Changes
+
+- f6a3b5e: `agentproto host guard` escalates when the host level changes, not on every run. The last level is remembered in `~/.agentproto/host-guard/level.json` (`--level-state <path>`, `--no-level-state` to restore the per-run behaviour), and the guard escalates only when the host crosses into a level at or above `--escalate-on` (`crit` by default, or `warn`): OK→WARN, WARN→CRIT, OK→CRIT. A host that stays CRIT is escalated again after `--renotify-after <min>` (default 120, 0 = never); the same delay is the cooldown before a host that drops below a level and climbs back is escalated again for it. A WARN host found CRIT on the re-check now arms the workflow block too. A failed escalation is not recorded as sent, so the next run retries it.
+- d33d2e4: Stop ONE process that saturates the host, through a narrow daemon-checked right.
+
+  - **`agentproto host stop-process <pid> --reason <text>`** (`POST /host/processes/:pid/stop`) stops a process only when it descends from a live daemon session. It refuses the daemon, its ancestors, a session's own adapter process, another user's process, and anything outside every session. SIGTERM first; SIGKILL after `--grace` only if the pid still runs the same command. Every attempt is logged with the caller and the reason (`~/.agentproto/host-stop-process.log`), and the owning session gets a system notice.
+  - **`agentproto host guard`** escalates a whole-disk scan (`find`/`bfs`/`fd`/`du` rooted at `/`, the home dir, `/Volumes`) at once, whatever the host level, once per pid. The escalation names the owning session and the exact stop command. Scan detection now also reads a root that follows an option taking an argument (`bfs -S dfs /`, `-j 8`, `-D`, `-O`, BSD `find -f`), and `/System/Volumes/Data`.
+  - **`defaults.permissionGrants`** (operator-only) adds Claude Code `permissions.allow` rules per session label, written into the isolated settings at spawn, restart and resume. The built-in default lets `host-guard-escalation` run `Bash(agentproto host stop-process:*)` and nothing else; `{}` removes every grant. The harness gains `permissionAllow` on `start()`.
+
+- 7544250: Answer the terminal queries a PTY child sends (device attributes, XTVERSION, cell size, mode state, graphics probe). The most recently attached terminal answers them; the other clients get the output without the queries, so the child never receives two replies. With no terminal attached, the daemon answers a minimal set itself. New config keys `sessions.terminalQueries` (`auto` | `off`), `sessions.terminalGraphics`, `sessions.terminalCellSize` and `sessions.terminalName` (env `AGENTPROTO_PTY_QUERIES`, `AGENTPROTO_PTY_GRAPHICS`, `AGENTPROTO_PTY_CELL_SIZE`, `AGENTPROTO_PTY_TERMINAL_NAME`). `WS /sessions/:id/pty?answers=0` attaches a client that never answers queries; the read-only CLI mirror, the terminal panel and the relay's input delivery use it. The PTY resize now passes the window pixel size; node-pty applies it from 1.2 on, and the installed 1.1 keeps `ws_xpixel`/`ws_ypixel` at 0.
+
+### Patch Changes
+
+- 6c9fc60: `agentproto sessions kill <id>` is now an alias of `sessions stop`. Any other unknown `sessions` subcommand now exits with code 2 and a clear message on stderr (with a "did you mean" hint when one is near) instead of a `util.parseArgs` stack trace.
+- aca256a: `GET /store` (and so `agentproto app store` and the install links apps point at) now redirects to the installed `@agentproto/app-store` app when it is installed and can serve its page (its UI bundle exists, or a `ui.build` can produce it), instead of always opening the builtin `@agentproto/store` panel. A machine with the app installed no longer shows two different App Stores; the builtin panel stays the fallback on a fresh daemon.
+- Updated dependencies [fd9d763]
+- Updated dependencies [537e9ef]
+- Updated dependencies [6b5a1a7]
+- Updated dependencies [d33d2e4]
+- Updated dependencies [b693448]
+- Updated dependencies [468cbc4]
+  - @agentproto/app@2.7.0
+  - @agentproto/model-catalog@0.16.2
+  - @agentproto/harness@4.2.0
+  - @agentproto/apps@0.28.2
+  - @agentproto/driver@0.4.4
+  - @agentproto/worktree@0.23.2
+  - @agentproto/inference-endpoint@1.0.7
+  - @agentproto/adapter-browser@0.9.5
+  - @agentproto/sandbox-box@0.2.44
+  - @agentproto/sandbox-computer@0.8.3
+  - @agentproto/sandbox-e2b@0.11.6
+  - @agentproto/sandbox-instabox@0.2.11
+
 ## 1.37.1
 
 ### Patch Changes

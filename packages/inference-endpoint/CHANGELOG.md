@@ -1,5 +1,11 @@
 # @agentproto/llm-endpoint
 
+## 1.0.7
+
+### Patch Changes
+
+- @agentproto/providers-store@0.4.9
+
 ## 1.0.6
 
 ### Patch Changes

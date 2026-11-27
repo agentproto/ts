@@ -1,5 +1,98 @@
 # @agentproto/runtime
 
+## 6.7.0
+
+### Minor Changes
+
+- d33d2e4: Stop ONE process that saturates the host, through a narrow daemon-checked right.
+
+  - **`agentproto host stop-process <pid> --reason <text>`** (`POST /host/processes/:pid/stop`) stops a process only when it descends from a live daemon session. It refuses the daemon, its ancestors, a session's own adapter process, another user's process, and anything outside every session. SIGTERM first; SIGKILL after `--grace` only if the pid still runs the same command. Every attempt is logged with the caller and the reason (`~/.agentproto/host-stop-process.log`), and the owning session gets a system notice.
+  - **`agentproto host guard`** escalates a whole-disk scan (`find`/`bfs`/`fd`/`du` rooted at `/`, the home dir, `/Volumes`) at once, whatever the host level, once per pid. The escalation names the owning session and the exact stop command. Scan detection now also reads a root that follows an option taking an argument (`bfs -S dfs /`, `-j 8`, `-D`, `-O`, BSD `find -f`), and `/System/Volumes/Data`.
+  - **`defaults.permissionGrants`** (operator-only) adds Claude Code `permissions.allow` rules per session label, written into the isolated settings at spawn, restart and resume. The built-in default lets `host-guard-escalation` run `Bash(agentproto host stop-process:*)` and nothing else; `{}` removes every grant. The harness gains `permissionAllow` on `start()`.
+
+- b693448: App sessions for an app installed inside a git repo can read that repo's root config again, read-only: `.git` (plus the git dirs a linked worktree's `.git` file points at), `.gitignore`, `.claude/`, `.codex/`, `.mcp.json`, `CLAUDE.md` and `AGENTS.md`. Fixes Claude Code steps starting with "Settings file could not be read: EPERM" and running without the project's hooks and permission rules, and `rg` / `git` failing on the hidden `.git` from the app dir.
+
+  New `boundaries.hostReads` in APP.md / `defineApp`: paths relative to the host repo root (a sibling package's built CLI, a shared folder) that the app's sessions may read. The loader rejects absolute and `..` entries; the daemon resolves symlinks, refuses entries outside the host repo or naming the whole repo, and masks secret files inside them. Nothing in the host repo becomes writable, and the rest of its working tree stays hidden. Because `.git` is readable, committed content of the host repo is reachable through git; `.git/config` is masked when it embeds credentials (URL userinfo or `extraheader`), with a warning. The loader also rejects `.` and whitespace-padded `hostReads` entries.
+
+- fa8ac3a: Serve the MCP Events extension (`io.modelcontextprotocol/events`): add `events/poll` (pull delivery, no prior subscribe), backed by a durable per-`(name, arguments)` journal and a shared, idle-released provider watch, with an opaque cursor, `maxAgeMs`, `maxEvents`, `hasMore`, `nextPollMs` and `truncated` (a cursor older than the journal, the retention or a watch gap reads as truncated, never an error). `server/discover` now declares the extension next to `events:{}`; `events/list` reports the delivery modes really offered per type and omits `nextCursor` on the last page; `events/unsubscribe` accepts `delivery: { url }` without `mode`; `Mcp-Name` is now required on poll, subscribe and unsubscribe (breaking for existing webhook clients that omitted the header on subscribe/unsubscribe: send `Mcp-Name` with the event name); errors use the standard codes `-32023` to `-32027` (backing-subscription failures are `-32603` with `data.kind`), with the old `-32015`/`-32016` kept in `data.legacyCode` for one release. The public events origin applies its repo allowlist to `events/poll` (`-32024`). The extension can be switched off with `mcp.eventsExtension: false`, which keeps the three webhook methods.
+- ac2fe63: MCP Events push delivery: `events/stream` and `notifications/events/*` on the 2026-07-28 era of `/mcp` and on the public events origin. A stream is a third read of the same journal as `events/poll` (same validation, same shared watch, same cursor format, interchangeable with poll), answered as SSE with `notifications/events/active`, `event`, `heartbeat`, `error` and `terminated`, and a final frame when the server closes it. `events/list` lists `push` on the modern era only; the legacy era keeps `["poll", "webhook"]`. Set `mcp.eventsStream` to `false` to stop serving it (404 `-32601`) and stop advertising `push`.
+- fb21ae3: Extend the MCP 2026-07-28 human gate to pending approvals and to runs parked for human input. A pending approval read through `approval_get` / `approval_wait` is projected as a `url` elicitation pointing at the configured human approval page (`approvals.uiBaseUrl`, never a credential in the link); an `accept` is only logged as a display acknowledgement and never decides or consumes the approval. An operator calling `workflow_status` on a run parked on a flat, non-secret input schema receives a `form` elicitation, and the reply resumes the run through its own resolver. Each surface has its own switch (`mcp.humanGateApprovals`, `mcp.humanGateRuns`).
+- caeab2a: Add MCP 2026-07-28 MRTR elicitation transport (`mrtr-state.ts` and `human-gate.ts`) for held tool permissions and multi-field session questions over the modern `/mcp` gateway, with persisted `0600` HMAC signing keys, single-use nonces, strict flat non-secret form schema validation, subtree scoping with self-approval prohibition, and an `mcp.humanGate` configuration switch.
+- 052d14d: Serve the stateless MCP 2026-07-28 era (`server/discover`, `capabilities.extensions`, strict header validation, and `-32021` HTTP 400 error mapping) on the root authenticated `/mcp` gateway alongside the legacy 2025-11-25 transport, with unified session observability and an `mcp.modernEra` configuration switch.
+- 59d472c: Offer the MCP `io.modelcontextprotocol/tasks` extension on the modern `/mcp` gateway, following AIP-78 TURN-TASK: one session turn is one task. For a client that declares the extension, `agent_start` (with a prompt) and `agent_prompt` answer with a `CreateTaskResult` whose `_meta["io.agentproto/turn-task"]` carries the real `sessionId` and the prompt ticket; `tasks/get`, `tasks/update` and `tasks/cancel` follow that ticket. The host reserves the ticket (and the session id of an `agent_start`) before the call runs and writes the ledger entry before the prompt reaches the session; the per-principal cap and the capability check run first, so a refused call leaves nothing behind. The task is bound to its prompt ticket (not a queue position) and to the principal that created it. The terminal state and a bounded, redacted `TurnResult` (`{ sessionId, text, truncated }`) are written when the turn ends; session end, session removal and host restart close the task per the AIP mapping. `tasks/cancel` removes a queued ticket, interrupts only its own in-flight turn (the session stays alive), is a no-op on an ended one, and is an error when the harness cannot cancel. The ledger is written atomically (fsync, rename, `0600`); `ttlMs` counts from the end of the task and a task that has not ended is never purged. New config: `mcp.tasksTools`, `mcp.tasksTtlMs`, `mcp.tasksMaxTtlMs`, `mcp.tasksMaxPerPrincipal`, `mcp.tasksResultMaxChars`. The session registry gains prompt tickets: `enqueuePrompt({ promptId })`, `onPromptTicket`, `promptTicketState`, `cancelPromptTicket`. Disable with `mcp.tasks: false`.
+- b844aaf: Serve the beta MCP Skills extension (`io.modelcontextprotocol/skills`) on the 2026-07-28 era of the root `/mcp` gateway: `skills/list`, `skills/get` and `skill://<name>/<path>` reads through `resources/read`, backed by the imported-skills registry only (application skills are not served). Each skill carries its frontmatter verbatim and a manifest of files with `sha256` digests over raw bytes; a skill above 512 files / 16 MiB is not served and says why, and paths are confined to the skill folder. `server/discover` announces the extension and the `resources` capability. Switch it off with `mcp.extensions.skills=false`; the legacy 2025-11-25 path and the spawn-time skill delivery are unchanged. `@agentproto/mcp-server` exports `registerSkillsMethods`.
+- 468cbc4: Add `memory.harnessAutoMemory` (`keep` by default, `off` opt-in). With `off`, a claude-code session that binds no AIP-72 memory gets `autoMemoryEnabled: false` in its isolated settings, so a lesson the harness would file in a private dir that dies with the session goes through the shared `memory_write` tool instead. Sessions with a native-dir projection are unchanged. Applied at spawn and at restart.
+- 7544250: Answer the terminal queries a PTY child sends (device attributes, XTVERSION, cell size, mode state, graphics probe). The most recently attached terminal answers them; the other clients get the output without the queries, so the child never receives two replies. With no terminal attached, the daemon answers a minimal set itself. New config keys `sessions.terminalQueries` (`auto` | `off`), `sessions.terminalGraphics`, `sessions.terminalCellSize` and `sessions.terminalName` (env `AGENTPROTO_PTY_QUERIES`, `AGENTPROTO_PTY_GRAPHICS`, `AGENTPROTO_PTY_CELL_SIZE`, `AGENTPROTO_PTY_TERMINAL_NAME`). `WS /sessions/:id/pty?answers=0` attaches a client that never answers queries; the read-only CLI mirror, the terminal panel and the relay's input delivery use it. The PTY resize now passes the window pixel size; node-pty applies it from 1.2 on, and the installed 1.1 keeps `ws_xpixel`/`ws_ypixel` at 0.
+- 840364d: Register `list_voice_providers` / `setup_voice_provider` and `list_billing_providers` / `setup_billing_provider` on the daemon, produced by the voice and billing registries (both built on `makeProviderFamily`). The runtime holds no provider; credentials come from the host environment and are never returned.
+
+### Patch Changes
+
+- d2fd3f7: `app_install` now accepts a published catalog entry's `source` as is. The descriptors a catalog source carries next to the install fields (`kind`, `version`, `size`) are dropped by one shared step in the input schema (and in the panel dispatcher), so any store client can confirm an install without hitting the "pass exactly one source" error.
+- fd9d763: Allow caller-provided `driverCtx.secrets` to satisfy `DRIVER.md` `auth.state.env` before falling back to `process.env` in `loadAppBundledTools` (with snake_case fallback for `metadata.http`), forward scoped `secrets` / `resolveSecrets` through `runBundledAppTool` and `performExposedToolCall`, and invalidate the cached `internalToolServerPromise` on `app_install`, `app_resync` (when changed), `app_uninstall`, and `routine_reconcile` so newly installed or updated apps' exposed tools are immediately dispatchable without a daemon restart.
+- 537e9ef: Sync generated catalog data from the pinned provider sources.
+- 2bfef37: A first-turn ticket reserved for a session is now dropped (cause `superseded`) when the first turn runs under its own `promptId`, so the MCP task bound to the reservation ends `cancelled` instead of staying `working` until the session ends, with the status message "the first turn ran under a different prompt".
+- a0b38af: `session_follow`: a follow on the follower's own child now always delivers `turn-end` (added with a warning when an explicit event list omits it), and a follow whose `selector.sessionIds` names a session that gets restarted / continued is re-pointed at the successor instead of keeping the dead id.
+- 7d59984: The `gh` provenance shim no longer writes its footer (host, local path, session id) on a repository outside your own owners. A new `defaults.prProvenance.footer.ownerOrgs` list names the GitHub users or orgs whose repos may carry the footer; any other repo gets none on `gh pr create`, and `gh pr edit` never puts one back. The list defaults to empty, so set it to keep the footer on your own repos.
+
+  This only covers the `gh` shim. The daemon's own stamping lanes (`command_execute`, the reconciler, `pr_open`) are unchanged and still follow `skipRepos`. Owner matching ignores the forge host. Footers turn off for existing users of `provenance.wrapGh` until the list is set.
+
+- 122f261: MCP events conformance leftovers. `-32027` `data.reason` is now one of the spec's `lastError` categories (`connection_refused`, `timeout`, `http_4xx`, `http_5xx`, `challenge_failed`; `tls_error` is reserved), with the previous value kept in `data.legacyReason` for one release, and its message no longer repeats the endpoint's host, address, status or response text. A non-`https` or malformed `delivery.url` on `events/subscribe` is now `-32602` `invalid_callback_url` instead of `-32027` `non_https`. `events/subscribe` decodes a `cursor` like `events/poll` does (`-32602` when unreadable, `-32024` when issued to another caller) and answers `truncated: true` when one is given. `-32023` carries `data.kind`, `-32025` carries `data.limit` and `data.max`, `-32026` carries `data.feature` and `data.value`. The modern `server/discover` no longer advertises `listChanged` on `tools`, `resources` or `prompts`, since `subscriptions/listen` is not served. The poll journal is purged every 10 minutes instead of only at boot.
+- 2820bf8: MCP human gate follow-ups. The approval console URL filter now splits each query key into words (on `_`, `-`, `.` and camelCase) instead of matching a substring, so a key like `designer` is no longer refused while `token`, `api_key`, `session-id`, `accessToken`, `apikey` or `password` still are. The new internal `checkApprovalUrl` says why a base is refused (`buildApprovalUrl` keeps its signature), and the daemon logs one line with the reason, never the URL, when a configured `approvals.uiBaseUrl` is refused for a client that can receive a url elicitation. `resolveHumanGateSurfaces` only returns `approvalsUiBaseUrl` while the approvals surface is on. The MRTR state store refuses a signed token whose kind is unknown: the internal `MrtrVerifyFailureReason` union gains `"unsupported_kind"` (not on a published export path). The `mcp.humanGate` help now names its four surfaces.
+- 79effa5: MCP modern era (`2026-07-28` on `/mcp`): a refused MRTR retry (altered, expired, replayed, foreign or malformed `requestState`, or a caller not allowed to resolve the input) and the Skills invalid params (unknown skill or file, unissued cursor, `skill://` traversal) now answer `-32602` with HTTP 400, as AIP-77's error mapping gives, instead of HTTP 200. Other handler errors and the legacy era are unchanged.
+- 4fbc59b: MCP human gate: a question without `fields` is now carried as a form with one `answer` property (a `oneOf` of its choices, or a plain string when free text is allowed) and answered by `optionId` (free text as `feedback`), instead of the tool-permission form whose `approve` picked the first allow option. A `plan-approval` with a valid `planApproval` now resolves `approve` to `approveOptionId` and `deny` / `decline` to `rejectOptionId`, and offers no `scope`. Follows AIP-45 "MCP transport of a question".
+- 2f02013: Stop replaying terminal queries to a terminal that attaches late to a PTY session. The recent-output replay no longer includes device-attribute, terminal-identity, keyboard-flag, status, mode, window-size, colour and graphics-support requests, so the attaching terminal no longer answers them after the child stopped waiting (the late reply used to land in the child's input).
+- b2524a0: MCP human gate: a plural secret term ("Paste your API keys", "passwords", "access tokens", "credit cards") is now a secret hint, so such a question is not projected as a form.
+- 550d39c: MCP human gate: a compound secret term written with spaces ("Paste your API key", "access token", "private key", "credit card number") is now a secret hint, like its `api_key`, `api-key` and `apikey` forms, so such a question or form is not projected (AIP-45 "No secret in a form", AIP-77 "Flat forms, no secrets").
+- aca256a: `GET /store` (and so `agentproto app store` and the install links apps point at) now redirects to the installed `@agentproto/app-store` app when it is installed and can serve its page (its UI bundle exists, or a `ui.build` can produce it), instead of always opening the builtin `@agentproto/store` panel. A machine with the app installed no longer shows two different App Stores; the builtin panel stays the fallback on a fresh daemon.
+- 1a11f25: `workflow_escalation_resolve`: `payload` is optional again. The approval form (`approvalId` + `approved` + `who`, as sent by `agentproto workflow resolve --approve|--reject` and the stageboard approval card) and the escalate form were rejected with "-32602 ... expected nonoptional at payload" before the handler ran. A run parked at a `kind: "suspend"` step called without a payload now gets an explicit `missing_payload` error.
+- Updated dependencies [fd9d763]
+- Updated dependencies [8813d9e]
+- Updated dependencies [bf015f6]
+- Updated dependencies [bc39e63]
+- Updated dependencies [912935b]
+- Updated dependencies [58713bc]
+- Updated dependencies [243e055]
+- Updated dependencies [495ce4b]
+- Updated dependencies [537e9ef]
+- Updated dependencies [8168760]
+- Updated dependencies [6b5a1a7]
+- Updated dependencies [d33d2e4]
+- Updated dependencies [b693448]
+- Updated dependencies [fa8ac3a]
+- Updated dependencies [b844aaf]
+- Updated dependencies [da79225]
+- Updated dependencies [468cbc4]
+- Updated dependencies [83b3c87]
+- Updated dependencies [0364992]
+- Updated dependencies [fa96d71]
+- Updated dependencies [797624c]
+- Updated dependencies [615cb30]
+- Updated dependencies [1601a5a]
+- Updated dependencies [f670111]
+  - @agentproto/app@2.7.0
+  - @agentproto/billing@0.2.0
+  - @agentproto/voice@0.2.0
+  - @agentproto/model-catalog@0.16.2
+  - @agentproto/driver-http@0.3.0
+  - @agentproto/harness@4.2.0
+  - @agentproto/mcp-server@0.9.0
+  - @agentproto/tool@0.8.0
+  - @agentproto/apps@0.28.2
+  - @agentproto/providers-store@0.4.9
+  - @agentproto/driver-browser@0.4.4
+  - @agentproto/driver@0.4.4
+  - @agentproto/governance-engine@1.0.4
+  - @agentproto/workflow-runtime@0.21.4
+  - @agentproto/inference-endpoint@1.0.7
+  - @agentproto/workspace-brain@0.7.5
+  - @agentproto/adapter-browser@0.9.5
+  - @agentproto/plugin-local-browser@0.3.11
+  - @agentproto/eval-reporters@0.2.35
+  - @agentproto/telemetry-langfuse@0.2.33
+  - @agentproto/review@1.0.1
+  - @agentproto/run@0.2.6
+  - @agentproto/sandbox@1.0.3
+
 ## 6.6.1
 
 ### Patch Changes

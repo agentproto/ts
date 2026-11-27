@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/metric-source",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bijective TypeScript <-> Markdown converter and schema definitions for declarative read-only metric sources.",
   "keywords": [
     "agentproto",
