@@ -488,10 +488,61 @@ describe("loadAppHandle — boundaries", () => {
         "utf8",
       )
       await expect(loadAppHandle(d)).rejects.toThrow(AppLoadError)
-      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter 'boundaries'/)
+      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter 'boundaries\.enforce'/)
     } finally {
       await rm(d, { recursive: true, force: true })
     }
+  })
+
+  it("round-trips boundaries.hostReads", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-hostreads-"))
+    try {
+      const hostReads = ["packages/other-tool/packages/cli/dist", "apps/_shared"]
+      await defineApp({
+        agents: [{ agent: soloAgent(), body: "Solo." }],
+        boundaries: { enforce: "best-effort", hostReads },
+      }).emit(d)
+      const loaded = await loadAppHandle(d)
+      expect(loaded.boundaries).toEqual({ enforce: "best-effort", hostReads })
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ["an absolute path", ["/etc"]],
+    ["a '..' segment", ["../outside"]],
+    ["a nested '..' segment", ["apps/../../outside"]],
+    ["an empty entry", [""]],
+    ["a non-string entry", [42]],
+  ])("throws AppLoadError on boundaries.hostReads with %s", async (_label, hostReads) => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-badhostreads-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }] }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(appPath, matter.stringify(parsed.content, { ...parsed.data, boundaries: { hostReads } }), "utf8")
+      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter 'boundaries\.hostReads\[0\]'/)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("throws AppLoadError on an unknown boundaries field", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-badboundaryfield-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }] }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(appPath, matter.stringify(parsed.content, { ...parsed.data, boundaries: { writes: ["x"] } }), "utf8")
+      await expect(loadAppHandle(d)).rejects.toThrow(/'boundaries\.writes' is not a supported field/)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("defineApp rejects an escaping boundaries.hostReads entry", () => {
+    expect(() =>
+      defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }], boundaries: { hostReads: ["../outside"] } }),
+    ).toThrow(AppDefinitionError)
   })
 })
 

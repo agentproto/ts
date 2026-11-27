@@ -142,7 +142,7 @@ export interface InstalledApp {
   /** Boundary policy declared by the app (AIP-42 `boundaries`) — see
    *  app-boundary.ts. `enforce: "required"` makes a spawn refuse instead of
    *  warn when the fs zones can't be enforced on the chosen harness. */
-  readonly boundaries?: { readonly enforce?: "required" | "best-effort" }
+  readonly boundaries?: { readonly enforce?: "required" | "best-effort"; readonly hostReads?: readonly string[] }
   readonly dev?: {
     readonly launch: readonly {
       readonly name: string

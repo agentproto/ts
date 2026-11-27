@@ -498,6 +498,32 @@
       "uniqueItems": true,
       "description": "Host directories the app is granted READ-ONLY access to outside its sandboxed dir (absolute or ~-relative). Carried verbatim in frontmatter by emit/load; validated to exist at install time. Read-only everywhere — there is no write/delete path for these roots."
     },
+    "boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Filesystem boundary policy for sessions the app spawns (app_run, workflow agent steps). The host confines them to the app's zones: app dir read-only, run workspace and data dir writable, everything else denied, including the host repo the app is installed inside. The host repo's own config (.git, .gitignore, .claude/, .codex/, CLAUDE.md, AGENTS.md at its root) stays readable, never writable.",
+      "properties": {
+        "enforce": {
+          "type": "string",
+          "enum": [
+            "required",
+            "best-effort"
+          ],
+          "default": "best-effort",
+          "description": "required: refuse the spawn when the zones cannot be enforced on the chosen harness or platform. best-effort: spawn with an explicit warning."
+        },
+        "hostReads": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S"
+          },
+          "description": "Paths in the app's own host repo (the git repo whose working tree holds the app dir) its sessions may READ, relative to the host repo root, no '..' segment: a sibling package's built CLI, a shared folder. The host resolves symlinks and refuses an entry that lands outside the host repo or names the whole repo; secret files inside an entry (.env, keys) stay masked. Never writable. Ignored when the app is not inside a git repo."
+        }
+      }
+    },
     "category": {
       "type": "string",
       "minLength": 1,
