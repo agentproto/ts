@@ -330,6 +330,10 @@ if (args[0] === "pr" && args[1] === "edit") {
   process.stdout.write(URL + "\n")
   process.exit(0)
 }
+if (args[0] === "repo" && args[1] === "view") {
+  process.stdout.write(JSON.stringify({ owner: { login: process.env.FAKE_GH_REPO_OWNER || "acme" }, name: "widgets" }) + "\n")
+  process.exit(0)
+}
 if (args[0] === "api") {
   const field = args.find(a => a.startsWith("body="))
   if (args.includes("PATCH") && field) {
@@ -484,6 +488,22 @@ process.exit(0)
     expect(r.status).toBe(0)
     expect(body()).toBe(`Via the API\n\n---\n${FOOTER}`)
     expect(patches()).toHaveLength(2)
+  })
+
+  it("`gh api -X PATCH repos/{owner}/{repo}/...` resolves the placeholders: own repo keeps the footer", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["api", "-X", "PATCH", "repos/{owner}/{repo}/pulls/42", "-f", "body=Via the API"])
+    expect(r.status).toBe(0)
+    expect(body()).toBe(`Via the API\n\n---\n${FOOTER}`)
+  })
+
+  it("`gh api -X PATCH repos/{owner}/{repo}/...` on a repo outside our owners restores nothing", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["api", "-X", "PATCH", "repos/{owner}/{repo}/pulls/42", "-f", "body=Via the API"], {
+      FAKE_GH_REPO_OWNER: "someone-else",
+    })
+    expect(r.status).toBe(0)
+    expect(body()).toBe("Via the API")
   })
 
   it("a plain `gh api` read passes straight through", () => {

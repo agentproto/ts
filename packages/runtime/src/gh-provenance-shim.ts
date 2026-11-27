@@ -463,6 +463,15 @@ function readFooter(target) {
     apiPath = target.endpoint
     const endpointMatch = /^\\/?repos\\/([^\\/\\s]+)\\/([^\\/\\s]+)\\//.exec(String(apiPath || ""))
     if (endpointMatch) repo = repoKey(endpointMatch[1], endpointMatch[2])
+    // \`repos/{owner}/{repo}/...\` is gh's "current repo" placeholder form: resolve
+    // it to the real owner/name so the ownership test sees the actual repo.
+    if (repo.indexOf("{") >= 0) {
+      const cur = spawnSync(realGh, ["repo", "view", "--json", "owner,name"], SIDE_OPTS)
+      try {
+        const r = JSON.parse(cur.stdout)
+        repo = cur.status === 0 && r.owner && r.name ? repoKey(r.owner.login || r.owner, r.name) : ""
+      } catch { repo = "" }
+    }
     host = target.hostname ? ["--hostname", target.hostname] : []
     const get = spawnSync(realGh, ["api", ...host, apiPath], SIDE_OPTS)
     if (get.status !== 0) return null
