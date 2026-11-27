@@ -9,9 +9,11 @@
  *
  * Poll and replay: `events/poll` is served by a durable journal fed by a shared
  * provider watch (`poll-lease.ts`, `poll-journal.ts`), independent of the
- * webhook outbox. Webhook subscribe results keep `cursor: null` /
- * `truncated: false`: past events are not replayed over a webhook, poll is the
- * replay path.
+ * webhook outbox. Webhook subscribe results keep `cursor: null`: past events
+ * are not replayed over a webhook, poll is the replay path. A subscribe that
+ * carries a cursor (decoded and checked like a poll cursor) answers
+ * `truncated: true`, the single signal that delivery starts later than the
+ * cursor the client supplied.
  *
  * Subscription ids are deterministic (`subscription-id.ts`): subscribe upserts
  * on identity, unsubscribe RECOMPUTES the id (never an id-lookup). The store
@@ -22,7 +24,7 @@
 import "../sentinel-platform.js"
 
 import { decodeWhsecSecret } from "../webhook-egress/signing.js"
-import { verifyCallback, type ChallengeFailureReason, type ChallengeOutcome } from "../webhook-egress/challenge.js"
+import { verifyCallback, type ChallengeOutcome } from "../webhook-egress/challenge.js"
 import {
   deliveryPreferenceFor,
   SentinelBackingExpiredError,
@@ -111,9 +113,9 @@ export function invalidParams(reason: string, detail: string): McpEventsError {
   return new McpEventsError(EVENTS_ERR.invalidParams, `Invalid params: ${detail}`, { reason })
 }
 
-/** `-32023 NotFound` — unknown event type. */
+/** `-32023 NotFound`: unknown event type (`data.kind: "event"`). */
 export function eventNotFound(reason: string, detail: string): McpEventsError {
-  return new McpEventsError(EVENTS_ERR.notFound, `NotFound: ${detail}`, { reason })
+  return new McpEventsError(EVENTS_ERR.notFound, `NotFound: ${detail}`, { reason, kind: "event" })
 }
 
 /** `-32024 Forbidden` — the caller may not use this event with these arguments. */
@@ -121,24 +123,99 @@ export function forbidden(reason: string, detail: string): McpEventsError {
   return new McpEventsError(EVENTS_ERR.forbidden, `Forbidden: ${detail}`, { reason })
 }
 
-/** `-32025 ResourceExhausted` — a server-side quota is spent. */
-export function resourceExhausted(reason: string, detail: string): McpEventsError {
-  return new McpEventsError(EVENTS_ERR.resourceExhausted, `ResourceExhausted: ${detail}`, { reason })
-}
-
-/** `-32026 Unsupported` — the delivery mode or provider is not offered for this event. */
-export function unsupported(reason: string, detail: string): McpEventsError {
-  return new McpEventsError(EVENTS_ERR.unsupported, `Unsupported: ${detail}`, { reason })
+/** `-32025 ResourceExhausted`: a server-side quota is spent; `data.limit` names it, `data.max` is its ceiling. */
+export function resourceExhausted(
+  reason: string,
+  detail: string,
+  limit?: { limit: string; max?: number },
+): McpEventsError {
+  return new McpEventsError(EVENTS_ERR.resourceExhausted, `ResourceExhausted: ${detail}`, { reason, ...limit })
 }
 
 /**
- * `-32027 CallbackEndpointError` with `data.reason` from the challenge table
- * (SsrfFetchReason → ChallengeFailureReason → RPC reason). The challenge
- * outcome's reason is already the RPC value, so it is passed through as-is.
- * `data.legacyCode` carries the pre-standard `-32015` for one release.
+ * `-32026 Unsupported`: the delivery mode or provider is not offered for this
+ * event. `option` identifies the refused option (`{ feature: "deliveryMode", value }`).
  */
-export function callbackEndpointError(reason: ChallengeFailureReason, detail: string): McpEventsError {
-  return new McpEventsError(EVENTS_ERR.callbackEndpoint, `CallbackEndpointError: ${detail}`, { reason, legacyCode: -32015 })
+export function unsupported(
+  reason: string,
+  detail: string,
+  option?: { feature: string; value: unknown },
+): McpEventsError {
+  return new McpEventsError(EVENTS_ERR.unsupported, `Unsupported: ${detail}`, { reason, ...option })
+}
+
+/** The `lastError` categories the spec allows in `-32027` `data.reason`. */
+export type CallbackEndpointReason =
+  | "connection_refused"
+  | "timeout"
+  | "tls_error"
+  | "http_4xx"
+  | "http_5xx"
+  | "challenge_failed"
+
+const CALLBACK_ENDPOINT_MESSAGES: Record<CallbackEndpointReason, string> = {
+  connection_refused: "the callback endpoint could not be reached",
+  timeout: "the callback endpoint did not answer in time",
+  tls_error: "the TLS handshake with the callback endpoint failed",
+  http_4xx: "the callback endpoint rejected the verification request",
+  http_5xx: "the callback endpoint failed to process the verification request",
+  challenge_failed: "the callback endpoint did not echo the verification challenge",
+}
+
+/**
+ * Translate a failed challenge outcome to its `-32027` category. The
+ * translation lives at the MCP boundary: `ChallengeFailureReason` also serves
+ * the sentinel webhook surface and keeps its own values.
+ *   - `connect` → `connection_refused`; `timeout` stays;
+ *   - an SSRF refusal (`private_target`, `redirect`, `non_https`) →
+ *     `connection_refused` (nothing was, or may be, reached);
+ *   - non-2xx: 5xx → `http_5xx`, any other status → `http_4xx`.
+ * `tls_error` is never emitted: `ssrfFetch` reports a TLS failure as `connect`.
+ */
+export function callbackEndpointReason(outcome: Extract<ChallengeOutcome, { ok: false }>): CallbackEndpointReason {
+  switch (outcome.reason) {
+    case "challenge_failed":
+      return "challenge_failed"
+    case "non_2xx":
+      // `verifyCallback` always sets `status` on `non_2xx`. An outcome without one
+      // (from another producer) is read as a rejection, `http_4xx`, not a server fault.
+      return outcome.status !== undefined && outcome.status >= 500 && outcome.status <= 599 ? "http_5xx" : "http_4xx"
+    case "timeout":
+      return outcome.cause === "connect" ? "connection_refused" : "timeout"
+    case "non_https":
+    case "ssrf_blocked":
+      return "connection_refused"
+  }
+}
+
+/**
+ * `-32027 CallbackEndpointError`. `data.reason` is a `lastError` category
+ * (`callbackEndpointReason`); `data.legacyReason` carries the challenge reason
+ * this surface used to send, and `data.legacyCode` the pre-standard `-32015`,
+ * for one release. The message is a fixed sentence per category: it never
+ * repeats the endpoint's host, address, status or response text, so the error
+ * is not an oracle on the endpoint.
+ */
+export function callbackEndpointError(outcome: Extract<ChallengeOutcome, { ok: false }>): McpEventsError {
+  const reason = callbackEndpointReason(outcome)
+  return new McpEventsError(EVENTS_ERR.callbackEndpoint, `CallbackEndpointError: ${CALLBACK_ENDPOINT_MESSAGES[reason]}`, {
+    reason,
+    legacyReason: outcome.reason,
+    legacyCode: -32015,
+  })
+}
+
+/** `delivery.url` must be an absolute `https:` URL (checked on subscribe only, before any network call). */
+function requireHttpsCallbackUrl(url: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw invalidParams("invalid_callback_url", "delivery.url must be an absolute https URL")
+  }
+  if (parsed.protocol !== "https:") {
+    throw invalidParams("invalid_callback_url", "delivery.url must be an absolute https URL")
+  }
 }
 
 /**
@@ -202,7 +279,8 @@ export interface EventsSubscribeInput {
   arguments: Record<string, unknown>
   delivery: { mode: "webhook"; url: string; secret: string }
   ttlMs?: number | null
-  /** Validated, but webhook delivery never replays past events: poll is the replay path. */
+  /** Decoded like a poll cursor; a webhook never replays past events (poll is the
+   *  replay path), so a non-null cursor answers `truncated: true`. */
   cursor?: string | null
   maxAgeMs?: number
 }
@@ -275,7 +353,10 @@ function requireWebhookDelivery(
   if (!isRecord(delivery)) throw invalidParams("invalid_delivery", "`delivery` must be an object")
   const mode = delivery.mode
   if (mode === undefined ? !opts.modeOptional : mode !== "webhook") {
-    throw unsupported("unsupported_delivery_mode", 'delivery.mode must be "webhook" (use events/poll for pull delivery)')
+    throw unsupported("unsupported_delivery_mode", 'delivery.mode must be "webhook" (use events/poll for pull delivery)', {
+      feature: "deliveryMode",
+      value: mode ?? null,
+    })
   }
   if (typeof delivery.url !== "string" || delivery.url.length === 0) {
     throw invalidParams("invalid_callback_url", "delivery.url is required")
@@ -330,6 +411,7 @@ export async function eventsSubscribe(
   if (!mapped.ok) throw invalidParams("invalid_arguments", `arguments for "${input.name}": ${mapped.reason}`)
 
   const delivery = requireWebhookDelivery(input.delivery)
+  requireHttpsCallbackUrl(delivery.url)
   const secret = delivery.secret
   if (secret === undefined || decodeWhsecSecret(secret) === null) {
     throw invalidParams(
@@ -343,6 +425,9 @@ export async function eventsSubscribe(
   if (input.cursor !== undefined && input.cursor !== null && typeof input.cursor !== "string") {
     throw invalidParams("invalid_cursor", "`cursor` must be a string or null")
   }
+  // Same decoder as poll: an unreadable cursor is -32602, another caller's is -32024.
+  if (typeof input.cursor === "string") decodePollCursor(input.cursor, ctx.principal)
+  const truncated = typeof input.cursor === "string"
   validateMaxAgeMs(input.maxAgeMs)
 
   const id = subscriptionId({
@@ -358,7 +443,7 @@ export async function eventsSubscribe(
   // bless an unverified secret.
   const verify = ctx.verify ?? verifyCallback
   const outcome: ChallengeOutcome = await verify({ principal: ctx.principal, url: delivery.url, subscriptionId: id, secret })
-  if (!outcome.ok) throw callbackEndpointError(outcome.reason, outcome.detail)
+  if (!outcome.ok) throw callbackEndpointError(outcome)
 
   return withSubscribeMutex(async () => {
     const until = untilForTtl(input.ttlMs, now())
@@ -368,7 +453,7 @@ export async function eventsSubscribe(
       // REFRESH: same deterministic identity. Rotate the signing secret when
       // the submitted one differs (`putSentinelSecret` records
       // `prevSecret` + `rotatedAt`; delivery dual-signs during the window).
-      // A submitted cursor is validated but not replayed over the webhook.
+      // A submitted cursor is decoded but not replayed over the webhook (`truncated`).
       const target = existing.spec.target
       if (target.kind !== "webhook") {
         throw invalidParams("identity_conflict", `subscription ${id} exists with a non-webhook target`)
@@ -399,7 +484,7 @@ export async function eventsSubscribe(
       const ref = ctx.store.materializeWebhookTargetRef(target)
       if (ref !== undefined) ctx.store.putSentinelSecret(ref, { secret })
       ctx.store.update(id, { spec: { ...existing.spec, until }, handle, status: "active" })
-      return { id, refreshBefore: computeRefreshBefore(until), cursor: null, truncated: false }
+      return { id, refreshBefore: computeRefreshBefore(until), cursor: null, truncated }
     }
 
     // CREATE
@@ -417,7 +502,7 @@ export async function eventsSubscribe(
       sentinelId: id,
     })
     ctx.store.create({ id, spec, provider: mapped.providerSlug, handle })
-    return { id, refreshBefore: computeRefreshBefore(until), cursor: null, truncated: false }
+    return { id, refreshBefore: computeRefreshBefore(until), cursor: null, truncated }
   })
 }
 
@@ -578,7 +663,10 @@ export async function eventsPoll(input: EventsPollInput, ctx: EventsPollContext)
     throw forbidden("unauthorized", `not authorized to poll "${input.name}" with the given arguments`)
   }
   if (!registration.definition.delivery.includes("poll") || !registration.meta.replayable) {
-    throw unsupported("unsupported_delivery_mode", `"${input.name}" is not offered for poll delivery`)
+    throw unsupported("unsupported_delivery_mode", `"${input.name}" is not offered for poll delivery`, {
+      feature: "deliveryMode",
+      value: "poll",
+    })
   }
   const mapped = registration.meta.argumentsToMatch(args)
   if (!mapped.ok) throw invalidParams("invalid_arguments", `arguments for "${input.name}": ${mapped.reason}`)
@@ -601,7 +689,9 @@ export async function eventsPoll(input: EventsPollInput, ctx: EventsPollContext)
     await ctx.leases.acquire({ key, name: input.name, mapped })
   } catch (err) {
     if (err instanceof PollLeaseError) {
-      if (err.kind === "exhausted") throw resourceExhausted("poll_watch_quota", err.message)
+      if (err.kind === "exhausted") {
+        throw resourceExhausted("poll_watch_quota", err.message, { limit: "pollWatches", max: err.max })
+      }
       if (err.kind === "unsupported") throw unsupported("provider_unavailable", err.message)
       throw new McpEventsError(EVENTS_ERR.internal, `BackingSubscriptionError: ${err.message}`, {
         kind: "backing_subscription",

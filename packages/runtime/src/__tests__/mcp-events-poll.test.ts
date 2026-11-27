@@ -5,7 +5,7 @@
 
 import "../sentinel-platform.js"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -243,6 +243,35 @@ describe("events/poll", () => {
     expect(journal.has(key)).toBe(true)
     journal.purge(() => false)
     expect(journal.has(key)).toBe(false)
+  })
+
+  it("periodic purge: after the purge interval, an emptied journal nobody feeds is removed without a restart", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    try {
+      await leases.stop()
+      journal = createPollJournal({ dir, now: () => clock, retentionMs: 10_000 })
+      leases = createPollLeaseManager({
+        journal,
+        resolveProvider: async () => provider,
+        toEvent: toJournalEvent,
+        now: () => clock,
+        pumpIntervalMs: 1000,
+        idleTtlMs: 60_000,
+      })
+      await poll()
+      const key = journalKey(NAME, ARGS)
+      expect(journal.has(key)).toBe(true)
+      // the lease goes idle and is released; the gap entry ages out of retention
+      tick(61_000)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(leases.size()).toBe(0)
+      // purge runs every 10 min of the injected clock, not on every pump tick
+      tick(10 * 60 * 1000)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(journal.has(key)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("a re-served provider event is journaled once", async () => {

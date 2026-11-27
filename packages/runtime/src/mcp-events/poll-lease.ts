@@ -22,6 +22,8 @@ import type { JournalEvent, PollJournal } from "./poll-journal.js"
 export const DEFAULT_IDLE_TTL_MS = 5 * 60 * 1000
 export const DEFAULT_PUMP_INTERVAL_MS = 15 * 1000
 export const DEFAULT_MAX_LEASES = 64
+/** How often the background timer purges the journal (expired entries, unfed journals). */
+export const DEFAULT_PURGE_INTERVAL_MS = 10 * 60 * 1000
 
 type Mapped = Extract<ArgumentsResult, { ok: true }>
 
@@ -39,6 +41,8 @@ export interface PollLeaseManagerOptions {
   /** Minimum spacing between two provider polls of one lease. */
   pumpIntervalMs?: number
   maxLeases?: number
+  /** Spacing, on `now`, between two background journal purges. Default 10 min. */
+  purgeIntervalMs?: number
   now?: () => number
   /** Convert a provider event to the wire shape (`toMcpEvent` minus the cursor). */
   toEvent: (event: SentinelEvent) => JournalEvent
@@ -51,6 +55,8 @@ export class PollLeaseError extends Error {
   constructor(
     readonly kind: "unsupported" | "exhausted" | "backing",
     message: string,
+    /** The ceiling that was hit (`exhausted` only). */
+    readonly max?: number,
   ) {
     super(message)
     this.name = "PollLeaseError"
@@ -84,6 +90,7 @@ export function createPollLeaseManager(opts: PollLeaseManagerOptions): PollLease
   const idleTtlMs = opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS
   const pumpIntervalMs = opts.pumpIntervalMs ?? DEFAULT_PUMP_INTERVAL_MS
   const maxLeases = opts.maxLeases ?? DEFAULT_MAX_LEASES
+  const purgeIntervalMs = opts.purgeIntervalMs ?? DEFAULT_PURGE_INTERVAL_MS
   const now = opts.now ?? Date.now
   const leases = new Map<string, Lease>()
   const opening = new Map<string, Promise<Lease>>()
@@ -144,11 +151,17 @@ export function createPollLeaseManager(opts: PollLeaseManagerOptions): PollLease
   }
 
   let timer: ReturnType<typeof setInterval> | undefined
+  let lastPurgeAt = now()
   if (opts.background !== false) {
     timer = setInterval(() => {
       void (async () => {
         await manager.sweep()
         await Promise.all([...leases.values()].map(l => pump(l, false)))
+        // Without this the journal is only purged at boot: an unfed journal would sit on disk until a restart.
+        if (now() - lastPurgeAt >= purgeIntervalMs) {
+          lastPurgeAt = now()
+          opts.journal.purge(key => manager.isActive(key))
+        }
       })().catch(() => undefined)
     }, pumpIntervalMs)
     timer.unref?.()
@@ -162,7 +175,7 @@ export function createPollLeaseManager(opts: PollLeaseManagerOptions): PollLease
       let created = false
       if (!lease) {
         if (leases.size + opening.size >= maxLeases) {
-          throw new PollLeaseError("exhausted", `too many concurrent poll watches (max ${maxLeases})`)
+          throw new PollLeaseError("exhausted", `too many concurrent poll watches (max ${maxLeases})`, maxLeases)
         }
         let pending = opening.get(input.key)
         if (!pending) {

@@ -1,0 +1,5 @@
+---
+"@agentproto/runtime": patch
+---
+
+MCP events conformance leftovers. `-32027` `data.reason` is now one of the spec's `lastError` categories (`connection_refused`, `timeout`, `http_4xx`, `http_5xx`, `challenge_failed`; `tls_error` is reserved), with the previous value kept in `data.legacyReason` for one release, and its message no longer repeats the endpoint's host, address, status or response text. A non-`https` or malformed `delivery.url` on `events/subscribe` is now `-32602` `invalid_callback_url` instead of `-32027` `non_https`. `events/subscribe` decodes a `cursor` like `events/poll` does (`-32602` when unreadable, `-32024` when issued to another caller) and answers `truncated: true` when one is given. `-32023` carries `data.kind`, `-32025` carries `data.limit` and `data.max`, `-32026` carries `data.feature` and `data.value`. The modern `server/discover` no longer advertises `listChanged` on `tools`, `resources` or `prompts`, since `subscriptions/listen` is not served. The poll journal is purged every 10 minutes instead of only at boot.

@@ -29,7 +29,7 @@ Events envelope. The envelope fields are `eventId`, `name`, `data`,
 | `nextCursor` pagination | `cursor` query param on `events/list`, opaque token = offset+scheme checkpoint | `events-registry.ts` | merged into `events-list-pagination` |
 | deterministic subscription id (principal + callback URL + event name + args, canonical JSON) | `subscriptionId(subInput)` — sha256 over **RFC 8785 (JCS) canonical JSON** (full spec: recursive key sort, Unicode minimization, ECMAScript number serialization; args payload is trustless input, nested objects legal); same identity = **upsert**, never duplicate | `mcp-events/subscription-id.ts` | `sub-id-canonical-jcs`, `sub-id-no-duplicate` |
 | callback verification (challenge POST, signed, one-shot, short TTL) | `verifyCallback()` — 2xx required, constant-time compare, keyed cache per **(principal + normalized callback URL + sha256(secret)) — a NEW secret during rotation ALWAYS forces re-verification (the cache can never bless an unverified secret)**, bounded TTL 10 min | `webhook-egress/challenge.ts` | `challenge-success`, `challenge-fail-reason-categorized`, `challenge-cache-hit`, `challenge-new-secret-bypasses-cache` |
-| `CallbackEndpointError -32015` + `data.reason` | JSON-RPC error on subscribe; `reason ∈ {challenge_failed, timeout, non_https, ssrf_blocked, non_2xx}` | `webhook-egress/challenge.ts` | merged into `challenge-fail-reason-categorized` |
+| `CallbackEndpointError -32027` + `data.reason` | JSON-RPC error on subscribe; `reason ∈ {connection_refused, timeout, tls_error, http_4xx, http_5xx, challenge_failed}` (the spec's `lastError` categories), translated from `ChallengeFailureReason` at the MCP boundary; the old value rides in `data.legacyReason`, `-32015` in `data.legacyCode`, for one release; the message is a fixed sentence per category (no host, address, status or response text). A non-`https` or malformed `delivery.url` is `-32602` `invalid_callback_url`, before any network call | `mcp-events/adapter.ts` (`callbackEndpointError`) | `challenge-fail-reason-categorized`, `callback-fail-reason-categorized` |
 | SSRF (HTTPS only, validated addr connect w/ hostname verified, no private, no redirect) | `ssrfFetch()` under challenge AND delivery (I3) | `webhook-egress/ssrf-fetch.ts` | `ssrf-blocks-private`, `ssrf-no-redirect`, `ssrf-same-fn-both-paths` |
 | event envelope `eventId/name/data/timestamp/cursor` | CloudEvents `SentinelEvent` mapped: `id→eventId` (and into the `webhook-id` header), `type→name`, `data→data`, `time→timestamp`, plus top-level `cursor` per §3; top-level `type` = protocol control notifications only, never sent | `mcp-events/adapter.ts` (`toMcpEvent`) | `envelope-mapping` |
 | body serialized once + signed bytes (I2) | `signWebhook()` returns **ONLY headers**; the caller owns the bytes and `deliverEventEnvelope` PASSes/returns those same bytes so retry re-signs without re-serializing | `webhook-egress/{signing,delivery}.ts` | `sign-body-once`, `retry-keeps-bytes` |
@@ -41,7 +41,7 @@ Events envelope. The envelope fields are `eventId`, `name`, `data`,
 | TTL: `ttlMs` omitted → default 7d; `number` → grant `min(requested, 30d)` but never below 60s floor; `null` → `until:{kind:"never"}` → `refreshBefore: null` | `until: {kind:"at", ms}` in store; **`refreshBefore` = the GRANTED EXPIRATION itself (`until.ms` as ISO-8601), per the official doc — never a pre-expiry hint**; one function `computeRefreshBefore()` in §3, claused nowhere else | `mcp-events/adapter.ts` | `ttl-clamp`, `refresh-before-expires` |
 | `ttlMs: null` | unexpire sentinel (`until:{kind:"never"}`) returns `refreshBefore: null` | same | `ttl-null-no-refresh-needed` |
 | client refresh before expiry (same sub identity + last cursor) | upsert path reuses existing sub id; returns new `refreshBefore` = new `until.ms`; cursor is accepted but NOT replayed (v1 non-replayable — `cursor:null` back) | `mcp-events/adapter.ts` | merged into `refresh-before-expires` |
-| replay via `cursor`; `truncated` when history gone; un-replayable types → `cursor: null` | **v1 REALITY (verified in code): NO provider has historical replay** — `local-gh` polls by snapshot diffing, providers' `poll(handle, limit)` accepts a `SentinelHandle`, not a `(cursor, limit)` pair, and there is no `{truncated}` path. So v1 declares EVERY event definition non-replayable: subscribe/refresh always return `cursor: null`, `truncated: false` never set. Replayable cursor mechanics = explicit follow-up (a replay `ArgumentError`-free provider API + cursor validation) — DO NOT fake it on top of snapshot diffing (it would invent phantom cursors). | `mcp-events/adapter.ts` | `unreplayable-cursor-null` (replay suites are explicitly OUT of v1) |
+| replay via `cursor`; `truncated` when history gone; un-replayable types → `cursor: null` | **v1 REALITY (verified in code): NO provider has historical replay** — `local-gh` polls by snapshot diffing, providers' `poll(handle, limit)` accepts a `SentinelHandle`, not a `(cursor, limit)` pair, and there is no `{truncated}` path. So v1 declares EVERY event definition non-replayable: subscribe/refresh always return `cursor: null`; a supplied `cursor` is decoded like a poll cursor (`-32602` unreadable, `-32024` another caller's) and answers `truncated: true`, since nothing is replayed over the webhook (`events/poll` is the replay path). Replayable cursor mechanics = explicit follow-up (a replay `ArgumentError`-free provider API + cursor validation) — DO NOT fake it on top of snapshot diffing (it would invent phantom cursors). | `mcp-events/adapter.ts` | `unreplayable-cursor-null` (replay suites are explicitly OUT of v1) |
 | `events/unsubscribe` with same event name + args + URL; idempotent | remove-by-deterministic-id path; second call returns `{}` | `mcp-events/adapter.ts` | `unsubscribe-idempotent` |
 | delivery ordering non-guaranteed; consumer idempotence | I1 dedup + docs note (W-D) | docs | — |
 | bursts / batching, `read` retrieval of full record | **explicitly cut** (see §5) — ChatGPT treats 2xx accept async; we only promise body shape | — | — |
@@ -61,7 +61,7 @@ they will not work and are not planned for this release.
 | **Event batching** across subscribers | One event per POST. The client may group server-side. |
 | **ChatGPT plugin manifest** | Their side handles discovery; we only need the capability flag + methods. |
 | **`read` tool** for oversized payloads | The 256 KiB clamp reduces `data` to `{summary, subject}`. A full-read tool is a follow-up (W-F) only if real usage demands it. |
-| **Replay via cursor** | No provider has historical replay. All event definitions are non-replayable in v1: `cursor: null` always, `truncated` never set. |
+| **Replay via cursor** | No provider has historical replay over the webhook: subscribe/refresh return `cursor: null`, and answer `truncated: true` when the client supplied a cursor. |
 | **`sentinel` routine target** | Reserved for AIP-41 `schedule.kind: event` binding; not yet implemented. |
 | **Per-principal multi-tenant identity** | v1 principal is `"daemon-bearer"` or `session:<sessionId>`. Auth-profile plumbing is W-F. |
 
@@ -89,20 +89,29 @@ they will not work and are not planned for this release.
 
 ### Challenge failure → JSON-RPC
 
-| `ChallengeFailureReason` | JSON-RPC `data.reason` |
+`ChallengeFailureReason` keeps its values (the sentinel webhook surface uses
+them); `callbackEndpointError` translates them for `-32027`, using the HTTP
+status and the `ssrfFetch` cause the challenge outcome carries. The old value
+is kept in `data.legacyReason` for one release.
+
+| `ChallengeFailureReason` (cause / status) | JSON-RPC `data.reason` |
 |---|---|
 | `challenge_failed` | `challenge_failed` |
-| `timeout` | `timeout` |
-| `non_https` | `non_https` |
-| `ssrf_blocked` | `ssrf_blocked` |
-| `non_2xx` | `non_2xx` |
+| `timeout` (`timeout`) | `timeout` |
+| `timeout` (`connect`) | `connection_refused` |
+| `ssrf_blocked` (`private_target`, `redirect`) | `connection_refused` |
+| `non_https` | `connection_refused` (unreachable on subscribe: `delivery.url` is checked first, `-32602`) |
+| `non_2xx` (5xx) | `http_5xx` |
+| `non_2xx` (any other status) | `http_4xx` |
+
+`tls_error` is never emitted: `ssrfFetch` reports a TLS failure as `connect`.
 
 ### JSON-RPC error codes
 
 | Code | Meaning |
 |---|---|
 | `-32602` | Invalid params (unknown event, bad args vs `inputSchema`) |
-| `-32015` | `CallbackEndpointError` — challenge verification failed |
+| `-32027` | `CallbackEndpointError`: challenge verification failed. `data.reason` is a `lastError` category; the pre-standard `-32015` rides in `data.legacyCode` for one release |
 | `-32016` | `BackingSubscriptionError` — a refresh could not renew the backing remote subscription. `data.reason`: `backing_subscription_expired` (remote already expired/deleted: unsubscribe and subscribe again; local state is untouched and no second remote is provisioned) or `backing_renew_failed` (transient: retry the refresh) |
 
 ## 6. Security invariants
