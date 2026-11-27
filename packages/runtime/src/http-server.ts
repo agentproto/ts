@@ -14523,7 +14523,10 @@ export function normalizeStoreRedirectUrl(rawUrl: string, appId: string = STORE_
 export const INSTALLED_STORE_APP_ID = "@agentproto/app-store"
 
 /** `GET /store` target: the installed `@agentproto/app-store` app when it can
- *  serve a page (record has a `ui`, its dir exists), else the builtin panel.
+ *  serve a page (record has a `ui`, its dir exists, and its `ui.path` bundle
+ *  exists or a `ui.build` can produce it), else the builtin panel. A record
+ *  whose bundle is gone with no way to rebuild it would only reach
+ *  `handleAppUiPage`'s error page, so the builtin panel serves instead.
  *  The builtin stays the fallback so `/store` works on a fresh daemon, but an
  *  installed storefront wins: otherwise a machine has two App Stores, the
  *  builtin's plain list being the one the short url and the CLI opened. */
@@ -14533,7 +14536,10 @@ export function resolveStoreRedirectUrl(
 ): string {
   const installed = registry?.getApp(INSTALLED_STORE_APP_ID)
   if (installed?.ui && existsSync(installed.dir)) {
-    return normalizeStoreRedirectUrl(rawUrl, INSTALLED_STORE_APP_ID)
+    const bundle = isAbsolute(installed.ui.path) ? installed.ui.path : join(installed.dir, installed.ui.path)
+    if (existsSync(bundle) || installed.ui.build !== undefined) {
+      return normalizeStoreRedirectUrl(rawUrl, INSTALLED_STORE_APP_ID)
+    }
   }
   return normalizeStoreRedirectUrl(rawUrl)
 }
