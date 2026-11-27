@@ -1628,6 +1628,20 @@ function toolCallArguments(update: Record<string, unknown>): unknown | undefined
 }
 
 /**
+ * The canonical MCP tool name (`mcp__<server>__<tool>`) a bridge attached to
+ * a tool-call frame, or undefined. The claude-code bridge titles an MCP call
+ * "<server>: <tool>" for display but carries the real name in
+ * `_meta.claudeCode.toolName`; downstream routing (MCP App views, per-server
+ * tool cards) keys on the canonical form, which the title cannot be parsed
+ * back into reliably.
+ */
+function canonicalMcpToolName(update: Record<string, unknown>): string | undefined {
+  const meta = update._meta as { claudeCode?: { toolName?: unknown } } | null | undefined
+  const name = meta?.claudeCode?.toolName
+  return typeof name === "string" && /^mcp__[^_].*?__.+/.test(name) ? name : undefined
+}
+
+/**
  * Build the tool-call ENRICHMENT for a non-terminal `tool_call_update` — the
  * frame where the claude-code bridge delivers the input and the real title
  * for a call it already announced as a bare "Read File" with `rawInput: {}`.
@@ -1642,7 +1656,9 @@ function toolCallEnrichment(
   const toolCallId = update.toolCallId as string | undefined
   if (!toolCallId) return null
   const args = toolCallArguments(update)
-  const title = typeof update.title === "string" ? update.title : undefined
+  const title =
+    canonicalMcpToolName(update) ??
+    (typeof update.title === "string" ? update.title : undefined)
   if (args === undefined && title === undefined) return null
   return {
     kind: "tool-call",
@@ -1709,7 +1725,10 @@ function translateSessionUpdate(
       // bucket (read/edit/search/execute/…) so rendered lines are
       // informative instead of generic.
       const toolName =
-        (update.title as string) ?? (update.kind as string) ?? "tool"
+        canonicalMcpToolName(update) ??
+        (update.title as string) ??
+        (update.kind as string) ??
+        "tool"
       return {
         kind: "tool-call",
         sessionId,

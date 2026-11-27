@@ -58,6 +58,7 @@ export function buildCspPolicy(csp: McpAppUiCsp | undefined): string {
     directive("media-src", ["data:", "blob:"], resource),
     directive("connect-src", [], orNone(sources(csp?.connectDomains))),
     directive("frame-src", [], orNone(sources(csp?.frameDomains))),
+    "object-src 'none'",
     directive("base-uri", [], orNone(sources(csp?.baseUriDomains))),
   ].join("; ")
 }
