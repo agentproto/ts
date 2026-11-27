@@ -2621,11 +2621,9 @@ export async function createGateway(
   // and a failed restore leaves that one tunnel `error` without gating
   // the rest of the gateway. Skipped when persistence is off (tests):
   // a test gateway must not relaunch the user's real tunnels.
-  if (persist) {
-    void tunnels.restoreOnBoot().catch(() => {
-      // restoreOnBoot already logs per-tunnel failures via onLog.
-    })
-  }
+  // The relaunch itself runs below, right after `remote` is created and its
+  // gate restored: a public tunnel to this daemon's own port is refused
+  // while the gateway isn't protected.
   // AIP-53 `services[].expose`: one keyed tunnel per exposed app service on
   // this same registry. Keyed tunnels are not autostart: the services boot
   // pass (reensureAppServicesOnBoot) re-ensures them, so boot never doubles.
@@ -3777,6 +3775,18 @@ export async function createGateway(
       }),
     isSessionChatInstalled,
   })
+  // Restore the remote-mode bearer gate BEFORE relaunching autostart
+  // tunnels (see the note at `tunnels` above). Skipped when persistence is
+  // off (tests). A failed restore must not block the tunnel relaunch.
+  if (persist) {
+    void remote
+      .restore()
+      .catch(() => false)
+      .then(() => tunnels.restoreOnBoot())
+      .catch(() => {
+        // restoreOnBoot already logs per-tunnel failures via onLog.
+      })
+  }
 
   // HTML cache for installed apps' `ui.path` panels (app-ui-apps.ts) —
   // gateway-scope singleton so a `/mcp` request doesn't re-read an

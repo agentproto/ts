@@ -170,6 +170,8 @@ const STATE_FILE_REL = ".agentproto/remote.json"
 export class RemoteController {
   private state: RemoteState | null = null
   private bearerToken: string | null = null
+  /** Gate restored from persisted state (hash only; no plaintext token). */
+  private bearerTokenHash: string | null = null
   private provider: RemoteProvider | null = null
   private lastError: string | undefined
   private readonly opts: RemoteControllerOptions
@@ -184,8 +186,33 @@ export class RemoteController {
    * a restart.
    */
   readonly readAuth = (): AuthOptions => {
-    if (this.bearerToken === null) return { mode: "none" }
-    return { mode: "bearer", token: this.bearerToken }
+    if (this.bearerToken !== null) return { mode: "bearer", token: this.bearerToken }
+    if (this.bearerTokenHash !== null) {
+      return { mode: "bearer", tokenHash: this.bearerTokenHash }
+    }
+    return { mode: "none" }
+  }
+
+  /**
+   * Re-arm the bearer gate after a restart from the persisted state, so
+   * routes that require a protected gateway (e.g. a public tunnel to this
+   * daemon's own port) are accepted again. Only the token hash is
+   * persisted, so the holder's existing token keeps working. This does NOT
+   * relaunch the provider tunnel: the persisted URL is stale until
+   * `remote_disable` + `remote_enable`. No-op when remote mode is already
+   * active or nothing gateway-exposing was persisted.
+   */
+  async restore(): Promise<boolean> {
+    if (this.state) return false
+    const persisted = await loadPersistedState(this.opts.workspace)
+    if (!persisted || !persisted.exposesGateway || !persisted.bearerTokenHash) {
+      return false
+    }
+    this.state = { ...persisted, pid: null }
+    this.bearerTokenHash = persisted.bearerTokenHash
+    this.lastError =
+      "restored after restart: bearer gate re-armed, tunnel not relaunched (run remote_disable then remote_enable for a new URL)"
+    return true
   }
 
   status(): RemoteStatus {
@@ -299,6 +326,7 @@ export class RemoteController {
     const provider = this.provider
     this.state = null
     this.bearerToken = null
+    this.bearerTokenHash = null
     this.provider = null
     if (provider) {
       try {
@@ -367,12 +395,9 @@ async function clearState(workspace: string): Promise<void> {
 }
 
 /**
- * Best-effort load of persisted state on boot. We don't restore the
- * bearer token from this — the hash is one-way — so a rebooted gateway
- * that finds a stale `remote.json` will surface it via `remote_status`
- * and require a fresh `remote_enable` to mint a new token.
- *
- * Exposed mostly for diagnostics; not used by the controller today.
+ * Best-effort load of persisted state on boot. The hash is one-way, so the
+ * plaintext token is never recovered; `RemoteController.restore` re-arms the
+ * gate from the hash instead.
  */
 export async function loadPersistedState(
   workspace: string,

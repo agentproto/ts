@@ -351,4 +351,42 @@ describe("gateway guard: never publish the daemon itself without authentication"
     expect(rec.starts.length).toBe(startsBefore)
     expect(reg2.get(desc.id)).toMatchObject({ status: "error", lastError: /refusing a public tunnel/ })
   })
+
+  it("an autostart tunnel left in error by the guard is relaunched once the gateway is protected", async () => {
+    const rec: Recorder = { calls: [], starts: [] }
+    const reg = guardedRegistry(rec, () => true)
+    const desc = await reg.create({
+      provider: "cloudflare-provisioned",
+      targetPort: 18790,
+      public: true,
+      autostart: true,
+    })
+    await reg.shutdown()
+
+    // Boot with the gateway unprotected: refused, persisted as error.
+    const reg2 = guardedRegistry(rec, () => false)
+    await reg2.restoreOnBoot()
+    expect(reg2.get(desc.id)).toMatchObject({ status: "error" })
+    await reg2.shutdown()
+
+    // Next restore with the gate up: the errored entry is retried.
+    const startsBefore = rec.starts.length
+    const reg3 = guardedRegistry(rec, () => true)
+    expect(reg3.get(desc.id)).toMatchObject({ status: "error" })
+    await reg3.restoreOnBoot()
+    expect(rec.starts.length).toBe(startsBefore + 1)
+    expect(reg3.get(desc.id)).toMatchObject({ status: "active" })
+  })
+
+  it("does not retry an errored tunnel that is not autostart", async () => {
+    const rec: Recorder = { calls: [], starts: [] }
+    const reg = guardedRegistry(rec, () => true)
+    const desc = await reg.create({ provider: "cloudflare-provisioned", targetPort: 4871, public: true })
+    await reg.shutdown()
+    const startsBefore = rec.starts.length
+    const reg2 = guardedRegistry(rec, () => true)
+    await reg2.restoreOnBoot()
+    expect(rec.starts.length).toBe(startsBefore)
+    expect(reg2.get(desc.id)).toMatchObject({ status: "stopped" })
+  })
 })
