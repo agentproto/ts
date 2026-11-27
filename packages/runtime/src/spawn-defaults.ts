@@ -287,6 +287,13 @@ export interface SpawnDefaultsConfig {
      *  evaluated. Ignored while `sessionTokens` is `"off"` (rule 8). */
     requireProof?: Array<"session:spawn">
   }
+  /** `defaults.permissionGrants` - extra Claude Code `permissions.allow`
+   *  rules per session label, written into the isolated settings of a
+   *  local claude-code session spawned with that label
+   *  (`permission-grants.ts`). Absent: the built-in default, which lets
+   *  `host-guard-escalation` run `agentproto host stop-process`. Set it to
+   *  replace that default (`{}` = no grant). Operator-only. */
+  permissionGrants?: Record<string, string[]>
   /** Hooks projected into a harness's own settings (`native-hooks-defaults.ts`). */
   nativeHooks?: {
     /** `defaults.nativeHooks.preCompactCheckpoint` - "on": a local claude-code

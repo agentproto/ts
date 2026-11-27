@@ -67,7 +67,7 @@ import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/prom
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs, promisify } from "node:util"
-import type { SessionDescriptor } from "@agentproto/runtime"
+import type { HostLoadReport, HostProcess, SessionDescriptor } from "@agentproto/runtime"
 import { discoverDaemon, httpGetJson, httpPostJson, printNoDaemonError } from "./_daemon-helpers.js"
 import { gatherHealthInput } from "./host.js"
 import {
@@ -512,6 +512,87 @@ export interface GuardLevelMemory {
   lastEscalatedAt?: string
   /** Level of the last escalation sent. */
   lastEscalatedLevel?: HealthVerdict
+  /** Whole-disk scans already escalated, as `<pid> <command line>`
+   *  (`scanKey`), kept only while they run, so a pid the OS hands to
+   *  another command counts as a new scan. */
+  scanKeys?: string[]
+}
+
+// ── whole-disk scans ────────────────────────────────────────────────
+
+/** A process scanning the whole disk (`find`/`bfs`/`fd`/`du` rooted at `/`,
+ *  the home dir, `/Volumes`, ...), as `host load` reports it (`fs-scan`
+ *  warning), with the session it belongs to. */
+export interface GuardScan {
+  pid: number
+  root: string | null
+  args: string
+  elapsedSec: number
+  cpuPercent: number
+  /** Owning session, when the process descends from one. */
+  sessionId: string | null
+  sessionLabel: string | null
+}
+
+type ScanReport = Pick<HostLoadReport, "warnings"> &
+  Partial<Pick<HostLoadReport, "processes" | "topByCpu" | "topByMemory">>
+
+/** The whole-disk scans in a host load report. Pure. */
+export function filesystemScansOf(report: ScanReport): GuardScan[] {
+  const procs = new Map<number, HostProcess>()
+  for (const p of [...(report.topByCpu ?? []), ...(report.topByMemory ?? []), ...(report.processes ?? [])]) {
+    procs.set(p.pid, p)
+  }
+  const out: GuardScan[] = []
+  for (const w of report.warnings) {
+    if (w.kind !== "fs-scan") continue
+    // `host load` writes "... rooted at <root>, running <age>".
+    const root = /rooted at (.+?), running /.exec(w.message)?.[1] ?? null
+    for (const pid of w.pids ?? []) {
+      if (out.some(s => s.pid === pid)) continue
+      const p = procs.get(pid)
+      const owner = p?.owner
+      out.push({
+        pid,
+        root,
+        args: p?.args ?? w.message,
+        elapsedSec: p?.elapsedSec ?? 0,
+        cpuPercent: p?.cpuPercent ?? 0,
+        sessionId: owner?.kind === "session" ? owner.sessionId : null,
+        sessionLabel: owner?.kind === "session" ? (owner.label ?? null) : null,
+      })
+    }
+  }
+  return out.sort((a, b) => a.pid - b.pid)
+}
+
+/** Identity of a scan across runs: its pid AND its command line, so a pid
+ *  the OS recycles onto another command is a new scan. */
+export function scanKey(scan: Pick<GuardScan, "pid" | "args">): string {
+  return `${scan.pid} ${scan.args}`
+}
+
+/** Which scans to escalate now: the ones not already escalated. And the
+ *  scan memory to keep, whether the escalation goes out or not: only scans
+ *  still running are remembered, keyed by pid and command line (`scanKey`),
+ *  so a recycled pid running another command counts as new. Pure. */
+export function freshScans(
+  scans: readonly GuardScan[],
+  previous: GuardLevelMemory | null,
+): { fresh: GuardScan[]; keepIfSent: string[]; keepIfNotSent: string[] } {
+  const announced = new Set(previous?.scanKeys ?? [])
+  const current = scans.map(scanKey)
+  return {
+    fresh: scans.filter(s => !announced.has(scanKey(s))),
+    keepIfSent: current,
+    keepIfNotSent: current.filter(k => announced.has(k)),
+  }
+}
+
+/** The one command the escalation session may run without a prompt
+ *  (`defaults.permissionGrants`), for a scan it should stop. */
+export function stopScanCommand(scan: Pick<GuardScan, "pid" | "root">): string {
+  return `agentproto host stop-process ${scan.pid} --reason "whole-disk scan rooted at ${scan.root ?? "?"} (host guard)"`
 }
 
 export interface EscalationDecision {
@@ -601,6 +682,9 @@ export async function readGuardLevel(path: string = DEFAULT_GUARD_LEVEL_PATH): P
       escalatedLevel: isLevel(parsed.escalatedLevel) ? parsed.escalatedLevel : "OK",
       ...(isDate(parsed.lastEscalatedAt) ? { lastEscalatedAt: parsed.lastEscalatedAt } : {}),
       ...(isLevel(parsed.lastEscalatedLevel) ? { lastEscalatedLevel: parsed.lastEscalatedLevel } : {}),
+      ...(Array.isArray(parsed.scanKeys)
+        ? { scanKeys: parsed.scanKeys.filter((k): k is string => typeof k === "string" && /^\d+ /.test(k)) }
+        : {}),
     }
   } catch {
     return null
@@ -963,7 +1047,8 @@ function humanReport(report: {
 
 function escalationPrompt(args: {
   level: HealthVerdict
-  reason: EscalationDecision["reason"]
+  reason: EscalationDecision["reason"] | "fs-scan"
+  scans: readonly GuardScan[]
   sinceMin: number
   healthReasons: readonly string[]
   closed: readonly { id: string; label: string; idleSec: number }[]
@@ -977,9 +1062,16 @@ function escalationPrompt(args: {
       `- ${s.id} ${sessionLabel(s)} status=${s.status ?? "?"} busy=${s.busy === true} keepAlive=${s.keepAlive === true} idle=${Math.round(idleMsOf(s, Date.now()) / 1000)}s`,
   )
   const headline =
-    args.reason === "still-crit"
-      ? `HOST GUARD ESCALATION — the host has stayed CRIT for ${args.sinceMin} min, after the automated cleanup pass.`
-      : `HOST GUARD ESCALATION — the host just reached ${args.level} and is still ${args.level} after the automated cleanup pass.`
+    args.reason === "fs-scan"
+      ? `HOST GUARD ESCALATION — a whole-disk scan is running on the host (host level ${args.level}).`
+      : args.reason === "still-crit"
+        ? `HOST GUARD ESCALATION — the host has stayed CRIT for ${args.sinceMin} min, after the automated cleanup pass.`
+        : `HOST GUARD ESCALATION — the host just reached ${args.level} and is still ${args.level} after the automated cleanup pass.`
+  const scanLines = args.scans.map(s => {
+    const who = s.sessionId ? `session ${s.sessionId}${s.sessionLabel ? ` (${s.sessionLabel})` : ""}` : "no session"
+    const stop = s.sessionId ? `\n  stop it: \`${stopScanCommand(s)}\`` : "\n  outside every session: the daemon will refuse to stop it; report it"
+    return `- pid ${s.pid}, ${who}, rooted at ${s.root ?? "?"}, ${Math.round(s.elapsedSec / 60)} min, ${Math.round(s.cpuPercent)}% CPU: \`${s.args.slice(0, 160)}\`${stop}`
+  })
   return [
     headline,
     "",
@@ -995,10 +1087,21 @@ function escalationPrompt(args: {
     "Live sessions still on the host:",
     ...(rows.length > 0 ? rows : ["- (none)"]),
     "",
+    ...(scanLines.length > 0
+      ? [
+          "Whole-disk scans (find/bfs/fd/du rooted at /, the home dir, /Volumes):",
+          ...scanLines,
+          "",
+        ]
+      : []),
     "Instructions:",
     "1. Do NOT start heavy workflows, big sandboxes, or large builds until `agentproto host health` is OK or WARN.",
     "2. Find what is consuming the host (`agentproto host load --full`); report the top processes and their owning sessions.",
     "3. Only stop sessions that are genuinely idle. Never stop a busy/keepAlive session.",
+    "   A single process of a session that saturates the host (a whole-disk scan above, a runaway build) is stopped with",
+    "   `agentproto host stop-process <pid> --reason \"...\"`. The escalation session the guard spawns may run it without a",
+    "   prompt (defaults.permissionGrants); another session may be asked for permission. The daemon only accepts a process",
+    "   that descends from a live session, logs the request, and tells the owning session. Never use `kill`.",
     "4. Report back to the supervisor with what you freed and what remains.",
   ].join("\n")
 }
@@ -1025,12 +1128,14 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
 
   let health: ReturnType<typeof computeHostHealth>
   let sessions: SessionDescriptor[]
+  let scans: GuardScan[] = []
   try {
     const input = await gatherHealthInput({
       local: false,
       ...(flags.budgetMs !== undefined ? { budgetMs: flags.budgetMs } : {}),
     })
     health = computeHostHealth(input, DEFAULT_HEALTH_THRESHOLDS)
+    scans = input.report ? filesystemScansOf(input.report) : []
     sessions = await fetchSessions(found.url)
     await annotateWorktreeStates(sessions)
   } catch (err) {
@@ -1162,12 +1267,21 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
     nowMs: Date.now(),
     renotifyAfterMs: flags.renotifyAfterMs,
   })
-  let memory = decision.memory
+  // A whole-disk scan is escalated at once, whatever the level, once per pid.
+  const scanMemory = freshScans(scans, previousLevel)
+  const escalateNow = decision.escalate || scanMemory.fresh.length > 0
+  const escalationReason = decision.escalate ? decision.reason : "fs-scan"
+  let memory: GuardLevelMemory = { ...decision.memory, scanKeys: scanMemory.keepIfNotSent }
+  const memoryIfSent: GuardLevelMemory = {
+    ...(decision.escalate ? decision.memoryIfSent : decision.memory),
+    scanKeys: scanMemory.keepIfSent,
+  }
 
-  if (!flags.dryRun && flags.escalate && decision.escalate) {
+  if (!flags.dryRun && flags.escalate && escalateNow) {
     const prompt = escalationPrompt({
       level,
-      reason: decision.reason,
+      reason: escalationReason,
+      scans,
       sinceMin: Math.max(0, Math.round((Date.now() - Date.parse(decision.memory.since)) / 60_000)),
       healthReasons: after && after.reasons.length > 0 ? after.reasons : health.reasons,
       closed,
@@ -1186,7 +1300,7 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
           queue: true,
         }, found.token)
         escalation = `notified ${target}`
-        memory = decision.memoryIfSent
+        memory = memoryIfSent
       } else if (flags.agent) {
         const spawned = await httpPostJson<{ session?: { id?: string }; id?: string }>(
           `${found.url}/sessions/agent`,
@@ -1195,7 +1309,7 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
         )
         const id = spawned?.session?.id ?? spawned?.id ?? "unknown"
         escalation = `spawned ${flags.agent} as ${id}`
-        memory = decision.memoryIfSent
+        memory = memoryIfSent
       } else {
         escalation = "skipped (no --agent or --notify-session configured)"
       }
@@ -1203,8 +1317,8 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
       // Not recorded as sent: the next run tries again.
       escalation = `FAILED: ${errText(err)}`
     }
-  } else if (flags.escalate && decision.escalate) {
-    escalation = `would escalate (${decision.reason})`
+  } else if (flags.escalate && escalateNow) {
+    escalation = `would escalate (${escalationReason})`
   }
 
   if (!flags.dryRun && flags.levelState) {
@@ -1228,9 +1342,10 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
     level,
     escalationDecision: {
       escalateOn: flags.escalateOn,
-      reason: decision.reason,
-      escalate: decision.escalate && flags.escalate,
+      reason: escalationReason,
+      escalate: escalateNow && flags.escalate,
     },
+    scans,
     escalation,
   }
   if (flags.log) {

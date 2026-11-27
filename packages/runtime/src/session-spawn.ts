@@ -450,6 +450,7 @@ import {
   type SessionTokenMode,
 } from "./identity-defaults.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
+import { permissionAllowFor } from "./permission-grants.js"
 import type { MemoryScope, MemoryStore } from "@agentproto/memory"
 import type { Grant } from "@agentproto/policy"
 import {
@@ -6137,6 +6138,11 @@ async function spawnAgentSessionOnce(
     // branch is a parameter: the cwd (the provisioned worktree on the async
     // path, known only after provisioning) and the activity pulse.
     const preCompactCommand = preCompactCommandFor(configDefaults, { adapter: input.adapter, sandbox: input.sandbox })
+    const permissionAllow = permissionAllowFor(configDefaults, {
+      adapter: input.adapter,
+      label: input.label,
+      sandbox: input.sandbox,
+    })
     const localStartOptions = async (startCwd: string, onActivity: () => void) => {
       const startConfigDir = resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId)
       const adapterMcpServers = adapterMcpServersForStart()
@@ -6172,6 +6178,8 @@ async function spawnAgentSessionOnce(
         // claude-code only: this helper never serves a sandbox spawn, the
         // resolver still checks so the rule lives in one place.
         ...(preCompactCommand ? { preCompactCommand } : {}),
+        // Per-label permission grants (`defaults.permissionGrants`).
+        ...(permissionAllow ? { permissionAllow } : {}),
         env: await localSpawnEnv(startConfigDir),
         // Exact-file AGENTS.md read grant — the driver derives the
         // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement

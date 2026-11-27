@@ -78,6 +78,7 @@ import {
 import { DEFAULT_SPAWN_ATTACH, SPAWN_ATTACH_ENV } from "./spawn-attach.js"
 import { DEFAULT_SPAWN_DEDUPE, SPAWN_DEDUPE_ENV } from "./spawn-dedupe.js"
 import { DEFAULT_ATTENTION_DELAY_SEC, ATTENTION_DELAY_ENV } from "./session-presence.js"
+import { DEFAULT_PERMISSION_GRANTS, PERMISSION_RULE_PATTERN } from "./permission-grants.js"
 import {
   TERMINAL_CELL_SIZE_ENV,
   TERMINAL_CELL_SIZE_PATTERN,
@@ -212,6 +213,13 @@ const mcpDefaultsConfigSchema: z.ZodType<McpDefaultsConfig> = z
 const unsupportedSessionGrantMessage =
   "only session:message, session:prompt and session:control grants with a string principal are honored here"
 const sessionGrantActions = ["session:message", "session:prompt", "session:control"] as const
+/** `defaults.permissionGrants`: session label -> Claude Code allow rules
+ *  (`permission-grants.ts`). */
+const permissionGrantsSchema = z.record(
+  z.string().min(1).max(128),
+  z.array(z.string().regex(PERMISSION_RULE_PATTERN)).max(20),
+)
+
 const configMessageGrantSchema: z.ZodType<Grant> = z
   .object({
     principal: z.unknown(),
@@ -321,6 +329,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
+    permissionGrants: permissionGrantsSchema.optional(),
     nativeHooks: z
       .object({
         preCompactCheckpoint: z.enum(["off", "on"]).optional(),
@@ -2602,6 +2611,18 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Actions that require a proven caller",
     help: "Actions a caller must be PROVEN to invoke (AIP-46 §Session principals rule 9). Empty (the default): nothing is refused. A listed action refuses a caller that only named a session ('claimed') with identity_unverified, and one whose session token was minted for another session than its claim with identity_mismatch. A scoped orchestrator caller is proven by its scope token; an anonymous loopback caller (CLI, hooks, desktop) is the operator and is never refused. Ignored while defaults.identity.sessionTokens is 'off': no token is minted, so nobody could be proven (rule 8). Only 'session:spawn' is evaluated today. Read GET /identity spawnProof.wouldRefuse and its claimed split before listing it.",
     default: [],
+  },
+
+  // ── defaults: permissionGrants ──
+  {
+    path: "defaults.permissionGrants",
+    schema: permissionGrantsSchema,
+    apply: "hot",
+    writable: false,
+    section: "defaults",
+    label: "Permission grants per session label",
+    help: "Extra Claude Code permission allow rules, per session label, written into the isolated settings of a local claude-code session spawned, restarted or resumed with that label. The built-in default lets the host-guard escalation session (label host-guard-escalation) run `agentproto host stop-process`, which the daemon itself limits to a process descending from a live session. Setting this key replaces the default; {} removes every grant. Operator-only: hand-edit config.json.",
+    default: DEFAULT_PERMISSION_GRANTS,
   },
 
   // ── defaults: nativeHooks ──

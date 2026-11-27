@@ -20,9 +20,16 @@
  * tool calls become a real use case.
  */
 
+import { execFile } from "node:child_process"
 import "./sentinel-platform.js"
 
-import { buildLabeledStatsReport } from "./process-stats.js"
+import { buildLabeledStatsReport, createProcessTableSource } from "./process-stats.js"
+import {
+  defaultStopProcessLogPath,
+  jsonlLogger,
+  MAX_STOP_GRACE_MS,
+  stopSessionProcess,
+} from "./host-stop-process.js"
 import { loadConfig } from "./config.js"
 import { exposedToolGrantsFor, resolveExposedToolsMode } from "./exposed-tools-policy.js"
 import { getHostLoadService } from "./host-load.js"
@@ -736,6 +743,10 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  (`defaults.nativeHooks`), forwarded to the driver's
      *  `start({ preCompactCommand })`. Set only for local claude-code spawns. */
     preCompactCommand?: string
+    /** Claude Code `permissions.allow` rules from `defaults.permissionGrants`
+     *  for this session's label, forwarded to the driver's
+     *  `start({ permissionAllow })`. Set only for local claude-code spawns. */
+    permissionAllow?: string[]
     /** Resolved imported skills to deliver into this session's isolated
      *  config dir — forwarded verbatim to the driver's
      *  `start({ sessionSkills })` (see `AgentCliStartOptions.sessionSkills`).
@@ -1104,6 +1115,9 @@ export interface AuthOptions {
 export type AuthSource = AuthOptions | (() => AuthOptions)
 
 export interface RuntimeHttpServerOptions {
+  /** JSONL log of `POST /host/processes/:pid/stop` attempts. Default
+   *  `~/.agentproto/host-stop-process.log` (tests point it at a temp file). */
+  hostStopProcessLogPath?: string
   port: number
   bind?: string
   auth?: AuthSource
@@ -4105,6 +4119,93 @@ export async function startHttpServer(
           } catch (err) {
             json(500, { error: "host_load_failed", message: err instanceof Error ? err.message : String(err) })
           }
+          return
+        }
+
+        // POST /host/processes/:pid/stop {reason, graceMs?} - stop ONE process
+        // that descends from a live session (never the daemon, a session root,
+        // or anything outside every session; see host-stop-process.ts for the
+        // rules). Logged with the attested caller and the reason; the owning
+        // session gets a system notice. 200 stopped, 403 refused, 400 bad input.
+        const stopMatch = /^\/host\/processes\/(\d+)\/stop$/.exec(path)
+        if (opts.sessions && stopMatch && req.method === "POST") {
+          // Destructive: same gate as every mutating sessions route (a web
+          // page must not be able to stop a session's process).
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const json = (status: number, body: unknown): void => {
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(JSON.stringify(body))
+          }
+          const body = ((await readJsonBody(req).catch(() => null)) ?? {}) as Record<string, unknown>
+          const reason = typeof body.reason === "string" ? body.reason : ""
+          const graceRaw = body.graceMs
+          if (graceRaw !== undefined && (typeof graceRaw !== "number" || !Number.isInteger(graceRaw) || graceRaw < 0 || graceRaw > MAX_STOP_GRACE_MS)) {
+            json(400, { error: "invalid_grace", message: `graceMs must be an integer between 0 and ${MAX_STOP_GRACE_MS}` })
+            return
+          }
+          const registry = opts.sessions
+          const result = await stopSessionProcess(
+            {
+              pid: Number(stopMatch[1]),
+              reason,
+              by: resolveCallerSessionId(req) ?? "operator",
+              ...(typeof graceRaw === "number" ? { graceMs: graceRaw } : {}),
+            },
+            {
+              table: createProcessTableSource(10_000),
+              sessions: () =>
+                registry.list({ includeArchived: false }).map(d => ({
+                  id: d.id,
+                  pid: d.pid ?? null,
+                  live: d.status === "running" || d.status === "starting",
+                  ...(d.label ?? d.slug ? { label: (d.label ?? d.slug)! } : {}),
+                })),
+              daemonPid: process.pid,
+              ...(typeof process.getuid === "function" ? { uid: process.getuid() } : {}),
+              kill: (pid, signal) => {
+                process.kill(pid, signal)
+              },
+              alive: pid => {
+                try {
+                  process.kill(pid, 0)
+                  return true
+                } catch (err) {
+                  return (err as NodeJS.ErrnoException).code === "EPERM"
+                }
+              },
+              sleep: ms => new Promise(r => setTimeout(r, ms)),
+              // A zombie (exited, not yet reaped by its parent) still answers
+              // kill(pid, 0): read its state so it reports as stopped.
+              isZombie: pid =>
+                new Promise(resolve => {
+                  execFile("ps", ["-o", "stat=", "-p", String(pid)], { timeout: 2000 }, (err, stdout) => {
+                    resolve(!err && stdout.trim().startsWith("Z"))
+                  })
+                }),
+              log: jsonlLogger(opts.hostStopProcessLogPath ?? defaultStopProcessLogPath()),
+              notify: async (owner, text, data) => {
+                await registry.sendMessage(
+                  createSessionMessage({
+                    to: owner.sessionId,
+                    from: { relation: "system" },
+                    kind: "notice",
+                    urgency: "next-turn",
+                    correlationId: `host-stop-process:${String(data.pid)}`,
+                    text,
+                    data,
+                  }),
+                  { source: "host-stop-process" },
+                )
+                return true
+              },
+            },
+          )
+          const status = result.ok ? 200 : result.code === "invalid-reason" || result.code === "invalid-pid" ? 400 : 403
+          json(status, result)
           return
         }
 

@@ -257,7 +257,12 @@ export interface ConfigWriteCaller {
  *  write there would rewrite it. This is a write policy on the loopback trust
  *  model, not an authentication boundary: a session that omits both its token
  *  and its caller claim is indistinguishable from the operator. */
-const OPERATOR_ONLY_KEYS = ["defaults.messaging", "defaults.identity", "defaults.tasks.operatorDelegates"] as const
+const OPERATOR_ONLY_KEYS = [
+  "defaults.messaging",
+  "defaults.identity",
+  "defaults.tasks.operatorDelegates",
+  "defaults.permissionGrants",
+] as const
 
 export function isOperatorOnlyConfigKey(key: string): boolean {
   return OPERATOR_ONLY_KEYS.some(p => key === p || key.startsWith(`${p}.`) || p.startsWith(`${key}.`))

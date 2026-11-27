@@ -146,6 +146,21 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
     })
   })
 
+  it("writes host-granted allow rules as permissions.allow, beside the mode", async () => {
+    const handle = defineHarness(claudeCodeLike())
+    const runtime = createAgentCliRuntime(handle)
+    await runtime.start({
+      cwd: "/scratch",
+      config: { mode: "plan" },
+      permissionAllow: ["Bash(agentproto host stop-process:*)"],
+    })
+    const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
+    expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
+      attribution: { commit: "", pr: "", sessionUrl: false },
+      permissions: { defaultMode: "plan", allow: ["Bash(agentproto host stop-process:*)"] },
+    })
+  })
+
   it("maps mode:bypass-permissions to the same settings.json vocabulary", async () => {
     const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)

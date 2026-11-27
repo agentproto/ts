@@ -1568,6 +1568,14 @@ export interface AgentCliStartOptions {
    */
   preCompactCommand?: string
   /**
+   * Claude Code permission ALLOW rules (`Bash(agentproto host stop-process:*)`)
+   * written into the isolated `settings.json` as `permissions.allow`,
+   * rewritten at every spawn so a grant never outlives the spawn that asked
+   * for it. Host-authored only (`defaults.permissionGrants`). Other adapters
+   * ignore it.
+   */
+  permissionAllow?: string[]
+  /**
    * Extra system-prompt text for this session (an AIP-42 AGENT.md projection
    * that resolved a real channel — see {@link AgentCliDefinition.systemPrompt}).
    * Applied per the manifest's declared `systemPrompt.via`: `acp-meta` rides
