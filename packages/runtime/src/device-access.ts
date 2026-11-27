@@ -178,9 +178,9 @@ export class DeviceAccessStore {
     return { code, expiresAt: new Date(expiresAt).toISOString() }
   }
 
-  private prune(): void {
+  private prune(keepOffers = false): void {
     const t = this.now()
-    for (const [k, o] of this.offers) if (o.expiresAt <= t) this.offers.delete(k)
+    if (!keepOffers) for (const [k, o] of this.offers) if (o.expiresAt <= t) this.offers.delete(k)
     for (const [k, r] of this.requests) {
       if (r.status === "pending" && r.expiresAt <= t) r.status = "expired"
       // Forget finished requests a while after they end.
@@ -193,7 +193,8 @@ export class DeviceAccessStore {
   request(input: { offer: string; deviceName?: string; platform?: string }):
     | { ok: true; requestId: string; pollSecret: string; number: string; expiresAt: string; grant: DeviceGrant; deviceName: string; platform: string }
     | { ok: false; error: OfferFailure } {
-    this.prune()
+    // Keep expired offers for this lookup, so an expired code says so.
+    this.prune(true)
     const t = this.now()
     if (this.lockedUntil > t) return { ok: false, error: "locked" }
     const key = sha256(normalizeOfferCode(input.offer))
@@ -438,7 +439,11 @@ function cookieValue(req: IncomingMessage, name: string): string | undefined {
   return undefined
 }
 
-/** A device token in `Authorization: Bearer dvt_…` or the device cookie. */
+/**
+ * A device token in `Authorization: Bearer dvt_…` or the device cookie. No HTTP
+ * route issues the cookie: the native shell sets it itself in its web view from
+ * the token it holds in the system's secure storage, so the page never sees it.
+ */
 export function extractDeviceToken(req: IncomingMessage): string | undefined {
   const h = req.headers.authorization
   const m = typeof h === "string" ? /^Bearer\s+(dvt_[A-Za-z0-9_-]+)$/.exec(h.trim()) : null

@@ -192,6 +192,24 @@ describe("device pairing over HTTP", () => {
     )
   })
 
+  it("an approvals engine with no enabled channel cannot confirm anything, so nothing is requested", async () => {
+    const mute = createApprovalsEngine({ homeDir: join(dir, "approvals-mute"), sessionEvents: createSessionEventBus(), webOrigins: [] })
+    try {
+      await withServer(
+        async base => {
+          const offer = store.offer({ grant: { apps: "*" } })
+          const r = await post(base, "/device-pair/request", { offer: offer.code })
+          expect(r.status).toBe(503)
+          expect(mute.list({ status: "pending" })).toHaveLength(0)
+          expect(store.pendingRequests()).toHaveLength(0)
+        },
+        { approvals: { ...mute, enabledChannels: [] } as ApprovalsEngine },
+      )
+    } finally {
+      mute.dispose()
+    }
+  })
+
   it("a device is limited to the apps of its grant: other apps answer grant_out_of_scope, even by the cookie", async () => {
     await withServer(async base => {
       const { token } = await connect(base, ["acme/one"])

@@ -50,12 +50,6 @@ export function deviceRoute(method: string, path: string): { route: DeviceRoute;
   return undefined
 }
 
-/** The routes a daemon in bearer mode must let through without the daemon bearer. */
-export function isOpenDeviceRoute(method: string, path: string): boolean {
-  const r = deviceRoute(method, path)
-  return r !== undefined && r.route !== "me"
-}
-
 function json(res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}): void {
   res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...extra })
   res.end(JSON.stringify(body))
@@ -172,7 +166,7 @@ export async function handleDeviceRoute(
       json(res, 400, { error: "bad_request" }, CORS)
       return true
     }
-    if (!deps.approvals) {
+    if (!deps.approvals || deps.approvals.enabledChannels.length === 0) {
       // Nothing may be approved without a human channel.
       json(res, 503, { error: "no_confirmation_channel", message: "This machine has no way to confirm a new device (approvals are off)." }, CORS)
       return true
@@ -306,12 +300,6 @@ export function deviceMaySessionRead(req: IncomingMessage, store: DeviceAccessSt
   if (!token) return false
   const d = store.verify(token)
   return d !== undefined && d.grant.sessionsRead
-}
-
-/** Any valid device token (for the tunnel gate on the tool-call route; the grant is checked by the route). */
-export function hasValidDeviceToken(req: IncomingMessage, store: DeviceAccessStore = getDeviceAccessStore()): boolean {
-  const token = extractDeviceToken(req)
-  return token !== undefined && store.verify(token) !== undefined
 }
 
 // ── the page a pairing link opens ─────────────────────────────────────────────

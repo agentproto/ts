@@ -114,6 +114,9 @@ export function registerDeviceAccessTools(server: McpServer, opts: RegisterDevic
       } catch {
         return fail(`device_offer: "${base}" is not a URL.`)
       }
+      if (origin.pathname !== "/" || origin.search || origin.hash) {
+        return fail("device_offer: `baseUrl` must be a bare origin (scheme, host, port), without a path.")
+      }
       const local = origin.hostname === "127.0.0.1" || origin.hostname === "localhost"
       if (origin.protocol !== "https:" && !local) {
         return fail("device_offer: the daemon's public URL must be https (a connection link must not travel in clear).")

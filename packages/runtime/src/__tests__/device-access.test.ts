@@ -37,6 +37,8 @@ describe("offers and requests", () => {
     const { s, clock } = store()
     const offer = s.offer({ grant: { apps: "*" }, ttlMs: 60_000 })
     clock.t += 61_000
+    expect(s.request({ offer: offer.code })).toEqual({ ok: false, error: "offer_expired" })
+    // Once said, it is gone.
     expect(s.request({ offer: offer.code })).toEqual({ ok: false, error: "invalid_offer" })
   })
 

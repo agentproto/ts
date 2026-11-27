@@ -79,6 +79,7 @@ describe("device_offer", () => {
     expect((await call("device_offer", { apps: ["acme/headless"], baseUrl: BASE, deliver: "return" })).text).toMatch(/acme\/headless/)
     expect((await call("device_offer", { apps: ["nope"], baseUrl: BASE, deliver: "return" })).isError).toBe(true)
     expect((await call("device_offer", { apps: "*", deliver: "return" })).text).toMatch(/baseUrl/)
+    expect((await call("device_offer", { apps: "*", baseUrl: `${BASE}/sub/path`, deliver: "return" })).text).toMatch(/bare origin/)
     expect((await call("device_offer", { apps: "*", baseUrl: BASE, deliver: "telegram" })).text).toMatch(/Telegram is not set up/)
   })
 

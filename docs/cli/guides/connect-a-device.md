@@ -27,11 +27,18 @@ device_offer { "apps": ["@acme/notes"], "sessionsRead": true, "baseUrl": "https:
   The code sits in the URL fragment, so no server or log sees it. A QR code is the
   same link.
 
-`baseUrl` is the public https address of the daemon (its tunnel); it can come from
+`baseUrl` is the public https address of the daemon (its tunnel), a bare origin
+with no path; it can come from
 `AGENTPROTO_PUBLIC_HTTP_ORIGIN`. To let Android open the app straight from the
 link, put the Digital Asset Links proof for the app at
 `~/.agentproto/assetlinks.json`; the daemon serves it at
 `/.well-known/assetlinks.json`. Without it, the page at `/pair` offers a button.
+
+Two things to know. Offers and waiting requests live in the daemon's memory, so a
+restart of the daemon mid-pairing ends it: send a new link. And `"*"` is a live
+wildcard: an app installed later is reachable by the devices that were granted
+`"*"`, without a new confirmation. Grant a list of ids to freeze the set, or put
+`access: { remote: false }` in an app that must stay off every device.
 
 ## 2. Confirm
 
