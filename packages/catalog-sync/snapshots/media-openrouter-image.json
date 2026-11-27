@@ -52,16 +52,16 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1377,
-            "win_rate": 58.1,
+            "elo": 1374,
+            "win_rate": 56.4,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1333,
-            "win_rate": 61.9,
-            "rank": 2
+            "elo": 1328,
+            "win_rate": 61,
+            "rank": 3
           }
         ]
       }
@@ -118,15 +118,15 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1399,
-            "win_rate": 60.8,
+            "elo": 1401,
+            "win_rate": 59.9,
             "rank": 2
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1334,
-            "win_rate": 62.2,
+            "elo": 1337,
+            "win_rate": 62.4,
             "rank": 1
           }
         ]
@@ -1181,14 +1181,14 @@
             "arena": "models",
             "category": "image",
             "elo": 1363,
-            "win_rate": 60.1,
+            "win_rate": 59.1,
             "rank": 4
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1272,
-            "win_rate": 50.6,
+            "elo": 1273,
+            "win_rate": 50.7,
             "rank": 6
           },
           {
@@ -1260,8 +1260,8 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1350,
-            "win_rate": 59.2,
+            "elo": 1349,
+            "win_rate": 58.3,
             "rank": 5
           },
           {
@@ -1811,7 +1811,7 @@
       "default_parameters": {},
       "supported_voices": null,
       "knowledge_cutoff": null,
-      "expiration_date": null,
+      "expiration_date": "2026-11-27",
       "links": {
         "details": "/api/v1/models/microsoft/mai-image-2.5-pro-20260723/endpoints"
       },
@@ -2399,9 +2399,9 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1331,
+            "elo": 1332,
             "win_rate": 60.7,
-            "rank": 3
+            "rank": 2
           }
         ]
       },
@@ -2520,7 +2520,7 @@
       "default_parameters": {},
       "supported_voices": null,
       "knowledge_cutoff": null,
-      "expiration_date": null,
+      "expiration_date": "2026-11-27",
       "links": {
         "details": "/api/v1/models/microsoft/mai-image-2.5/endpoints"
       },
@@ -2547,7 +2547,7 @@
             "arena": "models",
             "category": "imageediting",
             "elo": 1251,
-            "win_rate": 52.4,
+            "win_rate": 52.3,
             "rank": 7
           },
           {
@@ -3424,7 +3424,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1107,
+            "elo": 1106,
             "win_rate": 38.6,
             "rank": 14
           },
@@ -3683,7 +3683,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1239,
+            "elo": 1238,
             "win_rate": 49,
             "rank": 10
           },
@@ -3886,7 +3886,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1227,
+            "elo": 1226,
             "win_rate": 51,
             "rank": 13
           },

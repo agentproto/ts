@@ -1152,7 +1152,7 @@
         "id": "grok-code",
         "name": "Grok Code Fast 1",
         "family": "grok-code",
-        "release_date": "2025-09-02",
+        "release_date": "2025-08-28",
         "status": "deprecated",
         "cost": {
           "input": 0,
@@ -1248,6 +1248,7 @@
         "name": "Kimi K2.5",
         "family": "kimi",
         "release_date": "2026-01-27",
+        "status": "deprecated",
         "cost": {
           "input": 0.6,
           "output": 3,
@@ -1271,6 +1272,7 @@
         "name": "Kimi K2.6",
         "family": "kimi",
         "release_date": "2026-04-20",
+        "status": "deprecated",
         "cost": {
           "input": 0.95,
           "output": 4,
@@ -1298,6 +1300,18 @@
           "output": 15,
           "cache_read": 0.3,
           "cache_write": 3
+        }
+      },
+      "kimi-k3.1-pro": {
+        "id": "kimi-k3.1-pro",
+        "name": "Kimi K3.1 Pro",
+        "family": "kimi-pro",
+        "release_date": "2026-10-23",
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.2,
+          "cache_write": 2
         }
       },
       "laguna-s-2.1-free": {
@@ -1582,7 +1596,7 @@
         "id": "mistral-large-4",
         "name": "Mistral Large 4",
         "family": "mistral-large",
-        "release_date": "2026-10-06",
+        "release_date": "2026-10-05",
         "provider": {
           "npm": "@ai-sdk/mistral"
         },
@@ -1855,6 +1869,16 @@
         "cost": {
           "input": 0,
           "output": 0
+        }
+      },
+      "seaglass-alpha-free": {
+        "id": "seaglass-alpha-free",
+        "name": "Seaglass Alpha Free",
+        "release_date": "2026-11-26",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
         }
       },
       "space-bunny-free": {

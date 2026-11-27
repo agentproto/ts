@@ -665,3 +665,28 @@ for that.
 ### llm:huggingface
 - Added: LiquidAI/LFM2.5-24B-A2B, thinkingmachines/Inkling-2-Mini
 - Removed: MiniMaxAI/MiniMax-M1-80k, MiniMaxAI/MiniMax-M2.7, deepseek-ai/DeepSeek-V3.1-Terminus, deepseek-ai/DeepSeek-V3.2-Exp, moonshotai/Kimi-K2-Thinking, swiss-ai/Apertus-8B-Instruct-2509, tencent/Hy4-flash
+
+## 2026-11-27
+
+### llm:openrouter
+- Added: inclusionai/ling-3.2-flash, inclusionai/lingsante-3.1-air-vl, mistralai/codestral-2508:batch, mistralai/ministral-8b-2512:batch, mistralai/mistral-large-2512:batch, mistralai/mistral-small-2603:batch, tngtech/deepseek-r1t2-chimera, upstage/solar-mini-4-5, upstage/solar-pro-4-contributor, xiaomi/mimo-v2.6-flash-mopd
+- Removed: mistralai/mistral-medium-3, mistralai/mistral-medium-3.1, moonshotai/kimi-k2-thinking, unbiased/pareto-26.10, unbiased/pareto-26.10-preview, unbiased/pareto-26.9, xiaomi/mimo-v2.5, xiaomi/mimo-v2.5-pro
+
+### llm:requesty
+- Added: doubleword/deepseek-v4.1-flash-1017, doubleword/deepseek-v4.1-flash-1017:flex, doubleword/glm-5.3-flash, doubleword/glm-5.3-flash:flex, doubleword/kimi-k3.1-pro, doubleword/kimi-k3.1-pro:flex, fireworks/minimax-m3.1-flash, fireworks/qwen4-max, inceptron/deepseek-v4-flash-0731, inceptron/deepseek-v4.1-flash-1017, inceptron/glm-5.3, inceptron/glm-5.3-flash, openai/gpt-6-astra-healthcare, openai/gpt-6.1-sol-healthcare, openai/gpt-6.2-astra-healthcare, openai/gpt-6.2-sol-healthcare, parasail/deepseek-v4.1-flash, parasail/deepseek-v4.1-flash-1017, parasail/glm-5.3-flash, parasail/kimi-k3.1-pro, parasail/minimax-m3.1-flash, scaleway/deepseek-v4.1-flash-1017, scaleway/glm-5.3
+- Removed: anthropic/claude-opus-4-5, fireworks/gpt-oss-120b, google/gemini-3-pro-preview, google/gemini-3-pro-preview:flex, lyceum/deepseek-v4-flash-0731, lyceum/deepseek-v4-pro, lyceum/kimi-k3, mistral/mistral-small-2603, novita/GLM-5, novita/baichuan/baichuan-m2-32b, novita/deepseek-v4.1-flash, novita/deepseek-v4.1-flash-1017, novita/deepseek/deepseek-r1-turbo, novita/deepseek/deepseek-v4-flash-0424, novita/deepseek/deepseek-v4-flash-0731, novita/deepseek/deepseek_v3, novita/glm-5.3-flash, novita/glm-5.3-flashx, novita/google/gemma-4-26b-a4b-it, novita/gryphe/mythomax-l2-13b, novita/hy4, novita/hy4-flash, novita/kimi-k3.1-pro, novita/kimi-k3.1-pro-highspeed, novita/meta-llama/llama-3.1-8b-instruct, novita/meta-llama/llama-3.3-70b-instruct, novita/meta-llama/llama-4-maverick-17b-128e-instruct-fp8, novita/microsoft/wizardlm-2-8x22b, novita/moonshotai/kimi-k2-instruct, novita/qwen/qwen3.5-397b-a17b, novita/qwen/qwen3.8-max, novita/qwen3-vl-plus, novita/qwen4-max, novita/sao10k/l3-8b-stheno-v3.2, novita/step-5-preview, novita/stepfun/step-3.7-flash, novita/tencent/hy3, novita/zai-org/glm-4.6, novita/zai-org/glm-5.1, openai/gpt-4o-2024-05-13, openai/gpt-4o-2024-11-20, tensorx/qwen3.8-2.4t-a95b, vertex/gemini-3-pro-preview, xai/grok-code-fast-1
+
+### llm:opencode-go
+- Added: opencode-go/hungerg-free
+- Removed: opencode-go/mimo-v2.5, opencode-go/mimo-v2.5-pro
+
+### llm:opencode-zen
+- Added: opencode/kimi-k3.1-pro, opencode/seaglass-alpha-free
+- Removed: opencode/kimi-k2.5, opencode/kimi-k2.6
+
+### llm:huggingface
+- Added: MiniMaxAI/MiniMax-M2.7, Qwen/Qwen3.8-Flash-Next, inclusionAI/LingSante-3.1-air-VL, tencent/Hy4-flash, tngtech/DeepSeek-TNG-R1T2-Chimera
+- Removed: BSC-LT/ALIA-40b-instruct-2606, CohereLabs/aya-expanse-32b, CohereLabs/aya-vision-32b, CohereLabs/c4ai-command-a-03-2025, CohereLabs/c4ai-command-r-08-2024, CohereLabs/c4ai-command-r7b-12-2024, CohereLabs/c4ai-command-r7b-arabic-02-2025, CohereLabs/command-a-reasoning-08-2025, CohereLabs/command-a-translate-08-2025, CohereLabs/command-a-vision-07-2025, CohereLabs/tiny-aya-earth, CohereLabs/tiny-aya-fire, CohereLabs/tiny-aya-global, CohereLabs/tiny-aya-water, NousResearch/Hermes-3-Llama-3.1-70B, Qwen/Qwen3.5-122B-A10B, Qwen/Qwen3.8-Flash-Next-FP8, Sao10K/L3-8B-Stheno-v3.2, XiaomiMiMo/MiMo-V2.5, XiaomiMiMo/MiMo-V2.5-Pro, aisingapore/Gemma-SEA-LION-v4-27B-IT, aisingapore/Nemotron-SEA-LION-v4.8-120B-A12B, aisingapore/Qwen-SEA-LION-v4-32B-IT, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, alpindale/WizardLM-2-8x22B, cyankiwi/Qwen3.5-9B-AWQ-4bit, deepseek-ai/DeepSeek-R1, ibm-granite/granite-4.2-30b, ibm-granite/granite-4.2-3b, inclusionAI/Ling-3.0-flash-Fin, inclusionAI/Ling-3.1-flash, moonshotai/Kimi-K2-Instruct, moonshotai/Kimi-K2-Instruct-0905, nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4, speakleash/Bielik-11B-v3.0-Instruct, stepfun-ai/Step-3.5-Flash, stepfun-ai/Step-3.7-Flash, swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-v1.5-70B, tencent/Hy3, zai-org/AutoGLM-Phone-9B-Multilingual, zai-org/GLM-4.5, zai-org/GLM-4.5-Air, zai-org/GLM-4.5V, zai-org/GLM-4.5V-FP8, zai-org/GLM-4.6-FP8, zai-org/GLM-4.6V, zai-org/GLM-4.6V-FP8, zai-org/GLM-4.6V-Flash, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1, zai-org/GLM-5.1-FP8, zai-org/GLM-5.2-FP8, zai-org/GLM-5.3-BF16, zai-org/GLM-5.3-Flash-BF16
+
+### llm:xai
+- Added: grok-4.6-latest, grok-4.7-latest

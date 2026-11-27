@@ -1159,98 +1159,6 @@
       ]
     },
     {
-      "id": "kwaivgi/kling-v3.0-pro",
-      "canonical_slug": "kwaivgi/kling-v3.0-pro-20260429",
-      "hugging_face_id": null,
-      "name": "Kling: Video v3.0 Pro",
-      "created": 1777496206,
-      "description": "Kling v3.0 Pro is Kuaishou's premium video generation model, offering higher visual quality than the Standard tier. It supports text-to-video and image-to-video workflows, with first-frame and last-frame control for precise...",
-      "context_length": 0,
-      "architecture": {
-        "modality": "text+image->video",
-        "input_modalities": [
-          "text",
-          "image"
-        ],
-        "output_modalities": [
-          "video"
-        ],
-        "tokenizer": "Other",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      },
-      "top_provider": {
-        "context_length": 0,
-        "max_completion_tokens": 0,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "max_tokens",
-        "temperature",
-        "top_p"
-      ],
-      "default_parameters": {},
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": null,
-      "links": {
-        "details": "/api/v1/models/kwaivgi/kling-v3.0-pro-20260429/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/videos"
-      ]
-    },
-    {
-      "id": "kwaivgi/kling-v3.0-std",
-      "canonical_slug": "kwaivgi/kling-v3.0-std-20260429",
-      "hugging_face_id": null,
-      "name": "Kling: Video v3.0 Standard",
-      "created": 1777496205,
-      "description": "Kling v3.0 Standard is a video generation model from Kuaishou. It supports text-to-video and image-to-video workflows, with first-frame and last-frame control for guided scene composition. Clips range from 3 to...",
-      "context_length": 0,
-      "architecture": {
-        "modality": "text+image->video",
-        "input_modalities": [
-          "text",
-          "image"
-        ],
-        "output_modalities": [
-          "video"
-        ],
-        "tokenizer": "Other",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      },
-      "top_provider": {
-        "context_length": 0,
-        "max_completion_tokens": 0,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "max_tokens",
-        "temperature",
-        "top_p"
-      ],
-      "default_parameters": {},
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": null,
-      "links": {
-        "details": "/api/v1/models/kwaivgi/kling-v3.0-std-20260429/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/videos"
-      ]
-    },
-    {
       "id": "google/veo-3.1-fast",
       "canonical_slug": "google/veo-3.1-fast-20260320",
       "hugging_face_id": null,
@@ -1348,59 +1256,6 @@
       "expiration_date": null,
       "links": {
         "details": "/api/v1/models/google/veo-3.1-lite-20260331/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/videos"
-      ]
-    },
-    {
-      "id": "kwaivgi/kling-video-o1",
-      "canonical_slug": "kwaivgi/kling-video-o1-20260420",
-      "hugging_face_id": null,
-      "name": "Kling: Video O1",
-      "created": 1776704777,
-      "description": "Kling Video O1 is a video generation model from Kuaishou. It supports text and image inputs with video output, enabling text-to-video and image-to-video workflows. It is suited for cinematic content...",
-      "context_length": 0,
-      "architecture": {
-        "modality": "text+image->video",
-        "input_modalities": [
-          "text",
-          "image"
-        ],
-        "output_modalities": [
-          "video"
-        ],
-        "tokenizer": "Other",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0",
-        "completion": "0"
-      },
-      "top_provider": {
-        "context_length": 0,
-        "max_completion_tokens": 0,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "max_tokens",
-        "temperature",
-        "top_p"
-      ],
-      "default_parameters": {
-        "temperature": null,
-        "top_p": null,
-        "top_k": null,
-        "frequency_penalty": null,
-        "presence_penalty": null,
-        "repetition_penalty": null
-      },
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": null,
-      "links": {
-        "details": "/api/v1/models/kwaivgi/kling-video-o1-20260420/endpoints"
       },
       "endpoints": [
         "/api/v1/videos"
@@ -1614,7 +1469,7 @@
       ]
     }
   ],
-  "total_count": 33,
+  "total_count": 30,
   "links": {
     "next": null
   }
