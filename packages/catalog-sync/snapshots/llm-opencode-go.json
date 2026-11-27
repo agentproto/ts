@@ -189,6 +189,16 @@
           "cache_read": 0.5
         }
       },
+      "hungerg-free": {
+        "id": "hungerg-free",
+        "name": "HungerG Free",
+        "release_date": "2026-11-24",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "hy3": {
         "id": "hy3",
         "name": "Hy3",
@@ -331,6 +341,7 @@
         "name": "MiMo V2.5",
         "family": "mimo",
         "release_date": "2026-04-22",
+        "status": "deprecated",
         "cost": {
           "input": 0.14,
           "output": 0.28,
@@ -342,6 +353,7 @@
         "name": "MiMo V2.5 Pro",
         "family": "mimo-pro",
         "release_date": "2026-04-22",
+        "status": "deprecated",
         "cost": {
           "input": 0.435,
           "output": 0.87,

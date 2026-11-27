@@ -138,7 +138,9 @@
     },
     {
       "id": "grok-4.6",
-      "aliases": [],
+      "aliases": [
+        "grok-4.6-latest"
+      ],
       "context_length": 500000,
       "created": 1785974400,
       "object": "model",
@@ -163,7 +165,9 @@
     },
     {
       "id": "grok-4.7",
-      "aliases": [],
+      "aliases": [
+        "grok-4.7-latest"
+      ],
       "context_length": 500000,
       "created": 1788307200,
       "object": "model",

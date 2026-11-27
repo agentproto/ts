@@ -1,7 +1,7 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-copilot.mjs
 // (ids + pricing: github/docs data/tables/copilot/models-and-pricing.yml + the
 // promo footnotes of models-and-pricing.md, i.e. GitHub Copilot's own price list;
-// ids are Copilot's spelling, e.g. dotted "claude-sonnet-5.5". synced 2026-11-23T16:49:01.654Z)
+// ids are Copilot's spelling, e.g. dotted "claude-sonnet-5.5". synced 2026-11-27T13:27:49.422Z)
 // `promo`: the row carries the PROMOTIONAL price; `promo.then` is the standard
 // price from `promo.until` on (see effectivePricing in catalog.ts).
 

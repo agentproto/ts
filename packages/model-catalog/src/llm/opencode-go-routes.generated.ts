@@ -102,6 +102,13 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "x-ai",
     provider: "opencode-go",
   },
+  "opencode-go/hungerg-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-11-24",
+    vendor: "opencode",
+    provider: "opencode-go",
+  },
   "opencode-go/hy3": {
     inputPer1M: 0.14,
     outputPer1M: 0.58,
@@ -173,22 +180,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     cacheWriteMultiplier: 0,
     addedAt: "2026-11-02",
     vendor: "meituan",
-    provider: "opencode-go",
-  },
-  "opencode-go/mimo-v2.5": {
-    inputPer1M: 0.14,
-    outputPer1M: 0.28,
-    cacheReadMultiplier: 0.02,
-    addedAt: "2026-04-22",
-    vendor: "xiaomi",
-    provider: "opencode-go",
-  },
-  "opencode-go/mimo-v2.5-pro": {
-    inputPer1M: 0.435,
-    outputPer1M: 0.87,
-    cacheReadMultiplier: 0.008333,
-    addedAt: "2026-04-22",
-    vendor: "xiaomi",
     provider: "opencode-go",
   },
   "opencode-go/mimo-v2.6-flash": {

@@ -1140,9 +1140,9 @@
           }
         }
       },
-      "lifecycle": "active",
-      "deprecated_at": null,
-      "retires_at": null
+      "lifecycle": "deprecated",
+      "deprecated_at": "2026-11-23T18:30:00Z",
+      "retires_at": "2027-01-22T20:00:00Z"
     },
     {
       "type": "model",
