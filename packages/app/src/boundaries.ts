@@ -6,9 +6,12 @@
 import type { AppBoundariesDefinition } from "./types.js"
 
 /** A `boundaries.hostReads` entry: relative to the host repo root, no `..`
- *  segment, not absolute (same shape as `services[].cwd`). `.` (the whole
- *  repo) and whitespace-padded entries are refused on top of the pattern. */
-export const HOST_READ_PATH_RE = /^(?!\/)(?!(?:.*\/)?\.\.(?:\/|$)).*\S/
+ *  segment, not absolute, not `.` (the whole repo), no surrounding
+ *  whitespace, no line terminator anywhere. Same source as the AIP-53
+ *  APP.schema.json `hostReads` item pattern: anchored at both ends, and
+ *  without the `s` flag `.` matches no line terminator (`\n`, `\r`, U+2028,
+ *  U+2029), so an entry holding one is refused like the schema refuses it. */
+export const HOST_READ_PATH_RE = /^(?!\/)(?!\.?\/*$)(?!\s)(?!(?:.*\/)?\.\.(?:\/|$)).*\S$/
 
 export const HOST_READS_MAX = 64
 
@@ -30,8 +33,8 @@ export function boundariesError(raw: unknown): string | undefined {
     if (!Array.isArray(b.hostReads)) return "'boundaries.hostReads' must be an array of relative paths."
     if (b.hostReads.length > HOST_READS_MAX) return `'boundaries.hostReads' holds at most ${HOST_READS_MAX} paths.`
     for (const [i, p] of b.hostReads.entries()) {
-      if (typeof p !== "string" || !HOST_READ_PATH_RE.test(p) || p !== p.trim() || /^\.\/*$/.test(p)) {
-        return `'boundaries.hostReads[${i}]' must be a path relative to the host repo root, with no '..' segment, not the repo root itself, no surrounding whitespace (got ${JSON.stringify(p)}).`
+      if (typeof p !== "string" || !HOST_READ_PATH_RE.test(p)) {
+        return `'boundaries.hostReads[${i}]' must be a path relative to the host repo root, with no '..' segment, not the repo root itself, no surrounding whitespace, no line break (got ${JSON.stringify(p)}).`
       }
     }
   }
