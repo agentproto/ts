@@ -7,7 +7,7 @@
  * escalation resolvers). Secrets are forbidden in `form` mode.
  */
 
-import type { AgentPromptAnswers, AgentPromptField } from "@agentproto/acp"
+import type { AgentPromptAnswers, AgentPromptField, AgentPromptQuestion } from "@agentproto/acp"
 import type { PendingPermission, SessionsRegistry } from "../sessions.js"
 import { BridgeError } from "./bridge.js"
 import { ERR_INVALID_PARAMS } from "./constants.js"
@@ -247,7 +247,61 @@ export interface BuiltElicitation {
   requestKey: string
   request: { method: "elicitation/create"; params: ElicitRequestFormParams }
   fields?: readonly AgentPromptField[]
+  /** A question without `fields`, answered by `optionId` through its one `answer` property. */
+  answer?: { choiceOptionIds: readonly string[]; freeTextOptionId?: string }
+  /** A `plan-approval` whose options are named by id: `approve` and `deny` select them. */
+  plan?: { approveOptionId: string; rejectOptionId: string }
   offersAlwaysScope?: boolean
+}
+
+/**
+ * The `planApproval` ids of a `plan-approval` prompt, when both are strings naming an offered
+ * option. `PendingPermission.planApproval` is carried untyped from the driver, so anything else
+ * reads as no plan payload and the prompt keeps the tool-permission selection by kind.
+ */
+function planApprovalIds(pending: PendingPermission): { approveOptionId: string; rejectOptionId: string } | undefined {
+  if (pending.request !== "plan-approval" || !isRecord(pending.planApproval)) return undefined
+  const { approveOptionId, rejectOptionId } = pending.planApproval
+  if (typeof approveOptionId !== "string" || typeof rejectOptionId !== "string") return undefined
+  const offered = (id: string) => pending.options.some(o => o.optionId === id)
+  return offered(approveOptionId) && offered(rejectOptionId) ? { approveOptionId, rejectOptionId } : undefined
+}
+
+/**
+ * A question without `fields` as a form with one `answer` property (AIP-45, MCP transport of a
+ * question): a `oneOf` of its choices, or a plain string when free text is allowed. Null when it
+ * cannot be written faithfully (a secret, an option that is not offered, nothing to answer with):
+ * it is then not projected, never carried as the tool-permission form.
+ */
+function buildQuestionAnswerElicitation(pending: PendingPermission, question: AgentPromptQuestion): BuiltElicitation | null {
+  const offered = (id: string | undefined) => id !== undefined && pending.options.some(o => o.optionId === id)
+  const choices = Array.isArray(question.choices) ? question.choices : []
+  if (!choices.every(c => isRecord(c) && typeof c.optionId === "string" && typeof c.label === "string" && offered(c.optionId))) {
+    return null
+  }
+  const freeText = question.allowFreeText === true
+  if (freeText && !offered(question.freeTextOptionId)) return null
+  if (!freeText && choices.length === 0) return null
+  const message = question.prompt || pending.text || "Session question requires input"
+  if (isSecretField("message", message) || isSecretField("message", pending.text)) return null
+  if (choices.some(c => isSecretField(c.optionId, c.label))) return null
+  const answer: ElicitFormPropertySchema = {
+    type: "string",
+    title: "Answer",
+    description: message,
+    ...(freeText ? {} : { oneOf: choices.map(c => ({ const: c.optionId, title: c.label })) }),
+  }
+  const validated = validateFlatFormSchema({ type: "object", properties: { answer }, required: ["answer"] })
+  if (!validated.ok) return null
+  return {
+    kind: "question",
+    requestKey: `question_${pending.id}`,
+    request: { method: "elicitation/create", params: { mode: "form", message, requestedSchema: validated.schema } },
+    answer: {
+      choiceOptionIds: choices.map(c => c.optionId),
+      ...(freeText ? { freeTextOptionId: question.freeTextOptionId! } : {}),
+    },
+  }
 }
 
 /** Build an MCP 2026-07-28 `elicitation/create` form request for a parked permission or multi-field question. */
@@ -285,8 +339,12 @@ export function buildPermissionElicitation(pending: PendingPermission): BuiltEli
     }
   }
 
-  // Standard tool-permission hold.
-  const offersAlwaysScope = pending.options.some(o => o.kind === "allow_always")
+  if (pending.question) return buildQuestionAnswerElicitation(pending, pending.question)
+
+  // Standard tool-permission hold. A plan approval named by id gets no `scope`: `approve`
+  // always selects `approveOptionId`, so a scope could not change the outcome.
+  const plan = planApprovalIds(pending)
+  const offersAlwaysScope = !plan && pending.options.some(o => o.kind === "allow_always")
   const properties: Record<string, ElicitFormPropertySchema> = {
     decision: {
       type: "string",
@@ -330,6 +388,7 @@ export function buildPermissionElicitation(pending: PendingPermission): BuiltEli
         requestedSchema: validated.schema,
       },
     },
+    ...(plan ? { plan } : {}),
     offersAlwaysScope,
   }
 }
@@ -689,7 +748,10 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
     }
 
     if (elicitResult.action === "decline") {
-      const res = await sessions.respondPermission(pending.id, { decision: "deny" })
+      const res = await sessions.respondPermission(
+        pending.id,
+        built.plan ? { decision: "deny", optionId: built.plan.rejectOptionId } : { decision: "deny" },
+      )
       audit({ principal, kind: built.kind, entityId: pending.id, action: "decline", applied: res.ok })
       return res.ok ? "applied" : "gone"
     }
@@ -710,13 +772,31 @@ export function createHumanGate(opts: CreateHumanGateOptions): HumanGate {
       return res.ok ? "applied" : "gone"
     }
 
+    if (built.kind === "question" && built.answer) {
+      // Answered by optionId (AIP-45 agent-prompt rule 3), never with `{ answers }`.
+      const answer = content.answer
+      if (typeof answer !== "string" || answer.trim().length === 0) return "incomplete"
+      const { choiceOptionIds, freeTextOptionId } = built.answer
+      const input = choiceOptionIds.includes(answer)
+        ? { decision: "approve" as const, optionId: answer }
+        : freeTextOptionId !== undefined
+          ? { decision: "approve" as const, optionId: freeTextOptionId, feedback: answer }
+          : undefined
+      if (!input) return "incomplete"
+      const res = await sessions.respondPermission(pending.id, input)
+      audit({ principal, kind: "question", entityId: pending.id, action: "accept", applied: res.ok })
+      return res.ok ? "applied" : "gone"
+    }
+
     const decision = content.decision
     if (decision !== "approve" && decision !== "deny") return "incomplete"
     const scope = content.scope === "once" || content.scope === "always" ? content.scope : undefined
-    const res = await sessions.respondPermission(pending.id, {
-      decision,
-      ...(decision === "approve" && scope && built.offersAlwaysScope ? { scope } : {}),
-    })
+    const res = await sessions.respondPermission(
+      pending.id,
+      built.plan
+        ? { decision, optionId: decision === "approve" ? built.plan.approveOptionId : built.plan.rejectOptionId }
+        : { decision, ...(decision === "approve" && scope && built.offersAlwaysScope ? { scope } : {}) },
+    )
     audit({ principal, kind: "permission", entityId: pending.id, action: "accept", applied: res.ok, detail: decision })
     return res.ok ? "applied" : "gone"
   }

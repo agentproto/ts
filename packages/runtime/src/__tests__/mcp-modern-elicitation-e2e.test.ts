@@ -378,6 +378,136 @@ describe("MCP 2026-07-28 elicitation (MRTR) e2e over /mcp", () => {
     })
   })
 
+  it("answers a choice question without fields with the chosen optionId, not the first allow option", async () => {
+    const rig = await startRig()
+    const fake = holdSession({
+      requestId: "q-choice",
+      text: "Which colour?",
+      extra: {
+        request: "question",
+        options: [
+          { optionId: "answer:0", name: "Red", kind: "allow_once" },
+          { optionId: "answer:1", name: "Blue", kind: "allow_once" },
+          { optionId: "decline", name: "Decline to answer", kind: "reject_once" },
+        ],
+        question: {
+          prompt: "Which colour?",
+          choices: [
+            { optionId: "answer:0", label: "Red" },
+            { optionId: "answer:1", label: "Blue" },
+          ],
+          allowFreeText: false,
+        },
+      },
+    })
+    const sid = await spawnAndPark(rig.registry, fake)
+
+    const first = await callModernTool(rig.baseUrl, "permissions_list", { sessionId: sid }, { id: 1 })
+    expect(first.json.result.resultType).toBe("input_required")
+    expect(Object.keys(first.json.result.inputRequests)).toEqual(["question_q-choice"])
+    const schema = first.json.result.inputRequests["question_q-choice"].params.requestedSchema
+    expect(schema.properties.answer.oneOf).toEqual([
+      { const: "answer:0", title: "Red" },
+      { const: "answer:1", title: "Blue" },
+    ])
+    expect(schema.properties).not.toHaveProperty("decision")
+
+    const replay = await callModernTool(
+      rig.baseUrl,
+      "permissions_list",
+      { sessionId: sid },
+      {
+        id: 2,
+        requestState: first.json.result.requestState,
+        inputResponses: { "question_q-choice": { action: "accept", content: { answer: "answer:1" } } },
+      },
+    )
+    expect(replay.json.result.resultType).toBe("complete")
+    await fake.done
+    expect(fake.responded[0]?.resolution).toEqual({ optionId: "answer:1" })
+    expect(rig.audits).toContainEqual(
+      expect.objectContaining({ kind: "question", entityId: "q-choice", action: "accept", applied: true }),
+    )
+  })
+
+  it("answers a free-text question without fields with the free-text option and feedback, and re-asks on an empty answer", async () => {
+    const rig = await startRig()
+    const fake = holdSession({
+      requestId: "q-free",
+      text: "Say something",
+      extra: {
+        request: "question",
+        options: [
+          { optionId: "answer", name: "Answer", kind: "allow_once" },
+          { optionId: "decline", name: "Decline to answer", kind: "reject_once" },
+        ],
+        question: { prompt: "Say something", choices: [], allowFreeText: true, freeTextOptionId: "answer" },
+      },
+    })
+    const sid = await spawnAndPark(rig.registry, fake)
+
+    const first = await callModernTool(rig.baseUrl, "permissions_list", { sessionId: sid }, { id: 1 })
+    const incomplete = await callModernTool(
+      rig.baseUrl,
+      "permissions_list",
+      { sessionId: sid },
+      {
+        id: 2,
+        requestState: first.json.result.requestState,
+        inputResponses: { "question_q-free": { action: "accept", content: { answer: "" } } },
+      },
+    )
+    expect(incomplete.json.result.resultType).toBe("input_required")
+    expect(fake.responded).toHaveLength(0)
+
+    const replay = await callModernTool(
+      rig.baseUrl,
+      "permissions_list",
+      { sessionId: sid },
+      {
+        id: 3,
+        requestState: incomplete.json.result.requestState,
+        inputResponses: { "question_q-free": { action: "accept", content: { answer: "bonjour" } } },
+      },
+    )
+    expect(replay.json.result.resultType).toBe("complete")
+    await fake.done
+    expect(fake.responded[0]?.resolution).toEqual({ optionId: "answer", feedback: "bonjour" })
+  })
+
+  it("approves a plan with approveOptionId when another allow_once option comes first", async () => {
+    const rig = await startRig()
+    const fake = holdSession({
+      requestId: "plan-1",
+      text: "Approve the plan?",
+      extra: {
+        request: "plan-approval",
+        options: [
+          { optionId: "other", name: "Something else", kind: "allow_once" },
+          { optionId: "plan-approve", name: "Approve plan", kind: "allow_once" },
+          { optionId: "plan-reject", name: "Reject plan", kind: "reject_once" },
+        ],
+        planApproval: { plan: "1. do it", approveOptionId: "plan-approve", rejectOptionId: "plan-reject" },
+      },
+    })
+    const sid = await spawnAndPark(rig.registry, fake)
+
+    const first = await callModernTool(rig.baseUrl, "permissions_list", { sessionId: sid }, { id: 1 })
+    const replay = await callModernTool(
+      rig.baseUrl,
+      "permissions_list",
+      { sessionId: sid },
+      {
+        id: 2,
+        requestState: first.json.result.requestState,
+        inputResponses: { "perm_plan-1": { action: "accept", content: { decision: "approve" } } },
+      },
+    )
+    expect(replay.json.result.resultType).toBe("complete")
+    await fake.done
+    expect(fake.responded[0]?.resolution).toEqual({ optionId: "plan-approve" })
+  })
+
   it("forbids self-approval (pending.sessionId === callerSessionId) and out-of-subtree resolution", async () => {
     const rig = await startRig()
     const parent = rig.registry.spawnAgent({
