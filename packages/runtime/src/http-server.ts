@@ -232,7 +232,7 @@ import {
   injectIntoHead,
   installHeadTags,
   readInstallIcon,
-  resolveInstallIcons,
+  servedInstallIcons,
 } from "./app-ui-install.js"
 import { renderAppUiBuildingHtml, renderAppUiErrorHtml } from "./app-ui-placeholder.js"
 import {
@@ -6517,7 +6517,13 @@ export async function startHttpServer(
           if ((manifestMatch || iconMatch) && req.method === "GET") {
             const installAppId = decodeURIComponent((manifestMatch ?? iconMatch)![1]!)
             if (appUiShellBlocked(installAppId)) return
-            if (manifestMatch) await handleAppManifest(res, installAppId, opts.appRegistry, appBasePath(path)!)
+            const installBase = appBasePath(path)
+            if (installBase === undefined) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "not_found" }))
+              return
+            }
+            if (manifestMatch) await handleAppManifest(res, installAppId, opts.appRegistry, installBase)
             else await handleAppIcon(res, installAppId, Number(iconMatch![2]), opts.appRegistry)
             return
           }
@@ -14636,13 +14642,13 @@ async function handleAppUiPage(
       // app's icon list, so they ride in the cache key.
       const reqPath = (req.url ?? "").split("?")[0] ?? ""
       const base = appBasePath(reqPath)
-      const icons = base ? await resolveInstallIcons(app) : []
+      const { icons, served } = base ? await servedInstallIcons(app) : { icons: [], served: [] }
       rep = await appUiRepresentations.get(
-        `page\0${uiPath}\0${baseUrl}\0${variant ?? ""}\0${base ?? ""}\0${JSON.stringify(app.ui.install ?? null)}\0${JSON.stringify(icons)}`,
+        `page\0${uiPath}\0${baseUrl}\0${variant ?? ""}\0${base ?? ""}\0${JSON.stringify(app.ui.install ?? null)}\0${JSON.stringify(icons)}\0${served.join()}`,
         `${st.mtimeMs}:${st.size}`,
         async () => {
           const raw = await readFile(uiPath, "utf8")
-          const tags = base ? installHeadTags(raw, app, base, appleIconIndex(icons)) : ""
+          const tags = base ? installHeadTags(raw, app, base, appleIconIndex(icons, served)) : ""
           return appUiPageRepresentation(injectIntoHead(raw, tags), baseUrl, variant)
         },
       )

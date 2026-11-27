@@ -110,6 +110,9 @@ export function appThemeColor(app: InstallableApp): string {
   return app.ui?.install?.themeColor ?? hslToHex(hash(app.appId) % 360, 0.45, 0.32)
 }
 
+/** `s` cut to `max` code points (never splits a surrogate pair). */
+const cutChars = (s: string, max: number): string => [...s].slice(0, max).join("")
+
 export function appDisplayName(app: InstallableApp): string {
   return app.name?.trim() || app.ui?.title?.trim() || app.appId
 }
@@ -188,7 +191,7 @@ export async function buildAppManifest(app: InstallableApp, base: string): Promi
   const served = await Promise.all(icons.map((_, i) => readInstallIcon(app, i)))
   return {
     name,
-    short_name: app.ui?.install?.shortName ?? ([...name].length > SHORT_NAME_MAX ? [...name].slice(0, SHORT_NAME_MAX).join("") : name),
+    short_name: app.ui?.install?.shortName ?? cutChars(name, SHORT_NAME_MAX),
     id: `${base}/ui`,
     start_url: `${base}/ui`,
     scope: `${base}/`,
@@ -213,17 +216,21 @@ export function installHeadTags(html: string, app: InstallableApp, base: string,
   return (
     `<link rel="manifest" href="${escapeAttr(base)}/manifest.webmanifest">` +
     `<meta name="theme-color" content="${appThemeColor(app)}">` +
-    `<meta name="apple-mobile-web-app-title" content="${escapeAttr(app.ui?.install?.shortName ?? appDisplayName(app).slice(0, SHORT_NAME_MAX))}">` +
+    `<meta name="apple-mobile-web-app-title" content="${escapeAttr(app.ui?.install?.shortName ?? cutChars(appDisplayName(app), SHORT_NAME_MAX))}">` +
     (appleIconIndex !== undefined ? `<link rel="apple-touch-icon" href="${escapeAttr(base)}/icons/${appleIconIndex}">` : "")
   )
 }
 
-/** Index of the icon best suited to `apple-touch-icon`: the largest png, else the first. */
-export function appleIconIndex(icons: readonly InstallIcon[]): number | undefined {
-  if (icons.length === 0) return undefined
-  let best = 0
+/**
+ * Index of the icon best suited to `apple-touch-icon`: the largest png, else
+ * the first. Only icons the host can actually serve (`served[i]`) compete, so
+ * the link never points at a 404.
+ */
+export function appleIconIndex(icons: readonly InstallIcon[], served?: readonly boolean[]): number | undefined {
+  let best: number | undefined
   let bestSize = -1
   icons.forEach((icon, i) => {
+    if (served && !served[i]) return
     const size = Math.max(0, ...[...icon.sizes.matchAll(/(\d+)x\d+/g)].map(m => Number(m[1])))
     const png = icon.path !== undefined && /\.png$/i.test(icon.path) ? 1 : 0
     const score = png * 100000 + size
@@ -240,4 +247,11 @@ export function injectIntoHead(html: string, tags: string): string {
   const h = /<html[^>]*>/i.exec(html)
   if (h?.index !== undefined) return html.slice(0, h.index + h[0].length) + `<head>${tags}</head>` + html.slice(h.index + h[0].length)
   return tags + html
+}
+
+/** Which of the app's install icons can be served right now. */
+export async function servedInstallIcons(app: InstallableApp): Promise<{ icons: readonly InstallIcon[]; served: boolean[] }> {
+  const icons = await resolveInstallIcons(app)
+  const served = await Promise.all(icons.map(async (_, i) => (await readInstallIcon(app, i)) !== undefined))
+  return { icons, served }
 }

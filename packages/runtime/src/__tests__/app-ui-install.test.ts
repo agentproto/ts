@@ -62,6 +62,17 @@ describe("pure helpers", () => {
       ]),
     ).toBe(2)
     expect(appleIconIndex([])).toBeUndefined()
+    // An unservable icon never wins, even when it would score highest.
+    expect(
+      appleIconIndex(
+        [
+          { path: "bad.png", sizes: "512x512" },
+          { path: "good.png", sizes: "192x192" },
+        ],
+        [false, true],
+      ),
+    ).toBe(1)
+    expect(appleIconIndex([{ path: "bad.png", sizes: "512x512" }], [false])).toBeUndefined()
   })
 
   it("generated icon escapes the name and uses initials", () => {
@@ -222,6 +233,9 @@ describe("installable UI — REST routes", () => {
       // Only the good one is advertised.
       expect(m.icons.map(i => i.src)).toEqual(["/apps/@acme/bad/icons/3"])
       for (const n of [0, 1, 2]) expect((await fetch(`${base}/apps/@acme/bad/icons/${n}`)).status).toBe(404)
+      // The apple-touch-icon link skips the unservable icons too.
+      const page = await (await fetch(`${base}/apps/@acme/bad/ui`)).text()
+      expect(page).toContain('<link rel="apple-touch-icon" href="/apps/@acme/bad/icons/3">')
       expect((await fetch(`${base}/apps/@acme/bad/icons/9`)).status).toBe(404)
     })
   })
