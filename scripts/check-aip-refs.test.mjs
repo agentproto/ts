@@ -74,6 +74,19 @@ test("fails on an AIP-N reference the canonical registry doesn't know", (t) => {
   assert.match(result.unresolved[0], /AIP-65 does not resolve/)
 })
 
+test("resolves an AIP whose spec file exists but whose nav entry lags in meta.json", (t) => {
+  const { sourceRoot, scanRoot } = makeFixture(t, {
+    pages: ["index", "aip-1"],
+    specPackages: { 78: null },
+    files: {
+      "packages/runtime/src/tasks.ts": "// Specified by AIP-78.\n",
+    },
+  })
+  const result = checkAipRefs({ sourceRoot, scanRoot, scanDirs: ["packages"] })
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.unresolved, [])
+})
+
 test("warns (without failing) on a stale 'no AIP' claim", (t) => {
   const { sourceRoot, scanRoot } = makeFixture(t, {
     pages: ["index", "aip-1", "aip-65"],

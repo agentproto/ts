@@ -6215,7 +6215,9 @@ async function runPtyMirror(
   return new Promise(done => {
     const initialCols = process.stdout.columns ?? 80
     const initialRows = process.stdout.rows ?? 24
-    const wsUrl = `${endpoint.url.replace(/^http/, "ws")}/sessions/${desc.id}/pty?cols=${initialCols}&rows=${initialRows}`
+    // Read-only: stdin is never forwarded, so this client cannot answer
+    // the child's terminal queries (`answers=0`, see attachPty).
+    const wsUrl = `${endpoint.url.replace(/^http/, "ws")}/sessions/${desc.id}/pty?cols=${initialCols}&rows=${initialRows}&answers=0`
     const ws = new WebSocket(wsUrl, {
       headers: endpoint.token
         ? { authorization: `Bearer ${endpoint.token}` }
@@ -6427,6 +6429,7 @@ async function runPtyAttach(
       stdoutTty && process.stdout.columns ? process.stdout.columns : 80
     const initialRows =
       stdoutTty && process.stdout.rows ? process.stdout.rows : 24
+    // No `answers=0` here, unlike `sessions mirror`: the real terminal answers the child's queries through the forwarded stdin.
     const wsUrl = `${endpoint.url.replace(/^http/, "ws")}/sessions/${desc.id}/pty?cols=${initialCols}&rows=${initialRows}`
 
     // Reconnect policy. close 1006 ("abnormal closure" — the daemon

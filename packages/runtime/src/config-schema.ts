@@ -78,6 +78,14 @@ import {
 import { DEFAULT_SPAWN_ATTACH, SPAWN_ATTACH_ENV } from "./spawn-attach.js"
 import { DEFAULT_SPAWN_DEDUPE, SPAWN_DEDUPE_ENV } from "./spawn-dedupe.js"
 import { DEFAULT_ATTENTION_DELAY_SEC, ATTENTION_DELAY_ENV } from "./session-presence.js"
+import {
+  TERMINAL_CELL_SIZE_ENV,
+  TERMINAL_CELL_SIZE_PATTERN,
+  TERMINAL_GRAPHICS_ENV,
+  TERMINAL_NAME_ENV,
+  TERMINAL_NAME_PATTERN,
+  TERMINAL_QUERIES_ENV,
+} from "./terminal-query-responder.js"
 import { DEFAULT_WRAP_GH, PROVENANCE_WRAP_GH_ENV } from "./gh-provenance-shim.js"
 import { DEFAULT_AGENTS_MD_INLINE_MAX_KB } from "./agents-md.js"
 import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
@@ -420,6 +428,12 @@ const mcpConfigSchema: z.ZodType<McpConfig> = z
     eventsExtension: z.boolean().optional(),
     humanGateApprovals: z.boolean().optional(),
     humanGateRuns: z.boolean().optional(),
+    tasks: z.boolean().optional(),
+    tasksTools: z.enum(["both", "agent_start", "agent_prompt"]).optional(),
+    tasksTtlMs: z.number().int().positive().optional(),
+    tasksMaxTtlMs: z.number().int().positive().optional(),
+    tasksMaxPerPrincipal: z.number().int().positive().optional(),
+    tasksResultMaxChars: z.number().int().positive().optional(),
   })
   .passthrough()
 
@@ -592,6 +606,10 @@ const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
   .object({
     attentionDelaySec: z.number().optional(),
     eventsDir: z.string().optional(),
+    terminalQueries: z.enum(["auto", "off"]).optional(),
+    terminalGraphics: z.boolean().optional(),
+    terminalCellSize: z.string().regex(TERMINAL_CELL_SIZE_PATTERN).optional(),
+    terminalName: z.string().regex(TERMINAL_NAME_PATTERN).optional(),
   })
   .passthrough()
 
@@ -1080,7 +1098,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "advanced",
     label: "MCP 2026-07-28 MRTR elicitation gate",
-    help: "When true (default), modern 2026-07-28 MCP clients declaring elicitation receive InputRequiredResult for held permissions and session questions. Set to false to return standard tool results without MRTR.",
+    help: "When true (default), modern 2026-07-28 MCP clients declaring elicitation receive InputRequiredResult for four surfaces: held permissions, session questions, pending approvals (url, with approvals.uiBaseUrl; see mcp.humanGateApprovals) and runs parked for human input, observed by the operator on workflow_status (see mcp.humanGateRuns). Set to false to turn every surface off and return standard tool results without MRTR.",
     default: true,
   },
   {
@@ -1122,6 +1140,66 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "MCP elicitation for parked runs",
     help: "When true (default), an operator calling workflow_status on a run parked for human input (with a flat non-secret schema) receives an input_required form; the reply resumes the run through its own resolver. Set to false to turn this surface off alone.",
     default: true,
+  },
+  {
+    path: "mcp.tasks",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Tasks extension on /mcp",
+    help: "When true (default), modern 2026-07-28 MCP clients that declare the Tasks extension receive a task handle for the turn started by agent_start / agent_prompt (tasks/get, tasks/update, tasks/cancel). Set to false to stop announcing the extension and answer those tools as before.",
+    default: true,
+  },
+  {
+    path: "mcp.tasksTools",
+    schema: z.enum(["both", "agent_start", "agent_prompt"]),
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Tasks: tools that return a task",
+    help: "Which tools answer a Tasks-declaring client with a task handle: both (default), agent_start only (its first prompt), or agent_prompt only. Applied to every client alike.",
+    default: "both",
+  },
+  {
+    path: "mcp.tasksTtlMs",
+    schema: num,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Tasks: retention after the end (ms)",
+    help: "How long a finished task stays readable, counted from the moment it reaches a terminal state. Clamped to mcp.tasksMaxTtlMs. A task that is not finished is never purged.",
+    default: 86400000,
+  },
+  {
+    path: "mcp.tasksMaxTtlMs",
+    schema: num,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Tasks: retention ceiling (ms)",
+    help: "Upper bound on the retention of a finished task.",
+    default: 604800000,
+  },
+  {
+    path: "mcp.tasksMaxPerPrincipal",
+    schema: num,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Tasks: unfinished tasks per caller",
+    help: "Cap on the tasks one caller may hold that have not ended. A call beyond it is refused before any turn or ledger entry is created.",
+    default: 32,
+  },
+  {
+    path: "mcp.tasksResultMaxChars",
+    schema: num,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "MCP Tasks: stored result size (chars)",
+    help: "Bound on the final assistant text kept in a task result (cut at the bound, flagged truncated, secrets redacted). A transcript is never stored.",
+    default: 8192,
   },
   // ── daemon ──
   {
@@ -1526,6 +1604,50 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Sessions events dir",
     help: "Root directory for per-session transcripts. Lockout: existing transcripts do not move when this changes, and a bad path can break every session reader.",
     default: "~/.agentproto/sessions",
+  },
+  {
+    path: "sessions.terminalQueries",
+    schema: z.enum(["auto", "off"]),
+    apply: "restart",
+    env: TERMINAL_QUERIES_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY terminal queries",
+    help: "Who answers the terminal queries a PTY child sends (device attributes, XTVERSION, cell size, graphics probe). auto: the most recently attached terminal answers; with none attached, the daemon answers a minimal set. off: nobody answers when no terminal is attached.",
+    default: "auto",
+  },
+  {
+    path: "sessions.terminalGraphics",
+    schema: bool,
+    apply: "restart",
+    env: TERMINAL_GRAPHICS_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY graphics support",
+    help: "When the daemon answers for a PTY with no attached terminal, report graphics support to the child. Only enable it when the attached terminals display that image protocol.",
+    default: false,
+  },
+  {
+    path: "sessions.terminalCellSize",
+    schema: z.string().regex(TERMINAL_CELL_SIZE_PATTERN),
+    apply: "restart",
+    env: TERMINAL_CELL_SIZE_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY cell size (px)",
+    help: "Cell size in pixels, <width>x<height>, reported to PTY children (CSI 14 t, CSI 16 t) and written in the PTY window size. An approximation: the daemon does not know the clients' real cell size, so it only matters when no terminal is attached (an attached terminal answers with its own size); the window pixel size is derived from it, not measured.",
+    default: "10x20",
+  },
+  {
+    path: "sessions.terminalName",
+    schema: z.string().regex(TERMINAL_NAME_PATTERN),
+    apply: "restart",
+    env: TERMINAL_NAME_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY terminal name",
+    help: "Name the daemon gives for XTVERSION when it answers for a PTY with no attached terminal. Some programs enable a feature only for terminals they know by name (Claude Code draws images only for kitty, Ghostty or iTerm2, on top of sessions.terminalGraphics).",
+    default: "agentproto",
   },
   {
     path: "memory.root",

@@ -14,13 +14,20 @@
  *
  *   verdict  reaps                                    escalates
  *   OK       nothing                                  no
- *   WARN     oldest idle sessions, just enough to     no
- *            fall back under the sessions WARN limit,
- *            else at most `warnMaxClose` (default 3)
+ *   WARN     oldest idle sessions, just enough to     only with `--escalate-on
+ *            fall back under the sessions WARN limit,  warn`, if still WARN or
+ *            else at most `warnMaxClose` (default 3)   worse after cleanup
  *   CRIT     same, more aggressively (`critMaxClose`,  yes, after cleanup,
  *            default 10, and enough to fall under       only if still CRIT
  *            the WARN sessions limit), never below the
  *            900 s CRIT idle floor
+ *
+ * Escalation reacts to a change of level, not to every run: the last level
+ * is remembered in a small state file (`--level-state`, see
+ * {@link decideEscalation}), and the guard escalates when the host crosses
+ * into a level at or above `--escalate-on` (OK→WARN, WARN→CRIT, OK→CRIT).
+ * A host that stays CRIT is escalated again once `--renotify-after` minutes
+ * have passed since the last escalation.
  *
  * A session is eligible only when ALL of these hold:
  *   - alive (`running` / `starting` — `starting` is excluded, no turn yet),
@@ -56,7 +63,7 @@
  * or health sample is unavailable, 64 on bad usage.
  */
 import { execFile } from "node:child_process"
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs, promisify } from "node:util"
@@ -74,10 +81,15 @@ import {
 export const GUARD_ESCALATION_LABEL = "host-guard-escalation"
 export const DEFAULT_GUARD_LOG_PATH = join(homedir(), ".agentproto", "host-guard.log")
 export const DEFAULT_GUARD_STATE_PATH = join(homedir(), ".agentproto", "host-guard", "state.json")
+export const DEFAULT_GUARD_LEVEL_PATH = join(homedir(), ".agentproto", "host-guard", "level.json")
 
-/** How long a CRIT marker blocks workflow starts. The guard runs
- *  every 20 min, so 25 min keeps a fresh CRIT verdict live across one missed
- *  tick without leaving the block armed after the guard stops running. */
+/** Default delay before a host that stays CRIT is escalated again (2 h). */
+export const DEFAULT_RENOTIFY_AFTER_MIN = 120
+
+/** How long a CRIT marker blocks workflow starts. With the guard running
+ *  every 20 min (or more often), 25 min keeps a fresh CRIT verdict live
+ *  across one missed tick without leaving the block armed after the guard
+ *  stops running. */
 export const GUARD_STATE_TTL_MS = 25 * 60_000
 
 /** Absolute floor for the CRIT idle window (15 min). Even when
@@ -478,6 +490,132 @@ export function recheckGuardCandidate(
   })
 }
 
+// ── escalation memory ───────────────────────────────────────────────
+
+/** The lowest level that may trigger an escalation. */
+export type EscalateOn = "warn" | "crit"
+
+const LEVEL_RANK: Record<HealthVerdict, number> = { OK: 0, WARN: 1, CRIT: 2 }
+const RANK_LEVEL: readonly HealthVerdict[] = ["OK", "WARN", "CRIT"]
+
+/** What the guard remembers between runs (`--level-state`). */
+export interface GuardLevelMemory {
+  /** Level observed by the last run (after its cleanup). */
+  level: HealthVerdict
+  /** When the host entered `level`. */
+  since: string
+  /** Highest level already escalated during the current episode. It is
+   *  lowered whenever the host drops below it, so climbing back up counts
+   *  as a new crossing. */
+  escalatedLevel: HealthVerdict
+  /** When the last escalation was sent, if any. */
+  lastEscalatedAt?: string
+  /** Level of the last escalation sent. */
+  lastEscalatedLevel?: HealthVerdict
+}
+
+export interface EscalationDecision {
+  escalate: boolean
+  /** `crossed`: the host reached a level not yet escalated in this episode.
+   *  `still-crit`: the host stays CRIT past the renotify delay.
+   *  `below-threshold` / `already-escalated`: no escalation.
+   *  `cooldown`: the host climbed back to a level escalated less than the
+   *  renotify delay ago (a host flapping around a threshold). */
+  reason: "crossed" | "still-crit" | "below-threshold" | "already-escalated" | "cooldown"
+  /** Memory to persist when the escalation is NOT sent (or fails). */
+  memory: GuardLevelMemory
+  /** Memory to persist once the escalation has been sent. */
+  memoryIfSent: GuardLevelMemory
+}
+
+/**
+ * Whether this run escalates. Pure. `level` is the host level after the
+ * cleanup pass; `previous` is the remembered memory, or null when there is
+ * none (first run, unreadable file, or `--no-level-state`), in which case
+ * any level at or above the threshold escalates, as before this memory
+ * existed. `renotifyAfterMs` is also the cooldown of a re-crossing: a host
+ * that drops below a level and climbs back to it is not escalated again
+ * before that delay has passed since the last escalation at that level or
+ * above. `renotifyAfterMs` <= 0 disables both the CRIT renotification and
+ * the cooldown. A last escalation dated in the future (clock moved back) is
+ * treated as old.
+ */
+export function decideEscalation(input: {
+  escalateOn: EscalateOn
+  level: HealthVerdict
+  previous: GuardLevelMemory | null
+  nowMs: number
+  renotifyAfterMs: number
+}): EscalationDecision {
+  const { level, previous, nowMs } = input
+  const now = new Date(nowMs).toISOString()
+  const rank = LEVEL_RANK[level]
+  const threshold = input.escalateOn === "warn" ? LEVEL_RANK.WARN : LEVEL_RANK.CRIT
+  const since = previous && previous.level === level ? previous.since : now
+  const announced = Math.min(previous ? LEVEL_RANK[previous.escalatedLevel] : 0, rank)
+  const memory: GuardLevelMemory = {
+    level,
+    since,
+    escalatedLevel: RANK_LEVEL[announced]!,
+    ...(previous?.lastEscalatedAt ? { lastEscalatedAt: previous.lastEscalatedAt } : {}),
+    ...(previous?.lastEscalatedLevel ? { lastEscalatedLevel: previous.lastEscalatedLevel } : {}),
+  }
+  const memoryIfSent: GuardLevelMemory = {
+    level,
+    since,
+    escalatedLevel: level,
+    lastEscalatedAt: now,
+    lastEscalatedLevel: level,
+  }
+  if (rank < threshold) return { escalate: false, reason: "below-threshold", memory, memoryIfSent: memory }
+  const lastAt = previous?.lastEscalatedAt ? Date.parse(previous.lastEscalatedAt) : Number.NaN
+  // Unknown or future (clock moved back): as if long ago.
+  const lastRecent =
+    input.renotifyAfterMs > 0 &&
+    Number.isFinite(lastAt) &&
+    lastAt <= nowMs &&
+    nowMs - lastAt < input.renotifyAfterMs
+  if (rank > announced) {
+    const lastLevelRank = previous?.lastEscalatedLevel ? LEVEL_RANK[previous.lastEscalatedLevel] : -1
+    if (lastRecent && lastLevelRank >= rank) {
+      return { escalate: false, reason: "cooldown", memory, memoryIfSent: memory }
+    }
+    return { escalate: true, reason: "crossed", memory, memoryIfSent }
+  }
+  if (level === "CRIT" && input.renotifyAfterMs > 0 && !lastRecent) {
+    return { escalate: true, reason: "still-crit", memory, memoryIfSent }
+  }
+  return { escalate: false, reason: "already-escalated", memory, memoryIfSent: memory }
+}
+
+/** Best-effort read of the level memory: null when absent or unreadable. */
+export async function readGuardLevel(path: string = DEFAULT_GUARD_LEVEL_PATH): Promise<GuardLevelMemory | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<GuardLevelMemory>
+    const isLevel = (v: unknown): v is HealthVerdict => v === "OK" || v === "WARN" || v === "CRIT"
+    const isDate = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v))
+    if (!isLevel(parsed.level) || !isDate(parsed.since)) return null
+    return {
+      level: parsed.level,
+      since: parsed.since,
+      escalatedLevel: isLevel(parsed.escalatedLevel) ? parsed.escalatedLevel : "OK",
+      ...(isDate(parsed.lastEscalatedAt) ? { lastEscalatedAt: parsed.lastEscalatedAt } : {}),
+      ...(isLevel(parsed.lastEscalatedLevel) ? { lastEscalatedLevel: parsed.lastEscalatedLevel } : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Written to a temporary file then renamed, so a run killed mid-write
+ *  never leaves a truncated memory (which would read as "no memory"). */
+async function writeGuardLevel(path: string, memory: GuardLevelMemory): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  const tmp = `${path}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(memory, null, 2) + "\n", "utf8")
+  await rename(tmp, path)
+}
+
 /** The CRIT marker consumed by the workflow launch gate. */
 export interface GuardState {
   verdict: "CRIT"
@@ -552,20 +690,29 @@ export const GUARD_USAGE = `Usage:
   agentproto host guard [--dry-run] [--json] [--log <path>|--no-log]
                         [--state <path>|--no-state]
                         [--agent <slug>] [--notify-session <id-or-name>]
-                        [--no-escalate] [--warn-close <n>] [--crit-close <n>]
+                        [--no-escalate] [--escalate-on warn|crit]
+                        [--level-state <path>|--no-level-state]
+                        [--renotify-after <min>]
+                        [--warn-close <n>] [--crit-close <n>]
                         [--min-idle <s>] [--crit-min-idle <s>] [--settle <ms>]
                         [--budget <ms>]
 
-The deterministic host watchdog, meant for \`*/20 * * * *\`. Reads
-\`host health\` + the live session list, then:
+The deterministic host watchdog, meant to run every few minutes
+(\`*/5 * * * *\`, or \`*/20\`). Reads \`host health\` + the live session
+list, then:
 
   OK    nothing.
   WARN  closes the oldest already-idle sessions, just enough to fall back
         under the sessions WARN limit (else at most --warn-close, default 3).
   CRIT  same, more aggressively (--crit-close, default 10), writes a marker
-        that blocks \`agentproto workflow start|run-file\`, and — only AFTER
-        the cleanup — escalates to a brain (\`--notify-session\`) or a fresh
-        agent (\`--agent\`) if the host is still CRIT.
+        that blocks \`agentproto workflow start|run-file\`.
+
+Only AFTER the cleanup, and only when the host has just crossed into a level
+at or above --escalate-on (default crit), the guard escalates to a brain
+(\`--notify-session\`) or a fresh agent (\`--agent\`). The last level is
+remembered in --level-state, so a host that stays at the same level is not
+escalated again on every run; one that stays CRIT is escalated again after
+--renotify-after minutes.
 
 A session is NEVER closed while busy, awaiting input/permission, holding
 background tasks or queued prompts, watched, keepAlive, pinned, younger than
@@ -581,6 +728,18 @@ own session. Nothing is spawned before cleanup.
   --agent <slug>         spawn this adapter if the host is still CRIT after cleanup
   --notify-session <id>  prompt this session instead of spawning a new agent
   --no-escalate          never notify/spawn
+  --escalate-on <level>  lowest level that escalates: crit (default) or warn
+  --level-state <path>   last-level memory (default ~/.agentproto/host-guard/level.json)
+  --no-level-state       no memory: escalate on every run at or above the level
+                         (runs with different targets should use distinct
+                         --level-state files: one run's escalation counts for all)
+  --renotify-after <min> escalate again while CRIT lasts, every <min> minutes;
+                         also the cooldown before a level escalated recently is
+                         escalated again after a drop: a second CRIT episode
+                         within that delay of the last CRIT escalation is not
+                         reported (lower the delay to hear of it sooner).
+                         Default 120. 0 = never renotify, and no cooldown: every
+                         crossing escalates, even a host flapping around a level
   --settle <ms>          wait after closing before re-checking (default 3000)
   --budget <ms>          host sample budget (same as host health --budget)
 `
@@ -593,6 +752,9 @@ interface GuardFlags {
   agent: string | undefined
   notifySession: string | undefined
   escalate: boolean
+  escalateOn: EscalateOn
+  levelState: string | null
+  renotifyAfterMs: number
   policy: Partial<GuardPolicy>
   settleMs: number
   budgetMs: number | undefined
@@ -615,6 +777,10 @@ function parseGuardFlags(args: readonly string[]): { flags: GuardFlags } | { err
         agent: { type: "string" },
         "notify-session": { type: "string" },
         "no-escalate": { type: "boolean" },
+        "escalate-on": { type: "string" },
+        "level-state": { type: "string" },
+        "no-level-state": { type: "boolean" },
+        "renotify-after": { type: "string" },
         "warn-close": { type: "string" },
         "crit-close": { type: "string" },
         "min-idle": { type: "string" },
@@ -638,8 +804,13 @@ function parseGuardFlags(args: readonly string[]): { flags: GuardFlags } | { err
   const critMinIdle = num(values["crit-min-idle"], "crit-min-idle", 0)
   const settle = num(values.settle, "settle", 0)
   const budget = num(values.budget, "budget", 300)
-  for (const v of [warnClose, critClose, minIdle, critMinIdle, settle, budget]) {
+  const renotifyAfter = num(values["renotify-after"], "renotify-after", 0)
+  for (const v of [warnClose, critClose, minIdle, critMinIdle, settle, budget, renotifyAfter]) {
     if (typeof v === "string") return { error: v }
+  }
+  const escalateOn = values["escalate-on"] ?? "crit"
+  if (escalateOn !== "warn" && escalateOn !== "crit") {
+    return { error: `--escalate-on expects warn or crit, got "${String(escalateOn)}"` }
   }
   const policy: Partial<GuardPolicy> = {}
   if (typeof warnClose === "number") policy.warnMaxClose = warnClose
@@ -662,6 +833,14 @@ function parseGuardFlags(args: readonly string[]): { flags: GuardFlags } | { err
         (typeof values["notify-session"] === "string" ? values["notify-session"] : process.env.HOST_GUARD_NOTIFY_SESSION) ||
         undefined,
       escalate: values["no-escalate"] !== true,
+      escalateOn,
+      levelState:
+        values["no-level-state"] === true
+          ? null
+          : typeof values["level-state"] === "string"
+            ? values["level-state"]
+            : DEFAULT_GUARD_LEVEL_PATH,
+      renotifyAfterMs: (typeof renotifyAfter === "number" ? renotifyAfter : DEFAULT_RENOTIFY_AFTER_MIN) * 60_000,
       policy,
       settleMs: typeof settle === "number" ? settle : 3000,
       budgetMs: typeof budget === "number" ? budget : undefined,
@@ -783,6 +962,9 @@ function humanReport(report: {
 }
 
 function escalationPrompt(args: {
+  level: HealthVerdict
+  reason: EscalationDecision["reason"]
+  sinceMin: number
   healthReasons: readonly string[]
   closed: readonly { id: string; label: string; idleSec: number }[]
   failed: readonly { id: string; error: string }[]
@@ -794,8 +976,12 @@ function escalationPrompt(args: {
     s =>
       `- ${s.id} ${sessionLabel(s)} status=${s.status ?? "?"} busy=${s.busy === true} keepAlive=${s.keepAlive === true} idle=${Math.round(idleMsOf(s, Date.now()) / 1000)}s`,
   )
+  const headline =
+    args.reason === "still-crit"
+      ? `HOST GUARD ESCALATION — the host has stayed CRIT for ${args.sinceMin} min, after the automated cleanup pass.`
+      : `HOST GUARD ESCALATION — the host just reached ${args.level} and is still ${args.level} after the automated cleanup pass.`
   return [
-    "HOST GUARD ESCALATION — the host is still CRIT after the automated cleanup pass.",
+    headline,
     "",
     `Health reasons: ${args.healthReasons.join("; ") || "none recorded"}`,
     `Remaining: ${args.remaining.alive} live, ${args.remaining.busy} busy, ${args.remaining.keepAlive} keepAlive.`,
@@ -933,7 +1119,12 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
     }
   }
 
-  if (!flags.dryRun && health.verdict === "CRIT") {
+  // Re-check after cleanup whenever the result may escalate: a CRIT host
+  // (as before), or a WARN host when escalation starts at WARN.
+  const mayEscalate =
+    health.verdict === "CRIT" ||
+    (health.verdict === "WARN" && flags.escalateOn === "warn" && flags.escalate)
+  if (!flags.dryRun && mayEscalate) {
     if (flags.settleMs > 0) await new Promise(r => setTimeout(r, flags.settleMs))
     try {
       const input = await gatherHealthInput({
@@ -945,43 +1136,82 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
       sessions = await fetchSessions(found.url)
       remaining = summarizeRemaining(sessions)
       if (post.verdict !== "CRIT" && flags.state) await clearGuardState(flags.state)
-    } catch (err) {
-      after = { verdict: "CRIT", reasons: [`re-check failed: ${errText(err)}`] }
-    }
-
-    if (after.verdict === "CRIT" && flags.escalate) {
-      const prompt = escalationPrompt({
-        healthReasons: after.reasons.length > 0 ? after.reasons : health.reasons,
-        closed,
-        failed,
-        remaining,
-        sessions,
-      })
-      const existing = sessions.find(
-        s => isAliveSession(s) && s.label === GUARD_ESCALATION_LABEL && !closed.some(c => c.id === s.id),
-      )
-      const target = flags.notifySession ?? existing?.id
-      try {
-        if (target) {
-          await httpPostJson(`${found.url}/sessions/${encodeURIComponent(target)}/prompt?wait=false`, {
-            prompt,
-            queue: true,
-          }, found.token)
-          escalation = `notified ${target}`
-        } else if (flags.agent) {
-          const spawned = await httpPostJson<{ session?: { id?: string }; id?: string }>(
-            `${found.url}/sessions/agent`,
-            { adapter: flags.agent, prompt, label: GUARD_ESCALATION_LABEL },
-            found.token,
-          )
-          const id = spawned?.session?.id ?? spawned?.id ?? "unknown"
-          escalation = `spawned ${flags.agent} as ${id}`
-        } else {
-          escalation = "skipped (no --agent or --notify-session configured)"
-        }
-      } catch (err) {
-        escalation = `FAILED: ${errText(err)}`
+      // A WARN host found CRIT on the re-check arms the workflow block too.
+      if (post.verdict === "CRIT" && health.verdict !== "CRIT" && flags.state) {
+        await writeGuardState(flags.state, {
+          verdict: "CRIT",
+          reasons: post.reasons,
+          at: startedAt,
+          expiresAt: new Date(Date.now() + GUARD_STATE_TTL_MS).toISOString(),
+          closed,
+          remaining,
+        })
       }
+    } catch (err) {
+      after = { verdict: health.verdict, reasons: [`re-check failed: ${errText(err)}`] }
+    }
+  }
+
+  // The level this run ends at, compared with the remembered one.
+  const level: HealthVerdict = after?.verdict ?? health.verdict
+  const previousLevel = flags.levelState ? await readGuardLevel(flags.levelState) : null
+  const decision = decideEscalation({
+    escalateOn: flags.escalateOn,
+    level,
+    previous: previousLevel,
+    nowMs: Date.now(),
+    renotifyAfterMs: flags.renotifyAfterMs,
+  })
+  let memory = decision.memory
+
+  if (!flags.dryRun && flags.escalate && decision.escalate) {
+    const prompt = escalationPrompt({
+      level,
+      reason: decision.reason,
+      sinceMin: Math.max(0, Math.round((Date.now() - Date.parse(decision.memory.since)) / 60_000)),
+      healthReasons: after && after.reasons.length > 0 ? after.reasons : health.reasons,
+      closed,
+      failed,
+      remaining,
+      sessions,
+    })
+    const existing = sessions.find(
+      s => isAliveSession(s) && s.label === GUARD_ESCALATION_LABEL && !closed.some(c => c.id === s.id),
+    )
+    const target = flags.notifySession ?? existing?.id
+    try {
+      if (target) {
+        await httpPostJson(`${found.url}/sessions/${encodeURIComponent(target)}/prompt?wait=false`, {
+          prompt,
+          queue: true,
+        }, found.token)
+        escalation = `notified ${target}`
+        memory = decision.memoryIfSent
+      } else if (flags.agent) {
+        const spawned = await httpPostJson<{ session?: { id?: string }; id?: string }>(
+          `${found.url}/sessions/agent`,
+          { adapter: flags.agent, prompt, label: GUARD_ESCALATION_LABEL },
+          found.token,
+        )
+        const id = spawned?.session?.id ?? spawned?.id ?? "unknown"
+        escalation = `spawned ${flags.agent} as ${id}`
+        memory = decision.memoryIfSent
+      } else {
+        escalation = "skipped (no --agent or --notify-session configured)"
+      }
+    } catch (err) {
+      // Not recorded as sent: the next run tries again.
+      escalation = `FAILED: ${errText(err)}`
+    }
+  } else if (flags.escalate && decision.escalate) {
+    escalation = `would escalate (${decision.reason})`
+  }
+
+  if (!flags.dryRun && flags.levelState) {
+    try {
+      await writeGuardLevel(flags.levelState, memory)
+    } catch (err) {
+      process.stderr.write(`agentproto host guard: could not write level state: ${errText(err)}\n`)
     }
   }
 
@@ -995,6 +1225,12 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
     closed,
     failed,
     after,
+    level,
+    escalationDecision: {
+      escalateOn: flags.escalateOn,
+      reason: decision.reason,
+      escalate: decision.escalate && flags.escalate,
+    },
     escalation,
   }
   if (flags.log) {

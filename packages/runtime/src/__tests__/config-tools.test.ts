@@ -40,6 +40,9 @@ afterEach(async () => {
   delete process.env[WORKTREE_ISOLATION_ENV]
   delete process.env[PROVENANCE_WRAP_GH_ENV]
   delete process.env.AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS
+  for (const v of ["AGENTPROTO_PTY_QUERIES", "AGENTPROTO_PTY_GRAPHICS", "AGENTPROTO_PTY_CELL_SIZE", "AGENTPROTO_PTY_TERMINAL_NAME"]) {
+    delete process.env[v]
+  }
 })
 
 async function writeCfg(cfg: AgentprotoConfig): Promise<void> {
@@ -103,6 +106,30 @@ describe("config_get", () => {
       const row = findKey(res, "daemon.sandboxIdleReapAfterMs")
       expect(row.source).toBe("env")
       expect(row.envOverride).toBe("AGENTPROTO_SANDBOX_IDLE_REAP_AFTER_MS")
+    }
+    await client.close()
+  })
+
+  it("reports the env override of the PTY terminal query keys", async () => {
+    await writeCfg({ sessions: { terminalQueries: "auto", terminalCellSize: "10x20" } })
+    process.env.AGENTPROTO_PTY_QUERIES = "off"
+    process.env.AGENTPROTO_PTY_GRAPHICS = "1"
+    process.env.AGENTPROTO_PTY_CELL_SIZE = "8x16"
+    process.env.AGENTPROTO_PTY_TERMINAL_NAME = "kitty(0.40.0)"
+    const client = await setupClient(makeDeps({}))
+    const expected: Record<string, unknown> = {
+      "sessions.terminalQueries": "off",
+      "sessions.terminalGraphics": true,
+      "sessions.terminalCellSize": "8x16",
+      "sessions.terminalName": "kitty(0.40.0)",
+    }
+    const res = parse(
+      await client.callTool({ name: "config_get", arguments: { keys: Object.keys(expected) } }),
+    )
+    for (const [path, value] of Object.entries(expected)) {
+      const row = findKey(res, path)
+      expect(row.source).toBe("env")
+      expect(row.effective).toEqual(value)
     }
     await client.close()
   })

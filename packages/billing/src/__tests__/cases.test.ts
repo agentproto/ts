@@ -299,9 +299,9 @@ describe("case 9: a partial refund after spending, a dispute, and a yearly plan 
     await w.storage.spend("d", "DEMO_CREDITS", 100_000, "s1")
     const r = await applyRefund(w.deps, { type: "refund", movement: "stripe:re_p", rail: "stripe", paymentMovement: f.movement, amountMinor: 1000, at: T0 }, { accountId: "d" })
     expect(r.reclaimed).toBe(118_000) // half of what the payment minted (purchased lot), 136 000 left
-    await applyDispute(w.deps, { type: "dispute", movement: "stripe:du_1", rail: "stripe", paymentMovement: f.movement, status: "opened", at: T0 }, { accountId: "d" })
+    await applyDispute(w.deps, { type: "dispute", movement: "stripe:dp_1", rail: "stripe", paymentMovement: f.movement, status: "opened", amountMinor: 2000, currency: "EUR", at: T0 }, { accountId: "d" })
     expect(await w.storage.spendableBalance("d", "DEMO_CREDITS")).toBe(0)
-    await applyDispute(w.deps, { type: "dispute", movement: "stripe:du_1", rail: "stripe", paymentMovement: f.movement, status: "lost", at: T0 }, { accountId: "d" })
+    await applyDispute(w.deps, { type: "dispute", movement: "stripe:dp_1", rail: "stripe", paymentMovement: f.movement, status: "lost", amountMinor: 2000, currency: "EUR", at: T0 }, { accountId: "d" })
     expect(await w.storage.spendableBalance("d", "DEMO_CREDITS")).toBe(47_200) // only the bonus is left
   })
   // The yearly plan is covered by BILL-REFUND on the reference manifest (the four files sell monthly plans only).

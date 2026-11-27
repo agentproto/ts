@@ -249,6 +249,13 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/lib/bounded-child.test.mjs scripts/list-unpublished-packages.test.mjs scripts/release-needed.test.mjs scripts/reparent-onto-remote.test.mjs
 
+      # Guards start-watchdog's flagging policy (scripts/start-watchdog.mjs),
+      # including the self-protection that keeps the escalation investigator it
+      # spawns from being killed by the next sweep. Lives outside
+      # packages/**/adapters/**, so `pnpm test` misses it.
+      - name: Run start-watchdog tests
+        run: node --test scripts/start-watchdog.test.mjs
+
       # The tier classification (scripts/gen-status.mjs) and the spec packages
       # doc generator (scripts/gen-spec-packages-doc.mjs) live outside
       # packages/**/adapters/**, so `pnpm test` misses their unit suites.
@@ -1400,16 +1407,23 @@ jobs:
           # Zen keys fund the lane's free model; Go keys run Go flash (a metered
           # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
           # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
-          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
-          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
-          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, _DEFAULT =
+          # OPENCODE_GO_API_KEY. _DEFAULT goes FIRST: on 2026-11-26 the free Zen ids
+          # answered FreeUsageLimitError on every Zen key (even a new one), so a
+          # review spent ~50 s on dead Zen rungs before reaching a Go key. The
+          # Zen and other Go keys stay behind it, in their old order.
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys. A Zen lane
+          # model no longer starts free: the first attempt runs on the Go key
+          # with Go flash (metered, owner-allowlisted), and the free Zen keys are
+          # only tried once that key hits its cap. Deliberate while the free Zen
+          # ids are refused; move the Go rung back to the end to restore free-first.
           credential-ladder: |
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_HODL opencode
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
-            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           # The key authenticates OpenCode. It is selected by the resolved
           # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a
           # Zen key). The resolver step above fails closed unless the model is
@@ -1865,16 +1879,23 @@ jobs:
           # Zen keys fund the lane's free model; Go keys run Go flash (a metered
           # id, used only while it is listed in AGENT_ALLOWED_METERED_MODELS)
           # and are also exported as OPENCODE_GO_API_KEY for the Go provider.
-          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, then the
-          # legacy OPENCODE_GO_API_KEY (org unknown, possibly ws03).
-          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys.
+          # Go keys: _HODL = ws01 hodl org, _WS01 = ws01 agentik org, _DEFAULT =
+          # OPENCODE_GO_API_KEY. _DEFAULT goes FIRST: on 2026-11-26 the free Zen ids
+          # answered FreeUsageLimitError on every Zen key (even a new one), so a
+          # review spent ~50 s on dead Zen rungs before reaching a Go key. The
+          # Zen and other Go keys stay behind it, in their old order.
+          # A Go lane model (AGENT_REVIEW_MODEL) skips the Zen keys. A Zen lane
+          # model no longer starts free: the first attempt runs on the Go key
+          # with Go flash (metered, owner-allowlisted), and the free Zen keys are
+          # only tried once that key hits its cap. Deliberate while the free Zen
+          # ids are refused; move the Go rung back to the end to restore free-first.
           credential-ladder: |
+            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_API_KEY_WS03 opencode
             OPENCODE_API_KEY_HODL opencode
             OPENCODE_API_KEY_DEFAULT opencode
             OPENCODE_GO_API_KEY_HODL opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
             OPENCODE_GO_API_KEY_WS01 opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
-            OPENCODE_GO_API_KEY_DEFAULT opencode-go/deepseek-v4.1-flash OPENCODE_GO_API_KEY
           api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY_HODL || secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY_HODL || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY

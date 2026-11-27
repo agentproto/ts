@@ -39,6 +39,11 @@
       "import": "./dist/defaults.mjs",
       "default": "./dist/defaults.mjs"
     },
+    "./text": {
+      "types": "./dist/text.d.ts",
+      "import": "./dist/text.mjs",
+      "default": "./dist/text.mjs"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.mjs",

@@ -7,12 +7,13 @@
  *
  *     startCascade(opts: VoiceStartOptions & CascadeOptions): Promise<VoiceSession>
  *
- * `emit`, `hooks`, `language` and `voiceId` come from `VoiceStartOptions`.
+ * `emit`, `hooks`, `onUsage`, `language` and `voiceId` come from `VoiceStartOptions`.
  * `brain` yields reply TEXT; this engine owns synthesis, so the brain never
  * returns audio and the TTS provider is replaceable by configuration.
  */
 import { VOICE_DEFAULTS } from "../defaults.js"
-import { makeUsageMeter } from "../usage.js"
+import { deliverUsage, makeUsageMeter } from "../usage.js"
+import { createProcessorRuntime, type BrainEvent, type TextChunk } from "../processors.js"
 import { Pcm16ChunkAligner } from "../pcm16.js"
 import type {
   AudioFrame,
@@ -59,7 +60,7 @@ export interface CascadeOptions {
   stt: SttProvider
   tts: TtsProvider
   /** Reply text, in chunks. */
-  brain(input: CascadeBrainInput): AsyncIterable<string>
+  brain(input: CascadeBrainInput): AsyncIterable<string | BrainEvent>
   /** `false`: manual mode, no local VAD; `commit()` ends the utterance (push-to-talk). */
   vad?: CascadeVadOptions | false
   bargeIn?: CascadeBargeInOptions
@@ -282,6 +283,23 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     throw new Error(`tts provider "${tts.slug}" cannot take chunked input; use ttsMode "sentence"`)
   }
 
+  // Mount-time validation: a bad processor array throws here, before any socket.
+  const runtime = opts.processors?.length
+    ? createProcessorRuntime({
+        processors: opts.processors,
+        callId: globalThis.crypto.randomUUID(),
+        ...(opts.language ? { language: opts.language } : {}),
+        onEvent: e => hooks.onProcessorEvent?.(e),
+        budgetMs: {
+          audioIn: VOICE_DEFAULTS.processors.budgetMs.audioIn.value,
+          audioOut: VOICE_DEFAULTS.processors.budgetMs.audioOut.value,
+          transcript: VOICE_DEFAULTS.processors.budgetMs.transcript.value,
+          textOut: VOICE_DEFAULTS.processors.budgetMs.textOut.value,
+        },
+      })
+    : undefined
+  // The cascade engine runs textOut; the other points are reserved.
+  runtime?.reportReserved(["audioIn", "transcript", "audioOut"])
   const meter = makeUsageMeter("cascade")
   let closed = false
   let seq = 0
@@ -340,7 +358,9 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     disarmMicIdle()
     pipeline.close()
     closed = true
+    runtime?.close()
     meter.seal()
+    await deliverUsage(opts.onUsage, meter.snapshot())
   }
   const deps: CallPipelineDeps = {
     transport: {
@@ -391,10 +411,53 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
     },
     onTurn: async ({ text, utteranceId, signal, onChunk }) => {
       const brain = opts.brain({ text, signal: signal as AbortSignal, utteranceId: utteranceId ?? 0 })
-      return streamTurnWithSentences(
+      // textOut: every brain chunk goes through the processors before the
+      // sentence splitter and the TTS. The transcript shown to the host keeps
+      // the brain's own text; the TTS, and the usage counted from it, get the
+      // processed one.
+      let rawText = ""
+      let spokenText = ""
+      const useTextOut = runtime?.has("textOut") === true
+      const spoken = await streamTurnWithSentences(
         {
           brain: async ({ onDelta, signal: s }) => {
-            await consumeBrain(brain, onDelta, { ...(opts.brainGuards ?? {}), ...(s ? { signal: s } : {}) })
+            if (!useTextOut || !runtime) {
+              await consumeBrain(brain, onDelta, { ...(opts.brainGuards ?? {}), ...(s ? { signal: s } : {}) })
+              return
+            }
+            const scope = { ...(utteranceId !== undefined ? { utteranceId } : {}), signal: s ?? new AbortController().signal }
+            let tail: Promise<void> = Promise.resolve()
+            const feed = (chunk: TextChunk) => {
+              tail = tail.catch(() => undefined).then(async () => {
+                const outs = await runtime.process("textOut", chunk, scope)
+                for (const o of outs) {
+                  if (!o.text) continue
+                  spokenText += o.text
+                  onDelta(o.text)
+                }
+              })
+            }
+            try {
+              await consumeBrain(
+                brain,
+                d => {
+                  rawText += d
+                  feed({ text: d })
+                },
+                {
+                  ...(opts.brainGuards ?? {}),
+                  ...(s ? { signal: s } : {}),
+                  onEvent: (event: BrainEvent) => feed({ text: "", event }),
+                },
+              )
+              // The brain is done: tell the chain, so a transformer that holds
+              // text back can release it with the chunk that carries `end`.
+              feed({ text: "", end: true })
+            } finally {
+              // Whatever happened to the brain, what was already fed settles
+              // before the turn goes on (and a failed feed never poisons it).
+              await tail.catch(() => undefined)
+            }
           },
           tts: sentenceTts,
           ...(continuous ? { ttsStream: continuous } : {}),
@@ -404,6 +467,11 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
         },
         { text, onChunk, utteranceId, ...(signal ? { signal } : {}) },
       )
+      // Keep the brain's own words in the transcript; anything the engine added
+      // after them (a failure apology) stays as is.
+      return useTextOut && spoken.startsWith(spokenText)
+        ? rawText + spoken.slice(spokenText.length)
+        : spoken
     },
     ...(opts.logPrefix ? { logPrefix: opts.logPrefix } : {}),
   }
@@ -438,6 +506,7 @@ export async function startCascade(opts: VoiceStartOptions & CascadeOptions): Pr
       pipeline.interrupt()
     },
     getUsage: () => meter.snapshot(),
+    ...(runtime ? { getProcessorStats: () => runtime.stats() } : {}),
     close: closeSession,
   }
 }

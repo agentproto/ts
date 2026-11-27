@@ -137,6 +137,29 @@ function storeRegistry(): AppRegistry {
   return appRegistry
 }
 
+describe("appInstallInputSchema with a catalog source (no local state)", () => {
+  it("accepts a published entry's source as is: descriptors are dropped, install fields kept", () => {
+    const parsed = appInstallInputSchema.safeParse({
+      kind: "agentapp",
+      url: "https://x.test/app-1.0.0.agentapp",
+      sha256: "abc123x",
+      version: "1.0.0",
+      size: 518086,
+    })
+    expect(parsed.success).toBe(true)
+    expect(parsed.data).toEqual({ url: "https://x.test/app-1.0.0.agentapp", sha256: "abc123x" })
+  })
+
+  it("still refuses a misspelled pin or a dir-only key next to a url", () => {
+    expect(appInstallInputSchema.safeParse({ url: "https://x.test/a.git", shaa: "deadbeef" }).success).toBe(false)
+    expect(appInstallInputSchema.safeParse({ url: "https://x.test/a.git", repoint: true }).success).toBe(false)
+  })
+
+  it("still refuses a mixed source (dir + url)", () => {
+    expect(appInstallInputSchema.safeParse({ dir: "/a", url: "https://x.test/a.agentapp" }).success).toBe(false)
+  })
+})
+
 describe("panel-path install guard (dispatchAllowlistedAppTool)", () => {
   const payload = { url: "https://x.test/repo.git", sha: "deadbeef" }
 
@@ -185,6 +208,30 @@ describe("panel-path install guard (dispatchAllowlistedAppTool)", () => {
     expect(appInstallInputSchema.safeParse(dispatchTool.mock.calls[0]![1]).success).toBe(true)
     const body = JSON.parse((result as { content: { text: string }[] }).content[0]!.text)
     expect(body).toEqual({ installed: true })
+  })
+
+  it("a catalog source's descriptors (kind/version/size) are not forwarded to the strict app_install schema", async () => {
+    const dispatchTool = vi.fn(async (_tool: string, _args: Record<string, unknown>) => ({ installed: true }))
+    const source = {
+      kind: "agentapp",
+      url: "https://x.test/app-1.0.0.agentapp",
+      sha256: "abc123x",
+      version: "1.0.0",
+      size: 518086,
+    }
+    const first = await performBuiltinPanelToolCall(
+      STORE_UI_TOOLS,
+      { appId: "@agentproto/store", tool: "app_install", args: source },
+      { dispatchTool },
+    )
+    const preview = JSON.parse((first as { content: { text: string }[] }).content[0]!.text)
+    await performBuiltinPanelToolCall(
+      STORE_UI_TOOLS,
+      { appId: "@agentproto/store", tool: "app_install", args: { ...source, confirm: preview.confirm } },
+      { dispatchTool },
+    )
+    expect(dispatchTool).toHaveBeenCalledWith("app_install", { url: source.url, sha256: source.sha256 })
+    expect(appInstallInputSchema.safeParse(dispatchTool.mock.calls[0]![1]).success).toBe(true)
   })
 
   it("an installed-app UI panel's tool-call path gets the SAME guard (performAppToolCall)", async () => {

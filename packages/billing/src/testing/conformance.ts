@@ -13,11 +13,11 @@ import type { StoragePort } from "@agentproto/wallet/ports"
 import { loadBillingManifest, parseBillingManifest } from "../manifest/index.js"
 import type { BillingHandle } from "../define-billing-manifest.js"
 import { applyPayment, listOwed, traceOf } from "../payment.js"
-import { applyDispute, applyRefund } from "../reclaim.js"
+import { applyDispute, applyRefund, applyRefundReversal } from "../reclaim.js"
 import { dueDrops, failRenewal, runDueIncludes, sweepGrace, activeFeatures } from "../periods.js"
 import { applyGrant } from "../grants.js"
 import { resolvePayer, canPay, type AccountDirectory, type AccountNode } from "../payer.js"
-import { handleWebhook } from "../webhook.js"
+import { handleRailFact, handleWebhook } from "../webhook.js"
 import { assertRailEnv, assertKeyMatchesMode, railMode } from "../rails.js"
 import { makeBillingRegistry } from "../registry.js"
 import { addMonthsUtc } from "../model.js"
@@ -250,12 +250,15 @@ export function billingConformanceCases(ctx: BillingConformanceContext): Conform
     const f = pay()
     await applyPayment(deps, f)
     const before = await storage.spendableBalance("acme", m.primaryAsset)
-    await applyDispute(deps, { type: "dispute", movement: "fake:du_1", rail: "fake", paymentMovement: f.movement, status: "opened", at: ctx.clock.nowMs() }, { accountId: "acme" })
-    eq(await storage.spendableBalance("acme", m.primaryAsset), 0, "spendable while frozen")
-    await applyDispute(deps, { type: "dispute", movement: "fake:du_1", rail: "fake", paymentMovement: f.movement, status: "won", at: ctx.clock.nowMs() }, { accountId: "acme" })
+    const dispute = (movement: string, status: "opened" | "won" | "lost") =>
+      applyDispute(deps, { type: "dispute", movement, rail: "fake", paymentMovement: f.movement, status, amountMinor: 2000, currency: "EUR", at: ctx.clock.nowMs() }, { accountId: "acme" })
+    await dispute("fake:dp_1", "opened")
+    // The freeze is the disputed amount in credits (the whole purchased lot here), not the whole account.
+    eq(await storage.spendableBalance("acme", m.primaryAsset), 47_200, "spendable while frozen")
+    await dispute("fake:dp_1", "won")
     eq(await storage.spendableBalance("acme", m.primaryAsset), before, "spendable after a won dispute")
-    await applyDispute(deps, { type: "dispute", movement: "fake:du_2", rail: "fake", paymentMovement: f.movement, status: "opened", at: ctx.clock.nowMs() }, { accountId: "acme" })
-    await applyDispute(deps, { type: "dispute", movement: "fake:du_2", rail: "fake", paymentMovement: f.movement, status: "lost", at: ctx.clock.nowMs() }, { accountId: "acme" })
+    await dispute("fake:dp_2", "opened")
+    await dispute("fake:dp_2", "lost")
     eq(await storage.spendableBalance("acme", m.primaryAsset), 47_200, "only the bonus is left after a lost dispute")
   })
 
@@ -372,6 +375,202 @@ export function billingConformanceCases(ctx: BillingConformanceContext): Conform
     const entry = listed.find(e => e.slug === ctx.provider.id)
     check(entry, "the provider is not listed")
     check(!JSON.stringify(listed).includes(secret), "a secret leaked into the listing")
+  })
+  // ── Settlement defects: a fact that completes, tax, discount, trial (rules 1 to 4) ──
+  const journalShape = async (storage: StoragePort, account: string) =>
+    ((await storage.loadEvents(account)) as CauseEvent[]).map(e => `${e.id}|${e.kind}|${e.asset}|${e.amount}|${e.lotId}|${e.expiresAt ?? ""}|${e.cause ?? ""}|${e.origin ?? ""}`).sort()
+  add("BILL-PAY-COMPLETE", "an incomplete fact then the complete one gives the journal of the complete one alone (rule 2)", async () => {
+    const alone = world()
+    const full = pay({ movement: "fake:pi_complete" })
+    await applyPayment(alone.deps, full)
+    const expected = await journalShape(alone.storage, "acme")
+    const { deps, storage, m } = world()
+    const first = await applyPayment(deps, { ...full, offerId: "unknown-offer" })
+    eq(first.status, "refused", "the incomplete fact")
+    const second = await applyPayment(deps, full)
+    eq(second.status, "applied", "the complete fact after an incomplete one")
+    eq((await journalShape(storage, "acme")).join("\n"), expected.join("\n"), "journal")
+    eq((await listOwed(storage, "acme", ctx.clock.nowMs())).length, 0, "owed after completion")
+    eq(await credits(storage, "acme", m), 236_000 + 47_200, "credits")
+    const third = await applyPayment(deps, full)
+    eq(third.status, "replayed", "the complete fact again")
+  })
+  add("BILL-PAY-CONFLICT", "a second fact of one movement with another amount or currency writes nothing and is a conflict", async () => {
+    const { deps, storage } = world()
+    const f = pay()
+    await applyPayment(deps, f)
+    const n = (await storage.loadEvents("acme")).length
+    const amount = await applyPayment(deps, { ...f, amountMinor: 1999 })
+    check(amount.status === "conflict", `a different amount was ${amount.status}`)
+    if (amount.status === "conflict") {
+      eq(amount.recorded.amountMinor, 2000, "recorded amount")
+      eq(amount.received.amountMinor, 1999, "received amount")
+    }
+    const currency = await applyPayment(deps, { ...f, currency: "USD" })
+    eq(currency.status, "conflict", "a different currency")
+    eq((await storage.loadEvents("acme")).length, n, "journal length")
+    // A refused fact cannot be completed by a fact of another amount either.
+    const g = pay({ offerId: "unknown-offer" })
+    await applyPayment(deps, g)
+    const other = await applyPayment(deps, { ...g, offerId: "pack-20", amountMinor: 2500 })
+    eq(other.status, "conflict", "completing a refused fact with another amount")
+  })
+  add("BILL-PAY-TAX-EXCL", "a tax added on top of the price is accepted, an inclusive amount over the price is not (rule 1)", async () => {
+    const { deps, storage, m } = world()
+    const ok = await applyPayment(deps, pay({ amountMinor: 2400, taxMinor: 400, taxBehavior: "exclusive" }))
+    eq(ok.status, "applied", "price plus exclusive tax")
+    // Gross basis: the whole paid amount is converted, as for an inclusive tax.
+    eq(await credits(storage, "acme", m), 283_200 + 56_640, "credits of 24 EUR, 20 percent tier")
+    const ko = await applyPayment(deps, pay({ amountMinor: 2400, taxMinor: 400 }))
+    eq(ko.status, "refused", "inclusive tax over the price")
+  })
+  add("BILL-PAY-DISCOUNT", "a discount is accepted only on an offer that allows it; credits follow the amount paid", async () => {
+    const { deps, storage, m } = world()
+    const refused = await applyPayment(deps, pay({ amountMinor: 1500, discountMinor: 500 }))
+    eq(refused.status, "refused", "a discount on an offer without `discounts: allow`")
+    const ok = await applyPayment(deps, pay({ offerId: "pack-promo", amountMinor: 1500, discountMinor: 500, owner: { orgId: "promo" } }))
+    eq(ok.status, "applied", "a discount on an offer that allows it")
+    eq(await credits(storage, "promo", m), 177_000 + 35_400, "credits of 15 EUR paid, 20 percent tier")
+    const wrong = await applyPayment(deps, pay({ offerId: "pack-promo", amountMinor: 1500, discountMinor: 400, owner: { orgId: "promo" } }))
+    eq(wrong.status, "refused", "amount plus discount differs from the price")
+  })
+  add("BILL-PAY-TRIAL", "a zero payment opens a trial period on an offer with a trial, and is refused elsewhere", async () => {
+    const { deps, storage, state, m } = world()
+    const trial = pay({ offerId: "plan-trial", amountMinor: 0 })
+    const out = await applyPayment(deps, trial)
+    eq(out.status, "applied", "zero payment of a trial offer")
+    const p = await state.getPeriod(trial.movement)
+    eq(p?.status, "active", "trial period")
+    eq(p?.endAt, T0 + 14 * DAY, "trial end")
+    check((await activeFeatures(deps, "acme")).includes("pro"), "the trial does not open the features")
+    eq((await listOwed(storage, "acme", ctx.clock.nowMs())).length, 0, "owed after a trial")
+    eq(await credits(storage, "acme", m), 60_000, "includes of the trial")
+    const refused = await applyPayment(deps, pay({ offerId: "plan-month", amountMinor: 0, owner: { orgId: "other" } }))
+    eq(refused.status, "refused", "zero payment of an offer without a trial")
+    // The first paid period continues the trial without a gap.
+    ctx.clock.set(T0 + 14 * DAY)
+    const paid = pay({ offerId: "plan-trial", amountMinor: 500 })
+    await applyPayment(deps, paid)
+    eq((await state.getPeriod(paid.movement))?.startAt, T0 + 14 * DAY, "first paid period starts at the trial end")
+  })
+
+  // ── Refunds: cumulative share, reversal, call reference (rules 6, 7) ──
+  const refund = (deps: BillingDeps, paymentMovement: string, movement: string, amountMinor: number) =>
+    applyRefund(deps, { type: "refund", movement, rail: "fake", paymentMovement, amountMinor, at: ctx.clock.nowMs() }, { accountId: "acme" })
+  add("BILL-REFUND-PARTIAL-OPEN", "a partial refund keeps the period open, the refunds that reach the payment close it, never more than paid", async () => {
+    const { deps, state, storage } = world()
+    const f = pay({ offerId: "plan-year", amountMinor: 5000 })
+    await applyPayment(deps, f)
+    const r1 = await refund(deps, f.movement, "fake:re_a", 1000)
+    eq(r1.reclaimed, 12_000, "a fifth of the first drop")
+    eq((await state.getPeriod(f.movement))?.status, "active", "period after a partial refund")
+    ctx.clock.set(addMonthsUtc(T0, 1) + DAY)
+    await runDueIncludes(deps)
+    eq(((await storage.loadEvents("acme")) as CauseEvent[]).filter(e => e.origin === "include").length, 2, "includes keep coming after a partial refund")
+    // Two refunds of the same amount are two refunds.
+    const r2 = await refund(deps, f.movement, "fake:re_b", 1000)
+    eq(r2.status, "applied", "a second refund of the same amount")
+    await refund(deps, f.movement, "fake:re_c", 3000)
+    eq((await state.getPeriod(f.movement))?.status, "closed", "period once the refunds reach the payment")
+    const over = await refund(deps, f.movement, "fake:re_d", 1000)
+    eq(over.reclaimed, 0, "a refund beyond the payment takes nothing more")
+  })
+  add("BILL-REFUND-REVERSED", "a refund that fails after it succeeded gives back what it took and reopens the period", async () => {
+    const { deps, state, storage, m } = world()
+    const f = pay()
+    await applyPayment(deps, f)
+    const expiry = fold(await storage.loadEvents("acme"), ctx.clock.nowMs()).find(l => l.partitionId === "REF_CREDITS:purchased")?.expiresAt
+    await refund(deps, f.movement, "fake:re_r", 2000)
+    eq(await credits(storage, "acme", m), 47_200, "after the refund")
+    const fact = { type: "refund_reversed" as const, movement: "fake:re_r", rail: "fake", paymentMovement: f.movement, amountMinor: 2000, at: ctx.clock.nowMs() }
+    const back = await applyRefundReversal(deps, fact, { accountId: "acme" })
+    eq(back.status, "applied", "reversal")
+    eq(back.restored, 236_000, "credits given back")
+    eq(await credits(storage, "acme", m), 236_000 + 47_200, "after the reversal")
+    const lot = fold(await storage.loadEvents("acme"), ctx.clock.nowMs()).find(l => l.partitionId === "REF_CREDITS:purchased" && l.remaining > 0)
+    eq(lot?.expiresAt, expiry, "the given-back lot keeps the original expiry")
+    eq((await applyRefundReversal(deps, fact, { accountId: "acme" })).status, "replayed", "reversal twice")
+    eq(await credits(storage, "acme", m), 236_000 + 47_200, "after a replayed reversal")
+    // Through the webhook dispatch, on a subscription: the period reopens.
+    const s = pay({ offerId: "plan-month", amountMinor: 500 })
+    await applyPayment(deps, s)
+    await refund(deps, s.movement, "fake:re_s", 500)
+    eq((await state.getPeriod(s.movement))?.status, "closed", "period after the full refund")
+    const viaHook = await handleRailFact(deps, { ...fact, movement: "fake:re_s", paymentMovement: s.movement, amountMinor: 500 })
+    check(viaHook.type === "refund_reversed" && viaHook.outcome.status === "applied", "the reversal did not dispatch")
+    eq((await state.getPeriod(s.movement))?.status, "active", "period after the reversal")
+    // A reversal before its refund (reordered webhooks): the late refund takes nothing.
+    const early = pay()
+    await applyPayment(deps, early)
+    const credited = await credits(storage, "acme", m)
+    eq((await applyRefundReversal(deps, { ...fact, movement: "fake:re_early", paymentMovement: early.movement }, { accountId: "acme" })).status, "unknown_refund", "reversal of an unknown refund")
+    eq((await refund(deps, early.movement, "fake:re_early", 2000)).status, "replayed", "the refund after its reversal")
+    eq(await credits(storage, "acme", m), credited, "credits after a reversed-then-late refund")
+  })
+  add("BILL-REFUND-REF", "two refunds of the same amount on one payment are two refunds at the rail; the same reference is one", async () => {
+    const p = ctx.provider
+    // Needs a provider that runs without a live account (fake or recorded), like the signed-event cases.
+    if (!p.refund || typeof (p as unknown as { signed?: unknown }).signed !== "function") return
+    const a = await p.refund("fake:pi_ref", 500, "refund-1")
+    const b = await p.refund("fake:pi_ref", 500, "refund-2")
+    const again = await p.refund("fake:pi_ref", 500, "refund-1")
+    check(a.ok && b.ok && again.ok, "a refund failed")
+    check(a.externalRef !== b.externalRef, "two refunds of one amount collapsed into one")
+    eq(again.externalRef, a.externalRef, "the same reference twice")
+  })
+
+  // ── Disputes: amount, late win, several per payment, inquiries (rule 8) ──
+  const disputeOf = (deps: BillingDeps, paymentMovement: string, movement: string, status: "opened" | "won" | "lost", amountMinor: number, currency = "EUR") =>
+    applyDispute(deps, { type: "dispute", movement, rail: "fake", paymentMovement, status, amountMinor, currency, at: ctx.clock.nowMs() }, { accountId: "acme" })
+  add("BILL-DISPUTE-PARTIAL", "a dispute of part of a payment freezes and takes back that part only", async () => {
+    const { deps, storage, m } = world()
+    const f = pay()
+    await applyPayment(deps, f)
+    const opened = await disputeOf(deps, f.movement, "fake:dp_p", "opened", 500)
+    eq(opened.held, 59_000, "held: a quarter of the purchased credits")
+    eq(await storage.spendableBalance("acme", m.primaryAsset), 236_000 + 47_200 - 59_000, "spendable while a quarter is frozen")
+    const lost = await disputeOf(deps, f.movement, "fake:dp_p", "lost", 500)
+    eq(lost.reclaimed, 59_000, "reclaimed: a quarter")
+    eq(await credits(storage, "acme", m), 177_000 + 47_200, "credits after the lost part")
+  })
+  add("BILL-DISPUTE-LATE-WIN", "a dispute won after it was lost gives the credits back", async () => {
+    const { deps, storage, state, m } = world()
+    const f = pay({ offerId: "plan-month", amountMinor: 500 })
+    await applyPayment(deps, f)
+    await disputeOf(deps, f.movement, "fake:dp_w", "opened", 500)
+    const lost = await disputeOf(deps, f.movement, "fake:dp_w", "lost", 500)
+    eq(lost.reclaimed, 60_000, "reclaimed on loss")
+    eq((await state.getPeriod(f.movement))?.status, "closed", "period after the loss")
+    const won = await disputeOf(deps, f.movement, "fake:dp_w", "won", 500)
+    eq(won.status, "applied", "late win")
+    eq(won.restored, 60_000, "given back on the late win")
+    eq(await credits(storage, "acme", m), 60_000, "credits after the late win")
+    eq((await state.getPeriod(f.movement))?.status, "active", "period after the late win")
+    eq((await disputeOf(deps, f.movement, "fake:dp_w", "won", 500)).status, "replayed", "late win twice")
+    // A loss with no prior `opened` still takes its share back.
+    const g = pay({ owner: { orgId: "acme" } })
+    await applyPayment(deps, g)
+    const direct = await disputeOf(deps, g.movement, "fake:dp_direct", "lost", 2000)
+    eq(direct.reclaimed, 236_000, "a loss without an opened event")
+  })
+  add("BILL-DISPUTE-MULTI", "several disputes on one payment are handled each by its own movement, the total never above the payment", async () => {
+    const { deps, storage, m } = world()
+    const f = pay()
+    await applyPayment(deps, f)
+    await disputeOf(deps, f.movement, "fake:dp_m1", "opened", 1500)
+    await disputeOf(deps, f.movement, "fake:dp_m2", "opened", 1500)
+    const a = await disputeOf(deps, f.movement, "fake:dp_m1", "lost", 1500)
+    const b = await disputeOf(deps, f.movement, "fake:dp_m2", "lost", 1500)
+    eq(a.reclaimed, 177_000, "first loss: three quarters")
+    eq(b.reclaimed, 59_000, "second loss: only what is left of the payment")
+    eq(await credits(storage, "acme", m), 47_200, "only the bonus is left")
+    eq(await storage.spendableBalance("acme", m.primaryAsset), 47_200, "nothing stays frozen")
+  })
+  add("BILL-DISPUTE-INQUIRY", "an inquiry (warning_*) is not a dispute: no fact, nothing frozen", async () => {
+    const signer = (ctx.provider as unknown as { signed?: (b: object) => { body: string; headers: Record<string, string> } }).signed
+    if (!signer) return
+    const fact = await ctx.provider.verifyWebhook(signer.call(ctx.provider, { type: "dispute.opened", intent: "pi_inq", dispute: "dp_inq", status: "warning_needs_response", amountMinor: 2000, currency: "EUR", at: ctx.clock.nowMs() }))
+    eq(fact, null, "an inquiry became a fact")
   })
   return cases
 }

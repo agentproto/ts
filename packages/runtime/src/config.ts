@@ -712,6 +712,23 @@ export interface McpConfig {
    * only read when `humanGate` is on.
    */
   humanGateRuns?: boolean
+  /**
+   * Whether the modern `/mcp` gateway offers the MCP Tasks extension: a
+   * session turn started by `agent_start` / `agent_prompt` is answered with a
+   * task handle for clients that declare the extension. Defaults to `true`.
+   * Set to `false` to stop announcing it and answer those tools as before.
+   */
+  tasks?: boolean
+  /** Which tools answer with a task: `both` (default), `agent_start` only, or `agent_prompt` only. */
+  tasksTools?: "both" | "agent_start" | "agent_prompt"
+  /** Retention of a task after it reaches a terminal state, in ms (default 24 h, clamped to `tasksMaxTtlMs`). */
+  tasksTtlMs?: number
+  /** Upper bound of the retention, in ms (default 7 days). */
+  tasksMaxTtlMs?: number
+  /** Cap on the non-terminal tasks one principal may hold at once (default 32). */
+  tasksMaxPerPrincipal?: number
+  /** Bound on the final text stored in a task result, in characters (default 8192). */
+  tasksResultMaxChars?: number
 }
 
 /**
@@ -820,6 +837,42 @@ export interface SessionsConfig {
    * transcripts do NOT move).
    */
   eventsDir?: string
+  /**
+   * Who answers the terminal queries a PTY child sends at startup (device
+   * attributes, XTVERSION, cell size, graphics probe, ...). `auto`: the most
+   * recently attached terminal answers; with none attached, the daemon
+   * answers a minimal set itself. `off`: queries reach the clients untouched
+   * and nobody answers when none is attached. Env var
+   * `AGENTPROTO_PTY_QUERIES` > this field > `auto`. Applies to PTYs spawned
+   * after a daemon restart.
+   */
+  terminalQueries?: "auto" | "off"
+  /**
+   * Whether the daemon, answering for a PTY with no attached terminal,
+   * reports graphics support ("OK" to the graphics probe). Only turn it on
+   * when the terminals that attach really display that image protocol. Env
+   * var `AGENTPROTO_PTY_GRAPHICS` > this field > `false`.
+   */
+  terminalGraphics?: boolean
+  /**
+   * Cell size in pixels, `<width>x<height>`, that the daemon reports
+   * (`CSI 14 t`, `CSI 16 t`) and writes in the PTY window size. Env var
+   * `AGENTPROTO_PTY_CELL_SIZE` > this field > `10x20`. An approximation:
+   * the daemon does not know the real cell size of the clients. It only
+   * matters when the daemon answers (no terminal attached); an attached
+   * terminal answers these queries with its own size. The window pixel
+   * size is `cols x width` by `rows x height` of this value, whatever the
+   * clients really display.
+   */
+  terminalCellSize?: string
+  /**
+   * Name the daemon gives for XTVERSION when it answers for a PTY with no
+   * attached terminal. Some programs enable a feature only for terminals
+   * they know by name (Claude Code draws images only for kitty, Ghostty or
+   * iTerm2, on top of `terminalGraphics`). Env var
+   * `AGENTPROTO_PTY_TERMINAL_NAME` > this field > `agentproto`.
+   */
+  terminalName?: string
 }
 
 /**

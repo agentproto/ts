@@ -47,8 +47,8 @@ export function periodBounds(
 }
 
 /** Drops of a period, all of them (given or not). */
-export function includeDrops(p: Pick<PeriodRecord, "startAt" | "endAt" | "interval">): IncludeDrop[] {
-  if (p.interval !== "year") return [{ index: 0, at: p.startAt, windowEnd: p.endAt }]
+export function includeDrops(p: Pick<PeriodRecord, "startAt" | "endAt" | "interval"> & { trial?: boolean }): IncludeDrop[] {
+  if (p.interval !== "year" || p.trial) return [{ index: 0, at: p.startAt, windowEnd: p.endAt }]
   const years = Math.max(1, Math.round((p.endAt - p.startAt) / (365 * 86_400_000)))
   return Array.from({ length: 12 * years }, (_, k) => ({
     index: k,
@@ -162,6 +162,21 @@ export async function closePeriod(
   const p = await deps.state.getPeriod(id)
   if (!p || p.status === "closed") return p
   const next: PeriodRecord = { ...p, status: "closed", closedAt: at, closedReason: reason }
+  await deps.state.putPeriod(next)
+  return next
+}
+
+/**
+ * Reopen a period closed for a refund or a lost dispute, once what was taken
+ * back of its payment is below the payment again (a reversed refund, a dispute
+ * won after it was lost). The drops missed while it was closed are given by
+ * the next `runDueIncludes`. A period closed for another reason stays closed.
+ */
+export async function reopenPeriod(deps: BillingDeps, id: string): Promise<PeriodRecord | null> {
+  const p = await deps.state.getPeriod(id)
+  if (!p || p.status !== "closed" || (p.closedReason !== "refunded" && p.closedReason !== "disputed")) return p
+  const { closedAt: _at, closedReason: _reason, ...open } = p
+  const next: PeriodRecord = { ...open, status: "active" }
   await deps.state.putPeriod(next)
   return next
 }

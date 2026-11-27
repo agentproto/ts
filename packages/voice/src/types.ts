@@ -7,6 +7,8 @@
  * No agent framework is imported here or anywhere in this package.
  */
 
+import type { ProcessorEvent, ProcessorStats, VoiceProcessors } from "./processors.js"
+
 /** Audio on every boundary: PCM16 little-endian, mono. */
 export interface AudioFrame {
   pcm16: ArrayBuffer
@@ -177,6 +179,11 @@ export interface VoiceHooks {
    * disabled (`idleMicMs: 0`).
    */
   onMicIdle?(info: { idleMs: number }): void | Promise<void>
+  /**
+   * Something happened to a processor (error, budget overrun, abandoned,
+   * dropped, bypassed, published). Called without waiting; a throw is ignored.
+   */
+  onProcessorEvent?(event: ProcessorEvent): void
 }
 
 export interface VoiceEmit {
@@ -195,6 +202,19 @@ export interface VoiceEmit {
 export interface VoiceStartOptions {
   emit: VoiceEmit
   hooks: VoiceHooks
+  /**
+   * Receives the final usage record once, when the session closes (the same
+   * content `getUsage()` returns after `close()`). A throw or a rejection is
+   * swallowed: it never interrupts audio or fails the close.
+   */
+  onUsage?(usage: VoiceUsage): void | Promise<void>
+  /**
+   * Processors, in execution order (AIP-75, Processors). Validated when the
+   * session starts: a `ProcessorConfigError` is thrown before any socket
+   * opens. The cascade engine runs the `textOut` point; the realtime engine
+   * ignores them.
+   */
+  processors?: VoiceProcessors
   language?: string
   voiceId?: string
   /** Opaque, product-owned, documented by the provider package. */
@@ -223,6 +243,8 @@ export interface VoiceSession {
   refreshTools?(): Promise<void>
   say?(directive: string): Promise<void>
   getUsage?(): VoiceUsage | undefined
+  /** Measured time per processor (cascade engine with processors). */
+  getProcessorStats?(): Record<string, ProcessorStats>
   close(): Promise<void>
 }
 
@@ -271,7 +293,17 @@ export interface VoiceUsageEntry {
   tokens?: VoiceTokenBuckets
   /** Only when the vendor itself reports a cost; never computed here. */
   reportedCostUsd?: number
+  /**
+   * Opaque tag the host attaches to say whose key paid for the stage (for
+   * example the host's own key or one its customer supplied). The kit never
+   * interprets it: it carries it from the host to the host's billing. Absent
+   * when the host did not set one. Not normative in the spec.
+   */
+  credentialSource?: CredentialSource
 }
+
+/** An opaque, host-defined label. */
+export type CredentialSource = string
 
 /** Cumulative and monotonic; final after `close()`. No price, no content. */
 export interface VoiceUsage {

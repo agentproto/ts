@@ -35,7 +35,14 @@ export interface PtyFactoryOptions {
   rows: number
 }
 
-export type PtyFactory = (opts: PtyFactoryOptions) => PtyProcess
+/** `PtyProcess` whose `resize` also takes the pixel size of the window.
+ *  node-pty fills `ws_xpixel`/`ws_ypixel` from it from 1.2 on; older
+ *  versions ignore the extra argument and leave them at 0. */
+export type PixelAwarePtyProcess = PtyProcess & {
+  resize(cols: number, rows: number, pixelSize?: { width: number; height: number }): void
+}
+
+export type PtyFactory = (opts: PtyFactoryOptions) => PixelAwarePtyProcess
 
 // ── node-pty spawn-helper self-heal ────────────────────────────────────
 //
@@ -163,15 +170,16 @@ export async function loadNodePtyFactory(
           describeSpawnFailure(err, { command: opts.command, cwd: opts.cwd, nodePtyDir }),
         )
       }
-      const proc: PtyProcess = {
+      const proc: PixelAwarePtyProcess = {
         get pid() {
           return pty.pid
         },
         write(data: string) {
           pty.write(data)
         },
-        resize(cols: number, rows: number) {
-          pty.resize(cols, rows)
+        resize(cols: number, rows: number, pixelSize?: { width: number; height: number }) {
+          if (pixelSize) pty.resize(cols, rows, pixelSize)
+          else pty.resize(cols, rows)
         },
         kill(signal?: string) {
           pty.kill(signal)

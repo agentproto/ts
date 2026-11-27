@@ -16,7 +16,7 @@ rail event  ->  SettlementProvider.verifyWebhook  ->  handleRailFact  ->  AIP-49
 | `define-billing-manifest.ts` | `defineBillingManifest`: shape check, cross-reference rules (21), normalisation (22), derived rates from `anchor` and `fx` (26), AIP-49 edges, arbitrage check over every declared edge (14). |
 | `manifest/` | `parseBillingManifest` (BILLING.md) and `loadBillingManifest`. |
 | `payment.ts` | The payment path: check, fact, effect, trace. One `StoragePort.commit`, idempotent by event id, `traceOf`, `listOwed`. |
-| `reclaim.ts` | Refunds (rule 6, never the bonus) and disputes (freeze, release, reclaim). |
+| `reclaim.ts` | Refunds (rule 6, never the bonus, cumulative per payment), reversed refunds, and disputes for their amount (freeze, release, reclaim, give back on a late win). |
 | `periods.ts` | Paid subscription periods, the include drops (monthly inside a yearly period), `past_due` and grace. |
 | `grants.ts`, `payer.ts`, `transfers.ts` | Free credits with deterministic keys, who pays (`self`, `hierarchy/v1`), parent to child allocation. |
 | `settlement.ts` | `SettlementProvider`: the AIP-49 `SettlementPort` plus `verifyWebhook`, optional `refund` and `syncCatalog`. No second settlement interface. |

@@ -32,6 +32,8 @@ export interface PeriodRecord {
   given: number[]
   /** Boolean features the period opens. */
   features: string[]
+  /** A free trial period (offer `subscription.trial`): one window, includes given once at its start. */
+  trial?: boolean
   graceEndsAt?: number
   closedAt?: number
   closedReason?: "refunded" | "disputed" | "grace_expired" | "no_grace" | "renewed"

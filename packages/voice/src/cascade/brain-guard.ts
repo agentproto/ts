@@ -8,6 +8,7 @@
  * an HTTP stream, here it is any `AsyncIterable<string>`.
  */
 import { VOICE_DEFAULTS } from "../defaults.js"
+import type { BrainEvent } from "../processors.js"
 
 export interface BrainGuardOptions {
   /** Max wait for the first chunk. */
@@ -31,9 +32,16 @@ const B = VOICE_DEFAULTS.cascade.brain
  * or `signal` aborts (a cut turn is not an error here).
  */
 export async function consumeBrain(
-  source: AsyncIterable<string>,
+  source: AsyncIterable<string | BrainEvent>,
   onDelta: (delta: string) => void,
-  opts: BrainGuardOptions & { signal?: AbortSignal } = {},
+  opts: BrainGuardOptions & {
+    signal?: AbortSignal
+    /**
+     * A non-text brain event. Receiving one counts as brain activity: the next
+     * wait starts from zero, so a long tool call is not taken for a stall.
+     */
+    onEvent?: (event: BrainEvent) => void
+  } = {},
 ): Promise<string> {
   const firstChunkMs = opts.firstChunkMs ?? B.firstChunkMs.value
   const idleMs = opts.idleMs ?? B.idleMs.value
@@ -63,10 +71,14 @@ export async function consumeBrain(
         throw new BrainStalledError(started ? "idle" : "first-chunk", limit)
       }
       if (r.done) return full
-      if (r.value) {
-        started = true
-        full += r.value
-        onDelta(r.value)
+      if (typeof r.value === "string") {
+        if (r.value) {
+          started = true
+          full += r.value
+          onDelta(r.value)
+        }
+      } else if (r.value) {
+        opts.onEvent?.(r.value)
       }
     }
   } finally {

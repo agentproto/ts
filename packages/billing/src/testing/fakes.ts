@@ -110,7 +110,7 @@ export class FakeSettlementProvider implements SettlementProvider {
   readonly id: string
   readonly name = "Fake rail"
   readonly env: { secretKey: string; webhookSecret: string; mode: string }
-  readonly refunds: { movement: string; amountMinor: number }[] = []
+  readonly refunds: { movement: string; amountMinor: number; ref: string }[] = []
   readonly catalogs: unknown[] = []
   constructor(
     private readonly webhookSecret: string,
@@ -126,9 +126,12 @@ export class FakeSettlementProvider implements SettlementProvider {
   async pay(): Promise<SettlementResult> {
     return { ok: false, error: "the fake rail does not pay out" }
   }
-  async refund(movement: string, amountMinor: number): Promise<SettlementResult> {
-    this.refunds.push({ movement, amountMinor })
-    return { ok: true, externalRef: `${this.id}:re_${movement}` }
+  async refund(movement: string, amountMinor: number, ref: string): Promise<SettlementResult> {
+    // `ref` is the idempotency key, as at a real rail: the same ref is the same refund.
+    const known = this.refunds.findIndex(r => r.ref === ref)
+    if (known >= 0) return { ok: true, externalRef: `${this.id}:re_${known + 1}` }
+    this.refunds.push({ movement, amountMinor, ref })
+    return { ok: true, externalRef: `${this.id}:re_${this.refunds.length}` }
   }
   async syncCatalog(projection: unknown): Promise<void> {
     this.catalogs.push(projection)
@@ -139,7 +142,7 @@ export class FakeSettlementProvider implements SettlementProvider {
   }
   async verifyWebhook(raw: WebhookRequest): Promise<RailFact | null> {
     if (raw.headers["x-fake-signature"] !== this.webhookSecret) throw new Error("webhook signature mismatch")
-    const e = JSON.parse(raw.body) as Record<string, unknown> & { type: string; intent?: string; refund?: string; dispute?: string }
+    const e = JSON.parse(raw.body) as Record<string, unknown> & { type: string; intent?: string; refund?: string; dispute?: string; status?: string }
     const at = Number(e.at ?? Date.now())
     switch (e.type) {
       case "payment_intent.succeeded":
@@ -153,15 +156,30 @@ export class FakeSettlementProvider implements SettlementProvider {
           owner: e.owner as Record<string, string>,
           amountMinor: Number(e.amountMinor),
           taxMinor: Number(e.taxMinor ?? 0),
+          ...(e.taxBehavior !== undefined ? { taxBehavior: e.taxBehavior as "inclusive" | "exclusive" } : {}),
+          ...(e.discountMinor !== undefined ? { discountMinor: Number(e.discountMinor) } : {}),
           currency: String(e.currency),
           paidAt: at,
         }
       case "charge.refunded":
         return { type: "refund", movement: `${this.id}:${e.refund}`, rail: this.id, paymentMovement: `${this.id}:${e.intent}`, amountMinor: Number(e.amountMinor), at }
+      case "refund.failed":
+        return { type: "refund_reversed", movement: `${this.id}:${e.refund}`, rail: this.id, paymentMovement: `${this.id}:${e.intent}`, amountMinor: Number(e.amountMinor), at }
       case "dispute.opened":
       case "dispute.won":
       case "dispute.lost":
-        return { type: "dispute", movement: `${this.id}:${e.dispute}`, rail: this.id, paymentMovement: `${this.id}:${e.intent}`, status: e.type.slice("dispute.".length) as "opened" | "won" | "lost", at }
+        // An inquiry moves no money: no fact, so nothing is frozen.
+        if (typeof e.status === "string" && e.status.startsWith("warning_")) return null
+        return {
+          type: "dispute",
+          movement: `${this.id}:${e.dispute}`,
+          rail: this.id,
+          paymentMovement: `${this.id}:${e.intent}`,
+          status: e.type.slice("dispute.".length) as "opened" | "won" | "lost",
+          amountMinor: Number(e.amountMinor),
+          currency: String(e.currency),
+          at,
+        }
       default:
         return null
     }

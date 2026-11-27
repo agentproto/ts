@@ -28,8 +28,25 @@ const GIT_TIMEOUT_MS = 5 * 60_000
 
 const dataDirField = z.string().optional()
 
+/** Descriptors a catalog entry's `source` carries next to the install fields. */
+const CATALOG_SOURCE_DESCRIPTORS = ["kind", "version", "size"] as const
+
+/** A catalog entry's `source` is forwarded as is by a store client. The
+ *  `app_install` schema is strict, so for a `{url}` install exactly the
+ *  catalog descriptors (`kind`, `version`, `size`) are dropped; any other key
+ *  (a misspelled `sha`, a dir-only `repoint`) still fails loudly. A `{dir}` or
+ *  `{file}` payload passes through untouched: catalog sources are URL based. */
+export function pickAppInstallSourceFields(args: Record<string, unknown>): Record<string, unknown> {
+  if (typeof args.url !== "string" || args.dir !== undefined || args.file !== undefined) return args
+  return Object.fromEntries(
+    Object.entries(args).filter(([k]) => !(CATALOG_SOURCE_DESCRIPTORS as readonly string[]).includes(k)),
+  )
+}
+
 /** `app_install` input: exactly one of `{dir}` | `{url, ref?, subdir?, sha?, sha256?, allowBuild?}` | `{file, sha256?}`. */
-export const appInstallInputSchema = z.union([
+export const appInstallInputSchema = z.preprocess(
+  v => (v !== null && typeof v === "object" && !Array.isArray(v) ? pickAppInstallSourceFields(v as Record<string, unknown>) : v),
+  z.union([
   z.object({ dir: z.string(), dataDir: dataDirField, repoint: z.boolean().optional() }).strict(),
   z
     .object({
@@ -44,7 +61,8 @@ export const appInstallInputSchema = z.union([
     })
     .strict(),
   z.object({ file: z.string(), sha256: z.string().optional(), catalogUrl: z.string().optional(), dataDir: dataDirField }).strict(),
-])
+  ]),
+)
 export type AppInstallInput = z.infer<typeof appInstallInputSchema>
 
 export const APP_INSTALL_EXCLUSIVE_ERROR =
