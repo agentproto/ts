@@ -1,0 +1,56 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Reconstructed from the text: the page shows no cancelled answer. Built from the CancelledTask interface of section 'Task Status' (a Task with status \"cancelled\") and the rule of 'Task Polling' (resultType \"complete\"), with the identifiers and timestamps of the 'Example Message Flow'.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/get after tasks/cancel on the turn in flight answers status cancelled",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-cancelled",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "match": {
+          "status": "cancelled"
+        },
+        "keysWithin": "task",
+        "absent": [
+          "cacheScope",
+          "result",
+          "error"
+        ]
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "tasks/get",
+    "params": {
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "resultType": "complete",
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840",
+      "status": "cancelled",
+      "createdAt": "2025-11-25T10:30:00Z",
+      "lastUpdatedAt": "2025-11-25T10:50:00Z",
+      "ttlMs": 3600000
+    }
+  }
+}

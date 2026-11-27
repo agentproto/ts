@@ -1,0 +1,50 @@
+{
+  "_source": "https://modelcontextprotocol.io/extensions/skills/overview",
+  "_note": "Section 'Getting a Skill', request. The page gives the answer in prose (result.skill with the shape of a skills/list entry, plus resultType, ttlMs and cacheScope) and says an unknown URI returns -32602 (section 'Message Flow' and 'Error Handling'). skills/get carries no Mcp-Name header: the header is defined for tools/call, prompts/get and resources/read only.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "skills/get",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "skills/get answers the entry under result.skill, without an Mcp-Name header",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "present": [
+          "skill",
+          "ttlMs",
+          "cacheScope"
+        ],
+        "skillEqualsPageEntry": true
+      }
+    },
+    {
+      "case": "negative",
+      "method": "skills/get",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "skills/get on an unknown skill is invalid params",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "set": {
+        "params.uri": "skill://no-such-skill/SKILL.md"
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; the Skills methods and skill:// reads answer -32602 with HTTP 200 today (McpError forwarded through the bridge, mcp-modern/skills.ts)."
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "skills/get",
+    "params": {
+      "uri": "skill://code-review/SKILL.md"
+    }
+  }
+}

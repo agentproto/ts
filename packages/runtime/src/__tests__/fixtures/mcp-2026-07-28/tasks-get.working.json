@@ -1,0 +1,124 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Example Message Flow': the tasks/get request (id 3) and its answer while the task is working. The removed methods tasks/result and tasks/list follow the 'Backward Compatibility' table of the same page (clients calling tasks/result MUST receive -32601); their wire shape is reconstructed from the text.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/get on a turn in flight answers status working",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-working",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "match": {
+          "status": "working"
+        },
+        "keysWithin": "task",
+        "absent": [
+          "cacheScope"
+        ]
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/result",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "the removed tasks/result is unknown",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-working",
+      "request": {
+        "method": "tasks/result",
+        "params": {
+          "taskId": "$taskId"
+        }
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 404,
+        "code": -32601
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/list",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/list is not served",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "request": {
+        "method": "tasks/list",
+        "params": {}
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 404,
+        "code": -32601
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "Mcp-Name other than params.taskId is a header mismatch",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-working",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "headers": {
+        "mcp-name": "786512e2-9e0d-44bd-8f29-789f320fe840"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32020
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tasks/get",
+    "params": {
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "resultType": "complete",
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840",
+      "status": "working",
+      "createdAt": "2025-11-25T10:30:00Z",
+      "lastUpdatedAt": "2025-11-25T10:50:00Z",
+      "ttlMs": 3600000,
+      "pollIntervalMs": 5000
+    }
+  }
+}

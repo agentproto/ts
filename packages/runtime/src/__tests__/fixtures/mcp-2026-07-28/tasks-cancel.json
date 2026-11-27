@@ -1,0 +1,65 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Reconstructed from the text: the page shows the CancelTaskRequest interface (section 'Task Cancellation') but no JSON example. The answer is an empty acknowledgement with resultType \"complete\" (same section). Identifier from the 'Example Message Flow'.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tasks/cancel",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/cancel on the turn in flight is acknowledged empty",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-working",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "keysWithin": "response"
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/cancel",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/cancel by a session outside the owner's subtree is the same invalid params as an unknown id",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-foreign",
+      "caller": "$outsiderId",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "tasks/cancel",
+    "params": {
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "result": {
+      "resultType": "complete"
+    }
+  }
+}

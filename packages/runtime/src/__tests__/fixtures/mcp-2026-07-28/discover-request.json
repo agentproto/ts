@@ -1,6 +1,31 @@
 {
   "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/discover",
   "_note": "Body copied from the 'Request' section. The page shows no HTTP headers for this example.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "server/discover",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "server/discover is answered with supportedVersions, capabilities and cache hints",
+      "capability": "none",
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "match": {
+          "supportedVersions": [
+            "2026-07-28",
+            "2025-11-25"
+          ]
+        },
+        "present": [
+          "capabilities",
+          "ttlMs",
+          "cacheScope"
+        ]
+      }
+    }
+  ],
   "body": {
     "jsonrpc": "2.0",
     "id": "discover-1",

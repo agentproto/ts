@@ -9,14 +9,16 @@ import { describe, expect, it } from "vitest"
 import { readFileSync } from "node:fs"
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { McpError, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { createMcpServer, registerEventsMethods } from "@agentproto/mcp-server"
+import { createMcpServer, registerEventsMethods, registerSkillsMethods } from "@agentproto/mcp-server"
 
 import {
   ERR_MISSING_CLIENT_CAPABILITY,
   GATEWAY_ADVERTISED_VERSIONS,
   handleModernRequest,
+  TASKS_EXTENSION,
   type EventsStreamHandler,
   type ModernDeps,
+  type TaskProjector,
 } from "../mcp-modern/index.js"
 import { eventsList, type EventsListRequest } from "../mcp-events/adapter.js"
 import { daemonBearerPrincipal } from "../mcp-events/events-registry.js"
@@ -673,5 +675,80 @@ describe("events/stream (push delivery)", () => {
 
   it("without the handler, events/stream is 404 -32601", async () => {
     expectError(await call("events/stream", STREAM_REQUEST.params, { headers: { "mcp-name": "email.received" } }), 404, -32601)
+  })
+})
+
+describe("extensions: Tasks and Skills (live)", () => {
+  // Fixture shapes and the end-to-end replay live in `mcp-conformance-blackbox.test.ts`; these rows pin the
+  // per-method contract against stubs, so a regression names the rule it broke.
+  const TASK_ID = `task_${"a".repeat(32)}`
+  const TASK = { taskId: TASK_ID, status: "working", createdAt: "2026-11-27T00:00:00.000Z", lastUpdatedAt: "2026-11-27T00:00:00.000Z", ttlMs: 60000, pollIntervalMs: 1000 }
+  const DECLARES: Json = { ...META, [CAPS_KEY]: { extensions: { [TASKS_EXTENSION]: {} } } }
+  const stubTasks: TaskProjector = {
+    plan: tool => (tool === "probe" ? { kind: "reserved", tool, taskId: TASK_ID, reservation: { promptId: "prompt_stub", commit() {} } } : undefined),
+    configure() {},
+    finalize: () => ({ resultType: "task", ...TASK }),
+    get: () => ({ resultType: "complete", ...TASK }),
+    update: async () => {},
+    cancel: async () => {},
+    observeSessionEnded() {},
+    observeInputChanged() {},
+  }
+  const TASKS: ModernDeps = { ...DEPS, tasks: stubTasks }
+  const SKILLS: ModernDeps = {
+    createServer: async () => {
+      const server = await legacyServer()
+      const entry = { uri: "skill://s/SKILL.md", frontmatter: { name: "s", description: "d" }, resources: [] }
+      registerSkillsMethods(server, {
+        list: async () => ({ skills: [entry] }),
+        get: async () => ({ skill: entry }),
+        read: async uri => ({ uri: uri.href, mimeType: "text/markdown", text: "x" }),
+      })
+      return server
+    },
+  }
+
+  it('`resultType` is "complete" or "input_required" without the Tasks extension, and may be "task" once the client declares it', async () => {
+    expect(json(await callTool({}, "probe", { deps: TASKS })).result?.resultType).toBe("complete")
+    expect(json(await callTool({}, "probe", { deps: DEPS, meta: DECLARES })).result?.resultType).toBe("complete")
+    const created = json(await callTool({}, "probe", { deps: TASKS, meta: DECLARES })).result
+    expect(created?.resultType).toBe("task")
+    expect(created?.taskId).toBe(TASK_ID)
+  })
+
+  it("tasks/get carries the task's own ttlMs and no cacheScope (it is not a cacheable operation)", async () => {
+    const result = json(await call("tasks/get", { taskId: TASK_ID }, { deps: TASKS, meta: DECLARES, headers: { "mcp-name": TASK_ID } })).result
+    expect(result?.resultType).toBe("complete")
+    expect(result?.ttlMs).toBe(TASK.ttlMs)
+    expect(result).not.toHaveProperty("cacheScope")
+  })
+
+  it("`Mcp-Name` is params.taskId on tasks/get, tasks/update and tasks/cancel (`-32020`, HTTP 400 otherwise)", async () => {
+    const params: Record<string, Json> = {
+      "tasks/get": { taskId: TASK_ID },
+      "tasks/update": { taskId: TASK_ID, inputResponses: {} },
+      "tasks/cancel": { taskId: TASK_ID },
+    }
+    for (const [method, p] of Object.entries(params)) {
+      expectError(await call(method, p, { deps: TASKS, meta: DECLARES, headers: { "mcp-name": undefined } }), 400, -32020)
+      expectError(await call(method, p, { deps: TASKS, meta: DECLARES, headers: { "mcp-name": "task_other" } }), 400, -32020)
+      expect((await call(method, p, { deps: TASKS, meta: DECLARES, headers: { "mcp-name": TASK_ID } })).status, method).toBe(200)
+    }
+  })
+
+  it("skills/list and skills/get carry resultType, ttlMs and cacheScope", async () => {
+    for (const [method, params] of [["skills/list", {}], ["skills/get", { uri: "skill://s/SKILL.md" }]] as const) {
+      const r = await call(method, params, { deps: SKILLS })
+      expect(r.status, method).toBe(200)
+      const result = json(r).result
+      expect(result, method).toMatchObject({ resultType: "complete", ttlMs: expect.any(Number) })
+      expect(["public", "private"], method).toContain(result?.cacheScope)
+    }
+  })
+
+  it("skills/get needs no `Mcp-Name` header (only tools/call, prompts/get and resources/read carry one)", async () => {
+    const r = await call("skills/get", { uri: "skill://s/SKILL.md" }, { deps: SKILLS, headers: { "mcp-name": undefined } })
+    expect(r.status).toBe(200)
+    expect(json(r).result?.skill?.uri).toBe("skill://s/SKILL.md")
   })
 })

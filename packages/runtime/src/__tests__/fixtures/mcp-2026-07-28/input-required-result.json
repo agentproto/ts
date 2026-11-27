@@ -1,0 +1,66 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
+  "_note": "Section 'Input Required Tool Results', 'Input Required Response'. The same shape is described on https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr (InputRequiredResult): at least one of inputRequests or requestState, and no caching hints.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "an InputRequiredResult carries only resultType, inputRequests and requestState",
+      "capability": "client: elicitation.form",
+      "given": "permission-parked",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "input_required",
+        "keysWithin": "body",
+        "present": [
+          "inputRequests",
+          "requestState"
+        ]
+      }
+    }
+  ],
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "resultType": "input_required",
+      "inputRequests": {
+        "github_login": {
+          "method": "elicitation/create",
+          "params": {
+            "mode": "form",
+            "message": "Please provide your GitHub username",
+            "requestedSchema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          }
+        }
+      },
+      "requestState": "eyJsb2NhdGlvbiI6Ik5ldyBZb3JrIn0..."
+    }
+  }
+}

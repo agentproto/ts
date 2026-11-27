@@ -1,6 +1,20 @@
 {
   "_source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http",
   "_note": "Section 'Standard Request Headers', example '`tools/call` request'. The spec example sends no Accept header although the same page says the client MUST send one.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "the page's tools/call, headers included, is served",
+      "capability": "none",
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete"
+      }
+    }
+  ],
   "headers": {
     "Content-Type": "application/json",
     "MCP-Protocol-Version": "2026-07-28",

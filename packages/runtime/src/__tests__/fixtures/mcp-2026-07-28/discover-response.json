@@ -1,12 +1,30 @@
 {
   "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/discover",
   "_note": "Body copied from the 'Response' section.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "server/discover",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "the discover result keys are those of the page",
+      "capability": "none",
+      "request": "discover-request",
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "keysWithin": "body"
+      }
+    }
+  ],
   "body": {
     "jsonrpc": "2.0",
     "id": "discover-1",
     "result": {
       "resultType": "complete",
-      "supportedVersions": ["2026-07-28"],
+      "supportedVersions": [
+        "2026-07-28"
+      ],
       "capabilities": {
         "tools": {},
         "resources": {}

@@ -1,0 +1,260 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
+  "_note": "Section 'Input Required Tool Results', 'Retry with Input Responses'. The negative cases follow https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr ('Server Requirements', items 4 and 5: requestState is attacker-controlled input, bound to the principal, a short expiry and the originating request; single use enforced server-side). Their wire shape is reconstructed from the text: the retry of this page with the state altered, expired, replayed or presented by another caller.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "the retry with the exact requestState and an accept applies the answer",
+      "capability": "client: elicitation.form",
+      "given": "permission-input-required",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "set": {
+        "params.requestState": "$requestState",
+        "params.inputResponses": {
+          "$inputKey": {
+            "action": "accept",
+            "content": {
+              "decision": "approve",
+              "scope": "once"
+            }
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "permissionResolved": true
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "the page's own requestState, not issued by this server, is refused",
+      "capability": "client: elicitation.form",
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "an altered requestState is refused",
+      "capability": "client: elicitation.form",
+      "given": "permission-input-required",
+      "mutate": "tamper-request-state",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "set": {
+        "params.requestState": "$requestState",
+        "params.inputResponses": {
+          "$inputKey": {
+            "action": "accept",
+            "content": {
+              "decision": "approve",
+              "scope": "once"
+            }
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602,
+        "errorData": {
+          "reason": "invalid_signature"
+        }
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "an expired requestState is refused",
+      "capability": "client: elicitation.form",
+      "given": "permission-input-required",
+      "mutate": "advance-clock",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "set": {
+        "params.requestState": "$requestState",
+        "params.inputResponses": {
+          "$inputKey": {
+            "action": "accept",
+            "content": {
+              "decision": "approve",
+              "scope": "once"
+            }
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602,
+        "errorData": {
+          "reason": "expired"
+        }
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "a requestState already used is refused the second time",
+      "capability": "client: elicitation.form",
+      "given": "permission-input-required",
+      "repeat": 2,
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "set": {
+        "params.requestState": "$requestState",
+        "params.inputResponses": {
+          "$inputKey": {
+            "action": "accept",
+            "content": {
+              "decision": "approve",
+              "scope": "once"
+            }
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602,
+        "errorData": {
+          "reason": "replayed"
+        }
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "a requestState presented by another caller is refused",
+      "capability": "client: elicitation.form",
+      "given": "permission-input-required",
+      "caller": "$outsiderId",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "set": {
+        "params.requestState": "$requestState",
+        "params.inputResponses": {
+          "$inputKey": {
+            "action": "accept",
+            "content": {
+              "decision": "approve",
+              "scope": "once"
+            }
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602,
+        "errorData": {
+          "reason": "mismatch"
+        }
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts)."
+    }
+  ],
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "get_weather",
+      "arguments": {
+        "location": "New York"
+      },
+      "inputResponses": {
+        "github_login": {
+          "action": "accept",
+          "content": {
+            "name": "octocat"
+          }
+        }
+      },
+      "requestState": "eyJsb2NhdGlvbiI6Ik5ldyBZb3JrIn0..."
+    }
+  }
+}

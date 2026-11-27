@@ -1,0 +1,44 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Capability Negotiation', the -32021 example naming the Tasks extension (its message is non-normative, so only the error keys and data are compared). The HTTP status 400 comes from https://modelcontextprotocol.io/specification/2026-07-28/basic/index (section '_meta'). The request is the tasks/get of 'Example Message Flow', sent without the extension declared.",
+  "httpStatus": 400,
+  "_conformance": [
+    {
+      "case": "negative",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/get without the extension declared is a missing capability naming it",
+      "capability": "none",
+      "request": "tasks-get.working",
+      "clientCapabilities": {},
+      "expect": {
+        "httpStatus": 400,
+        "code": -32021,
+        "errorKeysOf": "body",
+        "errorData": {
+          "requiredCapabilities": {
+            "extensions": {
+              "io.modelcontextprotocol/tasks": {}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32021,
+      "message": "Missing required client capability",
+      "data": {
+        "requiredCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/tasks": {}
+          }
+        }
+      }
+    }
+  }
+}

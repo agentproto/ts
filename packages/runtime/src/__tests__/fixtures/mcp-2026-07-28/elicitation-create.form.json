@@ -1,0 +1,152 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation",
+  "_note": "Section 'Example: Simple Text Request', input request delivered inside InputRequiredResult.inputRequests, and the client result returned inside inputResponses. The negative cases follow 'Form Mode Security' (no sensitive information in form mode) and 'Security Considerations' (bind the request to the client identity); their wire shape is reconstructed from the text.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "a parked permission is asked as a form elicitation on permissions_list",
+      "capability": "client: elicitation.form",
+      "given": "permission-parked",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "input_required",
+        "inputRequestLike": "body",
+        "absent": [
+          "ttlMs",
+          "cacheScope"
+        ]
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "a question asking for a secret is never put in a form",
+      "capability": "client: elicitation.form",
+      "given": "question-secret-parked",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "absent": [
+          "inputRequests",
+          "requestState"
+        ]
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "a session is never asked to resolve its own permission",
+      "capability": "client: elicitation.form",
+      "given": "permission-parked",
+      "caller": "$sessionId",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "absent": [
+          "inputRequests",
+          "requestState"
+        ]
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "no elicitation for a client that did not declare the capability",
+      "capability": "none",
+      "given": "permission-parked",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "permissions_list",
+          "arguments": {
+            "sessionId": "$sessionId"
+          }
+        }
+      },
+      "clientCapabilities": {},
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "absent": [
+          "inputRequests",
+          "requestState"
+        ]
+      }
+    }
+  ],
+  "body": {
+    "method": "elicitation/create",
+    "params": {
+      "mode": "form",
+      "message": "Please provide your GitHub username",
+      "requestedSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    }
+  },
+  "response": {
+    "action": "accept",
+    "content": {
+      "name": "octocat"
+    }
+  }
+}

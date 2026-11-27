@@ -1,0 +1,45 @@
+{
+  "_source": "https://modelcontextprotocol.io/extensions/skills/overview",
+  "_note": "Reconstructed from the text: the request of section 'Reading Skill Content' with a path that climbs out of the skill folder. Section 'Error Handling': an unknown skill or file is -32602; section 'Integrity and Verification': reads are restricted to URIs of the manifest.",
+  "_conformance": [
+    {
+      "case": "negative",
+      "method": "resources/read",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "a skill:// path with .. is refused before any read",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; the Skills methods and skill:// reads answer -32602 with HTTP 200 today (McpError forwarded through the bridge, mcp-modern/skills.ts)."
+    },
+    {
+      "case": "negative",
+      "method": "resources/read",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "a percent-encoded .. is refused the same way",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "set": {
+        "params.uri": "skill://code-review/%2e%2e/outside.md"
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; the Skills methods and skill:// reads answer -32602 with HTTP 200 today (McpError forwarded through the bridge, mcp-modern/skills.ts)."
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "resources/read",
+    "params": {
+      "uri": "skill://code-review/../outside.md"
+    }
+  }
+}

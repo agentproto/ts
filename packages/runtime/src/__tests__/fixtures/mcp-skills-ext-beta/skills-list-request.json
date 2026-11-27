@@ -1,0 +1,78 @@
+{
+  "_source": "https://modelcontextprotocol.io/extensions/skills/overview",
+  "_note": "Section 'Listing Skills', request and response. The page omits _meta for brevity and says every request MUST carry it, so the replay adds it. The live server serves the page's own code-review skill (the SKILL.md and references/checklist.md texts of section 'Reading Skill Content'), so its manifest must equal the page's (same URIs, digests and sizes; the page says both files end with a newline). The cache hints may differ (this server answers ttlMs 0, cacheScope private).",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "skills/list",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "skills/list lists the served skill with the page's manifest",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "keysWithin": "response",
+        "present": [
+          "ttlMs",
+          "cacheScope"
+        ],
+        "skillsEqualPage": true
+      }
+    },
+    {
+      "case": "negative",
+      "method": "skills/list",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "skills/list with a cursor it never issued is invalid params",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "set": {
+        "params.cursor": "not-a-cursor"
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; the Skills methods and skill:// reads answer -32602 with HTTP 200 today (McpError forwarded through the bridge, mcp-modern/skills.ts)."
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "skills/list",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "complete",
+      "skills": [
+        {
+          "uri": "skill://code-review/SKILL.md",
+          "frontmatter": {
+            "name": "code-review",
+            "description": "Review code using the team's checklist."
+          },
+          "resources": [
+            {
+              "uri": "skill://code-review/SKILL.md",
+              "digest": "sha256:d2489d6c182e8df9c178563ff9f2eac7998a0c1bb1278c52a7fd5306e4259160",
+              "size": 149
+            },
+            {
+              "uri": "skill://code-review/references/checklist.md",
+              "digest": "sha256:dbab2de7bf7db9cc95cb6ce681c3690b26184db39f75b958a0287ca6d9e24e20",
+              "size": 65
+            }
+          ]
+        }
+      ],
+      "ttlMs": 300000,
+      "cacheScope": "public"
+    }
+  }
+}
