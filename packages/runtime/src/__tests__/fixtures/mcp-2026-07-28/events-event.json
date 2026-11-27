@@ -1,0 +1,22 @@
+{
+  "_source": "https://github.com/modelcontextprotocol/ext-events/blob/c77b84395eff0ae32f53b0516c2214fe276ed050/specification/beta/events/events.mdx#event-delivery",
+  "_note": "Section 'Event delivery', events as they occur.",
+  "body": {
+    "jsonrpc": "2.0",
+    "method": "notifications/events/event",
+    "params": {
+      "eventId": "evt_001",
+      "name": "email.received",
+      "timestamp": "2026-02-19T15:30:00Z",
+      "data": {
+        "messageId": "msg_xyz",
+        "from": "dsp@anthropic.com",
+        "subject": "MCP spec review"
+      },
+      "cursor": "historyId_99842",
+      "_meta": {
+        "io.modelcontextprotocol/subscriptionId": 1
+      }
+    }
+  }
+}
