@@ -1407,7 +1407,8 @@ export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn" | "dupl
  *  - `started`: the ticket's turn began (it left the queue, or was delivered at once).
  *  - `steered`: the ticket was injected into the turn already running; it ends with that turn.
  *  - `ended`: the turn the ticket belonged to ended (`interrupted` when it was cancelled).
- *  - `dropped`: the ticket left the queue, or was cancelled, without ever starting a turn.
+ *  - `dropped`: the ticket left the queue, or was cancelled, without ever starting a turn
+ *    (`superseded`: a first-turn reservation whose turn ran under its own ticket instead).
  */
 export type PromptTicketEvent =
   | { type: "started"; sessionId: string; promptId: string }
@@ -1417,7 +1418,7 @@ export type PromptTicketEvent =
       type: "dropped"
       sessionId: string
       promptId: string
-      cause: "removed" | "cancelled" | "answered-question" | "dispatch-failed"
+      cause: "removed" | "cancelled" | "answered-question" | "dispatch-failed" | "superseded"
     }
 
 /** Where a prompt ticket stands right now. `unknown` = never seen, already ended or dropped. */
@@ -11994,9 +11995,15 @@ export function createSessionsRegistry(opts?: {
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.emitter.emit("busy", true)
-    const turnTicket =
-      turnOpts?.promptId ?? ((rt.desc.turnsCompleted ?? 0) === 0 ? firstTurnTickets.get(rt.desc.id) : undefined)
+    const reservedTicket = firstTurnTickets.get(rt.desc.id)
     firstTurnTickets.delete(rt.desc.id)
+    const turnTicket =
+      turnOpts?.promptId ?? ((rt.desc.turnsCompleted ?? 0) === 0 ? reservedTicket : undefined)
+    // A reservation this turn does not run under (the turn carries its own ticket) will never start:
+    // drop it, or whoever observes it (an MCP task) waits on it until the session ends.
+    if (reservedTicket !== undefined && reservedTicket !== turnTicket) {
+      emitTicket({ type: "dropped", sessionId: rt.desc.id, promptId: reservedTicket, cause: "superseded" })
+    }
     if (turnTicket) {
       rt.activePromptId = turnTicket
       if (rt.dispatchingTicket === turnTicket) rt.dispatchingTicket = undefined

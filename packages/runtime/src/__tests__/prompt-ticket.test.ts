@@ -15,6 +15,7 @@ import {
   type SessionsRegistry,
 } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { createTaskProjector, createTurnTaskLedger } from "../mcp-modern/index.js"
 
 type SteerFn = (content: unknown) => Promise<"steered" | "promptRequired" | "unsupported">
 
@@ -116,6 +117,27 @@ describe("prompt tickets", () => {
     await until(() => registry.get(desc.id)?.busy === true)
     expect(types("prompt_first")).toEqual(["started", "ended"])
     agent.finish()
+  })
+
+  it("a first turn that carries its own ticket drops the reserved one, so the reserved task ends cancelled", async () => {
+    const ledger = createTurnTaskLedger({ dir: join(tmp, "tasks") })
+    const projector = createTaskProjector({ sessions: registry, ledger })
+    const plan = projector.plan("agent_start", { name: "agent_start", arguments: { prompt: "go" } }, undefined)
+    if (plan?.kind !== "reserved") throw new Error("expected a reservation")
+    const sessionId = plan.reservation.sessionId!
+    const reserved = plan.reservation.promptId
+    plan.reservation.commit(sessionId)
+    registry.expectFirstTurnTicket(sessionId, reserved)
+    const agent = fakeAgent()
+    registry.spawnAgent({ id: sessionId, workspaceSlug: "w", cwd: tmp, agentSession: agent.session, adapterSlug: "fake" })
+    await registry.enqueuePrompt(sessionId, "go", { promptId: "prompt_own" })
+    await until(() => types("prompt_own").includes("started"))
+    expect(types(reserved)).toEqual(["dropped"])
+    expect(ledger.get(plan.taskId)?.lastStatus).toBe("cancelled")
+    expect(ledger.get(plan.taskId)?.statusMessage).toBe("the first turn ran under a different prompt")
+    agent.finish()
+    await until(() => types("prompt_own").includes("ended"))
+    expect(types(reserved)).toEqual(["dropped"])
   })
 
   it("releaseFirstTurnTicket frees a reservation whose spawn never happened", async () => {
