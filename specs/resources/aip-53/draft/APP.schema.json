@@ -342,7 +342,7 @@
           },
           "cwd": {
             "type": "string",
-            "pattern": "^(?!/)(?!\\.?/*$)(?!\\s)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S$",
+            "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S",
             "description": "Working directory, relative to the installed app directory (default: the app directory itself). Stricter than the reference implementation, which also resolves absolute paths and `..` segments: this schema forbids both so a service cannot start outside its app."
           },
           "port": {
