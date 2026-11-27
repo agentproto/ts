@@ -1,9 +1,9 @@
-import { makeBillingRegistry, type PaymentFact } from "@agentproto/billing"
+import { assertRailCapabilities, makeBillingRegistry, type PaymentFact } from "@agentproto/billing"
 import Stripe from "stripe"
 import { describe, expect, it } from "vitest"
 import { STRIPE_API_VERSION } from "../api-version.js"
 import type { StripeLike } from "../client.js"
-import { STRIPE_CAPABILITIES, createProvider, createStripeProvider, stripeKeyMode } from "../provider.js"
+import { STRIPE_CAPABILITIES, createProvider, createStripeProvider, loadStripeSdk, stripeKeyMode } from "../provider.js"
 import { eventOf, makeKit } from "./kit.js"
 
 // Type test: the real SDK satisfies the structural client (compile time, `check-types`).
@@ -38,16 +38,17 @@ describe("construction and capabilities", () => {
     expect(() => createStripeProvider({ ...kit.config(), client: undefined as never })).toThrow(/client/)
     expect(() => createStripeProvider({ ...kit.config(), ownerKeys: [] })).toThrow(/ownerKeys/)
   })
-  it("declares no refund, checkout, portal, catalog sync nor off-session charge, and has none of those methods", async () => {
+  it("declares refunds, checkout, portal and catalog sync, has those methods, and no off-session charge", async () => {
     const { provider } = setup()
     expect(provider.capabilities).toEqual(STRIPE_CAPABILITIES)
-    expect(provider.capabilities.refunds).toBe("none")
-    expect(provider.refund).toBeUndefined()
-    expect(provider.createCheckout).toBeUndefined()
-    expect(provider.createPortalSession).toBeUndefined()
-    expect(provider.syncCatalog).toBeUndefined()
+    expect([provider.capabilities.refunds, provider.capabilities.checkout, provider.capabilities.portal, provider.capabilities.catalogSync, provider.capabilities.offSessionCharge]).toEqual(["partial", true, true, true, false])
+    for (const m of [provider.refund, provider.createCheckout, provider.createPortalSession, provider.syncCatalog]) expect(typeof m).toBe("function")
     expect(await provider.charge({ accountId: "acme", amountMinor: 100, asset: "EUR", ref: "r" })).toEqual({ ok: false, error: "unsupported" })
     expect(await provider.pay({ counterparty: "acme", amountMinor: 100, asset: "EUR" })).toEqual({ ok: false, error: "unsupported" })
+  })
+  it("a manifest on this rail now passes assertRailCapabilities", () => {
+    const { kit, provider } = setup()
+    expect(() => assertRailCapabilities(kit.manifest, [provider])).not.toThrow()
   })
   it("check(): a key present, of a known kind and of the rail's mode", async () => {
     const kit = makeKit()
@@ -63,18 +64,42 @@ describe("construction and capabilities", () => {
     const kit = makeKit()
     const opts = kit.config()
     const env = { STRIPE_SECRET_KEY: kit.secretKey, STRIPE_WEBHOOK_SECRET: kit.webhookSecret, STRIPE_MODE: "test" }
-    const p = createProvider({ env, providers: async () => null, options: { client: opts.client, ownerKeys: opts.ownerKeys, onUnhandled: opts.onUnhandled, now: opts.now } })
+    const options = { client: opts.client, manifest: opts.manifest, ownerKeys: opts.ownerKeys, allowedReturnOrigins: opts.allowedReturnOrigins, onUnhandled: opts.onUnhandled, now: opts.now }
+    const p = await createProvider({ env, providers: async () => null, options })
     expect(await p.check!()).toEqual({ ok: true })
     expect(await p.verifyWebhook(kit.sign(eventOf("customer.updated")))).toBeNull()
-    expect(() => createProvider({ env, providers: async () => null })).toThrow(/onUnhandled/)
+    await expect(createProvider({ env, providers: async () => null, options: { client: opts.client } })).rejects.toThrow(/onUnhandled/)
     const reg = makeBillingRegistry({
       env,
       importPackage: async name => (name === "@agentproto/billing-stripe" ? { createProvider } : {}),
-      providerOptions: { stripe: { client: opts.client, ownerKeys: ["orgId"], onUnhandled: opts.onUnhandled } },
+      providerOptions: { stripe: options },
     })
     const resolved = await reg.provider("stripe")
     expect(resolved?.id).toBe("stripe")
-    expect(JSON.stringify(await reg.family.list())).not.toContain(kit.secretKey)
+    const listing = JSON.stringify(await reg.family.list())
+    expect(listing).not.toContain(kit.secretKey)
+    expect(listing).not.toContain(kit.webhookSecret)
+  })
+  it("createProvider without a client builds the SDK with the key at STRIPE_API_VERSION (no call made)", async () => {
+    const kit = makeKit()
+    const opts = kit.config()
+    const env = { STRIPE_SECRET_KEY: kit.secretKey, STRIPE_WEBHOOK_SECRET: kit.webhookSecret }
+    const p = await createProvider({ env, providers: async () => null, options: { manifest: opts.manifest, ownerKeys: ["orgId"], allowedReturnOrigins: opts.allowedReturnOrigins, onUnhandled: opts.onUnhandled } })
+    expect(await p.check!()).toEqual({ ok: true })
+    expect(JSON.stringify(p)).not.toContain(kit.secretKey)
+    const Sdk = await loadStripeSdk()
+    expect(Sdk).toBe(Stripe)
+  })
+  it("createProvider without a client nor a key: check() names the variable, and a call rejects without reaching Stripe", async () => {
+    const kit = makeKit()
+    const opts = kit.config()
+    const p = await createProvider({ env: {}, providers: async () => null, options: { manifest: opts.manifest, ownerKeys: ["orgId"], allowedReturnOrigins: opts.allowedReturnOrigins, onUnhandled: opts.onUnhandled } })
+    expect((await p.check!()).reason).toMatch(/STRIPE_SECRET_KEY is not set/)
+    expect(await p.refund!("stripe:pi_3Ex0Intent0001", 100, "r")).toEqual({ ok: false, error: expect.stringMatching(/STRIPE_SECRET_KEY is not set/) })
+  })
+  it("loadStripeSdk: a clear message when the stripe package is missing", async () => {
+    await expect(loadStripeSdk(async () => Promise.reject(new Error("Cannot find package 'stripe'")))).rejects.toThrow(/the 'stripe' package is not installed; install stripe@>=23/)
+    await expect(loadStripeSdk(async () => ({ nothing: 1 }))).rejects.toThrow(/exports no Stripe class/)
   })
 })
 

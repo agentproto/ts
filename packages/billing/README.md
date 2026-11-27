@@ -31,7 +31,7 @@ start-up    ->  assertRailEnv, assertRailCapabilities
 | `testing/` | In-memory stores, `FakeSettlementProvider`, a reference manifest and the framework-free BILL-* cases. |
 | `contract/` | The contract cases a host or a provider package runs in its CI: spend, holds, and `settlementProviderContractCases` (SET-*). |
 
-No payment provider lives here. A provider is its own package, `@agentproto/billing-<slug>`, that the registry imports by slug (`BILLING_CATALOG` names the expected ones); none is published yet.
+No payment provider lives here. A provider is its own package, `@agentproto/billing-<slug>`, that the registry imports by slug (`BILLING_CATALOG` names the expected ones). The Stripe one is [`@agentproto/billing-stripe`](../billing-stripe): webhooks and money facts, checkout, billing portal, refunds and catalog sync, built through `createProvider` with `providerOptions.stripe`. The other entries of the catalog have no package yet.
 
 ## Writing a payment provider
 
