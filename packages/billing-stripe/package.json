@@ -4,13 +4,14 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "@agentproto/billing-stripe: Stripe settlement provider for @agentproto/billing (AIP-74). Webhook signature verification, mode guard and the money facts of checkouts, invoices, refunds and disputes.",
+  "description": "@agentproto/billing-stripe: Stripe settlement provider for @agentproto/billing (AIP-74). Webhook verification and money facts; checkout, billing portal, refunds and catalog sync.",
   "keywords": [
     "agentproto",
     "aip-74",
     "billing",
     "stripe",
     "webhooks",
+    "checkout",
     "settlement"
   ],
   "homepage": "https://agentproto.sh/docs/aip-74",

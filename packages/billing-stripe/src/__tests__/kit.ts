@@ -1,16 +1,31 @@
 /**
  * Test kit: the fixtures (built by hand from Stripe's public API reference,
- * not recorded), a Stripe client double that replays the invoice payment
- * reads, a signer with a secret made for each run, and the factory of signed
- * requests the SET-* contract cases need.
+ * not recorded), a Stripe client double (it replays the invoice payment
+ * reads, keeps products, prices, sessions and refunds in memory, and logs
+ * every read and write), a signer with a secret made for each run, and the
+ * factory of signed requests the SET-* contract cases need.
  */
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import type { RailMode, SettlementProvider } from "@agentproto/billing"
 import type { SettlementEvents } from "@agentproto/billing/contract-tests"
 import { InMemoryBillingState, InMemoryStorage, ManualClock } from "@agentproto/billing/testing"
-import type { StripeEventLike, StripeInvoicePaymentLike, StripeLike, StripeListLike } from "../client.js"
+import { loadBillingManifest } from "@agentproto/billing/manifest"
+import type { StripeCatalog } from "../catalog.js"
+import type {
+  StripeCheckoutSessionCreateParamsLike,
+  StripeEventLike,
+  StripeInvoicePaymentLike,
+  StripeLike,
+  StripeListLike,
+  StripePriceCreateParamsLike,
+  StripePriceLike,
+  StripeProductCreateParamsLike,
+  StripeProductLike,
+  StripeRequestOptionsLike,
+} from "../client.js"
 import type { StripeProviderConfig } from "../provider.js"
+import { STRIPE_REFERENCE_MANIFEST } from "./manifest.js"
 import { stripeSignatureHeader } from "../signature.js"
 
 export const FIXTURES_DIR = fileURLToPath(new URL("./fixtures/", import.meta.url))
@@ -43,19 +58,169 @@ export function eventOf(name: string, patch: { id?: string; created?: number; li
   return merged
 }
 
-/** The Stripe client double: invoice payments come from what the test registered. Counts calls; can be made to fail. */
+/** An error shaped like the SDK's (`type`, `code`, `statusCode`, `raw`, `headers`). */
+export class FakeStripeError extends Error {
+  constructor(
+    message: string,
+    readonly type: string,
+    readonly code?: string,
+    readonly statusCode = 400,
+    readonly raw: unknown = {},
+    readonly headers: Record<string, string> = {},
+  ) {
+    super(message)
+  }
+}
+
+export interface ClientCall {
+  method: string
+  kind: "read" | "write"
+  params: unknown
+  options?: StripeRequestOptionsLike
+}
+
+/**
+ * The Stripe client double. Invoice payments come from what the test
+ * registered; products, prices, checkout sessions and refunds live in
+ * memory, as Stripe would keep them. Every call is logged, read or write.
+ */
 export class FakeStripeClient implements StripeLike {
   readonly payments = new Map<string, StripeInvoicePaymentLike[]>()
+  readonly productsById = new Map<string, StripeProductLike>()
+  readonly pricesById = new Map<string, StripePriceLike>()
+  readonly sessions = new Map<string, StripeCheckoutSessionCreateParamsLike>()
+  readonly refundsByKey = new Map<string, { id: string; status: string; payment_intent: string; amount: number }>()
+  readonly log: ClientCall[] = []
+  /** Invoice payment reads (the webhook side). */
   calls = 0
   failing = false
+  /** The account the key belongs to, for `accounts.retrieveCurrent`. */
+  accountId = "acct_1Ex0Account0001"
+  /** When set, `accounts.retrieveCurrent` throws it (a restricted key without read access, say). */
+  accountError: Error | null = null
+  /** When set, `refunds.create` throws it. */
+  refundError: Error | null = null
+  #n = 0
+  get reads(): number {
+    return this.log.filter(c => c.kind === "read").length
+  }
+  get writes(): number {
+    return this.log.filter(c => c.kind === "write").length
+  }
+  #id(prefix: string): string {
+    return `${prefix}_${(++this.#n).toString().padStart(4, "0")}Ex0`
+  }
+  #record(method: string, kind: "read" | "write", params: unknown, options?: StripeRequestOptionsLike) {
+    this.log.push({ method, kind, params: structuredClone(params), ...(options ? { options: { ...options } } : {}) })
+  }
   readonly invoicePayments = {
     list: async (params: { invoice?: string; status?: string; limit?: number }): Promise<StripeListLike<StripeInvoicePaymentLike>> => {
       this.calls++
+      this.#record("invoicePayments.list", "read", params)
       if (this.failing) throw new Error("stripe: connection error (test double)")
       const all = (this.payments.get(params.invoice ?? "") ?? []).filter(p => params.status === undefined || p.status === params.status)
       const limit = params.limit ?? 10
       return { data: all.slice(0, limit), has_more: all.length > limit }
     },
+  }
+  readonly accounts = {
+    retrieveCurrent: async (): Promise<{ id: string }> => {
+      this.#record("accounts.retrieveCurrent", "read", {})
+      if (this.accountError) throw this.accountError
+      return { id: this.accountId }
+    },
+  }
+  readonly refunds = {
+    create: async (params: { payment_intent: string; amount: number; metadata?: Record<string, string> }, options?: StripeRequestOptionsLike) => {
+      this.#record("refunds.create", "write", params, options)
+      if (this.refundError) throw this.refundError
+      const key = options?.idempotencyKey
+      const known = key !== undefined ? this.refundsByKey.get(key) : undefined
+      if (known) return { ...known }
+      const r = { id: this.#id("re"), status: "succeeded", payment_intent: params.payment_intent, amount: params.amount }
+      this.refundsByKey.set(key ?? r.id, r)
+      return { ...r }
+    },
+  }
+  readonly checkout = {
+    sessions: {
+      create: async (params: StripeCheckoutSessionCreateParamsLike, options?: StripeRequestOptionsLike) => {
+        this.#record("checkout.sessions.create", "write", params, options)
+        const id = this.#id("cs_test")
+        this.sessions.set(id, structuredClone(params))
+        return { id, url: `https://checkout.example.com/c/pay/${id}` }
+      },
+    },
+  }
+  readonly billingPortal = {
+    sessions: {
+      create: async (params: { customer: string; return_url: string }, options?: StripeRequestOptionsLike) => {
+        this.#record("billingPortal.sessions.create", "write", params, options)
+        return { url: `https://billing.example.com/p/session/${this.#id("bps")}` }
+      },
+    },
+  }
+  readonly products = {
+    list: async (params: { ids?: string[]; limit?: number }): Promise<StripeListLike<StripeProductLike>> => {
+      this.#record("products.list", "read", params)
+      const data = [...this.productsById.values()].filter(p => params.ids === undefined || params.ids.includes(p.id))
+      return { data: data.slice(0, params.limit ?? 10).map(p => structuredClone(p)), has_more: data.length > (params.limit ?? 10) }
+    },
+    create: async (params: StripeProductCreateParamsLike, options?: StripeRequestOptionsLike): Promise<StripeProductLike> => {
+      this.#record("products.create", "write", params, options)
+      if (this.productsById.has(params.id)) throw new FakeStripeError(`Product already exists.`, "StripeInvalidRequestError", "resource_already_exists")
+      const p: StripeProductLike = { id: params.id, name: params.name, active: true, metadata: { ...params.metadata } }
+      this.productsById.set(p.id, p)
+      return structuredClone(p)
+    },
+    update: async (id: string, params: { name?: string; active?: boolean; metadata?: Record<string, string> }, options?: StripeRequestOptionsLike): Promise<StripeProductLike> => {
+      this.#record("products.update", "write", { id, ...params }, options)
+      const p = this.productsById.get(id)
+      if (!p) throw new FakeStripeError(`No such product: '${id}'`, "StripeInvalidRequestError", "resource_missing", 404)
+      Object.assign(p, { ...(params.name !== undefined ? { name: params.name } : {}), ...(params.active !== undefined ? { active: params.active } : {}), metadata: { ...p.metadata, ...params.metadata } })
+      return structuredClone(p)
+    },
+  }
+  readonly prices = {
+    list: async (params: { lookup_keys?: string[]; limit?: number }): Promise<StripeListLike<StripePriceLike>> => {
+      this.#record("prices.list", "read", params)
+      if ((params.lookup_keys?.length ?? 0) > 10) throw new FakeStripeError("You can specify up to 10 lookup_keys.", "StripeInvalidRequestError", "parameter_invalid")
+      const data = [...this.pricesById.values()].filter(p => params.lookup_keys === undefined || (p.lookup_key !== null && params.lookup_keys.includes(p.lookup_key)))
+      return { data: data.slice(0, params.limit ?? 10).map(p => structuredClone(p)), has_more: data.length > (params.limit ?? 10) }
+    },
+    create: async (params: StripePriceCreateParamsLike, options?: StripeRequestOptionsLike): Promise<StripePriceLike> => {
+      this.#record("prices.create", "write", params, options)
+      this.#putPrice(params)
+      return structuredClone([...this.pricesById.values()].at(-1)!)
+    },
+  }
+  #putPrice(params: StripePriceCreateParamsLike): void {
+    const holder = [...this.pricesById.values()].find(p => p.lookup_key === params.lookup_key)
+    if (holder && !params.transfer_lookup_key) throw new FakeStripeError(`A price (\`${holder.id}\`) already uses that lookup key.`, "StripeInvalidRequestError", "lookup_key_already_used")
+    if (holder) holder.lookup_key = null
+    const id = this.#id("price")
+    this.pricesById.set(id, {
+      id,
+      active: true,
+      currency: params.currency,
+      unit_amount: params.unit_amount,
+      lookup_key: params.lookup_key,
+      product: params.product,
+      recurring: params.recurring ? { interval: params.recurring.interval, interval_count: params.recurring.interval_count ?? 1 } : null,
+      tax_behavior: params.tax_behavior ?? "unspecified",
+      metadata: { ...params.metadata },
+    })
+  }
+  /** Put the products and prices of some offers of a catalog in place, as if an earlier sync had run. Not logged. */
+  seed(catalog: StripeCatalog, offerIds?: readonly string[]): void {
+    for (const o of catalog.offers) {
+      if (offerIds && !offerIds.includes(o.offerId)) continue
+      this.productsById.set(o.product.id, { id: o.product.id, name: o.product.name, active: true, metadata: { ...o.product.metadata } })
+      if (o.price) {
+        const p = o.price
+        this.#putPrice({ product: p.product, currency: p.currency, unit_amount: p.unitAmount, lookup_key: p.lookupKey, transfer_lookup_key: true, metadata: p.metadata, ...(p.recurring ? { recurring: p.recurring } : {}), ...(p.taxBehavior ? { tax_behavior: p.taxBehavior } : {}) })
+      }
+    }
   }
   /** Register the payments of an invoice, shaped like the `invoice_payments.list` fixture. */
   setPayments(invoice: string, items: { paymentIntent: string; amountPaid: number; status?: string; type?: string }[]): void {
@@ -66,6 +231,12 @@ export class FakeStripeClient implements StripeLike {
     )
   }
 }
+
+/** The reference manifest of the SET-* cases, on a `stripe` rail. */
+export const referenceManifest = () => loadBillingManifest(STRIPE_REFERENCE_MANIFEST, { strategies: [] })
+
+/** The one origin the kit's providers accept for return URLs. */
+export const SHOP_ORIGIN = "https://shop.example.com"
 
 export interface Unhandled {
   event: StripeEventLike
@@ -81,13 +252,16 @@ export function makeKit(opts: { mode?: RailMode; clock?: ManualClock } = {}) {
   const webhookSecret = `whsec_${globalThis.crypto.randomUUID().replace(/-/g, "")}`
   const secretKey = `sk_${mode}_${globalThis.crypto.randomUUID().replace(/-/g, "")}`
   const client = new FakeStripeClient()
+  const manifest = referenceManifest()
   const unhandled: Unhandled[] = []
   const config = (over: Partial<StripeProviderConfig> = {}): StripeProviderConfig => ({
     secretKey,
     webhookSecret,
     mode,
     client,
+    manifest,
     ownerKeys: ["orgId"],
+    allowedReturnOrigins: [SHOP_ORIGIN],
     onUnhandled: (event, reason) => void unhandled.push({ event, reason }),
     now: () => clock.nowMs(),
     ...over,
@@ -99,7 +273,7 @@ export function makeKit(opts: { mode?: RailMode; clock?: ManualClock } = {}) {
     return { body, headers: { "stripe-signature": stripeSignatureHeader(body, secret, seconds()) } }
   }
   const stores = () => ({ storage: new InMemoryStorage(clock), state: new InMemoryBillingState() })
-  return { mode, clock, webhookSecret, secretKey, client, unhandled, config, sign, seconds, stores }
+  return { mode, clock, webhookSecret, secretKey, client, manifest, unhandled, config, sign, seconds, stores }
 }
 
 export type Kit = ReturnType<typeof makeKit>
@@ -136,6 +310,20 @@ export function stripeEvents(kit: Kit): SettlementEvents {
   }
   return {
     payment: s => payment(s),
+    // The session the provider created, completed and paid: its metadata is what createCheckout set.
+    checkoutCompleted: s => {
+      const session = kit.client.sessions.get(s.checkoutRef)
+      if (!session) throw new Error(`no checkout session '${s.checkoutRef}' was created`)
+      const e = eventOf("checkout.session.completed", {
+        id: `evt_${s.checkoutRef}`,
+        created: created(s.at),
+        livemode: live,
+        object: { id: s.checkoutRef, mode: session.mode, amount_subtotal: s.amountMinor, amount_total: s.amountMinor, currency: s.currency.toLowerCase(), livemode: live, payment_intent: `pi_${s.checkoutRef.slice(3)}` },
+      })
+      // Replaced, not merged: only what the provider wrote on the session may come back.
+      e.data.object.metadata = { ...session.metadata }
+      return kit.sign(e)
+    },
     // The payment intent of a checkout carries none of the session's metadata.
     paymentIncomplete: s =>
       kit.sign(eventOf("payment_intent.succeeded", { id: `evt_pi_${s.ref}`, created: created(s.at), livemode: live, object: { id: `pi_${s.ref}`, amount: s.amountMinor, amount_received: s.amountMinor, currency: s.currency.toLowerCase(), livemode: live } })),

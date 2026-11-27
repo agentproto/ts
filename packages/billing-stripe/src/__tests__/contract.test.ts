@@ -1,20 +1,21 @@
 import { settlementProviderContractCases } from "@agentproto/billing/contract-tests"
-import { describe, it } from "vitest"
+import { describe, expect, it } from "vitest"
+import { toStripeCatalog } from "../catalog.js"
 import { createStripeProvider } from "../provider.js"
-import { makeKit, stripeEvents } from "./kit.js"
+import { SHOP_ORIGIN, makeKit, stripeEvents, type Kit } from "./kit.js"
 import { STRIPE_REFERENCE_MANIFEST } from "./manifest.js"
 
 /**
- * The SET-* cases of `@agentproto/billing` against this provider. What it does
- * not serve yet is declared, with its capability off: checkout (SET-10, SET-12)
- * and catalog sync (SET-11).
+ * The SET-* cases of `@agentproto/billing` against this provider. Nothing is
+ * declared unsupported: every capability a case needs is on.
  */
-const UNSUPPORTED = ["SET-10", "SET-11", "SET-12"] as const
+const UNSUPPORTED: readonly string[] = []
 
-describe("SET contract (Stripe provider, in-memory stores)", () => {
-  const kit = makeKit()
+function contract(kit: Kit) {
   const provider = createStripeProvider(kit.config())
-  const cases = settlementProviderContractCases({
+  // SET-10 checks out `pack-20` before SET-11 syncs the catalog: its price is already at the rail.
+  kit.client.seed(toStripeCatalog(kit.manifest), ["pack-20"])
+  return settlementProviderContractCases({
     provider,
     clock: kit.clock,
     stores: kit.stores,
@@ -22,23 +23,22 @@ describe("SET contract (Stripe provider, in-memory stores)", () => {
     events: stripeEvents(kit),
     unsupported: UNSUPPORTED,
     secrets: [kit.secretKey, kit.webhookSecret],
-    misconfigured: () => createStripeProvider(kit.config({ secretKey: `sk_live_${globalThis.crypto.randomUUID().replace(/-/g, "")}` })),
+    returnUrls: { allowed: `${SHOP_ORIGIN}/billing/done`, refused: "https://shop.example.com.evil.example/done" },
+    railWrites: () => kit.client.writes,
+    misconfigured: () => createStripeProvider(kit.config({ secretKey: `sk_${kit.mode === "live" ? "test" : "live"}_${globalThis.crypto.randomUUID().replace(/-/g, "")}` })),
+  })
+}
+
+describe("SET contract (Stripe provider, in-memory stores)", () => {
+  const cases = contract(makeKit())
+  it("plays every case, none declared unsupported", () => {
+    expect(UNSUPPORTED).toEqual([])
+    expect(cases.map(c => c.name.split(" ")[0])).toEqual(["SET-1", "SET-2", "SET-3", "SET-5", "SET-5-SUB", "SET-6", "SET-7", "SET-8", "SET-9", "SET-10", "SET-11", "SET-12", "SET-13", "SET-21", "SET-22"])
   })
   for (const c of cases) it(c.name, c.run)
 })
 
 describe("SET contract (Stripe provider, live mode)", () => {
-  const kit = makeKit({ mode: "live" })
-  const provider = createStripeProvider(kit.config())
-  const cases = settlementProviderContractCases({
-    provider,
-    clock: kit.clock,
-    stores: kit.stores,
-    manifestSource: STRIPE_REFERENCE_MANIFEST,
-    events: stripeEvents(kit),
-    unsupported: UNSUPPORTED,
-    secrets: [kit.secretKey, kit.webhookSecret],
-    misconfigured: () => createStripeProvider(kit.config({ secretKey: `rk_test_${globalThis.crypto.randomUUID().replace(/-/g, "")}` })),
-  }).filter(c => /^SET-(1|3|8|9) /.test(c.name))
+  const cases = contract(makeKit({ mode: "live" })).filter(c => /^SET-(1|3|8|9|10|12) /.test(c.name))
   for (const c of cases) it(c.name, c.run)
 })
