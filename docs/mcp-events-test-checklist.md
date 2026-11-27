@@ -9,12 +9,15 @@
 
 ## Transport
 
-- [ ] `discover-exposes-events-capability` — `server/discover` returns `events:{}` in capabilities
+- [ ] `discover-exposes-events-capability`: `initialize` (2025-11-25) and `server/discover` (2026-07-28) return `events:{}`, plus `extensions["io.modelcontextprotocol/events"] = {listChanged:false}` while the extension is on
+- [ ] modern `server/discover` carries no `listChanged` on `tools`, `resources` or `prompts` (`mcp-modern-contract-live.test.ts`)
+- [ ] `Mcp-Name` = `params.name` on subscribe, unsubscribe, poll and stream; missing or different is `-32020` HTTP 400 (`mcp-modern-contract-live.test.ts`, `mcp-events-stream-http.test.ts`)
 
 ## events/list
 
 - [ ] `events-list-tenant-scoped` — registry filters definitions by principal's reachable schemes
-- [ ] `events-list-pagination` — `cursor` query param; opaque token = offset+scheme checkpoint; `nextCursor` returned
+- [ ] `events-list-pagination`: `cursor` param; opaque token = offset+scheme checkpoint; `nextCursor` returned, and omitted on the last page
+- [ ] `delivery` names the served modes: `push` on the 2026-07-28 era only while `events/stream` is served; the legacy era lists `["poll","webhook"]` (`mcp-events-poll.test.ts`, `mcp-modern-contract-live.test.ts`)
 
 ## Subscription identity
 
@@ -59,13 +62,34 @@
 - [ ] `ttl-null-no-refresh-needed` — `ttlMs: null` → `until:{kind:"never"}` → `refreshBefore: null`
 - [ ] `rotation-window-both-secrets` — subscribe-refresh writes new secret; delivery signs with both while window open
 
-## Replay (v1 reality)
+## Replay
 
-- [ ] `unreplayable-cursor-null` — ALL event definitions non-replayable; subscribe/refresh always return `cursor: null`; `truncated` never set
+- [ ] `unreplayable-cursor-null`: webhook subscribe/refresh return `cursor: null`; a supplied cursor is decoded like a poll cursor (`-32602` unreadable, `-32024` another caller's) and answers `truncated: true`
+
+## events/poll (`mcp-events-poll.test.ts`)
+
+- [ ] reads the journal after the cursor; `hasMore`, `nextPollMs`, `maxEvents` (default 100, max 1000)
+- [ ] `truncated: true` when retention, `maxAgeMs` or a gap leaves the cursor behind
+- [ ] a cursor issued to another caller is `-32024`
+- [ ] an unfed journal is purged by the periodic purge, without a restart
+- [ ] `-32025` `data: {reason:"poll_watch_quota", limit:"pollWatches", max}` when the watch pool is full (`mcp-events-codes.test.ts`)
+
+## events/stream (`mcp-events-stream.test.ts`, `mcp-events-stream-http.test.ts`)
+
+- [ ] `notifications/events/active` is the first message, with the granted `heartbeatMs` (default 30 000, clamped to [5 000, 60 000])
+- [ ] a cursor replays in order; a poll cursor resumes a stream and the reverse
+- [ ] a gap mid-stream sends a second `active` with `truncated: true`
+- [ ] heartbeat only after a silence of `heartbeatMs`, carrying the head cursor
+- [ ] a provider failure sends `notifications/events/error` and the stream stays open
+- [ ] client abort releases the lease hold and the journal listener; an open stream keeps its watch past the idle TTL
+- [ ] the 33rd stream is `-32025` `limit:"streams"`; a full watch pool is the same `-32025` as poll
+- [ ] validation errors (`-32602`, `-32023`, `-32024`, `-32026`) are JSON errors, no SSE frame
+- [ ] HTTP: `text/event-stream`, `x-accel-buffering: no`, one `data:` frame per message, no `id:` line, no comment; `Accept` without `text/event-stream` is 406; shutdown sends the final frame; `mcp.eventsStream:false` is 404
+- [ ] public origin: a stream outside the repo allowlist is `-32024` before any watch opens (`mcp-events-surface.test.ts`)
 
 ## Unsubscribe
 
-- [ ] `unsubscribe-idempotent` — same event name + args + URL → same deterministic id; second call returns `{}`
+- [ ] `unsubscribe-idempotent`: same event name + args + URL → same deterministic id; second call returns `{}`; an `http://` subscription can still be removed
 
 ## Filters
 
