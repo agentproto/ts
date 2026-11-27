@@ -74,6 +74,12 @@ export const GH_PROVENANCE_MODEL_ENV = "AGENTPROTO_MODEL"
  *  shim on every invocation (case-insensitively). */
 export const GH_PROVENANCE_SKIP_REPOS_ENV = "AGENTPROTO_GH_PROVENANCE_SKIP_REPOS"
 
+/** JSON array of GitHub owners (users/orgs) whose repos may carry the shim's
+ *  footer, read from `defaults.prProvenance.footer.ownerOrgs` at spawn. The
+ *  footer names the host, a local path and a session id, so the shim stamps
+ *  (and restores) it only for these owners, never for a third party's repo. */
+export const GH_PROVENANCE_OWNERS_ENV = "AGENTPROTO_GH_PROVENANCE_OWNERS"
+
 /** Parse a raw string into a boolean opt-in, or `undefined` when it isn't a
  *  recognised truthy/falsy token (so a lower-precedence source can decide). */
 export function parseWrapGh(raw: string | undefined): boolean | undefined {
@@ -139,6 +145,9 @@ export interface GhShimEnvInput {
   /** `defaults.prProvenance.footer.skipRepos`, resolved at spawn. The shim
    *  checks it on every invocation; a listed repo gets no footer. */
   skipRepos?: readonly string[]
+  /** `defaults.prProvenance.footer.ownerOrgs`, resolved at spawn. Only repos
+   *  under these owners get a footer from the shim. */
+  ownerOrgs?: readonly string[]
   sep?: string
 }
 
@@ -157,6 +166,9 @@ export function buildGhShimEnv(input: GhShimEnvInput): Record<string, string> {
   if (input.model) env[GH_PROVENANCE_MODEL_ENV] = input.model
   if (input.skipRepos && input.skipRepos.length > 0) {
     env[GH_PROVENANCE_SKIP_REPOS_ENV] = JSON.stringify(input.skipRepos)
+  }
+  if (input.ownerOrgs && input.ownerOrgs.length > 0) {
+    env[GH_PROVENANCE_OWNERS_ENV] = JSON.stringify(input.ownerOrgs)
   }
   return env
 }
@@ -197,6 +209,7 @@ const WORKSPACE_SLUG_ENV = ${JSON.stringify(WORKSPACE_SLUG_ENV)}
 const ADAPTER_ENV = ${JSON.stringify(GH_PROVENANCE_ADAPTER_ENV)}
 const MODEL_ENV = ${JSON.stringify(GH_PROVENANCE_MODEL_ENV)}
 const SKIP_REPOS_ENV = ${JSON.stringify(GH_PROVENANCE_SKIP_REPOS_ENV)}
+const OWNERS_ENV = ${JSON.stringify(GH_PROVENANCE_OWNERS_ENV)}
 
 // Repos (lowercased) that opted out of footers, read on every invocation so a
 // respawned session (or an injected value) is always current.
@@ -211,8 +224,26 @@ function skipRepos() {
   } catch { return [] }
 }
 const SKIP_REPOS = skipRepos()
+// Owners (lowercased) whose repos may carry a footer. The footer names the
+// host, a local path and a session id: it goes only where we own the repo. An
+// unset/empty list means no repo is ours, so no footer is ever written.
+function ownOwners() {
+  const raw = process.env[OWNERS_ENV]
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.map(function (r) { return String(r).trim().toLowerCase() }).filter(Boolean)
+      : []
+  } catch { return [] }
+}
+const OWN_OWNERS = ownOwners()
 function repoKey(owner, repo) { return (String(owner) + "/" + String(repo)).toLowerCase() }
-function repoIsSkipped(key) { return SKIP_REPOS.indexOf(key) >= 0 }
+// True when the repo gets no footer: opted out, or not under one of our owners.
+function repoIsSkipped(key) {
+  if (SKIP_REPOS.indexOf(key) >= 0) return true
+  return OWN_OWNERS.indexOf(key.split("/")[0]) < 0
+}
 
 // A RENDERED footer line, not a prose mention of the marker.
 const FOOTER_RE = new RegExp("<sub>[^\\n]*" + MARKER + "[^\\n]*</sub>")

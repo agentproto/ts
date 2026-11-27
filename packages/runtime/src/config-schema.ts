@@ -360,7 +360,10 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
     prProvenance: z
       .object({
         footer: z
-          .object({ skipRepos: z.array(z.string().min(1)).optional() })
+          .object({
+            skipRepos: z.array(z.string().min(1)).optional(),
+            ownerOrgs: z.array(z.string().min(1)).optional(),
+          })
           .passthrough()
           .optional(),
       })
@@ -2287,6 +2290,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "defaults",
     label: "Provenance footer skip list",
     help: "Repos (owner/name) whose pull requests never receive an agentproto provenance footer.",
+    default: [],
+  },
+  {
+    path: "defaults.prProvenance.footer.ownerOrgs",
+    schema: z.array(z.string().min(1)),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Provenance footer owners",
+    help: "GitHub owners (users or orgs) whose repos may carry the gh shim's provenance footer (host, cwd, session id). Any other repo gets no footer. Default [] = none.",
     default: [],
   },
   {

@@ -38,6 +38,7 @@ import {
  *  literal in these tests so the file still loads (and then fails on the
  *  behaviour) against a tree that predates the constant. */
 const SKIP_REPOS_ENV = "AGENTPROTO_GH_PROVENANCE_SKIP_REPOS"
+const OWNERS_ENV = "AGENTPROTO_GH_PROVENANCE_OWNERS"
 
 describe("parseWrapGh", () => {
   it("recognises truthy tokens", () => {
@@ -86,6 +87,10 @@ describe("buildGhShimEnv", () => {
     const env = buildGhShimEnv({ shimDir: "/shim", basePath: "/usr/bin" })
     expect(GH_PROVENANCE_ADAPTER_ENV in env).toBe(false)
     expect(GH_PROVENANCE_MODEL_ENV in env).toBe(false)
+  })
+  it("carries the footer owner list when provided", () => {
+    const env = buildGhShimEnv({ shimDir: "/shim", basePath: "/usr/bin", ownerOrgs: ["acme"] })
+    expect(env[OWNERS_ENV]).toBe(JSON.stringify(["acme"]))
   })
   it("carries the footer skip list when provided", () => {
     const env = buildGhShimEnv({
@@ -191,6 +196,7 @@ exit 0
         ...process.env,
         PATH: path,
         FAKE_GH_LOG: ghLog,
+        [OWNERS_ENV]: JSON.stringify(["acme"]),
         [SESSION_ID_ENV]: "sess-1",
         [WORKSPACE_SLUG_ENV]: "ts",
         [GH_PROVENANCE_ADAPTER_ENV]: "claude-code",
@@ -230,6 +236,23 @@ exit 0
     expect(r.stdout).toContain(PR_URL)
     // The real create ran, but no footer view/PATCH followed.
     expect(log()).toContain("create")
+    expect(log()).not.toContain("PATCH")
+  })
+
+  it("writes no footer (no host, cwd or session id) on a repo outside our owners", () => {
+    const r = runShim(["pr", "create", "--title", "t", "--body", "b"], {
+      FAKE_GH_BODY: "Initial body",
+      [OWNERS_ENV]: JSON.stringify(["someone-else"]),
+    })
+    expect(r.status).toBe(0)
+    expect(log()).toContain("create")
+    expect(log()).not.toContain("PATCH")
+    expect(log()).not.toContain("sess-1")
+  })
+
+  it("writes no footer when no owner is configured at all", () => {
+    const r = runShim(["pr", "create"], { FAKE_GH_BODY: "Initial body", [OWNERS_ENV]: "" })
+    expect(r.status).toBe(0)
     expect(log()).not.toContain("PATCH")
   })
 
@@ -341,6 +364,7 @@ process.exit(0)
         PATH: `${shimDir}${delimiter}${fakeDir}`,
         FAKE_GH_LOG: ghLog,
         FAKE_GH_STATE: state,
+        [OWNERS_ENV]: JSON.stringify(["acme"]),
         [SESSION_ID_ENV]: "sess-1",
         ...extraEnv,
       },
@@ -397,6 +421,16 @@ process.exit(0)
     writeFileSync(state, STAMPED)
     const r = runShim(["pr", "edit", PR_URL, "--body", "Rewritten"], {
       [SKIP_REPOS_ENV]: JSON.stringify(["Acme/Widgets"]),
+    })
+    expect(r.status).toBe(0)
+    expect(body()).toBe("Rewritten")
+    expect(patches()).toHaveLength(0)
+  })
+
+  it("never re-adds a footer on `pr edit` for a repo outside our owners", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "--body", "Rewritten"], {
+      [OWNERS_ENV]: JSON.stringify(["someone-else"]),
     })
     expect(r.status).toBe(0)
     expect(body()).toBe("Rewritten")

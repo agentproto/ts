@@ -15,6 +15,7 @@ export interface FooterSkipConfig {
     prProvenance?: {
       footer?: {
         skipRepos?: readonly string[]
+        ownerOrgs?: readonly string[]
       }
     }
   }
@@ -64,6 +65,26 @@ export async function loadFooterSkipRepos(
   try {
     const cfg = await loadCfg()
     const list = cfg.defaults?.prProvenance?.footer?.skipRepos
+    if (!Array.isArray(list)) return []
+    return list.filter((entry): entry is string => typeof entry === "string")
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Read the owners (GitHub users/orgs) whose repos may carry a provenance
+ * footer from `defaults.prProvenance.footer.ownerOrgs`. The `gh` shim stamps
+ * only these: a footer names the host, a local path and a session id, none of
+ * which belongs on a repo we do not own. Missing/malformed config yields an
+ * empty list, which means "no repo is ours" (no footer anywhere).
+ */
+export async function loadFooterOwnerOrgs(
+  loadCfg: () => Promise<FooterSkipConfig> = defaultLoadConfig,
+): Promise<readonly string[]> {
+  try {
+    const cfg = await loadCfg()
+    const list = cfg.defaults?.prProvenance?.footer?.ownerOrgs
     if (!Array.isArray(list)) return []
     return list.filter((entry): entry is string => typeof entry === "string")
   } catch {
