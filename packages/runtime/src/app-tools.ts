@@ -19,6 +19,7 @@
  * step at a time.
  */
 
+import { getDeviceAccessStore } from "./device-access.js"
 import { existsSync } from "node:fs"
 import { readFile, readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -1971,6 +1972,7 @@ export async function performInstall(
     (handle.exposes.tools?.length ?? 0) > 0
       ? { exposes: handle.exposes }
       : {}),
+    ...(handle.access ? { access: handle.access } : {}),
     ...(ui ? { ui } : {}),
     ...(artifact ? { artifact } : {}),
     ...(skill ? { skill } : {}),
@@ -3899,6 +3901,8 @@ export function registerAppTools(
       if (!removed) {
         return errorResult(`app_uninstall: no installed app "${input.appId}".`)
       }
+      // Devices keep no access to a removed app (one left with nothing is revoked).
+      getDeviceAccessStore().dropApp(input.appId)
       // Kill every service owner (session + recorded pid) and drop its
       // ownership record — otherwise a reinstall spawns a second owner for a
       // service still running from the old install.

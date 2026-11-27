@@ -80,6 +80,8 @@ export interface InstalledApp {
    *  `workflows` ids are what a consumer's `requires.apps[].workflows` may
    *  name and what `app_call` checks against. Absent = exposes nothing. */
   readonly exposes?: AppExposes
+  /** The app's `access` statement (AIP-53): `remote: false` keeps it off paired devices. */
+  readonly access?: { readonly remote?: boolean }
   readonly ui?: {
     readonly path: string
     readonly title?: string

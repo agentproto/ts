@@ -96,6 +96,7 @@ export type {
   WorkspaceInput,
   AppUiDefinition,
   AppUiBuildConfig,
+  AppAccess,
   OpenAIAppUiExtension,
   OpenAIEntrypoint,
   OpenAIIcon,

@@ -784,6 +784,17 @@ export interface AppDefinition {
    * an app release.
    */
   readonly category?: string
+  /** Who may open this app from another device (see {@link AppAccess}). Absent = the host's default. */
+  readonly access?: AppAccess
+}
+
+/**
+ * The app's own statement about remote access. `remote: false` keeps it off
+ * paired devices (phone apps): they never list it and any tool call from one is
+ * refused. Absent or `true` leaves the decision to the device's grant.
+ */
+export interface AppAccess {
+  readonly remote?: boolean
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -874,6 +885,8 @@ export interface AppHandle {
   readonly boundaries?: AppBoundariesDefinition
   /** Coarse grouping surfaced in catalogs/trees (see {@link AppDefinition.category}). */
   readonly category?: string
+  /** Remote-access statement (see {@link AppAccess}). */
+  readonly access?: AppAccess
 
   /**
    * Build agents into runnable Mastra agents whose `instructions` field is

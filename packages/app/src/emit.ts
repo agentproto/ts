@@ -65,6 +65,7 @@ interface EmitInput {
   readonly externalReadRoots?: readonly string[]
   readonly boundaries?: AppBoundariesDefinition
   readonly category?: string
+  readonly access?: { readonly remote?: boolean }
 }
 
 /**
@@ -238,6 +239,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(app.externalReadRoots !== undefined ? { externalReadRoots: app.externalReadRoots } : {}),
     ...(app.boundaries !== undefined ? { boundaries: app.boundaries } : {}),
     ...(app.category !== undefined ? { category: app.category } : {}),
+    ...(app.access !== undefined ? { access: app.access } : {}),
   }
   await writeFile(appPath, toManifest(appFrontmatter, app.description ?? ""), "utf8")
 

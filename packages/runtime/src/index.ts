@@ -1232,6 +1232,8 @@ import { createDeviceSandboxProvider } from "./sandbox-providers/device.js"
 import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry, type DevicePromptSessionsLike } from "./device-registry.js"
+import { getDeviceAccessStore } from "./device-access.js"
+import { createTelegramLinkSender, registerDeviceAccessTools } from "./device-access-tools.js"
 import { registerDeviceTools } from "./device-tools.js"
 import { syncDeviceMirror } from "./device-mirror.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
@@ -4729,6 +4731,22 @@ export async function createGateway(
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
     registerRemoteTools(server, { controller: remote })
+    // Device pairing, HTTP binding (device-access.ts): one-time connection
+    // links for a phone app. The link goes out on Telegram when the approval
+    // cards are set up; the confirmation itself is an approval a human decides.
+    registerDeviceAccessTools(server, {
+      appRegistry,
+      machineName: hostname(),
+      confirmationAvailable: telegramApprovalCardsOn || (daemonConfig.approvals?.webOrigins?.length ?? 0) > 0,
+      ...(telegramApprovalCardsOn
+        ? {
+            telegram: createTelegramLinkSender({
+              readToken: async () => (await telegramBotCreds.read(permissionTelegramCfg?.permissionTelegramAlias ?? "default"))?.token ?? null,
+              chatId: permissionTelegramCfg!.permissionTelegramChatId!,
+            }),
+          }
+        : {}),
+    })
     // E2E daemon-pairing tools (pair_offer / pair_list / pair_revoke) — only
     // when a pairing registry was wired. Same closure-rebind pattern as the
     // remote tools above; the registry singleton lives on the gateway.
@@ -4739,7 +4757,7 @@ export async function createGateway(
       // pair_list's records. device_revoke has the exact effect of
       // pair_revoke; both surfaces stay live.
       registerDeviceTools(server, {
-        registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
+        registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry, getDeviceAccessStore()),
         ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
         // BOOTSTRAP P7a — controller→host id resolution for `device_prompt`
         // (issue #1637). The gateway-scoped registry, not the caller's scope:

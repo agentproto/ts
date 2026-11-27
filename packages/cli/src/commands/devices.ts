@@ -52,7 +52,9 @@ Usage:
   agentproto devices --help
 
   list     Every device this daemon knows: name, fingerprint, role, kind,
-           rendezvous, createdAt, lastSeen, online, scope. Joined CI hosts that
+           rendezvous, createdAt, lastSeen, online, scope. A phone app paired by a
+           one-time connection link shows as kind "app" with the apps it may
+           open. Joined CI hosts that
            are gone (said goodbye, or unreachable past the TTL) are hidden
            unless --include-ended.
   rename   Give a device a new label (cosmetic only).
@@ -137,6 +139,9 @@ interface DeviceRow {
   online: boolean
   legacy?: boolean
   scope?: "host"
+  /** App-scoped device (phone app): what it may open. */
+  grant?: { apps: "*" | string[]; sessionsRead: boolean }
+  platform?: string
   ended?: boolean
   stale?: boolean
 }
@@ -221,7 +226,7 @@ async function runList(args: readonly string[]): Promise<number> {
   )
   for (const d of rows) {
     process.stdout.write(
-      `${(d.name ?? "").slice(0, 20).padEnd(20)}  ${d.fingerprint.padEnd(32)}  ${d.role.padEnd(6)}  ${d.kind.padEnd(8)}  ${(d.online ? "yes" : "no").padEnd(6)}  ${(d.lastSeen ?? "").padEnd(22)}  ${d.rendezvous ?? ""}${d.legacy ? "  [legacy: re-pair]" : ""}${d.scope === "host" ? "  [scope: host]" : ""}${d.ended ? "  [ended]" : ""}${d.stale ? "  [stale]" : ""}\n`,
+      `${(d.name ?? "").slice(0, 20).padEnd(20)}  ${d.fingerprint.padEnd(32)}  ${d.role.padEnd(6)}  ${d.kind.padEnd(8)}  ${(d.online ? "yes" : "no").padEnd(6)}  ${(d.lastSeen ?? "").padEnd(22)}  ${d.rendezvous ?? ""}${d.legacy ? "  [legacy: re-pair]" : ""}${d.scope === "host" ? "  [scope: host]" : ""}${d.grant ? `  [apps: ${d.grant.apps === "*" ? "all" : d.grant.apps.join(",")}${d.grant.sessionsRead ? "; sessions read" : ""}]` : ""}${d.ended ? "  [ended]" : ""}${d.stale ? "  [stale]" : ""}\n`,
     )
   }
   return 0
