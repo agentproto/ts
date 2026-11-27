@@ -18,16 +18,16 @@ fixtures, and the two hand-written Skills result shapes). The page that explains
 | `server/discover` | gateway | 2026-07-28 | client: extensions.io.modelcontextprotocol/tasks; none | 3 | 1 | HTTP 200, `complete`; HTTP 400, `-32022` |
 | `tools/call` | gateway | 2026-07-28 | none | 2 | 1 | HTTP 400, `-32020`; HTTP 200, `complete` |
 | `tools/list` | gateway | 2026-07-28 | none | 1 | 2 | HTTP 400, `-32020`; HTTP 400, `-32022`; HTTP 200, `complete` |
-| `tools/call` | elicitation | 2026-07-28 | client: elicitation.form; client: elicitation.url | 4 | 9 | HTTP 200, `input_required`; HTTP 200, `complete`; HTTP 400, `-32602` (known defect) |
+| `tools/call` | elicitation | 2026-07-28 | client: elicitation.form; client: elicitation.url | 4 | 9 | HTTP 200, `input_required`; HTTP 200, `complete`; HTTP 400, `-32602` |
 | `tasks/cancel` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks | 1 | 1 | HTTP 200, `complete`; HTTP 400, `-32602` |
 | `tasks/get` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks; client: extensions.io.modelcontextprotocol/tasks + elicitation.form | 5 | 5 | HTTP 400, `-32021`; HTTP 400, `-32602`; HTTP 200, `complete`; HTTP 400, `-32020` |
 | `tasks/list` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks (negative cases only: the method is not served) | 0 | 1 | HTTP 404, `-32601` |
 | `tasks/result` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks (negative cases only: the method is not served) | 0 | 1 | HTTP 404, `-32601` |
 | `tasks/update` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks + elicitation.form | 1 | 2 | HTTP 200, `complete`; HTTP 400, `-32021`; HTTP 400, `-32602` |
 | `tools/call` | tasks | 2026-07-28 + Tasks extension | client: extensions.io.modelcontextprotocol/tasks | 1 | 1 | HTTP 200, `task`; HTTP 200, `complete` |
-| `resources/read` | skills | 2026-07-28 + Skills extension (beta) | server: extensions.io.modelcontextprotocol/skills | 1 | 3 | HTTP 200, `complete`; HTTP 400, `-32602` (known defect) |
-| `skills/get` | skills | 2026-07-28 + Skills extension (beta) | server: extensions.io.modelcontextprotocol/skills | 1 | 1 | HTTP 200, `complete`; HTTP 400, `-32602` (known defect) |
-| `skills/list` | skills | 2026-07-28 + Skills extension (beta) | server: extensions.io.modelcontextprotocol/skills | 1 | 1 | HTTP 200, `complete`; HTTP 400, `-32602` (known defect) |
+| `resources/read` | skills | 2026-07-28 + Skills extension (beta) | server: extensions.io.modelcontextprotocol/skills | 1 | 3 | HTTP 200, `complete`; HTTP 400, `-32602` |
+| `skills/get` | skills | 2026-07-28 + Skills extension (beta) | server: extensions.io.modelcontextprotocol/skills | 1 | 1 | HTTP 200, `complete`; HTTP 400, `-32602` |
+| `skills/list` | skills | 2026-07-28 + Skills extension (beta) | server: extensions.io.modelcontextprotocol/skills | 1 | 1 | HTTP 200, `complete`; HTTP 400, `-32602` |
 
 ## Every case
 
@@ -58,11 +58,11 @@ fixtures, and the two hand-written Skills result shapes). The page that explains
 | `tools/call` | negative | no url elicitation for a client that declared form only | client: elicitation.form | HTTP 200, `complete` | `mcp-2026-07-28/elicitation-create.url.json` |
 | `tools/call` | positive | an InputRequiredResult carries only resultType, inputRequests and requestState | client: elicitation.form | HTTP 200, `input_required` | `mcp-2026-07-28/input-required-result.json` |
 | `tools/call` | positive | the retry with the exact requestState and an accept applies the answer | client: elicitation.form | HTTP 200, `complete` | `mcp-2026-07-28/input-required-retry.json` |
-| `tools/call` | negative | the page's own requestState, not issued by this server, is refused | client: elicitation.form | HTTP 400, `-32602` (known defect) | `mcp-2026-07-28/input-required-retry.json` |
-| `tools/call` | negative | an altered requestState is refused | client: elicitation.form | HTTP 400, `-32602` (known defect) | `mcp-2026-07-28/input-required-retry.json` |
-| `tools/call` | negative | an expired requestState is refused | client: elicitation.form | HTTP 400, `-32602` (known defect) | `mcp-2026-07-28/input-required-retry.json` |
-| `tools/call` | negative | a requestState already used is refused the second time | client: elicitation.form | HTTP 400, `-32602` (known defect) | `mcp-2026-07-28/input-required-retry.json` |
-| `tools/call` | negative | a requestState presented by another caller is refused | client: elicitation.form | HTTP 400, `-32602` (known defect) | `mcp-2026-07-28/input-required-retry.json` |
+| `tools/call` | negative | the page's own requestState, not issued by this server, is refused | client: elicitation.form | HTTP 400, `-32602` | `mcp-2026-07-28/input-required-retry.json` |
+| `tools/call` | negative | an altered requestState is refused | client: elicitation.form | HTTP 400, `-32602` | `mcp-2026-07-28/input-required-retry.json` |
+| `tools/call` | negative | an expired requestState is refused | client: elicitation.form | HTTP 400, `-32602` | `mcp-2026-07-28/input-required-retry.json` |
+| `tools/call` | negative | a requestState already used is refused the second time | client: elicitation.form | HTTP 400, `-32602` | `mcp-2026-07-28/input-required-retry.json` |
+| `tools/call` | negative | a requestState presented by another caller is refused | client: elicitation.form | HTTP 400, `-32602` | `mcp-2026-07-28/input-required-retry.json` |
 
 ### tasks
 
@@ -93,21 +93,13 @@ fixtures, and the two hand-written Skills result shapes). The page that explains
 | Method | Case | What is checked | Capability | Expected | Fixture |
 |---|---|---|---|---|---|
 | `resources/read` | positive | resources/read on skill:// returns the SKILL.md text of the page | server: extensions.io.modelcontextprotocol/skills | HTTP 200, `complete` | `mcp-skills-ext-beta/resources-read-skill-request.json` |
-| `resources/read` | negative | a skill:// path with .. is refused before any read | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` (known defect) | `mcp-skills-ext-beta/resources-read-skill-traversal.json` |
-| `resources/read` | negative | a percent-encoded .. is refused the same way | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` (known defect) | `mcp-skills-ext-beta/resources-read-skill-traversal.json` |
-| `resources/read` | negative | a file outside the manifest is invalid params | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` (known defect) | `mcp-skills-ext-beta/resources-read-skill-unlisted.json` |
+| `resources/read` | negative | a skill:// path with .. is refused before any read | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` | `mcp-skills-ext-beta/resources-read-skill-traversal.json` |
+| `resources/read` | negative | a percent-encoded .. is refused the same way | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` | `mcp-skills-ext-beta/resources-read-skill-traversal.json` |
+| `resources/read` | negative | a file outside the manifest is invalid params | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` | `mcp-skills-ext-beta/resources-read-skill-unlisted.json` |
 | `skills/get` | positive | skills/get answers the entry under result.skill, without an Mcp-Name header | server: extensions.io.modelcontextprotocol/skills | HTTP 200, `complete` | `mcp-skills-ext-beta/skills-get-request.json` |
-| `skills/get` | negative | skills/get on an unknown skill is invalid params | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` (known defect) | `mcp-skills-ext-beta/skills-get-request.json` |
+| `skills/get` | negative | skills/get on an unknown skill is invalid params | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` | `mcp-skills-ext-beta/skills-get-request.json` |
 | `skills/list` | positive | skills/list lists the served skill with the page's manifest | server: extensions.io.modelcontextprotocol/skills | HTTP 200, `complete` | `mcp-skills-ext-beta/skills-list-request.json` |
-| `skills/list` | negative | skills/list with a cursor it never issued is invalid params | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` (known defect) | `mcp-skills-ext-beta/skills-list-request.json` |
-
-## Known defects
-
-Cases whose expected status is the one AIP-77 gives, not the one the code answers today. The
-replay checks everything else about them and pins the status with an expected failure, which turns red once fixed.
-
-- AIP-77 'Error mapping' maps -32602 to HTTP 400; a refused MRTR retry is answered -32602 with HTTP 200 today (BridgeError without an HTTP status, mcp-modern/human-gate.ts). Cases: `tools/call` (5).
-- AIP-77 'Error mapping' maps -32602 to HTTP 400; the Skills methods and skill:// reads answer -32602 with HTTP 200 today (McpError forwarded through the bridge, mcp-modern/skills.ts). Cases: `resources/read`, `skills/get`, `skills/list` (5).
+| `skills/list` | negative | skills/list with a cursor it never issued is invalid params | server: extensions.io.modelcontextprotocol/skills | HTTP 400, `-32602` | `mcp-skills-ext-beta/skills-list-request.json` |
 
 ## Sources
 
