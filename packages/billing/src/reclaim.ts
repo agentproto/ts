@@ -15,7 +15,9 @@
  *
  * Every refund and lost dispute leaves a zero-amount marker on the payment's
  * fiat lot: `<movement>:refund:<amountMinor>` or `<movement>:lost:<amountMinor>`,
- * with `correlationId` = the payment movement. The share is read from them, so
+ * with `correlationId` = the payment movement. An opened or won dispute leaves
+ * one too (`<movement>:opened`, `<movement>:won`), so a dispute seen again out
+ * of order is a replay. The share is read from them, so
  * the journal alone answers what was taken back of a payment (rule 5).
  */
 import { fold, type Lot } from "@agentproto/wallet"
@@ -38,6 +40,8 @@ const ORIGIN_REFUND = "refund"
 const ORIGIN_REFUND_REVERSED = "refund-reversed"
 const ORIGIN_DISPUTE_LOST = "dispute-lost"
 const ORIGIN_DISPUTE_REINSTATED = "dispute-reinstated"
+const ORIGIN_DISPUTE_OPENED = "dispute-opened"
+const ORIGIN_DISPUTE_WON = "dispute-won"
 
 /**
  * The non-bonus credit lots a payment minted, plus the lots a reversal gave
@@ -234,6 +238,8 @@ export async function applyRefundReversal(
  *            period closes once the share is the whole payment;
  *   `won`    releases the freeze or, after a loss, gives back what was taken
  *            and reopens the period.
+ * `opened` and `won` always write a marker, even with nothing to freeze or to
+ * release: a late or repeated `opened` of the same dispute is then a replay.
  * Several disputes of one payment are handled each by its own movement. An
  * inquiry that moves no money never reaches here: a rail emits no fact for it.
  */
@@ -289,8 +295,13 @@ export async function applyDispute(
         })
         budget -= amount
       }
-      if (out.length > 0) await deps.storage.commit(acct, out)
-      return { status: "applied", held: out.reduce((s, h) => s + h.amount, 0) } as const
+      const held = out.reduce((s, h) => s + h.amount, 0)
+      // Always recorded, even with nothing to freeze: the same dispute seen again
+      // later (an update, a resend) is then a replay, and never freezes credits
+      // bought in between.
+      out.push(marker(fiat, `${dp}:opened`, dp, fact.paymentMovement, ORIGIN_DISPUTE_OPENED, now))
+      await deps.storage.commit(acct, out)
+      return { status: "applied", held } as const
     }
 
     if (fact.status === "lost") {
@@ -316,8 +327,10 @@ export async function applyDispute(
       if (takenBackMinor([...events, ...out], fact.paymentMovement) < paid) await reopenPeriod(deps, fact.paymentMovement)
       return { status: "applied", restored } as const
     }
-    if (openHolds.length === 0) return { status: "replayed" } as const
-    await deps.storage.commit(acct, release("dispute-won"))
+    if (ids.has(`${dp}:won`)) return { status: "replayed" } as const
+    // Recorded even with no freeze to release (a win that arrives before its
+    // opened event): the late opened event is then a replay and freezes nothing.
+    await deps.storage.commit(acct, [...release("dispute-won"), marker(fiat, `${dp}:won`, dp, fact.paymentMovement, ORIGIN_DISPUTE_WON, now)])
     return { status: "applied", reclaimed: 0 } as const
   })
 }

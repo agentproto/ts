@@ -22,7 +22,8 @@ import { assertRailEnv, assertKeyMatchesMode, railMode } from "../rails.js"
 import { makeBillingRegistry } from "../registry.js"
 import { addMonthsUtc } from "../model.js"
 import type { BillingDeps, BillingStateStore, CauseEvent } from "../ports.js"
-import type { PaymentFact, SettlementProvider } from "../settlement.js"
+import type { PaymentFact, RailFact, SettlementProvider } from "../settlement.js"
+import { assertRailCapabilities } from "../capabilities.js"
 import { REFERENCE_MANIFEST } from "./reference-manifest.js"
 import type { ManualClock } from "./fakes.js"
 
@@ -352,12 +353,15 @@ export function billingConformanceCases(ctx: BillingConformanceContext): Conform
     await rejects(() => assertRailEnv(m, {}), "FAKE_SECRET_KEY", "missing env")
     assertRailEnv(m, { FAKE_SECRET_KEY: "k", FAKE_WEBHOOK_SECRET: "w" })
   })
-  add("BILL-RAIL", "a refund before its payment is unknown, then applies once the payment lands (reordered webhooks)", async () => {
+  add("BILL-RAIL", "a refund before its payment writes nothing, then applies once the payment lands (reordered webhooks)", async () => {
     const { deps, storage } = world()
     const f = pay()
     const refund = (await ctx.provider.verifyWebhook((ctx.provider as unknown as { signed: (b: object) => { body: string; headers: Record<string, string> } }).signed({ type: "charge.refunded", intent: f.movement.replace("fake:", ""), refund: "re_x", amountMinor: 2000, at: ctx.clock.nowMs() })))!
     const first = await (await import("../webhook.js")).handleRailFact(deps, refund)
-    check(first.type === "refund" && first.outcome.status === "unknown_payment", "a refund of an unknown payment was applied")
+    // A store that keeps early facts answers `deferred`; one that does not, `unknown_payment`. Neither writes.
+    const kept = typeof deps.state.deferFact === "function" && typeof deps.state.takeDeferred === "function"
+    check(first.type === "refund" && first.outcome.status === (kept ? "deferred" : "unknown_payment"), "a refund of an unknown payment was applied")
+    eq((await storage.loadEvents("acme")).length, 0, "journal after a refund of an unknown payment")
     await applyPayment(deps, f)
     const second = await (await import("../webhook.js")).handleRailFact(deps, refund)
     check(second.type === "refund" && second.outcome.status === "applied", "the refund did not apply after the payment")
@@ -571,6 +575,125 @@ export function billingConformanceCases(ctx: BillingConformanceContext): Conform
     if (!signer) return
     const fact = await ctx.provider.verifyWebhook(signer.call(ctx.provider, { type: "dispute.opened", intent: "pi_inq", dispute: "dp_inq", status: "warning_needs_response", amountMinor: 2000, currency: "EUR", at: ctx.clock.nowMs() }))
     eq(fact, null, "an inquiry became a fact")
+  })
+  // ── Disputes out of order: `won` or an empty `opened` first (rule 8) ──
+  add("BILL-DISPUTE-WON-FIRST", "a dispute won before its opened event freezes nothing when the opened event arrives late", async () => {
+    const { deps, storage, m } = world()
+    const f = pay()
+    await applyPayment(deps, f)
+    const before = await storage.spendableBalance("acme", m.primaryAsset)
+    await disputeOf(deps, f.movement, "fake:dp_wf", "won", 2000)
+    await disputeOf(deps, f.movement, "fake:dp_wf", "opened", 2000)
+    eq(await storage.spendableBalance("acme", m.primaryAsset), before, "spendable after the late opened event")
+  })
+  add("BILL-DISPUTE-OPENED-EMPTY", "an opened dispute with nothing to freeze, replayed after a new purchase, does not freeze the new purchase", async () => {
+    const { deps, storage, m } = world()
+    const f = pay()
+    await applyPayment(deps, f)
+    const spend = (storage as { spend?: (a: string, s: string, n: number, id: string) => Promise<void> }).spend
+    check(spend, "the storage under test has no `spend` helper: this case needs one")
+    await spend!.call(storage, "acme", m.primaryAsset, 236_000 + 47_200, "spent-all")
+    const first = await disputeOf(deps, f.movement, "fake:dp_e", "opened", 2000)
+    eq(first.held ?? 0, 0, "held by the first opened event")
+    await applyPayment(deps, pay())
+    const bought = await storage.spendableBalance("acme", m.primaryAsset)
+    await disputeOf(deps, f.movement, "fake:dp_e", "opened", 2000)
+    eq(await storage.spendableBalance("acme", m.primaryAsset), bought, "spendable after the opened event is replayed")
+  })
+
+  // ── Subscription facts (rule 17) ──
+  add("BILL-SUB-RENEWAL-FAILED", "a renewal_failed fact puts the open period past_due", async () => {
+    const { deps, state } = world()
+    const f = pay({ offerId: "plan-month", amountMinor: 500 })
+    await applyPayment(deps, f)
+    ctx.clock.set(addMonthsUtc(T0, 1))
+    const out = await handleRailFact(deps, { type: "renewal_failed", movement: "fake:in_rf", rail: "fake", offerId: "plan-month", owner: { orgId: "acme" }, at: ctx.clock.nowMs() })
+    eq((await state.getPeriod(f.movement))?.status, "past_due", "period status")
+    eq(out.type, "renewal_failed", "outcome type")
+  })
+  add("BILL-SUB-ENDED", "a subscription_ended fact closes the period: includes given stay, no further include is given", async () => {
+    const { deps, state, storage, m } = world()
+    const f = pay({ offerId: "plan-year", amountMinor: 5000 })
+    await applyPayment(deps, f)
+    ctx.clock.set(addMonthsUtc(T0, 1) + DAY)
+    await runDueIncludes(deps)
+    const kept = await credits(storage, "acme", m)
+    const out = await handleRailFact(deps, { type: "subscription_ended", movement: "fake:sub_1", rail: "fake", offerId: "plan-year", owner: { orgId: "acme" }, reason: "canceled", at: ctx.clock.nowMs() })
+    const p = await state.getPeriod(f.movement)
+    eq(p?.status, "closed", "period status")
+    eq(p?.closedReason, "canceled", "closed reason")
+    eq(out.type, "subscription_ended", "outcome type")
+    eq(await credits(storage, "acme", m), kept, "credits given before the end")
+    ctx.clock.set(addMonthsUtc(T0, 2) + DAY)
+    await runDueIncludes(deps)
+    eq(((await storage.loadEvents("acme")) as CauseEvent[]).filter(e => e.origin === "include").length, 2, "include drops given in total")
+    check(!(await activeFeatures(deps, "acme")).includes("pro"), "features kept after the end")
+  })
+
+  // ── Rail capabilities at start-up (SET-7) ──
+  add("BILL-RAIL-CAPS", "a manifest with a subscription on a rail without subscriptions refuses to start, naming offer, rail and flag", async () => {
+    const m = manifest()
+    const full = {
+      oneTimePayments: true, buyerAmount: true, subscriptions: true, trials: true, discounts: true,
+      moneyFacts: "self" as const, refunds: "partial" as const, refundReversals: true, disputes: true,
+      checkout: true, portal: true, catalogSync: true, offSessionCharge: false, payouts: false,
+      taxReported: true, balanceAuthority: "journal" as const, remoteHolds: false,
+    }
+    // The rail of the reference manifest, whatever id the provider package gave it.
+    const railId = m.rails[0]!.id
+    const rail = (caps: object) => Object.assign(Object.create(ctx.provider as object), { id: m.rails[0]!.provider ?? railId, capabilities: caps }) as SettlementProvider
+    assertRailCapabilities(m, [rail(full)])
+    await rejects(() => assertRailCapabilities(m, [rail({ ...full, subscriptions: false })]), "subscriptions", "subscriptions off")
+    let message = ""
+    try { assertRailCapabilities(m, [rail({ ...full, subscriptions: false })]) } catch (e) { message = (e as Error).message }
+    check(message.includes("plan-month") && message.includes(`'${railId}'`), `the error names the offer and the rail: '${message}'`)
+    await rejects(() => assertRailCapabilities(m, [rail({ ...full, trials: false })]), "plan-trial", "trials off")
+    await rejects(() => assertRailCapabilities(m, [rail({ ...full, buyerAmount: false })]), "top-up", "buyer amount off")
+    await rejects(() => assertRailCapabilities(m, [rail({ ...full, discounts: false })]), "pack-promo", "discounts off")
+    await rejects(() => assertRailCapabilities(m, [rail({ ...full, refunds: "none" })]), "refunds", "no refund path")
+    await rejects(() => assertRailCapabilities(m, [rail({ ...full, refunds: "none", moneyFacts: "delegated", moneyFactsFrom: "ghost" })]), "ghost", "a delegation that does not resolve")
+    await rejects(() => assertRailCapabilities(m, []), railId, "a rail with no provider")
+  })
+
+  // ── A fact the rail cannot tie to an offer (rule 4) ──
+  add("BILL-PAY-UNSUPPORTED", "a fact marked unsupported is refused with its reason, its money is owed, no credit is given", async () => {
+    const { deps, storage, m } = world()
+    const out = await handleRailFact(deps, pay({ unsupported: "an invoice settled by two payments" }))
+    check(out.type === "payment" && out.outcome.status === "refused", `the unsupported fact was ${out.type === "payment" ? out.outcome.status : out.type}`)
+    if (out.type === "payment" && out.outcome.status === "refused") check(out.outcome.reason.includes("two payments"), `reason '${out.outcome.reason}'`)
+    eq((await listOwed(storage, "acme", ctx.clock.nowMs())).reduce((s, o) => s + o.remaining, 0), 2000, "owed")
+    eq(await credits(storage, "acme", m), 0, "credits")
+  })
+
+  // ── Facts that arrive before their payment (reordered webhooks) ──
+  const early = async (first: (paymentMovement: string) => RailFact) => {
+    const w = world()
+    const f = pay({ offerId: "plan-month", amountMinor: 500 })
+    const deferring = typeof w.state.deferFact === "function" && typeof w.state.takeDeferred === "function"
+    const before = await handleRailFact(w.deps, first(f.movement))
+    const status = (before as { outcome: { status: string } }).outcome.status
+    if (!deferring) {
+      // A store without deferFact keeps the old behaviour: the host replays the fact itself.
+      eq(status, "unknown_payment", "outcome of a fact before its payment, store without deferFact")
+      return null
+    }
+    eq(status, "deferred", "outcome of a fact before its payment")
+    eq((await w.storage.loadEvents("acme")).length, 0, "journal before the payment")
+    const paid = await handleRailFact(w.deps, f)
+    check(paid.type === "payment" && paid.outcome.status === "applied", "the payment was not applied")
+    return { ...w, f }
+  }
+  add("BILL-RAIL-REFUND-FIRST", "a full refund received before its payment takes the credits back once the payment lands, without a replay", async () => {
+    const w = await early(pm => ({ type: "refund", movement: "fake:re_first", rail: "fake", paymentMovement: pm, amountMinor: 500, at: ctx.clock.nowMs() }))
+    if (!w) return
+    eq(await credits(w.storage, "acme", w.m), 0, "credits")
+    eq((await w.state.getPeriod(w.f.movement))?.status, "closed", "period")
+  })
+  add("BILL-RAIL-DISPUTE-FIRST", "a lost dispute received before its payment takes the credits back once the payment lands, without a replay", async () => {
+    const w = await early(pm => ({ type: "dispute", movement: "fake:dp_first", rail: "fake", paymentMovement: pm, status: "lost", amountMinor: 500, currency: "EUR", at: ctx.clock.nowMs() }))
+    if (!w) return
+    eq(await credits(w.storage, "acme", w.m), 0, "credits")
+    eq((await w.state.getPeriod(w.f.movement))?.status, "closed", "period")
   })
   return cases
 }

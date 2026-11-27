@@ -21,6 +21,8 @@ import type { ManualClock } from "../testing/fakes.js"
 
 export type { ConformanceCase }
 export { holdsContractCases, type HoldsContractContext } from "./holds.js"
+export { settlementProviderContractCases } from "./settlement.js"
+export type { SettlementContractContext, SettlementEvents, PaymentScenario, MoneyScenario } from "./settlement.js"
 
 export interface SpendContractContext {
   /** A fresh, empty journal for one case. */

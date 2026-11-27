@@ -4,8 +4,22 @@
  */
 import { fold, spendableBalance, type Lot, type WalletEvent } from "@agentproto/wallet"
 import type { ClockPort, SettlementResult, StoragePort } from "@agentproto/wallet/ports"
-import type { AccessRecord, BillingStateStore, PeriodRecord } from "../ports.js"
-import type { RailFact, SettlementProvider, WebhookRequest } from "../settlement.js"
+import type { AccessRecord, BillingStateStore, DeferredFact, PeriodRecord } from "../ports.js"
+import { createHmac, timingSafeEqual } from "node:crypto"
+import type { SettlementEvents } from "../contract/settlement.js"
+import type { BillingHandle } from "../define-billing-manifest.js"
+import { assertKeyMatchesMode, type RailMode } from "../rails.js"
+import { assertReturnUrl } from "../return-url.js"
+import type {
+  CatalogSyncReport,
+  CheckoutOutcome,
+  CheckoutRequest,
+  PortalRequest,
+  RailFact,
+  SettlementCapabilities,
+  SettlementProvider,
+  WebhookRequest,
+} from "../settlement.js"
 
 /** A clock the test moves by hand. */
 export class ManualClock implements ClockPort {
@@ -98,27 +112,87 @@ export class InMemoryBillingState implements BillingStateStore {
   async listAccess(accountId: string): Promise<AccessRecord[]> {
     return [...this.access.values()].filter(a => a.accountId === accountId)
   }
+  private deferred = new Map<string, Map<string, DeferredFact>>()
+  async deferFact(paymentMovement: string, fact: DeferredFact): Promise<void> {
+    const kept = this.deferred.get(paymentMovement) ?? new Map<string, DeferredFact>()
+    kept.set(`${fact.type}:${fact.movement}:${fact.type === "dispute" ? fact.status : ""}`, { ...fact })
+    this.deferred.set(paymentMovement, kept)
+  }
+  async takeDeferred(paymentMovement: string): Promise<DeferredFact[]> {
+    const kept = [...(this.deferred.get(paymentMovement)?.values() ?? [])]
+    this.deferred.delete(paymentMovement)
+    return kept
+  }
+}
+
+export interface FakeSettlementProviderOptions {
+  /** Origins `createCheckout` and `createPortalSession` accept for their return URLs. Default: none. */
+  allowedReturnOrigins?: readonly string[]
+  /** The rail's secret key. `fk_test_...` or `fk_live_...` gives its mode, read by `check()`. */
+  secretKey?: string
+  /** The rail's mode. Default `test`. An event whose `livemode` disagrees throws. */
+  mode?: RailMode
+  /** Owner keys a checkout must carry. Default `["orgId"]`, the reference manifest's. */
+  ownerKeys?: readonly string[]
+  /** Override declared capabilities (to test a start-up check). */
+  capabilities?: Partial<SettlementCapabilities>
+}
+
+const FAKE_CAPABILITIES: SettlementCapabilities = {
+  oneTimePayments: true,
+  buyerAmount: true,
+  subscriptions: true,
+  trials: true,
+  discounts: true,
+  moneyFacts: "self",
+  refunds: "partial",
+  refundReversals: true,
+  disputes: true,
+  checkout: true,
+  portal: true,
+  catalogSync: true,
+  offSessionCharge: true,
+  payouts: false,
+  taxReported: true,
+  balanceAuthority: "journal",
+  remoteHolds: false,
 }
 
 /**
- * A payment provider with no network. Webhook bodies are JSON `{ type, id,
- * movement, ... }`; the signature header is `x-fake-signature: <webhook secret>`.
+ * A payment provider with no network. Webhook bodies are JSON `{ type, ... }`;
+ * the signature header is `x-fake-signature: hex(HMAC-SHA256(webhook secret, body))`.
  * Like a real rail it sends SEVERAL events for one money movement: both
  * `payment_intent.succeeded` and `charge.succeeded` normalise to the same movement.
+ * `events()` is its factory of signed requests for `settlementProviderContractCases`.
+ * Secrets live in private fields: `JSON.stringify` of the provider never shows them.
  */
 export class FakeSettlementProvider implements SettlementProvider {
   readonly id: string
   readonly name = "Fake rail"
   readonly env: { secretKey: string; webhookSecret: string; mode: string }
+  readonly capabilities: SettlementCapabilities
   readonly refunds: { movement: string; amountMinor: number; ref: string }[] = []
-  readonly catalogs: unknown[] = []
-  constructor(
-    private readonly webhookSecret: string,
-    id = "fake",
-  ) {
+  readonly checkouts: { ref: string; offerId: string; owner: Record<string, string>; accountId: string }[] = []
+  readonly portals: { accountId: string; returnUrl: string }[] = []
+  /** Offer id to the projection pushed by `syncCatalog`. */
+  readonly catalog = new Map<string, string>()
+  /** Write calls made to the "rail" (refunds, checkouts, portal sessions, catalog writes). */
+  railWrites = 0
+  readonly #webhookSecret: string
+  readonly #secretKey: string | undefined
+  readonly #mode: RailMode
+  readonly #allowedReturnOrigins: readonly string[]
+  readonly #ownerKeys: readonly string[]
+  constructor(webhookSecret: string, id = "fake", opts: FakeSettlementProviderOptions = {}) {
     this.id = id
     const up = id.toUpperCase()
     this.env = { secretKey: `${up}_SECRET_KEY`, webhookSecret: `${up}_WEBHOOK_SECRET`, mode: `${up}_MODE` }
+    this.capabilities = { ...FAKE_CAPABILITIES, ...opts.capabilities }
+    this.#webhookSecret = webhookSecret
+    this.#secretKey = opts.secretKey
+    this.#mode = opts.mode ?? "test"
+    this.#allowedReturnOrigins = opts.allowedReturnOrigins ?? []
+    this.#ownerKeys = opts.ownerKeys ?? ["orgId"]
   }
   async charge(p: { accountId: string; amountMinor: number; asset: string; ref: string }): Promise<SettlementResult> {
     return { ok: true, externalRef: `${this.id}:pi_${p.ref}`, network: this.id }
@@ -131,18 +205,87 @@ export class FakeSettlementProvider implements SettlementProvider {
     const known = this.refunds.findIndex(r => r.ref === ref)
     if (known >= 0) return { ok: true, externalRef: `${this.id}:re_${known + 1}` }
     this.refunds.push({ movement, amountMinor, ref })
+    this.railWrites++
     return { ok: true, externalRef: `${this.id}:re_${this.refunds.length}` }
   }
-  async syncCatalog(projection: unknown): Promise<void> {
-    this.catalogs.push(projection)
+  async check(): Promise<{ ok: boolean; reason?: string }> {
+    if (this.#secretKey === undefined) return { ok: true }
+    const keyMode: RailMode | null = this.#secretKey.startsWith("fk_live_") ? "live" : this.#secretKey.startsWith("fk_test_") ? "test" : null
+    if (keyMode === null) return { ok: false, reason: `rail '${this.id}': the key is not a fake rail key` }
+    try {
+      assertKeyMatchesMode(this.#mode, keyMode, this.id)
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
+    }
+    return { ok: true }
   }
-  /** Build a signed request for a payment event. */
+  async createCheckout(req: CheckoutRequest): Promise<CheckoutOutcome> {
+    assertReturnUrl(req.successUrl, this.#allowedReturnOrigins)
+    assertReturnUrl(req.cancelUrl, this.#allowedReturnOrigins)
+    for (const k of this.#ownerKeys) if (typeof req.owner[k] !== "string" || req.owner[k] === "") throw new Error(`checkout: owner key '${k}' is missing`)
+    const ref = `cs_${this.checkouts.length + 1}_${req.accountId}`
+    this.checkouts.push({ ref, offerId: req.offerId, owner: { ...req.owner }, accountId: req.accountId })
+    this.railWrites++
+    return { outcome: "redirect", url: `https://checkout.example.com/${ref}`, ref }
+  }
+  async createPortalSession(req: PortalRequest): Promise<{ url: string }> {
+    assertReturnUrl(req.returnUrl, this.#allowedReturnOrigins)
+    this.portals.push({ accountId: req.accountId, returnUrl: req.returnUrl })
+    this.railWrites++
+    return { url: `https://portal.example.com/${encodeURIComponent(req.accountId)}` }
+  }
+  async syncCatalog(manifest: BillingHandle, opts: { dryRun?: boolean } = {}): Promise<CatalogSyncReport> {
+    const report: CatalogSyncReport = { created: [], updated: [], unchanged: [], degradations: [] }
+    for (const offer of manifest.derived.offers.values()) {
+      const projection = JSON.stringify(offer.price)
+      const had = this.catalog.get(offer.id)
+      const bucket = had === undefined ? report.created : had === projection ? report.unchanged : report.updated
+      bucket.push(offer.id)
+      if (!opts.dryRun && had !== projection) {
+        this.catalog.set(offer.id, projection)
+        this.railWrites++
+      }
+      // What the fake rail cannot carry, named.
+      const conv = offer.convert ? manifest.derived.conversions.get(offer.convert) : undefined
+      if (conv?.bonus) report.degradations.push({ offerId: offer.id, field: "conversion.bonus", reason: "the rail sells the price; the bonus lot is minted by the core" })
+      if (offer.subscription?.anchor === "calendar") report.degradations.push({ offerId: offer.id, field: "subscription.anchor", reason: "the rail bills from the payment date" })
+    }
+    return report
+  }
+  #sign(body: string): string {
+    return createHmac("sha256", this.#webhookSecret).update(body).digest("hex")
+  }
+  /** Build a signed request for an event. */
   signed(body: Record<string, unknown>): WebhookRequest {
-    return { body: JSON.stringify(body), headers: { "x-fake-signature": this.webhookSecret } }
+    const text = JSON.stringify(body)
+    return { body: text, headers: { "x-fake-signature": this.#sign(text) } }
+  }
+  /** The factory of signed requests the SET-* contract cases need. */
+  events(): SettlementEvents {
+    const intent = (paymentMovement: string) => paymentMovement.slice(`${this.id}:`.length)
+    const live = this.#mode === "live"
+    return {
+      payment: s => this.signed({ type: "payment_intent.succeeded", intent: `pi_${s.ref}`, offerId: s.offerId, owner: s.owner, amountMinor: s.amountMinor, currency: s.currency, at: s.at, livemode: live }),
+      paymentIncomplete: s => this.signed({ type: "charge.succeeded", intent: `pi_${s.ref}`, owner: s.owner, amountMinor: s.amountMinor, currency: s.currency, at: s.at, livemode: live }),
+      checkoutCompleted: s => this.signed({ type: "checkout.completed", session: s.checkoutRef, amountMinor: s.amountMinor, currency: s.currency, at: s.at, livemode: live }),
+      refund: s => this.signed({ type: "charge.refunded", intent: intent(s.paymentMovement), refund: `re_${s.ref}`, amountMinor: s.amountMinor, at: s.at }),
+      refundPending: s => this.signed({ type: "refund.pending", intent: intent(s.paymentMovement), refund: `re_${s.ref}`, amountMinor: s.amountMinor, at: s.at }),
+      refundFailed: s => this.signed({ type: "refund.failed", intent: intent(s.paymentMovement), refund: `re_${s.ref}`, amountMinor: s.amountMinor, at: s.at }),
+      dispute: s => this.signed({ type: `dispute.${s.status}`, intent: intent(s.paymentMovement), dispute: `dp_${s.ref}`, amountMinor: s.amountMinor, currency: s.currency, at: s.at }),
+      inquiry: s => this.signed({ type: "dispute.opened", status: "warning_needs_response", intent: intent(s.paymentMovement), dispute: `dp_${s.ref}`, amountMinor: s.amountMinor, currency: s.currency, at: s.at }),
+      renewalFailed: s => this.signed({ type: "invoice.payment_failed", invoice: `in_${s.ref}`, offerId: s.offerId, owner: s.owner, at: s.at }),
+      subscriptionEnded: s => this.signed({ type: "subscription.deleted", subscription: `sub_${s.ref}`, offerId: s.offerId, owner: s.owner, reason: s.reason, at: s.at }),
+      noMoney: s => this.signed({ type: "customer.updated", id: s.ref, at: s.at }),
+      badSignature: s => ({ body: JSON.stringify({ type: "payment_intent.succeeded", intent: `pi_${s.ref}`, at: s.at }), headers: { "x-fake-signature": "0".repeat(64) } }),
+      wrongMode: s => this.signed({ type: "payment_intent.succeeded", intent: `pi_${s.ref}`, offerId: s.offerId, owner: s.owner, amountMinor: s.amountMinor, currency: s.currency, at: s.at, livemode: !live }),
+    }
   }
   async verifyWebhook(raw: WebhookRequest): Promise<RailFact | null> {
-    if (raw.headers["x-fake-signature"] !== this.webhookSecret) throw new Error("webhook signature mismatch")
+    const given = Buffer.from(String(raw.headers["x-fake-signature"] ?? ""), "utf8")
+    const expected = Buffer.from(this.#sign(raw.body), "utf8")
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new Error("webhook signature mismatch")
     const e = JSON.parse(raw.body) as Record<string, unknown> & { type: string; intent?: string; refund?: string; dispute?: string; status?: string }
+    if (typeof e.livemode === "boolean" && e.livemode !== (this.#mode === "live")) throw new Error(`rail '${this.id}' is in ${this.#mode} mode: event of the other mode refused`)
     const at = Number(e.at ?? Date.now())
     switch (e.type) {
       case "payment_intent.succeeded":
@@ -152,17 +295,37 @@ export class FakeSettlementProvider implements SettlementProvider {
           type: "payment",
           movement: `${this.id}:${e.intent}`,
           rail: this.id,
-          offerId: String(e.offerId),
-          owner: e.owner as Record<string, string>,
+          // An event without the offer is an incomplete fact: the core refuses it and lists the money as owed.
+          offerId: e.offerId === undefined ? "" : String(e.offerId),
+          owner: (e.owner ?? {}) as Record<string, string>,
           amountMinor: Number(e.amountMinor),
           taxMinor: Number(e.taxMinor ?? 0),
           ...(e.taxBehavior !== undefined ? { taxBehavior: e.taxBehavior as "inclusive" | "exclusive" } : {}),
           ...(e.discountMinor !== undefined ? { discountMinor: Number(e.discountMinor) } : {}),
+          ...(typeof e.unsupported === "string" ? { unsupported: e.unsupported } : {}),
           currency: String(e.currency),
           paidAt: at,
         }
+      case "checkout.completed": {
+        const session = this.checkouts.find(c => c.ref === e.session)
+        if (!session) return null
+        return {
+          type: "payment",
+          movement: `${this.id}:pi_${session.ref}`,
+          rail: this.id,
+          offerId: session.offerId,
+          owner: { ...session.owner },
+          amountMinor: Number(e.amountMinor),
+          taxMinor: 0,
+          currency: String(e.currency),
+          paidAt: at,
+        }
+      }
       case "charge.refunded":
         return { type: "refund", movement: `${this.id}:${e.refund}`, rail: this.id, paymentMovement: `${this.id}:${e.intent}`, amountMinor: Number(e.amountMinor), at }
+      case "refund.pending":
+        // A refund that may still fail is not a fact yet.
+        return null
       case "refund.failed":
         return { type: "refund_reversed", movement: `${this.id}:${e.refund}`, rail: this.id, paymentMovement: `${this.id}:${e.intent}`, amountMinor: Number(e.amountMinor), at }
       case "dispute.opened":
@@ -178,6 +341,18 @@ export class FakeSettlementProvider implements SettlementProvider {
           status: e.type.slice("dispute.".length) as "opened" | "won" | "lost",
           amountMinor: Number(e.amountMinor),
           currency: String(e.currency),
+          at,
+        }
+      case "invoice.payment_failed":
+        return { type: "renewal_failed", movement: `${this.id}:${e.invoice}`, rail: this.id, offerId: String(e.offerId), owner: (e.owner ?? {}) as Record<string, string>, at }
+      case "subscription.deleted":
+        return {
+          type: "subscription_ended",
+          movement: `${this.id}:${e.subscription}`,
+          rail: this.id,
+          offerId: String(e.offerId),
+          owner: (e.owner ?? {}) as Record<string, string>,
+          reason: e.reason === "unpaid" ? "unpaid" : "canceled",
           at,
         }
       default:

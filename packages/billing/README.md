@@ -1,11 +1,13 @@
 # @agentproto/billing
 
 Reference implementation of [AIP-74](https://agentproto.sh/docs/aip-74), a
-**draft**. Private until step 7 of the kits plan: it is not published.
+**draft**: the schema and the provider contract may still change between minor
+versions while the package is `0.x`.
 
 ```
 BILLING.md  ->  parseBillingManifest  ->  defineBillingManifest  ->  handle (derived rates, edges)
 rail event  ->  SettlementProvider.verifyWebhook  ->  handleRailFact  ->  AIP-49 journal
+start-up    ->  assertRailEnv, assertRailCapabilities
 ```
 
 ## What is here
@@ -19,13 +21,43 @@ rail event  ->  SettlementProvider.verifyWebhook  ->  handleRailFact  ->  AIP-49
 | `reclaim.ts` | Refunds (rule 6, never the bonus, cumulative per payment), reversed refunds, and disputes for their amount (freeze, release, reclaim, give back on a late win). |
 | `periods.ts` | Paid subscription periods, the include drops (monthly inside a yearly period), `past_due` and grace. |
 | `grants.ts`, `payer.ts`, `transfers.ts` | Free credits with deterministic keys, who pays (`self`, `hierarchy/v1`), parent to child allocation. |
-| `settlement.ts` | `SettlementProvider`: the AIP-49 `SettlementPort` plus `verifyWebhook`, optional `refund` and `syncCatalog`. No second settlement interface. |
-| `registry.ts` | The provider registry, mounted with `makeProviderFamily()` of `@agentproto/provider-kit`. |
+| `settlement.ts` | `SettlementProvider`: the AIP-49 `SettlementPort` plus `verifyWebhook` and the required `capabilities`; optional `refund`, `check`, `createCheckout`, `createPortalSession`, `syncCatalog`. The facts (`RailFact`). No second settlement interface. |
+| `capabilities.ts` | `assertRailCapabilities`: the start-up check of the offers against what their rails can do. |
+| `return-url.ts` | `assertReturnUrl`: the allow list of return origins every provider applies before a checkout or a portal call. |
+| `webhook.ts` | `handleRailFact` / `handleWebhook`: the dispatch of every fact, and the facts kept until their payment lands. |
+| `registry.ts` | The provider registry, mounted with `makeProviderFamily()` of `@agentproto/provider-kit`; builds a package through its `createProvider` when it exports one. |
 | `rails.ts` | Rail variable names, the start-up guard (rule 24), `test` / `live` mode. |
 | `spend/` | The spend primitives: `createPricer` (`price`), `createDebit` (`debit`), `createShadow` (`shadow`). Mechanisms only, with neutral defaults. |
 | `testing/` | In-memory stores, `FakeSettlementProvider`, a reference manifest and the framework-free BILL-* cases. |
+| `contract/` | The contract cases a host or a provider package runs in its CI: spend, holds, and `settlementProviderContractCases` (SET-*). |
 
-No payment provider lives here (Stripe, Autumn and Lemon Squeezy arrive as `@agentproto/billing-<slug>`, step 4a).
+No payment provider lives here. A provider is its own package, `@agentproto/billing-<slug>`, that the registry imports by slug (`BILLING_CATALOG` names the expected ones); none is published yet.
+
+## Writing a payment provider
+
+A provider implements `SettlementProvider` and declares what its rail can do in `capabilities` (required). Each flag is honest: `true` means the method exists and works, `false` that it is absent or answers `unsupported`.
+
+- **Start-up.** `assertRailCapabilities(manifest, providers)` refuses a manifest that sells an offer its rail cannot serve, naming the offer, the rail and the flag: a subscription on a rail without `subscriptions`, a trial without `trials`, `amountMinor: buyer` without `buyerAmount`, `discounts: allow` without `discounts`, and any offer whose refund path cannot run (`refunds: "none"`, unless `moneyFacts: "delegated"` names in `moneyFactsFrom` a provider that refunds). A `prepaid-pool` offer is sold on the rail of its conversion, every other offer on every declared rail.
+- **Facts.** `verifyWebhook` returns one `RailFact` or null: `payment`, `refund` (once it succeeded), `refund_reversed`, `dispute` (`opened`, `won`, `lost`; an inquiry is no fact), `renewal_failed` (the open period goes `past_due` for the grace), `subscription_ended` (the open period closes, reason `canceled` or `unpaid`; the includes given stay). A payment the rail cannot tie to one offer and one payer is still reported, with `unsupported: <reason>`: the core refuses it, mints the money alone and lists it as owed, gives no credit.
+- **Checkout and portal.** `createCheckout` returns one of four outcomes (`redirect`, `charged`, `invoice_sent`, `no_payment`) and writes nothing: only the verified webhook writes. It carries `owner` to the payment fact; `payer` is the payer as the rail knows them. Call `assertReturnUrl(url, allowedOrigins)` on every return URL before any call to the rail.
+- **Catalog.** `syncCatalog(manifest, { dryRun })` projects the offers and reports `created`, `updated`, `unchanged` and the `degradations` (what the rail cannot carry, by offer and field). It never deletes at the rail; a dry run only reads.
+- **Registry.** A package that needs parameters exports `createProvider(ctx)`, with `ctx.env`, `ctx.options` (`BillingRegistryOptions.providerOptions[slug]`) and `ctx.providers(slug)` to reach another provider lazily (a cycle throws). `check()`, when present, is what the registry's `check` answers.
+- **Contract cases.** Run `settlementProviderContractCases` in the package's CI with a factory of signed requests in the rail's own vocabulary (`events`). A case whose scenario is missing fails; list it in `unsupported` only when its capability is off.
+
+```ts
+import { settlementProviderContractCases } from "@agentproto/billing/contract-tests"
+for (const c of settlementProviderContractCases({ provider, stores, clock, events, secrets, returnUrls, misconfigured, railWrites })) it(c.name, c.run)
+```
+
+## Facts that arrive before their payment
+
+Webhooks are not ordered. A refund, a refund reversal or a dispute that names a payment the store does not know yet is kept when the `BillingStateStore` implements the two optional methods `deferFact(paymentMovement, fact)` and `takeDeferred(paymentMovement)`: `handleRailFact` answers `deferred`, and applies the kept facts, in the order of their dates, right after their payment is applied through `handleRailFact` (`outcome.deferred`). `InMemoryBillingState` implements them.
+
+A store without them keeps the previous behaviour: the outcome is `unknown_payment` and nothing is written. **The host must then keep such a fact and replay it once the payment is known**, or the credits of a refunded or disputed payment are never taken back. A payment applied with `applyPayment` directly, outside `handleRailFact`, does not apply the kept facts either.
+
+A kept fact whose payment never comes (a refund of another product on a shared rail account) stays in the store: purge it on your own schedule.
+
+Subscription facts are not kept: a `renewal_failed` or `subscription_ended` with no open period is `no_period`, nothing written, and applies when the rail sends it again. Known limit: a `renewal_failed` is applied to the period open when it arrives. A failed attempt delivered after the payment that retried it marks that new, paid period `past_due`; features stay on through the grace, and the next renewal payment closes it as `renewed`.
 
 ## The schema
 

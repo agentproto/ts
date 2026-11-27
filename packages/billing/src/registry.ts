@@ -3,7 +3,9 @@
  * (@agentproto/provider-kit). A slug resolves to a `SettlementProvider` from a
  * provider registered in process (tests, a product that bundles one) or from a
  * dynamic import of `@agentproto/billing-<slug>`. No provider lives here: the
- * catalog only names the packages.
+ * catalog only names the packages. A package that exports `createProvider`
+ * is built through it (env, its options, lazy access to the other providers);
+ * otherwise its `default`, `provider` or first provider-shaped export is used.
  */
 import {
   makeEnvCredsStore,
@@ -14,7 +16,7 @@ import {
   type FamilyHandle,
   type ProviderFamily,
 } from "@agentproto/provider-kit"
-import { defaultRailEnv, type SettlementProvider } from "./settlement.js"
+import { defaultRailEnv, type SettlementCapabilities, type SettlementProvider } from "./settlement.js"
 
 export const BILLING_CATALOG: AdapterCatalog = [
   { slug: "stripe", name: "Stripe", description: "Cards and invoices; the reference rail", packageName: "@agentproto/billing-stripe", hint: "payments · subscriptions · refunds" },
@@ -30,7 +32,26 @@ export interface BillingProviderInfo {
   modeVariable: string
   canRefund: boolean
   canSyncCatalog: boolean
+  /** What the rail declares it can do. */
+  capabilities: SettlementCapabilities
 }
+
+/**
+ * What a provider package's `createProvider` export receives. A package that
+ * needs parameters (options, another provider it delegates to) exports it; a
+ * package without parameters may still export a ready provider as `default`
+ * or `provider`.
+ */
+export interface CreateProviderContext {
+  /** The environment the registry reads (the provider reads its own variables from it). */
+  env: Record<string, string | undefined>
+  /** Resolve another provider by slug, lazily. A cycle throws instead of hanging. */
+  providers: (slug: string) => Promise<SettlementProvider | null>
+  /** `BillingRegistryOptions.providerOptions[slug]`. */
+  options?: unknown
+}
+
+export type CreateProvider = (ctx: CreateProviderContext) => SettlementProvider | Promise<SettlementProvider>
 
 export interface BillingHandleOfProvider extends FamilyHandle {
   readonly provider: SettlementProvider
@@ -49,7 +70,12 @@ export function toBillingHandle(provider: SettlementProvider): BillingHandleOfPr
       { name: provider.env.webhookSecret, description: `${provider.name} webhook signing secret`, sensitive: true },
     ],
     async check() {
-      return true
+      if (typeof provider.check !== "function") return true
+      try {
+        return (await provider.check()).ok === true
+      } catch {
+        return false
+      }
     },
   }
 }
@@ -68,6 +94,8 @@ export interface BillingRegistryOptions {
   env?: Record<string, string | undefined>
   /** Import seam, for tests. Default: native dynamic `import()`. */
   importPackage?: (packageName: string) => Promise<Record<string, unknown>>
+  /** Options passed to a package's `createProvider`, by slug. */
+  providerOptions?: Record<string, unknown>
 }
 
 export interface BillingRegistry {
@@ -88,6 +116,31 @@ export function makeBillingRegistry(opts: BillingRegistryOptions = {}): BillingR
     vars[slug] = { [names.secretKey]: names.secretKey, [names.webhookSecret]: names.webhookSecret }
   }
   const credsStore = makeEnvCredsStore({ env, vars })
+  const entries = new Map(BILLING_CATALOG.map(e => [e.slug, e]))
+  // `path` is the chain of slugs being built through `createProvider`: a slug met twice is a cycle.
+  const loadProvider = async (
+    slug: string,
+    path: readonly string[],
+    importPackage: (packageName: string) => Promise<Record<string, unknown>>,
+  ): Promise<SettlementProvider | null> => {
+    if (path.includes(slug)) throw new Error(`billing provider cycle: ${[...path, slug].join(" -> ")}`)
+    const inProcess = local.get(slug)
+    if (inProcess) return inProcess
+    // A slug outside the catalog has no package name to import: it does not resolve.
+    const entry = entries.get(slug)
+    if (!entry) return null
+    const mod = await importPackage(entry.packageName)
+    if (typeof mod.createProvider === "function") {
+      const created = await (mod.createProvider as CreateProvider)({
+        env,
+        providers: other => loadProvider(other, [...path, slug], importPackage),
+        ...(opts.providerOptions?.[slug] !== undefined ? { options: opts.providerOptions[slug] } : {}),
+      })
+      return isProvider(created) ? created : null
+    }
+    const candidate = mod.default ?? mod.provider ?? Object.values(mod).find(isProvider)
+    return isProvider(candidate) ? candidate : null
+  }
   const family = makeProviderFamily<BillingHandleOfProvider, BillingProviderInfo>({
     family: "billing",
     catalog: [
@@ -105,16 +158,11 @@ export function makeBillingRegistry(opts: BillingRegistryOptions = {}): BillingR
       modeVariable: h.provider.env.mode,
       canRefund: typeof h.provider.refund === "function",
       canSyncCatalog: typeof h.provider.syncCatalog === "function",
+      capabilities: h.provider.capabilities,
     }),
     load: async (slug, ctx) => {
-      const inProcess = local.get(slug)
-      if (inProcess) return toBillingHandle(inProcess)
-      // `ctx.entry` is optional since #2814: a slug outside the catalog reaches
-      // `load` with no entry, and no package name to import — it does not resolve.
-      if (!ctx.entry) return null
-      const mod = await ctx.importPackage(ctx.entry.packageName)
-      const candidate = mod.default ?? mod.provider ?? Object.values(mod).find(isProvider)
-      return isProvider(candidate) ? toBillingHandle(candidate) : null
+      const p = await loadProvider(slug, [], ctx.importPackage)
+      return p ? toBillingHandle(p) : null
     },
     ...(opts.importPackage ? { importPackage: opts.importPackage } : {}),
   })
