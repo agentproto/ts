@@ -41,7 +41,8 @@ export function normalizeUiInstall(raw: unknown, fail: (message: string) => Erro
     icons?: readonly AppUiInstallIcon[]
   } = {}
   if (raw.shortName !== undefined) {
-    if (typeof raw.shortName !== "string" || [...raw.shortName].length < 1 || [...raw.shortName].length > UI_INSTALL_SHORT_NAME_MAX) {
+    const chars = typeof raw.shortName === "string" ? [...raw.shortName].length : 0
+    if (typeof raw.shortName !== "string" || chars < 1 || chars > UI_INSTALL_SHORT_NAME_MAX) {
       throw fail(`\`ui.install.shortName\` must be 1 to ${UI_INSTALL_SHORT_NAME_MAX} characters.`)
     }
     out.shortName = raw.shortName
