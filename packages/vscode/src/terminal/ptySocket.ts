@@ -69,6 +69,7 @@ export function connectPtySocket(
     if (disposed) return
     void client.resolveToken().then(token => {
       if (disposed) return
+      // No `answers=0`: the VS Code terminal answers the child's queries through the Pseudoterminal's handleInput.
       const wsUrl =
         `${client.url.replace(/^http/, "ws")}/sessions/${encodeURIComponent(session.id)}/pty` +
         `?cols=${cols}&rows=${rows}`

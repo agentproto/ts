@@ -141,6 +141,7 @@ import {
   type SessionDescriptor,
   type PtyFactory,
 } from "./sessions.js"
+import { resolveTerminalQueryOptions } from "./terminal-query-responder.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { sweepWiringLifecycle, wireRetirementCleanup } from "./retirement-cleanup.js"
 import {
@@ -457,6 +458,15 @@ export {
 export type { PublicBase, PublicBaseSource } from "./public-origins.js"
 export { startHttpServer } from "./http-server.js"
 export { createSessionsRegistry } from "./sessions.js"
+export {
+  answerTerminalQuery,
+  DEFAULT_TERMINAL_PROFILE,
+  resolveTerminalQueryOptions,
+  TerminalQueryScanner,
+  type TerminalProfile,
+  type TerminalQueryMode,
+  type TerminalQueryOptions,
+} from "./terminal-query-responder.js"
 export { createRuntimeEvents } from "./events.js"
 export type {
   CapabilitiesInventory,
@@ -3082,6 +3092,7 @@ export async function createGateway(
     },
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
+    terminalQueries: resolveTerminalQueryOptions(daemonConfig.sessions),
     ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
     ...(opts.terminalUsageReaders ? { terminalUsageReaders: opts.terminalUsageReaders } : {}),
     ...(opts.runSandboxCheckpointGc ? { runSandboxCheckpointGc: opts.runSandboxCheckpointGc } : {}),

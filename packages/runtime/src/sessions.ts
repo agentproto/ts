@@ -50,6 +50,14 @@ import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } f
 import { readUsageSnapshots as readUsageSnapshotLines } from "./usage-snapshot-log.js"
 import { paidCostFor } from "./terminal-usage.js"
 import { stripTerminalQueries } from "./terminal-query-filter.js"
+import {
+  answerTerminalQuery,
+  pixelSizeOf,
+  DEFAULT_TERMINAL_PROFILE,
+  TerminalQueryScanner,
+  type ScannedChunk,
+  type TerminalQueryOptions,
+} from "./terminal-query-responder.js"
 import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import { runShellGate } from "./supervisor.js"
@@ -582,7 +590,9 @@ export interface SetSessionPostureResult {
 export interface PtyProcess {
   readonly pid: number
   write(data: string): void
-  resize(cols: number, rows: number): void
+  /** `pixelSize` fills the pixel fields of the PTY window size
+   *  (`ws_xpixel`/`ws_ypixel`) when the PTY library supports it. */
+  resize(cols: number, rows: number, pixelSize?: { width: number; height: number }): void
   kill(signal?: string): void
   onData(handler: (data: string) => void): void
   onExit(handler: (event: { exitCode: number; signal?: number }) => void): void
@@ -3764,7 +3774,13 @@ interface SessionRuntime {
   /** Per-subscriber size requests for the PTY. Min cols/rows
    *  across the live set is what we actually call pty.resize with
    *  (mirrors tmux's "smallest attached client wins" rule). */
-  ptySubscribers?: Map<number, { cols: number; rows: number }>
+  ptySubscribers?: Map<number, { cols: number; rows: number; answersQueries: boolean }>
+  /** Current PTY grid size (spawn size, then every reconcile). */
+  ptySize?: { cols: number; rows: number }
+  /** Finds the terminal queries in the PTY output (see
+   *  terminal-query-responder.ts). Absent when terminal query handling is
+   *  off: the output then reaches every client untouched. */
+  queryScanner?: TerminalQueryScanner
   /** Ring buffer of recent stdout+stderr lines. Capped so a runaway
    *  child can't blow the daemon's heap. */
   recentLines: string[]
@@ -5767,8 +5783,17 @@ export interface SessionsRegistry {
   attachPty(
     id: string,
     initial: { cols: number; rows: number },
-    onData: (chunk: Buffer) => void,
-    onExit: (event: { exitCode: number; signal?: number }) => void
+    /** `carriesQueries`: the chunk holds terminal queries this subscriber
+     *  is the one expected to answer; a transport must not drop it (the
+     *  child would wait for a reply that never comes). */
+    onData: (chunk: Buffer, info?: { carriesQueries: boolean }) => void,
+    onExit: (event: { exitCode: number; signal?: number }) => void,
+    /** `answersQueries` (default true): this client is a terminal that
+     *  replies to the queries the child sends. The most recently attached
+     *  such client receives them and answers; the others receive the
+     *  output without them. Pass false for a client that never answers
+     *  (a recorder, a viewer without a terminal emulator). */
+    options?: { answersQueries?: boolean }
   ): {
     write(data: string): void
     resize(cols: number, rows: number): void
@@ -6979,6 +7004,10 @@ export function createSessionsRegistry(opts?: {
    *  throws — the daemon advertises PTY support only when the cli
    *  layer resolved node-pty successfully. */
   spawnPty?: PtyFactory
+  /** Who answers the terminal queries a PTY child sends (see
+   *  terminal-query-responder.ts). Absent: mode `auto` with the default
+   *  profile. */
+  terminalQueries?: TerminalQueryOptions
   /** Hook called when a prompt arrives for an agent-cli session whose
    *  agentSession binding is gone (daemon restart). When provided,
    *  the registry transparently resumes the session via the adapter's
@@ -7170,6 +7199,9 @@ export function createSessionsRegistry(opts?: {
     ...extraObservers,
   ])
   const ptyFactory = opts?.spawnPty
+  const terminalQueries = opts?.terminalQueries
+  const terminalQueryMode = terminalQueries?.mode ?? "auto"
+  const terminalProfile = terminalQueries?.profile ?? DEFAULT_TERMINAL_PROFILE
   const resumeAgent = opts?.resumeAgent
   const orchestratorScopes = opts?.orchestratorScopes
   const restartSandboxGoneHook = opts?.restartSandboxGone
@@ -8891,7 +8923,37 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
-  const appendBytes = (rt: SessionRuntime, chunk: Buffer): void => {
+  /** The subscriber that answers the terminal queries: the most recently
+   *  attached one that declared it can. Undefined when none is attached. */
+  const queryAnsweringSubscriber = (rt: SessionRuntime): number | undefined => {
+    let found: number | undefined
+    for (const [subId, sub] of rt.ptySubscribers ?? []) {
+      if (sub.answersQueries && (found === undefined || subId > found)) found = subId
+    }
+    return found
+  }
+
+  /** No attached terminal will see these queries: the daemon answers the
+   *  ones it can (see `answerTerminalQuery`). */
+  const answerQueriesWithoutTerminal = (rt: SessionRuntime, queries: string[]): void => {
+    if (!rt.pty || queryAnsweringSubscriber(rt) !== undefined) return
+    const size = rt.ptySize ?? { cols: 80, rows: 24 }
+    for (const query of queries) {
+      const reply = answerTerminalQuery(query, terminalProfile, size)
+      if (reply === undefined) continue
+      try {
+        rt.pty.write(reply)
+      } catch {
+        // PTY already exited.
+      }
+    }
+  }
+
+  /** `scanned` is what the query scanner released for `chunk` (see
+   *  `TerminalQueryScanner`): the query-answering subscriber receives its
+   *  `withQueries` stream, every other subscriber `withoutQueries`. The
+   *  ring buffer and the transcript always keep the raw chunk. */
+  const appendBytes = (rt: SessionRuntime, chunk: Buffer, scanned?: ScannedChunk): void => {
     // Durable copy BEFORE the RAM ring drops anything — same ordering
     // rule transcript-writer.ts follows for agent-cli StreamEvents.
     terminalTranscriptWriter.appendChunk(rt.desc.id, chunk)
@@ -8906,7 +8968,11 @@ export function createSessionsRegistry(opts?: {
     }
     rt.desc.lastOutputAt = new Date().toISOString()
     if (rt.conversationTerminal === true) sniffConversationTerminalChunk(rt, chunk)
-    rt.emitter.emit("data", chunk)
+    if (scanned) {
+      rt.emitter.emit("data", scanned.withQueries, scanned.withoutQueries, scanned.queries.length > 0)
+    } else {
+      rt.emitter.emit("data", chunk, chunk, false)
+    }
   }
 
   /**
@@ -8923,8 +8989,9 @@ export function createSessionsRegistry(opts?: {
       if (dim.rows < rows) rows = dim.rows
     }
     if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
+    rt.ptySize = { cols, rows }
     try {
-      rt.pty.resize(cols, rows)
+      rt.pty.resize(cols, rows, pixelSizeOf(terminalProfile, { cols, rows }))
     } catch {
       // pty may have exited between the emit and the resize — swallow.
     }
@@ -14014,6 +14081,8 @@ export function createSessionsRegistry(opts?: {
         desc,
         pty,
         ptySubscribers: new Map(),
+        ptySize: { cols: input.cols, rows: input.rows },
+        ...(terminalQueryMode === "auto" ? { queryScanner: new TerminalQueryScanner() } : {}),
         recentLines: [],
         recentBytes: [],
         recentBytesSize: 0,
@@ -14060,7 +14129,11 @@ export function createSessionsRegistry(opts?: {
           rt.bracketedPaste ?? { mode: "unknown", carry: "" },
           buf
         )
-        appendBytes(rt, buf)
+        const scanned = rt.queryScanner?.feed(buf)
+        if (scanned && scanned.queries.length > 0) {
+          answerQueriesWithoutTerminal(rt, scanned.queries)
+        }
+        appendBytes(rt, buf, scanned)
         notePtyPaint(rt, chunk)
       })
       pty.onExit(evt => {
@@ -14092,6 +14165,10 @@ export function createSessionsRegistry(opts?: {
               `(code=${evt.exitCode}${signalPart}): ${rt.desc.lastError}`,
           )
         }
+        // Bytes the query scanner still holds (an unfinished sequence at
+        // the very end of the output) go to the clients before the exit.
+        const held = rt.queryScanner?.flush()
+        if (held && held.byteLength > 0) rt.emitter.emit("data", held, held, false)
         rt.emitter.emit("exit", evt)
         rt.emitter.emit("status", rt.desc.status)
         void terminalTranscriptWriter.close(rt.desc.id)
@@ -15556,7 +15633,7 @@ export function createSessionsRegistry(opts?: {
       }
       return name
     },
-    attachPty(id, initial, onData, onExit) {
+    attachPty(id, initial, onData, onExit, options) {
       const rt = sessions.get(id)
       if (!rt || !rt.pty || !rt.ptySubscribers) return null
       // Backfill: flush the byte ring buffer so a fresh attach lands
@@ -15573,9 +15650,13 @@ export function createSessionsRegistry(opts?: {
       // Subscriber registration: a monotonically-growing key so the
       // size map can hold the per-subscriber dims and detach is O(1).
       const subId = nextSubId++
-      rt.ptySubscribers.set(subId, { cols: initial.cols, rows: initial.rows })
+      const answersQueries = options?.answersQueries ?? true
+      rt.ptySubscribers.set(subId, { cols: initial.cols, rows: initial.rows, answersQueries })
       reconcilePtySize(rt)
-      const dataHandler = (chunk: Buffer): void => onData(chunk)
+      const dataHandler = (withQueries: Buffer, withoutQueries: Buffer, hasQueries: boolean): void => {
+        if (queryAnsweringSubscriber(rt) === subId) onData(withQueries, { carriesQueries: hasQueries })
+        else onData(withoutQueries, { carriesQueries: false })
+      }
       const exitHandler = (evt: {
         exitCode: number
         signal?: number
@@ -15593,7 +15674,7 @@ export function createSessionsRegistry(opts?: {
         },
         resize(cols: number, rows: number): void {
           if (!rt.ptySubscribers) return
-          rt.ptySubscribers.set(subId, { cols, rows })
+          rt.ptySubscribers.set(subId, { cols, rows, answersQueries })
           reconcilePtySize(rt)
         },
         detach(): void {

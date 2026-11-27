@@ -78,6 +78,14 @@ import {
 import { DEFAULT_SPAWN_ATTACH, SPAWN_ATTACH_ENV } from "./spawn-attach.js"
 import { DEFAULT_SPAWN_DEDUPE, SPAWN_DEDUPE_ENV } from "./spawn-dedupe.js"
 import { DEFAULT_ATTENTION_DELAY_SEC, ATTENTION_DELAY_ENV } from "./session-presence.js"
+import {
+  TERMINAL_CELL_SIZE_ENV,
+  TERMINAL_CELL_SIZE_PATTERN,
+  TERMINAL_GRAPHICS_ENV,
+  TERMINAL_NAME_ENV,
+  TERMINAL_NAME_PATTERN,
+  TERMINAL_QUERIES_ENV,
+} from "./terminal-query-responder.js"
 import { DEFAULT_WRAP_GH, PROVENANCE_WRAP_GH_ENV } from "./gh-provenance-shim.js"
 import { DEFAULT_AGENTS_MD_INLINE_MAX_KB } from "./agents-md.js"
 import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
@@ -598,6 +606,10 @@ const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
   .object({
     attentionDelaySec: z.number().optional(),
     eventsDir: z.string().optional(),
+    terminalQueries: z.enum(["auto", "off"]).optional(),
+    terminalGraphics: z.boolean().optional(),
+    terminalCellSize: z.string().regex(TERMINAL_CELL_SIZE_PATTERN).optional(),
+    terminalName: z.string().regex(TERMINAL_NAME_PATTERN).optional(),
   })
   .passthrough()
 
@@ -1592,6 +1604,50 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Sessions events dir",
     help: "Root directory for per-session transcripts. Lockout: existing transcripts do not move when this changes, and a bad path can break every session reader.",
     default: "~/.agentproto/sessions",
+  },
+  {
+    path: "sessions.terminalQueries",
+    schema: z.enum(["auto", "off"]),
+    apply: "restart",
+    env: TERMINAL_QUERIES_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY terminal queries",
+    help: "Who answers the terminal queries a PTY child sends (device attributes, XTVERSION, cell size, graphics probe). auto: the most recently attached terminal answers; with none attached, the daemon answers a minimal set. off: nobody answers when no terminal is attached.",
+    default: "auto",
+  },
+  {
+    path: "sessions.terminalGraphics",
+    schema: bool,
+    apply: "restart",
+    env: TERMINAL_GRAPHICS_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY graphics support",
+    help: "When the daemon answers for a PTY with no attached terminal, report graphics support to the child. Only enable it when the attached terminals display that image protocol.",
+    default: false,
+  },
+  {
+    path: "sessions.terminalCellSize",
+    schema: z.string().regex(TERMINAL_CELL_SIZE_PATTERN),
+    apply: "restart",
+    env: TERMINAL_CELL_SIZE_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY cell size (px)",
+    help: "Cell size in pixels, <width>x<height>, reported to PTY children (CSI 14 t, CSI 16 t) and written in the PTY window size. An approximation: the daemon does not know the clients' real cell size, so it only matters when no terminal is attached (an attached terminal answers with its own size); the window pixel size is derived from it, not measured.",
+    default: "10x20",
+  },
+  {
+    path: "sessions.terminalName",
+    schema: z.string().regex(TERMINAL_NAME_PATTERN),
+    apply: "restart",
+    env: TERMINAL_NAME_ENV,
+    writable: true,
+    section: "daemon",
+    label: "PTY terminal name",
+    help: "Name the daemon gives for XTVERSION when it answers for a PTY with no attached terminal. Some programs enable a feature only for terminals they know by name (Claude Code draws images only for kitty, Ghostty or iTerm2, on top of sessions.terminalGraphics).",
+    default: "agentproto",
   },
   {
     path: "memory.root",

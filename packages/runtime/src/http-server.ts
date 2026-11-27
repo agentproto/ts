@@ -6630,6 +6630,28 @@ function rejectUpgrade(
   socket.destroy()
 }
 
+/** Above this many queued bytes, a PTY WS subscriber starts losing data
+ *  frames (see {@link shouldDropPtyFrame}). */
+export const PTY_WS_BACKPRESSURE_BYTES = 256 * 1024
+
+/**
+ * Whether a PTY data frame is dropped for a slow WS client. A slow client
+ * must not stall the fan-out to the others, so its frames are dropped once
+ * more than {@link PTY_WS_BACKPRESSURE_BYTES} are queued; except a frame
+ * carrying terminal queries this client is the one expected to answer: the
+ * child waits for that reply and nobody else would give it.
+ */
+export function shouldDropPtyFrame(bufferedAmount: number, carriesQueries: boolean): boolean {
+  return bufferedAmount > PTY_WS_BACKPRESSURE_BYTES && !carriesQueries
+}
+
+/** `answers` query parameter of `WS /sessions/:id/pty`: only the literal
+ *  `0` marks a client that never answers terminal queries; absent or any
+ *  other value means it does (see attachPty's `answersQueries`). */
+export function ptyClientAnswersQueries(answersParam: string | null): boolean {
+  return answersParam !== "0"
+}
+
 /**
  * Per-connection WS handler for /sessions/:id/pty. Attaches as a
  * subscriber to the SessionsRegistry; bridges JSON frames in both
@@ -6652,18 +6674,15 @@ function handlePtyWebSocket(
   )
   const cols = clampPositiveInt(query.get("cols"), 80)
   const rows = clampPositiveInt(query.get("rows"), 24)
-
-  // Backpressure threshold — when the socket has more than 256 KiB
-  // queued, drop the next data frame for THIS subscriber rather than
-  // letting the registry block on send. Other subscribers stay live.
-  const BACKPRESSURE_BYTES = 256 * 1024
+  const answersQueries = ptyClientAnswersQueries(query.get("answers"))
 
   const handle = registry.attachPty(
     sessionId,
     { cols, rows },
-    chunk => {
+    (chunk, info) => {
       if (ws.readyState !== ws.OPEN) return
-      if (ws.bufferedAmount > BACKPRESSURE_BYTES) return // drop
+      // Drop under backpressure, never a chunk with queries to answer.
+      if (shouldDropPtyFrame(ws.bufferedAmount, info?.carriesQueries === true)) return
       ws.send(
         JSON.stringify({ kind: "data", b64: chunk.toString("base64") }),
       )
@@ -6685,6 +6704,7 @@ function handlePtyWebSocket(
         // ignore
       }
     },
+    { answersQueries },
   )
 
   if (!handle) {

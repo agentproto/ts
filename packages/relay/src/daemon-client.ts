@@ -204,7 +204,9 @@ export async function sendTerminalInput(
   token: string | undefined,
   timeoutMs = 10_000,
 ): Promise<DeliveryResult> {
-  const wsUrl = `${daemonUrl.replace(/^http/, "ws")}/sessions/${encodeURIComponent(sessionId)}/pty`
+  // A short attach that only writes input: it never answers the child's
+  // terminal queries (`answers=0`, see the daemon's attachPty).
+  const wsUrl = `${daemonUrl.replace(/^http/, "ws")}/sessions/${encodeURIComponent(sessionId)}/pty?answers=0`
   return new Promise<DeliveryResult>(resolvePromise => {
     let settled = false
     const settle = (result: DeliveryResult): void => {
