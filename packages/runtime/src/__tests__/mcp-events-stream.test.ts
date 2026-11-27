@@ -288,6 +288,19 @@ describe("events/stream engine", () => {
     expect(slots.size()).toBe(0)
   })
 
+  it("a run started with an already-aborted signal writes nothing and releases slot, hold and listener", async () => {
+    const stream = await openEventsStream({ name: NAME, arguments: ARGS, cursor: null }, ctx())
+    expect(slots.size()).toBe(1)
+    const messages: Msg[] = []
+    const outcome = await stream.run({ send: async m => void messages.push(m), signal: AbortSignal.abort() })
+    expect(outcome).toBe("aborted")
+    expect(messages).toEqual([])
+    expect(slots.size()).toBe(0)
+    expect(journal.listenerCount(KEY)).toBe(0)
+    clock += IDLE_TTL + 1
+    expect(await leases.sweep()).toEqual([KEY])
+  })
+
   it("an open stream keeps its watch past the idle TTL", async () => {
     const r = await start()
     clock += IDLE_TTL * 3
