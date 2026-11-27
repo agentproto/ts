@@ -596,6 +596,10 @@ describe("secret hints: compound terms with a space, hyphen, underscore or nothi
       expect(isSecretField("value", `Your ${a}  ${b}`)).toBe(true)
       expect(isSecretField("value", `Your ${a}\u00a0${b}`)).toBe(true)
     })
+    it("is a secret hint across a line break or a tab (whitespace run, fail-safe)", () => {
+      expect(isSecretField("value", `Paste your ${a}\n${b}`)).toBe(true)
+      expect(isSecretField("value", `Paste your ${a}\t${b}`)).toBe(true)
+    })
   })
 
   // Guards: hyphen, underscore and glued forms were already caught and must stay caught.
