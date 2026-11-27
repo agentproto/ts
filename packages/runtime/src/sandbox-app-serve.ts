@@ -739,6 +739,10 @@ const GATE_UNSUPPORTED_EXIT = 42
  * at all cannot serve either (the readiness and gate probes then report it).
  */
 async function serveSupportsAccessToken(client: BoxToolClient, dir: string): Promise<boolean> {
+  // Intent: only a definite "runs, but has no such flag" (exit 42) refuses the
+  // launch. A `--help` that fails or cannot be run is read as "supported" on
+  // purpose: such a CLI cannot serve either, and the readiness and gate probes
+  // that follow the launch decide whether anything is handed out.
   const script =
     'out=$(agentproto app serve --help 2>&1) || exit 0; ' +
     `case "$out" in *--access-token-file*) exit 0;; *) exit ${GATE_UNSUPPORTED_EXIT};; esac`
@@ -897,9 +901,13 @@ export async function startSandboxAppServe(
     }
     // The URL is public: never hand it out unless tool calls need the token.
     let entryUrl: string | undefined
-    if (ready) {
+    {
+      // Run whether or not the readiness probe passed: a definite answer
+      // other than 401 means the public URL is open. No answer while not
+      // ready means nothing is listening yet (the pre-launch check already
+      // guarantees the CLI enforces the token); that is not an open server.
       const protectedGate = await (opts?.gateProbe ?? defaultGateProbe)(url)
-      if (protectedGate !== true) {
+      if (protectedGate === false || (ready && protectedGate !== true)) {
         await stopServeProcess(client, pid)
         return {
           ok: false,
@@ -908,7 +916,7 @@ export async function startSandboxAppServe(
             "would be open to anyone. The server was stopped.",
         }
       }
-      entryUrl = await readEntryUrl(client, req.dir, url)
+      if (ready) entryUrl = await readEntryUrl(client, req.dir, url)
     }
     return {
       ok: true,

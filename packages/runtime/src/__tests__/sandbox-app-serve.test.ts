@@ -292,6 +292,33 @@ describe("startSandboxAppServe", () => {
     expect(result.ok).toBe(false)
   })
 
+  it("probes the gate even when readiness times out: an open answer stops the server, no answer does not", async () => {
+    const open = makeServingClient()
+    const refused = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => false,
+      gateProbe: async () => false,
+      timeoutMs: 10,
+      intervalMs: 1,
+      connect: async () => open,
+    })
+    expect(refused.ok).toBe(false)
+    expect(open.calls.filter(c => c.name === "command_execute").at(-1)?.args.args).toEqual(["-c", "kill 1234"])
+
+    const silent = makeServingClient()
+    const pending = await startSandboxAppServe(fakeHost(), { dir: DIR, port: 3210 }, {
+      probe: async () => false,
+      gateProbe: async () => undefined,
+      timeoutMs: 10,
+      intervalMs: 1,
+      connect: async () => silent,
+    })
+    expect(pending.ok).toBe(true)
+    if (pending.ok) {
+      expect(pending.appServe.ready).toBe(false)
+      expect(pending.appServe.entryUrl).toBeUndefined()
+    }
+  })
+
   it("serves without an entryUrl when the token file cannot be read", async () => {
     const client = makeFakeClient((name, args) => {
       if (name === "app_install") return textResult({ appId: "acme/job-kit", dir: DIR })

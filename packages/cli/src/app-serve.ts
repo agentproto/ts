@@ -1111,7 +1111,7 @@ async function runAppServeRemote(
       ? { tokenFile: resolve(process.cwd(), expandHome(looseString(values["access-token-file"])!)) }
       : {}),
     insecureNoAuth: values["insecure-no-auth"] === true,
-    defaultFile: defaultAccessTokenFile(`remote:${remote.url}`),
+    defaultFile: defaultAccessTokenFile(`remote:${remote.url}:${appId}`),
   }).catch(accessTokenFailure)
   if (typeof access === "number") return access
   reportAccess(access, listenHost)
