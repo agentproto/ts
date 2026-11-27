@@ -3779,8 +3779,10 @@ export async function createGateway(
   // tunnels (see the note at `tunnels` above). Skipped when persistence is
   // off (tests). A failed restore must not block the tunnel relaunch.
   if (persist) {
-    void remote
-      .restore()
+    // A configured static bearer already protects the gateway (the guard
+    // above counts it) and must keep winning: don't shadow it with a
+    // stale remote hash.
+    void (opts.auth?.mode === "bearer" ? Promise.resolve(false) : remote.restore())
       .catch(() => false)
       .then(() => tunnels.restoreOnBoot())
       .catch(() => {
