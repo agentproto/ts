@@ -1,14 +1,22 @@
 /**
  * Browser DOM adapter for {@link createMcpAppHost}: mounts an MCP App's
- * `ui://` html in a sandboxed `srcdoc` iframe and speaks the protocol to it
- * over ext-apps' `PostMessageTransport`.
+ * `ui://` html in an iframe and speaks the protocol to it over ext-apps'
+ * message protocol.
  *
- * Isolation model (v1): an opaque-origin srcdoc iframe — `sandbox` without
- * `allow-same-origin`, so the view can't touch the host's DOM, storage or
- * cookies — plus a CSP `<meta>` built from the resource's `_meta.ui.csp`,
- * injected as the first child of `<head>` so it governs everything the view
- * loads. The spec's sandbox-proxy double-iframe (a separate origin serving
- * the view) is NOT implemented; see README "Known limits".
+ * Two isolation modes:
+ *
+ * - **Sandbox origin** (MCP Apps spec, "Rendering the MCP App"): the view is
+ *   served as a document by a server the host controls, on an origin that
+ *   differs from the host's, with its CSP as an HTTP header, and the iframe
+ *   carries `allow-scripts allow-same-origin`. The origin boundary — not an
+ *   opaque origin — is what keeps the view away from the host's DOM, storage
+ *   and cookies. Resolved by a {@link McpAppSandboxResolver} (by default the
+ *   embedding daemon's `POST /mcp-app-sandbox/views`).
+ * - **Restricted** (fallback when no sandbox origin is available): an
+ *   opaque-origin `srcdoc` iframe (`sandbox` without `allow-same-origin`)
+ *   with the CSP as a `<meta>`. Safe, but views that need a real origin
+ *   (IndexedDB, emulators, OAuth callbacks) cannot run. Logged as
+ *   "restricted mode".
  *
  * `buildCspPolicy` / `buildCspMeta` / `injectCsp` are pure string functions,
  * usable (and tested) without a DOM.
@@ -19,48 +27,168 @@ import {
   type McpUiResourcePermissions,
   PostMessageTransport,
 } from "@modelcontextprotocol/ext-apps/app-bridge"
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
+import { type JSONRPCMessage, JSONRPCMessageSchema } from "@modelcontextprotocol/sdk/types.js"
 
 import { createMcpAppHost, type McpAppHost, type McpAppHostOptions } from "./host.js"
+import { buildCspPolicy } from "./csp.js"
 import type { McpAppUi, McpAppUiCsp } from "./types.js"
 
+export { buildCspPolicy }
 export type { McpAppUi, McpAppUiCsp }
 
-/** Never `allow-same-origin`: with it, a srcdoc iframe shares the host's
- *  origin and its scripts could reach straight into the embedding page. */
+/** Restricted mode: never `allow-same-origin`. With it, a srcdoc iframe
+ *  shares the host's origin and its scripts could reach straight into the
+ *  embedding page. */
 export const MCP_APP_SANDBOX = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
 
+/** Sandbox-origin mode: `allow-same-origin` is REQUIRED by the spec and safe
+ *  only because the document lives on an origin different from the host's. */
+export const MCP_APP_SANDBOX_ORIGIN =
+  "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+
+/** Where a view document was registered for serving. */
+export interface McpAppSandboxView {
+  /** Absolute URL of the view document. */
+  url: string
+  /** Its origin (`scheme://host[:port]`); must differ from the host's. */
+  origin: string
+  /** The origin is shared with other views: only ONE view per such origin is
+   *  mounted at a time (same-origin views can script each other), the others
+   *  fall back to restricted mode. */
+  shared?: boolean
+}
+
+/** Registers a view with the server that owns the sandbox origin. Resolve
+ *  `null` when none is available (the view then runs in restricted mode). */
+export type McpAppSandboxResolver = (
+  ui: Pick<McpAppUi, "html" | "csp" | "permissions">,
+) => Promise<McpAppSandboxView | null>
+
+export interface DaemonSandboxResolverOptions {
+  /** The daemon's base URL (default: nothing — required). */
+  baseUrl: string
+  fetch?: typeof fetch
+  /** Extra headers (e.g. a bearer) for non-same-origin callers. */
+  headers?: Record<string, string>
+}
+
 /**
- * A CSP source token is a single whitespace-free word. Anything else coming
- * from `_meta.ui.csp` — a `;`, a quote, a space — could smuggle an extra
- * directive or keyword into the policy, so it is dropped rather than
- * escaped.
+ * Resolver for the daemon's `POST /mcp-app-sandbox/views`. Any failure (older
+ * daemon: 404, sandbox disabled: 501, network) resolves `null`.
  */
-const SAFE_SOURCE = /^[^\s;,'"<>]+$/
-
-function sources(domains: readonly string[] | undefined): string[] {
-  return (domains ?? []).filter((d) => SAFE_SOURCE.test(d))
+export function createDaemonSandboxResolver(opts: DaemonSandboxResolverOptions): McpAppSandboxResolver {
+  const doFetch = opts.fetch ?? globalThis.fetch.bind(globalThis)
+  const endpoint = new URL("/mcp-app-sandbox/views", opts.baseUrl).toString()
+  const hostOrigin = new URL(opts.baseUrl).origin
+  return async (ui) => {
+    let res: Response
+    try {
+      res = await doFetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...opts.headers },
+        body: JSON.stringify({ html: ui.html, csp: ui.csp, permissions: ui.permissions }),
+      })
+    } catch {
+      return null
+    }
+    if (!res.ok) return null
+    let body: unknown
+    try {
+      body = await res.json()
+    } catch {
+      return null
+    }
+    const url = (body as { url?: unknown })?.url
+    if (typeof url !== "string") return null
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return null
+    }
+    // Never trust the server blindly with the one property that matters: the
+    // view must NOT share the host's origin.
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.origin === hostOrigin) {
+      return null
+    }
+    const shared = (body as { shared?: unknown }).shared === true
+    return { url: parsed.toString(), origin: parsed.origin, ...(shared ? { shared: true } : {}) }
+  }
 }
 
-function directive(name: string, fixed: readonly string[], domains: readonly string[]): string {
-  return [name, ...fixed, ...domains].join(" ")
+function isHttpUrlOnOrigin(view: McpAppSandboxView): boolean {
+  try {
+    const u = new URL(view.url)
+    return (u.protocol === "http:" || u.protocol === "https:") && u.origin === view.origin
+  } catch {
+    return false
+  }
 }
 
-/** The Content-Security-Policy string for a view (CONTRACT §3). */
-export function buildCspPolicy(csp: McpAppUiCsp | undefined): string {
-  const resource = sources(csp?.resourceDomains)
-  const orNone = (domains: string[]) => (domains.length > 0 ? domains : ["'none'"])
-  return [
-    "default-src 'none'",
-    directive("script-src", ["'unsafe-inline'"], resource),
-    directive("style-src", ["'unsafe-inline'"], resource),
-    directive("img-src", ["data:", "blob:"], resource),
-    directive("font-src", ["data:"], resource),
-    directive("media-src", ["data:", "blob:"], resource),
-    directive("connect-src", [], orNone(sources(csp?.connectDomains))),
-    directive("frame-src", [], orNone(sources(csp?.frameDomains))),
-    "object-src 'none'",
-    directive("base-uri", [], orNone(sources(csp?.baseUriDomains))),
-  ].join("; ")
+/** Shared sandbox origins that currently host a mounted view. */
+const sharedOriginsInUse = new Set<string>()
+
+/** Per-host-origin memo of "no sandbox origin here", so a daemon without the
+ *  route is probed once a minute, not once per mounted view. */
+const unavailableUntil = new Map<string, number>()
+const UNAVAILABLE_TTL_MS = 60_000
+
+function autoResolver(doc: Document): McpAppSandboxResolver | undefined {
+  const loc = doc.defaultView?.location
+  if (!loc || (loc.protocol !== "http:" && loc.protocol !== "https:")) return undefined
+  const inner = createDaemonSandboxResolver({ baseUrl: loc.origin })
+  return async (ui) => {
+    if ((unavailableUntil.get(loc.origin) ?? 0) > Date.now()) return null
+    const view = await inner(ui)
+    if (!view) unavailableUntil.set(loc.origin, Date.now() + UNAVAILABLE_TTL_MS)
+    return view
+  }
+}
+
+/**
+ * Transport to a view on a known origin. Unlike ext-apps' PostMessageTransport
+ * (which posts to `"*"` and only checks `event.source`), outgoing messages are
+ * addressed to the sandbox origin — so a view that navigates its frame
+ * elsewhere cannot receive tool results — and incoming ones must come from
+ * both the iframe's window AND that origin.
+ */
+export class OriginPinnedTransport implements Transport {
+  onclose?: () => void
+  onerror?: (error: Error) => void
+  onmessage?: (message: JSONRPCMessage) => void
+  sessionId?: string
+  private listener?: (event: MessageEvent) => void
+
+  constructor(
+    private readonly view: Window,
+    private readonly origin: string,
+    private readonly listenOn: Window,
+  ) {}
+
+  async start(): Promise<void> {
+    if (this.listener) throw new Error("OriginPinnedTransport already started")
+    this.listener = (event) => {
+      if (event.source !== this.view || event.origin !== this.origin) return
+      const parsed = JSONRPCMessageSchema.safeParse(event.data)
+      if (!parsed.success) {
+        this.onerror?.(new Error("Invalid JSON-RPC message from view"))
+        return
+      }
+      this.onmessage?.(parsed.data)
+    }
+    this.listenOn.addEventListener("message", this.listener)
+  }
+
+  async send(message: JSONRPCMessage): Promise<void> {
+    this.view.postMessage(message, this.origin)
+  }
+
+  async close(): Promise<void> {
+    if (this.listener) this.listenOn.removeEventListener("message", this.listener)
+    this.listener = undefined
+    this.onclose?.()
+  }
 }
 
 function escapeAttribute(value: string): string {
@@ -72,24 +200,25 @@ export function buildCspMeta(csp: McpAppUiCsp | undefined): string {
   return `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(buildCspPolicy(csp))}">`
 }
 
-const HEAD_OPEN = /<head(?:\s[^>]*)?>/i
-const HTML_OPEN = /<html(?:\s[^>]*)?>/i
-const DOCTYPE = /^\s*<!doctype[^>]*>/i
+/** HTML whitespace is exactly these five characters (NOT `\s`: NBSP and BOM are text). */
+const LEADING_DOCTYPE = /^[ \t\n\f\r]*<!doctype[^>]*>/i
 
 /**
- * Inject the CSP meta as the first child of `<head>`, creating `<head>` when
- * the document has none. A CSP meta the view ships itself is left in place:
- * browsers enforce every policy present, so it can only tighten ours.
+ * Inject the CSP meta ahead of ALL author content, interpreting none of it.
+ *
+ * The only thing skipped is a doctype that opens the document (so the view
+ * does not fall into quirks mode); the meta goes in a `<head>` created right
+ * there. No comment, tag, attribute or quote in the author's HTML is parsed,
+ * so no markup trick (`<!-->`, `--!>`, a quote in an unquoted value,
+ * `<noscript>`, NBSP/BOM before `<html>`, an unclosed element…) can move the
+ * meta behind author script: the HTML parser opens its implicit `<html>` and
+ * `<head>` for our `<head>` and the author's own `<head>` start tag is then
+ * ignored. A CSP meta the view ships itself stays in place: browsers enforce
+ * every policy present, so it can only tighten ours.
  */
 export function injectCsp(html: string, csp: McpAppUiCsp | undefined): string {
-  const meta = buildCspMeta(csp)
-  const head = HEAD_OPEN.exec(html)
-  if (head) return insertAt(html, head.index + head[0].length, meta)
-  const htmlTag = HTML_OPEN.exec(html)
-  if (htmlTag) return insertAt(html, htmlTag.index + htmlTag[0].length, `<head>${meta}</head>`)
-  const doctype = DOCTYPE.exec(html)
-  const at = doctype ? doctype[0].length : 0
-  return insertAt(html, at, `<head>${meta}</head>`)
+  const doctype = LEADING_DOCTYPE.exec(html)
+  return insertAt(html, doctype ? doctype[0].length : 0, `<head>${buildCspMeta(csp)}</head>`)
 }
 
 function insertAt(html: string, index: number, fragment: string): string {
@@ -116,9 +245,17 @@ export function toResourcePermissions(
 export interface MountMcpAppOptions extends McpAppHostOptions {
   container: HTMLElement
   ui: Pick<McpAppUi, "html" | "csp" | "permissions" | "prefersBorder">
+  /**
+   * How to obtain a dedicated sandbox origin for the view. Omitted ⇒ auto:
+   * the embedding page's own daemon (`POST <location.origin>/mcp-app-sandbox/views`)
+   * when the page is http(s). `false` ⇒ always restricted mode.
+   */
+  sandbox?: McpAppSandboxResolver | false
 }
 
 export interface MountedMcpApp {
+  /** `"sandbox-origin"` (spec) or `"restricted"` (opaque-origin fallback). */
+  mode: "sandbox-origin" | "restricted"
   iframe: HTMLIFrameElement
   host: McpAppHost
   /** Tear the view down (`ui/resource-teardown`), then remove the iframe.
@@ -127,39 +264,84 @@ export interface MountedMcpApp {
 }
 
 export async function mountMcpApp(opts: MountMcpAppOptions): Promise<MountedMcpApp> {
-  const { container, ui, ...hostOptions } = opts
-  const iframe = container.ownerDocument.createElement("iframe")
-  iframe.setAttribute("sandbox", MCP_APP_SANDBOX)
+  const { container, ui, sandbox, ...hostOptions } = opts
+  const doc = container.ownerDocument
+  const resolver = sandbox === false ? undefined : (sandbox ?? autoResolver(doc))
+  let view: McpAppSandboxView | null = null
+  if (resolver) {
+    try {
+      view = await resolver(ui)
+    } catch {
+      view = null
+    }
+  }
+  // Enforced here, for EVERY resolver, not just the daemon's: a view on the
+  // host's own origin with `allow-same-origin` would have the host page.
+  if (view && (view.origin === doc.defaultView?.location.origin || !isHttpUrlOnOrigin(view))) {
+    console.warn("[mcp-app-host] refused a sandbox view on the host's own origin (or an invalid URL).")
+    view = null
+  }
+  let claimedSharedOrigin: string | undefined
+  if (view?.shared) {
+    if (sharedOriginsInUse.has(view.origin)) {
+      console.warn("[mcp-app-host] another view already uses this shared sandbox origin; mounting this one restricted.")
+      view = null
+    } else {
+      sharedOriginsInUse.add(view.origin)
+      claimedSharedOrigin = view.origin
+    }
+  }
+  if (!view) {
+    console.warn(
+      "[mcp-app-host] view in restricted mode: no dedicated sandbox origin available " +
+        "(opaque-origin srcdoc; views that need IndexedDB, a real origin or OAuth callbacks may not run).",
+    )
+  }
+
+  const iframe = doc.createElement("iframe")
+  iframe.setAttribute("sandbox", view ? MCP_APP_SANDBOX_ORIGIN : MCP_APP_SANDBOX)
+  // The view's URL is a capability: never let it ride in a Referer.
+  iframe.referrerPolicy = "no-referrer"
   const allow = buildAllowAttribute(toResourcePermissions(ui.permissions))
   if (allow) iframe.setAttribute("allow", allow)
   iframe.style.display = "block"
   iframe.style.width = "100%"
   iframe.style.border = ui.prefersBorder ? "1px solid rgba(127, 127, 127, 0.35)" : "0"
-  iframe.srcdoc = injectCsp(ui.html, ui.csp)
+  if (view) iframe.src = view.url
+  else iframe.srcdoc = injectCsp(ui.html, ui.csp)
   container.appendChild(iframe)
 
-  const view = iframe.contentWindow
-  if (!view) {
+  const viewWindow = iframe.contentWindow
+  const hostWindow = doc.defaultView
+  if (!viewWindow || !hostWindow) {
+    if (claimedSharedOrigin) sharedOriginsInUse.delete(claimedSharedOrigin)
     iframe.remove()
     throw new Error("mountMcpApp: container is not attached to a document with a browsing context")
   }
   // Pinned both ways: we only post to this iframe, and only accept messages
-  // whose `event.source` is this iframe's window.
-  const transport = new PostMessageTransport(view, view)
+  // from this iframe's window (and, in sandbox-origin mode, its origin).
+  const transport = view
+    ? new OriginPinnedTransport(viewWindow, view.origin, hostWindow)
+    : new PostMessageTransport(viewWindow, viewWindow)
   let host: McpAppHost
   try {
     host = await createMcpAppHost(transport, hostOptions)
   } catch (err) {
+    if (claimedSharedOrigin) sharedOriginsInUse.delete(claimedSharedOrigin)
     iframe.remove()
     throw err
   }
 
   let disposed: Promise<void> | undefined
   return {
+    mode: view ? "sandbox-origin" : "restricted",
     iframe,
     host,
     dispose() {
-      disposed ??= host.teardown().finally(() => iframe.remove())
+      disposed ??= host.teardown().finally(() => {
+        if (claimedSharedOrigin) sharedOriginsInUse.delete(claimedSharedOrigin)
+        iframe.remove()
+      })
       return disposed
     },
   }

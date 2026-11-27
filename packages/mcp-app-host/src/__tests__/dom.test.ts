@@ -35,6 +35,8 @@ async function mount(ui: Parameters<typeof mountMcpApp>[0]["ui"]): Promise<Mount
     hostInfo: { name: "test-host", version: "1.0.0" },
     hostContext: { displayMode: "inline" },
     handlers: { callTool: async () => ({ content: [] }) },
+    // These tests are about the restricted (opaque srcdoc) mode.
+    sandbox: false,
   })
   mounted.push(m)
   return m
@@ -61,7 +63,7 @@ describe("mountMcpApp", () => {
     expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin")
     expect(iframe.getAttribute("allow")).toBe("camera; clipboard-write")
     expect(iframe.srcdoc).toBe(
-      `<html><head>${buildCspMeta({ connectDomains: ["https://api.example.com"] })}<title>v</title></head><body>view</body></html>`,
+      `<head>${buildCspMeta({ connectDomains: ["https://api.example.com"] })}</head><html><head><title>v</title></head><body>view</body></html>`,
     )
   })
 

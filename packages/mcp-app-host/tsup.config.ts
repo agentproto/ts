@@ -8,6 +8,7 @@ export default createTsupConfig({
   entry: {
     index: "src/index.ts",
     dom: "src/dom.ts",
+    csp: "src/csp.ts",
   },
   format: ["esm"],
   splitting: false,

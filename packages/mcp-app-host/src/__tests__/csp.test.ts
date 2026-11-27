@@ -4,11 +4,12 @@
 import { describe, expect, it } from "vitest"
 
 import { buildCspMeta, buildCspPolicy, injectCsp, toResourcePermissions } from "../dom.js"
+import { buildSandboxCspHeader } from "../csp.js"
 
 const DEFAULT_POLICY =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
   "img-src data: blob:; font-src data:; media-src data: blob:; " +
-  "connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"
+  "connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"
 
 describe("buildCspPolicy", () => {
   it("defaults every network directive to 'none' when csp is absent", () => {
@@ -33,6 +34,7 @@ describe("buildCspPolicy", () => {
         "connect-src https://api.example.com wss://live.example.com; " +
         "frame-src https://www.youtube.com; " +
         "object-src 'none'; " +
+        "form-action 'none'; " +
         "base-uri https://base.example.com",
     )
   })
@@ -63,33 +65,17 @@ describe("buildCspMeta", () => {
 
 describe("injectCsp", () => {
   const meta = buildCspMeta(undefined)
+  const head = `<head>${meta}</head>`
 
-  it("inserts the meta as the first child of an existing <head>", () => {
-    const html = `<!doctype html><html lang="en"><head><title>x</title></head><body></body></html>`
-    expect(injectCsp(html, undefined)).toBe(
-      `<!doctype html><html lang="en"><head>${meta}<title>x</title></head><body></body></html>`,
+  it("opens with our <head> before everything, after only a leading doctype", () => {
+    expect(injectCsp(`<!doctype html><html lang="en"><head><title>x</title></head><body></body></html>`, undefined)).toBe(
+      `<!doctype html>${head}<html lang="en"><head><title>x</title></head><body></body></html>`,
     )
-  })
-
-  it("matches <head> with attributes but not <header>", () => {
-    const html = `<html><header>h</header><head data-x="1"><title>x</title></head></html>`
-    expect(injectCsp(html, undefined)).toBe(
-      `<html><header>h</header><head data-x="1">${meta}<title>x</title></head></html>`,
+    expect(injectCsp(`<!DOCTYPE html>\n<html><body><p>hi</p></body></html>`, undefined)).toBe(
+      `<!DOCTYPE html>${head}\n<html><body><p>hi</p></body></html>`,
     )
-  })
-
-  it("creates <head> right after <html> when there is none", () => {
-    const html = `<!DOCTYPE html><html><body><p>hi</p></body></html>`
-    expect(injectCsp(html, undefined)).toBe(
-      `<!DOCTYPE html><html><head>${meta}</head><body><p>hi</p></body></html>`,
-    )
-  })
-
-  it("creates <head> after the doctype for a bare fragment document", () => {
-    expect(injectCsp(`<!doctype html><div>hi</div>`, undefined)).toBe(
-      `<!doctype html><head>${meta}</head><div>hi</div>`,
-    )
-    expect(injectCsp(`<div>hi</div>`, undefined)).toBe(`<head>${meta}</head><div>hi</div>`)
+    expect(injectCsp(`  \n<!doctype html><div>hi</div>`, undefined)).toBe(`  \n<!doctype html>${head}<div>hi</div>`)
+    expect(injectCsp(`<div>hi</div>`, undefined)).toBe(`${head}<div>hi</div>`)
   })
 
   it("keeps a CSP meta the view ships itself, ours first (policies intersect)", () => {
@@ -97,7 +83,7 @@ describe("injectCsp", () => {
     const html = `<html><head>${own}</head><body></body></html>`
     const out = injectCsp(html, { frameDomains: ["https://embed.example.com"] })
     const ours = buildCspMeta({ frameDomains: ["https://embed.example.com"] })
-    expect(out).toBe(`<html><head>${ours}${own}</head><body></body></html>`)
+    expect(out).toBe(`<head>${ours}</head>${html}`)
     expect(out.indexOf(ours)).toBeLessThan(out.indexOf(own))
   })
 })
@@ -108,5 +94,120 @@ describe("toResourcePermissions", () => {
       toResourcePermissions({ camera: {}, microphone: true, clipboardWrite: {}, bogus: {} }),
     ).toEqual({ camera: {}, clipboardWrite: {} })
     expect(toResourcePermissions(undefined)).toEqual({})
+  })
+})
+
+describe("buildSandboxCspHeader", () => {
+  it("defaults: 'self' sources, none for frames, base-uri 'self', no embedder", () => {
+    expect(buildSandboxCspHeader(undefined, undefined)).toBe(
+      "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; " +
+        "connect-src 'self'; frame-src 'none'; object-src 'none'; form-action 'self'; base-uri 'self'; frame-ancestors 'none'",
+    )
+  })
+
+  it("honours every declared domain, including baseUriDomains", () => {
+    const h = buildSandboxCspHeader(
+      {
+        resourceDomains: ["https://cdn.example.com"],
+        connectDomains: ["https://api.example.com"],
+        frameDomains: ["https://www.youtube.com"],
+        baseUriDomains: ["https://archive.org"],
+      },
+      "http://127.0.0.1:18790",
+    )
+    expect(h).toContain("script-src 'self' 'unsafe-inline' https://cdn.example.com")
+    expect(h).toContain("connect-src 'self' https://api.example.com")
+    expect(h).toContain("frame-src https://www.youtube.com")
+    expect(h).toContain("base-uri https://archive.org")
+    expect(h).toContain("frame-ancestors http://127.0.0.1:18790")
+  })
+
+  it("pins frame-ancestors to a bare http(s) origin only (R6)", () => {
+    expect(buildSandboxCspHeader(undefined, "https://host.example.com/some/path?q=1")).toContain(
+      "frame-ancestors https://host.example.com",
+    )
+    for (const bad of ["javascript:alert(1)", "*", "https://a.com; script-src *", "", "not a url"]) {
+      expect(buildSandboxCspHeader(undefined, bad)).toContain("frame-ancestors 'none'")
+    }
+  })
+
+  it("still drops directive-injecting tokens, and the daemon can drop its own origin", () => {
+    const h = buildSandboxCspHeader(
+      { connectDomains: ["https://ok.example.com", "https://x.com; script-src *", "'unsafe-eval'", "http://127.0.0.1:1"] },
+      undefined,
+      { dropSource: (s) => s.includes("127.0.0.1") },
+    )
+    expect(h).toContain("connect-src 'self' https://ok.example.com;")
+    expect(h).not.toContain("unsafe-eval")
+    expect(h).not.toContain("script-src *")
+    expect(h).not.toContain("127.0.0.1")
+  })
+})
+
+describe("injectCsp — nothing the author writes can move the meta behind author content", () => {
+  const META = buildCspMeta(undefined)
+  const DECOYS = [
+    "<!-- <head> --><html><head><title>t</title></head><body></body></html>",
+    '<html><script>var s = "<head>"</script><head></head></html>',
+    "<html><style>/* <head> */</style><head></head></html>",
+    "<html><textarea><head></textarea><head></head></html>",
+    "<html><title><head></title><head></head></html>",
+    "<html><noscript><head></noscript><head></head></html>",
+    "<html><template><head></template><head></head></html>",
+    "<html><svg><desc><head></desc></svg><head></head></html>",
+    "<!doctype html><select><option><head></select><head></head>",
+    "<!-- unterminated <head>",
+    "<html><body><p>x</p><head></head></body></html>",
+    // Comment forms a naive scanner mis-tokenises (the browser closes them immediately).
+    "<html><!--><script>A()</script><!-- x -->",
+    "<html><!---><script>A()</script><!-- x -->",
+    "<html><!-- x --!><script>A()</script><!-- y -->",
+    // Characters JS calls whitespace but HTML does not: they are text, not prologue.
+    "\u00a0<html><head></head><script>A()</script></html>",
+    "\ufeff<!doctype html><html><head></head><script>A()</script></html>",
+    // A quote inside an unquoted attribute value must not swallow the tag end.
+    '<html a=x"><script>/*"*/A()</script>',
+    "<html a='x><script>A()</script>",
+    '<head a=x"><script>/*"*/A()</script></head>',
+  ]
+
+  it("always places the meta before any author markup (only a leading doctype may precede it)", () => {
+    for (const html of DECOYS) {
+      const out = injectCsp(html, undefined)
+      expect(out.split(META).length, html).toBe(2)
+      const before = out.slice(0, out.indexOf(META))
+      expect(before.replace(/^[ \t\n\f\r]*<!doctype[^>]*>/i, "").replace(/<head>$/, ""), html).toBe("")
+      // And the author's script never precedes it.
+      const script = out.indexOf("<script")
+      if (script >= 0) expect(out.indexOf(META), html).toBeLessThan(script)
+    }
+  })
+
+  it("is a pure prefix operation: the author's bytes are untouched and in order", () => {
+    for (const html of DECOYS) {
+      const out = injectCsp(html, undefined)
+      expect(out.replace(`<head>${META}</head>`, ""), html).toBe(html)
+    }
+  })
+})
+
+describe("SAFE_SOURCE rejects control characters", () => {
+  it("drops sources containing NUL / CR / LF (they would make writeHead throw or split headers)", () => {
+    const h = buildSandboxCspHeader({ connectDomains: ["https://a.example.com", "https://b\u0000.example.com", "https://c\r\nx.example.com"] }, undefined)
+    expect(h).toContain("connect-src 'self' https://a.example.com;")
+    expect(h).not.toContain("\u0000")
+    expect(h).not.toContain("b.example")
+  })
+})
+
+describe("sandbox header hardening", () => {
+  it("blocks form posts to anywhere but the view's own origin", () => {
+    expect(buildSandboxCspHeader(undefined, undefined)).toContain("form-action 'self'")
+  })
+  it("drops sources with non-ASCII characters (they would make the HTTP header invalid)", () => {
+    const h = buildSandboxCspHeader({ connectDomains: ["https://ok.example.com", "https://caf\u00e9.example.com", "https://x\u0142.example.com"] }, undefined)
+    expect(h).toContain("connect-src 'self' https://ok.example.com;")
+    expect(h).not.toContain("caf")
   })
 })
