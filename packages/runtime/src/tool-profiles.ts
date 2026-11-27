@@ -270,6 +270,8 @@ export const PROFILE_TOOLS: Record<Exclude<ToolProfileName, "full">, readonly st
  * it belongs.
  */
 export const FULL_ONLY_TOOLS: readonly string[] = [
+  // Full-only on purpose: the admin profile is at its 100-tool budget
+  // (see the budget test); listing, renaming and revoking devices stay admin.
   "device_offer",
   "device_pair_pending",
   "activities_list",
