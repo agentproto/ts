@@ -83,6 +83,7 @@ export {
 } from "./pack.js"
 export type { AgentAppManifest, BundleFile, AgentAppPackErrorCode, AppPackageRules } from "./pack.js"
 export { refKey, stripOwner } from "./refs.js"
+export { isSafeRelativeIconPath } from "./ui-install.js"
 export { boundariesError, HOST_READ_PATH_RE, HOST_READS_MAX } from "./boundaries.js"
 export { versionSatisfies } from "./version-range.js"
 export type {
@@ -96,6 +97,8 @@ export type {
   WorkspaceInput,
   AppUiDefinition,
   AppUiBuildConfig,
+  AppUiInstall,
+  AppUiInstallIcon,
   OpenAIAppUiExtension,
   OpenAIEntrypoint,
   OpenAIIcon,

@@ -225,6 +225,15 @@ import type { TelegramBotCredsStore } from "./telegram-bot-creds.js"
 import { handleA2aTaskRequest, type A2aTaskHttpConfig } from "./a2a-task-http.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
 import { resolveAppUiBuildState } from "./app-ui-build.js"
+import {
+  appBasePath,
+  appleIconIndex,
+  buildAppManifest,
+  injectIntoHead,
+  installHeadTags,
+  readInstallIcon,
+  resolveInstallIcons,
+} from "./app-ui-install.js"
 import { renderAppUiBuildingHtml, renderAppUiErrorHtml } from "./app-ui-placeholder.js"
 import {
   IMMUTABLE_CACHE_CONTROL,
@@ -6499,6 +6508,17 @@ export async function startHttpServer(
             const assetAppId = decodeURIComponent(assetMatch[1]!)
             if (appUiShellBlocked(assetAppId)) return
             await handleAppUiAsset(req, res, assetAppId, assetMatch[2]!, opts.appRegistry)
+            return
+          }
+          // Installable UI (AIP-53): the derived web app manifest and its
+          // icons. Same gate as the page they describe.
+          const manifestMatch = path.match(APP_MANIFEST_RE)
+          const iconMatch = manifestMatch ? null : path.match(APP_ICON_RE)
+          if ((manifestMatch || iconMatch) && req.method === "GET") {
+            const installAppId = decodeURIComponent((manifestMatch ?? iconMatch)![1]!)
+            if (appUiShellBlocked(installAppId)) return
+            if (manifestMatch) await handleAppManifest(res, installAppId, opts.appRegistry, appBasePath(path)!)
+            else await handleAppIcon(res, installAppId, Number(iconMatch![2]), opts.appRegistry)
             return
           }
           const uiMatch = path.match(APP_UI_PAGE_RE)
@@ -14612,10 +14632,19 @@ async function handleAppUiPage(
     if (app?.ui) {
       const uiPath = app.ui.path
       const st = await stat(uiPath)
+      // Installable UI: tags depend on the request's path prefix and on the
+      // app's icon list, so they ride in the cache key.
+      const reqPath = (req.url ?? "").split("?")[0] ?? ""
+      const base = appBasePath(reqPath)
+      const icons = base ? await resolveInstallIcons(app) : []
       rep = await appUiRepresentations.get(
-        `page\0${uiPath}\0${baseUrl}\0${variant ?? ""}`,
+        `page\0${uiPath}\0${baseUrl}\0${variant ?? ""}\0${base ?? ""}\0${JSON.stringify(app.ui.install ?? null)}\0${JSON.stringify(icons)}`,
         `${st.mtimeMs}:${st.size}`,
-        async () => appUiPageRepresentation(await readFile(uiPath, "utf8"), baseUrl, variant),
+        async () => {
+          const raw = await readFile(uiPath, "utf8")
+          const tags = base ? installHeadTags(raw, app, base, appleIconIndex(icons)) : ""
+          return appUiPageRepresentation(injectIntoHead(raw, tags), baseUrl, variant)
+        },
       )
     } else {
       const html = builtin!.html
@@ -14727,6 +14756,55 @@ export function resolveStoreRedirectUrl(
  *  validated by `isValidAppUiAssetName` (a bad name is a 404, never a path). */
 const APP_UI_ASSET_RE = /^\/apps\/(.+?)\/ui\/assets\/([^/]*)$/
 
+/** `GET /apps/:appId/manifest.webmanifest` and `GET /apps/:appId/icons/:n` —
+ *  the installable-UI routes (app-ui-install.ts). */
+const APP_MANIFEST_RE = /^\/apps\/(.+?)\/manifest\.webmanifest$/
+const APP_ICON_RE = /^\/apps\/(.+?)\/icons\/(\d{1,2})$/
+
+async function handleAppManifest(
+  res: ServerResponse,
+  appId: string,
+  appRegistry: AppRegistry,
+  base: string,
+): Promise<void> {
+  const app = appRegistry.getApp(appId)
+  if (!app?.ui) {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "not_found" }))
+    return
+  }
+  const manifest = await buildAppManifest(app, base)
+  res.writeHead(200, {
+    "content-type": "application/manifest+json; charset=utf-8",
+    "cache-control": "no-cache",
+    "x-content-type-options": "nosniff",
+  })
+  res.end(JSON.stringify(manifest))
+}
+
+async function handleAppIcon(
+  res: ServerResponse,
+  appId: string,
+  index: number,
+  appRegistry: AppRegistry,
+): Promise<void> {
+  const app = appRegistry.getApp(appId)
+  const icon = app?.ui ? await readInstallIcon(app, index) : undefined
+  if (!icon) {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "not_found" }))
+    return
+  }
+  res.writeHead(200, {
+    "content-type": icon.type,
+    "cache-control": "no-cache",
+    "x-content-type-options": "nosniff",
+    // An svg is an image here, never a document: no script can run from it.
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+  })
+  res.end(icon.bytes)
+}
+
 /** The app-UI static shell: the page, and its assets with a valid flat file
  *  name. The ONE predicate the tunnel-auth exemption consults
  *  (`tunnelBearerAllowed`) — everything under it (tool-call, external-blob,
@@ -14734,6 +14812,7 @@ const APP_UI_ASSET_RE = /^\/apps\/(.+?)\/ui\/assets\/([^/]*)$/
 function isAppUiShellRequest(method: string, path: string): boolean {
   if (method !== "GET") return false
   if (APP_UI_PAGE_RE.test(path)) return true
+  if (APP_MANIFEST_RE.test(path) || APP_ICON_RE.test(path)) return true
   const asset = path.match(APP_UI_ASSET_RE)
   return asset !== null && isValidAppUiAssetName(asset[2]!)
 }
