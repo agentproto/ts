@@ -2124,6 +2124,16 @@ export async function startHttpServer(
    * When `opts.token` is unset (older host integrations), this is a
    * no-op so existing call sites keep working.
    */
+  /** The request itself carries the per-boot daemon token (bearer header or
+   *  `?token=`): a credential a foreign page cannot hold, whatever its Origin. */
+  function presentsPerBootToken(req: IncomingMessage): boolean {
+    if (!opts.token) return false
+    if (req.headers.authorization === `Bearer ${opts.token}`) return true
+    const urlStr = req.url ?? ""
+    if (!urlStr.includes("?")) return false
+    return new URLSearchParams(urlStr.slice(urlStr.indexOf("?") + 1)).get("token") === opts.token
+  }
+
   function checkSessionsToken(req: IncomingMessage): "ok" | "missing" | "bad" {
     if (!opts.token) return "ok"
 
@@ -3767,6 +3777,29 @@ export async function startHttpServer(
         // for the bearer once a request has crossed the network boundary.
         if (!tunnelBearerAllowed(req, path, req.method ?? "GET")) {
           rejectTunnelUnauthorized(res)
+          return
+        }
+
+        // Cross-origin READ gate. CORS answers `*` to an untrusted origin (that is
+        // what lets a page probe `/health`), so every other GET/HEAD route that
+        // returns local state must refuse a foreign browser Origin (including
+        // `null`) itself: otherwise any web page the user visits could read it.
+        // `guardBrowserOrigin` lets through no-Origin native clients, allowlisted
+        // origins, a widget embed token and the bearer; a link-session credential
+        // keeps its own path. Exempt: `/health` (public probe), `/apps/*` and
+        // `/mcp*` (their own origin/token gates). Writes keep their own gates
+        // (and their 401 contract).
+        if (
+          (req.method === "GET" || req.method === "HEAD") &&
+          path !== "/health" &&
+          !path.startsWith("/apps/") &&
+          path !== "/mcp" &&
+          !path.startsWith("/mcp/") &&
+          !isScreencastSessionsRoute(path) && // gated (401) by `checkSessionsToken` below
+          !presentsPerBootToken(req) &&
+          appLinkSessionReadAuth(req, path, req.method, opts.appLinkKeyPath) === undefined &&
+          guardBrowserOrigin(req, res)
+        ) {
           return
         }
 
