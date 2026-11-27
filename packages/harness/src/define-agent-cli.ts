@@ -761,6 +761,9 @@ export function createAgentCliRuntime(
           // in-bounds — the run workspace sits outside the app-dir cwd.
           isolatedPermissions.additionalDirectories = opts.fsZones.writable
         }
+        if (opts?.permissionAllow?.length) {
+          isolatedPermissions.allow = [...opts.permissionAllow]
+        }
         if (Object.keys(isolatedPermissions).length > 0) {
           isolatedSettings.permissions = isolatedPermissions
         }

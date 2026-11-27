@@ -121,6 +121,7 @@ import {
 import { resolveTurnRetryPolicy, type TurnRetryInput } from "./turn-retry-policy.js"
 import { sessionTokenModeOf } from "./identity-defaults.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
+import { permissionAllowFor } from "./permission-grants.js"
 import { revokeSessionTokens } from "./session-credentials.js"
 import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
@@ -1648,6 +1649,7 @@ async function restartAgentSessionOnce(
       sessionId: restartedSessionId,
     })
     const restartPreCompactCommand = preCompactCommandFor(restartDefaults, { adapter: adapterSlug })
+    const restartPermissionAllow = permissionAllowFor(restartDefaults, { adapter: adapterSlug, label: prev.label })
     // The adapter lists the gateway's tools while it starts, before the
     // descriptor below exists (spawning-caller-context.ts).
     const unstageSpawningCaller = stageSpawningCaller(restartedSessionId, {
@@ -1671,6 +1673,8 @@ async function restartAgentSessionOnce(
       // Projected PreCompact hook, re-read now: the respawn rewrites the
       // isolated settings.json whole, so the current config decides.
       ...(restartPreCompactCommand ? { preCompactCommand: restartPreCompactCommand } : {}),
+      // Per-label permission grants, re-read now like the hook above.
+      ...(restartPermissionAllow ? { permissionAllow: restartPermissionAllow } : {}),
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
       // Re-apply the AGENT.md system-prompt text on the SAME declared channel
       // (the original spawn already warned + prefixed when the adapter had

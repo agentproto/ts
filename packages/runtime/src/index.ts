@@ -152,6 +152,7 @@ import {
 import { createIdentityModeReader, resolveIdentityDefaults } from "./identity-defaults.js"
 import { identityObservationsFile } from "./identity-observations.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
+import { permissionAllowFor } from "./permission-grants.js"
 import { withSessionToken } from "./session-spawn.js"
 import {
   DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS,
@@ -3200,10 +3201,12 @@ export async function createGateway(
                 )
                 return undefined
               })
-              const resumePreCompactCommand = preCompactCommandFor(
-                (await loadConfig().catch(() => undefined))?.defaults,
-                { adapter: adapterSlug },
-              )
+              const resumeDefaults = (await loadConfig().catch(() => undefined))?.defaults
+              const resumePreCompactCommand = preCompactCommandFor(resumeDefaults, { adapter: adapterSlug })
+              const resumePermissionAllow = permissionAllowFor(resumeDefaults, {
+                adapter: adapterSlug,
+                label: descriptor.label,
+              })
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
@@ -3249,6 +3252,8 @@ export async function createGateway(
                 // Projected PreCompact hook: the resume rewrites the isolated
                 // settings.json whole, so the current config decides here too.
                 ...(resumePreCompactCommand ? { preCompactCommand: resumePreCompactCommand } : {}),
+                // Per-label permission grants, re-read like the hook above.
+                ...(resumePermissionAllow ? { permissionAllow: resumePermissionAllow } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
                 ...(launchConfig.options ? { options: launchConfig.options } : {}),
                 ...(onActivity ? { onActivity } : {}),

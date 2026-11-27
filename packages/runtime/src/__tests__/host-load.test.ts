@@ -249,6 +249,20 @@ describe("scanRootOf", () => {
     expect(scanRootOf("du -sh /", home)).toBe("/")
     expect(scanRootOf("du -sk -x /Volumes", home)).toBe("/Volumes")
   })
+  it("flags a scan whose root follows an option that takes an argument", () => {
+    // The shape that saturated a host: bfs with a search strategy first.
+    expect(scanRootOf("bfs -S dfs / -name report.png", home)).toBe("/")
+    expect(scanRootOf("bfs -j 8 /Volumes -name x", home)).toBe("/Volumes")
+    expect(scanRootOf("find -O3 / -name x", home)).toBe("/")
+    expect(scanRootOf("find -D tree / -name x", home)).toBe("/")
+    expect(scanRootOf("find -f / -name x", home)).toBe("/")
+    expect(scanRootOf("find /System/Volumes/Data -name x", home)).toBe("/System/Volumes/Data")
+    expect(scanRootOf("fd -H report.png /", home)).toBe("/")
+  })
+  it("does not read an option's argument as a root", () => {
+    expect(scanRootOf("bfs -S dfs . -name x", home)).toBeUndefined()
+    expect(scanRootOf("find -f /Users/me/proj -name x", home)).toBeUndefined()
+  })
   it("ignores scoped scans and non-scan commands", () => {
     expect(scanRootOf("find /Users/me/proj -name x", home)).toBeUndefined()
     expect(scanRootOf("find . -name x", home)).toBeUndefined()

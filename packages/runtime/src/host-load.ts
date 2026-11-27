@@ -429,7 +429,11 @@ export function parseLsofCwd(text: string): Map<number, string> {
 
 const SCAN_TOOLS = new Set(["find", "gfind", "bfs", "fd", "fdfind", "du", "gdu", "ncdu", "tree"])
 const FIND_LIKE = new Set(["find", "gfind", "bfs"])
-const BROAD_ROOTS = new Set(["/", "~", "/Users", "/home", "/Volumes"])
+const BROAD_ROOTS = new Set(["/", "~", "/Users", "/home", "/Volumes", "/System/Volumes/Data"])
+/** find-like options that take a separate argument: `bfs -S dfs` (search
+ *  strategy), `-j 8` (threads), GNU find/bfs `-D <debug>` and `-O <level>`,
+ *  and BSD find `-f <path>` (whose argument IS a starting path). */
+const FIND_OPTS_WITH_ARG = new Set(["-S", "-j", "-D", "-O", "-f"])
 
 /** The whole-filesystem root a `find`/`bfs`/`du`/... command line scans, or
  *  undefined when it is scoped to something narrower. "Broad" = `/`, `~`, the
@@ -440,13 +444,22 @@ export function scanRootOf(args: string, home: string): string | undefined {
   if (!SCAN_TOOLS.has(exe)) return undefined
   const findLike = FIND_LIKE.has(exe)
   const homeNorm = home.replace(/\/+$/, "")
-  for (const t of toks.slice(1)) {
+  const isBroad = (t: string): boolean => {
+    const norm = t.length > 1 ? t.replace(/\/+$/, "") : t
+    return BROAD_ROOTS.has(norm) || norm === "~/" || (homeNorm.length > 1 && norm === homeNorm)
+  }
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i]!
     if (findLike) {
-      if (/^-[HLPEXsxd]$/.test(t)) continue
+      if (/^-[HLPEXsxd]$/.test(t) || /^-(?:O|j)\d+$/.test(t)) continue
+      if (FIND_OPTS_WITH_ARG.has(t)) {
+        const arg = toks[++i]
+        if (t === "-f" && arg !== undefined && isBroad(arg)) return arg
+        continue
+      }
       if (t.startsWith("-") || t === "(" || t === "!") break
     } else if (t.startsWith("-")) continue
-    const norm = t.length > 1 ? t.replace(/\/+$/, "") : t
-    if (BROAD_ROOTS.has(norm) || norm === "~/" || (homeNorm.length > 1 && norm === homeNorm)) return t
+    if (isBroad(t)) return t
   }
   return undefined
 }

@@ -40,6 +40,7 @@ export const HOST_USAGE = `Usage:
   agentproto host health [--json] [--watch <seconds>] [--budget <ms>] [--local]
                          [--no-color] [--warn-load <x>] [--crit-load <x>] [...]
   agentproto host guard  [--dry-run] [--json] [--agent <slug>] [--notify-session <id>] [...]
+  agentproto host stop-process <pid> --reason <text> [--grace <ms>] [--json]
 
 host load: one-screen host load report: load average vs core count, CPU
 user/sys/idle, RAM (used/wired/compressor/free) and swap, per-disk transfers/s +
@@ -472,6 +473,10 @@ export async function runHost(args: readonly string[]): Promise<number> {
   if (sub === "guard") {
     const { runHostGuard } = await import("./host-guard.js")
     return runHostGuard(args.slice(1))
+  }
+  if (sub === "stop-process") {
+    const { runHostStopProcess } = await import("./host-stop-process.js")
+    return runHostStopProcess(args.slice(1))
   }
   if (sub !== "load") {
     process.stderr.write(`agentproto host: unknown subcommand "${sub}"\n\n${HOST_USAGE}`)

@@ -10,6 +10,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from "vitest"
 import {
+  filesystemScansOf,
+  freshScans,
+  stopScanCommand,
   DEFAULT_GUARD_LEVEL_PATH,
   decideEscalation,
   readGuardLevel,
@@ -64,13 +67,17 @@ const io = vi.hoisted(() => ({
   escalations: [] as string[],
   /** When set, the next escalation request fails (then this is cleared). */
   failNextEscalation: false,
+  /** Prompt text of each escalation sent. */
+  prompts: [] as string[],
+  /** Host load report handed to the guard (only warnings/processes matter). */
+  report: undefined as undefined | { warnings: unknown[]; processes?: unknown[] },
 }))
 
 vi.mock("../commands/_daemon-helpers.js", () => ({
   discoverDaemon: async () => ({ found: { url: "http://daemon.test", token: "t" } }),
   printNoDaemonError: () => undefined,
   httpGetJson: async () => ({ sessions: io.sessions }),
-  httpPostJson: async (url: string) => {
+  httpPostJson: async (url: string, body?: { prompt?: string }) => {
     const prompt = /\/sessions\/([^/]+)\/prompt/.exec(url)
     if (prompt && io.failNextEscalation) {
       io.failNextEscalation = false
@@ -78,6 +85,7 @@ vi.mock("../commands/_daemon-helpers.js", () => ({
     }
     if (prompt) {
       io.escalations.push(`notify:${decodeURIComponent(prompt[1] as string)}`)
+      io.prompts.push(body?.prompt ?? "")
       return {}
     }
     if (url.endsWith("/sessions/agent")) {
@@ -102,7 +110,7 @@ vi.mock("../commands/_daemon-helpers.js", () => ({
 }))
 
 vi.mock("../commands/host.js", () => ({
-  gatherHealthInput: async () => ({}),
+  gatherHealthInput: async () => (io.report ? { report: io.report } : {}),
 }))
 
 vi.mock("../commands/host-health.js", async importOriginal => {
@@ -716,6 +724,8 @@ describe("runHostGuard — escalation on level change", () => {
     io.kills = []
     io.reapFails = new Set()
     io.escalations = []
+    io.prompts = []
+    io.report = undefined
     io.failNextEscalation = false
     io.verdictAfter = undefined
     io.healthSamples = 0
@@ -823,8 +833,85 @@ describe("runHostGuard — escalation on level change", () => {
     expect(io.escalations).toEqual([])
   })
 
+  it("escalates a whole-disk scan at once, even on an OK host, and only once per pid", async () => {
+    io.verdict = "OK"
+    const scan = (pid: number) => ({
+      warnings: [
+        { kind: "fs-scan", severity: "warn", message: `filesystem-wide scan pid ${pid} [session] rooted at /, running 2m`, pids: [pid] },
+      ],
+      processes: [
+        { pid, args: "bfs -S dfs / -name x", elapsedSec: 120, cpuPercent: 99, owner: { kind: "session", sessionId: "sess_fig1", label: "fig-step" } },
+      ],
+    })
+    io.report = scan(4242)
+    await run()
+    expect(io.escalations).toEqual(["notify:brain"])
+    expect(io.prompts[0]).toContain("whole-disk scan is running")
+    expect(io.prompts[0]).toContain("session sess_fig1 (fig-step)")
+    expect(io.prompts[0]).toContain('agentproto host stop-process 4242 --reason "whole-disk scan rooted at / (host guard)"')
+    expect(io.prompts[0]).toContain("Never use `kill`")
+    // Same scan still running: not escalated again.
+    await run()
+    expect(io.escalations).toHaveLength(1)
+    // A new scan: escalated.
+    io.report = scan(5151)
+    await run()
+    expect(io.escalations).toHaveLength(2)
+    expect((await readGuardLevel(levelPath))?.scanPids).toEqual([5151])
+  })
+
   it("rejects an unknown --escalate-on level", async () => {
     expect(await run(["--escalate-on", "sometimes"])).toBe(64)
+  })
+})
+
+describe("whole-disk scans", () => {
+  const scanReport = (pids: number[], owner: "session" | "none" = "session") => ({
+    warnings: pids.map(pid => ({
+      kind: "fs-scan",
+      severity: "warn",
+      message: `filesystem-wide scan pid ${pid} bfs -S dfs / -name x [session] rooted at /, running 3m`,
+      pids: [pid],
+    })),
+    processes: pids.map(pid => ({
+      pid,
+      args: "bfs -S dfs / -name x",
+      elapsedSec: 180,
+      cpuPercent: 95,
+      owner: owner === "session" ? { kind: "session", sessionId: "sess_fig1", label: "fig-step" } : { kind: "other" },
+    })),
+  })
+
+  it("filesystemScansOf reads the fs-scan warnings with their owning session", () => {
+    const scans = filesystemScansOf(scanReport([4242]) as never)
+    expect(scans).toEqual([
+      {
+        pid: 4242,
+        root: "/",
+        args: "bfs -S dfs / -name x",
+        elapsedSec: 180,
+        cpuPercent: 95,
+        sessionId: "sess_fig1",
+        sessionLabel: "fig-step",
+      },
+    ])
+    expect(filesystemScansOf(scanReport([7], "none") as never)[0]!.sessionId).toBeNull()
+    expect(filesystemScansOf({ warnings: [] })).toEqual([])
+  })
+
+  it("freshScans announces a pid once and forgets the ones that ended", () => {
+    const scans = filesystemScansOf(scanReport([10, 11]) as never)
+    const memo = { level: "OK" as const, since: "2026-11-27T00:00:00.000Z", escalatedLevel: "OK" as const, scanPids: [10, 99] }
+    const r = freshScans(scans, memo)
+    expect(r.fresh.map(s => s.pid)).toEqual([11])
+    expect(r.keepIfSent).toEqual([10, 11])
+    expect(r.keepIfNotSent).toEqual([10])
+  })
+
+  it("stopScanCommand is the granted command, for that pid only", () => {
+    expect(stopScanCommand({ pid: 4242, root: "/" })).toBe(
+      'agentproto host stop-process 4242 --reason "whole-disk scan rooted at / (host guard)"',
+    )
   })
 })
 
