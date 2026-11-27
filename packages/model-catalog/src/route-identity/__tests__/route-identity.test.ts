@@ -728,6 +728,7 @@ describe("resolveLlmModelRoute", () => {
 
     it("resolves a real table row without a pin (smoke against live data)", () => {
       const [id] = Object.keys(HUGGINGFACE_ROUTES).filter((k) => k !== FIXTURE_ID)
+      expect(id).toBeDefined()
       const route = resolveLlmModelRoute(`${id}@huggingface`)
       expect(route?.route).toBe("huggingface")
     })

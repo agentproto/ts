@@ -175,14 +175,19 @@ jobs:
           run_suite() {
             title="$1"; shift
             log="$RUNNER_TEMP/$(echo "$title" | tr -c 'a-z0-9' '-').log"
-            pnpm --filter @agentproto/model-catalog exec vitest run "$@" > "$log" 2>&1
-            code=$?
+            # GitHub's default shell is `bash -e`: a bare failing command would
+            # abort the step before the outcome is recorded, so branch on it.
+            if pnpm --filter @agentproto/model-catalog exec vitest run "$@" > "$log" 2>&1; then
+              code=0
+            else
+              code=$?
+            fi
             if [ "$code" -ne 0 ]; then
               {
                 echo "### $title: FAILED (exit $code)"
                 echo
                 echo '```'
-                grep -E '^( FAIL |AssertionError|Error:| ❯ | +→ )' "$log" | head -40
+                { grep -E '^( FAIL |AssertionError|Error:| ❯ | +→ )' "$log" || true; } | head -40 || true
                 echo '```'
                 echo
               } >> "$report"

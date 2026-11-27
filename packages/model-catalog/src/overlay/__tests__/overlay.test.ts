@@ -8,7 +8,11 @@ import { getModel, resolveAlias, listModels } from "../../registry/index.js"
 
 // A core LLM id taken from the synced Anthropic table as it is, so a sync that
 // retires a model cannot break the overlay tests.
-const CORE_ID = Object.keys(ANTHROPIC_GENERATED_PRICING).find(id => !id.includes(".") && getModel(id))!
+const CORE_ID = (() => {
+  const id = Object.keys(ANTHROPIC_GENERATED_PRICING).find(k => !k.includes(".") && getModel(k))
+  if (!id) throw new Error("no resolvable Anthropic id in the synced tables")
+  return id
+})()
 
 afterEach(() => clearCatalogOverlays())
 
