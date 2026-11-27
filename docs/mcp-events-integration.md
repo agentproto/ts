@@ -9,7 +9,7 @@
 > era, the official `-32023`..`-32027` codes and the `Mcp-Name` header.
 > `initialize` never advertises the 2026-07-28 era; a request selects it
 > (`MCP-Protocol-Version` header or body `_meta`), and that era serves
-> `server/discover`. The normative text is AIP-76 (`mcp-events/v1`); §8
+> `server/discover`. The draft AIP-76 (`mcp-events/v1`) carries the contract; §8
 > below covers poll and stream.
 > This doc is the single mapping authority — the Contract Map below is
 > reprinted verbatim from the plan and is the source of truth for both the
