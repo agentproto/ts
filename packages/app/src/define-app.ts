@@ -19,6 +19,7 @@
  */
 
 import { isAbsolute } from "node:path"
+import { normalizeUiInstall } from "./ui-install.js"
 import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
 import type { BuildMastraAgentResult } from "@agentproto/bridge"
@@ -216,9 +217,14 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       }
     }
   }
+  const uiInstall =
+    def.ui?.install === undefined
+      ? undefined
+      : normalizeUiInstall(def.ui.install, msg => new AppDefinitionError(msg))
   const ui = def.ui
     ? Object.freeze({
         ...def.ui,
+        ...(uiInstall !== undefined ? { install: uiInstall } : {}),
         ...(uiExtensions !== undefined ? { extensions: uiExtensions } : {}),
       })
     : undefined

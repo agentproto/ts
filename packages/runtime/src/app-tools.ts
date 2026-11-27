@@ -1891,6 +1891,7 @@ export async function performInstall(
         ...(handle.ui?.tools !== undefined ? { tools: handle.ui.tools } : {}),
         ...(handle.ui?.toolScope !== undefined ? { toolScope: handle.ui.toolScope } : {}),
         ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
+        ...(handle.ui?.install !== undefined ? { install: handle.ui.install } : {}),
         ...(handle.ui?.build !== undefined && allowUiBuild ? { build: handle.ui.build } : {}),
         // OpenAI MCP-extensions carrier (plan W-B): the normalized,
         // app-validated `ui.extensions` block persists verbatim on the
