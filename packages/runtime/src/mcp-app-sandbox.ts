@@ -303,7 +303,7 @@ export function createMcpAppSandbox(
     if (mode === "port" && sandboxPort !== undefined) {
       // A hostname different from the page's: cookies ignore ports, so the same
       // name would put the view in the daemon page's cookie jar.
-      const name = hostName === "127.0.0.1" ? "localhost" : "127.0.0.1"
+      const name = hostName !== undefined && canonName(hostName) === "127.0.0.1" ? "localhost" : "127.0.0.1"
       const origin = `http://${name}:${sandboxPort}`
       return { token, url: `${origin}/v/${token}`, origin, mode: "port" }
     }
