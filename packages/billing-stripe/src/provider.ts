@@ -109,6 +109,8 @@ export function createStripeProvider(cfg: StripeProviderConfig): SettlementProvi
 
   const keyProblem = (): string | null => {
     if (secretKey === "") return `rail '${STRIPE_RAIL}': ${STRIPE_ENV.secretKey} is not set`
+    // Without it every webhook fails closed: the rail must not read healthy.
+    if (webhookSecret === "") return `rail '${STRIPE_RAIL}': ${STRIPE_ENV.webhookSecret} is not set`
     const keyMode = stripeKeyMode(secretKey)
     if (keyMode === null) return `rail '${STRIPE_RAIL}': ${STRIPE_ENV.secretKey} is not a secret or restricted key (sk_ or rk_)`
     try {

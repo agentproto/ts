@@ -27,7 +27,7 @@ Through the registry, `createProvider(ctx)` reads `STRIPE_SECRET_KEY`, `STRIPE_W
 ## What this version does
 
 - **Signature.** The public `Stripe-Signature` scheme, with `node:crypto`: HMAC-SHA256 of `${t}.${body}`, constant-time comparison, 300 s tolerance. Every `v1` of the header is read (several appear while a secret is rolled); any one that matches is enough; other schemes are ignored. A wrong, missing or stale signature throws, and nothing is written.
-- **API version.** `STRIPE_API_VERSION` (`2026-11-18.endive`) is the version the installed SDK pins (a test compares the two). Set the webhook endpoint to it: an event of another version throws.
+- **API version.** `STRIPE_API_VERSION` (`2026-11-18.endive`) is the API version this adapter reads, equal to the one `stripe@23` pins (a test compares the two against this package's own dev dependency). Whatever SDK version your host installs, set the webhook endpoint to `STRIPE_API_VERSION` and pass it as `apiVersion` to the client: an event of another version throws. The peer range is `stripe >=23.0.0` for that reason.
 - **Mode.** `check()` refuses a key whose prefix (`sk_test_`, `rk_test_`, `sk_live_`, `rk_live_`) does not match `STRIPE_MODE`; an event whose `livemode` does not match the mode throws.
 - **Scope.** A payment event without `metadata.agentproto_offer` gives no fact, nor does one outside `offerNamespace` when it is set: another product's payment is not listed as owed. Refunds and disputes carry no such metadata: they are emitted, and the core answers `unknown_payment` for another product's.
 - **Payer.** Each key `k` of `ownerKeys` is read from `metadata.agentproto_owner_<k>`.

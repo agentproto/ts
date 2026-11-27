@@ -52,7 +52,7 @@
     "@agentproto/billing": "workspace:*"
   },
   "peerDependencies": {
-    "stripe": ">=18.0.0"
+    "stripe": ">=23.0.0"
   },
   "peerDependenciesMeta": {
     "stripe": {

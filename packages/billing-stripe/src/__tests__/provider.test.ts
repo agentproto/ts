@@ -53,6 +53,8 @@ describe("construction and capabilities", () => {
     const kit = makeKit()
     expect(await createStripeProvider(kit.config()).check!()).toEqual({ ok: true })
     expect((await createStripeProvider(kit.config({ secretKey: undefined })).check!()).reason).toMatch(/STRIPE_SECRET_KEY is not set/)
+    expect((await createStripeProvider(kit.config({ webhookSecret: undefined })).check!()).reason).toMatch(/STRIPE_WEBHOOK_SECRET is not set/)
+    expect((await createStripeProvider(kit.config({ webhookSecret: "" })).check!()).ok).toBe(false)
     expect((await createStripeProvider(kit.config({ secretKey: "pk_test_abc" })).check!()).reason).toMatch(/not a secret or restricted key/)
     expect((await createStripeProvider(kit.config({ secretKey: "sk_live_abc" })).check!()).reason).toMatch(/test mode but its key is a live key/)
     expect([stripeKeyMode("sk_test_x"), stripeKeyMode("rk_test_x"), stripeKeyMode("sk_live_x"), stripeKeyMode("rk_live_x"), stripeKeyMode("whsec_x")]).toEqual(["test", "test", "live", "live", null])
