@@ -266,6 +266,11 @@ export interface EventsListContext {
   principal: Principal
   /** When false, `poll` is not advertised in `delivery` (the extension is switched off). Default true. */
   pollEnabled?: boolean
+  /**
+   * When true, `push` is advertised in `delivery` (`events/stream` is served, 2026-07-28 era only). Default FALSE, so
+   * the legacy era and every existing caller keep announcing `["poll", "webhook"]`.
+   */
+  pushEnabled?: boolean
 }
 
 export interface EventsListResult {
@@ -364,7 +369,7 @@ function requireWebhookDelivery(
   return { mode: "webhook", url: delivery.url, ...(typeof delivery.secret === "string" ? { secret: delivery.secret } : {}) }
 }
 
-function validateArgsOrThrow(name: string, registration: EventRegistration, args: unknown): Record<string, unknown> {
+export function validateArgsOrThrow(name: string, registration: EventRegistration, args: unknown): Record<string, unknown> {
   if (!isRecord(args)) throw invalidParams("invalid_arguments", "`arguments` must be an object")
   const schemaCheck = validateAgainstInputSchema(registration.definition.inputSchema, args)
   if (!schemaCheck.ok) {
@@ -378,10 +383,13 @@ function validateArgsOrThrow(name: string, registration: EventRegistration, args
 export async function eventsList(r: EventsListRequest, ctx: EventsListContext): Promise<EventsListResult> {
   const schemes = tenantScope(ctx.principal)
   const pollEnabled = ctx.pollEnabled !== false
+  const pushEnabled = ctx.pushEnabled === true
   const definitions = schemes.flatMap((scheme) =>
     scheme.events.map((event): EventDefinition => ({
       ...event.definition,
-      delivery: event.definition.delivery.filter((mode): mode is EventDeliveryMode => pollEnabled || mode !== "poll"),
+      delivery: event.definition.delivery.filter(
+        (mode): mode is EventDeliveryMode => (pollEnabled || mode !== "poll") && (pushEnabled || mode !== "push"),
+      ),
     })),
   )
   const requested = r.pageSize ?? LIST_PAGE_DEFAULT
@@ -581,7 +589,7 @@ export function toJournalEvent(event: SentinelEvent): JournalEvent {
   return { eventId, name, timestamp, data }
 }
 
-function validateMaxAgeMs(value: unknown): void {
+export function validateMaxAgeMs(value: unknown): void {
   if (value === undefined) return
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     throw invalidParams("invalid_max_age", "`maxAgeMs` must be a positive number")
@@ -620,11 +628,12 @@ function principalTag(principal: Principal): string {
   return createHash("sha256").update(principal).digest("base64url").slice(0, 12)
 }
 
-function encodePollCursor(journalId: string, seq: number, principal: Principal): string {
+/** Shared by `events/poll` and `events/stream`: one cursor format, interchangeable between the two. */
+export function encodePollCursor(journalId: string, seq: number, principal: Principal): string {
   return Buffer.from(JSON.stringify({ v: 1, j: journalId, s: seq, p: principalTag(principal) }), "utf8").toString("base64url")
 }
 
-function decodePollCursor(cursor: string, principal: Principal): { journalId: string; seq: number } {
+export function decodePollCursor(cursor: string, principal: Principal): { journalId: string; seq: number } {
   let parsed: { v?: unknown; j?: unknown; s?: unknown; p?: unknown }
   try {
     parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"))

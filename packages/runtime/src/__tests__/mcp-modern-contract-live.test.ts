@@ -15,8 +15,12 @@ import {
   ERR_MISSING_CLIENT_CAPABILITY,
   GATEWAY_ADVERTISED_VERSIONS,
   handleModernRequest,
+  type EventsStreamHandler,
   type ModernDeps,
 } from "../mcp-modern/index.js"
+import { eventsList, type EventsListRequest } from "../mcp-events/adapter.js"
+import { daemonBearerPrincipal } from "../mcp-events/events-registry.js"
+import { registerPushAwareEventsList } from "../mcp-events-surface.js"
 
 type Json = Record<string, any>
 type Headers = Record<string, string | string[] | undefined>
@@ -594,5 +598,80 @@ describe("local policy (live)", () => {
       expectError(await call("tools/list", {}, { headers: { "mcp-method": ["tools/list", "tools/list"] } }), 400, -32020)
       expectError(await callTool({ "mcp-name": ["probe", "probe"] }), 400, -32020)
     })
+  })
+})
+
+describe("events/stream (push delivery)", () => {
+  const STREAM_REQUEST = fixture("events-stream-request").body
+  const STREAM_RESULT = fixture("events-stream-result").body
+
+  async function realEventsServer(modern: boolean): Promise<McpServer> {
+    const { server } = await createMcpServer({ specs: [], name: "main", version: "1.2.3" })
+    const principal = daemonBearerPrincipal()
+    registerEventsMethods(server, {
+      list: async params => eventsList(params as EventsListRequest, { principal }),
+      subscribe: async () => ({}),
+      unsubscribe: async () => ({}),
+      poll: async () => ({}),
+    })
+    if (modern) registerPushAwareEventsList(server, principal)
+    return server
+  }
+
+  it("events/list on the modern era lists push; the legacy registration does not", async () => {
+    const modern = json(await call("events/list", {}, { deps: { createServer: () => realEventsServer(true) } })).result
+    const legacy = json(await call("events/list", {}, { deps: { createServer: () => realEventsServer(false) } })).result
+    expect(modern?.events.length).toBeGreaterThan(0)
+    for (const def of modern?.events ?? []) expect(def.delivery).toEqual(["poll", "push", "webhook"])
+    for (const def of legacy?.events ?? []) expect(def.delivery).toEqual(["poll", "webhook"])
+  })
+
+  it("is answered before any bridge opens, and its final frame carries only resultType and the subscription id", async () => {
+    let built = 0
+    let opened: { id: string | number; params: Json } | undefined
+    const eventsStream: EventsStreamHandler = {
+      open: async request => {
+        opened = request
+        return async sink => {
+          await sink.send({ jsonrpc: "2.0", id: request.id, result: { resultType: "complete", _meta: { "io.modelcontextprotocol/subscriptionId": request.id } } })
+          return "closed"
+        }
+      },
+    }
+    const deps: ModernDeps = {
+      createServer: async () => {
+        built++
+        return legacyServer()
+      },
+      eventsStream,
+    }
+    const out = await call("events/stream", STREAM_REQUEST.params, { deps, headers: { "mcp-name": STREAM_REQUEST.params.name } })
+    expect(out.status).toBe(200)
+    expect(out.headers["content-type"]).toBe("text/event-stream")
+    expect(out.body).toBeUndefined()
+    expect(built).toBe(0)
+    expect(opened?.params.name).toBe("email.received")
+    const sent: Json[] = []
+    await out.stream!({ send: async m => void sent.push(m), signal: new AbortController().signal })
+    expect(sent).toEqual([STREAM_RESULT])
+  })
+
+  it("an open error is a JSON-RPC error with its code and data, and no stream", async () => {
+    const deps: ModernDeps = {
+      createServer: legacyServer,
+      eventsStream: {
+        open: async () => {
+          throw Object.assign(new Error("Unsupported: no push"), { code: -32026, data: { feature: "deliveryMode", value: "push" } })
+        },
+      },
+    }
+    const out = await call("events/stream", STREAM_REQUEST.params, { deps, headers: { "mcp-name": "email.received" } })
+    expect(out.stream).toBeUndefined()
+    expect(out.headers["content-type"]).toBe("application/json")
+    expect(json(out).error).toMatchObject({ code: -32026, data: { feature: "deliveryMode", value: "push" } })
+  })
+
+  it("without the handler, events/stream is 404 -32601", async () => {
+    expectError(await call("events/stream", STREAM_REQUEST.params, { headers: { "mcp-name": "email.received" } }), 404, -32601)
   })
 })

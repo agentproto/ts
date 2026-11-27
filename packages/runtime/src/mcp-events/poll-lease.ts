@@ -8,6 +8,11 @@
  * nobody polls for `idleTtlMs` is released (the provider watch is cancelled),
  * so abandoned keys never leave an orphan watch behind.
  *
+ * An open `events/stream` RETAINS its lease (`retain`): a retained lease is never
+ * swept, since `lastUsedAt` only moves on `acquire` and a quiet stream would
+ * otherwise lose its watch after `idleTtlMs`. The idle clock restarts when the
+ * last hold is released.
+ *
  * The provider's own cursor lives in the lease (memory); the journal is what
  * clients replay from. After a restart the lease is gone: the next poll opens
  * a new watch and the journal records a gap, so older cursors read as
@@ -73,9 +78,19 @@ interface Lease {
   chain: Promise<unknown>
 }
 
+/** Category of a failed provider pull, safe to put on the wire (never the provider's raw message). */
+export type PumpFailureReason = "upstream_poll_failed"
+
 export interface PollLeaseManager {
   /** Take (or reuse) the lease for `input.key`, then pull any new provider events into the journal. */
   acquire(input: AcquireInput): Promise<{ created: boolean }>
+  /**
+   * Hold the lease of `key` open: `sweep` never releases a held lease. Returns the release function (idempotent);
+   * the idle TTL counts from the moment the last hold is released.
+   */
+  retain(key: string): () => void
+  /** Be told when a provider pull for `key` fails (the pump keeps retrying). Returns the unsubscribe function. */
+  onPumpError(key: string, listener: (reason: PumpFailureReason) => void): () => void
   /** Release leases idle for longer than the TTL. Returns the keys released. */
   sweep(): Promise<string[]>
   isActive(key: string): boolean
@@ -94,6 +109,18 @@ export function createPollLeaseManager(opts: PollLeaseManagerOptions): PollLease
   const now = opts.now ?? Date.now
   const leases = new Map<string, Lease>()
   const opening = new Map<string, Promise<Lease>>()
+  const holds = new Map<string, number>()
+  const pumpErrorListeners = new Map<string, Set<(reason: PumpFailureReason) => void>>()
+
+  function reportPumpError(key: string): void {
+    for (const listener of [...(pumpErrorListeners.get(key) ?? [])]) {
+      try {
+        listener("upstream_poll_failed")
+      } catch {
+        // A listener must never break the pump.
+      }
+    }
+  }
 
   async function open(input: AcquireInput): Promise<Lease> {
     const provider = await opts.resolveProvider(input.mapped.providerSlug)
@@ -134,7 +161,8 @@ export function createPollLeaseManager(opts: PollLeaseManagerOptions): PollLease
         lease.handle = { ...lease.handle, cursor: result.cursor }
         await lease.provider.ack?.(lease.handle, result.cursor)
       } catch {
-        // A failing provider poll is retried on the next pump; the journal keeps what it has.
+        // A failing provider poll is retried on the next pump; the journal keeps what it has. Open streams are told.
+        reportPumpError(lease.key)
       }
     })
     lease.chain = run.catch(() => undefined)
@@ -191,10 +219,43 @@ export function createPollLeaseManager(opts: PollLeaseManagerOptions): PollLease
       return { created }
     },
 
+    retain(key) {
+      holds.set(key, (holds.get(key) ?? 0) + 1)
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        const left = (holds.get(key) ?? 1) - 1
+        if (left > 0) {
+          holds.set(key, left)
+          return
+        }
+        holds.delete(key)
+        const lease = leases.get(key)
+        if (lease) lease.lastUsedAt = now()
+      }
+    },
+
+    onPumpError(key, listener) {
+      let set = pumpErrorListeners.get(key)
+      if (!set) {
+        set = new Set()
+        pumpErrorListeners.set(key, set)
+      }
+      set.add(listener)
+      return () => {
+        const current = pumpErrorListeners.get(key)
+        if (!current) return
+        current.delete(listener)
+        if (current.size === 0) pumpErrorListeners.delete(key)
+      }
+    },
+
     async sweep() {
       const cutoff = now() - idleTtlMs
       const released: string[] = []
       for (const lease of [...leases.values()]) {
+        if ((holds.get(lease.key) ?? 0) > 0) continue
         if (lease.lastUsedAt < cutoff) {
           await release(lease)
           released.push(lease.key)

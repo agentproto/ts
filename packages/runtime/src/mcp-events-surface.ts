@@ -1,6 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { McpError } from "@modelcontextprotocol/sdk/types.js"
-import { registerEventsMethods, type EventsMethodsHandlers } from "@agentproto/mcp-server"
+import { EventsListRequestSchema, registerEventsMethods, type EventsMethodsHandlers } from "@agentproto/mcp-server"
+import type { EventsStreamHandler } from "./mcp-modern/index.js"
+import { McpEventsError, eventsList, type EventsListRequest } from "./mcp-events/adapter.js"
+import type { Principal } from "./mcp-events/events-registry.js"
 
 /** MCP Events `-32024 Forbidden`. */
 const ERR_FORBIDDEN = -32024
@@ -51,4 +54,36 @@ export function createEventsSurfaceServer(opts: EventsSurfaceOptions): McpServer
       : {}),
   })
   return server
+}
+
+/**
+ * `events/stream` on the public origin: the same repo allowlist as poll and subscribe, checked BEFORE the stream
+ * opens (`-32024`, no slot, no lease, no frame).
+ */
+export function guardEventsStream(handler: EventsStreamHandler, repoAllowlist: readonly string[]): EventsStreamHandler {
+  return {
+    open: async request => {
+      if (!isSubscriptionPermitted(request.params, repoAllowlist)) {
+        throw new McpEventsError(ERR_FORBIDDEN, "stream not permitted", { reason: "not_permitted" })
+      }
+      return handler.open(request)
+    },
+  }
+}
+
+/**
+ * Re-register `events/list` on a MODERN-era per-request server so each type lists `push` (`events/stream` is served
+ * there). The legacy 2025-11-25 transport never runs this, so it keeps listing `["poll", "webhook"]`. Must be called
+ * after `registerEventsMethods` and before the server is connected.
+ */
+export function registerPushAwareEventsList(server: McpServer, principal: Principal): void {
+  server.server.setRequestHandler(
+    EventsListRequestSchema,
+    async request =>
+      (await eventsList((request.params ?? {}) as EventsListRequest, {
+        principal,
+        pollEnabled: true,
+        pushEnabled: true,
+      })) as unknown as Record<string, unknown>,
+  )
 }

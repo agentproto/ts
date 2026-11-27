@@ -1,0 +1,20 @@
+{
+  "_source": "https://github.com/modelcontextprotocol/ext-events/blob/c77b84395eff0ae32f53b0516c2214fe276ed050/specification/beta/events/events.mdx#subscription-termination",
+  "_note": "Section 'Subscription Termination', push.",
+  "body": {
+    "jsonrpc": "2.0",
+    "method": "notifications/events/terminated",
+    "params": {
+      "error": {
+        "code": -32024,
+        "message": "Forbidden",
+        "data": {
+          "reason": "Access revoked"
+        }
+      },
+      "_meta": {
+        "io.modelcontextprotocol/subscriptionId": 1
+      }
+    }
+  }
+}

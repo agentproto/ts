@@ -15,6 +15,7 @@ export const DEFAULT_MODERN_ERA = true
 export const DEFAULT_HUMAN_GATE = true
 export const DEFAULT_SKILLS_EXTENSION = true
 export const DEFAULT_EVENTS_EXTENSION = true
+export const DEFAULT_EVENTS_STREAM = true
 export const DEFAULT_TASKS = true
 
 export async function resolveMcpConfig(
@@ -60,6 +61,16 @@ export async function resolveEventsExtension(
 ): Promise<boolean> {
   const value = (await resolveMcpConfig(loadCfg)).eventsExtension
   return typeof value === "boolean" ? value : DEFAULT_EVENTS_EXTENSION
+}
+
+/** `events/stream` (push): on only while BOTH `mcp.eventsExtension` and `mcp.eventsStream` are on. */
+export async function resolveEventsStream(
+  loadCfg: () => Promise<{ mcp?: McpConfig }> = loadConfig,
+): Promise<boolean> {
+  const mcp = await resolveMcpConfig(loadCfg)
+  const extension = typeof mcp.eventsExtension === "boolean" ? mcp.eventsExtension : DEFAULT_EVENTS_EXTENSION
+  const stream = typeof mcp.eventsStream === "boolean" ? mcp.eventsStream : DEFAULT_EVENTS_STREAM
+  return extension && stream
 }
 
 export interface HumanGateSurfaceConfig {

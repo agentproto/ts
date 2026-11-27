@@ -1,0 +1,19 @@
+{
+  "_source": "https://github.com/modelcontextprotocol/ext-events/blob/c77b84395eff0ae32f53b0516c2214fe276ed050/specification/beta/events/events.mdx#request-events-stream",
+  "_note": "Section 'Request: events/stream'. The heartbeatMs comment of the jsonc example is dropped.",
+  "body": {
+    "jsonrpc": "2.0",
+    "method": "events/stream",
+    "id": 1,
+    "params": {
+      "name": "email.received",
+      "arguments": {
+        "from": "*@anthropic.com",
+        "redact_pii": true
+      },
+      "cursor": null,
+      "maxAgeMs": 300000,
+      "heartbeatMs": 15000
+    }
+  }
+}

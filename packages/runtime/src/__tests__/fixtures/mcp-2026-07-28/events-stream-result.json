@@ -1,0 +1,14 @@
+{
+  "_source": "https://github.com/modelcontextprotocol/ext-events/blob/c77b84395eff0ae32f53b0516c2214fe276ed050/specification/beta/events/events.mdx#event-delivery",
+  "_note": "Section 'Event delivery', final frame when the server closes the stream (StreamEventsResult).",
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "complete",
+      "_meta": {
+        "io.modelcontextprotocol/subscriptionId": 1
+      }
+    }
+  }
+}

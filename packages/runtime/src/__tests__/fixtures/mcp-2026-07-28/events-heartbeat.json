@@ -1,0 +1,14 @@
+{
+  "_source": "https://github.com/modelcontextprotocol/ext-events/blob/c77b84395eff0ae32f53b0516c2214fe276ed050/specification/beta/events/events.mdx#lifecycle",
+  "_note": "Section 'Lifecycle', Heartbeat.",
+  "body": {
+    "jsonrpc": "2.0",
+    "method": "notifications/events/heartbeat",
+    "params": {
+      "cursor": "historyId_99850",
+      "_meta": {
+        "io.modelcontextprotocol/subscriptionId": 1
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { handleModernRequest } from "../mcp-modern/index.js"
-import { createEventsSurfaceServer, isSubscriptionPermitted } from "../mcp-events-surface.js"
+import { createEventsSurfaceServer, guardEventsStream, isSubscriptionPermitted } from "../mcp-events-surface.js"
 
 const META = {
   "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -170,5 +170,47 @@ describe("events surface: isSubscriptionPermitted", () => {
     expect(isSubscriptionPermitted({ arguments: ["acme/ok"] }, allow)).toBe(false)
     expect(isSubscriptionPermitted({}, allow)).toBe(false)
     expect(isSubscriptionPermitted({ arguments: { repo: "acme/ok" } }, [])).toBe(false)
+  })
+})
+
+describe("events surface: events/stream allowlist", () => {
+  async function stream(repoAllowlist: readonly string[], repo: string) {
+    const open = vi.fn(async () => async () => "closed" as const)
+    const out = await handleModernRequest(
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "events/stream",
+          "mcp-name": "github.pull_request.closed",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "events/stream",
+          params: { name: "github.pull_request.closed", arguments: { repo, number: 1 }, cursor: null, _meta: META },
+        }),
+      },
+      {
+        createServer: async () => createEventsSurfaceServer({ version: "0", handlers: stubs(), repoAllowlist }),
+        eventsStream: guardEventsStream({ open }, repoAllowlist),
+      },
+    )
+    return { out, open }
+  }
+
+  it("refuses a repo outside the allowlist with -32024 before the handler is reached", async () => {
+    const { out, open } = await stream(["acme/ok"], "acme/no")
+    expect(out.stream).toBeUndefined()
+    expect(JSON.parse(out.body ?? "null").error.code).toBe(-32024)
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it("opens a stream for an allowlisted repo", async () => {
+    const { out, open } = await stream(["acme/ok"], "acme/ok")
+    expect(out.stream).toBeTypeOf("function")
+    expect(open).toHaveBeenCalledTimes(1)
   })
 })

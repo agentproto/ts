@@ -52,7 +52,8 @@ describe("filters-applied-server-side", () => {
   it("the wire EventDefinition carries the official shape and NO internal replayable field", () => {
     for (const event of GITHUB_SCHEME.events) {
       const def = event.definition
-      expect(def.delivery).toEqual(["poll", "webhook"])
+      // The registry offers push; events/list hides it outside the modern era (adapter `pushEnabled`).
+      expect(def.delivery).toEqual(["poll", "push", "webhook"])
       expect(typeof def.name).toBe("string")
       expect(typeof def.description).toBe("string")
       expect(typeof def.inputSchema).toBe("object")
