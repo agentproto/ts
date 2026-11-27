@@ -176,7 +176,8 @@ function decorate(
 /** A Skills request (beta extension): `skills/list`, `skills/get`, or a `resources/read` of a `skill://` URI. */
 function isSkillsRequest(method: string, params: Record<string, unknown>): boolean {
   if (method === "skills/list" || method === "skills/get") return true
-  return method === "resources/read" && typeof params.uri === "string" && params.uri.startsWith("skill://")
+  // A URI scheme is case-insensitive (RFC 3986 3.1): `SKILL://` is a Skills read too.
+  return method === "resources/read" && typeof params.uri === "string" && /^skill:\/\//i.test(params.uri)
 }
 
 /**

@@ -137,5 +137,5 @@ pnpm --filter @agentproto/runtime test mcp-conformance mcp-modern mcp-skills
 Known defects, when there are any, are listed at the end of the matrix. A refused MRTR retry and the Skills
 errors (unknown skill or file, unissued cursor, `skill://` traversal) answer `-32602` with HTTP 400, as AIP-77's
 error mapping gives. Other `-32602` errors raised by a handler (an unknown tool, for example) keep HTTP 200: the
-MCP 2026-07-28 core sets HTTP 400 only for a request missing a required `_meta` field and for `-32020`, `-32021`
-and `-32022`.
+MCP 2026-07-28 core sets HTTP 400 for a request missing a required `_meta` field and for `-32020`, `-32021` and
+`-32022`, and no HTTP status for other `-32602` errors.

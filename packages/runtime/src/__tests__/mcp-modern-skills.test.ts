@@ -194,15 +194,22 @@ describe("MCP Skills extension on /mcp (modern era)", () => {
       "skill://alpha/not-listed.txt",
       "skill://alpha/leak.txt",
       "skill://ghost/SKILL.md",
+      // The scheme is case-insensitive: an uppercase one is still a Skills read, refused the same way.
+      "SKILL://alpha/not-listed.txt",
     ]) {
       const r = await read(uri)
       expect(r.json.error?.code, uri).toBe(-32602)
+      // AIP-77 "Error mapping": -32602 is HTTP 400 on the modern era.
+      expect(r.status, uri).toBe(400)
     }
     const list = await rpc("skills/list")
     const alpha = list.json.result.skills.find((s: Json) => s.frontmatter.name === "alpha")
     expect(alpha.resources.some((x: Json) => x.uri.endsWith("leak.txt"))).toBe(false)
-    expect((await rpc("skills/get", { uri: "skill://alpha/../beta/SKILL.md" })).json.error.code).toBe(-32602)
-    expect((await rpc("skills/get", { uri: "skill://alpha/docs/guide.md" })).json.error.code).toBe(-32602)
+    for (const uri of ["skill://alpha/../beta/SKILL.md", "skill://alpha/docs/guide.md"]) {
+      const r = await rpc("skills/get", { uri })
+      expect(r.json.error.code, uri).toBe(-32602)
+      expect(r.status, uri).toBe(400)
+    }
   })
 
   it("keeps the served digest until skill_resync, then changes it", async () => {
