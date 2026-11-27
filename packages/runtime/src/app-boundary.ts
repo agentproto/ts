@@ -8,6 +8,11 @@
  *   hidden    host trees that must not be readable even though the OS
  *             sandbox alone would allow them (the daemon workspace, the host
  *             monorepo the app happens to be installed inside)
+ *   hostConfig  the harness project config at the root of that host repo
+ *             (`.claude/`, `.codex/`, `CLAUDE.md`, `AGENTS.md`), re-opened
+ *             READ-ONLY inside the hidden tree: harnesses walk up to the git
+ *             root to load it, and an unreadable settings file makes them
+ *             start without the project's hooks and permission rules
  *   else      denied
  *
  * One `AppBoundary` value drives every enforcement surface:
@@ -20,10 +25,10 @@
  *     `callerSessionId`, and children/restarts inherit it.
  */
 
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, realpathSync } from "node:fs"
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { canonicalizePath, resolveCommandSandbox, type SandboxMode } from "@agentproto/command-sandbox"
-import { findSecretsInTree } from "./app-read-grants.js"
+import { findSecretsInTree, isSecretFileName } from "./app-read-grants.js"
 
 export const APP_BOUNDARY_META_KEY = "appBoundary"
 
@@ -43,6 +48,52 @@ export interface AppBoundary {
   /** Secret files/dirs inside a read grant, denied for read and write even
    *  though their parent is readable. Absent = none. */
   readonly unreadable?: readonly string[]
+  /** Harness project config files/dirs at the root of a hidden host repo,
+   *  re-opened read-only (a subset of `readOnly`, kept apart for audit).
+   *  Absent = none. See {@link HOST_HARNESS_CONFIG_ENTRIES}. */
+  readonly hostConfig?: readonly string[]
+}
+
+/**
+ * Entries at the root of a hidden host repo that harnesses load as project
+ * config and that stay readable (never writable) for app sessions:
+ *   - Claude Code walks up to the git root for `.claude/settings.json`,
+ *     `.claude/settings.local.json`, hooks, commands, and `CLAUDE.md`;
+ *   - Codex reads the project `.codex/` and the `AGENTS.md` chain from the
+ *     git root down to `cwd`.
+ * Loading instructions into context is a separate switch
+ * (`isolateHostContext`): a readable `CLAUDE.md` is still excluded from the
+ * session's context when the harness supports that.
+ */
+export const HOST_HARNESS_CONFIG_ENTRIES: readonly string[] = [".claude", ".codex", "CLAUDE.md", "AGENTS.md"]
+
+/**
+ * The {@link HOST_HARNESS_CONFIG_ENTRIES} present under `repoRoot`. An entry
+ * whose real path leaves the repo (a symlink to elsewhere) or that has a
+ * secret-looking name is skipped: re-opening it would widen the boundary
+ * beyond the repo's own config.
+ */
+function hostHarnessConfig(repoRoot: string): string[] {
+  let realRoot: string
+  try {
+    realRoot = realpathSync(repoRoot)
+  } catch {
+    return []
+  }
+  const out: string[] = []
+  for (const name of HOST_HARNESS_CONFIG_ENTRIES) {
+    const p = join(repoRoot, name)
+    let real: string
+    try {
+      real = realpathSync(p)
+    } catch {
+      continue
+    }
+    if (!isPathWithin(real, realRoot) || real === realRoot) continue
+    if (isSecretFileName(name)) continue
+    out.push(p)
+  }
+  return out
 }
 
 export class FsZoneError extends Error {
@@ -108,14 +159,26 @@ export function buildAppBoundary(input: BuildAppBoundaryInput): AppBoundary {
     }
   }
   const canonDir = canonicalizePath(dir)
-  const candidates = [input.daemonWorkspace, findGitToplevel(dir)]
+  const gitRoot = findGitToplevel(dir)
+  const candidates = [input.daemonWorkspace, gitRoot]
   const hidden: string[] = []
+  const hostConfig: string[] = []
   for (const c of candidates) {
     if (!c) continue
     const abs = resolve(c)
     // A hidden tree at or inside the app dir would hide the app from itself.
     if (isPathWithin(canonicalizePath(abs), canonDir)) continue
     if (!hidden.includes(abs)) hidden.push(abs)
+    // Only the repo the app lives in: that is the root the harness walks up to.
+    if (c === gitRoot) {
+      for (const p of hostHarnessConfig(abs)) {
+        if (!readOnly.includes(p)) readOnly.push(p)
+        if (!hostConfig.includes(p)) hostConfig.push(p)
+        // Same secret filter as operator read grants: a `.env` or key file
+        // inside `.claude/` stays masked.
+        for (const secret of findSecretsInTree(p)) if (!unreadable.includes(secret)) unreadable.push(secret)
+      }
+    }
   }
   return {
     appId: input.app.appId,
@@ -126,6 +189,7 @@ export function buildAppBoundary(input: BuildAppBoundaryInput): AppBoundary {
     enforce: input.app.boundaries?.enforce ?? "best-effort",
     ...(grants.length > 0 ? { readGrants: grants } : {}),
     ...(unreadable.length > 0 ? { unreadable } : {}),
+    ...(hostConfig.length > 0 ? { hostConfig } : {}),
   }
 }
 
@@ -149,7 +213,8 @@ export function boundaryFromMeta(
       !strs(v.writable) ||
       !strs(v.hidden) ||
       (v.readGrants !== undefined && !strs(v.readGrants)) ||
-      (v.unreadable !== undefined && !strs(v.unreadable))
+      (v.unreadable !== undefined && !strs(v.unreadable)) ||
+      (v.hostConfig !== undefined && !strs(v.hostConfig))
     ) {
       return undefined
     }
@@ -162,6 +227,7 @@ export function boundaryFromMeta(
       enforce: v.enforce === "required" ? "required" : "best-effort",
       ...(v.readGrants !== undefined ? { readGrants: v.readGrants } : {}),
       ...(v.unreadable !== undefined ? { unreadable: v.unreadable } : {}),
+      ...(v.hostConfig !== undefined ? { hostConfig: v.hostConfig } : {}),
     }
   } catch {
     return undefined
@@ -177,7 +243,8 @@ export function describeBoundary(b: AppBoundary): string {
   const ro = b.readOnly.join(", ") || "(none)"
   const rw = b.writable.join(", ") || "(none)"
   const granted = b.readGrants?.length ? `; operator-granted read-only: ${b.readGrants.join(", ")}` : ""
-  return `read-only: ${ro}; writable: ${rw}${granted}`
+  const host = b.hostConfig?.length ? `; host harness config (read-only): ${b.hostConfig.join(", ")}` : ""
+  return `read-only: ${ro}; writable: ${rw}${granted}${host}`
 }
 
 function inAny(canon: string, zones: readonly string[]): boolean {
