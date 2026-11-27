@@ -186,8 +186,6 @@ export const ADMIN_PROFILE_TOOLS: readonly string[] = [
   "cron_update",
   "device_add",
   "device_list",
-  "device_offer",
-  "device_pair_pending",
   "device_prompt",
   "device_rename",
   "device_revoke",
@@ -272,6 +270,8 @@ export const PROFILE_TOOLS: Record<Exclude<ToolProfileName, "full">, readonly st
  * it belongs.
  */
 export const FULL_ONLY_TOOLS: readonly string[] = [
+  "device_offer",
+  "device_pair_pending",
   "activities_list",
   "adapter_list",
   "adapter_models",
