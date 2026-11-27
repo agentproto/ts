@@ -432,7 +432,7 @@ describe("question without fields and plan approval (AIP-45 MCP transport of a q
   })
 
   it("does not project a question without fields that asks for a secret, or that names an unknown option", () => {
-    expect(buildPermissionElicitation({ ...freeTextQuestion, question: { ...freeTextQuestion.question!, prompt: "Paste your API key" } })).toBeNull()
+    expect(buildPermissionElicitation({ ...freeTextQuestion, question: { ...freeTextQuestion.question!, prompt: "Type your password" } })).toBeNull()
     expect(
       buildPermissionElicitation({
         ...choiceQuestion,
