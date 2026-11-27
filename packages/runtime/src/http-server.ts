@@ -37,7 +37,9 @@ import {
   handleModernRequest,
   isJsonContentType as isModernJsonContentType,
   type CacheHints,
+  type EventsStreamHandler,
   type HumanGate,
+  type ModernResponse,
   type TaskProjector,
 } from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
@@ -1266,9 +1268,14 @@ export interface RuntimeHttpServerOptions {
      * before it is connected (the legacy 2025-11-25 path never sees it). Used
      * to mount beta extensions that must be switchable per request.
      */
-    decorateServer?: (server: McpServer) => void | Promise<void>
+    decorateServer?: (server: McpServer, ctx: { callerSessionId?: string }) => void | Promise<void>
     /** Tasks extension projector (absent or resolving to undefined = extension off). */
     tasks?: TaskProjector | (() => TaskProjector | undefined | Promise<TaskProjector | undefined>)
+    /**
+     * Events extension push delivery (`events/stream`, SSE), resolved per request with the caller already resolved.
+     * Absent or resolving to undefined = `events/stream` answers 404 `-32601`.
+     */
+    eventsStream?: (ctx: { callerSessionId?: string }) => Promise<EventsStreamHandler | undefined>
   }
   /**
    * Public events origin (`POST /mcp/events/<secret>`), MCP 2026-07-28 only. Absent = route not mounted. Own auth: the
@@ -1281,6 +1288,8 @@ export interface RuntimeHttpServerOptions {
     createServer: () => Promise<McpServer>
     /** Origins allowed to call (default none: any request carrying an Origin header is 403). */
     allowedOrigins?: readonly string[]
+    /** `events/stream` on this origin (already allowlist-guarded). Absent or undefined = 404 `-32601`. */
+    eventsStream?: () => Promise<EventsStreamHandler | undefined>
   }
   /** Resolve a presented scope-token to its scope, or null when
    *  unknown/missing. Paired with `orchestratorMcpServerFactory`. */
@@ -2882,6 +2891,7 @@ export async function startHttpServer(
           : opts.mcpModern?.humanGate
       const tasks =
         typeof opts.mcpModern?.tasks === "function" ? await opts.mcpModern.tasks() : opts.mcpModern?.tasks
+      const eventsStream = await opts.mcpModern?.eventsStream?.(callerSessionId !== undefined ? { callerSessionId } : {})
       const out = await handleModernRequest(
         {
           method: req.method ?? "GET",
@@ -2891,13 +2901,14 @@ export async function startHttpServer(
         {
           createServer: async () => {
             const server = await buildServer()
-            await opts.mcpModern?.decorateServer?.(server)
+            await opts.mcpModern?.decorateServer?.(server, callerSessionId !== undefined ? { callerSessionId } : {})
             return server
           },
           protocolVersions: [MODERN_PROTOCOL_VERSION],
           advertisedVersions: GATEWAY_ADVERTISED_VERSIONS,
           extensions: opts.mcpModern?.extensions ?? {},
           ...(tasks ? { tasks } : {}),
+          ...(eventsStream ? { eventsStream } : {}),
           ...(opts.mcpModern?.cachePolicy ? { cachePolicy: opts.mcpModern.cachePolicy } : {}),
           ...(humanGate ? { humanGate } : {}),
           ...(callerSessionId !== undefined ? { callerSessionId } : {}),
@@ -2920,9 +2931,7 @@ export async function startHttpServer(
       if (callerSessionId && opts.mcpObservations && !observedRpc && out.status >= 400) {
         opts.mcpObservations.recordHttpError(callerSessionId, out.status)
       }
-      if (res.writableEnded || res.destroyed) return
-      res.writeHead(out.status, { "cache-control": "no-store", ...out.headers })
-      res.end(out.body)
+      await writeModernResponse(res, out, controller.signal)
     }
 
     // Non-POST verbs (GET, DELETE, ...) take the modern path only when the header names a modern version.
@@ -3087,6 +3096,59 @@ export async function startHttpServer(
     await serveMcp(req, res, server)
   }
 
+  /** Aborted by `stop()`: every open `events/stream` writes its final frame, then ends. */
+  const streamsClosing = new AbortController()
+  const openStreams = new Set<Promise<unknown>>()
+
+  /**
+   * The one writer of a modern-era answer, shared by `/mcp` and the public events origin. A JSON answer is written
+   * as is. An `events/stream` answer gets the shared SSE head (`x-accel-buffering: no`), then one `data: <json>` frame
+   * per message: no `id:` line and no SSE comment (a heartbeat is a `notifications/events/heartbeat` frame, because
+   * a comment cannot carry the cursor). The stream is ALWAYS run, even when the client already left, so it releases
+   * what it reserved.
+   */
+  async function writeModernResponse(res: ServerResponse, out: ModernResponse, clientGone: AbortSignal): Promise<void> {
+    if (!out.stream) {
+      if (res.writableEnded || res.destroyed) return
+      res.writeHead(out.status, { "cache-control": "no-store", ...out.headers })
+      res.end(out.body)
+      return
+    }
+    const alive = (): boolean => !res.writableEnded && !res.destroyed
+    if (alive()) {
+      writeSseHead(res, out.headers)
+      res.flushHeaders()
+    }
+    const send = (message: Record<string, unknown>): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        if (!alive()) return reject(new Error("stream closed"))
+        const flushed = res.write(`data: ${JSON.stringify(message)}\n\n`)
+        if (flushed) return resolve()
+        const onDrain = (): void => {
+          res.off("close", onClose)
+          resolve()
+        }
+        const onClose = (): void => {
+          res.off("drain", onDrain)
+          reject(new Error("stream closed"))
+        }
+        res.once("drain", onDrain)
+        res.once("close", onClose)
+      })
+    const stream = out.stream
+    const run = Promise.resolve().then(() => stream({ send, signal: clientGone, closing: streamsClosing.signal }))
+    openStreams.add(run)
+    try {
+      const outcome = await run
+      if (outcome === "stalled") res.destroy()
+      else if (alive()) res.end()
+    } catch {
+      res.destroy()
+    } finally {
+      openStreams.delete(run)
+    }
+  }
+
   /** Deliberate 1 MiB ceiling on modern-era `/mcp` requests (matches the modern events origin). */
   const MODERN_MCP_BODY_CAP = 1024 * 1024
   const EVENTS_BODY_CAP = 1024 * 1024
@@ -3121,15 +3183,16 @@ export async function startHttpServer(
     res.on("close", () => {
       if (!res.writableEnded) controller.abort()
     })
+    const eventsStream = await cfg.eventsStream?.()
     const out = await handleModernRequest(
       {
         method: req.method ?? "GET",
         headers: req.headers as Record<string, string | string[] | undefined>,
         body: Buffer.concat(chunks).toString("utf8"),
       },
-      { createServer: cfg.createServer, signal: controller.signal },
+      { createServer: cfg.createServer, signal: controller.signal, ...(eventsStream ? { eventsStream } : {}) },
     )
-    send(out.status, out.headers, out.body)
+    await writeModernResponse(res, out, controller.signal)
   }
 
   /**
@@ -6586,6 +6649,14 @@ export async function startHttpServer(
       // down its underlying TCP socket; live WS connections receive
       // a close frame from the kernel.
       wss.close()
+      // Open `events/stream` responses end with their final frame (bounded wait), before sockets are severed.
+      streamsClosing.abort()
+      if (openStreams.size > 0) {
+        await Promise.race([
+          Promise.allSettled([...openStreams]),
+          new Promise<void>(resolve => setTimeout(resolve, 2000).unref()),
+        ])
+      }
       // `server.close()`'s callback only fires once every existing
       // connection has ended on its own — it does NOT sever them.
       // This daemon's whole purpose is long-lived keep-alive/SSE

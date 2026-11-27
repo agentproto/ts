@@ -199,7 +199,7 @@ import type { DeliveryApplyConfig } from "@agentproto/delivery"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { valueScanRedactor } from "@agentproto/processor"
-import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveHumanGateSurfaces, resolveTaskSettings } from "./mcp-config.js"
+import { resolveHumanGate, resolveModernEra, resolveNoCallerIdentity, resolveSkillsExtension, resolveEventsExtension, resolveEventsStream, resolveHumanGateSurfaces, resolveTaskSettings } from "./mcp-config.js"
 import {
   createHumanGate,
   createMrtrStateStore,
@@ -269,10 +269,12 @@ import {
 } from "./mcp-events/adapter.js"
 import { createPollJournal } from "./mcp-events/poll-journal.js"
 import { createPollLeaseManager } from "./mcp-events/poll-lease.js"
+import { createStreamSlots, openEventsStream, type EventsStreamInput } from "./mcp-events/stream.js"
+import type { EventsStreamHandler } from "./mcp-modern/index.js"
 import type { Principal } from "./mcp-events/events-registry.js"
 import { daemonBearerPrincipal, sessionPrincipal } from "./mcp-events/events-registry.js"
 import { createSentinelAutoLinker } from "@agentproto/sentinel"
-import { createEventsSurfaceServer } from "./mcp-events-surface.js"
+import { createEventsSurfaceServer, guardEventsStream, registerPushAwareEventsList } from "./mcp-events-surface.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -1348,6 +1350,22 @@ export {
   type EventsUnsubscribeInput,
   type EventsUnsubscribeContext,
 } from "./mcp-events/adapter.js"
+export {
+  openEventsStream,
+  createStreamSlots,
+  clampHeartbeatMs,
+  META_SUBSCRIPTION_ID,
+  HEARTBEAT_DEFAULT_MS,
+  HEARTBEAT_MIN_MS,
+  HEARTBEAT_MAX_MS,
+  MAX_CONCURRENT_STREAMS,
+  type EventsStream,
+  type EventsStreamContext,
+  type EventsStreamInput,
+  type EventsStreamOutcome,
+  type EventsStreamSink,
+  type StreamSlots,
+} from "./mcp-events/stream.js"
 export {
   subscriptionId,
   canonicalizeJcs,
@@ -2847,9 +2865,23 @@ export async function createGateway(
   } catch {
     // A purge failure must never block boot; the next read trims on demand.
   }
-  const eventsHandlersFor = (principal: Principal, pollEnabled: boolean) => ({
+  // `events/stream`: a third read of the same journal (same leases, same cursor format), capped process-wide.
+  const eventsStreamSlots = createStreamSlots()
+  const eventsStreamFor = (principal: Principal): EventsStreamHandler => ({
+    open: async ({ id, params }) => {
+      const stream = await openEventsStream(params as unknown as EventsStreamInput, {
+        principal,
+        journal: pollJournal,
+        leases: pollLeases,
+        slots: eventsStreamSlots,
+        subscriptionId: id,
+      })
+      return sink => stream.run(sink)
+    },
+  })
+  const eventsHandlersFor = (principal: Principal, pollEnabled: boolean, pushEnabled = false) => ({
     list: (params: Record<string, unknown>) =>
-      eventsList(params as EventsListRequest, { principal, pollEnabled }),
+      eventsList(params as EventsListRequest, { principal, pollEnabled, pushEnabled }),
     subscribe: (params: Record<string, unknown>) =>
       eventsSubscribe(params as unknown as EventsSubscribeInput, {
         principal,
@@ -5309,12 +5341,17 @@ export async function createGateway(
             .filter(Boolean),
           createServer: async () => {
             const principal = sessionPrincipal("mcp-events-origin")
+            // Modern era only: `push` is listed whenever `events/stream` is served here.
             return createEventsSurfaceServer({
               version: opts.version ?? "0.1.0-alpha",
               repoAllowlist: eventsRepos,
-              handlers: eventsHandlersFor(principal, await resolveEventsExtension()),
+              handlers: eventsHandlersFor(principal, await resolveEventsExtension(), await resolveEventsStream()),
             })
           },
+          eventsStream: async () =>
+            (await resolveEventsStream())
+              ? guardEventsStream(eventsStreamFor(sessionPrincipal("mcp-events-origin")), eventsRepos)
+              : undefined,
         }
       : undefined
 
@@ -5586,9 +5623,17 @@ export async function createGateway(
       enabled: () => resolveModernEra(),
       extensions: {},
       humanGate: async () => ((await resolveHumanGate()) ? mcpHumanGate : undefined),
-      decorateServer: async server => {
+      decorateServer: async (server, { callerSessionId }) => {
         if (await resolveSkillsExtension()) registerServedSkills(server)
+        // Modern era only: `events/list` names `push` while `events/stream` is served (the legacy era never lists it).
+        if (await resolveEventsStream()) {
+          registerPushAwareEventsList(server, callerSessionId ? sessionPrincipal(callerSessionId) : daemonBearerPrincipal())
+        }
       },
+      eventsStream: async ({ callerSessionId }) =>
+        (await resolveEventsStream())
+          ? eventsStreamFor(callerSessionId ? sessionPrincipal(callerSessionId) : daemonBearerPrincipal())
+          : undefined,
       tasks: async () => {
         const task = await resolveTaskSettings()
         if (!task.enabled) return undefined

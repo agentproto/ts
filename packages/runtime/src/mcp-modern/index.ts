@@ -8,11 +8,13 @@ import {
   ERR_INVALID_REQUEST,
   ERR_METHOD_NOT_FOUND,
   ERR_MISSING_CLIENT_CAPABILITY,
+  EVENTS_STREAM_METHOD,
   META_CLIENT_CAPABILITIES,
   TASK_EXTENSION_METHODS,
   META_SERVER_INFO,
 } from "./constants.js"
 import {
+  acceptsEventStream,
   acceptsJson,
   isJsonContentType,
   normalizeHeaders,
@@ -48,10 +50,36 @@ export interface ModernRequestInput {
   body: string
 }
 
+/** Where an `events/stream` response writes its SSE frames (one JSON-RPC message per frame). */
+export interface ModernStreamSink {
+  /** Resolves once the message is written (after `drain` when the socket buffered); rejects on a dead socket. */
+  send(message: Record<string, unknown>): Promise<void>
+  /** Aborted when the HTTP client goes away. */
+  signal: AbortSignal
+  /** Aborted when the server shuts down: the stream writes its final frame and ends. */
+  closing?: AbortSignal
+}
+
+/** `closed`: ended by the server after its final frame; `aborted`: client gone; `stalled`: drop the connection. */
+export type ModernStreamOutcome = "closed" | "aborted" | "stalled"
+
+/** Writes the stream until it ends. The transport MUST call it exactly once: it releases what the open reserved. */
+export type ModernStream = (sink: ModernStreamSink) => Promise<ModernStreamOutcome>
+
+/**
+ * `events/stream` (Events extension, push delivery). `open` validates and reserves; a throw carrying a numeric
+ * `code` (and optional `data`) is answered as a plain JSON-RPC error, before any SSE frame.
+ */
+export interface EventsStreamHandler {
+  open(request: { id: string | number; params: Record<string, unknown> }): Promise<ModernStream>
+}
+
 export interface ModernResponse {
   status: number
   headers: Record<string, string>
   body?: string
+  /** Set for an SSE response (`events/stream`): the transport writes the SSE head, then runs it. No `body`. */
+  stream?: ModernStream
 }
 
 export interface CacheHints {
@@ -87,6 +115,11 @@ export interface ModernDeps {
    * `tasks/*` answer `-32601` and `agent_start` / `agent_prompt` answer as before.
    */
   tasks?: TaskProjector
+  /**
+   * Events extension push delivery. Absent = disabled: `events/stream` is not in the allowed set and answers 404
+   * `-32601`. Answered here, before the in-process bridge opens (the bridge drops server messages without an id).
+   */
+  eventsStream?: EventsStreamHandler
   /** Resolved caller session id (absent for the operator), passed to `humanGate`. */
   callerSessionId?: string
   /** Called for `server/discover` and `tools/list` with the JSON-RPC response sent back (feeds the observer). */
@@ -246,6 +279,43 @@ async function answer(
   return decorate(request.method, await forward(), bridge.serverInfo, hints)
 }
 
+const SSE_RESPONSE_HEADERS = { "content-type": "text/event-stream" }
+
+async function openStream(
+  handler: EventsStreamHandler,
+  request: { id: string | number; params: Record<string, unknown> },
+  accept: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<ModernResponse> {
+  if (!acceptsEventStream(accept)) {
+    return errorResponse({
+      status: 406,
+      code: ERR_INVALID_REQUEST,
+      message: "Accept must allow text/event-stream for events/stream",
+      id: request.id,
+    })
+  }
+  let stream: ModernStream
+  try {
+    stream = await handler.open(request)
+  } catch (error) {
+    if (signal?.aborted) return { status: 499, headers: {} }
+    const code = (error as { code?: unknown } | null)?.code
+    if (typeof code === "number" && Number.isInteger(code)) {
+      const data = (error as { data?: unknown }).data
+      return errorResponse({
+        status: 200,
+        code,
+        message: error instanceof Error ? error.message : "Error",
+        id: request.id,
+        ...(data !== undefined ? { data } : {}),
+      })
+    }
+    return errorResponse({ status: 500, code: ERR_INTERNAL, message: "Internal error", id: request.id })
+  }
+  return { status: 200, headers: { ...SSE_RESPONSE_HEADERS }, stream }
+}
+
 /**
  * Serve ONE modern-era HTTP request without touching the network layer. Order: verb, Accept, Content-Type, body,
  * notification (202), request validation, in-process bridge. Never throws.
@@ -270,11 +340,24 @@ export async function handleModernRequest(input: ModernRequestInput, deps: Moder
   const request = parsed.request
   // No client-to-server notification exists in the modern core: accept and ignore (202, no body).
   if (request.id === undefined) return { status: 202, headers: {} }
-  const allowed = deps.tasks ? new Set([...ALLOWED_METHODS, ...TASK_EXTENSION_METHODS]) : ALLOWED_METHODS
+  const allowed =
+    deps.tasks || deps.eventsStream
+      ? new Set([
+          ...ALLOWED_METHODS,
+          ...(deps.tasks ? TASK_EXTENSION_METHODS : []),
+          ...(deps.eventsStream ? [EVENTS_STREAM_METHOD] : []),
+        ])
+      : ALLOWED_METHODS
   const invalid = validateRequest(request, headers, accepted, allowed, advertised)
   if (invalid) return errorResponse(invalid)
 
   const id = request.id
+  // `events/stream` is answered BEFORE the bridge opens: the bridge keeps only replies to its own requests, and a
+  // stream is a run of notifications plus an optional final frame. No `decorate`: the final frame carries no
+  // `ttlMs`, `cacheScope` or `serverInfo`.
+  if (request.method === EVENTS_STREAM_METHOD && deps.eventsStream) {
+    return openStream(deps.eventsStream, { id, params: request.params }, headers["accept"], deps.signal)
+  }
   let bridge: Bridge | undefined
   try {
     bridge = await openBridge(await deps.createServer())

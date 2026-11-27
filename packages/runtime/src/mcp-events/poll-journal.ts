@@ -83,6 +83,13 @@ export interface PollJournal {
   purge(isActive?: (key: string) => boolean): number
   /** True when a journal exists for `key`. */
   has(key: string): boolean
+  /**
+   * Wake `listener` after every `append` that added an entry and every `markGap` on `key` (in memory, same process).
+   * Returns the unsubscribe function. Used by `events/stream` to read as soon as something lands.
+   */
+  subscribe(key: string, listener: () => void): () => void
+  /** Number of live listeners on `key` (tests and diagnostics). */
+  listenerCount(key: string): number
 }
 
 export function journalKey(name: string, args: Record<string, unknown>): string {
@@ -135,6 +142,19 @@ export function createPollJournal(opts: JournalOptions): PollJournal {
   const cache = new Map<string, Loaded>()
 
   const fileFor = (key: string): string => join(opts.dir, `${key}.jsonl`)
+  const listeners = new Map<string, Set<() => void>>()
+
+  function notify(key: string): void {
+    const set = listeners.get(key)
+    if (!set) return
+    for (const listener of [...set]) {
+      try {
+        listener()
+      } catch {
+        // A listener must never break the writer.
+      }
+    }
+  }
 
   function load(key: string): Loaded | null {
     const cached = cache.get(key)
@@ -190,18 +210,39 @@ export function createPollJournal(opts: JournalOptions): PollJournal {
       // At-least-once from the provider, exactly-once in the journal: a re-served event is skipped.
       const known = new Set<string>()
       for (const entry of loaded.entries) if ("event" in entry) known.add(entry.event.eventId)
+      let added = 0
       for (const event of events) {
         if (known.has(event.eventId)) continue
         known.add(event.eventId)
         appendEntry(key, loaded, { seq: ++seq, at: now(), event })
+        added++
       }
       if (loaded.entries.length > maxEntries) trim(key, loaded)
+      if (added > 0) notify(key)
     },
 
     markGap(key) {
       const loaded = load(key) ?? create(key)
       appendEntry(key, loaded, { seq: headSeq(loaded) + 1, at: now(), gap: true })
+      notify(key)
     },
+
+    subscribe(key, listener) {
+      let set = listeners.get(key)
+      if (!set) {
+        set = new Set()
+        listeners.set(key, set)
+      }
+      set.add(listener)
+      return () => {
+        const current = listeners.get(key)
+        if (!current) return
+        current.delete(listener)
+        if (current.size === 0) listeners.delete(key)
+      }
+    },
+
+    listenerCount: key => listeners.get(key)?.size ?? 0,
 
     read(key, input) {
       const loaded = load(key) ?? create(key)
