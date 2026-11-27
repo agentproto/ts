@@ -1,0 +1,29 @@
+{
+  "id": "evt_3Ex0ChargeRefunded0001",
+  "object": "event",
+  "api_version": "2026-11-18.endive",
+  "created": 1795867200,
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "charge.refunded",
+  "data": {
+    "object": {
+      "id": "ch_3Ex0Charge0001",
+      "object": "charge",
+      "amount": 2000,
+      "amount_captured": 2000,
+      "amount_refunded": 1000,
+      "currency": "eur",
+      "customer": "cus_Ex0Customer0001",
+      "livemode": false,
+      "metadata": {},
+      "paid": true,
+      "payment_intent": "pi_3Ex0Intent0001",
+      "refunded": false,
+      "refunds": { "object": "list", "data": [{ "id": "re_3Ex0Refund0001", "object": "refund", "amount": 1000, "status": "succeeded", "payment_intent": "pi_3Ex0Intent0001" }], "has_more": false, "url": "/v1/charges/ch_3Ex0Charge0001/refunds" },
+      "status": "succeeded"
+    },
+    "previous_attributes": { "amount_refunded": 0 }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "evt_1Sx0CheckoutDone0001",
+  "object": "event",
+  "api_version": "2026-11-18.endive",
+  "created": 1795694400,
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "checkout.session.completed",
+  "data": {
+    "object": {
+      "id": "cs_test_a1Ex0Session0001",
+      "object": "checkout.session",
+      "amount_subtotal": 2000,
+      "amount_total": 2000,
+      "created": 1795694300,
+      "currency": "eur",
+      "customer": "cus_Ex0Customer0001",
+      "customer_details": { "email": "buyer@example.com", "name": "Test Buyer" },
+      "invoice": null,
+      "livemode": false,
+      "metadata": { "agentproto_offer": "pack-20", "agentproto_owner_orgId": "acme" },
+      "mode": "payment",
+      "payment_intent": "pi_3Ex0Intent0001",
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": null,
+      "success_url": "https://app.example.com/billing/done",
+      "total_details": { "amount_discount": 0, "amount_shipping": 0, "amount_tax": 0 },
+      "url": null
+    }
+  }
+}

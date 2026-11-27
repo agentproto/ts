@@ -1,0 +1,27 @@
+{
+  "id": "evt_3Ex0ChargeDone0001",
+  "object": "event",
+  "api_version": "2026-11-18.endive",
+  "created": 1795694400,
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "charge.succeeded",
+  "data": {
+    "object": {
+      "id": "ch_3Ex0Charge0001",
+      "object": "charge",
+      "amount": 2000,
+      "amount_captured": 2000,
+      "amount_refunded": 0,
+      "currency": "eur",
+      "customer": "cus_Ex0Customer0001",
+      "livemode": false,
+      "metadata": {},
+      "paid": true,
+      "payment_intent": "pi_3Ex0Intent0001",
+      "refunded": false,
+      "status": "succeeded"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "evt_1Ex0InvoicePaymentPaid0001",
+  "object": "event",
+  "api_version": "2026-11-18.endive",
+  "created": 1795694400,
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "invoice_payment.paid",
+  "data": {
+    "object": {
+      "id": "inpay_1Ex0InvoicePayment0001",
+      "object": "invoice_payment",
+      "amount_paid": 500,
+      "amount_requested": 500,
+      "created": 1795694300,
+      "currency": "eur",
+      "invoice": "in_1Ex0Invoice0001",
+      "is_default": true,
+      "livemode": false,
+      "payment": { "payment_intent": "pi_3Ex0Intent0002", "type": "payment_intent" },
+      "status": "paid",
+      "status_transitions": { "canceled_at": null, "paid_at": 1795694390 }
+    }
+  }
+}
