@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest"
 
 import { buildCspMeta, buildCspPolicy, injectCsp, toResourcePermissions } from "../dom.js"
+import { buildSandboxCspHeader } from "../csp.js"
 
 const DEFAULT_POLICY =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
@@ -108,5 +109,53 @@ describe("toResourcePermissions", () => {
       toResourcePermissions({ camera: {}, microphone: true, clipboardWrite: {}, bogus: {} }),
     ).toEqual({ camera: {}, clipboardWrite: {} })
     expect(toResourcePermissions(undefined)).toEqual({})
+  })
+})
+
+describe("buildSandboxCspHeader", () => {
+  it("defaults: 'self' sources, none for frames, base-uri 'self', no embedder", () => {
+    expect(buildSandboxCspHeader(undefined, undefined)).toBe(
+      "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; " +
+        "connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+    )
+  })
+
+  it("honours every declared domain, including baseUriDomains", () => {
+    const h = buildSandboxCspHeader(
+      {
+        resourceDomains: ["https://cdn.example.com"],
+        connectDomains: ["https://api.example.com"],
+        frameDomains: ["https://www.youtube.com"],
+        baseUriDomains: ["https://archive.org"],
+      },
+      "http://127.0.0.1:18790",
+    )
+    expect(h).toContain("script-src 'self' 'unsafe-inline' https://cdn.example.com")
+    expect(h).toContain("connect-src 'self' https://api.example.com")
+    expect(h).toContain("frame-src https://www.youtube.com")
+    expect(h).toContain("base-uri https://archive.org")
+    expect(h).toContain("frame-ancestors http://127.0.0.1:18790")
+  })
+
+  it("pins frame-ancestors to a bare http(s) origin only (R6)", () => {
+    expect(buildSandboxCspHeader(undefined, "https://host.example.com/some/path?q=1")).toContain(
+      "frame-ancestors https://host.example.com",
+    )
+    for (const bad of ["javascript:alert(1)", "*", "https://a.com; script-src *", "", "not a url"]) {
+      expect(buildSandboxCspHeader(undefined, bad)).toContain("frame-ancestors 'none'")
+    }
+  })
+
+  it("still drops directive-injecting tokens, and the daemon can drop its own origin", () => {
+    const h = buildSandboxCspHeader(
+      { connectDomains: ["https://ok.example.com", "https://x.com; script-src *", "'unsafe-eval'", "http://127.0.0.1:1"] },
+      undefined,
+      { dropSource: (s) => s.includes("127.0.0.1") },
+    )
+    expect(h).toContain("connect-src 'self' https://ok.example.com;")
+    expect(h).not.toContain("unsafe-eval")
+    expect(h).not.toContain("script-src *")
+    expect(h).not.toContain("127.0.0.1")
   })
 })

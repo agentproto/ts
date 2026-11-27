@@ -457,6 +457,14 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     bind: z.string().optional(),
     allowedOrigins: z.array(z.string()).optional(),
     frameAncestors: z.union([z.array(z.string()), z.string()]).optional(),
+    mcpAppSandbox: z
+      .object({
+        mode: z.enum(["subdomain", "port", "off"]).optional(),
+        port: z.number().optional(),
+        publicOrigin: z.string().optional(),
+      })
+      .strict()
+      .optional(),
     strictOrigins: z.boolean().optional(),
     label: z.string().optional(),
     authToken: z.string().optional(),
@@ -1271,6 +1279,33 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "App page frame ancestors",
     help: "Extra origins allowed to embed the app page GET /apps/:appId/ui in an iframe, on top of vscode-webview: and vscode-file: (for example https://web.telegram.org to let a browser-based Telegram client frame it). Only exact https://host[:port] origins and custom schemes are honoured; * and wildcards are refused because the page injects the tool-call bridge. Lockout: a bad value can make an embedded page refuse to load.",
+  },
+  {
+    path: "daemon.mcpAppSandbox.mode",
+    schema: z.enum(["subdomain", "port", "off"]),
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "MCP App sandbox mode",
+    help: "How MCP App views get a sandbox origin distinct from the daemon's (MCP Apps spec). subdomain (default): <token>.sandbox.localhost on the daemon's own port, one origin per view; port: a second listener on daemon.mcpAppSandbox.port, for browsers that do not resolve *.localhost; off: no sandbox origin, views run in the restricted opaque-origin srcdoc (some, such as emulators, will not run).",
+  },
+  {
+    path: "daemon.mcpAppSandbox.port",
+    schema: num,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "MCP App sandbox port",
+    help: "Port of the dedicated sandbox listener when daemon.mcpAppSandbox.mode is port. Must differ from the daemon's own port. The daemon refuses every request that carries this origin.",
+  },
+  {
+    path: "daemon.mcpAppSandbox.publicOrigin",
+    schema: str,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "MCP App sandbox public origin",
+    help: "One fixed public origin (for example a tunnel hostname such as https://sbx.example.com) that routes to this daemon and also serves MCP App views for pages reached through the tunnel. It serves documents only and is never trusted by the daemon's own routes.",
   },
   {
     path: "approvals.webOrigins",

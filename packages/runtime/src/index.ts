@@ -2051,6 +2051,8 @@ export interface CreateGatewayOptions {
    *  through to `startHttpServer`; see `RuntimeHttpServerOptions.frameAncestors`
    *  (the caller is expected to have validated the entries). */
   frameAncestors?: readonly string[]
+  /** Passed straight through to `startHttpServer`; see `McpAppSandboxOptions`. */
+  mcpAppSandbox?: import("./mcp-app-sandbox.js").McpAppSandboxOptions
   /**
    * Opt-in deferred/lazy MCP tool loading (harness-parity item 3, see
    * `deferred-tools.ts`). When set, every root-gateway tool outside
@@ -5755,6 +5757,7 @@ export async function createGateway(
     ...(opts.frameAncestors && opts.frameAncestors.length > 0
       ? { frameAncestors: opts.frameAncestors }
       : {}),
+    ...(opts.mcpAppSandbox ? { mcpAppSandbox: opts.mcpAppSandbox } : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),

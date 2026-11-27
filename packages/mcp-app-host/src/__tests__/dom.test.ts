@@ -35,6 +35,8 @@ async function mount(ui: Parameters<typeof mountMcpApp>[0]["ui"]): Promise<Mount
     hostInfo: { name: "test-host", version: "1.0.0" },
     hostContext: { displayMode: "inline" },
     handlers: { callTool: async () => ({ content: [] }) },
+    // These tests are about the restricted (opaque srcdoc) mode.
+    sandbox: false,
   })
   mounted.push(m)
   return m
