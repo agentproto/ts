@@ -1,6 +1,58 @@
 {
   "_source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning",
   "_note": "Section 'Protocol Version Negotiation'. Same body on https://modelcontextprotocol.io/specification/2026-07-28/schema (UnsupportedProtocolVersionError). The schema page says the HTTP status MUST be 400 Bad Request.",
+  "_conformance": [
+    {
+      "case": "negative",
+      "method": "tools/list",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "an unknown protocol version is refused with the advertised list",
+      "capability": "none",
+      "request": {
+        "method": "tools/list",
+        "params": {}
+      },
+      "meta": {
+        "io.modelcontextprotocol/protocolVersion": "1900-01-01"
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32022,
+        "errorKeysOf": "body",
+        "errorData": {
+          "supported": [
+            "2026-07-28",
+            "2025-11-25"
+          ],
+          "requested": "1900-01-01"
+        }
+      }
+    },
+    {
+      "case": "negative",
+      "method": "server/discover",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "a modern-only method sent at 2025-11-25 in both header and _meta is refused",
+      "capability": "none",
+      "request": "discover-request",
+      "meta": {
+        "io.modelcontextprotocol/protocolVersion": "2025-11-25"
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32022,
+        "errorData": {
+          "supported": [
+            "2026-07-28",
+            "2025-11-25"
+          ],
+          "requested": "2025-11-25"
+        }
+      }
+    }
+  ],
   "httpStatus": 400,
   "body": {
     "jsonrpc": "2.0",
@@ -9,7 +61,10 @@
       "code": -32022,
       "message": "Unsupported protocol version",
       "data": {
-        "supported": ["2026-07-28", "2025-11-25"],
+        "supported": [
+          "2026-07-28",
+          "2025-11-25"
+        ],
         "requested": "1900-01-01"
       }
     }

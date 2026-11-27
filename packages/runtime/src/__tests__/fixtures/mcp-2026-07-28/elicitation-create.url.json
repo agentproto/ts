@@ -1,0 +1,77 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation",
+  "_note": "Section 'Example: Request Sensitive Data', input request delivered inside InputRequiredResult.inputRequests, and the client result. The page says an accept means consent to open the URL, not that the interaction is complete.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "a pending approval is pointed to its page as a url elicitation on approval_get",
+      "capability": "client: elicitation.url",
+      "given": "approval-pending",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "approval_get",
+          "arguments": {
+            "id": "$approvalId"
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {},
+          "url": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "input_required",
+        "inputRequestLike": "body"
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "elicitation",
+      "title": "no url elicitation for a client that declared form only",
+      "capability": "client: elicitation.form",
+      "given": "approval-pending",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "approval_get",
+          "arguments": {
+            "id": "$approvalId"
+          }
+        }
+      },
+      "clientCapabilities": {
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "absent": [
+          "inputRequests",
+          "requestState"
+        ]
+      }
+    }
+  ],
+  "body": {
+    "method": "elicitation/create",
+    "params": {
+      "mode": "url",
+      "url": "https://mcp.example.com/ui/set_api_key",
+      "message": "Please provide your API key to continue."
+    }
+  },
+  "response": {
+    "action": "accept"
+  }
+}

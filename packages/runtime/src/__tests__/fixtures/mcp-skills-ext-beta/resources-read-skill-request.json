@@ -1,0 +1,49 @@
+{
+  "_source": "https://modelcontextprotocol.io/extensions/skills/overview",
+  "_note": "Section 'Reading Skill Content', request and response. The live text must equal the page's byte for byte, since the server serves the page's own skill.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "resources/read",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "resources/read on skill:// returns the SKILL.md text of the page",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "keysWithin": "response",
+        "present": [
+          "ttlMs",
+          "cacheScope"
+        ],
+        "contentsEqualPage": true
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "resources/read",
+    "params": {
+      "uri": "skill://code-review/SKILL.md"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "resultType": "complete",
+      "contents": [
+        {
+          "uri": "skill://code-review/SKILL.md",
+          "mimeType": "text/markdown",
+          "text": "---\nname: code-review\ndescription: Review code using the team's checklist.\n---\n\n# Code review\n\nRead `references/checklist.md`, then review the diff.\n"
+        }
+      ],
+      "ttlMs": 300000,
+      "cacheScope": "public"
+    }
+  }
+}

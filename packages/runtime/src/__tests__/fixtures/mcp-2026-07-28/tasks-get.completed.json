@@ -1,0 +1,67 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Example Message Flow': the tasks/get request (id 8) and its answer once the task completed. The page inlines a CallToolResult under result; this server inlines the turn result of AIP-78 (sessionId, text, truncated), so only the task-level keys are compared.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/get on a finished turn answers status completed with its result",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-completed",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "match": {
+          "status": "completed"
+        },
+        "keysWithin": "task",
+        "present": [
+          "result"
+        ],
+        "absent": [
+          "cacheScope"
+        ]
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "tasks/get",
+    "params": {
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {
+      "resultType": "complete",
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840",
+      "status": "completed",
+      "createdAt": "2025-11-25T10:30:00Z",
+      "lastUpdatedAt": "2025-11-25T10:50:00Z",
+      "ttlMs": 3600000,
+      "pollIntervalMs": 5000,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Hello, Luca!"
+          }
+        ],
+        "isError": false
+      }
+    }
+  }
+}

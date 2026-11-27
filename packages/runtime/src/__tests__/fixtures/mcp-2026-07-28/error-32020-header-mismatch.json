@@ -1,6 +1,45 @@
 {
   "_source": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http",
   "_note": "Section 'Server Validation', 'Example error response'. Same body on https://modelcontextprotocol.io/specification/2026-07-28/schema (HeaderMismatchError). The same pages say the HTTP status MUST be 400 Bad Request.",
+  "_conformance": [
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "Mcp-Name other than params.name on tools/call is a header mismatch",
+      "capability": "none",
+      "request": "tools-call-request",
+      "headers": {
+        "mcp-name": "foo"
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32020,
+        "errorKeysOf": "body"
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tools/list",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "a modern tools/list without MCP-Protocol-Version is a header mismatch",
+      "capability": "none",
+      "request": {
+        "method": "tools/list",
+        "params": {}
+      },
+      "headers": {
+        "mcp-protocol-version": null,
+        "mcp-method": "tools/list"
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32020
+      }
+    }
+  ],
   "httpStatus": 400,
   "body": {
     "jsonrpc": "2.0",

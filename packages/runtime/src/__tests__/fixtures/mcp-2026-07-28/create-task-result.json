@@ -1,0 +1,100 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Task Creation', 'Example Request (CallToolRequest)' and 'Example Response (CreateTaskResult)'. The live request is agent_prompt: this server turns one session turn into a task (AIP-78), and only for a client that declared the extension.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tools/call",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "agent_prompt from a declaring client answers a CreateTaskResult",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "session-idle",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "agent_prompt",
+          "arguments": {
+            "sessionId": "$sessionId",
+            "prompt": "go"
+          }
+        }
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "task",
+        "match": {
+          "status": "working"
+        },
+        "keysWithin": "response",
+        "present": [
+          "taskId",
+          "createdAt",
+          "lastUpdatedAt",
+          "ttlMs",
+          "pollIntervalMs"
+        ],
+        "absent": [
+          "cacheScope"
+        ]
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tools/call",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "no task for a client that did not declare the extension",
+      "capability": "none",
+      "given": "session-idle",
+      "request": {
+        "method": "tools/call",
+        "params": {
+          "name": "agent_prompt",
+          "arguments": {
+            "sessionId": "$sessionId",
+            "prompt": "go"
+          }
+        }
+      },
+      "clientCapabilities": {},
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "absent": [
+          "taskId"
+        ]
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "get_weather",
+      "arguments": {
+        "city": "New York"
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "resultType": "task",
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840",
+      "status": "working",
+      "statusMessage": "The operation is now in progress.",
+      "createdAt": "2025-11-25T10:30:00Z",
+      "lastUpdatedAt": "2025-11-25T10:40:00Z",
+      "ttlMs": 60000,
+      "pollIntervalMs": 5000
+    }
+  }
+}

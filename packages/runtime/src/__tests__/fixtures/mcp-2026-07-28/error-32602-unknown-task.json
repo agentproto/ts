@@ -1,0 +1,79 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Protocol Errors', 'Example: Task not found' (the 'Task has expired' example has the same code). The page sets no HTTP status for it; this server answers 400. The request is the tasks/get of 'Example Message Flow'. Unknown, expired and foreign ids answer the same error so a caller learns nothing about tasks it does not own.",
+  "_conformance": [
+    {
+      "case": "negative",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/get on an unknown taskId is invalid params",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "request": "tasks-get.working",
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602,
+        "errorKeysOf": "body"
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/get on an expired task is invalid params",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-completed",
+      "mutate": "advance-clock",
+      "request": "tasks-get.working",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/get by a session outside the owner's subtree is invalid params",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-foreign",
+      "caller": "$outsiderId",
+      "request": "tasks-get.working",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      }
+    }
+  ],
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 70,
+    "error": {
+      "code": -32602,
+      "message": "Failed to retrieve task: Task not found"
+    }
+  }
+}

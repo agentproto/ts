@@ -1,6 +1,29 @@
 {
   "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
   "_note": "Section 'Listing Tools', 'Response'. The matching request example on that page omits the required _meta, so no tools/list request fixture exists.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tools/list",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "a tools/list result carries resultType, ttlMs and cacheScope",
+      "capability": "none",
+      "request": {
+        "method": "tools/list",
+        "params": {}
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "keysWithin": "body",
+        "present": [
+          "ttlMs",
+          "cacheScope"
+        ]
+      }
+    }
+  ],
   "body": {
     "jsonrpc": "2.0",
     "id": 1,
@@ -19,13 +42,17 @@
                 "description": "City name or zip code"
               }
             },
-            "required": ["location"]
+            "required": [
+              "location"
+            ]
           },
           "icons": [
             {
               "src": "https://example.com/weather-icon.png",
               "mimeType": "image/png",
-              "sizes": ["48x48"]
+              "sizes": [
+                "48x48"
+              ]
             }
           ]
         }

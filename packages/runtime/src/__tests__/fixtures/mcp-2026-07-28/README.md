@@ -30,3 +30,33 @@ Retrieved 2026-11-26. Each `_source` names the section anchor.
 | `events-active.json`, `events-event.json`, `events-error.json`, `events-stream-result.json` | `#event-delivery` |
 | `events-heartbeat.json` | `#lifecycle` |
 | `events-terminated.json` | `#subscription-termination` |
+
+## Conformance replay (`_conformance`)
+
+A fixture that carries a `_conformance` array is replayed against a live `/mcp` by
+`../../mcp-conformance-blackbox.test.ts` (folder discovery, file-name order: nothing is listed in the test) and
+appears in `docs/mcp-conformance-matrix.md` (regenerate with `node scripts/mcp-conformance-matrix.mjs`).
+A fixture without the block is skipped and counted; that is the case of every `events-*` file today. The Events
+fixtures join the replay by adding the block, without editing the test.
+
+Each case names: `case` (`positive` or `negative`), `method` (the JSON-RPC method sent), `era`, `surface`
+(`gateway`, `elicitation`, `tasks`, `skills`), `capability` (what must be declared), `title`, and `expect`
+(`httpStatus`, then `code` for an error or `resultType` for a result, plus optional shape checks). Optional:
+`given` (a scenario the test sets up), `request` (another fixture or an inline `{ method, params }`), `set` (paths
+filled with the scenario's `$vars`), `clientCapabilities`, `meta`, `headers` (`null` removes one), `caller`,
+`mutate`, `repeat`, and `knownDefect` (the expected status is the one AIP-77 gives; the code answers otherwise
+today). New fixtures carry `request` and `response` (the page's request and answer) where older ones carry `body`.
+The 2026-07-28 pages omit `_meta` from most examples; the replay adds the required `_meta`.
+
+Added 2026-11-27 (pages read that day):
+
+| File | Page |
+|---|---|
+| `discover-request.extensions.json` | https://modelcontextprotocol.io/specification/2026-07-28/server/discover (reconstructed with the capability block of SEP-2663) |
+| `elicitation-create.form.json`, `elicitation-create.url.json` | https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation |
+| `input-required-result.json`, `input-required-retry.json` | https://modelcontextprotocol.io/specification/2026-07-28/server/tools (negative cases reconstructed from https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr) |
+| `create-task-result.json`, `tasks-get.{working,input_required,completed,failed,cancelled}.json`, `tasks-update.json`, `tasks-cancel.json`, `error-32021-missing-capability.json`, `error-32602-unknown-task.json` | https://modelcontextprotocol.io/seps/2663-tasks-extension |
+
+`tasks-get.cancelled.json` and `tasks-cancel.json` are reconstructed from the text (the page shows no JSON for them).
+Every `tasks-get.*` answer has `resultType: "complete"`: the two examples of the page's 'Task Execution Errors'
+section still carry `"task"` (read 2026-11-27), which the page's own 'Task Polling' section rules out.

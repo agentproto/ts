@@ -1,0 +1,50 @@
+{
+  "_source": "https://modelcontextprotocol.io/specification/2026-07-28/server/discover",
+  "_note": "Reconstructed from the text. The 'Request' body of the discover page, with the per-request client capability block of the Tasks extension copied from https://modelcontextprotocol.io/seps/2663-tasks-extension (section 'Capability Negotiation'). The server answer it is checked against is the second example of that section; the Skills declaration comes from https://modelcontextprotocol.io/extensions/skills/overview (section 'Capabilities').",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "server/discover",
+      "era": "2026-07-28",
+      "surface": "gateway",
+      "title": "discover announces the Tasks and Skills extensions and the resources capability",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "match": {
+          "capabilities": {
+            "resources": {},
+            "extensions": {
+              "io.modelcontextprotocol/tasks": {},
+              "io.modelcontextprotocol/skills": {}
+            }
+          }
+        },
+        "present": [
+          "ttlMs",
+          "cacheScope"
+        ]
+      }
+    }
+  ],
+  "body": {
+    "jsonrpc": "2.0",
+    "id": "discover-1",
+    "method": "server/discover",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "ExampleClient",
+          "version": "1.0.0"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/tasks": {}
+          }
+        }
+      }
+    }
+  }
+}

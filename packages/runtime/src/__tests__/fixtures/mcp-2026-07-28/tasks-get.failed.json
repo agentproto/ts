@@ -1,0 +1,65 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Task Execution Errors', 'Example: Task with JSON-RPC execution error'. On the page (read 2026-11-27) this example still carries resultType \"task\", which contradicts the 'Task Polling' section of the same page (resultType MUST be \"complete\" on a tasks/get answer); this fixture uses \"complete\". The page shows no request for it: the request is the tasks/get of 'Example Message Flow'. The live task fails because the host restarted while its turn was in flight.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "a turn lost to a host restart answers status failed with a JSON-RPC error",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "given": "task-failed",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "match": {
+          "status": "failed",
+          "error": {
+            "code": -32603
+          }
+        },
+        "keysWithin": "task",
+        "present": [
+          "error"
+        ],
+        "absent": [
+          "cacheScope"
+        ]
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tasks/get",
+    "params": {
+      "taskId": "786512e2-9e0d-44bd-8f29-789f820fe840"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "resultType": "complete",
+      "taskId": "786512e2-9e0d-44bd-8f29-789f820fe840",
+      "status": "failed",
+      "createdAt": "2025-11-25T10:30:00Z",
+      "lastUpdatedAt": "2025-11-25T10:40:00Z",
+      "ttlMs": 3600000,
+      "statusMessage": "Tool execution failed: API rate limit exceeded",
+      "error": {
+        "code": -32603,
+        "message": "API rate limit exceeded"
+      }
+    }
+  }
+}

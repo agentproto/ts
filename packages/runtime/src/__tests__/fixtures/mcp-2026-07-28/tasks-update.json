@@ -1,0 +1,96 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Example Message Flow': the tasks/update request (id 6) and its empty acknowledgement. The live input key is the one the server issued, so the page's key \"name\" is replaced by it; the content is left as on the page (the acknowledgement is eventually consistent and does not judge it).",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tasks/update",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/update on an input_required task is acknowledged empty",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks + elicitation.form",
+      "given": "task-input_required",
+      "set": {
+        "params.taskId": "$taskId",
+        "params.inputResponses": {
+          "$inputKey": {
+            "action": "accept",
+            "content": {
+              "input": "Luca"
+            }
+          }
+        }
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        },
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "keysWithin": "response"
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/update",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/update without the extension declared is a missing capability",
+      "capability": "none",
+      "given": "task-input_required",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {},
+      "expect": {
+        "httpStatus": 400,
+        "code": -32021
+      }
+    },
+    {
+      "case": "negative",
+      "method": "tasks/update",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "tasks/update on an unknown taskId is invalid params",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks",
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "tasks/update",
+    "params": {
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840",
+      "inputResponses": {
+        "name": {
+          "action": "accept",
+          "content": {
+            "input": "Luca"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "resultType": "complete"
+    }
+  }
+}

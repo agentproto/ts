@@ -1,0 +1,28 @@
+{
+  "_source": "https://modelcontextprotocol.io/extensions/skills/overview",
+  "_note": "Reconstructed from the text: the request of section 'Reading Skill Content' for a file the manifest of section 'Listing Skills' does not list. Section 'Error Handling': an unknown file is -32602.",
+  "_conformance": [
+    {
+      "case": "negative",
+      "method": "resources/read",
+      "era": "2026-07-28 + Skills extension (beta)",
+      "surface": "skills",
+      "title": "a file outside the manifest is invalid params",
+      "capability": "server: extensions.io.modelcontextprotocol/skills",
+      "given": "skills",
+      "expect": {
+        "httpStatus": 400,
+        "code": -32602
+      },
+      "knownDefect": "AIP-77 'Error mapping' maps -32602 to HTTP 400; the Skills methods and skill:// reads answer -32602 with HTTP 200 today (McpError forwarded through the bridge, mcp-modern/skills.ts)."
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "resources/read",
+    "params": {
+      "uri": "skill://code-review/references/not-in-manifest.md"
+    }
+  }
+}

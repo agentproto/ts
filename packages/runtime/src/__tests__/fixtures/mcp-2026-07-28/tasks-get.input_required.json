@@ -1,0 +1,81 @@
+{
+  "_source": "https://modelcontextprotocol.io/seps/2663-tasks-extension",
+  "_note": "Section 'Example Message Flow': the tasks/get request (id 4) and its answer once the task needs an elicitation. The live task waits on a parked permission of its session; it is projected only to a client that declared elicitation.",
+  "_conformance": [
+    {
+      "case": "positive",
+      "method": "tasks/get",
+      "era": "2026-07-28 + Tasks extension",
+      "surface": "tasks",
+      "title": "a parked permission turns the task input_required with its elicitation",
+      "capability": "client: extensions.io.modelcontextprotocol/tasks + elicitation.form",
+      "given": "task-input_required",
+      "set": {
+        "params.taskId": "$taskId"
+      },
+      "clientCapabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/tasks": {}
+        },
+        "elicitation": {
+          "form": {}
+        }
+      },
+      "expect": {
+        "httpStatus": 200,
+        "resultType": "complete",
+        "match": {
+          "status": "input_required"
+        },
+        "keysWithin": "task",
+        "present": [
+          "inputRequests"
+        ],
+        "absent": [
+          "cacheScope"
+        ]
+      }
+    }
+  ],
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tasks/get",
+    "params": {
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840"
+    }
+  },
+  "response": {
+    "id": 4,
+    "jsonrpc": "2.0",
+    "result": {
+      "resultType": "complete",
+      "taskId": "786512e2-9e0d-44bd-8f29-789f320fe840",
+      "status": "input_required",
+      "createdAt": "2025-11-25T10:30:00Z",
+      "lastUpdatedAt": "2025-11-25T10:50:00Z",
+      "ttlMs": 3600000,
+      "pollIntervalMs": 5000,
+      "inputRequests": {
+        "name": {
+          "method": "elicitation/create",
+          "params": {
+            "mode": "form",
+            "message": "Please enter your name.",
+            "requestedSchema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
