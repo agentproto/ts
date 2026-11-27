@@ -5515,6 +5515,7 @@ export async function createGateway(
     approvals: approvalsEngine,
     ...(workflowRunner ? { workflowRunner } : {}),
     surfaces: () => resolveHumanGateSurfaces(),
+    log: line => console.warn(line),
   })
 
   const taskRedactor = valueScanRedactor()

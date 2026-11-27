@@ -76,10 +76,12 @@ export async function resolveHumanGateSurfaces(
   const mcp = cfg.mcp ?? {}
   const on = typeof mcp.humanGate === "boolean" ? mcp.humanGate : DEFAULT_HUMAN_GATE
   const flag = (v: boolean | undefined): boolean => on && (typeof v === "boolean" ? v : true)
+  const approvals = flag(mcp.humanGateApprovals)
   return {
-    approvals: flag(mcp.humanGateApprovals),
+    approvals,
     runs: flag(mcp.humanGateRuns),
-    ...(cfg.approvals?.uiBaseUrl ? { approvalsUiBaseUrl: cfg.approvals.uiBaseUrl } : {}),
+    // The console URL is only handed out while the approvals surface is on.
+    ...(approvals && cfg.approvals?.uiBaseUrl ? { approvalsUiBaseUrl: cfg.approvals.uiBaseUrl } : {}),
   }
 }
 
