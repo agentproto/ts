@@ -63,7 +63,7 @@ describe("mountMcpApp", () => {
     expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin")
     expect(iframe.getAttribute("allow")).toBe("camera; clipboard-write")
     expect(iframe.srcdoc).toBe(
-      `<html><head>${buildCspMeta({ connectDomains: ["https://api.example.com"] })}<title>v</title></head><body>view</body></html>`,
+      `<head>${buildCspMeta({ connectDomains: ["https://api.example.com"] })}</head><html><head><title>v</title></head><body>view</body></html>`,
     )
   })
 

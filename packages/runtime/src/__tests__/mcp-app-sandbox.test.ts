@@ -271,12 +271,51 @@ describe("createMcpAppSandbox — serving", () => {
     expect(connect).toBe("connect-src 'self' https://api.example.com http://172.32.0.1 http://8.8.8.8")
   })
 
+  it("drops `*` hosts, single-label and LAN-suffix names, IPv6 literals and the registering host (R3)", () => {
+    const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
+    const v = reg(sb, {
+      html: HTML,
+      requestHost: "mac-studio.tailnet.ts.net:18790",
+      ancestor: "https://foo.example.com",
+      csp: {
+        connectDomains: [
+          "http://*",
+          "ws://*",
+          "http://*:*",
+          "*:*",
+          "*:7777",
+          "http://mac-studio:7777",
+          "nas.lan",
+          "foo.home",
+          "foo.localdomain",
+          "http://x.home.arpa",
+          "http://[2001:db8::1]",
+          "http://[::7f00:1]",
+          "http://[64:ff9b::7f00:1]",
+          "http://198.18.0.1",
+          "https://mac-studio.tailnet.ts.net",
+          "https://*.example.com",
+          "https://*.ts.net",
+          "http://%zz",
+          "https://*",
+          "wss://*",
+          "https://ok.example.org",
+        ],
+      },
+    })
+    const { res, out } = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${v.token}`), res, { kind: "public" })
+    const connect = (out.headers["content-security-policy"] ?? "").split("; ").find((d) => d.startsWith("connect-src"))
+    expect(connect).toBe("connect-src 'self' https://* wss://* https://ok.example.org")
+  })
+
   it("classifies the public hostname canonically: case, trailing dot, default port (R2)", () => {
     const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
     for (const h of ["sbx.example.com", "SBX.Example.com", "sbx.example.com.", "sbx.example.com:443", "sbx.example.com.:443"]) {
       expect(sb.classifyHost(h), h).toEqual({ kind: "public" })
     }
-    expect(sb.classifyHost("sbx.example.com:8443")).toBeNull()
+    // Any port on the public sandbox hostname is sandbox-side (fail closed).
+    expect(sb.classifyHost("sbx.example.com:8443")).toEqual({ kind: "public" })
     expect(sb.classifyHost("other.example.com")).toBeNull()
     for (const o of ["https://sbx.example.com", "https://SBX.example.com.", "https://sbx.example.com:443"]) {
       expect(sb.isSandboxOrigin(o), o).toBe(true)

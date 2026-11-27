@@ -78,6 +78,8 @@ interface StoredView {
   bytes: number
   csp: McpAppUiCsp | undefined
   ancestor: string | undefined
+  /** Hostname the registering page was reached on (may differ from the Origin's). */
+  pageHost: string | undefined
   expiresAt: number
 }
 
@@ -89,6 +91,8 @@ export type SandboxHostKind =
 
 const TOKEN = /^[0-9a-f]{32}$/
 const SANDBOX_SUFFIX = ".sandbox.localhost"
+/** Local-network name suffixes (matched against `.host`). */
+const LOCAL_SUFFIX = /\.(localhost|local|internal|localdomain|lan|home|corp|home\.arpa|intranet|private)$/
 const LOOPBACK_NAMES = new Set(["127.0.0.1", "localhost", "[::1]"])
 const DEFAULT_TTL_MS = 15 * 60 * 1000
 const DEFAULT_MAX_VIEWS = 256
@@ -131,16 +135,14 @@ function isLocalAddress(host: string): boolean {
       (a === 169 && b === 254) ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 168) ||
-      (a === 100 && b >= 64 && b <= 127)
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 198 && (b === 18 || b === 19))
     )
   }
-  if (host.startsWith("[")) {
-    const v6 = host.slice(1, -1)
-    if (v6 === "::" || v6 === "::1") return true
-    if (/^::ffff:/.test(v6)) return true // IPv4-mapped (any mapped v4 is treated as local)
-    if (/^f[cd][0-9a-f]{2}:/.test(v6)) return true // fc00::/7 ULA
-    if (/^fe[89ab][0-9a-f]:/.test(v6)) return true // fe80::/10 link-local
-  }
+  // Every IPv6 literal (loopback, mapped, compatible, NAT64, 6to4, ULA,
+  // link-local, …) is dropped: there is no legitimate reason for a view to
+  // name one, and enumerating the local ranges is how holes appear.
+  if (host.startsWith("[")) return true
   return false
 }
 
@@ -195,7 +197,8 @@ export function createMcpAppSandbox(
   const isPublicHost = (hostHeader: string | undefined): boolean => {
     const h = splitHost(hostHeader)
     if (!h || !publicName || !publicPort) return false
-    return canonName(h.name) === publicName && (h.port === "" || h.port === publicPort)
+    // Name only: any port on the public sandbox hostname is sandbox-side (fail closed).
+    return canonName(h.name) === publicName
   }
   const views = new Map<string, StoredView>()
   let listener: Server | undefined
@@ -247,35 +250,43 @@ export function createMcpAppSandbox(
    * `javascript:` (opaque-origin frames would send `Origin: null`, which no
    * origin guard can attribute to a sandbox).
    */
-  function targetsDaemon(source: string, ancestor: string | undefined): boolean {
+  function targetsDaemon(source: string, ancestor: string | undefined, pageHost: string | undefined): boolean {
     const raw = source.toLowerCase()
     if (raw === "*" || raw === "http:" || raw === "ws:" || raw === "data:" || raw === "about:" || raw === "javascript:") {
       return true
     }
+    // A bare scheme (`https:`, `wss:`, `blob:`, …) names no host; the dangerous
+    // ones (`http:`, `ws:`, `data:`, …) were handled above.
+    if (/^[a-z][a-z0-9+.-]*:$/.test(raw)) return false
+    const scheme = /^([a-z][a-z0-9+.-]*):\/\//.exec(raw)?.[1]
     const hostPart = raw
       .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
       .replace(/[/?#].*$/, "")
       .replace(/^[^@]*@/, "")
-    // Wildcard hosts: `*.localhost`, `*.local`, anything wildcarding a local suffix.
-    const wildcardBase = hostPart.replace(/:(\d+|\*)$/, "")
-    if (wildcardBase.startsWith("*.") && /(^|\.)(localhost|local|internal|localdomain|lan|home|corp)$/.test(canonName(wildcardBase))) {
-      return true
+    const bare = hostPart.replace(/:(\d+|\*)$/, "")
+    // A host of `*` (`http://*`, `*:*`, `*:7777`) covers loopback on plain http/ws.
+    if (bare === "*") return scheme !== "https" && scheme !== "wss"
+    const pageHosts = [ancestor ? originOf(ancestor)?.hostname : undefined, pageHost]
+      .filter((h): h is string => !!h)
+      .map(canonName)
+    const wildcard = bare.startsWith("*.")
+    const base = canonName(wildcard ? bare.slice(2) : bare)
+    // Wildcard hosts: anything wildcarding a local suffix, or covering the page's own host.
+    if (wildcard) {
+      if (LOCAL_SUFFIX.test(`.${base}`)) return true
+      return pageHosts.some((h) => h === base || h.endsWith(`.${base}`))
     }
     let host = ""
     try {
       // A scheme-qualified URL so the WHATWG parser canonicalises the host.
-      host = new URL(`http://${hostPart.replace(/:\*$/, "")}`).hostname
+      host = canonName(new URL(`http://${bare}`).hostname)
     } catch {
-      return false
+      return true // fail closed: drop what the URL parser refuses
     }
-    host = canonName(host)
-    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true
+    if (host === "localhost" || LOCAL_SUFFIX.test(`.${host}`)) return true
+    if (!host.includes(".") && !host.startsWith("[")) return true // single-label LAN names (`mac-studio`)
     if (isLocalAddress(host)) return true
-    if (ancestor) {
-      const a = originOf(ancestor)
-      if (a && canonName(a.hostname) === host) return true
-    }
-    return false
+    return pageHosts.includes(host)
   }
 
   function viewUrl(token: string, requestHost: string | undefined): RegisteredView | null {
@@ -284,7 +295,7 @@ export function createMcpAppSandbox(
     // the sandbox one: the sandbox hostname never serves the daemon API); a
     // page on a loopback host keeps a local sandbox origin.
     const hostName = splitHost(requestHost)?.name
-    const remote = hostName !== undefined && !LOOPBACK_NAMES.has(hostName)
+    const remote = hostName !== undefined && !LOOPBACK_NAMES.has(canonName(hostName))
     if (publicOrigin && remote) {
       return { token, url: `${publicOrigin}/v/${token}`, origin: publicOrigin, mode: "public" }
     }
@@ -335,7 +346,7 @@ export function createMcpAppSandbox(
       return
     }
     const csp = buildSandboxCspHeader(view.csp, view.ancestor, {
-      dropSource: (s) => targetsDaemon(s, view.ancestor),
+      dropSource: (s) => targetsDaemon(s, view.ancestor, view.pageHost),
     })
     // `port` / `public` give every view the SAME origin, so storage would be
     // shared between views. Wiping the origin's storage on each document load
@@ -399,6 +410,10 @@ export function createMcpAppSandbox(
         bytes: Buffer.byteLength(html, "utf8"),
         csp,
         ancestor: cleanAncestor && !isSandboxOrigin(cleanAncestor) ? cleanAncestor : undefined,
+        pageHost: (() => {
+          const n = splitHost(requestHost)?.name
+          return n ? canonName(n) : undefined
+        })(),
         expiresAt: now() + ttlMs,
       })
       sweep()

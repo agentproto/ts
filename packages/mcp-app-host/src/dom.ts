@@ -192,82 +192,25 @@ export function buildCspMeta(csp: McpAppUiCsp | undefined): string {
   return `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(buildCspPolicy(csp))}">`
 }
 
-/**
- * Index just past the end of the tag starting at `from` (`<`), honouring
- * quoted attribute values; -1 when it never closes.
- */
-function tagEnd(html: string, from: number): number {
-  let quote = ""
-  for (let j = from + 1; j < html.length; j++) {
-    const c = html[j]
-    if (quote) {
-      if (c === quote) quote = ""
-    } else if (c === '"' || c === "'") quote = c
-    else if (c === ">") return j + 1
-  }
-  return -1
-}
+/** HTML whitespace is exactly these five characters (NOT `\s`: NBSP and BOM are text). */
+const LEADING_DOCTYPE = /^[ \t\n\f\r]*<!doctype[^>]*>/i
 
 /**
- * Where the CSP meta goes. Only the document PROLOGUE is walked: whitespace,
- * comments, the doctype, the `<html>` start tag and, if it comes next, the
- * `<head>` start tag. Nothing after that is interpreted, so author markup
- * (a `<head>` inside a comment, `<noscript>`, `<template>`, a script string,
- * an unclosed element…) can never decide where the meta lands: it is always
- * placed before any author content.
- */
-function cspInsertionPoint(html: string): { at: number; wrapInHead: boolean } {
-  let i = 0
-  let afterHtml = -1
-  let afterDoctype = 0
-  const skipSpaceAndComments = (): void => {
-    for (;;) {
-      while (i < html.length && /\s/.test(html[i] ?? "")) i++
-      if (html.startsWith("<!--", i)) {
-        const close = html.indexOf("-->", i + 4)
-        if (close < 0) return
-        i = close + 3
-        continue
-      }
-      return
-    }
-  }
-  skipSpaceAndComments()
-  const doctype = /^<!doctype[^>]*>/i.exec(html.slice(i, i + 512))
-  if (doctype) {
-    i += doctype[0].length
-    afterDoctype = i
-    skipSpaceAndComments()
-  }
-  const htmlTag = /^<html(?=[\s/>])/i.exec(html.slice(i, i + 16))
-  if (htmlTag) {
-    const end = tagEnd(html, i)
-    if (end > 0) {
-      i = end
-      afterHtml = end
-      skipSpaceAndComments()
-    }
-  }
-  const headTag = /^<head(?=[\s/>])/i.exec(html.slice(i, i + 16))
-  if (headTag) {
-    const end = tagEnd(html, i)
-    if (end > 0) return { at: end, wrapInHead: false }
-  }
-  if (afterHtml >= 0) return { at: afterHtml, wrapInHead: true }
-  return { at: afterDoctype, wrapInHead: true }
-}
-
-/**
- * Inject the CSP meta ahead of any author content (see
- * {@link cspInsertionPoint}): as the first child of `<head>` when the document
- * opens with one, else in a `<head>` created right after `<html>` / the
- * doctype. A CSP meta the view ships itself is left in place: browsers enforce
+ * Inject the CSP meta ahead of ALL author content, interpreting none of it.
+ *
+ * The only thing skipped is a doctype that opens the document (so the view
+ * does not fall into quirks mode); the meta goes in a `<head>` created right
+ * there. No comment, tag, attribute or quote in the author's HTML is parsed,
+ * so no markup trick (`<!-->`, `--!>`, a quote in an unquoted value,
+ * `<noscript>`, NBSP/BOM before `<html>`, an unclosed element…) can move the
+ * meta behind author script: the HTML parser opens its implicit `<html>` and
+ * `<head>` for our `<head>` and the author's own `<head>` start tag is then
+ * ignored. A CSP meta the view ships itself stays in place: browsers enforce
  * every policy present, so it can only tighten ours.
  */
 export function injectCsp(html: string, csp: McpAppUiCsp | undefined): string {
-  const meta = buildCspMeta(csp)
-  const { at, wrapInHead } = cspInsertionPoint(html)
-  return insertAt(html, at, wrapInHead ? `<head>${meta}</head>` : meta)
+  const doctype = LEADING_DOCTYPE.exec(html)
+  return insertAt(html, doctype ? doctype[0].length : 0, `<head>${buildCspMeta(csp)}</head>`)
 }
 
 function insertAt(html: string, index: number, fragment: string): string {

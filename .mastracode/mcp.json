@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "agentproto": {
+      "url": "http://127.0.0.1:18790/mcp?deferred=0&callerSessionId=sess_84075a2a",
+      "headers": {
+        "x-agentproto-caller-session-id": "sess_84075a2a"
+      }
+    }
+  }
+}
