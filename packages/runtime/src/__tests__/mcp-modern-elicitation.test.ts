@@ -462,6 +462,24 @@ describe("question without fields and plan approval (AIP-45 MCP transport of a q
     expect(g.responded).toEqual([{ decision: "approve", optionId: "answer", feedback: "bonjour" }])
   })
 
+  it("writes a question with choices and free text as a plain string, and still resolves a typed choice by its optionId", async () => {
+    const mixed: PendingPermission = {
+      ...choiceQuestion,
+      id: "q-mixed",
+      toolCallId: "q-mixed",
+      options: [...choiceQuestion.options, { optionId: "other", name: "Other", kind: "allow_once" }],
+      question: { ...choiceQuestion.question!, allowFreeText: true, freeTextOptionId: "other" },
+    }
+    // AIP-45: a closed oneOf would refuse the free text the harness accepts.
+    expect(buildPermissionElicitation(mixed)?.request.params.requestedSchema.properties.answer).not.toHaveProperty("oneOf")
+    const choice = gateOver(mixed)
+    await choice.answer("question_q-mixed", { action: "accept", content: { answer: "answer:1" } })
+    expect(choice.responded).toEqual([{ decision: "approve", optionId: "answer:1" }])
+    const typed = gateOver(mixed)
+    await typed.answer("question_q-mixed", { action: "accept", content: { answer: "Green" } })
+    expect(typed.responded).toEqual([{ decision: "approve", optionId: "other", feedback: "Green" }])
+  })
+
   it("leaves a question without fields parked on an empty, absent or off-list answer, and never sends answers", async () => {
     const free = gateOver(freeTextQuestion)
     await free.answer("question_q-free", { action: "accept", content: { answer: "" } })
